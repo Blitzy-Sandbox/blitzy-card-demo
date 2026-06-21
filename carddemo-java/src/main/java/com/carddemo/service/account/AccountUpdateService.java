@@ -515,7 +515,10 @@ public class AccountUpdateService {
      */
     private AccountUpdateResponse buildResponse(AccountUpdateRequest request, Account account) {
         return new AccountUpdateResponse(
-                request.accountId(),
+                // PIC 9(11) fixed-width fidelity: echo the account id zero-padded to eleven digits,
+                // consistent with the view and card endpoints. The id was already validated numeric by
+                // parseAccountId(request.accountId()) earlier in updateAccount, so the parse is safe here.
+                String.format("%011d", Long.parseLong(request.accountId().trim())),
                 request.accountStatus(),
                 request.openYear(), request.openMonth(), request.openDay(),
                 account.getAcctCreditLimit(),

@@ -14,16 +14,19 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Centralized translation of CardDemo domain exceptions and Spring MVC binding
@@ -68,6 +71,26 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(ValidationException.class)
     public ResponseEntity<ProblemDetail> handleValidation(ValidationException ex) {
         return build(HttpStatus.BAD_REQUEST, "Validation Error", ex.getMessage());
+    }
+
+    /**
+     * Translates a database integrity violation (for example a primary-key or unique-constraint
+     * collision raised by the persistence provider on flush) into a 409 RFC 7807 ProblemDetail,
+     * keeping conflict responses consistent with the domain {@link DuplicateRecordException} and
+     * {@link ConcurrencyException} handlers above. The framework exception message can embed the
+     * offending SQL, constraint, table, and column names; per CWE-209 that detail is logged
+     * server-side only and the client receives a fixed, non-sensitive message.
+     *
+     * @param ex the data-integrity failure raised by the persistence layer
+     * @return a {@code 409 Conflict} response with a sanitized RFC 7807 problem body
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ProblemDetail> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        // Constraint/SQL/column internals are logged server-side only (CWE-209); the client receives
+        // only the generic, non-sensitive detail below.
+        log.warn("Data integrity violation: {}", ex.getMessage());
+        return build(HttpStatus.CONFLICT, "Data Conflict",
+                "The request conflicts with existing data");
     }
 
     @ExceptionHandler(TransactionPostingException.class)
@@ -158,6 +181,41 @@ public class GlobalExceptionHandler {
             builder.allow(supported.toArray(new HttpMethod[0]));
         }
         return builder.body(problem);
+    }
+
+    /**
+     * Translates an unsupported request {@code Content-Type} into a 415 RFC 7807 ProblemDetail so the
+     * media-type error shares the same envelope as the handled domain errors (the framework default
+     * {@code {timestamp,status,error,path}} envelope is replaced). The list of supported media types is
+     * the API's own published contract (for example {@code application/json}) and is safe to surface; the
+     * client-sent content type is not echoed.
+     *
+     * @param ex the framework media-type exception
+     * @return a 415 response carrying the RFC 7807 ProblemDetail
+     */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex) {
+        String detail = ex.getSupportedMediaTypes().isEmpty()
+                ? "The request media type is not supported"
+                : "The request media type is not supported; supported types: " + ex.getSupportedMediaTypes();
+        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type", detail);
+    }
+
+    /**
+     * Translates a no-handler / no-static-resource match (unmapped route) into a 404 RFC 7807
+     * ProblemDetail so unmapped-route errors share the same envelope as the handled domain errors
+     * (the framework default {@code {timestamp,status,error,path}} envelope is replaced). The requested
+     * path is logged server-side only and is deliberately NOT echoed in the client response (CWE-209):
+     * the client already knows the path it requested, and not reflecting it avoids surfacing internal
+     * routing detail.
+     *
+     * @param ex the framework no-resource-found exception
+     * @return a 404 response carrying the RFC 7807 ProblemDetail
+     */
+    @ExceptionHandler(NoResourceFoundException.class)
+    public ResponseEntity<ProblemDetail> handleNoResourceFound(NoResourceFoundException ex) {
+        log.debug("No resource found for request path: {}", ex.getResourcePath());
+        return build(HttpStatus.NOT_FOUND, "Resource Not Found", "The requested resource was not found");
     }
 
     private ResponseEntity<ProblemDetail> build(HttpStatus status, String title, String detail) {

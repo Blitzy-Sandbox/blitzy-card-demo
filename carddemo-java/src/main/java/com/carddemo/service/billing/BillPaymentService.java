@@ -10,6 +10,7 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.shared.TransactionIdAllocator;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -52,9 +53,6 @@ public class BillPaymentService {
     private static final String PAYMENT_MERCHANT_CITY = "N/A";
     private static final String PAYMENT_MERCHANT_ZIP = "N/A";
 
-    /** Transaction id is a fixed-width 16-digit zero-padded numeric string. */
-    private static final String TRAN_ID_FORMAT = "%016d";
-
     /** 26-char timestamp matching COBOL GET-CURRENT-TIMESTAMP (yyyy-MM-dd HH:mm:ss.ffffff). */
     private static final DateTimeFormatter TIMESTAMP_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
@@ -69,13 +67,16 @@ public class BillPaymentService {
     private final AccountRepository accountRepository;
     private final TransactionRepository transactionRepository;
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
+    private final TransactionIdAllocator transactionIdAllocator;
 
     public BillPaymentService(AccountRepository accountRepository,
                               TransactionRepository transactionRepository,
-                              CardCrossReferenceRepository cardCrossReferenceRepository) {
+                              CardCrossReferenceRepository cardCrossReferenceRepository,
+                              TransactionIdAllocator transactionIdAllocator) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
+        this.transactionIdAllocator = transactionIdAllocator;
     }
 
     /**
@@ -125,14 +126,19 @@ public class BillPaymentService {
 
         // IF CONF-PAY-YES -> post; ELSE -> prompt for confirmation (preview the balance).
         if (!confirmed) {
-            return new BillPaymentResponse(accountId, currentBalance, confirm, MSG_CONFIRM_PROMPT);
+            // PIC 9(11) fixed-width fidelity: echo the account id zero-padded to eleven digits, consistent
+            // with the view and card endpoints. loadAccount already validated the id is numeric.
+            return new BillPaymentResponse(
+                    String.format("%011d", Long.parseLong(accountId)), currentBalance, confirm, MSG_CONFIRM_PROMPT);
         }
 
         // READ-CXACAIX-FILE: card number cross-referenced to the account (CXACAIX AIX).
         final String cardNumber = loadCardNumber(account.getAcctId());
 
-        // STARTBR/READPREV/ENDBR HIGH-VALUES browse + ADD 1: next transaction id.
-        final String tranId = nextTransactionId();
+        // STARTBR/READPREV/ENDBR HIGH-VALUES browse + ADD 1: next transaction id. Allocation is
+        // concurrency-safe (advisory-lock serialized within this transaction) so concurrent payments
+        // each receive a unique id without a primary-key collision.
+        final String tranId = transactionIdAllocator.allocateNextTransactionId();
 
         // MOVE ACCT-CURR-BAL TO TRAN-AMT: pay in full.
         final BigDecimal paymentAmount = currentBalance;
@@ -155,7 +161,9 @@ public class BillPaymentService {
 
         // WRITE-TRANSACT-FILE success message (NOTE: two spaces after the first period).
         final String successMessage = "Payment successful.  Your Transaction ID is " + tranId + ".";
-        return new BillPaymentResponse(accountId, newBalance, confirm, successMessage);
+        // PIC 9(11) fixed-width fidelity: echo the account id zero-padded to eleven digits (see preview path).
+        return new BillPaymentResponse(
+                String.format("%011d", Long.parseLong(accountId)), newBalance, confirm, successMessage);
     }
 
     /** READ-ACCTDAT-FILE: parse the numeric account id and load the account. */
@@ -178,16 +186,6 @@ public class BillPaymentService {
             throw new RecordNotFoundException(MSG_ACCT_NOT_FOUND);
         }
         return xrefs.get(0).getXrefCardNum();
-    }
-
-    /** Browse-to-end + increment; zero-pad to 16 digits. Empty store -> first id is 1. */
-    private String nextTransactionId() {
-        final String maxTranId = transactionRepository.findMaxTranId();
-        long lastId = 0L;
-        if (maxTranId != null && !maxTranId.isBlank()) {
-            lastId = Long.parseLong(maxTranId.trim());
-        }
-        return String.format(TRAN_ID_FORMAT, lastId + 1L);
     }
 
     /** Builds the payment transaction with the fixed COBIL00C field values. */

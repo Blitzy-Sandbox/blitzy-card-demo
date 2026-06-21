@@ -9,6 +9,7 @@ import com.carddemo.model.entity.Transaction;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.shared.DateValidationService;
+import com.carddemo.service.shared.TransactionIdAllocator;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -45,9 +46,6 @@ public class TransactionAddService {
     /** Picture format supplied to {@link DateValidationService} for the origin and process dates. */
     private static final String DATE_FORMAT = "YYYY-MM-DD";
 
-    /** Fixed width of the zero-padded numeric transaction identifier. */
-    private static final String TRAN_ID_FORMAT = "%016d";
-
     /** Fixed width of the zero-padded numeric category code (four digits). */
     private static final String CATEGORY_CODE_FORMAT = "%04d";
 
@@ -60,22 +58,26 @@ public class TransactionAddService {
     private final TransactionRepository transactionRepository;
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final DateValidationService dateValidationService;
+    private final TransactionIdAllocator transactionIdAllocator;
 
     /**
      * Creates the service with its collaborating beans.
      *
-     * @param transactionRepository        repository providing the maximum-identifier lookup and save
+     * @param transactionRepository        repository providing the transaction save
      * @param cardCrossReferenceRepository  cross-reference repository for the account-or-card key
      *                                      derivation ({@code CXACAIX} read by account id and the
      *                                      keyed read by card number)
      * @param dateValidationService        strict date-validation collaborator for the origin/process dates
+     * @param transactionIdAllocator       concurrency-safe allocator of the next transaction identifier
      */
     public TransactionAddService(TransactionRepository transactionRepository,
                                  CardCrossReferenceRepository cardCrossReferenceRepository,
-                                 DateValidationService dateValidationService) {
+                                 DateValidationService dateValidationService,
+                                 TransactionIdAllocator transactionIdAllocator) {
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.dateValidationService = dateValidationService;
+        this.transactionIdAllocator = transactionIdAllocator;
     }
 
     /**
@@ -96,9 +98,8 @@ public class TransactionAddService {
         validateDataFields(request);
         enforceConfirmation(request.confirm());
 
-        String maxId = transactionRepository.findMaxTranId();
-        long next = (maxId == null ? 0L : Long.parseLong(maxId.trim())) + 1L;
-        String newTranId = String.format(TRAN_ID_FORMAT, next);
+        // Concurrency-safe next-id allocation (advisory-lock serialized within this transaction).
+        String newTranId = transactionIdAllocator.allocateNextTransactionId();
 
         BigDecimal normalizedAmount = request.amount().setScale(AMOUNT_SCALE, RoundingMode.HALF_EVEN);
 
@@ -126,7 +127,11 @@ public class TransactionAddService {
 
         return new TransactionAddResponse(
                 saved.getTranId(),
-                key.accountId(),
+                // PIC 9(11) fixed-width fidelity: render the resolved account id zero-padded to eleven
+                // digits so it matches the view and card endpoints. DerivedKey.accountId is always a
+                // decimal numeric string (supplied-and-validated, or derived from the card xref), so the
+                // parse is safe.
+                String.format("%011d", Long.parseLong(key.accountId())),
                 saved.getTranCardNum(),
                 saved.getTranTypeCd(),
                 String.format(CATEGORY_CODE_FORMAT, saved.getTranCatCd()),

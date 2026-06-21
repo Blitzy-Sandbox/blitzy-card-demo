@@ -136,7 +136,10 @@ public class AccountViewService {
      */
     private static AccountViewResponse buildResponse(Account account, Customer customer) {
         return new AccountViewResponse(
-                String.valueOf(account.getAcctId()),
+                // PIC 9(11) fixed-width fidelity: render the account id zero-padded to eleven digits so
+                // the value is directly reusable on the card endpoints (which require an 11-digit id) and
+                // is consistent across every endpoint that echoes an account id.
+                String.format("%011d", account.getAcctId()),
                 account.getAcctActiveStatus(),
                 account.getAcctOpenDate(),
                 account.getAcctCreditLimit(),

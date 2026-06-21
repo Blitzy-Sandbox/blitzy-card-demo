@@ -19,6 +19,7 @@ import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.transaction.TransactionAddService;
 import com.carddemo.service.shared.DateValidationService;
 import com.carddemo.service.shared.DateValidationService.DateValidationResult;
+import com.carddemo.service.shared.TransactionIdAllocator;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
@@ -55,9 +56,12 @@ class TransactionAddServiceTest {
     @Mock
     private DateValidationService dateValidationService;
 
+    @Mock
+    private TransactionIdAllocator transactionIdAllocator;
+
     private TransactionAddService service() {
         return new TransactionAddService(transactionRepository, cardCrossReferenceRepository,
-                dateValidationService);
+                dateValidationService, transactionIdAllocator);
     }
 
     // ---- Helpers ----------------------------------------------------------------------------
@@ -95,7 +99,7 @@ class TransactionAddServiceTest {
     }
 
     private void stubSaveEcho() {
-        when(transactionRepository.findMaxTranId()).thenReturn("0000000000000099");
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000100");
         when(transactionRepository.save(any(Transaction.class)))
                 .thenAnswer(inv -> inv.getArgument(0));
     }
@@ -112,7 +116,7 @@ class TransactionAddServiceTest {
         TransactionAddResponse response = service().addTransaction(request("123", null, "Y"));
 
         assertThat(response.cardNumber()).isEqualTo(CARD);
-        assertThat(response.accountId()).isEqualTo("123");
+        assertThat(response.accountId()).isEqualTo("00000000123");
         assertThat(response.transactionId()).isEqualTo("0000000000000100");
         verify(cardCrossReferenceRepository, never()).findById(anyString());
     }
@@ -126,7 +130,7 @@ class TransactionAddServiceTest {
 
         TransactionAddResponse response = service().addTransaction(request(null, CARD, "Y"));
 
-        assertThat(response.accountId()).isEqualTo("456");
+        assertThat(response.accountId()).isEqualTo("00000000456");
         assertThat(response.cardNumber()).isEqualTo(CARD);
         verify(cardCrossReferenceRepository, never()).findByXrefAcctId(any());
     }
@@ -142,7 +146,7 @@ class TransactionAddServiceTest {
                 service().addTransaction(request("123", "9999999999999999", "Y"));
 
         assertThat(response.cardNumber()).isEqualTo(CARD);
-        assertThat(response.accountId()).isEqualTo("123");
+        assertThat(response.accountId()).isEqualTo("00000000123");
         verify(cardCrossReferenceRepository, never()).findById(anyString());
     }
 
@@ -196,7 +200,7 @@ class TransactionAddServiceTest {
     void successfulAddPopulatesResponse() {
         when(cardCrossReferenceRepository.findByXrefAcctId(123L)).thenReturn(List.of(xref(CARD, 123L)));
         stubValidDates();
-        when(transactionRepository.findMaxTranId()).thenReturn(null);
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000001");
         when(transactionRepository.save(any(Transaction.class))).thenAnswer(inv -> inv.getArgument(0));
 
         TransactionAddResponse response = service().addTransaction(request("123", null, "Y"));
@@ -236,7 +240,7 @@ class TransactionAddServiceTest {
     void duplicateIdThrows() {
         when(cardCrossReferenceRepository.findByXrefAcctId(123L)).thenReturn(List.of(xref(CARD, 123L)));
         stubValidDates();
-        when(transactionRepository.findMaxTranId()).thenReturn("0000000000000099");
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000100");
         when(transactionRepository.save(any(Transaction.class)))
                 .thenThrow(new DataIntegrityViolationException("dup"));
 

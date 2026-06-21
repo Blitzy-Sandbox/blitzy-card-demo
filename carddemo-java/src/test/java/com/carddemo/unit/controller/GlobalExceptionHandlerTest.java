@@ -17,16 +17,20 @@ import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.slf4j.MDC;
 
 /**
@@ -236,5 +240,68 @@ class GlobalExceptionHandlerTest {
         assertThat(resp.getBody().getDetail()).contains("PATCH");
         // No supported methods are known, so the Allow header is left unset (empty).
         assertThat(resp.getHeaders().getAllow()).isEmpty();
+    }
+
+    @Test
+    @DisplayName("HttpMediaTypeNotSupportedException -> 415 RFC 7807 listing supported types; no internals leaked")
+    void mediaTypeNotSupportedIsMappedToRfc7807() {
+        // Client sent text/plain; the endpoint accepts application/json. Previously this produced the
+        // framework default {timestamp,status,error,path} envelope; it must now be RFC 7807.
+        HttpMediaTypeNotSupportedException ex = new HttpMediaTypeNotSupportedException(
+                MediaType.TEXT_PLAIN, java.util.List.of(MediaType.APPLICATION_JSON));
+
+        ResponseEntity<ProblemDetail> resp = handler.handleMediaTypeNotSupported(ex);
+        ProblemDetail body = resp.getBody();
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.UNSUPPORTED_MEDIA_TYPE);
+        assertThat(body.getStatus()).isEqualTo(415);
+        assertThat(body.getTitle()).isEqualTo("Unsupported Media Type");
+        // The API's own supported contract is safe to advertise.
+        assertThat(body.getDetail()).contains("application/json");
+        // Sanitization: no framework class name leaks into the client detail.
+        assertThat(body.getDetail()).doesNotContain("Exception");
+    }
+
+    @Test
+    @DisplayName("NoResourceFoundException (unmapped route) -> 404 RFC 7807; requested path is not echoed")
+    void noResourceFoundIsMappedToRfc7807WithoutPathEcho() {
+        // Unmapped route such as GET /api/nope. Previously this produced the framework default envelope;
+        // it must now be RFC 7807, and the requested path must NOT be reflected to the client (CWE-209).
+        NoResourceFoundException ex = new NoResourceFoundException(HttpMethod.GET, "/api/nope");
+
+        ResponseEntity<ProblemDetail> resp = handler.handleNoResourceFound(ex);
+        ProblemDetail body = resp.getBody();
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(body.getStatus()).isEqualTo(404);
+        assertThat(body.getTitle()).isEqualTo("Resource Not Found");
+        assertThat(body.getDetail()).isEqualTo("The requested resource was not found");
+        // The requested path is logged server-side only; it must not appear in the client response.
+        assertThat(body.getDetail()).doesNotContain("/api/nope");
+    }
+
+    @Test
+    @DisplayName("DataIntegrityViolationException -> 409 RFC 7807 with sanitized detail; DB internals not leaked")
+    void dataIntegrityViolationIsMappedToConflictAndSanitized() {
+        // The persistence provider embeds the offending constraint/table/column in the message; this
+        // must be logged server-side only and never surface in the client response body (CWE-209).
+        String leakyConstraintMessage =
+                "could not execute statement; constraint [transaction_pkey]; "
+                        + "duplicate key value violates unique constraint \"transaction_pkey\"";
+
+        ResponseEntity<ProblemDetail> resp = handler.handleDataIntegrityViolation(
+                new DataIntegrityViolationException(leakyConstraintMessage));
+        ProblemDetail body = resp.getBody();
+
+        // The concurrency-safe id allocator (advisory lock) prevents the primary-key race in normal
+        // operation; this handler is the defense-in-depth net that maps any residual collision to a
+        // retryable 409 consistent with the DuplicateRecord/Concurrency conflict envelopes.
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.getStatus()).isEqualTo(409);
+        assertThat(body.getTitle()).isEqualTo("Data Conflict");
+        assertThat(body.getDetail()).isEqualTo("The request conflicts with existing data");
+        // Sanitization: the SQL/constraint internals must not be echoed to the client.
+        assertThat(body.getDetail()).doesNotContain("transaction_pkey");
+        assertThat(body.getDetail()).doesNotContain("constraint");
     }
 }

@@ -19,6 +19,7 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.billing.BillPaymentService;
+import com.carddemo.service.shared.TransactionIdAllocator;
 import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
@@ -49,6 +50,9 @@ class BillPaymentServiceTest {
     @Mock
     private CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    @Mock
+    private TransactionIdAllocator transactionIdAllocator;
+
     @InjectMocks
     private BillPaymentService billPaymentService;
 
@@ -72,7 +76,7 @@ class BillPaymentServiceTest {
         when(accountRepository.findById(12345L)).thenReturn(Optional.of(account(12345L, "100.00")));
         when(cardCrossReferenceRepository.findByXrefAcctId(12345L))
                 .thenReturn(List.of(xref("1234567890123456", 12345L)));
-        when(transactionRepository.findMaxTranId()).thenReturn("0000000000000123");
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000124");
 
         BillPaymentResponse response = billPaymentService.pay(new BillPaymentRequest("12345", "Y"));
 
@@ -99,17 +103,18 @@ class BillPaymentServiceTest {
         assertThat(acctCaptor.getValue().getAcctCurrBal()).isEqualByComparingTo("0.00");
         assertThat(acctCaptor.getValue().getAcctCurrBal().scale()).isEqualTo(2);
 
-        assertThat(response.accountId()).isEqualTo("12345");
+        assertThat(response.accountId()).isEqualTo("00000012345");
         assertThat(response.currentBalance()).isEqualByComparingTo("0.00");
         assertThat(response.currentBalance().scale()).isEqualTo(2);
         assertThat(response.confirm()).isEqualTo("Y");
         assertThat(response.errorMessage())
                 .isEqualTo("Payment successful.  Your Transaction ID is 0000000000000124.");
 
-        InOrder inOrder = Mockito.inOrder(accountRepository, cardCrossReferenceRepository, transactionRepository);
+        InOrder inOrder = Mockito.inOrder(accountRepository, cardCrossReferenceRepository,
+                transactionIdAllocator, transactionRepository);
         inOrder.verify(accountRepository).findById(12345L);
         inOrder.verify(cardCrossReferenceRepository).findByXrefAcctId(12345L);
-        inOrder.verify(transactionRepository).findMaxTranId();
+        inOrder.verify(transactionIdAllocator).allocateNextTransactionId();
         inOrder.verify(transactionRepository).save(any(Transaction.class));
         inOrder.verify(accountRepository).save(any(Account.class));
     }
@@ -120,7 +125,7 @@ class BillPaymentServiceTest {
         when(accountRepository.findById(12345L)).thenReturn(Optional.of(account(12345L, "50.00")));
         when(cardCrossReferenceRepository.findByXrefAcctId(12345L))
                 .thenReturn(List.of(xref("1111222233334444", 12345L)));
-        when(transactionRepository.findMaxTranId()).thenReturn(null);
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000001");
 
         BillPaymentResponse response = billPaymentService.pay(new BillPaymentRequest("12345", "Y"));
 
@@ -137,7 +142,7 @@ class BillPaymentServiceTest {
         when(accountRepository.findById(12345L)).thenReturn(Optional.of(account(12345L, "10.00")));
         when(cardCrossReferenceRepository.findByXrefAcctId(12345L))
                 .thenReturn(List.of(xref("1234567890123456", 12345L)));
-        when(transactionRepository.findMaxTranId()).thenReturn("0000000000000005");
+        when(transactionIdAllocator.allocateNextTransactionId()).thenReturn("0000000000000006");
 
         BillPaymentResponse response = billPaymentService.pay(new BillPaymentRequest("12345", "y"));
 
@@ -177,7 +182,7 @@ class BillPaymentServiceTest {
 
         BillPaymentResponse response = billPaymentService.pay(new BillPaymentRequest("12345", ""));
 
-        assertThat(response.accountId()).isEqualTo("12345");
+        assertThat(response.accountId()).isEqualTo("00000012345");
         assertThat(response.currentBalance()).isEqualByComparingTo("250.75");
         assertThat(response.currentBalance().scale()).isEqualTo(2);
         assertThat(response.confirm()).isEqualTo("");
@@ -294,7 +299,7 @@ class BillPaymentServiceTest {
                 .hasMessage("Account ID NOT found...");
         verify(accountRepository).findById(12345L);
         verify(cardCrossReferenceRepository).findByXrefAcctId(12345L);
-        verify(transactionRepository, never()).findMaxTranId();
+        verify(transactionIdAllocator, never()).allocateNextTransactionId();
         verify(transactionRepository, never()).save(any(Transaction.class));
         verify(accountRepository, never()).save(any(Account.class));
     }
