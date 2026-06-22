@@ -1,10 +1,15 @@
 package com.carddemo.unit.service.admin;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.UserListResponse;
 import com.carddemo.model.entity.UserSecurity;
 import com.carddemo.model.enums.UserType;
@@ -58,8 +63,11 @@ class UserListServiceTest {
 
     @Test
     void populatedPageProjectsRowsWithBlankSelectionFlag() {
+        // Issue 4: a non-blank user-id filter is applied as a raw "start-at" (GTEQ) lower bound
+        // before paging (COUSR00C STARTBR), so the whole-table findAll must NOT be used. User ids
+        // are 8-char alphanumeric keys, so the filter is passed through verbatim (no normalization).
         Pageable pageable = PageRequest.of(0, 10);
-        when(userSecurityRepository.findAll(any(Pageable.class)))
+        when(userSecurityRepository.findBySecUsrIdGreaterThanEqual(eq("ABC"), any(Pageable.class)))
                 .thenReturn(new PageImpl<>(List.of(user("ADMIN001"), user("USER0002")), pageable, 2));
 
         UserListResponse response = service().listUsers(1, "ABC");
@@ -72,6 +80,22 @@ class UserListServiceTest {
         assertThat(first.userType()).isEqualTo(UserType.USER);
         assertThat(response.userIdFilter()).isEqualTo("ABC");
         assertThat(response.errorMessage()).isNull();
+
+        verify(userSecurityRepository).findBySecUsrIdGreaterThanEqual(eq("ABC"), any(Pageable.class));
+        verify(userSecurityRepository, never()).findAll(any(Pageable.class));
+    }
+
+    @Test
+    void zeroOrNegativePageRejectedWith400() {
+        // Issue 5: the user list is 1-based (page 1 is the first page), so any page below one is
+        // invalid and must be rejected with HTTP 400 rather than silently coerced to the first page.
+        assertThatThrownBy(() -> service().listUsers(0, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Page number must be one or greater");
+        assertThatThrownBy(() -> service().listUsers(-2, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Page number must be one or greater");
+        verifyNoInteractions(userSecurityRepository);
     }
 
     @Test

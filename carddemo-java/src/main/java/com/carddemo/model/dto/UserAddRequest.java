@@ -1,5 +1,6 @@
 package com.carddemo.model.dto;
 
+import com.carddemo.model.dto.constraint.NoHtml;
 import com.carddemo.model.enums.UserType;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -41,8 +42,8 @@ import jakarta.validation.constraints.Size;
  *                  length edit
  */
 public record UserAddRequest(
-        @NotBlank @Size(max = 20) String firstName,
-        @NotBlank @Size(max = 20) String lastName,
+        @NotBlank @NoHtml @Size(max = 20) String firstName,
+        @NotBlank @NoHtml @Size(max = 20) String lastName,
         @NotBlank @Size(max = 8) String userId,
         @NotBlank @Size(max = 8) String password,
         UserType userType) {

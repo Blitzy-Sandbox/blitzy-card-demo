@@ -37,6 +37,9 @@ class CustomerTest {
         customer.setCustDobYyyyMmDd("1990-05-15");
         customer.setCustPriCardHolderInd("Y");
         customer.setCustFicoCreditScore(720);
+        // CUSTDAT optimistic-locking version (mirrors Account@Version); participates in the
+        // COACTUPC ACCTDAT+CUSTDAT optimistic concurrency (AAP 0.8.4).
+        customer.setVersion(3L);
 
         assertThat(customer.getCustId()).isEqualTo(123456789L);
         assertThat(customer.getCustFirstName()).isEqualTo("JANE");
@@ -51,6 +54,7 @@ class CustomerTest {
         assertThat(customer.getCustDobYyyyMmDd()).isEqualTo("1990-05-15");
         assertThat(customer.getCustPriCardHolderInd()).isEqualTo("Y");
         assertThat(customer.getCustFicoCreditScore()).isEqualTo(720);
+        assertThat(customer.getVersion()).isEqualTo(3L);
     }
 
     @Test

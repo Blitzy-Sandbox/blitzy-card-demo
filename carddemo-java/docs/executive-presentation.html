@@ -332,10 +332,54 @@
     .center-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2em; }
 
     /* Slide number */
-    .reveal .slide-number { background: transparent; color: var(--ink-muted); font-family: var(--font-code); }
+    .reveal .slide-number { background: transparent; color: var(--ink-muted); font-family: var(--font-code); padding: 6px 10px; border-radius: 8px; }
+
+    /* ============ Accessibility & mobile polish (desktop layout unchanged) ============ */
+
+    /* Strong, always-visible keyboard focus indicator for the slide counter and the
+       navigation controls. The default reveal.js focus ring is barely visible against
+       the dark navy background; this adds a high-contrast teal outline + halo. */
+    .reveal .slide-number:focus-visible,
+    .reveal .slide-number a:focus-visible,
+    .reveal .controls button:focus-visible {
+      outline: 3px solid var(--blitzy-teal);
+      outline-offset: 3px;
+      border-radius: 10px;
+      box-shadow: 0 0 0 4px rgba(148, 250, 213, 0.40);
+    }
+
+    /* Guarantee a >=44px touch target for the navigation arrows (WCAG 2.5.5).
+       Expressed as a floor (min-*), so larger desktop arrows are never shrunk. */
+    .reveal .controls button { min-width: 44px; min-height: 44px; }
+
+    /* Small-screen readability: enlarge the slide counter and the navigation
+       controls so they remain legible and tappable when the fixed 16:9 canvas is
+       scaled down to a phone viewport. */
+    @media (max-width: 700px) {
+      .reveal .slide-number { font-size: 16px; padding: 8px 12px; }
+      .reveal .controls button { min-width: 48px; min-height: 48px; }
+    }
+
+    /* On very narrow portrait screens the 1920x1080 deck scales down small; surface a
+       brief, unobtrusive hint that landscape (or a larger display) reads best. */
+    #rotate-hint {
+      display: none; position: fixed; top: 0; left: 0; right: 0; z-index: 60;
+      align-items: center; justify-content: center; gap: 0.5em;
+      padding: 9px 14px; font-family: var(--font-head); font-size: 14px; font-weight: 600;
+      color: var(--blitzy-navy); background: var(--blitzy-teal);
+    }
+    #rotate-hint svg.lucide { width: 1.1em; height: 1.1em; stroke: var(--blitzy-navy); }
+    @media (max-width: 700px) and (orientation: portrait) {
+      #rotate-hint { display: flex; }
+    }
   </style>
 </head>
 <body>
+  <!-- Portrait-only readability hint (shown via CSS only on narrow portrait viewports). -->
+  <div id="rotate-hint" role="note">
+    <i data-lucide="rotate-cw" aria-hidden="true"></i>
+    <span>Rotate to landscape or use a larger screen for best readability.</span>
+  </div>
   <div class="reveal">
     <div class="slides">
 <!-- ============ Slide 1 — Title ============ -->
@@ -577,7 +621,7 @@ flowchart LR
             <span class="kpi-icon"><i data-lucide="gauge" aria-hidden="true"></i></span>
             <div class="kpi-number gradient-text" style="font-size:1.05em;">Metrics</div>
             <div class="kpi-label">Prometheus</div>
-            <div class="kpi-sub">Custom batch &amp; auth counters</div>
+            <div class="kpi-sub">Custom batch, auth &amp; transaction metrics</div>
           </div>
           <div class="kpi-card">
             <span class="kpi-icon"><i data-lucide="heart-pulse" aria-hidden="true"></i></span>
@@ -694,7 +738,7 @@ flowchart LR
         <div class="center-wrap">
           <span class="icon-hero"><i data-lucide="circle-check" aria-hidden="true"></i></span>
           <h1 class="gradient-text">Parity. Cloud-native. Observable.</h1>
-          <p class="lead" style="margin:0.2em auto 0; text-align:center;">100% behavioral parity with the COBOL baseline, delivered as a modular, observable, AWS-ready Spring Boot application.</p>
+          <p class="lead" style="margin:0.2em auto 0; text-align:center;">100% behavioral parity with the COBOL baseline across all 22 migrated features, delivered as a modular, observable, AWS-ready Spring Boot application.</p>
           <div class="brand-lockup" style="margin-top:0.7em;">
             <span class="brand-mark"><i data-lucide="zap" aria-hidden="true"></i></span>
             <span class="brand-word">Blitzy</span>

@@ -13,11 +13,16 @@ import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.service.shared.DateValidationService;
 import com.carddemo.service.shared.ValidationLookupService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import jakarta.persistence.OptimisticLockException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
@@ -80,17 +85,20 @@ public class AccountUpdateService {
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final DateValidationService dateValidationService;
     private final ValidationLookupService validationLookupService;
+    private final EntityManager entityManager;
 
     public AccountUpdateService(AccountRepository accountRepository,
                                 CustomerRepository customerRepository,
                                 CardCrossReferenceRepository cardCrossReferenceRepository,
                                 DateValidationService dateValidationService,
-                                ValidationLookupService validationLookupService) {
+                                ValidationLookupService validationLookupService,
+                                EntityManager entityManager) {
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.dateValidationService = dateValidationService;
         this.validationLookupService = validationLookupService;
+        this.entityManager = entityManager;
     }
 
     /**
@@ -153,12 +161,23 @@ public class AccountUpdateService {
             throw new ConcurrencyException(CONCURRENCY_MESSAGE);
         }
 
-        applyAccountChanges(account, request, openDate, expiryDate, reissueDate);
+        // Capture the pre-update account version. The guard above guarantees it equals
+        // request.version(). Every successful update advances the ACCTDAT+CUSTDAT aggregate
+        // version by EXACTLY ONE (see persist), so the committed version is deterministically
+        // preVersion + 1. Computing it here makes the echoed version independent of Hibernate
+        // flush/commit timing: a forced increment (customer-only path) is applied at commit,
+        // AFTER this method returns, so reading account.getVersion() back would yield a stale
+        // value and reject the client's legitimate follow-up update with a false 409.
+        long preVersion = account.getVersion();
+
+        boolean accountChanged =
+                applyAccountChanges(account, request, openDate, expiryDate, reissueDate);
         applyCustomerChanges(customer, request, dateOfBirth);
 
-        persist(account, customer);
+        persist(account, customer, accountChanged);
 
-        return buildResponse(request, account);
+        long committedVersion = preVersion + 1L;
+        return buildResponse(request, account, customer, committedVersion);
     }
 
     /**
@@ -426,22 +445,74 @@ public class AccountUpdateService {
 
     /**
      * Applies the validated values to the managed {@link Account}
-     * ({@code 9600-WRITE-PROCESSING} account-master build block). The
-     * {@code acctAddrZip} column is intentionally left untouched because the COBOL
-     * {@code ACCT-UPDATE-RECORD} does not include it.
+     * ({@code 9600-WRITE-PROCESSING} account-master build block) and reports
+     * whether any account column actually changed. The {@code acctAddrZip} column
+     * is intentionally left untouched because the COBOL {@code ACCT-UPDATE-RECORD}
+     * does not include it.
+     *
+     * <p>Each field is written only when the incoming value differs from the
+     * managed entity's current value (set-if-different). This makes the returned
+     * "changed" flag agree with Hibernate's own dirty check <em>by construction</em>:
+     * because a field is touched only when it genuinely differs from the loaded
+     * snapshot, the entity is dirty if and only if at least one field was set, i.e.
+     * if and only if this method returns {@code true}. {@link #persist} relies on
+     * that exact correspondence to apply precisely one version increment (the JPA
+     * auto-increment when the account is dirty, or a forced increment when only
+     * customer fields changed) and never two.
+     *
+     * @return {@code true} when at least one account column changed
      */
-    private void applyAccountChanges(Account account, AccountUpdateRequest request, String openDate,
-                                     String expiryDate, String reissueDate) {
-        account.setAcctActiveStatus(request.accountStatus());
-        account.setAcctCurrBal(normalizeMoney(request.currentBalance()));
-        account.setAcctCreditLimit(normalizeMoney(request.creditLimit()));
-        account.setAcctCashCreditLimit(normalizeMoney(request.cashCreditLimit()));
-        account.setAcctCurrCycCredit(normalizeMoney(request.currentCycleCredit()));
-        account.setAcctCurrCycDebit(normalizeMoney(request.currentCycleDebit()));
-        account.setAcctOpenDate(openDate);
-        account.setAcctExpiraionDate(expiryDate);
-        account.setAcctReissueDate(reissueDate);
-        account.setAcctGroupId(request.accountGroupId());
+    private boolean applyAccountChanges(Account account, AccountUpdateRequest request, String openDate,
+                                        String expiryDate, String reissueDate) {
+        boolean changed = false;
+        changed |= setIfChanged(account::getAcctActiveStatus, account::setAcctActiveStatus,
+                request.accountStatus());
+        changed |= setMoneyIfChanged(account::getAcctCurrBal, account::setAcctCurrBal,
+                normalizeMoney(request.currentBalance()));
+        changed |= setMoneyIfChanged(account::getAcctCreditLimit, account::setAcctCreditLimit,
+                normalizeMoney(request.creditLimit()));
+        changed |= setMoneyIfChanged(account::getAcctCashCreditLimit, account::setAcctCashCreditLimit,
+                normalizeMoney(request.cashCreditLimit()));
+        changed |= setMoneyIfChanged(account::getAcctCurrCycCredit, account::setAcctCurrCycCredit,
+                normalizeMoney(request.currentCycleCredit()));
+        changed |= setMoneyIfChanged(account::getAcctCurrCycDebit, account::setAcctCurrCycDebit,
+                normalizeMoney(request.currentCycleDebit()));
+        changed |= setIfChanged(account::getAcctOpenDate, account::setAcctOpenDate, openDate);
+        changed |= setIfChanged(account::getAcctExpiraionDate, account::setAcctExpiraionDate, expiryDate);
+        changed |= setIfChanged(account::getAcctReissueDate, account::setAcctReissueDate, reissueDate);
+        changed |= setIfChanged(account::getAcctGroupId, account::setAcctGroupId, request.accountGroupId());
+        return changed;
+    }
+
+    /**
+     * Writes {@code newValue} through {@code setter} only when it differs from the
+     * current value returned by {@code getter}, returning whether a write occurred.
+     * Equality uses {@link Objects#equals(Object, Object)}, matching Hibernate's
+     * dirty check for ordinary (non-decimal) attribute types.
+     */
+    private static <T> boolean setIfChanged(Supplier<T> getter, Consumer<T> setter, T newValue) {
+        if (!Objects.equals(getter.get(), newValue)) {
+            setter.accept(newValue);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Money-typed variant of {@link #setIfChanged}: the incoming amount is already
+     * normalized to scale {@value #MONEY_SCALE}, and the persisted column has the
+     * same scale, so {@link BigDecimal#compareTo} and {@link BigDecimal#equals}
+     * agree here; {@code compareTo} is used to honor the decimal comparison rule
+     * (AAP 0.8.2) and treat a {@code null} current value as a change.
+     */
+    private static boolean setMoneyIfChanged(Supplier<BigDecimal> getter, Consumer<BigDecimal> setter,
+                                             BigDecimal newValue) {
+        BigDecimal current = getter.get();
+        if (current == null || current.compareTo(newValue) != 0) {
+            setter.accept(newValue);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -493,9 +564,40 @@ public class AccountUpdateService {
      * makes the {@code @Version} optimistic lock fire deterministically; a flush
      * failure of either entity rolls back the whole transaction, so a failed
      * customer write undoes the already-flushed account write.
+     *
+     * <p>The ACCTDAT+CUSTDAT aggregate version must advance on EVERY successful
+     * commit so a later stale submit cannot slip past the before/after version
+     * guard (the lost-update defect the QA report observed for customer-only
+     * updates). COBOL {@code COACTUPC} always rewrites the account record, so the
+     * account version must always move - yet it must move by EXACTLY ONE, both to
+     * keep the echoed version equal to the committed value and to avoid a
+     * surprising double bump.
+     *
+     * <p>That single increment is achieved by choosing the mechanism based on
+     * {@code accountChanged}:
+     * <ul>
+     *   <li>when an account column changed, the entity is dirty and Hibernate's
+     *       built-in {@code @Version} auto-increment supplies the one increment, so
+     *       NO force lock is requested (requesting one here would stack a second
+     *       increment on top of the auto-increment - the +2 defect);</li>
+     *   <li>when only customer fields changed, the account is not dirty and would
+     *       not auto-increment, so {@link LockModeType#OPTIMISTIC_FORCE_INCREMENT}
+     *       supplies the one increment.</li>
+     * </ul>
+     * Because {@link #applyAccountChanges} writes a field only when it actually
+     * differs, {@code accountChanged} matches Hibernate's dirty state exactly, so
+     * precisely one of the two mechanisms fires. The customer master carries its
+     * own {@code @Version}, so both sides of the dual update participate in
+     * optimistic concurrency (AAP 0.8.4). The committed version is therefore
+     * {@code preVersion + 1}, which the caller echoes without re-reading.
      */
-    private void persist(Account account, Customer customer) {
+    private void persist(Account account, Customer customer, boolean accountChanged) {
         try {
+            if (!accountChanged) {
+                // Customer-only update: the account is not dirty and would not auto-increment,
+                // so force its version forward by one to keep the aggregate lock effective.
+                entityManager.lock(account, LockModeType.OPTIMISTIC_FORCE_INCREMENT);
+            }
             accountRepository.saveAndFlush(account);
             customerRepository.saveAndFlush(customer);
         } catch (ObjectOptimisticLockingFailureException | OptimisticLockException ex) {
@@ -506,14 +608,31 @@ public class AccountUpdateService {
     /**
      * Builds the success response ({@code COACTUPC} redisplay path): the split
      * fields are echoed, the money amounts are taken from the persisted account,
-     * the informational message confirms the commit, and the post-commit JPA
+     * the informational message confirms the commit, and the post-commit
      * {@code @Version} is surfaced so the client can submit a follow-up update
      * without re-reading. Concurrency is enforced both by the explicit
      * before/after version compare in {@link #updateAccount(AccountUpdateRequest)}
      * and by the JPA {@code @Version} lock that fires during
-     * {@link #persist(Account, Customer)}.
+     * {@link #persist(Account, Customer, boolean)}.
+     *
+     * <p>The surfaced version is the {@code committedVersion} computed by the
+     * caller as {@code preVersion + 1}. It is NOT read back from
+     * {@code account.getVersion()} because a customer-only update advances the
+     * account version through a forced increment applied at commit (after this
+     * method runs), which leaves the in-memory value one behind; echoing that
+     * stale value would reject the client's next legitimate update with a false
+     * 409. The single-increment guarantee in {@link #persist} makes
+     * {@code preVersion + 1} exactly equal to the value committed to the database.
+     *
+     * <p>The echoed {@code customerId} is taken from the {@link Customer} resolved
+     * through the account's card cross-reference - NEVER from {@code request.customerId()}.
+     * COACTUPC derives the customer identity from the account relationship (the
+     * XREF), so an arbitrary or mismatched customer id supplied in the request body
+     * is ignored and the response always reflects the account's true linked
+     * customer, preserving data-contract trust.
      */
-    private AccountUpdateResponse buildResponse(AccountUpdateRequest request, Account account) {
+    private AccountUpdateResponse buildResponse(AccountUpdateRequest request, Account account,
+                                                Customer customer, long committedVersion) {
         return new AccountUpdateResponse(
                 // PIC 9(11) fixed-width fidelity: echo the account id zero-padded to eleven digits,
                 // consistent with the view and card endpoints. The id was already validated numeric by
@@ -529,7 +648,10 @@ public class AccountUpdateService {
                 account.getAcctCurrCycCredit(),
                 request.accountGroupId(),
                 account.getAcctCurrCycDebit(),
-                request.customerId(),
+                // Issue: never echo request.customerId() (arbitrary client value). Echo the
+                // account's true linked customer, derived via the card cross-reference, in the
+                // exact format the account view emits (String.valueOf(custId)).
+                String.valueOf(customer.getCustId()),
                 request.ssnPart1(), request.ssnPart2(), request.ssnPart3(),
                 request.dobYear(), request.dobMonth(), request.dobDay(),
                 request.ficoScore(),
@@ -541,7 +663,7 @@ public class AccountUpdateService {
                 request.phone2Area(), request.phone2Prefix(), request.phone2Line(),
                 request.eftAccountId(),
                 request.primaryCardHolderIndicator(),
-                account.getVersion(),
+                committedVersion,
                 SUCCESS_MESSAGE,
                 null);
     }

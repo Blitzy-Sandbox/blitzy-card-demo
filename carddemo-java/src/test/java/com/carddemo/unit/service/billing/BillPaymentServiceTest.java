@@ -15,6 +15,7 @@ import com.carddemo.model.dto.BillPaymentResponse;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
@@ -52,6 +53,9 @@ class BillPaymentServiceTest {
 
     @Mock
     private TransactionIdAllocator transactionIdAllocator;
+
+    @Mock
+    private MetricsConfig metricsConfig;
 
     @InjectMocks
     private BillPaymentService billPaymentService;
@@ -117,6 +121,12 @@ class BillPaymentServiceTest {
         inOrder.verify(transactionIdAllocator).allocateNextTransactionId();
         inOrder.verify(transactionRepository).save(any(Transaction.class));
         inOrder.verify(accountRepository).save(any(Account.class));
+
+        // Issue 15 (Observability): a confirmed bill payment must feed the transaction-amount meter
+        // (carddemo.transaction.amount.total) with the posted payment amount.
+        ArgumentCaptor<BigDecimal> meteredAmount = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(metricsConfig).addTransactionAmount(meteredAmount.capture());
+        assertThat(meteredAmount.getValue()).isEqualByComparingTo("100.00");
     }
 
     @Test

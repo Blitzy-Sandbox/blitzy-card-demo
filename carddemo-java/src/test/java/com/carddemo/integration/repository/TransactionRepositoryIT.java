@@ -10,12 +10,14 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 
 /**
  * Integration tests for {@link TransactionRepository} against a real PostgreSQL 16 Testcontainer.
  * The transaction table is unseeded (zero rows), so each test inserts its own deterministic data to
  * verify the COTRN02C auto-id query (findMaxTranId), the CBTRN03C inclusive date-range query
- * (findByProcessingDateRange), and the COTRN00C 10-rows/page browse (inherited findAll(Pageable)).
+ * (findByProcessingDateRange), the COTRN00C 10-rows/page browse (inherited findAll(Pageable)), and
+ * the COTRN00C "start-at" (GTEQ) filtered browse (findByTranIdGreaterThanEqual).
  */
 class TransactionRepositoryIT extends AbstractRepositoryIT {
 
@@ -137,5 +139,32 @@ class TransactionRepositoryIT extends AbstractRepositoryIT {
 
         Page<Transaction> secondPage = transactionRepository.findAll(PageRequest.of(1, 10));
         assertThat(secondPage.getContent()).hasSize(2);
+    }
+
+    @Test
+    void findByTranIdGreaterThanEqualStartsAtKeyAndReadsForward() {
+        // COTRN00C STARTBR (GTEQ): the browse begins at the supplied id and reads forward in
+        // ascending id order. Starting at id 5 yields ids 5..12 (eight rows) on the first page.
+        seedTwelveTransactions();
+
+        Page<Transaction> page = transactionRepository.findByTranIdGreaterThanEqual(
+                "0000000000000005", PageRequest.of(0, 10, Sort.by("tranId").ascending()));
+
+        assertThat(page.getTotalElements()).isEqualTo(8L);
+        assertThat(page.getContent()).extracting(Transaction::getTranId)
+                .containsExactly("0000000000000005", "0000000000000006", "0000000000000007",
+                        "0000000000000008", "0000000000000009", "0000000000000010",
+                        "0000000000000011", "0000000000000012");
+    }
+
+    @Test
+    void findByTranIdGreaterThanEqualReturnsEmptyWhenStartIsPastLastId() {
+        seedTwelveTransactions();
+
+        Page<Transaction> page = transactionRepository.findByTranIdGreaterThanEqual(
+                "0000000000000099", PageRequest.of(0, 10, Sort.by("tranId").ascending()));
+
+        assertThat(page.getTotalElements()).isZero();
+        assertThat(page.getContent()).isEmpty();
     }
 }

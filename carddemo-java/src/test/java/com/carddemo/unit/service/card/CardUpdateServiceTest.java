@@ -100,6 +100,28 @@ class CardUpdateServiceTest {
     }
 
     @Test
+    void cardOwnedByDifferentAccountThrowsRecordNotFoundWithoutSaving() {
+        // The card exists but is owned by account 1, while the request supplies ACCT
+        // (12345678901). The account+card combination of COCRDUPC 9100-GETCARD-BYACCTCARD does
+        // not resolve, so the update must be rejected as not found BEFORE any field edit or write
+        // (IDOR closure: a tampered account id cannot mutate another account's card).
+        Card otherAccountCard = new Card();
+        otherAccountCard.setCardNum(CARD);
+        otherAccountCard.setCardAcctId(1L);
+        otherAccountCard.setCardEmbossedName("OLD NAME");
+        otherAccountCard.setCardActiveStatus("Y");
+        otherAccountCard.setCardExpiraionDate("2025-08-01");
+        otherAccountCard.setVersion(2L);
+        when(cardRepository.findById(CARD)).thenReturn(Optional.of(otherAccountCard));
+
+        assertThatThrownBy(() -> service().updateCard(req("NEW NAME", "N", "8", "2030")))
+                .isInstanceOf(RecordNotFoundException.class)
+                .hasMessage("Did not find cards for this search condition");
+
+        verify(cardRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
     void noChangesReturnsNoChangeMessageWithoutSaving() {
         when(cardRepository.findById(CARD))
                 .thenReturn(Optional.of(existing("OLD NAME", "Y", "2025-08-01")));

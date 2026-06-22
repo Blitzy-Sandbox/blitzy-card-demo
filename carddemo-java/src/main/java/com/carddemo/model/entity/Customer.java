@@ -4,6 +4,7 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.util.Objects;
 
 /**
@@ -70,6 +71,18 @@ public class Customer {
     @Column(name = "cust_fico_credit_score", nullable = false)
     private Integer custFicoCreditScore;
 
+    /**
+     * JPA optimistic-locking version (CUSTDAT side of the COACTUPC
+     * ACCTDAT+CUSTDAT update). The customer master, like the account master,
+     * participates in optimistic concurrency so a stale customer-only rewrite is
+     * rejected rather than silently overwriting a concurrent change
+     * (AAP 0.8.4 — {@code 9700-CHECK-CHANGE-IN-REC} before/after image compare).
+     * Mirrors the {@code @Version} on {@link Account}.
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
     public Customer() {
     }
 
@@ -109,6 +122,8 @@ public class Customer {
     public void setCustPriCardHolderInd(String v) { this.custPriCardHolderInd = v; }
     public Integer getCustFicoCreditScore() { return custFicoCreditScore; }
     public void setCustFicoCreditScore(Integer v) { this.custFicoCreditScore = v; }
+    public Long getVersion() { return version; }
+    public void setVersion(Long version) { this.version = version; }
 
     @Override
     public boolean equals(Object o) {

@@ -1,5 +1,6 @@
 package com.carddemo.config;
 
+import io.micrometer.core.instrument.config.MeterFilter;
 import io.micrometer.observation.ObservationPredicate;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.context.annotation.Bean;
@@ -35,5 +36,33 @@ public class ObservabilityConfig {
             }
             return true;
         };
+    }
+
+    /**
+     * Normalizes the tag-key set of Spring Batch's framework-owned {@code spring.batch.job.active}
+     * meter so the Prometheus registry registers it exactly once.
+     *
+     * <p>Spring Batch's Micrometer instrumentation offers the active-job {@code LongTaskTimer} to the
+     * registry twice with two different tag-key conventions: the canonical observation variant (tag
+     * key {@code spring.batch.job.active.name}) and a duplicate that carries the finished-job timer's
+     * tag keys ({@code spring.batch.job.name} plus {@code spring.batch.job.status}). Because Prometheus
+     * requires every meter sharing a name to share one tag-key set, the second offer is rejected and
+     * {@code PrometheusMeterRegistry} logs a one-time tag-key-mismatch WARN. The application declares no
+     * {@code spring.batch.*} meter and uses no {@code @EnableBatchProcessing}; the collision is purely
+     * internal to the framework and does not affect the AAP custom meters ({@code carddemo.*}).
+     *
+     * <p>This filter denies only the duplicate variant — the one named {@code spring.batch.job.active}
+     * that also carries a {@code spring.batch.job.status} tag — before it reaches the Prometheus naming
+     * layer. The canonical observation meter (which has no {@code spring.batch.job.status} tag) is never
+     * matched and therefore always survives, so active-job timing remains observable and no required
+     * metric is lost. Rationale and alternatives are recorded in {@code DECISION_LOG.md} (D-037).
+     *
+     * @return a {@link MeterFilter} that suppresses the mis-tagged duplicate active-job meter
+     */
+    @Bean
+    MeterFilter batchActiveJobDuplicateMeterFilter() {
+        return MeterFilter.deny(id ->
+                "spring.batch.job.active".equals(id.getName())
+                        && id.getTag("spring.batch.job.status") != null);
     }
 }

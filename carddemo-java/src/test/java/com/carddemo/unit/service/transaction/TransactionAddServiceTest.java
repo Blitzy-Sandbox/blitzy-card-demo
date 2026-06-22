@@ -9,11 +9,13 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.carddemo.exception.DuplicateRecordException;
+import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.TransactionAddRequest;
 import com.carddemo.model.dto.TransactionAddResponse;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.transaction.TransactionAddService;
@@ -26,6 +28,7 @@ import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -59,9 +62,12 @@ class TransactionAddServiceTest {
     @Mock
     private TransactionIdAllocator transactionIdAllocator;
 
+    @Mock
+    private MetricsConfig metricsConfig;
+
     private TransactionAddService service() {
         return new TransactionAddService(transactionRepository, cardCrossReferenceRepository,
-                dateValidationService, transactionIdAllocator);
+                dateValidationService, transactionIdAllocator, metricsConfig);
     }
 
     // ---- Helpers ----------------------------------------------------------------------------
@@ -176,20 +182,23 @@ class TransactionAddServiceTest {
     }
 
     @Test
-    @DisplayName("Account id not found in the cross-reference throws the source not-found message")
+    @DisplayName("Account id not found in the cross-reference throws RecordNotFound (404) with the source message")
     void accountNotFoundThrows() {
+        // A missing account/card is a record-absent condition (COTRN02C NOTFND), mapped to
+        // RecordNotFoundException -> HTTP 404 per the final scope status matrix; the COBOL
+        // message text is preserved verbatim for parity.
         when(cardCrossReferenceRepository.findByXrefAcctId(123L)).thenReturn(List.of());
         assertThatThrownBy(() -> service().addTransaction(request("123", null, "Y")))
-                .isInstanceOf(ValidationException.class)
+                .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage("Account ID NOT found...");
     }
 
     @Test
-    @DisplayName("Card number not found in the cross-reference throws the source not-found message")
+    @DisplayName("Card number not found in the cross-reference throws RecordNotFound (404) with the source message")
     void cardNotFoundThrows() {
         when(cardCrossReferenceRepository.findById(CARD)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service().addTransaction(request(null, CARD, "Y")))
-                .isInstanceOf(ValidationException.class)
+                .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage("Card Number NOT found...");
     }
 
@@ -212,6 +221,12 @@ class TransactionAddServiceTest {
         assertThat(response.typeCode()).isEqualTo("01");
         assertThat(response.confirm()).isEqualTo("Y");
         assertThat(response.errorMessage()).isNull();
+
+        // Issue 15 (Observability): a successful online add must feed the transaction-amount meter
+        // (carddemo.transaction.amount.total) so the gauge reflects online activity, not only batch.
+        ArgumentCaptor<BigDecimal> meteredAmount = ArgumentCaptor.forClass(BigDecimal.class);
+        verify(metricsConfig).addTransactionAmount(meteredAmount.capture());
+        assertThat(meteredAmount.getValue()).isEqualByComparingTo(new BigDecimal("123.45"));
     }
 
     @Test

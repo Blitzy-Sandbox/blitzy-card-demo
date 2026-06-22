@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -23,6 +24,8 @@ import com.carddemo.service.account.AccountUpdateService;
 import com.carddemo.service.shared.DateValidationService;
 import com.carddemo.service.shared.DateValidationService.DateValidationResult;
 import com.carddemo.service.shared.ValidationLookupService;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
@@ -67,10 +70,13 @@ class AccountUpdateServiceTest {
     private DateValidationService dateValidationService;
     @Mock
     private ValidationLookupService validationLookupService;
+    @Mock
+    private EntityManager entityManager;
 
     private AccountUpdateService service() {
         return new AccountUpdateService(accountRepository, customerRepository,
-                cardCrossReferenceRepository, dateValidationService, validationLookupService);
+                cardCrossReferenceRepository, dateValidationService, validationLookupService,
+                entityManager);
     }
 
     /**
@@ -146,6 +152,36 @@ class AccountUpdateServiceTest {
         return req("00000000001", "Y", "1990", "01", "01", "123", "700", "TX");
     }
 
+    /**
+     * Rebuilds {@link #validRequest()} with a caller-supplied (potentially arbitrary/tampered)
+     * {@code customerId} body value, so a test can confirm the service ignores it and echoes the
+     * customer derived from the account cross-reference instead. The matching version (0L) keeps the
+     * before/after compare passing so the commit/redisplay path runs.
+     */
+    private static AccountUpdateRequest validRequestWithCustomerId(String customerId) {
+        AccountUpdateRequest base = validRequest();
+        return new AccountUpdateRequest(
+                base.accountId(), base.accountStatus(),
+                base.openYear(), base.openMonth(), base.openDay(),
+                base.creditLimit(),
+                base.expirationYear(), base.expirationMonth(), base.expirationDay(),
+                base.cashCreditLimit(),
+                base.reissueYear(), base.reissueMonth(), base.reissueDay(),
+                base.currentBalance(), base.currentCycleCredit(), base.accountGroupId(),
+                base.currentCycleDebit(), customerId,
+                base.ssnPart1(), base.ssnPart2(), base.ssnPart3(),
+                base.dobYear(), base.dobMonth(), base.dobDay(),
+                base.ficoScore(),
+                base.firstName(), base.middleName(), base.lastName(),
+                base.addressLine1(), base.stateCode(), base.addressLine2(),
+                base.zipCode(), base.city(), base.countryCode(),
+                base.phone1Area(), base.phone1Prefix(), base.phone1Line(),
+                base.governmentIssuedId(),
+                base.phone2Area(), base.phone2Prefix(), base.phone2Line(),
+                base.eftAccountId(), base.primaryCardHolderIndicator(),
+                base.version());
+    }
+
     private void stubReads() {
         CardCrossReference xref = new CardCrossReference();
         xref.setXrefCardNum("4111111111111111");
@@ -153,11 +189,51 @@ class AccountUpdateServiceTest {
         xref.setXrefCustId(CUST_ID);
         when(cardCrossReferenceRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(xref));
         // Persisted account at @Version 0L; validRequest() echoes the same 0L so the before/after
-        // optimistic-lock compare passes and the edit/commit path runs.
+        // optimistic-lock compare passes and the edit/commit path runs. Every successful update
+        // advances the ACCTDAT+CUSTDAT aggregate version by exactly one (auto-increment when an
+        // account column changed, or a forced increment for a customer-only update), so the echoed
+        // version is deterministically preVersion + 1 = 1L - computed by the service rather than read
+        // back, which is why it is independent of the mocked EntityManager/repository here.
         Account account = new Account();
         account.setVersion(0L);
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
-        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(new Customer()));
+        // The customer is resolved through the account cross-reference (XREF-CUST-ID = CUST_ID); the
+        // response echoes THIS derived customer id, never an arbitrary request body value.
+        Customer customer = new Customer();
+        customer.setCustId(CUST_ID);
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
+    }
+
+    /**
+     * Read-chain stub for a CUSTOMER-ONLY update: the persisted account already holds exactly the
+     * account-column values that {@link #validRequest()} carries (status, the three scale-2 money
+     * amounts, the three assembled dates, and the group id), so the set-if-different
+     * {@code applyAccountChanges} touches no account column and the account is NOT dirty. Only the
+     * customer fields differ. This is the path the QA report exercised, where the account version
+     * must still advance via a forced increment so a later stale submit is caught.
+     */
+    private void stubReadsCustomerOnly() {
+        CardCrossReference xref = new CardCrossReference();
+        xref.setXrefCardNum("4111111111111111");
+        xref.setXrefAcctId(ACCT_ID);
+        xref.setXrefCustId(CUST_ID);
+        when(cardCrossReferenceRepository.findByXrefAcctId(ACCT_ID)).thenReturn(List.of(xref));
+        Account account = new Account();
+        account.setVersion(0L);
+        account.setAcctActiveStatus("Y");
+        account.setAcctCurrBal(new BigDecimal("250.00"));
+        account.setAcctCreditLimit(new BigDecimal("1000.00"));
+        account.setAcctCashCreditLimit(new BigDecimal("500.00"));
+        account.setAcctCurrCycCredit(new BigDecimal("10.00"));
+        account.setAcctCurrCycDebit(new BigDecimal("5.00"));
+        account.setAcctOpenDate("2000-01-01");
+        account.setAcctExpiraionDate("2030-12-31");
+        account.setAcctReissueDate("2025-01-01");
+        account.setAcctGroupId("GRP1");
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+        Customer customer = new Customer();
+        customer.setCustId(CUST_ID);
+        when(customerRepository.findById(CUST_ID)).thenReturn(Optional.of(customer));
     }
 
     private void stubDatesAcceptable() {
@@ -185,8 +261,78 @@ class AccountUpdateServiceTest {
         // money echoed from the persisted account after applyAccountChanges normalized scale-2
         assertThat(resp.creditLimit()).isEqualByComparingTo("1000.00");
         assertThat(resp.currentBalance()).isEqualByComparingTo("250.00");
-        // the persisted @Version is echoed so the client can submit a follow-up update
-        assertThat(resp.version()).isEqualTo(0L);
+        // the committed @Version (preVersion + 1) is echoed so the client can submit a follow-up
+        // update without re-reading; preVersion was 0L, so the committed value is 1L
+        assertThat(resp.version()).isEqualTo(1L);
+        // the customer id echoed is the one derived via the cross-reference (CUST_ID = 100)
+        assertThat(resp.customerId()).isEqualTo("100");
+    }
+
+    // ---- Data contract: arbitrary body customerId is ignored (Issue 2) ----
+
+    @Test
+    @DisplayName("an arbitrary request customerId is ignored; the response echoes the account's true linked customer")
+    void arbitraryCustomerIdIgnoredDerivedCustomerEchoed() {
+        // QA Issue 2: the update previously echoed request.customerId() verbatim, so a tampered body
+        // value leaked back to the client, breaking data-contract trust. COACTUPC derives the customer
+        // from the account relationship (XREF-CUST-ID). The service must ignore the bogus "999999999"
+        // and echo the derived customer (CUST_ID = 100), exactly as the account view emits it.
+        stubReads();
+        stubDatesAcceptable();
+        when(validationLookupService.isValidStateCode("TX")).thenReturn(true);
+        when(validationLookupService.isValidStateZip("TX", "75001")).thenReturn(true);
+
+        AccountUpdateResponse resp = service().updateAccount(validRequestWithCustomerId("999999999"));
+
+        assertThat(resp.customerId()).isEqualTo("100");
+    }
+
+    // ---- Single-increment mechanism selection (Issue 1 regression: customer-only advance, no +2) ----
+
+    @Test
+    @DisplayName("a customer-only update forces ONE account version increment so the aggregate lock stays effective")
+    void customerOnlyUpdateForcesSingleAccountVersionIncrement() {
+        // QA Issue 1: a customer-only update left account.version static, letting a later stale submit
+        // slip past the before/after guard (lost update). COACTUPC always rewrites the account record,
+        // so the account version must advance even when no account column changed. Here every account
+        // column already matches the request, so the account is not dirty and would not auto-increment;
+        // the service must request a forced increment to move it forward by exactly one.
+        stubReadsCustomerOnly();
+        stubDatesAcceptable();
+        when(validationLookupService.isValidStateCode("TX")).thenReturn(true);
+        when(validationLookupService.isValidStateZip("TX", "75001")).thenReturn(true);
+
+        AccountUpdateResponse resp = service().updateAccount(validRequest());
+
+        // The forced increment is requested exactly because the account is not dirty.
+        verify(entityManager).lock(any(Account.class), eq(LockModeType.OPTIMISTIC_FORCE_INCREMENT));
+        verify(accountRepository).saveAndFlush(any(Account.class));
+        verify(customerRepository).saveAndFlush(any(Customer.class));
+        // The echoed version is the committed value preVersion + 1 = 1L, computed deterministically so
+        // it does not depend on the forced increment's commit-time application.
+        assertThat(resp.version()).isEqualTo(1L);
+    }
+
+    @Test
+    @DisplayName("a dirty-account update does NOT force an extra increment (guards against the +2 double bump)")
+    void dirtyAccountUpdateDoesNotForceExtraIncrement() {
+        // Regression guard: when an account column changed, Hibernate's @Version auto-increment supplies
+        // the single increment. Requesting a forced increment on top would double-bump the version (the
+        // +2 defect) and leave the echoed version inconsistent with the committed value. The persisted
+        // account here (stubReads) has empty columns, so validRequest() dirties it and NO force lock
+        // must be requested.
+        stubReads();
+        stubDatesAcceptable();
+        when(validationLookupService.isValidStateCode("TX")).thenReturn(true);
+        when(validationLookupService.isValidStateZip("TX", "75001")).thenReturn(true);
+
+        AccountUpdateResponse resp = service().updateAccount(validRequest());
+
+        verify(entityManager, never()).lock(any(), any(LockModeType.class));
+        verify(accountRepository).saveAndFlush(any(Account.class));
+        verify(customerRepository).saveAndFlush(any(Customer.class));
+        // Still preVersion + 1 = 1L (the auto-increment supplies the one bump).
+        assertThat(resp.version()).isEqualTo(1L);
     }
 
     // ---- Concurrency: cross-request stale version (explicit before/after compare) ----

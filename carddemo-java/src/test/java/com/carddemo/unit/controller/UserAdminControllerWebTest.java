@@ -102,4 +102,33 @@ class UserAdminControllerWebTest {
 
         verify(userUpdateService, never()).updateUser(any());
     }
+
+    @Test
+    @DisplayName("POST with HTML markup in firstName/lastName is rejected with 400 and the service is never called")
+    void addUserWithMarkupReturns400AndDoesNotPersist() throws Exception {
+        // QA stored-XSS repro: <b>x</b> / <i>y</i> in the name fields. @NoHtml rejects the angle
+        // brackets at the @Valid boundary (MethodArgumentNotValidException -> 400) so nothing reaches
+        // the service and nothing is persisted.
+        mockMvc.perform(post("/api/admin/users")
+                        .with(jwt().authorities(ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"firstName\":\"<b>x</b>\",\"lastName\":\"<i>y</i>\","
+                                + "\"userId\":\"P11X222\",\"password\":\"PASS1234\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(userAddService, never()).addUser(any());
+    }
+
+    @Test
+    @DisplayName("PUT with HTML markup in firstName is rejected with 400 and the service is never called")
+    void updateUserWithMarkupReturns400AndDoesNotPersist() throws Exception {
+        mockMvc.perform(put("/api/admin/users/USER0001")
+                        .with(jwt().authorities(ADMIN))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"userId\":\"USER0001\",\"firstName\":\"<b>x</b>\","
+                                + "\"lastName\":\"DOE\",\"password\":\"PASS1234\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(userUpdateService, never()).updateUser(any());
+    }
 }

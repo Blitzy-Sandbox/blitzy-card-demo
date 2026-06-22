@@ -328,10 +328,20 @@ public class OnlineTransactionE2ETest {
                 .isEqualTo(HttpStatus.UNAUTHORIZED.value());
 
         // A tampered copy of a validly issued JWT (the HS256 signature no longer verifies) must also
-        // be rejected with 401. Flipping the final signature character breaks the signature while
-        // keeping the token structurally a three-segment JWT.
-        String tamperedToken = adminToken.substring(0, adminToken.length() - 1)
-                + (adminToken.endsWith("A") ? 'B' : 'A');
+        // be rejected with 401. Mutate the FIRST character of the signature segment (the third
+        // dot-delimited part), keeping the token structurally a three-segment JWT.
+        //
+        // The first signature character is used deliberately rather than the last: the final
+        // base64url character of a 32-byte HS256 signature encodes only 4 meaningful bits (the
+        // remaining 2 are unused padding bits), so flipping just the last character (e.g. 'A'<->'B')
+        // can decode to the identical signature bytes and still verify — an intermittent false
+        // negative. The first signature character always carries meaningful high-order bits, so
+        // changing it is guaranteed to alter the decoded signature and break verification.
+        int signatureStart = adminToken.lastIndexOf('.') + 1;
+        char firstSignatureChar = adminToken.charAt(signatureStart);
+        char replacementChar = (firstSignatureChar == 'A') ? 'B' : 'A';
+        String tamperedToken = adminToken.substring(0, signatureStart) + replacementChar
+                + adminToken.substring(signatureStart + 1);
         ResponseEntity<String> tampered = getStatus("/api/admin/users", tamperedToken);
         assertThat(tampered.getStatusCode().value())
                 .as("a tampered JWT with a broken HS256 signature is rejected with 401")

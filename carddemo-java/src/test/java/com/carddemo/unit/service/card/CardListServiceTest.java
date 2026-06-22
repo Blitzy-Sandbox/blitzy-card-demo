@@ -18,6 +18,7 @@ import com.carddemo.service.card.CardListService;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -157,14 +158,12 @@ class CardListServiceTest {
   }
 
   @Test
-  @DisplayName("valid card filter narrows to single matching row, hasNext forced false")
-  void cardFilterNarrowsToSingleMatch() {
-    List<Card> content = new ArrayList<>();
-    content.add(card("1111111111111111", 11L, "Y"));
-    content.add(card(VALID_CARD, 22L, "N"));
-    content.add(card("3333333333333333", 33L, "Y"));
-    Page<Card> page = new PageImpl<>(content, PageRequest.of(0, PAGE_SIZE), 10);
-    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
+  @DisplayName("valid card filter -> exact-match findById BEFORE paging (Issue 4), single row")
+  void cardFilterExactMatchBeforePaging() {
+    // Issue 4: the card-number filter is an EXACT match applied before paging (the card number is
+    // the unique key), so a matching card is returned regardless of which page it would have fallen
+    // on. The earlier implementation paged first and scanned only the current page, dropping matches.
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(card(VALID_CARD, 22L, "N")));
 
     CardListResponse response = cardListService.getCardList(null, VALID_CARD, 0);
 
@@ -177,24 +176,66 @@ class CardListServiceTest {
     assertThat(response.infoMessage()).isNull();
     assertThat(response.errorMessage()).isEqualTo(NO_MORE);
 
-    verify(cardRepository).findAll(any(Pageable.class));
+    verify(cardRepository).findById(VALID_CARD);
+    verify(cardRepository, never()).findAll(any(Pageable.class));
     verify(cardRepository, never()).findByCardAcctId(anyLong(), any(Pageable.class));
   }
 
   @Test
-  @DisplayName("valid card filter with no match in page -> empty first page message")
+  @DisplayName("card filter on a non-first page -> single match belongs to page 0 only, empty here")
+  void cardFilterSingleMatchOnlyOnFirstPage() {
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(card(VALID_CARD, 22L, "N")));
+
+    CardListResponse response = cardListService.getCardList(null, VALID_CARD, 1);
+
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.pageNumber()).isEqualTo("2");
+    assertThat(response.errorMessage()).isEqualTo(NO_MORE);
+    verify(cardRepository).findById(VALID_CARD);
+    verify(cardRepository, never()).findAll(any(Pageable.class));
+  }
+
+  @Test
+  @DisplayName("card + account filter -> AND-narrow on owning account (COCRDLIC 9500), single row")
+  void cardAndAccountFilterAndNarrowsMatch() {
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(card(VALID_CARD, 12345678901L, "Y")));
+
+    CardListResponse response = cardListService.getCardList(VALID_ACCOUNT, VALID_CARD, 0);
+
+    assertThat(response.cards()).hasSize(1);
+    assertThat(response.cards().get(0).cardNumber()).isEqualTo(VALID_CARD);
+    assertThat(response.accountIdFilter()).isEqualTo(VALID_ACCOUNT);
+    assertThat(response.cardNumberFilter()).isEqualTo(VALID_CARD);
+    verify(cardRepository).findById(VALID_CARD);
+    verify(cardRepository, never()).findByCardAcctId(anyLong(), any(Pageable.class));
+  }
+
+  @Test
+  @DisplayName("card + account filter where card belongs to a different account -> AND-narrow excludes it")
+  void cardAndAccountFilterMismatchExcluded() {
+    // The card exists but is owned by a different account than the supplied account filter; the
+    // 9500-FILTER-RECORDS AND-narrowing excludes it, yielding no records.
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(card(VALID_CARD, 99999999999L, "Y")));
+
+    CardListResponse response = cardListService.getCardList(VALID_ACCOUNT, VALID_CARD, 0);
+
+    assertThat(response.cards()).isEmpty();
+    assertThat(response.errorMessage()).isEqualTo(NO_RECORDS);
+    verify(cardRepository).findById(VALID_CARD);
+  }
+
+  @Test
+  @DisplayName("valid card filter with no matching card -> empty first page message")
   void cardFilterNoMatchEmptyFirstPage() {
-    List<Card> content = new ArrayList<>();
-    content.add(card("1111111111111111", 11L, "Y"));
-    content.add(card("3333333333333333", 33L, "Y"));
-    Page<Card> page = new PageImpl<>(content, PageRequest.of(0, PAGE_SIZE), 2);
-    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
+    when(cardRepository.findById("9999999999999999")).thenReturn(Optional.empty());
 
     CardListResponse response = cardListService.getCardList(null, "9999999999999999", 0);
 
     assertThat(response.cards()).isEmpty();
     assertThat(response.errorMessage()).isEqualTo(NO_RECORDS);
     assertThat(response.infoMessage()).isNull();
+    verify(cardRepository).findById("9999999999999999");
+    verify(cardRepository, never()).findAll(any(Pageable.class));
   }
 
   @Test
@@ -216,16 +257,14 @@ class CardListServiceTest {
   }
 
   @Test
-  @DisplayName("negative page number clamped to 0")
-  void negativePageClampedToZero() {
-    Page<Card> page = new PageImpl<>(cards(PAGE_SIZE), PageRequest.of(0, PAGE_SIZE), 10);
-    when(cardRepository.findAll(any(Pageable.class))).thenReturn(page);
-
-    cardListService.getCardList(null, null, -5);
-
-    ArgumentCaptor<Pageable> captor = ArgumentCaptor.forClass(Pageable.class);
-    verify(cardRepository).findAll(captor.capture());
-    assertThat(captor.getValue().getPageNumber()).isEqualTo(0);
+  @DisplayName("negative page number rejected with HTTP 400 (Issue 5), no repository call")
+  void negativePageRejectedWith400() {
+    // Issue 5: an invalid (negative) zero-based page must be rejected, not silently coerced to the
+    // first page. The validation precedes any repository access.
+    assertThatThrownBy(() -> cardListService.getCardList(null, null, -5))
+        .isInstanceOf(ValidationException.class)
+        .hasMessage("Page number must be zero or greater");
+    verifyNoInteractions(cardRepository);
   }
 
   @Test

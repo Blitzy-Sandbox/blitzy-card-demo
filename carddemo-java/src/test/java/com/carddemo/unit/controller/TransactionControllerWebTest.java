@@ -1,6 +1,7 @@
 package com.carddemo.unit.controller;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -67,5 +68,25 @@ class TransactionControllerWebTest {
                 .andExpect(status().isCreated());
 
         verify(transactionAddService).addTransaction(any(TransactionAddRequest.class));
+    }
+
+    @Test
+    @DisplayName("POST with HTML markup in free-text fields is rejected 400 before the service runs")
+    void addTransactionWithMarkupReturns400AndDoesNotPersist() throws Exception {
+        // description=<svg/onload=1> and merchantName=<script>x</script> must be rejected by the
+        // @NoHtml constraint at the @Valid boundary (MethodArgumentNotValidException -> 400) so the
+        // stored-XSS payload is never handed to the service for persistence (QA Issue 8 closure).
+        mockMvc.perform(post("/api/transactions")
+                        .with(jwt())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"accountId\":\"111\",\"cardNumber\":\"4111111111111111\","
+                                + "\"typeCode\":\"01\",\"categoryCode\":\"0001\",\"source\":\"POS\","
+                                + "\"description\":\"<svg/onload=1>\",\"amount\":100.00,"
+                                + "\"originDate\":\"2022-07-01\",\"processDate\":\"2022-07-01\","
+                                + "\"merchantId\":\"123456789\",\"merchantName\":\"<script>x</script>\","
+                                + "\"merchantCity\":\"C\",\"merchantZip\":\"12345\",\"confirm\":\"Y\"}"))
+                .andExpect(status().isBadRequest());
+
+        verify(transactionAddService, never()).addTransaction(any(TransactionAddRequest.class));
     }
 }

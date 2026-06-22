@@ -79,6 +79,18 @@ public class CardUpdateService {
         Card entity = cardRepository.findById(card)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_NOT_FOUND));
 
+        // Account/card ownership enforcement, identical in intent to CardDetailService. COCRDUPC
+        // reads the CARD record in 9100-GETCARD-BYACCTCARD as an account+card *combination* and
+        // surfaces a single DID-NOT-FIND-ACCTCARD-COMBO message when the pair does not resolve.
+        // The frozen REST contract (docs/api-contracts.md) marks accountId required and specifies
+        // HTTP 404 when no card matches the account/card pair. A card belonging to a *different*
+        // account must therefore be reported as not found before any field edit or write, so a
+        // tampered accountId cannot read or mutate another account's card (IDOR closure). The
+        // account search key is guaranteed present and 11-digit numeric by editSearchKeys above.
+        if (!accountMatches(entity, acct)) {
+            throw new RecordNotFoundException(MSG_NOT_FOUND);
+        }
+
         String oldExpiry = trimToEmpty(entity.getCardExpiraionDate());
         String oldName = trimToEmpty(entity.getCardEmbossedName());
         String oldStatus = trimToEmpty(entity.getCardActiveStatus());
@@ -237,6 +249,17 @@ public class CardUpdateService {
 
     private static boolean isBlankOrZeros(String value) {
         return value.isEmpty() || isAllZeros(value);
+    }
+
+    /**
+     * Tests whether the supplied (validated, 11-digit numeric) account search key matches the
+     * account that actually owns the fetched card, enforcing the account+card combination key of
+     * {@code COCRDUPC 9100-GETCARD-BYACCTCARD} so a card belonging to another account is reported
+     * as not found rather than read or updated.
+     */
+    private static boolean accountMatches(Card entity, String accountId) {
+        return entity.getCardAcctId() != null
+                && entity.getCardAcctId().longValue() == Long.parseLong(accountId);
     }
 
     private static boolean isAllZeros(String value) {

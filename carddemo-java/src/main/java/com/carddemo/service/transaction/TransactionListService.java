@@ -34,6 +34,12 @@ public class TransactionListService {
     /** Number of transaction rows returned per browse page. */
     private static final int PAGE_SIZE = 10;
 
+    /** Stored width of a transaction id (fixed-width, zero-padded numeric); used to normalize the start-at filter. */
+    private static final int TRAN_ID_LENGTH = 16;
+
+    /** Validation message when a zero-based page index is negative (Issue 5). */
+    private static final String MSG_PAGE_NEGATIVE = "Page number must be zero or greater";
+
     private final TransactionRepository transactionRepository;
 
     public TransactionListService(TransactionRepository transactionRepository) {
@@ -43,30 +49,48 @@ public class TransactionListService {
     /**
      * Returns one page of transactions for the browse screen.
      *
-     * @param page                the requested zero-based page index; negative
-     *                            values are clamped to the first page
-     * @param transactionIdFilter an optional transaction-id filter; when present
-     *                            and non-blank it must contain digits only
+     * @param page                the requested zero-based page index; must be zero or
+     *                            greater (a negative value is rejected with HTTP 400)
+     * @param transactionIdFilter an optional "start-at" transaction-id filter; when present
+     *                            and non-blank it must contain digits only and the browse
+     *                            begins at the first transaction id {@code >=} this value
+     *                            (zero-padded to the stored width) and reads forward
      * @return the page of transactions, the echoed one-based page number, the
      *         echoed filter, and a {@code null} error message on success
-     * @throws ValidationException if {@code transactionIdFilter} is present,
-     *                             non-blank, and not composed solely of digits
+     * @throws ValidationException if {@code transactionIdFilter} is present, non-blank, and
+     *                             not composed solely of digits, or if {@code page} is negative
      */
     @Transactional(readOnly = true)
     public TransactionListResponse listTransactions(int page, String transactionIdFilter) {
-        if (transactionIdFilter != null && !transactionIdFilter.isBlank()
-                && !transactionIdFilter.matches("\\d+")) {
+        boolean filterActive = transactionIdFilter != null && !transactionIdFilter.isBlank();
+        if (filterActive && !transactionIdFilter.matches("\\d+")) {
             throw new ValidationException("Tran ID must be Numeric ...");
         }
 
-        // Clamp the zero-based page so the resulting SQL offset (safePage * PAGE_SIZE) cannot
-        // exceed Integer.MAX_VALUE. clampPageToMaxOffset also floors negatives at 0, so an absurd
-        // page number now yields a graceful empty page (HTTP 200) instead of an offset-overflow
-        // InvalidDataAccessApiUsageException surfacing as HTTP 500.
-        int safePage = PaginationSupport.clampPageToMaxOffset(page, PAGE_SIZE);
+        // Issue 5 (invalid pagination bounds): a zero-based page index below zero is not a valid
+        // page. The CICS browse tracked a small page counter in the COMMAREA and could not express a
+        // negative page; the REST "page" parameter makes one expressible, so reject it explicitly
+        // (HTTP 400) instead of silently coercing it to the first page. A huge but non-negative page
+        // still yields a graceful empty page (HTTP 200) via the offset clamp below.
+        if (page < 0) {
+            throw new ValidationException(MSG_PAGE_NEGATIVE);
+        }
 
-        Page<Transaction> result = transactionRepository.findAll(
-                PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "tranId")));
+        // Clamp the zero-based page so the resulting SQL offset (safePage * PAGE_SIZE) cannot
+        // exceed Integer.MAX_VALUE, yielding a graceful empty page (HTTP 200) instead of an
+        // offset-overflow InvalidDataAccessApiUsageException surfacing as HTTP 500.
+        int safePage = PaginationSupport.clampPageToMaxOffset(page, PAGE_SIZE);
+        PageRequest pageable = PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, "tranId"));
+
+        // Issue 4 (filters not applied): COTRN00C's STARTBR-TRANSACT-FILE positions the browse on
+        // the entered transaction id with GTEQ and reads forward, so the filter is a "start-at"
+        // lower bound applied BEFORE paging (the earlier implementation validated and echoed the
+        // filter but queried the whole table). Ids are fixed-width zero-padded numeric strings, so a
+        // shorter filter is left-padded to the stored width to make the lexicographic >= comparison
+        // equal a numeric >= comparison.
+        Page<Transaction> result = filterActive
+                ? transactionRepository.findByTranIdGreaterThanEqual(normalizeStartAt(transactionIdFilter), pageable)
+                : transactionRepository.findAll(pageable);
 
         List<TransactionListResponse.TransactionListItem> items = result.getContent().stream()
                 .map(tx -> new TransactionListResponse.TransactionListItem(
@@ -101,5 +125,21 @@ public class TransactionListService {
         String dd = origTs.substring(8, 10);
         String yy = origTs.substring(2, 4);
         return mm + "/" + dd + "/" + yy;
+    }
+
+    /**
+     * Normalizes the numeric "start-at" transaction-id filter to the stored fixed width by
+     * left-padding it with zeros, so the lexicographic {@code >=} comparison performed by
+     * {@link TransactionRepository#findByTranIdGreaterThanEqual(String, org.springframework.data.domain.Pageable)}
+     * is identical to a numeric {@code >=} comparison against the zero-padded ids (e.g. a filter of
+     * {@code "15"} becomes {@code "0000000000000015"}). A filter already at or beyond the stored
+     * width is returned unchanged. The caller guarantees the input is non-blank and all digits.
+     *
+     * @param filter the validated all-digit transaction-id filter
+     * @return the filter left-padded with zeros to the stored transaction-id width
+     */
+    private static String normalizeStartAt(String filter) {
+        int deficit = TRAN_ID_LENGTH - filter.length();
+        return deficit > 0 ? "0".repeat(deficit) + filter : filter;
     }
 }

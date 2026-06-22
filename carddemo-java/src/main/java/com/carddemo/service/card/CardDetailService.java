@@ -78,6 +78,20 @@ public class CardDetailService {
         Card cardRecord = cardRepository.findById(card)
                 .orElseThrow(() -> new RecordNotFoundException(MSG_NOT_FOUND));
 
+        // Account/card ownership enforcement. COCRDSLC reads the CARD file in paragraph
+        // 9100-GETCARD-BYACCTCARD as an account+card *combination*: the paragraph name, the
+        // FOUND-CARDS-FOR-ACCOUNT success flag, and the single DID-NOT-FIND-ACCTCARD-COMBO
+        // not-found message all express a combined account+card key (the literal account MOVE
+        // is commented out in the source, a latent defect). The frozen REST contract
+        // (docs/api-contracts.md) likewise marks accountId required and specifies HTTP 404 when
+        // no card matches the account/card pair. A card that exists under a *different* account
+        // must therefore be reported as not found, surfacing the same DID-NOT-FIND-ACCTCARD-COMBO
+        // message and closing the IDOR where a tampered accountId could expose another account's
+        // card. The account filter is guaranteed present and 11-digit numeric by the edits above.
+        if (!accountMatches(cardRecord, acct)) {
+            throw new RecordNotFoundException(MSG_NOT_FOUND);
+        }
+
         CardDetailResponse response = new CardDetailResponse(
                 formatAccountId(cardRecord.getCardAcctId()),
                 cardRecord.getCardNum(),
@@ -99,6 +113,17 @@ public class CardDetailService {
         }
         String trimmed = value.trim();
         return WILDCARD.equals(trimmed) ? "" : trimmed;
+    }
+
+    /**
+     * Tests whether the supplied (validated, 11-digit numeric) account filter matches the account
+     * that actually owns the fetched card. Used to enforce the account+card combination key of
+     * {@code COCRDSLC 9100-GETCARD-BYACCTCARD} so a card belonging to another account is reported
+     * as not found rather than disclosed.
+     */
+    private static boolean accountMatches(Card cardRecord, String accountId) {
+        return cardRecord.getCardAcctId() != null
+                && cardRecord.getCardAcctId().longValue() == Long.parseLong(accountId);
     }
 
     private static boolean isAllZeros(String value) {

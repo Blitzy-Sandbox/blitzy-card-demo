@@ -7,6 +7,7 @@ import com.carddemo.model.dto.BillPaymentResponse;
 import com.carddemo.model.entity.Account;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
@@ -68,15 +69,18 @@ public class BillPaymentService {
     private final TransactionRepository transactionRepository;
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final TransactionIdAllocator transactionIdAllocator;
+    private final MetricsConfig metricsConfig;
 
     public BillPaymentService(AccountRepository accountRepository,
                               TransactionRepository transactionRepository,
                               CardCrossReferenceRepository cardCrossReferenceRepository,
-                              TransactionIdAllocator transactionIdAllocator) {
+                              TransactionIdAllocator transactionIdAllocator,
+                              MetricsConfig metricsConfig) {
         this.accountRepository = accountRepository;
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.transactionIdAllocator = transactionIdAllocator;
+        this.metricsConfig = metricsConfig;
     }
 
     /**
@@ -155,6 +159,11 @@ public class BillPaymentService {
         final BigDecimal newBalance = currentBalance.subtract(paymentAmount);
         account.setAcctCurrBal(newBalance);
         accountRepository.save(account);
+
+        // Observability (AAP 0.7.1): record the posted bill-payment amount on the signed running-total
+        // gauge (carddemo.transaction.amount.total) so online activity is reflected in metrics, mirroring
+        // the batch posting path. Telemetry only; never affects the BigDecimal balance arithmetic above.
+        metricsConfig.addTransactionAmount(paymentAmount);
 
         LOG.info("Bill payment posted: accountId={}, tranId={}, amount={}",
                 accountId, tranId, paymentAmount);

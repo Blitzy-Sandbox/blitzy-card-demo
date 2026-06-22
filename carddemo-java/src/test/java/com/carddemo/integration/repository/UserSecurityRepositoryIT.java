@@ -9,6 +9,9 @@ import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 
 /**
  * Integration tests for {@link UserSecurityRepository} against a real PostgreSQL 16 Testcontainer.
@@ -57,6 +60,41 @@ class UserSecurityRepositoryIT extends AbstractRepositoryIT {
             assertThat(user.getSecUsrPwd()).startsWith("$2");
             assertThat(user.getSecUsrPwd()).isNotEqualTo("PASSWORD");
         }
+    }
+
+    @Test
+    void findBySecUsrIdGreaterThanEqualStartsAtKeyAndReadsForward() {
+        // COUSR00C STARTBR (GTEQ): the browse begins at the supplied user id and reads forward in
+        // ascending key order. User ids are 8-char alphanumeric, so "USER0001" lexicographically
+        // follows all "ADMIN00x" ids; starting at it yields exactly the five USER000x rows.
+        Page<UserSecurity> page = userSecurityRepository.findBySecUsrIdGreaterThanEqual(
+                "USER0001", PageRequest.of(0, 10, Sort.by("secUsrId").ascending()));
+
+        assertThat(page.getTotalElements()).isEqualTo(5L);
+        assertThat(page.getContent()).extracting(UserSecurity::getSecUsrId)
+                .containsExactly("USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+    }
+
+    @Test
+    void findBySecUsrIdGreaterThanEqualIncludesExactMatchAndLaterKeys() {
+        // Starting at ADMIN003 includes ADMIN003 itself (>=) and every later key: ADMIN004/005 and
+        // all five USER000x rows (8 total).
+        Page<UserSecurity> page = userSecurityRepository.findBySecUsrIdGreaterThanEqual(
+                "ADMIN003", PageRequest.of(0, 10, Sort.by("secUsrId").ascending()));
+
+        assertThat(page.getTotalElements()).isEqualTo(8L);
+        assertThat(page.getContent()).extracting(UserSecurity::getSecUsrId)
+                .containsExactly("ADMIN003", "ADMIN004", "ADMIN005",
+                        "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+    }
+
+    @Test
+    void findBySecUsrIdGreaterThanEqualReturnsEmptyWhenStartIsPastLastKey() {
+        Page<UserSecurity> page = userSecurityRepository.findBySecUsrIdGreaterThanEqual(
+                "ZZZZZZZZ", PageRequest.of(0, 10, Sort.by("secUsrId").ascending()));
+
+        assertThat(page.getTotalElements()).isZero();
+        assertThat(page.getContent()).isEmpty();
     }
 
     @Test

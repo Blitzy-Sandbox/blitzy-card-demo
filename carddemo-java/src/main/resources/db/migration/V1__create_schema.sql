@@ -72,6 +72,7 @@ CREATE TABLE customer (
     cust_eft_account_id         VARCHAR(10) NOT NULL,
     cust_pri_card_holder_ind    VARCHAR(1)  NOT NULL,
     cust_fico_credit_score      INTEGER     NOT NULL,
+    version                     BIGINT      NOT NULL DEFAULT 0,
     CONSTRAINT pk_customer PRIMARY KEY (cust_id)
 );
 

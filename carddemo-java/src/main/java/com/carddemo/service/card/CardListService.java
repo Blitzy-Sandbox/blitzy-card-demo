@@ -40,6 +40,7 @@ public class CardListService {
     private static final String MSG_NO_RECORDS_FOUND = "NO RECORDS FOUND FOR THIS SEARCH CONDITION.";
     private static final String MSG_NO_MORE_RECORDS = "NO MORE RECORDS TO SHOW";
     private static final String MSG_INFORM_REC_ACTIONS = "TYPE S FOR DETAIL, U TO UPDATE ANY RECORD";
+    private static final String MSG_PAGE_NEGATIVE = "Page number must be zero or greater";
 
     private final CardRepository cardRepository;
 
@@ -52,11 +53,16 @@ public class CardListService {
      * are blank every card is listed (mirroring {@code COCRDLIC}). Each page holds at most
      * {@value #ROWS_PER_PAGE} rows ordered by card number ascending.
      *
+     * <p>Filters are applied before paging, mirroring {@code COCRDLIC} {@code 9500-FILTER-RECORDS}:
+     * the card-number filter is an exact match (the card number is the unique key) and, when an
+     * account filter is also supplied, the match is AND-narrowed on the owning account.</p>
+     *
      * @param accountIdFilter  optional 11-digit account filter (blank lists all)
-     * @param cardNumberFilter optional 16-digit card-number filter (blank lists all)
-     * @param pageNumber       zero-based page index
+     * @param cardNumberFilter optional 16-digit card-number filter (blank lists all; exact match)
+     * @param pageNumber       zero-based page index; must be zero or greater
      * @return the populated {@link CardListResponse}
-     * @throws ValidationException when a supplied filter is not the required numeric format
+     * @throws ValidationException when a supplied filter is not the required numeric format, or when
+     *                             {@code pageNumber} is negative
      */
     public CardListResponse getCardList(String accountIdFilter, String cardNumberFilter, int pageNumber) {
         String acct = normalize(accountIdFilter);
@@ -81,31 +87,52 @@ public class CardListService {
             cardFilterValid = true;
         }
 
-        // Clamp the zero-based page so the resulting SQL offset (page * ROWS_PER_PAGE) cannot
-        // exceed Integer.MAX_VALUE. clampPageToMaxOffset also floors negatives at 0, so an absurd
-        // page number now yields a graceful empty page (HTTP 200) instead of an offset-overflow
-        // InvalidDataAccessApiUsageException surfacing as HTTP 500.
-        int page = PaginationSupport.clampPageToMaxOffset(pageNumber, ROWS_PER_PAGE);
-        Pageable pageable = PageRequest.of(page, ROWS_PER_PAGE,
-                Sort.by(CARD_NUMBER_PROPERTY).ascending());
-
-        Page<Card> result = acctFilterValid
-                ? cardRepository.findByCardAcctId(Long.parseLong(acct), pageable)
-                : cardRepository.findAll(pageable);
-
-        List<CardListItem> items = new ArrayList<>();
-        for (Card record : result.getContent()) {
-            if (cardFilterValid && !card.equals(record.getCardNum())) {
-                continue;
-            }
-            items.add(new CardListItem(
-                    "",
-                    formatAccountId(record.getCardAcctId()),
-                    record.getCardNum(),
-                    record.getCardActiveStatus()));
+        // Issue 5 (invalid pagination bounds): a zero-based page index below zero is not a valid
+        // page. COCRDLIC tracked a small page counter in the COMMAREA and could not express a
+        // negative page; the REST "page" parameter makes one expressible, so reject it explicitly
+        // (HTTP 400) instead of silently coercing it to the first page. A huge but non-negative page
+        // still yields a graceful empty page (HTTP 200) via the offset clamp below.
+        if (pageNumber < 0) {
+            throw new ValidationException(MSG_PAGE_NEGATIVE);
         }
 
-        boolean hasNext = result.hasNext() && !cardFilterValid;
+        // Clamp the zero-based page so the resulting SQL offset (page * ROWS_PER_PAGE) cannot
+        // exceed Integer.MAX_VALUE, yielding a graceful empty page (HTTP 200) instead of an
+        // offset-overflow InvalidDataAccessApiUsageException surfacing as HTTP 500.
+        int page = PaginationSupport.clampPageToMaxOffset(pageNumber, ROWS_PER_PAGE);
+
+        List<CardListItem> items = new ArrayList<>();
+        boolean hasNext;
+
+        if (cardFilterValid) {
+            // Issue 4 (filters not applied): COCRDLIC 9500-FILTER-RECORDS treats the card-number
+            // filter as an EXACT match and, when an account filter is also supplied, AND-narrows on
+            // the account. The card number is the unique primary key, so an exact match yields at
+            // most one row; apply the filter BEFORE paging. The earlier implementation paged first
+            // and then scanned only the current page for the card number, which silently dropped a
+            // matching card that fell on a later page. The single matching row, when present,
+            // belongs to the first page only.
+            // Capture the account-filter flag in an effectively-final local for the lambda below
+            // (acctFilterValid is reassigned during validation and so cannot be captured directly).
+            final boolean narrowByAccount = acctFilterValid;
+            Card match = cardRepository.findById(card)
+                    .filter(found -> !narrowByAccount || accountMatches(found, acct))
+                    .orElse(null);
+            if (page == 0 && match != null) {
+                items.add(toListItem(match));
+            }
+            hasNext = false;
+        } else {
+            Pageable pageable = PageRequest.of(page, ROWS_PER_PAGE,
+                    Sort.by(CARD_NUMBER_PROPERTY).ascending());
+            Page<Card> result = acctFilterValid
+                    ? cardRepository.findByCardAcctId(Long.parseLong(acct), pageable)
+                    : cardRepository.findAll(pageable);
+            for (Card record : result.getContent()) {
+                items.add(toListItem(record));
+            }
+            hasNext = result.hasNext();
+        }
 
         String infoMessage = null;
         String errorMessage = null;
@@ -118,7 +145,7 @@ public class CardListService {
         }
 
         CardListResponse response = new CardListResponse(
-                String.valueOf(result.getNumber() + 1),
+                String.valueOf(page + 1),
                 acctFilterValid ? acct : "",
                 cardFilterValid ? card : "",
                 items,
@@ -151,5 +178,32 @@ public class CardListService {
 
     private static String formatAccountId(Long accountId) {
         return accountId == null ? "" : String.format("%011d", accountId);
+    }
+
+    /**
+     * Projects a {@link Card} entity onto a {@link CardListItem} browse row. The selection flag is
+     * an output control set by the client when marking a row, so it is always blank here.
+     *
+     * @param card the card entity to project
+     * @return the browse-row DTO for the card
+     */
+    private static CardListItem toListItem(Card card) {
+        return new CardListItem(
+                "",
+                formatAccountId(card.getCardAcctId()),
+                card.getCardNum(),
+                card.getCardActiveStatus());
+    }
+
+    /**
+     * Tests whether a card belongs to the supplied (validated, 11-digit) account filter, mirroring
+     * the account half of the {@code COCRDLIC} {@code 9500-FILTER-RECORDS} AND-narrowing.
+     *
+     * @param card the candidate card (its owning account id is compared)
+     * @param acct the validated 11-digit account filter
+     * @return {@code true} when the card's owning account equals the filter
+     */
+    private static boolean accountMatches(Card card, String acct) {
+        return card.getCardAcctId() != null && card.getCardAcctId().longValue() == Long.parseLong(acct);
     }
 }

@@ -120,14 +120,16 @@ class CardDetailServiceTest {
   }
 
   @Test
-  @DisplayName("valid keys, record found -> populated response, %011d account, month/year split")
+  @DisplayName("valid keys, record found under the supplied account -> populated response")
   void foundReturnsPopulatedResponse() {
-    Card entity = card(VALID_CARD, 1L, "JOHN Q PUBLIC", "Y", "2024-06-15");
+    // The card must be owned by the supplied account: COCRDSLC 9100-GETCARD-BYACCTCARD resolves
+    // the account+card combination, so a successful detail read requires the pair to match.
+    Card entity = card(VALID_CARD, 12345678901L, "JOHN Q PUBLIC", "Y", "2024-06-15");
     when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(entity));
 
     CardDetailResponse response = cardDetailService.getCardDetail(VALID_ACCOUNT, VALID_CARD);
 
-    assertThat(response.accountId()).isEqualTo("00000000001");
+    assertThat(response.accountId()).isEqualTo("12345678901");
     assertThat(response.cardNumber()).isEqualTo(VALID_CARD);
     assertThat(response.nameOnCard()).isEqualTo("JOHN Q PUBLIC");
     assertThat(response.cardStatus()).isEqualTo("Y");
@@ -135,6 +137,22 @@ class CardDetailServiceTest {
     assertThat(response.expirationYear()).isEqualTo("2024");
     assertThat(response.infoMessage()).isNull();
     assertThat(response.errorMessage()).isNull();
+
+    verify(cardRepository).findById(VALID_CARD);
+  }
+
+  @Test
+  @DisplayName("card exists but under a different account -> RecordNotFound (IDOR closure)")
+  void cardUnderDifferentAccountThrowsNotFound() {
+    // The card is owned by account 1, but the caller supplies VALID_ACCOUNT (12345678901). The
+    // account+card combination does not resolve, so COCRDSLC's DID-NOT-FIND-ACCTCARD-COMBO path
+    // applies: the card must NOT be disclosed under a tampered account id.
+    Card entity = card(VALID_CARD, 1L, "JOHN Q PUBLIC", "Y", "2024-06-15");
+    when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(entity));
+
+    assertThatThrownBy(() -> cardDetailService.getCardDetail(VALID_ACCOUNT, VALID_CARD))
+        .isInstanceOf(RecordNotFoundException.class)
+        .hasMessage("Did not find cards for this search condition");
 
     verify(cardRepository).findById(VALID_CARD);
   }

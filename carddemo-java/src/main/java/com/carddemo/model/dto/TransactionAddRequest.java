@@ -1,5 +1,6 @@
 package com.carddemo.model.dto;
 
+import com.carddemo.model.dto.constraint.NoHtml;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -61,14 +62,14 @@ public record TransactionAddRequest(
         @Size(max = 16) String cardNumber,
         @NotBlank @Pattern(regexp = "\\d{1,2}") @Size(max = 2) String typeCode,
         @NotBlank @Pattern(regexp = "\\d{1,4}") @Size(max = 4) String categoryCode,
-        @NotBlank @Size(max = 10) String source,
-        @NotBlank @Size(max = 60) String description,
+        @NotBlank @NoHtml @Size(max = 10) String source,
+        @NotBlank @NoHtml @Size(max = 60) String description,
         @NotNull @Digits(integer = 9, fraction = 2) BigDecimal amount,
         @NotBlank @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}") @Size(max = 10) String originDate,
         @NotBlank @Pattern(regexp = "\\d{4}-\\d{2}-\\d{2}") @Size(max = 10) String processDate,
         @NotBlank @Pattern(regexp = "\\d{1,9}") @Size(max = 9) String merchantId,
-        @NotBlank @Size(max = 30) String merchantName,
-        @NotBlank @Size(max = 25) String merchantCity,
-        @NotBlank @Size(max = 10) String merchantZip,
+        @NotBlank @NoHtml @Size(max = 30) String merchantName,
+        @NotBlank @NoHtml @Size(max = 25) String merchantCity,
+        @NotBlank @NoHtml @Size(max = 10) String merchantZip,
         @Pattern(regexp = "[YyNn]?") @Size(max = 1) String confirm) {
 }

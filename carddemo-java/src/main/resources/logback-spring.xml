@@ -16,11 +16,13 @@
                         bridge when tracing is active; Spring Boot 3.x exposes
                         them through the MDC.
 
-  The "-spring" suffix lets Spring Boot evaluate the <springProfile> and
-  <springProperty> elements below, so logging differs by active profile:
-    - local           -> human-readable console (the three IDs are still shown)
-                         to improve developer experience.
-    - test / default  -> pure JSON (machine-parseable) for CI and prod-like runs.
+  Structured JSON is emitted for EVERY profile (local, test, default, prod-like).
+  The Observability rule (AAP 0.7.1) requires structured JSON logging in the
+  locally verifiable runtime (the 'local'/compose profile is what operators and
+  the QA harness actually observe), so a single JSON appender is used uniformly
+  rather than a human-readable console for 'local'. The "-spring" suffix still
+  lets Spring Boot evaluate the <springProperty> element below for the embedded
+  application name.
 
   Design rationale is recorded in DECISION_LOG.md (Explainability rule); the
   comments here are intentionally functional only.
@@ -60,37 +62,18 @@
 
     <!--
       ======================================================================
-      Profile-aware wiring. Each profile defines AND references exactly one
-      appender, so no appender is ever left unreferenced. The 'local' and
-      '!local' selectors are complementary and exhaustive, so precisely one
-      branch is active per run.
+      Single structured-JSON appender for ALL profiles (local, test, default,
+      prod-like). Structured JSON to STDOUT via logstash-logback-encoder 8.0;
+      writing to stdout is the container best practice and the platform collects
+      the stream. The correlationId / traceId / spanId MDC keys are rendered so a
+      single request or batch chunk can be followed end-to-end. JSON is emitted
+      uniformly (including 'local') because the Observability rule (AAP 0.7.1)
+      requires structured JSON in the locally verifiable runtime; the former
+      'local' human-readable console has been removed so operators and the QA
+      harness observe the same JSON format the non-local profiles already used.
       ======================================================================
     -->
-
-    <!--
-      'local' profile: human-readable console for developer experience. The
-      correlationId / traceId / spanId are still printed so a single request or
-      batch chunk can be followed end-to-end. Logs go to STDOUT.
-    -->
-    <springProfile name="local">
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-                <charset>UTF-8</charset>
-                <pattern>%d{HH:mm:ss.SSS} %-5level [%X{correlationId}] [%X{traceId},%X{spanId}] %logger{36} - %msg%n</pattern>
-            </encoder>
-        </appender>
-        <root level="INFO">
-            <appender-ref ref="CONSOLE"/>
-        </root>
-    </springProfile>
-
-    <!--
-      Non-local profiles (test, default, prod-like): structured JSON to STDOUT
-      via logstash-logback-encoder 8.0. Writing to stdout is the container best
-      practice; the platform collects the stream.
-    -->
-    <springProfile name="!local">
-        <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <appender name="STDOUT_JSON" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
                 <providers>
                     <!-- ISO-8601 timestamp in UTC -->
@@ -153,6 +136,5 @@
         <root level="INFO">
             <appender-ref ref="STDOUT_JSON"/>
         </root>
-    </springProfile>
 
 </configuration>

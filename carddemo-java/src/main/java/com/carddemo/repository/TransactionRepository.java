@@ -4,6 +4,8 @@ import com.carddemo.model.entity.Transaction;
 import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -27,6 +29,23 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      */
     @Query("SELECT MAX(t.tranId) FROM Transaction t")
     String findMaxTranId();
+
+    /**
+     * Returns one page of transactions whose id is greater than or equal to {@code tranIdStart},
+     * ordered by the {@link Pageable}'s sort (ascending transaction id for the browse). This is the
+     * "start-at" filter of the COBOL transaction-list program {@code COTRN00C}: its
+     * {@code STARTBR-TRANSACT-FILE} positions the CICS browse on the entered transaction id with
+     * {@code GTEQ} (greater-than-or-equal) and the {@code READNEXT} loop then reads forward, so the
+     * list begins at the supplied id (or the next existing id when an exact match is absent) rather
+     * than performing an exact-match lookup. Transaction ids are fixed-width, zero-padded numeric
+     * strings, so the lexicographic {@code >=} comparison is identical to a numeric {@code >=}
+     * comparison (the caller left-pads a shorter filter to the stored width before invoking this).
+     *
+     * @param tranIdStart the inclusive lower-bound transaction id (the start-at key)
+     * @param pageable    the page request (page index, fixed page size, and ascending-id sort)
+     * @return the page of transactions with id {@code >= tranIdStart}
+     */
+    Page<Transaction> findByTranIdGreaterThanEqual(String tranIdStart, Pageable pageable);
 
     /**
      * Returns the transactions whose processing-timestamp date portion (the first ten characters

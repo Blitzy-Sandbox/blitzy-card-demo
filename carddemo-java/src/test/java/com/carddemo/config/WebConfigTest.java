@@ -59,16 +59,21 @@ class WebConfigTest {
     }
 
     @Test
-    @DisplayName("Jackson customizer disables timestamp dates and strict unknown-property handling")
+    @DisplayName("Jackson customizer disables timestamp dates and enables strict unknown-property handling")
     void jacksonCustomizer() {
         Jackson2ObjectMapperBuilderCustomizer customizer = webConfig.jacksonCustomizer();
         Jackson2ObjectMapperBuilder builder = new Jackson2ObjectMapperBuilder();
         customizer.customize(builder);
         ObjectMapper mapper = builder.build();
 
+        // Dates serialize as ISO-8601 strings, not numeric timestamps.
         assertThat(mapper.getSerializationConfig().isEnabled(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS))
                 .isFalse();
+        // Unknown request properties are rejected. This must be explicitly ENABLED: the
+        // Jackson2ObjectMapperBuilder disables FAIL_ON_UNKNOWN_PROPERTIES by default, so the customizer
+        // calling featuresToEnable(...) is what makes a stray body field (e.g. an `amount` sent to the
+        // full-balance bill-payment endpoint) fail deserialization with a 400 instead of being dropped.
         assertThat(mapper.getDeserializationConfig().isEnabled(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES))
-                .isFalse();
+                .isTrue();
     }
 }

@@ -120,6 +120,18 @@ spring:
       credentials:
         access-key: ${AWS_ACCESS_KEY_ID:test}
         secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      sqs:
+        listener:
+          # Long-poll wait (ReceiveMessage WaitTimeSeconds) for the report-queue @SqsListener.
+          # Held deliberately BELOW the SqsAsyncClient per-attempt timeout
+          # (carddemo.aws.client.api-call-attempt-timeout-millis, default 10000ms in AwsConfig) so an
+          # idle long-poll returns cleanly within a single attempt. Previously the listener used the
+          # framework default (10s), which equalled the 10s per-attempt timeout: every empty poll
+          # raced that timeout, exhausted the retries against the 30s overall apiCallTimeout, and
+          # logged a repeated "Error polling ... ApiCallTimeout" storm on the idle FIFO queue (and
+          # delayed graceful shutdown by ~30s while the in-flight poll drained). A 5s wait still uses
+          # efficient long polling (messages are delivered within ~5s) with a comfortable 5s margin.
+          poll-timeout: ${SQS_LISTENER_POLL_TIMEOUT:5s}
 
 # --- Phase 1: HTTP server ------------------------------------------------------------
 server:
@@ -214,13 +226,17 @@ carddemo:
   # Comma-separated list of CORS origins permitted to call the REST API. Declared here so
   # the key is discoverable in configuration; WebConfig binds
   # carddemo.web.cors.allowed-origins as a single String, then splits/trims on commas.
-  # Override per environment via the CORS_ALLOWED_ORIGINS env var; the permissive '*'
-  # default suits local/dev and is expected to be tightened to explicit origins in
-  # deployed environments. Credentials are disabled (stateless JWT travels in the
-  # Authorization header, not cookies), so the '*' default does not expose cookies.
+  # The default is an EXPLICIT local-development allow-list (localhost:3000 / localhost:8080),
+  # NOT a wildcard: a permissive '*' is never the default and must be opted into deliberately
+  # per environment via the CORS_ALLOWED_ORIGINS env var. With an explicit list, Spring reflects
+  # Access-Control-Allow-Origin only for a matching origin and emits no such header for an
+  # unlisted site (e.g. http://evil.example), rather than returning a blanket
+  # 'Access-Control-Allow-Origin: *'. Credentials are disabled (stateless JWT travels in the
+  # Authorization header, not cookies). Deployed environments set CORS_ALLOWED_ORIGINS to their
+  # own front-end origin(s).
   web:
     cors:
-      allowed-origins: ${CORS_ALLOWED_ORIGINS:*}
+      allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
 
   # --- Phase 7: AWS resource names (consumed by config/AwsConfig.java + services) ----
   # These names MUST match localstack-init/init-aws.sh and docker-compose.yml verbatim.

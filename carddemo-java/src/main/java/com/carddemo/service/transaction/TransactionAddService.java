@@ -1,11 +1,13 @@
 package com.carddemo.service.transaction;
 
 import com.carddemo.exception.DuplicateRecordException;
+import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.model.dto.TransactionAddRequest;
 import com.carddemo.model.dto.TransactionAddResponse;
 import com.carddemo.model.entity.CardCrossReference;
 import com.carddemo.model.entity.Transaction;
+import com.carddemo.observability.MetricsConfig;
 import com.carddemo.repository.CardCrossReferenceRepository;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.shared.DateValidationService;
@@ -59,6 +61,7 @@ public class TransactionAddService {
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
     private final DateValidationService dateValidationService;
     private final TransactionIdAllocator transactionIdAllocator;
+    private final MetricsConfig metricsConfig;
 
     /**
      * Creates the service with its collaborating beans.
@@ -69,15 +72,21 @@ public class TransactionAddService {
      *                                      keyed read by card number)
      * @param dateValidationService        strict date-validation collaborator for the origin/process dates
      * @param transactionIdAllocator       concurrency-safe allocator of the next transaction identifier
+     * @param metricsConfig                holder of the signed transaction-amount running total
+     *                                      ({@code carddemo.transaction.amount.total} gauge); the posted
+     *                                      online amount is recorded through it so the gauge reflects
+     *                                      online activity, mirroring the batch posting path
      */
     public TransactionAddService(TransactionRepository transactionRepository,
                                  CardCrossReferenceRepository cardCrossReferenceRepository,
                                  DateValidationService dateValidationService,
-                                 TransactionIdAllocator transactionIdAllocator) {
+                                 TransactionIdAllocator transactionIdAllocator,
+                                 MetricsConfig metricsConfig) {
         this.transactionRepository = transactionRepository;
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.dateValidationService = dateValidationService;
         this.transactionIdAllocator = transactionIdAllocator;
+        this.metricsConfig = metricsConfig;
     }
 
     /**
@@ -124,6 +133,12 @@ public class TransactionAddService {
         } catch (DataIntegrityViolationException ex) {
             throw new DuplicateRecordException("Tran ID already exist...", ex);
         }
+
+        // Observability (AAP 0.7.1): record the posted amount on the signed running-total gauge
+        // (carddemo.transaction.amount.total) so online transaction activity is reflected in metrics,
+        // mirroring the batch posting path (TransactionWriter). Telemetry only; never affects the
+        // BigDecimal persistence above, and a negative amount (credit/return) is accumulated safely.
+        metricsConfig.addTransactionAmount(saved.getTranAmt());
 
         return new TransactionAddResponse(
                 saved.getTranId(),
@@ -173,10 +188,15 @@ public class TransactionAddService {
             }
             // COMPUTE WS-ACCT-ID-N = NUMVAL(ACTIDINI); PERFORM READ-CXACAIX-FILE (keyed by account id).
             long acctId = Long.parseLong(accountId);
+            // A missing account/card maps to RecordNotFoundException (HTTP 404), not a validation
+            // error (400): COTRN02C READ-CXACAIX-FILE treats DFHRESP(NOTFND) as a record-absent
+            // condition ('Account ID NOT found...'), distinct from an input-edit failure. The
+            // COBOL message text is preserved verbatim (CBL line 593) for parity; only the mapped
+            // HTTP status changes to satisfy the final scope status matrix and docs/api-contracts.md.
             CardCrossReference xref = cardCrossReferenceRepository.findByXrefAcctId(acctId)
                     .stream()
                     .findFirst()
-                    .orElseThrow(() -> new ValidationException("Account ID NOT found..."));
+                    .orElseThrow(() -> new RecordNotFoundException("Account ID NOT found..."));
             // MOVE XREF-CARD-NUM TO CARDNINI: derive the card from the cross-reference.
             return new DerivedKey(Long.toString(acctId), xref.getXrefCardNum());
         }
@@ -186,9 +206,12 @@ public class TransactionAddService {
             if (!isDigits(cardNumber)) {
                 throw new ValidationException("Card Number must be Numeric...");
             }
-            // PERFORM READ-CCXREF-FILE (keyed read by card number).
+            // PERFORM READ-CCXREF-FILE (keyed read by card number). As with the account-id branch,
+            // a NOTFND on the keyed cross-reference read is a record-absent condition mapped to
+            // RecordNotFoundException (HTTP 404), preserving the COBOL message text verbatim
+            // (CBL line 626) while aligning the status with the final scope status matrix.
             CardCrossReference xref = cardCrossReferenceRepository.findById(cardNumber)
-                    .orElseThrow(() -> new ValidationException("Card Number NOT found..."));
+                    .orElseThrow(() -> new RecordNotFoundException("Card Number NOT found..."));
             // MOVE XREF-ACCT-ID TO ACTIDINI: derive the account from the cross-reference.
             return new DerivedKey(Long.toString(xref.getXrefAcctId()), cardNumber);
         }

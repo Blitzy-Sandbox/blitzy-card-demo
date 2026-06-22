@@ -625,7 +625,7 @@ Paginated user browse — **10 rows per page** (the COUSR00 screen displays 10 u
 | COBOL field | COBOL pic | Query param | Type | Notes |
 | :---------- | :-------- | :---------- | :--- | :---- |
 | `USRIDIN` | `X(8)` | `userId` | string(8) | optional start-at filter |
-| `PAGENUM` | `X(8)` | `page` | integer | 0-based page index |
+| `PAGENUM` | `X(8)` | `page` | integer | 1-based page index (page 1 is the first page; a value below 1 is rejected with HTTP 400) |
 
 **Response DTO — `UserListResponse`**: `pageNumber` (string, e.g. `"1"`), `userIdFilter`
 (nullable; echoes the start-at filter), `users[]` (each element a `UserListItem`), and a
