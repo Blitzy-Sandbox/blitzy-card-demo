@@ -12,6 +12,7 @@ import com.carddemo.exception.FileAccessException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.TransactionPostingException;
 import com.carddemo.exception.ValidationException;
+import jakarta.persistence.OptimisticLockException;
 import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.AfterEach;
@@ -24,6 +25,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.validation.BindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
@@ -303,5 +305,55 @@ class GlobalExceptionHandlerTest {
         // Sanitization: the SQL/constraint internals must not be echoed to the client.
         assertThat(body.getDetail()).doesNotContain("transaction_pkey");
         assertThat(body.getDetail()).doesNotContain("constraint");
+    }
+
+    @Test
+    @DisplayName("ObjectOptimisticLockingFailureException -> 409 with the COACTUPC parity body (F-LOCK-001)")
+    void springOptimisticLockFailureIsMappedToConflict() {
+        // Reproduces F-LOCK-001: the customer-only / no-field-change concurrent Account update advances
+        // the version with an OPTIMISTIC_FORCE_INCREMENT lock whose bump fails at transaction commit,
+        // AFTER the service-layer try/catch has returned. The escaping framework exception must map to
+        // 409 here rather than surface as a 500.
+        ResponseEntity<ProblemDetail> resp = handler.handleOptimisticLock(
+                new ObjectOptimisticLockingFailureException("com.carddemo.model.entity.Account", 1L));
+        ProblemDetail body = resp.getBody();
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.getStatus()).isEqualTo(409);
+        assertThat(body.getTitle()).isEqualTo("Concurrent Update Conflict");
+        assertThat(body.getDetail()).isEqualTo("Record changed by some one else. Please review");
+        // The entity name / identifier carried by the framework message must not leak to the client.
+        assertThat(body.getDetail()).doesNotContain("com.carddemo");
+        assertThat(body.getDetail()).doesNotContain("Account#");
+    }
+
+    @Test
+    @DisplayName("jakarta OptimisticLockException -> 409 with the COACTUPC parity body")
+    void jpaOptimisticLockExceptionIsMappedToConflict() {
+        ResponseEntity<ProblemDetail> resp = handler.handleOptimisticLock(
+                new OptimisticLockException("Account row was updated by another transaction [Account#1]"));
+        ProblemDetail body = resp.getBody();
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(body.getStatus()).isEqualTo(409);
+        assertThat(body.getTitle()).isEqualTo("Concurrent Update Conflict");
+        assertThat(body.getDetail()).isEqualTo("Record changed by some one else. Please review");
+    }
+
+    @Test
+    @DisplayName("Framework optimistic-lock 409 body is identical to the domain ConcurrencyException 409 body")
+    void optimisticLockBodyMatchesDomainConcurrencyBody() {
+        // The framework path (handleOptimisticLock, customer-only/no-op commit-time race) and the domain
+        // path (handleConcurrency, used by the dirty-account and deterministic-stale paths, which throw
+        // ConcurrencyException carrying the same COACTUPC L522 message) MUST present an identical 409
+        // contract so every concurrent-update path is indistinguishable to the client (AAP 0.8.4).
+        ProblemDetail framework = handler.handleOptimisticLock(
+                new ObjectOptimisticLockingFailureException("com.carddemo.model.entity.Account", 1L)).getBody();
+        ProblemDetail domain = handler.handleConcurrency(
+                new ConcurrencyException("Record changed by some one else. Please review")).getBody();
+
+        assertThat(framework.getStatus()).isEqualTo(domain.getStatus());
+        assertThat(framework.getTitle()).isEqualTo(domain.getTitle());
+        assertThat(framework.getDetail()).isEqualTo(domain.getDetail());
     }
 }

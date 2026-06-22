@@ -7,6 +7,7 @@ import com.carddemo.exception.FileAccessException;
 import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.TransactionPostingException;
 import com.carddemo.exception.ValidationException;
+import jakarta.persistence.OptimisticLockException;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.slf4j.Logger;
@@ -20,6 +21,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -53,6 +55,18 @@ public class GlobalExceptionHandler {
     /** SLF4J MDC key carrying the per-request correlation id (set by {@code CorrelationIdFilter}). */
     private static final String MDC_CORRELATION_KEY = "correlationId";
 
+    /** RFC 7807 title shared by every 409 optimistic-concurrency conflict response. */
+    private static final String CONCURRENCY_CONFLICT_TITLE = "Concurrent Update Conflict";
+
+    /**
+     * Client-facing detail for a 409 optimistic-lock conflict. Byte-identical to the COACTUPC
+     * redisplay message ({@code app/cbl/COACTUPC.cbl} L522, reference only; lineage commit
+     * {@code 27d6c6f}) that the domain {@link ConcurrencyException} also carries, so a conflict
+     * surfaced by the persistence framework and one thrown by the service layer return the same body.
+     */
+    private static final String CONCURRENCY_CONFLICT_DETAIL =
+            "Record changed by some one else. Please review";
+
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex) {
         return build(HttpStatus.NOT_FOUND, "Record Not Found", ex.getMessage());
@@ -65,7 +79,44 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ConcurrencyException.class)
     public ResponseEntity<ProblemDetail> handleConcurrency(ConcurrencyException ex) {
-        return build(HttpStatus.CONFLICT, "Concurrent Update Conflict", ex.getMessage());
+        return build(HttpStatus.CONFLICT, CONCURRENCY_CONFLICT_TITLE, ex.getMessage());
+    }
+
+    /**
+     * Translates a JPA/Hibernate optimistic-locking failure into the same 409 RFC 7807
+     * {@link ProblemDetail} as the domain {@link ConcurrencyException}, completing the AAP
+     * &sect;0.8.4 "{@code @Version} optimistic locking ... with {@code OptimisticLockException}
+     * handling" contract on EVERY concurrent-update path.
+     *
+     * <p>Most concurrent updates are caught inside the service layer (for example
+     * {@code CardUpdateService} and the dirty-account path of {@code AccountUpdateService}), which
+     * wraps the failure as a {@link ConcurrencyException} at {@code saveAndFlush} time. The
+     * customer-only / no-field-change account path, however, advances the account version with a
+     * {@code LockModeType.OPTIMISTIC_FORCE_INCREMENT} lock whose increment Hibernate defers to
+     * {@code beforeTransactionCompletion} (transaction commit) — AFTER the {@code @Transactional}
+     * service method and its local {@code try/catch} have returned. The resulting
+     * {@link ObjectOptimisticLockingFailureException} (or a {@link OptimisticLockException} surfaced
+     * directly by the provider) therefore escapes the service and must be mapped here so the client
+     * still receives the 409 conflict contract rather than a 500.
+     *
+     * <p>Data integrity is unaffected: the optimistic lock has already rolled back the losing
+     * transaction (exactly one writer wins, versions advance by one), so this handler only corrects
+     * the HTTP status mapping. The framework message can embed the entity name and identifier, so
+     * per CWE-209 it is logged server-side only and the client receives the fixed COACTUPC-parity
+     * detail.
+     *
+     * @param ex the optimistic-lock failure raised by the persistence layer (Spring's
+     *           {@link ObjectOptimisticLockingFailureException} or the JPA
+     *           {@link OptimisticLockException})
+     * @return a {@code 409 Conflict} response whose body is identical to the domain
+     *         {@link ConcurrencyException} mapping
+     */
+    @ExceptionHandler({ObjectOptimisticLockingFailureException.class, OptimisticLockException.class})
+    public ResponseEntity<ProblemDetail> handleOptimisticLock(Exception ex) {
+        // Entity/identifier internals are logged server-side only (CWE-209); the client receives
+        // only the fixed, non-sensitive concurrency detail below.
+        log.warn("Optimistic lock conflict: {}", ex.getMessage());
+        return build(HttpStatus.CONFLICT, CONCURRENCY_CONFLICT_TITLE, CONCURRENCY_CONFLICT_DETAIL);
     }
 
     @ExceptionHandler(ValidationException.class)
