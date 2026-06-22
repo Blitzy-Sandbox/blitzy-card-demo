@@ -155,7 +155,10 @@ git clone <repository-url> && cd carddemo-java
 docker compose up -d
 
 # 4. Run the application with the local profile
-./mvnw spring-boot:run -Dspring.profiles.active=local
+#    NOTE: spring-boot:run forks a separate application JVM, so the Maven-JVM system
+#    property -Dspring.profiles.active is NOT propagated to it. Use the plugin's own
+#    -Dspring-boot.run.profiles=<profile>, which the plugin forwards to the forked process.
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 
 # 5. Verify the application is healthy
 curl http://localhost:8080/actuator/health
@@ -183,8 +186,12 @@ Configuration is profile-driven via Spring Boot YAML files under `src/main/resou
 | `local` | `application-local.yml` | Local development against the Docker Compose stack; AWS endpoint points at LocalStack (`http://localhost:4566`). |
 | `test` | `application-test.yml` | Integration tests; AWS endpoint and datasource wired to Testcontainers / LocalStack. |
 
-Activate a profile with `-Dspring.profiles.active=<profile>` (for `spring-boot:run`) or
-`-Dspring.profiles.active=<profile>` as a JVM argument. Flyway migrations (`V1` → `V2` → `V3`) are
+Activate a profile with `-Dspring-boot.run.profiles=<profile>` when launching via
+`./mvnw spring-boot:run` (the plugin forks a separate application JVM, so a Maven-JVM
+`-Dspring.profiles.active=<profile>` would **not** reach the forked process; the plugin-specific
+`-Dspring-boot.run.profiles` is forwarded to it). When running the packaged jar directly, use either
+`-Dspring.profiles.active=<profile>` as a JVM argument or the `SPRING_PROFILES_ACTIVE=<profile>`
+environment variable. Flyway migrations (`V1` → `V2` → `V3`) are
 applied automatically on startup to provision and seed the schema before any online or batch flow
 executes.
 

@@ -136,7 +136,10 @@ export LOCALSTACK_AUTH_TOKEN=<optional-localstack-pro-token>
 docker compose up -d
 
 # 5. Run the application with the local profile
-./mvnw spring-boot:run -Dspring.profiles.active=local
+#    NOTE: spring-boot:run forks a separate application JVM, so the Maven-JVM system property
+#    -Dspring.profiles.active is NOT propagated to it. Use the plugin's own
+#    -Dspring-boot.run.profiles=<profile>, which the plugin forwards to the forked process.
+./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 
 # 6. Verify the application is healthy (expect status "UP")
 curl http://localhost:8080/actuator/health
@@ -170,7 +173,7 @@ PostgreSQL, S3, and SQS that the application registers (see
 
 ### Quick links (local URLs)
 
-Once `docker compose up -d` and `./mvnw spring-boot:run -Dspring.profiles.active=local` are running,
+Once `docker compose up -d` and `./mvnw spring-boot:run -Dspring-boot.run.profiles=local` are running,
 the following endpoints and UIs are available locally. Ports are fixed by `docker-compose.yml`.
 
 | Component | URL | Notes |
@@ -193,7 +196,7 @@ Configuration is profile-driven via Spring Boot YAML files under `src/main/resou
 | Profile | File | Purpose |
 | :------ | :--- | :------ |
 | *(default)* | `application.yml` | Base configuration: JPA, Flyway, actuator exposure, common AWS settings. The HTTP port defaults to `8080` (`${SERVER_PORT:8080}`). |
-| `local` | `application-local.yml` | Local development against the Docker Compose stack; the AWS endpoint points at LocalStack (`http://localhost:4566`). Activated by `-Dspring.profiles.active=local`. |
+| `local` | `application-local.yml` | Local development against the Docker Compose stack; the AWS endpoint points at LocalStack (`http://localhost:4566`). Activated by `-Dspring-boot.run.profiles=local` when launching via `./mvnw spring-boot:run` (the plugin forks a separate JVM, so a Maven-JVM `-Dspring.profiles.active` is not propagated); for a packaged jar use `-Dspring.profiles.active=local` or `SPRING_PROFILES_ACTIVE=local`. |
 | `test` | `application-test.yml` | Integration tests; the AWS endpoint and datasource are wired to Testcontainers / LocalStack. |
 
 All secrets and connection details resolve from environment variables (for example
@@ -303,7 +306,7 @@ Batch jobs run inside the same Spring Boot application context. With the infrast
   boot. To run a single job at startup you must **both** re-enable the runner and name the job:
 
   ```bash
-  ./mvnw spring-boot:run -Dspring.profiles.active=local \
+  ./mvnw spring-boot:run -Dspring-boot.run.profiles=local \
       -Dspring-boot.run.arguments="--spring.batch.job.enabled=true --spring.batch.job.name=dailyTransactionPostingJob"
   ```
 

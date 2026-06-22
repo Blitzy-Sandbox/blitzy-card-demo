@@ -102,39 +102,54 @@ The CICS programs passed conversational state between pseudo-conversational turn
 
 The full field-by-field mapping is tabulated in [Appendix B](#9-appendix-b--carddemo-commarea-field-mapping).
 
-### 3.4 Standard error envelope
+### 3.4 Standard error envelope (RFC 7807 Problem Detail)
 
-All non-2xx responses share a single JSON envelope:
+All non-2xx responses that carry a body use the **RFC 7807 `application/problem+json`**
+shape produced by Spring's `ProblemDetail` (see `GlobalExceptionHandler`). The body has
+exactly these fields:
 
 ```json
 {
-  "timestamp": "2026-06-20T14:31:05.123Z",
+  "type": "about:blank",
+  "title": "Record Not Found",
   "status": 404,
-  "error": "Not Found",
-  "code": "ACCOUNT_NOT_FOUND",
-  "message": "Account 00000000011 was not found.",
-  "path": "/api/accounts/00000000011",
-  "correlationId": "b1c2d3e4-f5a6-7b8c-9d0e-1f2a3b4c5d6e"
+  "detail": "Account cross-reference not found for key: 99999999999",
+  "instance": "/api/accounts/99999999999"
 }
 ```
 
-- `status` — HTTP status code (mirrors the line above it).
-- `code` — a stable, machine-readable symbol derived from the COBOL FILE STATUS / validation outcome (see §4).
-- `message` — human-readable detail; never leaks credentials, SQL, or stack traces.
-- `correlationId` — the request correlation identifier, also emitted on the `X-Correlation-Id` response header and in structured logs, enabling end-to-end tracing.
+- `type` — a URI reference for the problem type; the application uses the default
+  `"about:blank"` for every error.
+- `title` — a short, human-readable summary of the problem class (see the title table in
+  §4.1). It is stable per exception type.
+- `status` — the HTTP status code (mirrors the response status line).
+- `detail` — a human-readable explanation specific to this occurrence; never leaks
+  credentials, SQL, or stack traces.
+- `instance` — the request path that produced the error.
 
-Field-level validation failures (Bean Validation `@Valid`) return `400 Bad Request` with an additional `fieldErrors` array:
+Notes that differ from a conventional custom envelope:
+
+- **Content type** is `application/problem+json` (not `application/json`).
+- There is **no** `code`, `timestamp`, `error`, `message`, or `path` field. Machine-readable
+  discrimination is done via `status` + `title` (see §4.1).
+- The **correlation id is not in the body for 4xx errors**. It is always emitted on the
+  `X-Correlation-Id` response header (by `CorrelationIdFilter`) and in structured logs. For
+  `5xx` server errors the handler additionally adds a `correlationId` member to the body.
+- **`401 Unauthorized` and `403 Forbidden` return an empty body** (handled by the Spring
+  Security entry point / access-denied handler); only the status line and the
+  `X-Correlation-Id` header are present.
+
+**Bean Validation `@Valid` failures** return `400 Bad Request` with `title: "Validation
+Error"`. There is **no** `fieldErrors[]` array — the individual field violations are
+concatenated (separated by `; `) into the single `detail` string:
 
 ```json
 {
+  "type": "about:blank",
+  "title": "Validation Error",
   "status": 400,
-  "error": "Bad Request",
-  "code": "VALIDATION_FAILED",
-  "message": "Request validation failed.",
-  "fieldErrors": [
-    { "field": "transactionAmount", "message": "must have at most 2 decimal places" }
-  ],
-  "correlationId": "..."
+  "detail": "amount must not be null; originDate must not be blank; source must not be blank",
+  "instance": "/api/transactions"
 }
 ```
 
@@ -151,7 +166,13 @@ List endpoints reproduce the fixed page sizes wired into the originating BMS scr
 Common pagination parameters:
 
 - `page` — 0-based page index (query parameter, default `0`).
-- The response carries `pageNumber`, `pageSize`, `hasNext`, and `hasPrevious`. Forward/backward browsing matches the COBOL `STARTBR` / `READNEXT` / `READPREV` paradigm; `pageSize` is fixed per the table above and any client-supplied override is ignored.
+- Each list response echoes a **`pageNumber`** (a string, e.g. `"1"`) and the active filter
+  value (e.g. `userIdFilter`, `transactionIdFilter`), the page of rows, and a nullable
+  `errorMessage`. The responses do **not** include `pageSize`, `hasNext`, or `hasPrevious`
+  fields — the fixed page size from the table above is an internal contract constant, and
+  forward/backward browsing matches the COBOL `STARTBR` / `READNEXT` / `READPREV` paradigm
+  via the `page` index. Any client-supplied page-size override is ignored. See the
+  per-endpoint response shapes in §5.4 (transactions) and §5.7 (users).
 
 ### 3.6 Data types and decimal precision
 
@@ -159,12 +180,16 @@ COBOL `COMP-3` / signed-decimal `PIC` fields map to `java.math.BigDecimal` with 
 
 | COBOL picture | Source field example | JSON type | Scale | Notes |
 | :------------ | :------------------- | :-------- | :---- | :---- |
-| `PIC S9(10)V99` | `ACCT-CURR-BAL` (`CVACT01Y`) | string-encoded decimal | **2** | 10 integer + 2 fraction digits |
-| `PIC S9(09)V99` | `TRAN-AMT` (`CVTRA05Y`) | string-encoded decimal | **2** | 9 integer + 2 fraction digits |
+| `PIC S9(10)V99` | `ACCT-CURR-BAL` (`CVACT01Y`) | number | **2** | 10 integer + 2 fraction digits |
+| `PIC S9(09)V99` | `TRAN-AMT` (`CVTRA05Y`) | number | **2** | 9 integer + 2 fraction digits |
 | `PIC 9(11)` | `ACCT-ID` (`CVACT01Y`) | string | n/a | 11-digit account id; leading zeros preserved |
 | `PIC X(16)` | `CARD-NUM` (`CVACT02Y`) | string | n/a | 16-char card number; preserved verbatim |
 
-Monetary values are serialized as JSON strings (e.g. `"1234.56"`) to guarantee the exact two-place scale survives JSON round-tripping without binary floating-point drift.
+Monetary values are backed by `java.math.BigDecimal` (scale 2) and are serialized by Jackson
+as **JSON numbers with two decimal places preserved** (e.g. `492.00`, `6169.00`) — not as
+quoted strings. The `BigDecimal` scale guarantees the exact two-place precision survives JSON
+round-tripping without binary floating-point drift; the trailing-zero scale (`.00`) is
+emitted by Jackson's default `BigDecimal` serialization.
 
 ---
 
@@ -172,21 +197,43 @@ Monetary values are serialized as JSON strings (e.g. `"1234.56"`) to guarantee t
 
 ### 4.1 COBOL FILE STATUS → HTTP status
 
-The migrated services translate VSAM FILE STATUS outcomes (as seen across the online programs and the batch posting program `CBTRN02C`) into HTTP responses and the stable `code` symbol of the error envelope:
+The migrated services translate VSAM FILE STATUS outcomes (as seen across the online programs and the batch posting program `CBTRN02C`) into HTTP responses. The error body carries no machine-readable `code`; instead, each exception type sets a stable RFC 7807 **`title`** (see §3.4). The mapping is:
 
-| FILE STATUS | COBOL meaning | Java exception | HTTP status | Envelope `code` |
+| FILE STATUS | COBOL meaning | Java exception | HTTP status | Problem `title` |
 | :---------- | :------------ | :------------- | :---------- | :-------------- |
 | `00` | Successful I/O | — | `200` / `201` / `204` | — |
-| `23` | Record not found / end-of-file on keyed read | `RecordNotFoundException` | `404 Not Found` | `RECORD_NOT_FOUND` |
-| `22` | Duplicate key on write | `DuplicateRecordException` | `409 Conflict` | `DUPLICATE_RECORD` |
-| `2x`/`3x`/`9x` (other I/O errors) | Logic / permanent I/O error | `DataAccessException` | `500 Internal Server Error` | `IO_ERROR` |
+| `23` | Record not found / end-of-file on keyed read | `RecordNotFoundException` | `404 Not Found` | `Record Not Found` |
+| `22` | Duplicate key on write | `DuplicateRecordException` | `409 Conflict` | `Duplicate Record` |
+| `2x`/`3x`/`9x` (other I/O errors) | Logic / permanent I/O error | `FileAccessException` | `500 Internal Server Error` | `File Access Error` |
 
 Two additional cross-cutting mappings preserve the CICS update semantics of `COACTUPC` and `COCRDUPC`:
 
-| Condition | COBOL origin | Java exception | HTTP status | Envelope `code` |
+| Condition | COBOL origin | Java exception | HTTP status | Problem `title` |
 | :-------- | :----------- | :------------- | :---------- | :-------------- |
-| Concurrent modification (before/after image mismatch) | `READ UPDATE` image compare | `OptimisticLockException` (JPA `@Version`) | `409 Conflict` | `CONCURRENT_MODIFICATION` |
-| Dual-record update rollback | sole `SYNCPOINT ROLLBACK` in `COACTUPC` (account + customer) | rollback via `@Transactional` | `409`/`500` (per cause) | `UPDATE_ROLLED_BACK` |
+| Concurrent modification (before/after image mismatch) | `READ UPDATE` image compare | `ConcurrencyException` (JPA `@Version`) | `409 Conflict` | `Concurrent Update Conflict` |
+| Dual-record update rollback | sole `SYNCPOINT ROLLBACK` in `COACTUPC` (account + customer) | rollback via `@Transactional` | `409` / `500` (per cause) | per cause (e.g. `Data Conflict`, `Processing Error`) |
+
+The complete set of problem `title` values emitted by `GlobalExceptionHandler`, keyed by the
+exception (or Spring MVC condition) that produces it:
+
+| Java exception / condition | HTTP status | Problem `title` |
+| :------------------------- | :---------- | :-------------- |
+| `RecordNotFoundException` | `404` | `Record Not Found` |
+| `DuplicateRecordException` | `409` | `Duplicate Record` |
+| `ConcurrencyException` | `409` | `Concurrent Update Conflict` |
+| `ValidationException` | `400` | `Validation Error` |
+| `MethodArgumentNotValidException` (`@Valid`) | `400` | `Validation Error` |
+| `DataIntegrityViolationException` | `409` | `Data Conflict` |
+| `TransactionPostingException` | `422` | `Transaction Posting Rejected` |
+| `FileAccessException` | `500` | `File Access Error` |
+| `CardDemoException` (base / uncategorized) | `500` | `Processing Error` |
+| `MethodArgumentTypeMismatchException` | `400` | `Invalid Request Parameter` |
+| `HttpMessageNotReadableException` | `400` | `Malformed Request` |
+| `HttpRequestMethodNotSupportedException` | `405` | `Method Not Allowed` |
+| `HttpMediaTypeNotSupportedException` | `415` | `Unsupported Media Type` |
+| `NoResourceFoundException` | `404` | `Resource Not Found` |
+
+> `401 Unauthorized` (missing/invalid JWT) and `403 Forbidden` (insufficient role) are produced by the Spring Security filter chain — **not** by `GlobalExceptionHandler` — and return an empty body with only the status line and the `X-Correlation-Id` header.
 
 ### 4.2 Batch reject reason codes (NOT HTTP)
 
@@ -237,15 +284,20 @@ Authenticates a user against the migrated user-security store and issues a JWT. 
 | `role` | string | `ADMIN` or `USER` (derived; see §3.2). |
 | `expiresAt` | string (ISO-8601) | Token expiry timestamp. |
 
-**Errors**
+**Errors** (RFC 7807 problem body, see §3.4)
 
-| Condition | HTTP | `code` |
-| :-------- | :--- | :----- |
-| Unknown user id (`USRSEC` read FILE STATUS `23`) | `401 Unauthorized` | `AUTHENTICATION_FAILED` |
-| Password mismatch | `401 Unauthorized` | `AUTHENTICATION_FAILED` |
-| Blank `userId`/`password` | `400 Bad Request` | `VALIDATION_FAILED` |
+| Condition | HTTP | Problem `title` | `detail` |
+| :-------- | :--- | :-------------- | :------- |
+| Unknown user id (`USRSEC` read FILE STATUS `23` → `RecordNotFoundException`) | `404 Not Found` | `Record Not Found` | `User not found. Try again ...` |
+| Password mismatch (`ValidationException`) | `400 Bad Request` | `Validation Error` | `Wrong Password. Try again ...` |
+| Blank `userId`/`password`, or `userId` longer than 8 chars (`@Valid`) | `400 Bad Request` | `Validation Error` | e.g. `userId must not be blank`, `userId size must be between 0 and 8` |
 
-> The `ERRMSGO X(78)` output field of `COSGN00` (e.g. *"User not found"*, *"Wrong Password"*) maps to the envelope `message`; the API returns `401` without disclosing which credential failed.
+> The `ERRMSGO X(78)` output field of `COSGN00` (e.g. *"User not found. Try again ..."*,
+> *"Wrong Password. Try again ..."*) maps to the problem `detail`. The migrated flow preserves
+> the COBOL behavior of distinguishing the two failure modes: an **unknown user returns `404`**
+> while a **wrong password returns `400`**, so the responses do reveal which credential failed.
+> (The original `COSGN00C` likewise issued distinct messages.) Clients must not assume a
+> uniform `401`.
 
 ### 5.2 AccountController — Account View / Update
 
@@ -292,9 +344,9 @@ Path parameter `accountId` — `PIC 9(11)`, 11-digit string (leading zeros signi
 | `ACSPFLG` | `X(1)` | `primaryCardHolderIndicator` | string | 1 |
 | (none) | — | `version` | integer | — |
 
-> `version` is the JPA `@Version` optimistic-lock token; it has no BMS-map field. Clients echo it on the subsequent `PUT /api/accounts/{accountId}` so the update service can detect a concurrent modification (`409 CONCURRENT_MODIFICATION`).
+> `version` is the JPA `@Version` optimistic-lock token; it has no BMS-map field. Clients echo it on the subsequent `PUT /api/accounts/{accountId}` so the update service can detect a concurrent modification (`409 Concurrent Update Conflict`).
 
-**Errors:** `404 RECORD_NOT_FOUND` when the account, cross-reference, or customer record is absent (FILE STATUS `23`).
+**Errors:** `404 Record Not Found` when the account, cross-reference, or customer record is absent (FILE STATUS `23`).
 
 #### `PUT /api/accounts/{accountId}`
 
@@ -304,11 +356,11 @@ Updates the account and its associated customer record atomically. The COBOL upd
 
 | Concurrency control | JSON field | Type | Notes |
 | :------------------ | :--------- | :--- | :---- |
-| Optimistic lock token | `version` | integer | JPA `@Version`, **required** (`@NotNull`); the client echoes the value last read from the view/update response, and it must match the current row or `409 CONCURRENT_MODIFICATION` is returned. |
+| Optimistic lock token | `version` | integer | JPA `@Version`, **required** (`@NotNull`); the client echoes the value last read from the view/update response, and it must match the current row or `409 Concurrent Update Conflict` is returned. |
 
 **Response:** `200` with an `AccountUpdateResponse` — the refreshed split-field account/customer view, including the new `version`.
 
-**Errors:** `404 RECORD_NOT_FOUND` (account/customer missing); `409 CONCURRENT_MODIFICATION` (version mismatch); `409 UPDATE_ROLLED_BACK` / `500` when the dual-record transaction rolls back; `400 VALIDATION_FAILED` (field validation).
+**Errors:** `404 Record Not Found` (account/customer missing); `409 Concurrent Update Conflict` (version mismatch); `409 Data Conflict` / `500 Processing Error` when the dual-record transaction rolls back; `400 Validation Error` (field validation).
 
 ### 5.3 CardController — Card List / Detail / Update
 
@@ -341,6 +393,17 @@ Paginated card browse — **7 rows per page** (the COCRDLI screen displays 7 car
 
 Single keyed read (`COCRDSLC`). Path parameter `cardNumber` — `PIC X(16)`.
 
+**Required query parameter — `accountId`:** the migrated `CardDetailService` (mirroring
+`COCRDSLC`, which keys on the account/card pair) requires the owning account id. It is declared
+as `@RequestParam(required = false)` on the controller, but the service rejects a missing or
+blank value, so in practice it is **mandatory**.
+
+| Query parameter | COBOL pic | Type | Req | Notes |
+| :-------------- | :-------- | :--- | :-- | :---- |
+| `accountId` | `X(11)` | string | yes | Owning account id; omitting it returns `400` (see Errors). |
+
+Example: `GET /api/cards/0500024453765740?accountId=00000000050`.
+
 **Response DTO — `CardDetailResponse`** (HTTP `200`)
 
 | COBOL field | COBOL pic | JSON field | Type | Len |
@@ -355,7 +418,9 @@ Single keyed read (`COCRDSLC`). Path parameter `cardNumber` — `PIC X(16)`.
 
 > `version` is the JPA `@Version` optimistic-lock token (no BMS field); clients echo it on the subsequent `PUT /api/cards/{cardNumber}`.
 
-**Errors:** `404 RECORD_NOT_FOUND`.
+**Errors:** `400 Validation Error` with `detail: "Account number not provided"` when the
+`accountId` query parameter is missing or blank; `404 Record Not Found` when no card matches
+the account/card pair.
 
 #### `PUT /api/cards/{cardNumber}`
 
@@ -363,6 +428,8 @@ Optimistic update (`COCRDUPC`) of an existing card. **Request DTO — `CardUpdat
 
 | COBOL field | COBOL pic | JSON field | Type | Len/scale | Req |
 | :---------- | :-------- | :--------- | :--- | :-------- | :-- |
+| `ACCTSID` | `X(11)` | `accountId` | string | 11 | yes |
+| `CARDSID` | `X(16)` | `cardNumber` | string | 16 | yes |
 | `CRDNAME` | `X(50)` | `nameOnCard` | string | 50 | yes |
 | `CRDSTCD` | `X(1)` | `cardStatus` | string | 1 | yes |
 | `EXPMON` | `X(2)` | `expirationMonth` | string | 2 | yes |
@@ -370,10 +437,13 @@ Optimistic update (`COCRDUPC`) of an existing card. **Request DTO — `CardUpdat
 | `EXPYEAR` | `X(4)` | `expirationYear` | string | 4 | yes |
 | (lock) | — | `version` | integer | — | yes |
 
+> The body **must** include both `accountId` (`@NotBlank`) and `cardNumber` (`@NotBlank`); the
+> controller additionally validates that the body `cardNumber` equals the `{cardNumber}` path
+> variable. Omitting `accountId` fails with `400` `detail: "accountId must not be blank"`.
 > Field-edit semantics mirror `COCRDUPC`: `nameOnCard` (required, letters/spaces only, `1230-EDIT-NAME`), `cardStatus` (required, `Y`/`N`, `1240-EDIT-CARDSTATUS`), `expirationMonth` (required, `1`–`12`, `1250-EDIT-EXPIRY-MON`), and `expirationYear` (required, `1950`–`2099`, `1260-EDIT-EXPIRY-YEAR`). `expirationDay` is length-bounded only because `COCRDUPC` has no day edit paragraph, so it is **not** required. `version` is the required JPA `@Version` optimistic-lock token.
 
 **Response:** `200` with a `CardUpdateResponse` — the refreshed card view including the new `version`.
-**Errors:** `404 RECORD_NOT_FOUND`; `409 CONCURRENT_MODIFICATION` (`@Version` mismatch); `400 VALIDATION_FAILED`.
+**Errors:** `404 Record Not Found`; `409 Concurrent Update Conflict` (`@Version` mismatch); `400 Validation Error` (missing/invalid fields, including a blank `accountId`).
 
 
 ### 5.4 TransactionController — List / Detail / Add
@@ -423,7 +493,7 @@ Keyed detail read (`COTRN01C`). Path parameter `transactionId` — `PIC X(16)`.
 | `MCITY` | `X(25)` | `merchantCity` | string | 25 |
 | `MZIP` | `X(10)` | `merchantZip` | string | 10 |
 
-**Errors:** `404 RECORD_NOT_FOUND`.
+**Errors:** `404 Record Not Found`.
 
 #### `POST /api/transactions`
 
@@ -448,10 +518,22 @@ Adds a transaction (`COTRN02C`). The transaction id is **auto-generated** server
 | `MZIP` | `X(10)` | `merchantZip` | string | 10 | yes |
 | `CONFIRM` | `X(1)` | `confirm` | string | 1 | no |
 
-Required/format edits mirror `COTRN02C VALIDATE-INPUT-DATA-FIELDS`: `typeCode`, `categoryCode`, and `merchantId` are required and numeric; `source`, `description`, `merchantName`, and `merchantCity` are required; `originDate`/`processDate` are required and formatted `YYYY-MM-DD`; `merchantZip` is required (no numeric edit in source). The `confirm` field reproduces the COBOL two-step confirmation flow and is **optional** — when present it must be `Y` or `N`; a request with `confirm` ≠ `Y` (including blank, the "not yet confirmed" state) is treated as a non-committing validation pass and returns the assembled record for review without persisting.
+Required/format edits mirror `COTRN02C VALIDATE-INPUT-DATA-FIELDS`: `typeCode`, `categoryCode`, and `merchantId` are required and numeric; `source`, `description`, `merchantName`, and `merchantCity` are required; `originDate`/`processDate` are required and formatted `YYYY-MM-DD`; `merchantZip` is required (no numeric edit in source).
 
-**Response:** `201 Created` with `TransactionDetailResponse` (including the generated `transactionId`).
-**Errors:** `404 RECORD_NOT_FOUND` (account or card cross-reference missing); `400 VALIDATION_FAILED`.
+The `confirm` field reproduces the COBOL two-step confirmation flow (`COTRN02C`). To
+**persist** the transaction, `confirm` must be `Y` (or `y`). Any other value is rejected with
+`400 Validation Error` — the record is **not** returned for review and nothing is persisted:
+
+- `confirm` = `Y` / `y` → the transaction is validated and committed (`201 Created`).
+- `confirm` = blank, missing, `N`, or `n` → `400` with `detail: "Confirm to add this transaction..."`.
+- `confirm` = any other value → `400` with `detail: "Invalid value. Valid values are (Y/N)..."`.
+
+(The COBOL confirmation prompt is enforced server-side; there is no non-committing
+"validation pass" response — a non-`Y` value always yields a `400` prompt.)
+
+**Response:** `201 Created` with `TransactionAddResponse` (the assembled record including the
+server-generated `transactionId`, plus a nullable `errorMessage`).
+**Errors:** `404 Record Not Found` (account or card cross-reference missing); `400 Validation Error` (field edits, or a non-`Y` `confirm` value as described above).
 
 ### 5.5 BillingController — Bill Payment
 
@@ -478,7 +560,7 @@ Posts a full balance bill payment against an account (`COBIL00C`). The screen di
 | `ERRMSG` | `X(78)` | `errorMessage` | string | 78 |
 
 When `confirm` ≠ `Y`, the endpoint returns the current balance (and echoes `confirm`) for review without posting, mirroring the COBOL confirmation gate; the posted-payment transaction id is not part of the CP1 `BillPaymentResponse` contract.
-**Errors:** `404 RECORD_NOT_FOUND` (account missing); `400 VALIDATION_FAILED`.
+**Errors:** `404 Record Not Found` (account missing); `400 Validation Error`.
 
 ### 5.6 ReportController — Report Submission
 
@@ -488,27 +570,44 @@ Source: BMS map `CORPT00` · program `CORPT00C` · CICS transaction `CR00`. **Au
 
 Submits a transaction-report request. In COBOL this screen wrote a JCL record to the CICS extrapartition TDQ `JOBS` (`EXEC CICS WRITEQ TD QUEUE('JOBS')`), which the JES reader picked up to run the report batch job. The Java migration replaces the TDQ write with a publish to the **SQS FIFO queue `carddemo-report-jobs.fifo`** (full message contract in §6); the endpoint returns immediately (asynchronous submission) and the `TransactionReportJob` consumes the message to produce the report.
 
-**Request DTO — `ReportSubmissionRequest`**
+**Request DTO — `ReportRequest`**
 
-| COBOL field | COBOL pic | JSON field | Type | Len | Req | Notes |
-| :---------- | :-------- | :--------- | :--- | :-- | :-- | :---- |
-| `MONTHLY` / `YEARLY` / `CUSTOM` | `X(1)` each | `reportType` | enum | — | yes | one of `MONTHLY`, `YEARLY`, `CUSTOM` (the three mutually exclusive screen flags collapse to one enum) |
-| `SDTYYYY`+`SDTMM`+`SDTDD` | `X(4)`+`X(2)`+`X(2)` | `startDate` | string (date) | 10 | when `CUSTOM` | assembled `YYYY-MM-DD` |
-| `EDTYYYY`+`EDTMM`+`EDTDD` | `X(4)`+`X(2)`+`X(2)` | `endDate` | string (date) | 10 | when `CUSTOM` | assembled `YYYY-MM-DD` |
-| `CONFIRM` | `X(1)` | `confirm` | string | 1 | yes | reproduces the COBOL confirmation gate |
+The migrated `ReportRequest` preserves the `CORPT00` screen shape verbatim: the three report
+kinds are **separate single-character flag fields** (not a collapsed enum), and the custom
+date range is carried as **split month/day/year components** (not assembled date strings).
 
-For `MONTHLY` and `YEARLY` the date range is derived server-side (current month / current year) exactly as the COBOL program computes it; for `CUSTOM` the supplied `startDate`/`endDate` are used.
+| COBOL field | COBOL pic | JSON field | Type | Len | Notes |
+| :---------- | :-------- | :--------- | :--- | :-- | :---- |
+| `MONTHLY` | `X(1)` | `monthly` | string | 1 | set to `"Y"` to request the monthly report |
+| `YEARLY` | `X(1)` | `yearly` | string | 1 | set to `"Y"` to request the yearly report |
+| `CUSTOM` | `X(1)` | `custom` | string | 1 | set to `"Y"` to request a custom-range report |
+| `SDTMM` | `X(2)` | `startMonth` | string | 2 | custom range: start month |
+| `SDTDD` | `X(2)` | `startDay` | string | 2 | custom range: start day |
+| `SDTYYYY` | `X(4)` | `startYear` | string | 4 | custom range: start year |
+| `EDTMM` | `X(2)` | `endMonth` | string | 2 | custom range: end month |
+| `EDTDD` | `X(2)` | `endDay` | string | 2 | custom range: end day |
+| `EDTYYYY` | `X(4)` | `endYear` | string | 4 | custom range: end year |
+| `CONFIRM` | `X(1)` | `confirm` | string | 1 | confirmation gate — must be `"Y"` to enqueue |
 
-**Response DTO — `ReportSubmissionResponse`** (HTTP `202 Accepted`)
+Exactly one of `monthly` / `yearly` / `custom` must be `"Y"`. For `monthly` and `yearly` the
+date range is derived server-side; for `custom` the split start/end components are validated and
+assembled into the range. The `confirm` field reproduces the COBOL two-step confirmation gate.
+There is **no** `reportType` enum and **no** assembled `startDate`/`endDate` request field.
+
+**Response DTO — `ReportResponse`** (HTTP `202 Accepted`)
 
 | JSON field | Type | Notes |
 | :--------- | :--- | :---- |
-| `jobReference` | string | SQS message id of the enqueued report job. |
-| `reportType` | enum | Echoed report type. |
-| `startDate` / `endDate` | string (date) | Effective range. |
-| `correlationId` | string | Correlation id propagated to the batch job. |
+| `confirmationMessage` | string | Success prompt, e.g. *"Monthly report submitted for printing ..."*; `null` on the validation/non-confirmed path. |
+| `errorMessage` | string | Nullable error/prompt text; `null` on success. |
 
-**Errors:** `400 VALIDATION_FAILED` (no report type selected, or `CUSTOM` without a valid range); `502 MESSAGING_ERROR` if the queue publish fails (analogous to the COBOL *"Unable to Write TDQ (JOBS)"* path).
+There is **no** `jobReference`, `reportType`, `startDate`/`endDate`, or `correlationId` field
+in the response.
+
+**Errors:** `400 Validation Error` — e.g. `detail: "Select a report type to print report..."`
+when no flag is set, or an invalid custom range; the publish path throws `FileAccessException`,
+which maps to **`500` `File Access Error`** (the COBOL *"Unable to Write TDQ (JOBS)"* path) if
+the SQS publish fails.
 
 
 ### 5.7 UserAdminController — User CRUD
@@ -528,14 +627,38 @@ Paginated user browse — **10 rows per page** (the COUSR00 screen displays 10 u
 | `USRIDIN` | `X(8)` | `userId` | string(8) | optional start-at filter |
 | `PAGENUM` | `X(8)` | `page` | integer | 0-based page index |
 
-**Response DTO — `UserListResponse`**: `pageNumber`, `pageSize` (fixed `10`), `hasNext`, `hasPrevious`, and `users[]` where each element is a `UserSummary`:
+**Response DTO — `UserListResponse`**: `pageNumber` (string, e.g. `"1"`), `userIdFilter`
+(nullable; echoes the start-at filter), `users[]` (each element a `UserListItem`), and a
+nullable `errorMessage`. It does **not** carry `pageSize`, `hasNext`, or `hasPrevious`. Each
+`UserListItem` is:
 
-| COBOL field (row *n*) | COBOL pic | JSON field | Type | Len |
-| :-------------------- | :-------- | :--------- | :--- | :-- |
-| `USRIDn` | `X(8)` | `userId` | string | 8 |
-| `FNAMEn` | `X(20)` | `firstName` | string | 20 |
-| `LNAMEn` | `X(20)` | `lastName` | string | 20 |
-| `UTYPEn` | `X(1)` | `userType` | string | 1 |
+| COBOL field (row *n*) | COBOL pic | JSON field | Type | Len | Notes |
+| :-------------------- | :-------- | :--------- | :--- | :-- | :---- |
+| `SELn` | `X(1)` | `selectionFlag` | string | 1 | row selection marker (nullable; `null` unless a row is flagged) |
+| `USRIDn` | `X(8)` | `userId` | string | 8 | |
+| `FNAMEn` | `X(20)` | `firstName` | string | 20 | |
+| `LNAMEn` | `X(20)` | `lastName` | string | 20 | |
+| `UTYPEn` | `X(1)` | `userType` | string | — | enum **name** `ADMIN` / `USER` (see the note under `POST`) |
+
+#### `GET /api/admin/users/{userId}`
+
+Single keyed read of one user (`COUSR02C` / `COUSR03C` load step). Path parameter `userId` —
+`PIC X(8)`. Used by the update/delete screens to pre-load the selected user before editing.
+
+**Response DTO — `UserResponse`** (HTTP `200`)
+
+| JSON field | Type | Notes |
+| :--------- | :--- | :---- |
+| `userId` | string(8) | The user id. |
+| `firstName` | string(20) | |
+| `lastName` | string(20) | |
+| `userType` | string (enum) | enum name `ADMIN` / `USER`. |
+| `message` | string | Screen prompt (e.g. *"Press PF5 key to save your updates ..."*); nullable. |
+| `errorMessage` | string | Nullable. |
+
+> No password field is ever returned.
+
+**Errors:** `404 Record Not Found` (no such user id).
 
 #### `POST /api/admin/users`
 
@@ -547,10 +670,16 @@ Adds a user (`COUSR01C`). **Request DTO — `UserAddRequest`**:
 | `FNAMEI` | `X(20)` | `firstName` | string | 20 | yes |
 | `LNAMEI` | `X(20)` | `lastName` | string | 20 | yes |
 | `PASSWDI` | `X(8)` | `password` | string | 8 | yes (write-only; BCrypt-hashed at rest) |
-| `USRTYPEI` | `X(1)` | `userType` | string | 1 | yes (`A` or `U`) |
+| `USRTYPEI` | `X(1)` | `userType` | string (enum) | — | yes — JSON value `"ADMIN"` or `"USER"` |
 
-**Response:** `201 Created` with `UserResponse` (`userId`, `firstName`, `lastName`, `userType`; **no** password field).
-**Errors:** `409 DUPLICATE_RECORD` (user id already exists, FILE STATUS `22`); `400 VALIDATION_FAILED`.
+> **`userType` JSON value:** the `UserType` enum has no `@JsonValue`/`@JsonCreator`, so Jackson
+> (de)serializes it by its **enum name** — the request body must send `"ADMIN"` or `"USER"`.
+> The single-character COBOL codes `"A"` / `"U"` are **rejected** with `400` `detail:
+> "Request body is missing or malformed"` (a Jackson deserialization failure). Responses
+> likewise emit the enum name (`"ADMIN"` / `"USER"`), not `A` / `U`.
+
+**Response:** `201 Created` with `UserResponse` (`userId`, `firstName`, `lastName`, `userType`, plus a `message` and nullable `errorMessage`; **no** password field).
+**Errors:** `409 Duplicate Record` (user id already exists, FILE STATUS `22`); `400 Validation Error`.
 
 #### `PUT /api/admin/users/{userId}`
 
@@ -558,20 +687,24 @@ Updates a user (`COUSR02C`). Path parameter `userId` — `PIC X(8)`. **Request D
 
 | COBOL field | COBOL pic | JSON field | Type | Len | Req |
 | :---------- | :-------- | :--------- | :--- | :-- | :-- |
+| `USRIDIN` | `X(8)` | `userId` | string | 8 | yes |
 | `FNAMEI` | `X(20)` | `firstName` | string | 20 | yes |
 | `LNAMEI` | `X(20)` | `lastName` | string | 20 | yes |
 | `PASSWDI` | `X(8)` | `password` | string | 8 | yes (write-only; BCrypt-hashed, re-encoded only when changed) |
-| `USRTYPEI` | `X(1)` | `userType` | string | 1 | yes |
+| `USRTYPEI` | `X(1)` | `userType` | string (enum) | — | yes — JSON value `"ADMIN"` or `"USER"` (see the `POST` note) |
+
+> The body **must** include `userId` (`@NotBlank`), and the controller validates that it equals
+> the `{userId}` path variable.
 
 **Response:** `200` with `UserResponse`.
-**Errors:** `404 RECORD_NOT_FOUND`; `400 VALIDATION_FAILED`.
+**Errors:** `404 Record Not Found`; `400 Validation Error`.
 
 #### `DELETE /api/admin/users/{userId}`
 
 Deletes a user (`COUSR03C`). Path parameter `userId` — `PIC X(8)`. The COBOL screen first displays the user (`FNAME`, `LNAME`, `USRTYPE`) for confirmation; the REST contract returns the deleted user's summary in the response body.
 
 **Response:** `200` with the `UserResponse` of the deleted user (or `204 No Content` when the client does not request an echo).
-**Errors:** `404 RECORD_NOT_FOUND`.
+**Errors:** `404 Record Not Found`.
 
 ### 5.8 MenuController — Main / Admin Menus
 
@@ -595,7 +728,7 @@ The COBOL menu programs rendered a fixed list of option labels (`OPTN001`–`OPT
 
 **Auth:** `ADMIN` only. Returns the **4** active admin-menu options (user list / add / update / delete). Same `MenuResponse` / `MenuOption` shape as above, with `menuType` = `ADMIN`.
 
-**Errors (both):** `401 AUTHENTICATION_FAILED` (missing/invalid token); `403 ACCESS_DENIED` (non-admin calling `/api/menu/admin`).
+**Errors (both):** `401 Unauthorized` (missing/invalid token — empty body, see §3.4); `403 Forbidden` (non-admin calling `/api/menu/admin` — empty body).
 
 
 ---
@@ -612,40 +745,38 @@ This contract replaces the CICS transient-data-queue (TDQ) `WRITEQ TD` online-to
 | Type | FIFO (`.fifo` suffix is mandatory) |
 | Producer | `ReportSubmissionService` (← `CORPT00C` `WRITEQ TD QUEUE('JOBS')`) |
 | Consumer | `TransactionReportJob` trigger (Spring Batch) |
-| Message group id | `report-jobs` (single group preserves global ordering, mirroring the single TDQ) |
+| Message group id | `carddemo-reports` (single group preserves global ordering, mirroring the single TDQ; constant `REPORT_MESSAGE_GROUP_ID`, see DECISION_LOG D-020) |
 | Content-based dedup | disabled (each message carries a per-message random UUID deduplication id; see DECISION_LOG D-020) |
 | Local endpoint | `http://localhost:4566` (LocalStack); no live AWS dependency |
 
 ### 6.2 Message schema (`ReportJobMessage`)
 
-The message body is UTF-8 JSON:
+`ReportJobMessage` is a three-field Java `record`; the message body is UTF-8 JSON with exactly
+those three fields:
 
 ```json
 {
-  "reportType": "CUSTOM",
+  "reportType": "Custom",
   "startDate": "2026-01-01",
-  "endDate": "2026-01-31",
-  "requestedBy": "USER0001",
-  "correlationId": "b1c2d3e4-f5a6-7b8c-9d0e-1f2a3b4c5d6e",
-  "submittedAt": "2026-06-20T14:31:05.123Z"
+  "endDate": "2026-01-31"
 }
 ```
 
 | JSON field | Type | Source | Notes |
 | :--------- | :--- | :----- | :---- |
-| `reportType` | enum | `MONTHLY`/`YEARLY`/`CUSTOM` screen flags | one of `MONTHLY`, `YEARLY`, `CUSTOM` |
-| `startDate` | string (date) | `SDTYYYY`/`SDTMM`/`SDTDD` | inclusive range start (`YYYY-MM-DD`) |
-| `endDate` | string (date) | `EDTYYYY`/`EDTMM`/`EDTDD` | inclusive range end (`YYYY-MM-DD`) |
-| `requestedBy` | string(8) | JWT `userId` claim | the submitting user |
-| `correlationId` | string (UUID) | request correlation id | propagated to batch logs/traces |
-| `submittedAt` | string (ISO-8601) | server clock | submission timestamp |
+| `reportType` | string | `MONTHLY`/`YEARLY`/`CUSTOM` screen flags | the report-type **literal** — `"Monthly"`, `"Yearly"`, or `"Custom"` (not an enum value) |
+| `startDate` | string (date) | server-derived, or `SDTYYYY`/`SDTMM`/`SDTDD` for custom | inclusive range start (`YYYY-MM-DD`) |
+| `endDate` | string (date) | server-derived, or `EDTYYYY`/`EDTMM`/`EDTDD` for custom | inclusive range end (`YYYY-MM-DD`) |
+
+There are **no** `requestedBy`, `correlationId`, or `submittedAt` fields on the message
+(`public record ReportJobMessage(String reportType, String startDate, String endDate)`).
 
 ### 6.3 Ordering, delivery, and parity notes
 
-- **Ordering parity:** messages in the single `report-jobs` group are delivered in submission order, matching the FIFO read order of the TDQ `JOBS`.
+- **Ordering parity:** messages in the single `carddemo-reports` group are delivered in submission order, matching the FIFO read order of the TDQ `JOBS`.
 - **Repeat-submission parity (D-020):** content-based deduplication is *disabled* and each submission carries a per-message random UUID deduplication id, so legitimately repeated report requests are each enqueued and processed — preserving the CICS `WRITEQ TD` behavior where every submission enqueued a distinct job. FIFO *ordering* (not deduplication) is the property retained.
 - **Throughput:** FIFO queues cap at 300 messages/second without batching — far above the interactive report-submission rate, so the cap is not a constraint (D-004).
-- **Failure behavior:** a publish failure returns `502 MESSAGING_ERROR` to the caller (see §5.6), analogous to the COBOL *"Unable to Write TDQ (JOBS)"* error path; no message is enqueued.
+- **Failure behavior:** a publish failure throws `FileAccessException`, which maps to `500 File Access Error` for the caller (see §5.6), analogous to the COBOL *"Unable to Write TDQ (JOBS)"* error path; no message is enqueued.
 
 ---
 
@@ -715,10 +846,16 @@ Every one of the 17 online screens (CICS transaction, BMS mapset, and COBOL prog
 | `CR00` | `CORPT00` | `CORPT00C` | Transaction Reports | `ReportController` | `POST /api/reports/submit` |
 | `CU00` | `COUSR00` | `COUSR00C` | List Users | `UserAdminController` | `GET /api/admin/users` |
 | `CU01` | `COUSR01` | `COUSR01C` | Add User | `UserAdminController` | `POST /api/admin/users` |
-| `CU02` | `COUSR02` | `COUSR02C` | Update User | `UserAdminController` | `PUT /api/admin/users/{id}` |
-| `CU03` | `COUSR03` | `COUSR03C` | Delete User | `UserAdminController` | `DELETE /api/admin/users/{id}` |
+| `CU02` | `COUSR02` | `COUSR02C` | Update User | `UserAdminController` | `GET /api/admin/users/{id}`, `PUT /api/admin/users/{id}` |
+| `CU03` | `COUSR03` | `COUSR03C` | Delete User | `UserAdminController` | `GET /api/admin/users/{id}`, `DELETE /api/admin/users/{id}` |
 
-**Coverage:** 17 screens · 8 controllers · 17 endpoints (3 account+card list/detail/update groups, transaction list/detail/add, billing, report, 4 user verbs, 2 menus, sign-on). No endpoint, verb, or field exists beyond this matrix (no feature expansion).
+**Coverage:** 17 screens · 8 controllers · 18 REST endpoints. The single-user read
+`GET /api/admin/users/{id}` is shared by the Update-User and Delete-User screens (each
+pre-loads the selected user before editing or confirming the delete), which is why the screen
+count (17) is one fewer than the endpoint count (18). Beyond these business endpoints the only
+additional routes are the Spring Boot Actuator management endpoints (e.g.
+`/actuator/health`, `/actuator/prometheus`); no other business endpoint, verb, or field exists
+(no feature expansion beyond the closed F-001…F-022 set).
 
 ---
 
