@@ -58,7 +58,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * post-processor populates the {@code SecurityContext} unobstructed; its
  * collaborating {@link JwtTokenService} is therefore a no-op mock here.</p>
  */
-@WebMvcTest
+@WebMvcTest(controllers = SecurityConfigTest.SecuredTestController.class)
 @Import({SecurityConfig.class, SecurityConfigTest.SecuredTestController.class,
         SecurityConfigTest.TestSecurityBeans.class})
 @DisplayName("SecurityConfig - REST route authorization (admin gating) @ CP3")
