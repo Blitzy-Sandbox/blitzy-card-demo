@@ -1,30 +1,111 @@
 # =============================================================================
 # CardDemo - LOCAL profile overrides (application-local.yml).
 #
-# Activated automatically when the "local" profile is selected, which is the
-# default profile (see spring.profiles.default in the base application.yml).
-# Intended for local development against the Docker Compose PostgreSQL and
-# LocalStack stack.
+# Activated when the "local" profile is selected, which is the DEFAULT profile
+# (spring.profiles.default: local in the base application.yml). This is the
+# profile used by:
+#   - the documented quick-start  ->  ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+#   - the docker-compose "app" service (SPRING_PROFILES_ACTIVE=local)
 #
-# This file is the ONLY place that carries LOCAL-DEV credential DEFAULTS, so the
-# profile-agnostic application.yml stays secret-free. Every value below is a
-# NON-PRODUCTION, local-development convenience default and must never be used in
-# a deployed environment. Real environments select a non-local profile and inject
-# POSTGRES_PASSWORD / JWT_SECRET from the environment or a secret manager.
-# Design rationale is recorded in DECISION_LOG.md, not here.
+# Layered ON TOP OF application.yml: this file ONLY overrides/adds the keys that
+# differ for local development. Everything else is INHERITED from the base file
+# (datasource url/username/host/port, AWS region, Flyway, Spring Batch, server,
+# Actuator/health, observability OTLP endpoint + tracing sampling, the
+# carddemo.aws.* resource names, and the JWT expiration/issuer).
+#
+# DUAL-HOST OPERATION (one profile, two run modes): every host/endpoint below is
+# a ${ENV:default} placeholder whose DEFAULT targets localhost, so an ON-HOST run
+# works with no extra setup, while docker-compose supplies service-name overrides
+# so the SAME "local" profile also works IN-COMPOSE:
+#   property              ON-HOST default        IN-COMPOSE env override
+#   --------------------  ---------------------  ----------------------------------
+#   datasource host:port  localhost:5432         POSTGRES_HOST=postgres (:5432)
+#   AWS endpoint          http://localhost:4566  AWS_ENDPOINT=http://localstack:4566
+#   OTLP traces (base)    http://localhost:4318  OTLP_TRACES_ENDPOINT=http://jaeger:4318/v1/traces
+#
+# This is the ONLY file that carries LOCAL-DEV credential DEFAULTS, keeping the
+# profile-agnostic application.yml secret-free. Every default below is a
+# NON-PRODUCTION local-development convenience and must never be used in a
+# deployed environment; real environments select a non-local profile and inject
+# POSTGRES_PASSWORD / JWT_SECRET / AWS credentials from the environment or a
+# secret manager. Design rationale lives in DECISION_LOG.md (D-014 local profile,
+# D-020 JWT Base64 secret, D-021 local datasource password), not here.
 # =============================================================================
 
 spring:
+  # ---------------------------------------------------------------------------
+  # Datasource - only the PASSWORD is overridden. The base file requires
+  # POSTGRES_PASSWORD (no default -> fail-fast); local adds a convenience default
+  # matching the docker-compose postgres service. The url/username (and their
+  # POSTGRES_HOST/PORT/DB/USER placeholders) already default to localhost /
+  # carddemo in the base file and are intentionally NOT redefined here.
+  # ---------------------------------------------------------------------------
   datasource:
-    # Local-dev PostgreSQL password default matching docker-compose. Still honors
-    # POSTGRES_PASSWORD when set; NON-PRODUCTION local-development use only.
     password: ${POSTGRES_PASSWORD:carddemo}
 
+  # ---------------------------------------------------------------------------
+  # JPA - developer visibility ONLY in local: echo and pretty-print the SQL that
+  # Hibernate executes. ddl-auto stays "validate" (inherited from base; Flyway
+  # owns the schema, Hibernate never creates/updates it).
+  # ---------------------------------------------------------------------------
+  jpa:
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Cloud AWS (3.3.0) -> LocalStack. The single GLOBAL endpoint overrides
+  # the default endpoint for ALL auto-configured AWS clients (S3, SQS, SNS), so
+  # every AWS interaction is served by LocalStack with zero live-AWS dependencies
+  # (LocalStack Verification rule). LocalStack accepts any non-empty credentials;
+  # test/test are the conventional dummy values. S3 path-style access is REQUIRED
+  # for LocalStack (bucket-in-path addressing, not virtual-host style).
+  # region.static is inherited from base (${AWS_REGION:us-east-1}).
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      s3:
+        path-style-access-enabled: true
+
+# -----------------------------------------------------------------------------
+# INHERITED (intentionally NOT redefined here):
+#
+#   * Observability tracing - already correct for local in the base file:
+#       management.otlp.tracing.endpoint        = ${OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+#       management.tracing.sampling.probability = ${TRACING_SAMPLE_RATE:1.0}  (full sampling)
+#     docker-compose points OTLP_TRACES_ENDPOINT at the Jaeger service; keeping
+#     the base's env-overridable form preserves that override.
+#
+#   * AWS resource names (carddemo.aws.*) - inherited from base and identical to
+#     localstack-init/init-aws.sh:
+#       S3       carddemo-batch-input / carddemo-batch-output / carddemo-statements
+#       SQS FIFO carddemo-report-jobs.fifo
+#       SNS      carddemo-notifications
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# CardDemo security - LOCAL-DEV JWT signing secret default so the app boots with
+# no extra setup. The value is a Base64-encoded key that JwtTokenService
+# Base64-decodes before building the HMAC key (DECISION_LOG D-020); it decodes to
+# 62 bytes, satisfying the >= 32-byte (256-bit) HS256 minimum. NON-PRODUCTION
+# ONLY - real environments inject a distinct JWT_SECRET. Token expiration-ms and
+# issuer are inherited from base.
+# -----------------------------------------------------------------------------
 carddemo:
   security:
     jwt:
-      # Local-dev Base64-encoded HMAC signing key. Decodes to 62 bytes (>= the
-      # 32-byte / 256-bit minimum HS256 requires); JwtTokenService Base64-decodes
-      # it before use. NON-PRODUCTION placeholder only - real deployments inject
-      # a distinct JWT_SECRET from the environment or a secret manager.
       secret: ${JWT_SECRET:Y2FyZGRlbW8tbG9jYWwtZGV2LW9ubHktand0LXNpZ25pbmcta2V5LW5vdC1mb3ItcHJvZHVjdGlvbi11c2U=}
+
+# -----------------------------------------------------------------------------
+# Logging - raise the application package to DEBUG for local troubleshooting
+# (base keeps INFO). The "local" springProfile in logback-spring.xml already
+# selects the human-readable (non-JSON) console appender.
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    com.carddemo: DEBUG

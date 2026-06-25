@@ -829,7 +829,7 @@ services and externalized JSON resources.
 | `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `entity.CardXref` (+ `repository.CardXrefRepository`) | XREFFILE base+AIX READ @ `27d6c6f`: base key `XREF-CARD-NUM` READ → inherited `findById()`; CXACAIX alternate index (`XREF-ACCT-ID`, `KEYS(11,25) NONUNIQUEKEY`) → `findByXrefAcctId()`; `CHAR(16)` PK mapped via `@JdbcTypeCode(SqlTypes.CHAR)`; FILLER X(14) not persisted |
 | `CVCUS01Y.cpy` | CUSTOMER-RECORD (500B) | `entity.Customer` (+ `repository.CustomerRepository`) | `@Version`; 500-byte field mapping; SSN handling |
 | `CUSTREC.cpy` | CUSTOMER-RECORD (shared copy) | `entity.Customer` | Same 500B layout as `CVCUS01Y` (shared record definition) |
-| `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT`; timestamp fields |
+| `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT` (scale 2); `CHAR(26)` text timestamps; `TRAN-TYPE-CD` → `TransactionTypeCode` via `@Convert`; FILLER X(20) not persisted; field-level mapping in §5.1; @ `27d6c6f` |
 | `CVTRA06Y.cpy` | DALYTRAN-RECORD (350B) | `entity.DailyTransaction` (+ `repository.DailyTransactionRepository`) | Batch staging table; mirrors `Transaction` layout |
 | `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `entity.TransactionCategoryBalance` + `entity.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
 | `CVTRA02Y.cpy` | DIS-GROUP-RECORD (50B) | `com.carddemo.entity.DisclosureGroup` + `com.carddemo.entity.DisclosureGroupId` | `@EmbeddedId` (`DisclosureGroupId`); `DIS-INT-RATE S9(04)V99` → `BigDecimal` `dis_int_rate NUMERIC(6,2)` (precision=6, scale=2); feeds interest formula `(TRAN-CAT-BAL × DIS-INT-RATE)/1200` (CBACT04C → `InterestProcessor`, HALF_EVEN); no `@Version`; FILLER X(28) not persisted; @ `27d6c6f` |
@@ -853,6 +853,36 @@ services and externalized JSON resources.
 | `CSSTRPFY.cpy` | EIBAID / PF-key equates | Controller request params / resource paths | PF3/PF7/PF8 (exit/page) → REST params & paths |
 | `CVTRA07Y.cpy` | Daily-txn report header/detail/total lines | `batch.processors.TransactionReportProcessor` + report DTO | Report header/detail/total formatting layout |
 | `UNUSED1Y.cpy` | Reserved / unused (80B) | **— (none)** | **Intentionally unmapped — reserved/unused; no behavior to migrate** (see §8) |
+
+### 5.1 Field-Level Mapping: `CVTRA05Y` → `entity.Transaction` (posted `transactions`)
+
+Field-by-field mapping of `TRAN-RECORD` (copybook `app/cpy/CVTRA05Y.cpy`, RECLN 350) @ `27d6c6f` to
+the `com.carddemo.entity.Transaction` JPA entity and the `transactions` table defined in
+`V1__create_schema.sql`. Decimal exactness (`BigDecimal` scale 2), fixed-width `CHAR` alignment
+(`@JdbcTypeCode(SqlTypes.CHAR)` + `columnDefinition`), and byte-for-byte text timestamps are preserved
+per §0.6.1 / §0.6.4. The trailing `FILLER` is reserved padding and is intentionally not persisted.
+
+| COBOL field (`CVTRA05Y`) | PIC | Java field | Java type | `transactions` column (V1) |
+|---|---|---|---|---|
+| `TRAN-ID` | `X(16)` | `tranId` | `String` | `tran_id CHAR(16)` — `@Id`, `@JdbcTypeCode(CHAR)` |
+| `TRAN-TYPE-CD` | `X(02)` | `transactionType` | `enums.TransactionTypeCode` | `tran_type_cd CHAR(2)` — `@Convert(TransactionTypeConverter.class)`, `@JdbcTypeCode(CHAR)` |
+| `TRAN-CAT-CD` | `9(04)` | `tranCatCd` | `Integer` | `tran_cat_cd INTEGER` |
+| `TRAN-SOURCE` | `X(10)` | `tranSource` | `String` | `tran_source VARCHAR(10)` |
+| `TRAN-DESC` | `X(100)` | `tranDesc` | `String` | `tran_desc VARCHAR(100)` |
+| `TRAN-AMT` | `S9(09)V99` | `tranAmt` | `BigDecimal` | `tran_amt NUMERIC(11,2)` — scale 2, `HALF_EVEN` |
+| `TRAN-MERCHANT-ID` | `9(09)` | `merchantId` | `Long` | `merchant_id BIGINT` |
+| `TRAN-MERCHANT-NAME` | `X(50)` | `merchantName` | `String` | `merchant_name VARCHAR(50)` |
+| `TRAN-MERCHANT-CITY` | `X(50)` | `merchantCity` | `String` | `merchant_city VARCHAR(50)` |
+| `TRAN-MERCHANT-ZIP` | `X(10)` | `merchantZip` | `String` | `merchant_zip VARCHAR(10)` |
+| `TRAN-CARD-NUM` | `X(16)` | `cardNum` | `String` | `card_num CHAR(16)` — `@JdbcTypeCode(CHAR)` |
+| `TRAN-ORIG-TS` | `X(26)` | `origTs` | `String` | `orig_ts CHAR(26)` — text timestamp `YYYY-MM-DD HH:MM:SS.mmmmmm`, verbatim |
+| `TRAN-PROC-TS` | `X(26)` | `procTs` | `String` | `proc_ts CHAR(26)` — text timestamp, verbatim |
+| `FILLER` | `X(20)` | — | — | not persisted (reserved padding; intentionally unmapped) |
+
+Entity-identity (`equals`/`hashCode`) keys on `tranId` only. The entity carries **no `@Version`**
+(the `transactions` table has no version column) and **no `@GeneratedValue`** (transaction-ID
+generation is owned by `TransactionAddService`). Hibernate `ddl-auto=validate` verified against a real
+PostgreSQL 16 instance with the V1 schema; converter round-trip confirmed for seeded codes `01`–`07`.
 
 ## 6. BMS Mapsets + Symbolic Maps → DTO Field Contracts (REFERENCE)
 
