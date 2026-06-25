@@ -1063,6 +1063,7 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `batch.processors.StatementProcessor` / `batch.writers.StatementWriter` / `batch.readers.StatementFileService` | `CBSTM03A.CBL`, `CBSTM03B.CBL` (+ `CREASTMT` JCL, `COSTM01`) |
 | `batch.readers.{AccountFileReader,CardFileReader,CrossReferenceFileReader,CustomerFileReader,DailyTransactionReader}` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` |
 | `batch.jobs.BatchPipelineOrchestrator` | `PRTCATBL` JCL + overall pipeline sequencing |
+| `repository.TransactionRepository` | `TRANSACT` (`CVTRA05Y`) @ `27d6c6f`: keyed READ → `findById` (`COTRN01C`); WRITE → `save` (`COTRN02C`); STARTBR/READNEXT browse → `findAll(Pageable)` (`COTRN00C`); READPREV-to-end → `findTopByOrderByTranIdDesc` (`COTRN02C`); date window → `findByProcessingDateWindow` (`CBTRN03C`); by-card → `findByCardNumOrderByTranIdAsc` (`CBSTM03A`) |
 | `entity.*` (11 entities) | `CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`/`CUSTREC`, `CVTRA05Y`, `CVTRA06Y`, `CVTRA01Y`, `CVTRA02Y`, `CVTRA03Y`, `CVTRA04Y`, `CSUSR01Y` |
 | `exception.*` + `GlobalExceptionHandler` | FILE STATUS codes + ABEND routines across all programs (`CSMSG02Y`) |
 
