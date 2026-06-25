@@ -650,6 +650,7 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN02C.cbl` | `2000-POST-TRANSACTION` | `TransactionPostingProcessor` | `process()` | Posting orchestration -> ItemProcessor.process() (valid txns) |
 | `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` | `RejectWriter` | `write()` | Rejected record -> S3 rejects file with reason trailer (DALYREJS equivalent) |
 | `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `TransactionPostingProcessor` | `updateCategoryBalance()` | Category-balance upsert dispatch (create-or-update branch) |
+| `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `TransactionCategoryBalanceRepository` | `findById()` | Keyed READ TCATBAL on full composite key {acctId,typeCd,catCd} -> JPA findById (FILE STATUS `23` not-found -> create branch) |
 | `CBTRN02C.cbl` | `2700-A-CREATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | New category-balance row -> JPA insert |
 | `CBTRN02C.cbl` | `2700-B-UPDATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Category-balance accumulation -> JPA update |
 | `CBTRN02C.cbl` | `2800-UPDATE-ACCOUNT-REC` | `AccountRepository` | `save()` | Account balance rewrite -> JPA save within @Transactional chunk |
@@ -739,6 +740,7 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBACT04C.cbl` | `0300-ACCTFILE-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBACT04C.cbl` | `0400-TRANFILE-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `InterestCalculationProcessor` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `TransactionCategoryBalanceRepository` | `findAll()` | Sequential TCATBAL scan (ACCESS MODE SEQUENTIAL) -> JPA findAll() / findAll(Pageable) backing the chunk reader |
 | `CBACT04C.cbl` | `1050-UPDATE-ACCOUNT` | `AccountRepository` | `save()` | Account balance rewrite -> JPA save within @Transactional chunk |
 | `CBACT04C.cbl` | `1100-GET-ACCT-DATA` | `AccountRepository` | `findById()` | ACCTFILE keyed read -> JPA finder |
 | `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardXrefRepository` | `findByXrefAcctId()` | XREF keyed read -> JPA finder |
@@ -964,6 +966,18 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 | VSAM File / Index (Copybook) | Access Pattern | Java Target | Repository Methods |
 |---|---|---|---|
 | `TRANTYPE` (`CVTRA03Y.cpy`) | keyed `READ` for report enrichment (`CBTRN03C` `1500-B-LOOKUP-TRANTYPE`) @ `27d6c6f` | `repository.TransactionTypeRepository` | TRANTYPE (CVTRA03Y): keyed `READ` → `findById` (by `TRAN-TYPE`, `CHAR(2)` `String` key) · full load → `findAll` (enrichment caching) · `WRITE`/`REWRITE` → `save`. No custom finders; the composite-keyed `TRANCATG` table is served separately by `TransactionCategoryRepository`. |
+#### 7.1.6 Transaction-category VSAM access path → `TransactionCategoryRepository` method
+
+| VSAM File / Index (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `TRANCATG` (`CVTRA04Y.cpy`) | keyed `READ` for report enrichment (`CBTRN03C` `1500-C-LOOKUP-TRANCATG`) @ `27d6c6f` | `repository.TransactionCategoryRepository` | TRANCATG (CVTRA04Y): keyed `READ` → `findById` (composite `{tranTypeCd, tranCatCd}` = `TransactionCategoryId`) · full load → `findAll` (enrichment caching) · `WRITE`/`REWRITE` → `save`. No custom finders — no non-key access path. |
+
+#### 7.1.7 Disclosure-group VSAM access path → `DisclosureGroupRepository` method
+
+| VSAM File (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `DISCGRP` (`CVTRA02Y.cpy`, RECLN 50, key `DIS-GROUP-KEY` = `DIS-ACCT-GROUP-ID X(10)` + `DIS-TRAN-TYPE-CD X(02)` + `DIS-TRAN-CAT-CD 9(04)`) | keyed `READ` for the interest rate (`CBACT04C` `1200-GET-INTEREST-RATE`; not-found `'23'` → DEFAULT fallback `1200-A-GET-DEFAULT-INT-RATE`) @ `27d6c6f` | `repository.DisclosureGroupRepository` | DISCGRP (CVTRA02Y): keyed `READ` → `findById` (composite `{acctGroupId, tranTypeCd, tranCatCd}`) · `WRITE` → `save` · DEFAULT fallback handled in service. `DIS-INT-RATE` kept as `BigDecimal` (exact precision) feeding `(TRAN-CAT-BAL × DIS-INT-RATE)/1200`. No custom finders — the only access path is the full composite key. |
+
 ### 7.2 Batch pipeline → Spring Batch jobs
 
 | JCL Job | COBOL Driver | Java Target | Notes |
