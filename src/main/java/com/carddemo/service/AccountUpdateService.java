@@ -44,38 +44,36 @@ import org.springframework.transaction.annotation.Transactional;
  * transaction {@code CAUP} / program {@code COACTUPC}) at source commit
  * {@code 27d6c6f}.
  *
- * <p>This service translates {@code app/cbl/COACTUPC.cbl} &mdash; the largest
- * program in the legacy corpus &mdash; into an idiomatic, layered Spring
- * service. It rewrites BOTH the {@link Account} ({@code CVACT01Y}) and the
- * {@link Customer} ({@code CVCUS01Y}) records as a single atomic unit of work,
- * resolving the customer through the {@link CardXref} cross-reference
- * ({@code CVACT03Y}) exactly as the legacy {@code 9000-READ-ACCT} /
- * {@code 9300-GETACCTDATA} / {@code 9400-GETCUSTDATA} paragraphs do.</p>
- *
- * <p>The work is organized into the same clusters as the COBOL procedure
- * division, decomposed into focused private methods rather than transliterated
- * paragraph ranges:</p>
+ * <p>Updates an account together with its owning {@link Customer} as a single
+ * atomic unit of work. The customer is resolved from the supplied account id
+ * through the {@link CardXref} cross-reference; both the {@link Account}
+ * ({@code CVACT01Y}) and {@link Customer} ({@code CVCUS01Y}) records are
+ * rewritten together. Behavior:</p>
  * <ul>
  *   <li><strong>Load</strong> &mdash; resolve the cross-reference, account and
  *       customer records, surfacing the byte-exact not-found messages.</li>
- *   <li><strong>Validate</strong> &mdash; the ordered {@code 1200-EDIT-MAP-INPUTS}
- *       field edits ({@code 1210}-{@code 1280}), delegating date checks to
- *       {@link DateValidationService} and area-code / state / state-ZIP checks
- *       to {@link ValidationLookupService}; field failures are collected into an
- *       insertion-ordered map and raised as a single {@link ValidationException}.</li>
+ *   <li><strong>Validate</strong> &mdash; run the ordered field edits, delegating
+ *       date checks to {@link DateValidationService} and area-code / state /
+ *       state-ZIP checks to {@link ValidationLookupService}; field failures are
+ *       collected into an insertion-ordered map and raised as a single
+ *       {@link ValidationException}.</li>
  *   <li><strong>Apply</strong> &mdash; reassemble the segmented dates, SSN and
  *       telephone numbers and copy the validated values onto the loaded
- *       entities, with monetary amounts held as {@link BigDecimal} scaled to two
+ *       entities; monetary amounts are held as {@link BigDecimal} scaled to two
  *       fraction digits using {@link RoundingMode#HALF_EVEN}.</li>
- *   <li><strong>Persist</strong> &mdash; save both records inside one
- *       transaction (CICS {@code SYNCPOINT} parity); the COBOL
- *       {@code 9700-CHECK-CHANGE-IN-REC} re-read-and-compare concurrency guard
- *       is reproduced by JPA {@code @Version} optimistic locking, translated to
- *       {@link ConcurrentUpdateException} on conflict.</li>
+ *   <li><strong>Persist</strong> &mdash; save both records within one
+ *       {@code @Transactional} boundary; an optimistic-locking conflict is
+ *       translated to {@link ConcurrentUpdateException}.</li>
  * </ul>
  *
  * <p>The component is stateless and therefore thread-safe; all collaborators are
  * supplied through constructor injection.</p>
+ *
+ * <p>Design rationale (decomposition of {@code COACTUPC} into focused methods,
+ * the {@code @Transactional}/{@code SYNCPOINT} boundary, and the {@code @Version}
+ * translation of the {@code 9700-CHECK-CHANGE-IN-REC} guard) is recorded in
+ * {@code DECISION_LOG.md} (D-032, D-008, D-007); COBOL paragraph&#8594;method
+ * mappings are in {@code TRACEABILITY_MATRIX.md}.</p>
  */
 @Service
 public class AccountUpdateService {
@@ -177,14 +175,11 @@ public class AccountUpdateService {
     /**
      * Updates the account and its owning customer as one atomic unit of work.
      *
-     * <p>The flow mirrors {@code COACTUPC}: the search-key account identifier is
-     * edited first ({@code 1210-EDIT-ACCOUNT}); the cross-reference, account and
-     * customer records are loaded ({@code 9000}/{@code 9300}/{@code 9400}); the
-     * submitted field values are edited in the {@code 1200-EDIT-MAP-INPUTS}
-     * order; the validated values are applied to both records and saved within
-     * the same transaction. A version conflict on either record reproduces the
-     * legacy {@code 9700-CHECK-CHANGE-IN-REC} guard and is surfaced as a
-     * {@link ConcurrentUpdateException}.</p>
+     * <p>The account identifier is validated first; the cross-reference, account
+     * and customer records are then loaded; the submitted field values are
+     * validated in order; and the validated values are applied to both records
+     * and saved within the same transaction. A version conflict on either record
+     * is surfaced as a {@link ConcurrentUpdateException}.</p>
      *
      * @param accountId the account identifier from the request path
      * @param request   the submitted update payload

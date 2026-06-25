@@ -1,5 +1,5 @@
 # =============================================================================
-# CardDemo - Multi-stage container image (COBOL -> Java 25 / Spring Boot 3.5.11)
+# CardDemo - Multi-stage container image (COBOL -> Java 25 / Spring Boot 3.5.15)
 #
 # Produces a slim, runnable image of the CardDemo Spring Boot application by:
 #   Stage 1 (builder) - compiling and packaging the executable Spring Boot JAR
@@ -105,8 +105,14 @@ WORKDIR /app
 # is handed to the non-root runtime user.
 COPY --from=builder --chown=carddemo:carddemo /build/target/*.jar /app/app.jar
 
-# Application HTTP port (Spring Boot default, server.port=${SERVER_PORT:8080}).
+# Public application HTTP port (Spring Boot default, server.port=${SERVER_PORT:8080}).
 EXPOSE 8080
+
+# Isolated management/actuator port (management.server.port=${MANAGEMENT_SERVER_PORT:9091}).
+# Declared for documentation/in-network scraping only; docker-compose intentionally
+# does NOT publish this port to the host, keeping info/metrics/prometheus off the
+# public surface (DECISION_LOG D-033).
+EXPOSE 9091
 
 # Container-aware JVM defaults: size the heap relative to the container's memory
 # limit (cgroups), rather than the host's total RAM. Fully overridable at runtime
@@ -118,12 +124,15 @@ ENV JAVA_OPTS="-XX:MaxRAMPercentage=75.0"
 # Drop privileges: everything from here runs as the unprivileged carddemo user.
 USER carddemo
 
-# Liveness/health probe consistent with the Actuator health endpoint. A generous
-# start-period accommodates JVM warm-up plus Flyway schema migration on first boot.
-# `curl -f` fails (non-zero) on any non-2xx response, marking the container
-# unhealthy if the application is not serving UP.
+# Liveness/health probe consistent with the Actuator health endpoint, which is
+# served on the isolated management port (management.server.port=9091). The probe
+# runs inside the container, so it reaches the management port over localhost even
+# though that port is not published to the host. A generous start-period
+# accommodates JVM warm-up plus Flyway schema migration on first boot. `curl -f`
+# fails (non-zero) on any non-2xx response, marking the container unhealthy if the
+# application is not serving UP.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -fsS http://localhost:8080/actuator/health || exit 1
+    CMD curl -fsS http://localhost:9091/actuator/health || exit 1
 
 # Launch the JAR. The `sh -c "exec java ..."` form expands ${JAVA_OPTS} while
 # `exec` replaces the shell so the JVM becomes PID 1 and receives SIGTERM directly

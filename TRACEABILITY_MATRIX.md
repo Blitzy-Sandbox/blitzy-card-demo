@@ -150,24 +150,24 @@ server-side session.
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COMEN01C.cbl` | `MAIN-PARA` | `MenuController` | `getMainMenu()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless MenuController [GET /api/menu/main] |
-| `COMEN01C.cbl` | `PROCESS-ENTER-KEY` | `MainMenuService` | `getMainMenu()` | AID=ENTER primary action -> service business method |
+| `COMEN01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `getMainMenu()` | AID=ENTER primary action -> service business method |
 | `COMEN01C.cbl` | `RETURN-TO-SIGNON-SCREEN` | `MenuController` | `buildResponse()` | Session-expiry routing -> HTTP 401 / re-auth response |
 | `COMEN01C.cbl` | `SEND-MENU-SCREEN` | `MenuController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COMEN01C.cbl` | `RECEIVE-MENU-SCREEN` | `MenuController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COMEN01C.cbl` | `POPULATE-HEADER-INFO` | `MainMenuService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` | `MainMenuService` | `buildMenu()` | Menu option table (COMEN02Y/COADM02Y) -> `List<MenuOption>` with role filtering |
+| `COMEN01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | `getMainMenu()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `getMainMenu()` | Menu option table (COMEN02Y/COADM02Y) -> `List<MenuOption>` with role filtering |
 
 ### COADM01C.cbl — Admin menu (txn `CA00`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COADM01C.cbl` | `MAIN-PARA` | `MenuController` | `getAdminMenu()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless MenuController [GET /api/menu/admin] |
-| `COADM01C.cbl` | `PROCESS-ENTER-KEY` | `AdminMenuService` | `getAdminMenu()` | AID=ENTER primary action -> service business method |
+| `COADM01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `getAdminMenu()` | AID=ENTER primary action -> service business method |
 | `COADM01C.cbl` | `RETURN-TO-SIGNON-SCREEN` | `MenuController` | `buildResponse()` | Session-expiry routing -> HTTP 401 / re-auth response |
 | `COADM01C.cbl` | `SEND-MENU-SCREEN` | `MenuController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COADM01C.cbl` | `RECEIVE-MENU-SCREEN` | `MenuController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COADM01C.cbl` | `POPULATE-HEADER-INFO` | `AdminMenuService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COADM01C.cbl` | `BUILD-MENU-OPTIONS` | `AdminMenuService` | `buildMenu()` | Menu option table (COMEN02Y/COADM02Y) -> `List<MenuOption>` with role filtering |
+| `COADM01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | `getAdminMenu()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COADM01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `getAdminMenu()` | Menu option table (COMEN02Y/COADM02Y) -> `List<MenuOption>` with role filtering |
 
 ### COACTVWC.cbl — Account view (txn `CAVW`)
 
@@ -178,22 +178,22 @@ server-side session.
 | `COACTVWC.cbl` | `0000-MAIN-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COACTVWC.cbl` | `1000-SEND-MAP` | `AccountController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COACTVWC.cbl` | `1000-SEND-MAP-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTVWC.cbl` | `1100-SCREEN-INIT` | `AccountViewService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COACTVWC.cbl` | `1100-SCREEN-INIT-EXIT` | `AccountViewService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
-| `COACTVWC.cbl` | `1200-SETUP-SCREEN-VARS` | `AccountViewService` | `buildResponse()` | Screen variable setup -> response DTO field population |
-| `COACTVWC.cbl` | `1200-SETUP-SCREEN-VARS-EXIT` | `AccountViewService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
+| `COACTVWC.cbl` | `1100-SCREEN-INIT` | `AccountViewService` | `toViewResponse()` | Screen/array initialization -> response DTO defaults |
+| `COACTVWC.cbl` | `1100-SCREEN-INIT-EXIT` | `AccountViewService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTVWC.cbl` | `1200-SETUP-SCREEN-VARS` | `AccountViewService` | `toViewResponse()` | Screen variable setup -> response DTO field population |
+| `COACTVWC.cbl` | `1200-SETUP-SCREEN-VARS-EXIT` | `AccountViewService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
 | `COACTVWC.cbl` | `1300-SETUP-SCREEN-ATTRS` | `AccountController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
 | `COACTVWC.cbl` | `1300-SETUP-SCREEN-ATTRS-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COACTVWC.cbl` | `1400-SEND-SCREEN` | `AccountController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COACTVWC.cbl` | `1400-SEND-SCREEN-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTVWC.cbl` | `2000-PROCESS-INPUTS` | `AccountViewService` | `processInputs()` | Input processing orchestration -> service method |
-| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `processInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `processInputs()` |
+| `COACTVWC.cbl` | `2000-PROCESS-INPUTS` | `AccountViewService` | `getAccount()` | Input processing orchestration -> service method |
+| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `getAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getAccount()` |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP` | `AccountController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP-EXIT` | `AccountController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
-| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS` | `AccountViewService` | `editMapInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `editMapInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMapInputs()` |
-| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT` | `AccountViewService` | `editAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
+| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS` | `AccountViewService` | `getAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `getAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getAccount()` |
+| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT` | `AccountViewService` | `getAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `getAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getAccount()` |
 | `COACTVWC.cbl` | `9000-READ-ACCT` | `AccountRepository` | `findById()` | VSAM READ -> JPA finder |
 | `COACTVWC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
@@ -215,62 +215,62 @@ server-side session.
 | `COACTUPC.cbl` | `0000-MAIN` | `AccountController` | `updateAccount()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless AccountController [PUT /api/accounts/{id}] |
 | `COACTUPC.cbl` | `COMMON-RETURN` | `AccountController` | `buildResponse()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
 | `COACTUPC.cbl` | `0000-MAIN-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `1000-PROCESS-INPUTS` | `AccountUpdateService` | `processInputs()` | Input processing orchestration -> service method |
-| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `processInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `processInputs()` |
+| `COACTUPC.cbl` | `1000-PROCESS-INPUTS` | `AccountUpdateService` | `updateAccount()` | Input processing orchestration -> service method |
+| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `updateAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateAccount()` |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP` | `AccountController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `AccountController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
-| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService` | `editMapInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `editMapInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMapInputs()` |
-| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW` | `AccountUpdateService` | `detectChanges()` | Old/new field comparison -> change detection prior to @Version-guarded update |
-| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `detectChanges()` | `PERFORM THRU` exit label — structured early-`return` boundary of `detectChanges()` |
-| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT` | `AccountUpdateService` | `editAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
+| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService` | `validateFields()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `validateFields()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateFields()` |
+| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW` | `AccountUpdateService` | `applyAccountChanges()` | Old/new field comparison -> change detection prior to @Version-guarded update |
+| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `applyAccountChanges()` | `PERFORM THRU` exit label — structured early-`return` boundary of `applyAccountChanges()` |
+| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT` | `AccountUpdateService` | `validateFields()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `validateFields()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateFields()` |
 | `COACTUPC.cbl` | `1215-EDIT-MANDATORY` | `AccountUpdateService` | `editMandatory()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
 | `COACTUPC.cbl` | `1215-EDIT-MANDATORY-EXIT` | `AccountUpdateService` | `editMandatory()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMandatory()` |
-| `COACTUPC.cbl` | `1220-EDIT-YESNO` | `AccountUpdateService` | `editYesno()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `editYesno()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editYesno()` |
-| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService` | `editAlphaReqd()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `editAlphaReqd()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaReqd()` |
-| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService` | `editAlphanumReqd()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `editAlphanumReqd()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphanumReqd()` |
-| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService` | `editAlphaOpt()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `editAlphaOpt()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaOpt()` |
-| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService` | `editAlphanumOpt()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `editAlphanumOpt()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphanumOpt()` |
-| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD` | `AccountUpdateService` | `editNumReqd()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `editNumReqd()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editNumReqd()` |
-| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService` | `editSigned9v2()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `editSigned9v2()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editSigned9v2()` |
-| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService` | `editUsPhoneNum()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `EDIT-AREA-CODE` | `AccountUpdateService` | `editAreaCode()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService` | `editUsPhonePrefix()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService` | `editUsPhoneLinenum()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `editUsPhoneLinenum()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editUsPhoneLinenum()` |
-| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `editUsPhoneLinenum()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editUsPhoneLinenum()` |
-| `COACTUPC.cbl` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `editUsSsn()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `editUsSsn()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editUsSsn()` |
-| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD` | `AccountUpdateService` | `editUsStateCd()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `editUsStateCd()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editUsStateCd()` |
-| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `editFicoScore()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `editFicoScore()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editFicoScore()` |
-| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService` | `editUsStateZipCd()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `editUsStateZipCd()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editUsStateZipCd()` |
-| `COACTUPC.cbl` | `2000-DECIDE-ACTION` | `AccountUpdateService` | `decideAction()` | EVALUATE action dispatch -> switch expression (WHEN order preserved) |
-| `COACTUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `AccountUpdateService` | `decideAction()` | `PERFORM THRU` exit label — structured early-`return` boundary of `decideAction()` |
+| `COACTUPC.cbl` | `1220-EDIT-YESNO` | `AccountUpdateService` | `editYesNo()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `editYesNo()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editYesNo()` |
+| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService` | `editAlphaRequired()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `editAlphaRequired()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaRequired()` |
+| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService` | `editAlphaRequired()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `editAlphaRequired()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaRequired()` |
+| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService` | `editAlphaOptional()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `editAlphaOptional()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaOptional()` |
+| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService` | `editAlphaOptional()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `editAlphaOptional()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAlphaOptional()` |
+| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD` | `AccountUpdateService` | `editNumeric()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `editNumeric()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editNumeric()` |
+| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService` | `editMoney()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `editMoney()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMoney()` |
+| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService` | `editPhone()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `EDIT-AREA-CODE` | `AccountUpdateService` | `editPhoneArea()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService` | `editPhonePrefix()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService` | `editPhoneLine()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `editPhoneLine()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editPhoneLine()` |
+| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `editPhoneLine()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editPhoneLine()` |
+| `COACTUPC.cbl` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `editSsn()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `editSsn()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editSsn()` |
+| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD` | `AccountUpdateService` | `editState()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `editState()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editState()` |
+| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `editFico()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `editFico()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editFico()` |
+| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService` | `editStateZip()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `editStateZip()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editStateZip()` |
+| `COACTUPC.cbl` | `2000-DECIDE-ACTION` | `AccountUpdateService` | `updateAccount()` | EVALUATE action dispatch -> switch expression (WHEN order preserved) |
+| `COACTUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `AccountUpdateService` | `updateAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateAccount()` |
 | `COACTUPC.cbl` | `3000-SEND-MAP` | `AccountController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COACTUPC.cbl` | `3000-SEND-MAP-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `3100-SCREEN-INIT` | `AccountUpdateService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COACTUPC.cbl` | `3100-SCREEN-INIT-EXIT` | `AccountUpdateService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
-| `COACTUPC.cbl` | `3200-SETUP-SCREEN-VARS` | `AccountUpdateService` | `buildResponse()` | Screen variable setup -> response DTO field population |
-| `COACTUPC.cbl` | `3200-SETUP-SCREEN-VARS-EXIT` | `AccountUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `3201-SHOW-INITIAL-VALUES` | `AccountUpdateService` | `buildResponse()` | Initial field values -> response DTO (initial state) |
-| `COACTUPC.cbl` | `3201-SHOW-INITIAL-VALUES-EXIT` | `AccountUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `3202-SHOW-ORIGINAL-VALUES` | `AccountUpdateService` | `buildResponse()` | Original field values -> response DTO (before-image) |
-| `COACTUPC.cbl` | `3202-SHOW-ORIGINAL-VALUES-EXIT` | `AccountUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `3203-SHOW-UPDATED-VALUES` | `AccountUpdateService` | `buildResponse()` | Updated field values -> response DTO (after-image) |
-| `COACTUPC.cbl` | `3203-SHOW-UPDATED-VALUES-EXIT` | `AccountUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `3250-SETUP-INFOMSG` | `AccountUpdateService` | `buildResponse()` | Info-message setup -> response message field |
-| `COACTUPC.cbl` | `3250-SETUP-INFOMSG-EXIT` | `AccountUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
+| `COACTUPC.cbl` | `3100-SCREEN-INIT` | `AccountUpdateService` | `toViewResponse()` | Screen/array initialization -> response DTO defaults |
+| `COACTUPC.cbl` | `3100-SCREEN-INIT-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTUPC.cbl` | `3200-SETUP-SCREEN-VARS` | `AccountUpdateService` | `toViewResponse()` | Screen variable setup -> response DTO field population |
+| `COACTUPC.cbl` | `3200-SETUP-SCREEN-VARS-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTUPC.cbl` | `3201-SHOW-INITIAL-VALUES` | `AccountUpdateService` | `toViewResponse()` | Initial field values -> response DTO (initial state) |
+| `COACTUPC.cbl` | `3201-SHOW-INITIAL-VALUES-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTUPC.cbl` | `3202-SHOW-ORIGINAL-VALUES` | `AccountUpdateService` | `toViewResponse()` | Original field values -> response DTO (before-image) |
+| `COACTUPC.cbl` | `3202-SHOW-ORIGINAL-VALUES-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTUPC.cbl` | `3203-SHOW-UPDATED-VALUES` | `AccountUpdateService` | `toViewResponse()` | Updated field values -> response DTO (after-image) |
+| `COACTUPC.cbl` | `3203-SHOW-UPDATED-VALUES-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
+| `COACTUPC.cbl` | `3250-SETUP-INFOMSG` | `AccountUpdateService` | `toViewResponse()` | Info-message setup -> response message field |
+| `COACTUPC.cbl` | `3250-SETUP-INFOMSG-EXIT` | `AccountUpdateService` | `toViewResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toViewResponse()` |
 | `COACTUPC.cbl` | `3300-SETUP-SCREEN-ATTRS` | `AccountController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
 | `COACTUPC.cbl` | `3300-SETUP-SCREEN-ATTRS-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COACTUPC.cbl` | `3310-PROTECT-ALL-ATTRS` | `AccountController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
@@ -281,20 +281,20 @@ server-side session.
 | `COACTUPC.cbl` | `3390-SETUP-INFOMSG-ATTRS-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COACTUPC.cbl` | `3400-SEND-SCREEN` | `AccountController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COACTUPC.cbl` | `3400-SEND-SCREEN-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COACTUPC.cbl` | `9000-READ-ACCT` | `AccountUpdateService` | `getAccount()` | VSAM READ ACCTDAT -> JPA findById (illustrative spec label was 9100-GETACCT-REQUEST) |
-| `COACTUPC.cbl` | `9000-READ-ACCT-EXIT` | `AccountUpdateService` | `getAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getAccount()` |
+| `COACTUPC.cbl` | `9000-READ-ACCT` | `AccountUpdateService` | `loadAccount()` | VSAM READ ACCTDAT -> JPA findById (illustrative spec label was 9100-GETACCT-REQUEST) |
+| `COACTUPC.cbl` | `9000-READ-ACCT-EXIT` | `AccountUpdateService` | `loadAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `loadAccount()` |
 | `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
 | `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findByXrefAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByXrefAcctId()` |
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT` | `AccountRepository` | `findById()` | ACCTDAT keyed read -> JPA finder |
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | CUSTDAT keyed read -> JPA finder |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
-| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA` | `AccountUpdateService` | `cacheFetchedData()` | Stash before-image of fetched records for later change-compare |
-| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `cacheFetchedData()` | `PERFORM THRU` exit label — structured early-`return` boundary of `cacheFetchedData()` |
+| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA` | `AccountUpdateService` | `loadAccount()` | Stash before-image of fetched records for later change-compare |
+| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `loadAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `loadAccount()` |
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING` | `AccountUpdateService` | `updateAccount()` | @Transactional(rollbackFor=Exception) dual-record (ACCOUNT+CUSTOMER) atomic rewrite; @Version (spec label PROCESS-UPDATE-ACCT) |
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING-EXIT` | `AccountUpdateService` | `updateAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateAccount()` |
-| `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC` | `AccountUpdateService` | `checkChangeInRecord()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
-| `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC-EXIT` | `AccountUpdateService` | `checkChangeInRecord()` | `PERFORM THRU` exit label — structured early-`return` boundary of `checkChangeInRecord()` |
+| `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC` | `AccountUpdateService` | `persist()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
+| `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC-EXIT` | `AccountUpdateService` | `persist()` | `PERFORM THRU` exit label — structured early-`return` boundary of `persist()` |
 | `COACTUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `COACTUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handleUnexpected()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handleUnexpected()` |
 
@@ -307,10 +307,10 @@ server-side session.
 | `COCRDLIC.cbl` | `0000-MAIN-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDLIC.cbl` | `1000-SEND-MAP` | `CardController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COCRDLIC.cbl` | `1000-SEND-MAP-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDLIC.cbl` | `1100-SCREEN-INIT` | `CardListService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COCRDLIC.cbl` | `1100-SCREEN-INIT-EXIT` | `CardListService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
-| `COCRDLIC.cbl` | `1200-SCREEN-ARRAY-INIT` | `CardListService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COCRDLIC.cbl` | `1200-SCREEN-ARRAY-INIT-EXIT` | `CardListService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
+| `COCRDLIC.cbl` | `1100-SCREEN-INIT` | `CardListService` | `buildResponse()` | Screen/array initialization -> response DTO defaults |
+| `COCRDLIC.cbl` | `1100-SCREEN-INIT-EXIT` | `CardListService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
+| `COCRDLIC.cbl` | `1200-SCREEN-ARRAY-INIT` | `CardListService` | `buildResponse()` | Screen/array initialization -> response DTO defaults |
+| `COCRDLIC.cbl` | `1200-SCREEN-ARRAY-INIT-EXIT` | `CardListService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDLIC.cbl` | `1250-SETUP-ARRAY-ATTRIBS` | `CardListService` | `buildResponse()` | Screen variable setup -> response DTO field population |
 | `COCRDLIC.cbl` | `1250-SETUP-ARRAY-ATTRIBS-EXIT` | `CardListService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDLIC.cbl` | `1300-SETUP-SCREEN-ATTRS` | `CardController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
@@ -323,20 +323,20 @@ server-side session.
 | `COCRDLIC.cbl` | `2000-RECEIVE-MAP-EXIT` | `CardController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
 | `COCRDLIC.cbl` | `2100-RECEIVE-SCREEN` | `CardController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COCRDLIC.cbl` | `2100-RECEIVE-SCREEN-EXIT` | `CardController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
-| `COCRDLIC.cbl` | `2200-EDIT-INPUTS` | `CardListService` | `editInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDLIC.cbl` | `2200-EDIT-INPUTS-EXIT` | `CardListService` | `editInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editInputs()` |
-| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT` | `CardListService` | `editAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardListService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
-| `COCRDLIC.cbl` | `2220-EDIT-CARD` | `CardListService` | `editCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDLIC.cbl` | `2220-EDIT-CARD-EXIT` | `CardListService` | `editCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editCard()` |
-| `COCRDLIC.cbl` | `2250-EDIT-ARRAY` | `CardListService` | `editArray()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDLIC.cbl` | `2250-EDIT-ARRAY-EXIT` | `CardListService` | `editArray()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editArray()` |
+| `COCRDLIC.cbl` | `2200-EDIT-INPUTS` | `CardListService` | `listCards()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDLIC.cbl` | `2200-EDIT-INPUTS-EXIT` | `CardListService` | `listCards()` | `PERFORM THRU` exit label — structured early-`return` boundary of `listCards()` |
+| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT` | `CardListService` | `normalizeCardFilter()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardListService` | `normalizeCardFilter()` | `PERFORM THRU` exit label — structured early-`return` boundary of `normalizeCardFilter()` |
+| `COCRDLIC.cbl` | `2220-EDIT-CARD` | `CardListService` | `normalizeCardFilter()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDLIC.cbl` | `2220-EDIT-CARD-EXIT` | `CardListService` | `normalizeCardFilter()` | `PERFORM THRU` exit label — structured early-`return` boundary of `normalizeCardFilter()` |
+| `COCRDLIC.cbl` | `2250-EDIT-ARRAY` | `CardListService` | `buildResponse()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDLIC.cbl` | `2250-EDIT-ARRAY-EXIT` | `CardListService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDLIC.cbl` | `9000-READ-FORWARD` | `CardRepository` | `findByCardAcctId()` | STARTBR + READNEXT forward browse -> Pageable ascending query |
 | `COCRDLIC.cbl` | `9000-READ-FORWARD-EXIT` | `CardRepository` | `findByCardAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByCardAcctId()` |
 | `COCRDLIC.cbl` | `9100-READ-BACKWARDS` | `CardRepository` | `findByCardAcctId()` | READPREV backward browse -> Pageable descending query |
 | `COCRDLIC.cbl` | `9100-READ-BACKWARDS-EXIT` | `CardRepository` | `findByCardAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByCardAcctId()` |
-| `COCRDLIC.cbl` | `9500-FILTER-RECORDS` | `CardListService` | `applyFilter()` | In-memory record filter -> repository query predicate / Specification |
-| `COCRDLIC.cbl` | `9500-FILTER-RECORDS-EXIT` | `CardListService` | `applyFilter()` | `PERFORM THRU` exit label — structured early-`return` boundary of `applyFilter()` |
+| `COCRDLIC.cbl` | `9500-FILTER-RECORDS` | `CardListService` | `resolveSpecificCard()` | In-memory record filter -> repository query predicate / Specification |
+| `COCRDLIC.cbl` | `9500-FILTER-RECORDS-EXIT` | `CardListService` | `resolveSpecificCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `resolveSpecificCard()` |
 | `COCRDLIC.cbl` | `SEND-PLAIN-TEXT` | `CardController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
 | `COCRDLIC.cbl` | `SEND-PLAIN-TEXT-EXIT` | `CardController` | `buildErrorResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildErrorResponse()` |
 | `COCRDLIC.cbl` | `SEND-LONG-TEXT` | `CardController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
@@ -351,24 +351,24 @@ server-side session.
 | `COCRDSLC.cbl` | `0000-MAIN-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDSLC.cbl` | `1000-SEND-MAP` | `CardController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COCRDSLC.cbl` | `1000-SEND-MAP-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDSLC.cbl` | `1100-SCREEN-INIT` | `CardDetailService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COCRDSLC.cbl` | `1100-SCREEN-INIT-EXIT` | `CardDetailService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
-| `COCRDSLC.cbl` | `1200-SETUP-SCREEN-VARS` | `CardDetailService` | `buildResponse()` | Screen variable setup -> response DTO field population |
-| `COCRDSLC.cbl` | `1200-SETUP-SCREEN-VARS-EXIT` | `CardDetailService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
+| `COCRDSLC.cbl` | `1100-SCREEN-INIT` | `CardDetailService` | `toDetail()` | Screen/array initialization -> response DTO defaults |
+| `COCRDSLC.cbl` | `1100-SCREEN-INIT-EXIT` | `CardDetailService` | `toDetail()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toDetail()` |
+| `COCRDSLC.cbl` | `1200-SETUP-SCREEN-VARS` | `CardDetailService` | `toDetail()` | Screen variable setup -> response DTO field population |
+| `COCRDSLC.cbl` | `1200-SETUP-SCREEN-VARS-EXIT` | `CardDetailService` | `toDetail()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toDetail()` |
 | `COCRDSLC.cbl` | `1300-SETUP-SCREEN-ATTRS` | `CardController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
 | `COCRDSLC.cbl` | `1300-SETUP-SCREEN-ATTRS-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN` | `CardController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS` | `CardDetailService` | `processInputs()` | Input processing orchestration -> service method |
-| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardDetailService` | `processInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `processInputs()` |
+| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS` | `CardDetailService` | `getCard()` | Input processing orchestration -> service method |
+| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardDetailService` | `getCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getCard()` |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP` | `CardController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP-EXIT` | `CardController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
-| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS` | `CardDetailService` | `editMapInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardDetailService` | `editMapInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMapInputs()` |
-| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT` | `CardDetailService` | `editAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardDetailService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
-| `COCRDSLC.cbl` | `2220-EDIT-CARD` | `CardDetailService` | `editCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardDetailService` | `editCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editCard()` |
+| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS` | `CardDetailService` | `getCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardDetailService` | `getCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getCard()` |
+| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT` | `CardDetailService` | `getCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardDetailService` | `getCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getCard()` |
+| `COCRDSLC.cbl` | `2220-EDIT-CARD` | `CardDetailService` | `getCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardDetailService` | `getCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getCard()` |
 | `COCRDSLC.cbl` | `9000-READ-DATA` | `CardRepository` | `findById()` | VSAM READ -> JPA finder |
 | `COCRDSLC.cbl` | `9000-READ-DATA-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | CARDDAT keyed read by `CARD-NUM` (account-id cross-checked) -> JPA finder |
@@ -388,34 +388,34 @@ server-side session.
 | `COCRDUPC.cbl` | `0000-MAIN` | `CardController` | `updateCard()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless CardController [PUT /api/cards/{cardNum}] |
 | `COCRDUPC.cbl` | `COMMON-RETURN` | `CardController` | `buildResponse()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
 | `COCRDUPC.cbl` | `0000-MAIN-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS` | `CardUpdateService` | `processInputs()` | Input processing orchestration -> service method |
-| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `processInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `processInputs()` |
+| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS` | `CardUpdateService` | `updateCard()` | Input processing orchestration -> service method |
+| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateCard()` |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP` | `CardController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `CardController` | `bindRequest()` | `PERFORM THRU` exit label — structured early-`return` boundary of `bindRequest()` |
-| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `CardUpdateService` | `editMapInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `editMapInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editMapInputs()` |
-| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT` | `CardUpdateService` | `editAccount()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
-| `COCRDUPC.cbl` | `1220-EDIT-CARD` | `CardUpdateService` | `editCard()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `editCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editCard()` |
-| `COCRDUPC.cbl` | `1230-EDIT-NAME` | `CardUpdateService` | `editName()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `editName()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editName()` |
-| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS` | `CardUpdateService` | `editCardstatus()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `editCardstatus()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editCardstatus()` |
-| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON` | `CardUpdateService` | `editExpiryMon()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `CardUpdateService` | `editExpiryMon()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editExpiryMon()` |
-| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR` | `CardUpdateService` | `editExpiryYear()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
-| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `CardUpdateService` | `editExpiryYear()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editExpiryYear()` |
-| `COCRDUPC.cbl` | `2000-DECIDE-ACTION` | `CardUpdateService` | `decideAction()` | EVALUATE action dispatch -> switch expression (WHEN order preserved) |
-| `COCRDUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `CardUpdateService` | `decideAction()` | `PERFORM THRU` exit label — structured early-`return` boundary of `decideAction()` |
+| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `CardUpdateService` | `validateInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `validateInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateInputs()` |
+| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT` | `CardUpdateService` | `validateInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `validateInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateInputs()` |
+| `COCRDUPC.cbl` | `1220-EDIT-CARD` | `CardUpdateService` | `validateInputs()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `validateInputs()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateInputs()` |
+| `COCRDUPC.cbl` | `1230-EDIT-NAME` | `CardUpdateService` | `validateName()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `validateName()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateName()` |
+| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS` | `CardUpdateService` | `validateStatus()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `validateStatus()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateStatus()` |
+| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON` | `CardUpdateService` | `validateExpiryMonth()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `CardUpdateService` | `validateExpiryMonth()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateExpiryMonth()` |
+| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR` | `CardUpdateService` | `validateExpiryYear()` | Field edit/validation -> Jakarta Bean Validation constraint / service validation |
+| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `CardUpdateService` | `validateExpiryYear()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateExpiryYear()` |
+| `COCRDUPC.cbl` | `2000-DECIDE-ACTION` | `CardUpdateService` | `updateCard()` | EVALUATE action dispatch -> switch expression (WHEN order preserved) |
+| `COCRDUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `CardUpdateService` | `updateCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateCard()` |
 | `COCRDUPC.cbl` | `3000-SEND-MAP` | `CardController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COCRDUPC.cbl` | `3000-SEND-MAP-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDUPC.cbl` | `3100-SCREEN-INIT` | `CardUpdateService` | `initResponse()` | Screen/array initialization -> response DTO defaults |
-| `COCRDUPC.cbl` | `3100-SCREEN-INIT-EXIT` | `CardUpdateService` | `initResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `initResponse()` |
-| `COCRDUPC.cbl` | `3200-SETUP-SCREEN-VARS` | `CardUpdateService` | `buildResponse()` | Screen variable setup -> response DTO field population |
-| `COCRDUPC.cbl` | `3200-SETUP-SCREEN-VARS-EXIT` | `CardUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
-| `COCRDUPC.cbl` | `3250-SETUP-INFOMSG` | `CardUpdateService` | `buildResponse()` | Info-message setup -> response message field |
-| `COCRDUPC.cbl` | `3250-SETUP-INFOMSG-EXIT` | `CardUpdateService` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
+| `COCRDUPC.cbl` | `3100-SCREEN-INIT` | `CardUpdateService` | `toDetail()` | Screen/array initialization -> response DTO defaults |
+| `COCRDUPC.cbl` | `3100-SCREEN-INIT-EXIT` | `CardUpdateService` | `toDetail()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toDetail()` |
+| `COCRDUPC.cbl` | `3200-SETUP-SCREEN-VARS` | `CardUpdateService` | `toDetail()` | Screen variable setup -> response DTO field population |
+| `COCRDUPC.cbl` | `3200-SETUP-SCREEN-VARS-EXIT` | `CardUpdateService` | `toDetail()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toDetail()` |
+| `COCRDUPC.cbl` | `3250-SETUP-INFOMSG` | `CardUpdateService` | `toDetail()` | Info-message setup -> response message field |
+| `COCRDUPC.cbl` | `3250-SETUP-INFOMSG-EXIT` | `CardUpdateService` | `toDetail()` | `PERFORM THRU` exit label — structured early-`return` boundary of `toDetail()` |
 | `COCRDUPC.cbl` | `3300-SETUP-SCREEN-ATTRS` | `CardController` | `buildResponse()` | BMS field attributes (protect/colour) -> not applicable in REST; response shaping only |
 | `COCRDUPC.cbl` | `3300-SETUP-SCREEN-ATTRS-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDUPC.cbl` | `3400-SEND-SCREEN` | `CardController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
@@ -426,8 +426,8 @@ server-side session.
 | `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING` | `CardUpdateService` | `updateCard()` | @Transactional REWRITE CARDDAT -> repository save; @Version optimistic lock |
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING-EXIT` | `CardUpdateService` | `updateCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateCard()` |
-| `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC` | `CardUpdateService` | `checkChangeInRecord()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
-| `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC-EXIT` | `CardUpdateService` | `checkChangeInRecord()` | `PERFORM THRU` exit label — structured early-`return` boundary of `checkChangeInRecord()` |
+| `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC` | `CardUpdateService` | `persist()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
+| `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC-EXIT` | `CardUpdateService` | `persist()` | `PERFORM THRU` exit label — structured early-`return` boundary of `persist()` |
 | `COCRDUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `COCRDUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handleUnexpected()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handleUnexpected()` |
 
@@ -531,16 +531,16 @@ server-side session.
 |---|---|---|---|---|
 | `COUSR00C.cbl` | `MAIN-PARA` | `UserAdminController` | `listUsers()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [GET /api/admin/users] |
 | `COUSR00C.cbl` | `PROCESS-ENTER-KEY` | `UserListService` | `listUsers()` | AID=ENTER primary action -> service business method |
-| `COUSR00C.cbl` | `PROCESS-PF7-KEY` | `UserListService` | `previousPage()` | PF7 page-up -> Pageable previous page query |
-| `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
-| `COUSR00C.cbl` | `PROCESS-PAGE-FORWARD` | `UserListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
-| `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserListService` | `previousPage()` | PF7 page-up -> Pageable previous page query |
-| `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserListService` | `mapToDto()` | User row -> UserDto list element |
-| `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserListService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COUSR00C.cbl` | `PROCESS-PF7-KEY` | `UserListService` | `listUsers()` | PF7 page-up -> Pageable previous page query |
+| `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserListService` | `listUsers()` | PF8 page-down -> Pageable next page query |
+| `COUSR00C.cbl` | `PROCESS-PAGE-FORWARD` | `UserListService` | `listUsers()` | PF8 page-down -> Pageable next page query |
+| `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserListService` | `listUsers()` | PF7 page-up -> Pageable previous page query |
+| `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserListService` | `toSummary()` | User row -> UserDto list element |
+| `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserListService` | `listUsers()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR00C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `COUSR00C.cbl` | `SEND-USRLST-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR00C.cbl` | `RECEIVE-USRLST-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserListService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserListService` | `listUsers()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM READNEXT -> next page element |
 | `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
@@ -582,15 +582,15 @@ server-side session.
 |---|---|---|---|---|
 | `COUSR03C.cbl` | `MAIN-PARA` | `UserAdminController` | `deleteUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [DELETE /api/admin/users/{id}] |
 | `COUSR03C.cbl` | `PROCESS-ENTER-KEY` | `UserDeleteService` | `deleteUser()` | AID=ENTER primary action -> service business method |
-| `COUSR03C.cbl` | `DELETE-USER-INFO` | `UserDeleteService` | `deleteUserInfo()` | @Transactional DELETE -> repository delete |
+| `COUSR03C.cbl` | `DELETE-USER-INFO` | `UserDeleteService` | `deleteUser()` | @Transactional DELETE -> repository delete |
 | `COUSR03C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `COUSR03C.cbl` | `SEND-USRDEL-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR03C.cbl` | `RECEIVE-USRDEL-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserDeleteService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserDeleteService` | `deleteUser()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COUSR03C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
-| `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` | `UserDeleteService` | `deleteUserSecFile()` | @Transactional DELETE -> repository delete |
-| `COUSR03C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserDeleteService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
-| `COUSR03C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserDeleteService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` | `UserDeleteService` | `deleteUser()` | @Transactional DELETE -> repository delete |
+| `COUSR03C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserDeleteService` | `deleteUser()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COUSR03C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserDeleteService` | `deleteUser()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 
 ### CSUTLDTC.cbl — Date validation utility (LE CEEDAYS wrapper) (txn `-`)
 
@@ -840,8 +840,8 @@ services and externalized JSON resources.
 | `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `entity.TransactionCategory` + `entity.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
 | `CSUSR01Y.cpy` | SEC-USER-DATA (80B) | `com.carddemo.entity.User` | Plaintext password → BCrypt column `VARCHAR(60)` (constraint C-003); `user_type` kept as `CHAR(1)` String (no enum) |
 | `COSTM01.CPY` | Statement TRNX reporting layout | `dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
-| `COMEN02Y.cpy` | Main-menu option table (10) | `service.menu.MainMenuService` + `dto.MenuOption` | 10-option routing metadata |
-| `COADM02Y.cpy` | Admin-menu option table (4) | `service.menu.AdminMenuService` + `dto.MenuOption` | 4-option admin routing metadata |
+| `COMEN02Y.cpy` | Main-menu option table (10) | `service.MenuService` + `dto.MenuOption` | 10-option routing metadata |
+| `COADM02Y.cpy` | Admin-menu option table (4) | `service.MenuService` + `dto.MenuOption` | 4-option admin routing metadata |
 | `COCOM01Y.cpy` | CARDDEMO-COMMAREA | `dto.CommArea` + JWT claims / `SignOnResponse` | Cross-screen state → stateless JWT + DTO; no server session |
 | `CVCRD01Y.cpy` | CC-WORK-AREAS (card work) | Request-context work fields (transient) | Card scratch/work fields → per-request context |
 | `CSDAT01Y.cpy` | Date working storage | `service.DateValidationService` | Date WS fields → `java.time.LocalDate` |
@@ -1041,18 +1041,18 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | Java Class | Originating COBOL Program(s) / Copybook(s) |
 |---|---|
 | `service.auth.AuthenticationService` / `controller.AuthController` | `COSGN00C.cbl` (+ `COSGN00` BMS, `COCOM01Y`, `CSUSR01Y`) |
-| `service.menu.MainMenuService` / `service.menu.AdminMenuService` / `controller.MenuController` | `COMEN01C.cbl`, `COADM01C.cbl` (+ `COMEN02Y`, `COADM02Y`) |
-| `service.account.AccountViewService` / `controller.AccountController` | `COACTVWC.cbl` (+ `COACTVW` BMS) |
-| `service.account.AccountUpdateService` | `COACTUPC.cbl` (+ `COACTUP` BMS) |
-| `service.card.CardListService` / `controller.CardController` | `COCRDLIC.cbl` (+ `COCRDLI` BMS) |
-| `service.card.CardDetailService` | `COCRDSLC.cbl` (+ `COCRDSL` BMS) |
-| `service.card.CardUpdateService` | `COCRDUPC.cbl` (+ `COCRDUP` BMS) |
+| `service.MenuService` / `controller.MenuController` | `COMEN01C.cbl`, `COADM01C.cbl` (+ `COMEN02Y`, `COADM02Y`) |
+| `service.AccountViewService` / `controller.AccountController` | `COACTVWC.cbl` (+ `COACTVW` BMS) |
+| `service.AccountUpdateService` | `COACTUPC.cbl` (+ `COACTUP` BMS) |
+| `service.CardListService` / `controller.CardController` | `COCRDLIC.cbl` (+ `COCRDLI` BMS) |
+| `service.CardDetailService` | `COCRDSLC.cbl` (+ `COCRDSL` BMS) |
+| `service.CardUpdateService` | `COCRDUPC.cbl` (+ `COCRDUP` BMS) |
 | `service.transaction.TransactionListService` / `controller.TransactionController` | `COTRN00C.cbl` (+ `COTRN00` BMS) |
 | `service.transaction.TransactionDetailService` | `COTRN01C.cbl` (+ `COTRN01` BMS) |
 | `service.transaction.TransactionAddService` | `COTRN02C.cbl` (+ `COTRN02` BMS) |
 | `service.billing.BillPaymentService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
 | `service.report.ReportSubmissionService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
-| `service.admin.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserAdminController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
+| `service.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserAdminController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
 | `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
 | `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
 | `service.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |

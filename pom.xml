@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.11</version>
+        <version>3.5.15</version>
         <relativePath/>
     </parent>
 
@@ -83,18 +83,39 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
-        <!-- Spring Cloud AWS starters (S3 GDG replacement, SQS TDQ replacement, SNS notifications); versions from the AWS BOM -->
+        <!-- Spring Cloud AWS starters (S3 GDG replacement, SQS TDQ replacement, SNS notifications); versions from the AWS BOM.
+             The AWS SDK Apache HTTP client transitively pulls commons-logging:commons-logging, which conflicts with
+             Spring's spring-jcl bridge (Spring emits a "remove commons-logging.jar" warning). Excluding it routes all
+             commons-logging API calls through spring-jcl and restores the Gate 2 zero-warning build. See DECISION_LOG D-035. -->
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-s3</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
         <dependency>
             <groupId>io.awspring.cloud</groupId>
             <artifactId>spring-cloud-aws-starter-sns</artifactId>
+            <exclusions>
+                <exclusion>
+                    <groupId>commons-logging</groupId>
+                    <artifactId>commons-logging</artifactId>
+                </exclusion>
+            </exclusions>
         </dependency>
 
         <!-- Persistence: PostgreSQL JDBC driver and Flyway schema migration (versions managed by the parent BOM) -->
@@ -221,12 +242,35 @@
                 </configuration>
             </plugin>
 
-            <!-- Unit tests: *Test.java only; integration tests are deferred to Failsafe -->
+            <!-- Resolve dependency artifact paths into build properties (e.g. ${org.mockito:mockito-core:jar})
+                 so Mockito can be attached as an explicit -javaagent below. Bound to `initialize` so the
+                 property is available before Surefire executes. See DECISION_LOG D-035. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>resolve-dependency-properties</id>
+                        <phase>initialize</phase>
+                        <goals>
+                            <goal>properties</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- Unit tests: *Test.java only; integration tests are deferred to Failsafe.
+                 Mockito is attached as an explicit -javaagent (mockito-core ships Premain-Class:
+                 org.mockito.internal.PremainAttach) to remove the JDK 25 self-attaching / dynamic
+                 agent-load warnings; `@{argLine}` composes with the JaCoCo-injected coverage agent;
+                 `-Xshare:off` silences the CDS "bootstrap classpath has been appended" warning emitted
+                 when a java agent appends to the bootclasspath. Gate 2 zero-warning. See DECISION_LOG D-035. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>${surefire.version}</version>
                 <configuration>
+                    <argLine>@{argLine} -Xshare:off -javaagent:${org.mockito:mockito-core:jar}</argLine>
                     <includes>
                         <include>**/*Test.java</include>
                     </includes>

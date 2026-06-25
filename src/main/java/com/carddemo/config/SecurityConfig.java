@@ -28,8 +28,10 @@ import jakarta.servlet.http.HttpServletResponse;
 import com.carddemo.service.JwtAuthenticationFilter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.MDC;
+import org.springframework.boot.actuate.autoconfigure.security.servlet.EndpointRequest;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -48,31 +50,31 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 
 /**
  * Spring Security configuration for the headless, stateless, JWT-secured REST
- * surface that replaces the legacy CICS file-based {@code USRSEC} sign-on
- * (program {@code COSGN00C}, transaction {@code CC00}).
+ * surface (the sign-in entry point is {@code POST /api/auth/signin}).
  *
- * <p>The legacy program read the {@code USRSEC} VSAM file, compared the supplied
- * plaintext password, and routed to the administrator or main menu based on the
- * {@code CDEMO-USER-TYPE} flag carried in the pseudo-conversational COMMAREA.
- * Here that responsibility is split: token issuance and credential verification
- * live in the {@code service} layer, while this class establishes the
- * surrounding security posture &mdash; a single {@link SecurityFilterChain} with
- * no server-side session (the COMMAREA state is eliminated in favour of
- * per-request JWT claims), BCrypt password hashing (replacing the plaintext
- * {@code SEC-USR-PWD}), and role-based authorization derived from the
- * {@code CDEMO-USRTYP-ADMIN} ({@code 'A'}) and {@code CDEMO-USRTYP-USER}
- * ({@code 'U'}) user types, which map to {@code ROLE_ADMIN} and
- * {@code ROLE_USER} respectively.</p>
+ * <p>Two ordered {@link SecurityFilterChain} beans are defined: a first chain
+ * scoped to the operational Actuator endpoints (served only on the isolated
+ * management port), and the main chain that secures the public API. The API
+ * chain has CSRF disabled (the API is token-based and holds no session or
+ * cookie), CORS delegated to {@code WebConfig},
+ * {@link SessionCreationPolicy#STATELESS} sessions, BCrypt password hashing, the
+ * injected {@link JwtAuthenticationFilter} inserted ahead of
+ * {@link UsernamePasswordAuthenticationFilter}, and role-based authorization
+ * keyed on the {@code ROLE_ADMIN} and {@code ROLE_USER} authorities carried by
+ * the bearer token. HTTP Basic and form login are disabled.</p>
  *
- * <p>Authentication for protected routes is performed by the injected
- * {@link JwtAuthenticationFilter}, inserted ahead of the standard
- * {@link UsernamePasswordAuthenticationFilter}. Pre-controller authorization
- * failures are rendered here as RFC 7807 {@code application/problem+json}
- * responses: {@code 401} for an absent or invalid token and {@code 403} for an
- * authenticated caller lacking the required role. The envelope mirrors the shape
- * produced by the application's central {@code GlobalExceptionHandler} so that
- * clients parse one consistent error contract regardless of where the failure
- * originates.</p>
+ * <p>Pre-controller authorization failures are rendered here as RFC 7807
+ * {@code application/problem+json} responses ({@code 401} for an absent or
+ * invalid token, {@code 403} for an authenticated caller lacking the required
+ * role); the envelope mirrors the one produced by the application's central
+ * {@code GlobalExceptionHandler} so clients parse one consistent error
+ * contract.</p>
+ *
+ * <p>Operational actuator endpoints (info, metrics, prometheus) are served on
+ * the isolated, unpublished management port and are never exposed on this public
+ * port. The rationale for the stateless JWT model (replacing the CICS COMMAREA),
+ * the BCrypt credential upgrade, and the management-port isolation is recorded in
+ * {@code DECISION_LOG.md} (entries D-006, D-002, and D-033 respectively).</p>
  */
 @Configuration
 @EnableWebSecurity
@@ -123,8 +125,9 @@ public class SecurityConfig {
     }
 
     /**
-     * Supplies the password encoder used to hash and verify credentials, replacing the
-     * legacy plaintext {@code SEC-USR-PWD} storage with adaptive BCrypt hashing.
+     * Supplies the adaptive BCrypt password encoder used to hash and verify
+     * credentials. (Rationale for the BCrypt credential model is in
+     * {@code DECISION_LOG.md} entry D-002.)
      *
      * @return a {@link BCryptPasswordEncoder} at the default strength
      */
@@ -149,32 +152,71 @@ public class SecurityConfig {
     }
 
     /**
-     * Builds the single stateless filter chain that secures the REST surface.
+     * Secures the operational Actuator endpoints, which are served exclusively on
+     * the isolated management port ({@code management.server.port}, default 9091).
      *
-     * <p>CSRF is disabled because the API is token-based and holds no session or cookie;
-     * CORS delegates to the MVC configuration owned by {@code WebConfig}; sessions are
-     * {@link SessionCreationPolicy#STATELESS}. Authorization is evaluated in declaration
-     * order: the sign-in endpoints and the unauthenticated observability probes are open,
-     * the administrative user-management endpoints require {@code ROLE_ADMIN}, and every
-     * other request requires a valid token. The bearer-token filter runs before the
-     * username/password filter, and the browser-oriented HTTP Basic and form-login
-     * mechanisms are disabled.</p>
+     * <p>This chain is ordered ahead of {@link #securityFilterChain(HttpSecurity)}
+     * and matches only the Actuator endpoints (via {@link EndpointRequest#toAnyEndpoint()}),
+     * permitting them so that in-network monitoring can reach them: the Prometheus
+     * scraper reads {@code /actuator/prometheus} and the container / orchestrator
+     * liveness and readiness probes read {@code /actuator/health}. The management
+     * port is deliberately not published outside the container network, so that
+     * port boundary &mdash; not per-request authentication &mdash; is what keeps the
+     * operational metadata off the public surface. On the public application port
+     * these endpoints are not mapped at all, so they are never exposed there.</p>
+     *
+     * <p>Only the endpoints explicitly exposed by
+     * {@code management.endpoints.web.exposure.include} (health, info, metrics,
+     * prometheus) are reachable; all others remain unmapped. CSRF is disabled and
+     * no session is created, consistent with the stateless API chain. See
+     * {@code DECISION_LOG.md} entry D-033.</p>
+     *
+     * @param http the HTTP security builder
+     * @return the Actuator/management filter chain
+     * @throws Exception if the chain cannot be built
+     */
+    @Bean
+    @Order(1)
+    public SecurityFilterChain actuatorSecurityFilterChain(HttpSecurity http) throws Exception {
+        http
+                .securityMatcher(EndpointRequest.toAnyEndpoint())
+                .csrf(csrf -> csrf.disable())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+        return http.build();
+    }
+
+    /**
+     * Builds the stateless filter chain that secures the public REST API surface.
+     *
+     * <p>This chain handles every non-Actuator request (the Actuator endpoints are
+     * matched first by {@link #actuatorSecurityFilterChain(HttpSecurity)}). CSRF is
+     * disabled because the API is token-based and holds no session or cookie; CORS
+     * delegates to the MVC configuration owned by {@code WebConfig}; sessions are
+     * {@link SessionCreationPolicy#STATELESS}. Authorization is evaluated in
+     * declaration order: the sign-in endpoints are open, the administrative
+     * endpoints ({@code /api/admin/**} and the admin menu {@code /api/menu/admin})
+     * require {@code ROLE_ADMIN}, and every other request requires a valid token.
+     * The bearer-token filter runs before the username/password filter, and the
+     * browser-oriented HTTP Basic and form-login mechanisms are disabled.</p>
      *
      * @param http the HTTP security builder
      * @return the configured filter chain
      * @throws Exception if the chain cannot be built
      */
     @Bean
+    @Order(2)
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
                 .cors(Customizer.withDefaults())
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // Public sign-in endpoints (legacy COSGN00C / transaction CC00).
                         .requestMatchers("/api/auth/**").permitAll()
-                        .requestMatchers("/actuator/health", "/actuator/health/**",
-                                "/actuator/info", "/actuator/prometheus").permitAll()
-                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
+                        // Administrative surface: user-management CRUD and the admin menu
+                        // require ROLE_ADMIN (the legacy CDEMO-USRTYP-ADMIN user type).
+                        .requestMatchers("/api/admin/**", "/api/menu/admin").hasRole("ADMIN")
                         .anyRequest().authenticated())
                 .exceptionHandling(exception -> exception
                         .authenticationEntryPoint(authenticationEntryPoint())

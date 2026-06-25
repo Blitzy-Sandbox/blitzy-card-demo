@@ -1,6 +1,6 @@
 # =============================================================================
 # CardDemo — local end-to-end Docker Compose stack
-# (COBOL mainframe -> Java 25 / Spring Boot 3.5.11 migration)
+# (COBOL mainframe -> Java 25 / Spring Boot 3.5.15 migration)
 #
 # Brings up the COMPLETE local environment so a clean machine can run the
 # CardDemo application end-to-end with ZERO live-AWS dependencies, satisfying the
@@ -17,7 +17,8 @@
 #                the local multi-stage Dockerfile).
 #   jaeger       Distributed-tracing backend + UI; OTLP     16686 / 4317 / 4318
 #                receiver for the app's Micrometer traces.
-#   prometheus   Scrapes app:8080/actuator/prometheus.      9090
+#   prometheus   Scrapes app:9091/actuator/prometheus      9090
+#                (the app's isolated, unpublished mgmt port).
 #   grafana      Dashboards (auto-provisioned Prometheus    3000
 #                datasource + docs/grafana-dashboard.json).
 #
@@ -25,29 +26,40 @@
 #   docker compose up -d
 #   docker compose exec postgres pg_isready -U carddemo
 #   curl -s http://localhost:4566/_localstack/health   # s3/sqs/sns available
-#   curl -s http://localhost:8080/actuator/health      # status UP (db/s3/sqs)
+#   docker compose ps                                  # `app` reports "healthy"
+#                                                      # (in-container probe hits
+#                                                      #  the mgmt port 9091)
+# The actuator endpoints (health/info/metrics/prometheus) are served on the app's
+# management port 9091, which is intentionally NOT published to the host (see the
+# `app` service below); to inspect health directly, exec into the container:
+#   docker compose exec app curl -fsS http://localhost:9091/actuator/health
 #
 # Modern Compose schema: the obsolete top-level `version:` key is intentionally
 # omitted (Docker Compose v2+/v5.x). No top-level `name:` is hardcoded either, so
 # the project name defaults to the working-directory basename — keeping parallel
 # checkouts isolated on a shared Docker daemon.
 #
-# Secrets policy (No-Hardcoded-Credentials rule):
-#   * PostgreSQL credentials are local-dev defaults, overridable via the host
-#     environment (POSTGRES_DB / POSTGRES_USER / POSTGRES_PASSWORD).
+# Secrets policy (No-Hardcoded-Credentials rule, DECISION_LOG D-036):
+#   * Runtime application secrets carry NO committed defaults. POSTGRES_PASSWORD,
+#     JWT_SECRET, and GF_SECURITY_ADMIN_PASSWORD use fail-fast `${VAR:?message}`
+#     substitution, so `docker compose up` aborts with a clear message if the
+#     value is unset or empty. Supply them from the host environment or an
+#     un-committed `.env` file (copy `.env.example` and fill in generated values;
+#     see the onboarding guide). `.env` is git-ignored; `.env.example` carries
+#     only non-secret placeholders.
+#   * Non-secret identifiers keep convenience defaults: POSTGRES_DB / POSTGRES_USER
+#     and the Grafana admin USERNAME (GF_SECURITY_ADMIN_USER) are not secrets.
 #   * AWS credentials are the conventional LocalStack DUMMY values test/test —
 #     they are NOT real secrets and are required to be non-empty by the SDK.
 #   * LOCALSTACK_AUTH_TOKEN (only needed for the LocalStack Pro image) is read
 #     from the host environment and never baked into the file.
-#   * Grafana admin/admin is the documented local-only default (project-guide
-#     §10.B) and is overridable from the environment.
 #
 # Host-port override knobs: every PUBLISHED (host-side) port below defaults to
 # the exact value required by the Port Reference but can be remapped via an env
 # var (e.g. LOCALSTACK_PUBLISHED_PORT) to avoid collisions when several stacks
 # run on one Docker host. Container-internal ports never change, so in-network
 # service-to-service addressing (app->postgres:5432, app->localstack:4566,
-# prometheus->app:8080, app->jaeger:4318) is unaffected by any override.
+# prometheus->app:9091, app->jaeger:4318) is unaffected by any override.
 # =============================================================================
 
 services:
@@ -60,10 +72,13 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      # Defaults match application-local.yml; overridable from the host env.
+      # DB name/user are non-secret identifiers and keep convenience defaults.
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      # The password is a runtime secret: fail-fast if unset/empty (no committed
+      # default). Provide it via the host env or an un-committed .env file
+      # (see .env.example). DECISION_LOG D-036.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in your environment or .env (see .env.example)}
       # Keep PGDATA on the mounted volume subpath (alpine default is fine).
       PGDATA: /var/lib/postgresql/data/pgdata
     ports:
@@ -150,13 +165,23 @@ services:
       # Activate the local profile (application-local.yml).
       SPRING_PROFILES_ACTIVE: local
       SERVER_PORT: "8080"
+      # Isolated management/actuator port. Serves health/info/metrics/prometheus
+      # and is reachable only inside the compose network (NOT published below),
+      # keeping operational metadata off the public application port (D-033).
+      MANAGEMENT_SERVER_PORT: "9091"
       # Datasource -> the `postgres` service by name (internal port is always
-      # 5432). Credentials mirror the postgres service defaults.
+      # 5432). DB name/user are non-secret identifiers; the password is a runtime
+      # secret resolved fail-fast from the host env / .env (same value the
+      # postgres service requires). DECISION_LOG D-036.
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_DB: ${POSTGRES_DB:-carddemo}
       POSTGRES_USER: ${POSTGRES_USER:-carddemo}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required — set it in your environment or .env (see .env.example)}
+      # JWT signing secret (Base64, decodes to >= 32 bytes). Runtime secret with
+      # no committed default; the local profile no longer ships a fallback, so it
+      # must be supplied here (host env / .env). DECISION_LOG D-036.
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required — a Base64 key decoding to >= 32 bytes; set it in your environment or .env (see .env.example)}
       # AWS -> the `localstack` service by name. test/test are the LocalStack
       # dummy credentials (not secrets); region pinned to us-east-1.
       AWS_ENDPOINT: http://localstack:4566
@@ -167,6 +192,9 @@ services:
       # OTLP trace export -> the `jaeger` service by name (HTTP receiver, 4318).
       OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
     ports:
+      # Only the public application port is published. The management port 9091
+      # is deliberately omitted so actuator info/metrics/prometheus stay internal
+      # to the compose network and are never exposed on the host (D-033).
       - "${APP_PUBLISHED_PORT:-8080}:8080"
     depends_on:
       postgres:
@@ -196,8 +224,9 @@ services:
 
   # ---------------------------------------------------------------------------
   # Prometheus — scrapes the application's Micrometer metrics. The scrape config
-  # (./prometheus.yml) targets `app:8080` at /actuator/prometheus; the service
-  # name and port here MUST stay consistent with that target.
+  # (./prometheus.yml) targets `app:9091` (the app's isolated management port) at
+  # /actuator/prometheus; the service name and management port here MUST stay
+  # consistent with that target and with MANAGEMENT_SERVER_PORT on the app service.
   # ---------------------------------------------------------------------------
   prometheus:
     image: prom/prometheus:v2.53.2
@@ -230,8 +259,12 @@ services:
   grafana:
     image: grafana/grafana:11.2.2
     environment:
+      # Admin username is a non-secret identifier (keeps a convenience default).
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
-      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
+      # Admin password is a runtime secret: fail-fast if unset/empty (no committed
+      # default). Provide via the host env or an un-committed .env (see
+      # .env.example). DECISION_LOG D-036.
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:?GF_SECURITY_ADMIN_PASSWORD is required — set it in your environment or .env (see .env.example)}
       GF_USERS_ALLOW_SIGN_UP: "false"
     ports:
       - "${GRAFANA_PUBLISHED_PORT:-3000}:3000"

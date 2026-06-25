@@ -37,20 +37,22 @@ import org.springframework.transaction.annotation.Transactional;
  * source commit {@code 27d6c6f}.
  *
  * <p>The single public operation, {@link #updateCard(Long, String, CardDto.UpdateRequest)},
- * reproduces the {@code COCRDUPC} edit cascade ({@code 1210}-account,
- * {@code 1220}-card, {@code 1230}-name, {@code 1240}-card-status,
- * {@code 1250}-expiry-month, {@code 1260}-expiry-year) as a sequence of private
- * guarded checks that preserve the legacy evaluation order and byte-exact
- * operator messages. The full assembled expiry date is delegated to
- * {@link DateValidationService} for calendar validation.</p>
+ * runs the card-field edit cascade ({@code 1210}-account, {@code 1220}-card,
+ * {@code 1230}-name, {@code 1240}-card-status, {@code 1250}-expiry-month,
+ * {@code 1260}-expiry-year) as a sequence of private guarded checks that preserve
+ * the field evaluation order and byte-exact operator messages. The full assembled
+ * expiry date is delegated to {@link DateValidationService} for calendar
+ * validation.</p>
  *
- * <p>The legacy re-read-and-compare concurrency guard
- * {@code 9300-CHECK-CHANGE-IN-REC} is reproduced through JPA optimistic locking
- * on the {@link Card} {@code @Version} attribute rather than a field-by-field
- * snapshot comparison: a detected conflict is surfaced as
- * {@link ConcurrentUpdateException}. The update is committed atomically within a
- * single transaction, mirroring the CICS {@code SYNCPOINT} that bounded the
- * original {@code REWRITE}.</p>
+ * <p>The update is committed atomically within a single {@code @Transactional}
+ * boundary; an optimistic-locking conflict on the {@link Card} {@code @Version}
+ * attribute is surfaced as {@link ConcurrentUpdateException}.</p>
+ *
+ * <p>Design rationale (the {@code @Version} translation of the
+ * {@code 9300-CHECK-CHANGE-IN-REC} re-read-and-compare guard and the
+ * {@code @Transactional}/{@code SYNCPOINT} boundary) is recorded in
+ * {@code DECISION_LOG.md} (D-007, D-008); COBOL paragraph&#8594;method mappings
+ * are in {@code TRACEABILITY_MATRIX.md}.</p>
  */
 @Service
 public class CardUpdateService {
@@ -117,13 +119,12 @@ public class CardUpdateService {
      * Validates and applies an update to a single card, committing the change
      * atomically.
      *
-     * <p>Processing follows the {@code COCRDUPC} sequence: the request fields are
-     * edited in the legacy order; the assembled expiry date is validated through
-     * {@link DateValidationService}; the target card is loaded by its number and,
-     * when an account identifier is supplied, verified to belong to that account;
-     * the validated values are applied; and the record is persisted under
-     * optimistic locking. An optimistic-locking conflict reproduces the legacy
-     * {@code 9300-CHECK-CHANGE-IN-REC} "record changed by another user" outcome.</p>
+     * <p>The request fields are validated in order; the assembled expiry date is
+     * validated through {@link DateValidationService}; the target card is loaded
+     * by its number and, when an account identifier is supplied, verified to
+     * belong to that account; the validated values are applied; and the record
+     * is persisted under optimistic locking. A concurrent modification is
+     * surfaced as a {@link ConcurrentUpdateException}.</p>
      *
      * @param accountId  the owning account identifier used to confirm the card
      *                   belongs to the requested account; may be {@code null} to

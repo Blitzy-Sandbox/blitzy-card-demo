@@ -21,6 +21,10 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+
 import com.carddemo.exception.AuthenticationFailedException;
 import com.carddemo.exception.BusinessRuleException;
 import com.carddemo.exception.ConcurrentUpdateException;
@@ -42,6 +46,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.MethodParameter;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -105,6 +110,16 @@ class GlobalExceptionHandlerTest {
 
     private GlobalExceptionHandler handler;
 
+    /**
+     * Captures events emitted by the {@link GlobalExceptionHandler} logger so the
+     * suite can prove the no-sensitive-logging guarantee (R1): 5xx handlers must
+     * never log the throwable nor any internal token. Attached in {@link #setUp()}
+     * and detached in {@link #tearDown()} to keep the logger pristine across tests.
+     */
+    private Logger handlerLogger;
+
+    private ListAppender<ILoggingEvent> logCapture;
+
     @BeforeEach
     void setUp() {
         handler = new GlobalExceptionHandler();
@@ -114,10 +129,22 @@ class GlobalExceptionHandlerTest {
         // belt-and-suspenders rather than strictly required).
         lenient().when(request.getRequestURI()).thenReturn("/api/test");
         MDC.put("correlationId", CORRELATION_ID);
+
+        // Attach an in-memory Logback appender to the handler's logger so the 5xx
+        // tests can assert that neither the formatted message nor an attached
+        // throwable proxy carries an internal secret or stack token (R1).
+        handlerLogger = (Logger) LoggerFactory.getLogger(GlobalExceptionHandler.class);
+        logCapture = new ListAppender<>();
+        logCapture.start();
+        handlerLogger.addAppender(logCapture);
     }
 
     @AfterEach
     void tearDown() {
+        if (handlerLogger != null && logCapture != null) {
+            handlerLogger.detachAppender(logCapture);
+            logCapture.stop();
+        }
         MDC.clear();
     }
 
@@ -194,6 +221,8 @@ class GlobalExceptionHandlerTest {
         assertThat(body.getDetail()).isEqualTo(GENERIC_DETAIL);
         assertThat(body.getDetail())
                 .doesNotContain("Exception", "SQL", "at com.", SECRET, "ACCTFILE", "92");
+        // The handler must not have logged the throwable, whose cause carries SECRET.
+        assertNoSensitiveLogging();
     }
 
     @Test
@@ -300,6 +329,7 @@ class GlobalExceptionHandlerTest {
         ProblemDetail body = assertProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Internal Error");
         assertThat(body.getDetail()).isEqualTo(GENERIC_DETAIL);
         assertThat(body.getDetail()).doesNotContain("Exception", "SQL", "at com.", SECRET);
+        assertNoSensitiveLogging();
     }
 
     @Test
@@ -312,6 +342,7 @@ class GlobalExceptionHandlerTest {
         ProblemDetail body = assertProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Internal Error");
         assertThat(body.getDetail()).isEqualTo(GENERIC_DETAIL);
         assertThat(body.getDetail()).doesNotContain("Exception", "SQL", "at com.", SECRET);
+        assertNoSensitiveLogging();
     }
 
     // ------------------------------------------------------------------
@@ -365,5 +396,25 @@ class GlobalExceptionHandlerTest {
         assertThat(body.getStatus()).isEqualTo(expectedStatus.value());
         assertThat(body.getTitle()).isEqualTo(expectedTitle);
         return body;
+    }
+
+    /**
+     * Asserts the no-sensitive-logging guarantee (R1) for a 5xx handler: at least
+     * one diagnostic event was emitted, and <em>no</em> captured event echoes the
+     * seeded {@link #SECRET} (or related internal stack/SQL tokens) in its formatted
+     * message, nor carries a throwable proxy whose stack or message could leak it.
+     */
+    private void assertNoSensitiveLogging() {
+        assertThat(logCapture.list)
+                .as("a 5xx handler must emit at least one diagnostic log event")
+                .isNotEmpty();
+        for (ILoggingEvent event : logCapture.list) {
+            assertThat(event.getFormattedMessage())
+                    .as("log message must not echo the internal secret or stack/SQL tokens")
+                    .doesNotContain(SECRET, "SQL", "Boom", "ACCTFILE");
+            assertThat(event.getThrowableProxy())
+                    .as("5xx logging must not attach the throwable: its stack and message can leak secrets")
+                    .isNull();
+        }
     }
 }

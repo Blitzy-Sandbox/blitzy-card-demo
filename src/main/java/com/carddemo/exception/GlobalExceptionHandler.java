@@ -143,7 +143,10 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccess(FileAccessException ex,
             HttpServletRequest request) {
-        log.error("File access failure -> 500", ex);
+        // 5xx server errors must not log the throwable: its message and stack frames can embed
+        // record keys or upstream secrets (R1). Log only the non-sensitive exception type; the
+        // correlation ID (added to MDC by problem()) ties this entry to the generic 500 response.
+        log.error("File access failure -> 500 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.INTERNAL_SERVER_ERROR, TITLE_INTERNAL_ERROR,
                 GENERIC_INTERNAL_DETAIL, SLUG_INTERNAL, request);
         return ResponseEntity.status(body.getStatus()).body(body);
@@ -187,7 +190,9 @@ public class GlobalExceptionHandler {
     @ExceptionHandler({OptimisticLockException.class, OptimisticLockingFailureException.class})
     public ResponseEntity<ProblemDetail> handleOptimisticLock(RuntimeException ex,
             HttpServletRequest request) {
-        log.warn("Optimistic lock conflict -> 409: {}", ex.toString());
+        // Log only the non-sensitive exception type: ex.toString() embeds the provider message,
+        // which can include entity and key detail (R1). The caller receives the generic 409 detail.
+        log.warn("Optimistic lock conflict -> 409 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.CONFLICT, TITLE_CONCURRENT_UPDATE,
                 ConcurrentUpdateException.DEFAULT_MESSAGE, SLUG_CONCURRENT_UPDATE, request);
         return ResponseEntity.status(body.getStatus()).body(body);
@@ -205,7 +210,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ProblemDetail> handleDataAccess(DataAccessException ex,
             HttpServletRequest request) {
-        log.error("Data access failure -> 500", ex);
+        // See handleFileAccess: never log the throwable for a 5xx; log only the exception type (R1).
+        log.error("Data access failure -> 500 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.INTERNAL_SERVER_ERROR, TITLE_INTERNAL_ERROR,
                 GENERIC_INTERNAL_DETAIL, SLUG_INTERNAL, request);
         return ResponseEntity.status(body.getStatus()).body(body);
@@ -214,7 +220,8 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleUnexpected(Exception ex,
             HttpServletRequest request) {
-        log.error("Unhandled exception -> 500", ex);
+        // See handleFileAccess: never log the throwable for a 5xx; log only the exception type (R1).
+        log.error("Unhandled exception -> 500 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.INTERNAL_SERVER_ERROR, TITLE_INTERNAL_ERROR,
                 GENERIC_INTERNAL_DETAIL, SLUG_INTERNAL, request);
         return ResponseEntity.status(body.getStatus()).body(body);

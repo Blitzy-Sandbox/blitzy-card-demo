@@ -115,8 +115,17 @@ server:
 # Actuator / Observability - health (with k8s probes + readiness gated on DB),
 # Prometheus scrape endpoint, common metric tag, full tracing sampling locally,
 # and OTLP trace export to Jaeger.
+#
+# All actuator endpoints are served on a SEPARATE management port that is
+# intentionally NOT published outside the container network (docker-compose
+# publishes only the application port). This isolates operational metadata and
+# metrics from the public application port: info/metrics/prometheus are reachable
+# only by in-network scrapers (Prometheus), while the public security chain keeps
+# only sign-in and health probes anonymous. See DECISION_LOG D-033.
 # -----------------------------------------------------------------------------
 management:
+  server:
+    port: ${MANAGEMENT_SERVER_PORT:9091}
   endpoints:
     web:
       exposure:

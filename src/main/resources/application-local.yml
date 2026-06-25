@@ -23,25 +23,30 @@
 #   AWS endpoint          http://localhost:4566  AWS_ENDPOINT=http://localstack:4566
 #   OTLP traces (base)    http://localhost:4318  OTLP_TRACES_ENDPOINT=http://jaeger:4318/v1/traces
 #
-# This is the ONLY file that carries LOCAL-DEV credential DEFAULTS, keeping the
-# profile-agnostic application.yml secret-free. Every default below is a
-# NON-PRODUCTION local-development convenience and must never be used in a
-# deployed environment; real environments select a non-local profile and inject
-# POSTGRES_PASSWORD / JWT_SECRET / AWS credentials from the environment or a
-# secret manager. Design rationale lives in DECISION_LOG.md (D-014 local profile,
-# D-020 JWT Base64 secret, D-021 local datasource password), not here.
+# Runtime secrets carry NO committed defaults in any profile: POSTGRES_PASSWORD
+# and JWT_SECRET are plain ${ENV} placeholders here, so an unset value fails fast
+# at startup instead of falling back to a known credential. Supply them from the
+# environment or an un-committed .env file (copy .env.example; the onboarding
+# guide explains generation). The only convenience defaults that remain are the
+# LocalStack DUMMY AWS credentials (test/test — not real secrets) and non-secret
+# host/endpoint placeholders. Design rationale lives in DECISION_LOG.md (D-014
+# local profile, D-036 fail-fast runtime secrets, which supersedes the former
+# D-020/D-021 local credential defaults), not here.
 # =============================================================================
 
 spring:
   # ---------------------------------------------------------------------------
-  # Datasource - only the PASSWORD is overridden. The base file requires
-  # POSTGRES_PASSWORD (no default -> fail-fast); local adds a convenience default
-  # matching the docker-compose postgres service. The url/username (and their
-  # POSTGRES_HOST/PORT/DB/USER placeholders) already default to localhost /
-  # carddemo in the base file and are intentionally NOT redefined here.
+  # Datasource - the PASSWORD is a runtime secret and carries NO default in any
+  # profile: ${POSTGRES_PASSWORD} must be supplied from the environment or an
+  # un-committed .env file (see .env.example), so an unset value fails fast at
+  # startup rather than silently using a known credential (DECISION_LOG D-036).
+  # The url/username (and their POSTGRES_HOST/PORT/DB/USER placeholders) default
+  # to localhost / carddemo in the base file and are intentionally NOT redefined
+  # here. This redeclaration is retained only to document that the secret is
+  # required for the local profile too.
   # ---------------------------------------------------------------------------
   datasource:
-    password: ${POSTGRES_PASSWORD:carddemo}
+    password: ${POSTGRES_PASSWORD}
 
   # ---------------------------------------------------------------------------
   # JPA - developer visibility ONLY in local: echo and pretty-print the SQL that
@@ -89,17 +94,20 @@ spring:
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# CardDemo security - LOCAL-DEV JWT signing secret default so the app boots with
-# no extra setup. The value is a Base64-encoded key that JwtTokenService
-# Base64-decodes before building the HMAC key (DECISION_LOG D-020); it decodes to
-# 62 bytes, satisfying the >= 32-byte (256-bit) HS256 minimum. NON-PRODUCTION
-# ONLY - real environments inject a distinct JWT_SECRET. Token expiration-ms and
-# issuer are inherited from base.
+# CardDemo security - JWT signing secret. This is a runtime secret and carries NO
+# default in any profile: ${JWT_SECRET} must be supplied from the environment or
+# an un-committed .env file (see .env.example), so an unset value fails fast at
+# startup rather than booting with a known signing key (DECISION_LOG D-036). The
+# value is a Base64-encoded key that JwtTokenService Base64-decodes before
+# building the HMAC key; the decoded key must be >= 32 bytes (256 bits) for HS256
+# (generate one with `openssl rand -base64 48`). Token expiration-ms and issuer
+# are inherited from base. This redeclaration is retained only to document that
+# the secret is required for the local profile too.
 # -----------------------------------------------------------------------------
 carddemo:
   security:
     jwt:
-      secret: ${JWT_SECRET:Y2FyZGRlbW8tbG9jYWwtZGV2LW9ubHktand0LXNpZ25pbmcta2V5LW5vdC1mb3ItcHJvZHVjdGlvbi11c2U=}
+      secret: ${JWT_SECRET}
 
 # -----------------------------------------------------------------------------
 # Logging - raise the application package to DEBUG for local troubleshooting
