@@ -57,6 +57,14 @@ public class GlobalExceptionHandler {
     private static final String GENERIC_INTERNAL_DETAIL =
             "An internal error occurred. Please contact support if the problem persists.";
 
+    private static final String GENERIC_NOT_FOUND_DETAIL =
+            "The requested resource could not be found.";
+
+    private static final String GENERIC_DUPLICATE_DETAIL =
+            "A resource with the supplied identifier already exists.";
+
+    private static final String UNKNOWN_ENTITY_TYPE = "unknown";
+
     private static final String TITLE_VALIDATION_FAILED = "Validation Failed";
 
     private static final String TITLE_CONCURRENT_UPDATE = "Concurrent Update Conflict";
@@ -72,18 +80,23 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex,
             HttpServletRequest request) {
-        log.warn("Record not found -> 404: {}", ex.getMessage());
+        // Log only the non-sensitive entity type plus the correlation ID (added by problem()).
+        // The exception message and key can contain record identifiers (card numbers, account,
+        // customer, or user IDs) and must never be logged or returned to the caller (R1).
+        log.warn("Record not found -> 404 (entityType={})", safeEntityType(ex.getEntityType()));
         ProblemDetail body = problem(HttpStatus.NOT_FOUND, "Resource Not Found",
-                ex.getMessage(), "not-found", request);
+                notFoundDetail(ex.getEntityType()), "not-found", request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 
     @ExceptionHandler(DuplicateRecordException.class)
     public ResponseEntity<ProblemDetail> handleDuplicateRecord(DuplicateRecordException ex,
             HttpServletRequest request) {
-        log.warn("Duplicate record -> 409: {}", ex.getMessage());
+        // Sanitized logging/response: the exception message and key embed the record identifier,
+        // so only the non-sensitive entity type is logged and the response detail is generic (R1).
+        log.warn("Duplicate record -> 409 (entityType={})", safeEntityType(ex.getEntityType()));
         ProblemDetail body = problem(HttpStatus.CONFLICT, "Duplicate Resource",
-                ex.getMessage(), "duplicate", request);
+                duplicateDetail(ex.getEntityType()), "duplicate", request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 
@@ -205,6 +218,45 @@ public class GlobalExceptionHandler {
         ProblemDetail body = problem(HttpStatus.INTERNAL_SERVER_ERROR, TITLE_INTERNAL_ERROR,
                 GENERIC_INTERNAL_DETAIL, SLUG_INTERNAL, request);
         return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
+    /**
+     * Returns the supplied entity type when present, or a non-sensitive
+     * placeholder otherwise. The entity type is a domain or operation label
+     * (for example {@code "Account"} or {@code "READ ACCTFILE"}) and never
+     * contains a record key, so it is safe for diagnostic logging.
+     *
+     * @param entityType the entity type carried by the exception, may be {@code null}
+     * @return a non-sensitive entity-type label, never {@code null}
+     */
+    private static String safeEntityType(String entityType) {
+        return (entityType != null && !entityType.isBlank()) ? entityType : UNKNOWN_ENTITY_TYPE;
+    }
+
+    /**
+     * Builds a generic not-found detail that never includes the record key. The
+     * entity type is included only when it is a non-sensitive label.
+     *
+     * @param entityType the entity type carried by the exception, may be {@code null}
+     * @return a key-free detail string for the 404 response body
+     */
+    private static String notFoundDetail(String entityType) {
+        return (entityType != null && !entityType.isBlank())
+                ? "The requested " + entityType + " could not be found."
+                : GENERIC_NOT_FOUND_DETAIL;
+    }
+
+    /**
+     * Builds a generic duplicate-resource detail that never includes the record
+     * key. The entity type is included only when it is a non-sensitive label.
+     *
+     * @param entityType the entity type carried by the exception, may be {@code null}
+     * @return a key-free detail string for the 409 response body
+     */
+    private static String duplicateDetail(String entityType) {
+        return (entityType != null && !entityType.isBlank())
+                ? "A " + entityType + " with the supplied identifier already exists."
+                : GENERIC_DUPLICATE_DETAIL;
     }
 
     private ProblemDetail problem(HttpStatus status, String title, String detail,

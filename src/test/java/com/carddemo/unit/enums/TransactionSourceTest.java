@@ -120,12 +120,8 @@ class TransactionSourceTest {
     }
 
     // ------------------------------------------------------------------
-    // fromLabel() — trims the trailing PIC X(10) space padding (CRITICAL)
-    //
-    // These padded literals are intentionally expressed as plain @Test
-    // String literals rather than via @CsvSource: JUnit's @CsvSource trims
-    // trailing whitespace by default (ignoreLeadingAndTrailingWhitespace),
-    // which would silently strip the padding and defeat the assertion.
+    // fromLabel() — strips the trailing PIC X(10) space padding while
+    // preserving the embedded space within multi-word labels
     // ------------------------------------------------------------------
 
     @Test

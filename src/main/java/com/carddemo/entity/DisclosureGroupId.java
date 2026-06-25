@@ -20,6 +20,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import java.io.Serializable;
 import java.util.Objects;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * Composite primary key for the {@code disclosure_group} table.
@@ -48,14 +50,22 @@ public class DisclosureGroupId implements Serializable {
      * Account group identifier. Source field {@code DIS-ACCT-GROUP-ID PIC X(10)}.
      * Mapped to a fixed-width {@code CHAR(10)} column; PostgreSQL {@code bpchar}
      * blank-pads on storage and ignores trailing spaces in equality comparison.
+     * Bound with {@link JdbcTypeCode}{@code (}{@link SqlTypes#CHAR}{@code )} so
+     * that Hibernate emits the {@code CHAR} JDBC type and passes schema
+     * validation under {@code ddl-auto=validate}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "acct_group_id", length = 10, columnDefinition = "char(10)")
     private String acctGroupId;
 
     /**
      * Transaction type code. Source field {@code DIS-TRAN-TYPE-CD PIC X(02)}.
-     * Mapped to a fixed-width {@code CHAR(2)} column.
+     * Mapped to a fixed-width {@code CHAR(2)} column. Bound with
+     * {@link JdbcTypeCode}{@code (}{@link SqlTypes#CHAR}{@code )} so that
+     * Hibernate emits the {@code CHAR} JDBC type and passes schema validation
+     * under {@code ddl-auto=validate}.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type_cd", length = 2, columnDefinition = "char(2)")
     private String tranTypeCd;
 

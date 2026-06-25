@@ -3,6 +3,8 @@ package com.carddemo.unit.entity;
 import com.carddemo.entity.DisclosureGroupId;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +49,20 @@ class DisclosureGroupIdTest {
         assertThat(field("acctGroupId").getAnnotation(Column.class).name()).isEqualTo("acct_group_id");
         assertThat(field("tranTypeCd").getAnnotation(Column.class).name()).isEqualTo("tran_type_cd");
         assertThat(field("tranCatCd").getAnnotation(Column.class).name()).isEqualTo("tran_cat_cd");
+    }
+
+    @Test
+    @DisplayName("fixed-width CHAR keys bind @JdbcTypeCode(SqlTypes.CHAR); INTEGER key does not")
+    void jdbcTypeCodeCharBinding() throws NoSuchFieldException {
+        JdbcTypeCode acctGroupBinding = field("acctGroupId").getAnnotation(JdbcTypeCode.class);
+        JdbcTypeCode tranTypeBinding = field("tranTypeCd").getAnnotation(JdbcTypeCode.class);
+        assertThat(acctGroupBinding).as("acctGroupId @JdbcTypeCode present").isNotNull();
+        assertThat(acctGroupBinding.value()).isEqualTo(SqlTypes.CHAR);
+        assertThat(tranTypeBinding).as("tranTypeCd @JdbcTypeCode present").isNotNull();
+        assertThat(tranTypeBinding.value()).isEqualTo(SqlTypes.CHAR);
+        assertThat(field("tranCatCd").getAnnotation(JdbcTypeCode.class))
+                .as("Integer tranCatCd must not carry a CHAR JDBC binding")
+                .isNull();
     }
 
     @Test

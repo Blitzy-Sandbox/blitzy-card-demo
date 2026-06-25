@@ -68,6 +68,7 @@ public class DateValidationService {
     private static final int LEAP_CYCLE = 4;
     private static final int CENTURY_LEAP_CYCLE = 400;
 
+    private static final int CCYYMMDD_LENGTH = 8;
     private static final int CCYY_BEGIN = 0;
     private static final int CCYY_END = 4;
     private static final int MM_END = 6;
@@ -102,16 +103,25 @@ public class DateValidationService {
      * Validates an eight-character {@code CCYYMMDD} date string and returns the
      * corresponding date.
      *
+     * <p>The value must be exactly eight characters long and contain only
+     * digits; a {@code null}, shorter, longer, or non-numeric value is rejected
+     * before the year, month, and day segments are split out. The eight-digit
+     * value is then validated through {@link #validateDateParts}.
+     *
      * @param ccyymmdd  the candidate date in {@code CCYYMMDD} form
      * @param fieldName the field label echoed in any validation message
      * @return the parsed {@link LocalDate}
-     * @throws ValidationException if any ordered check fails
+     * @throws ValidationException if the value is not exactly eight digits or if
+     *                             any ordered date check fails
      */
     public LocalDate validateCcyymmdd(String ccyymmdd, String fieldName) {
         String value = (ccyymmdd == null) ? "" : ccyymmdd;
-        String ccyy = substringSafe(value, CCYY_BEGIN, CCYY_END);
-        String mm = substringSafe(value, CCYY_END, MM_END);
-        String dd = substringSafe(value, MM_END, DD_END);
+        if (value.length() != CCYYMMDD_LENGTH || !isAllDigits(value, CCYYMMDD_LENGTH)) {
+            throw dateError(fieldName, " must be an 8 digit CCYYMMDD value.");
+        }
+        String ccyy = value.substring(CCYY_BEGIN, CCYY_END);
+        String mm = value.substring(CCYY_END, MM_END);
+        String dd = value.substring(MM_END, DD_END);
         return validateDateParts(ccyy, mm, dd, fieldName);
     }
 
@@ -339,12 +349,5 @@ public class DateValidationService {
         } catch (NumberFormatException ex) {
             return null;
         }
-    }
-
-    private static String substringSafe(String value, int start, int end) {
-        if (start >= value.length()) {
-            return "";
-        }
-        return value.substring(start, Math.min(end, value.length()));
     }
 }

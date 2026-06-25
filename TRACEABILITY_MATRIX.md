@@ -46,10 +46,10 @@ architectural decisions recorded in `DECISION_LOG.md`.
 
 | Sub-package | Contents |
 |---|---|
-| `model.entity` | 11 JPA entities (`Account`, `Card`, `Customer`, `CardCrossReference`, `Transaction`, `DailyTransaction`, `TransactionCategoryBalance`, `DisclosureGroup`, `TransactionType`, `TransactionCategory`, `UserSecurity`). |
-| `model.dto` | Request/response DTOs derived from BMS symbolic maps + `CommArea`, `MenuOption`, `StatementDto`. |
-| `model.enums` | `UserType`, `FileStatus`, `TransactionSource`, `RejectCode`. |
-| `model.key` | `@Embeddable` composite keys (`TransactionCategoryBalanceId`, `DisclosureGroupId`, `TransactionCategoryId`). |
+| `entity` | 11 JPA entities (`Account`, `Card`, `Customer`, `CardXref`, `Transaction`, `DailyTransaction`, `TransactionCategoryBalance`, `DisclosureGroup`, `TransactionType`, `TransactionCategory`, `User`). |
+| `dto` | Request/response DTOs derived from BMS symbolic maps + `CommArea`, `MenuOption`, `StatementDto`. |
+| `enums` | `FileStatusCode`, `RejectReasonCode`, `TransactionSource`, `TransactionTypeCode`. |
+| `entity` | `@Embeddable` composite keys (`TransactionCategoryBalanceId`, `DisclosureGroupId`, `TransactionCategoryId`). |
 | `repository` | 11 Spring Data JPA repositories (replace VSAM keyed/browse access). |
 | `service.{auth,account,card,transaction,billing,report,admin,menu,shared}` | 20 service classes (online program business logic + shared utilities). |
 | `controller` | 8 REST controllers (replace the 17 BMS online screens). |
@@ -143,7 +143,7 @@ server-side session.
 | `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `POST /api/auth/signin (response)` | BMS sign-on map (COSGN00) -> JSON response payload |
 | `COSGN00C.cbl` | `SEND-PLAIN-TEXT` | `AuthController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
 | `COSGN00C.cbl` | `POPULATE-HEADER-INFO` | `AuthenticationService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COSGN00C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findBySecUsrId()` | VSAM READ USRSEC -> JPA finder on UserSecurity |
+| `COSGN00C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | VSAM READ USRSEC -> JPA finder on User |
 
 ### COMEN01C.cbl — Main menu (txn `CM00`)
 
@@ -196,8 +196,8 @@ server-side session.
 | `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `editAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editAccount()` |
 | `COACTVWC.cbl` | `9000-READ-ACCT` | `AccountRepository` | `findById()` | VSAM READ -> JPA finder |
 | `COACTVWC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
-| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
-| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByXrefAcctId()` |
+| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
+| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findByXrefAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByXrefAcctId()` |
 | `COACTVWC.cbl` | `9300-GETACCTDATA-BYACCT` | `AccountRepository` | `findById()` | ACCTDAT keyed read -> JPA finder |
 | `COACTVWC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COACTVWC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | CUSTDAT keyed read -> JPA finder |
@@ -206,7 +206,7 @@ server-side session.
 | `COACTVWC.cbl` | `SEND-PLAIN-TEXT-EXIT` | `AccountController` | `buildErrorResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildErrorResponse()` |
 | `COACTVWC.cbl` | `SEND-LONG-TEXT` | `AccountController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
 | `COACTVWC.cbl` | `SEND-LONG-TEXT-EXIT` | `AccountController` | `buildErrorResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildErrorResponse()` |
-| `COACTVWC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
+| `COACTVWC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 
 ### COACTUPC.cbl — Account update (txn `CAUP`)
 
@@ -283,8 +283,8 @@ server-side session.
 | `COACTUPC.cbl` | `3400-SEND-SCREEN-EXIT` | `AccountController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COACTUPC.cbl` | `9000-READ-ACCT` | `AccountUpdateService` | `getAccount()` | VSAM READ ACCTDAT -> JPA findById (illustrative spec label was 9100-GETACCT-REQUEST) |
 | `COACTUPC.cbl` | `9000-READ-ACCT-EXIT` | `AccountUpdateService` | `getAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `getAccount()` |
-| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
-| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByXrefAcctId()` |
+| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findByXrefAcctId()` | XREF-by-account read -> JPA finder |
+| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findByXrefAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByXrefAcctId()` |
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT` | `AccountRepository` | `findById()` | ACCTDAT keyed read -> JPA finder |
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | CUSTDAT keyed read -> JPA finder |
@@ -295,8 +295,8 @@ server-side session.
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING-EXIT` | `AccountUpdateService` | `updateAccount()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateAccount()` |
 | `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC` | `AccountUpdateService` | `checkChangeInRecord()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
 | `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC-EXIT` | `AccountUpdateService` | `checkChangeInRecord()` | `PERFORM THRU` exit label — structured early-`return` boundary of `checkChangeInRecord()` |
-| `COACTUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `COACTUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handle()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handle()` |
+| `COACTUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `COACTUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handleUnexpected()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handleUnexpected()` |
 
 ### COCRDLIC.cbl — Card list (txn `CCLI`)
 
@@ -379,7 +379,7 @@ server-side session.
 | `COCRDSLC.cbl` | `SEND-LONG-TEXT-EXIT` | `CardController` | `buildErrorResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildErrorResponse()` |
 | `COCRDSLC.cbl` | `SEND-PLAIN-TEXT` | `CardController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
 | `COCRDSLC.cbl` | `SEND-PLAIN-TEXT-EXIT` | `CardController` | `buildErrorResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildErrorResponse()` |
-| `COCRDSLC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
+| `COCRDSLC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 
 ### COCRDUPC.cbl — Card update (txn `CCUP`)
 
@@ -428,8 +428,8 @@ server-side session.
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING-EXIT` | `CardUpdateService` | `updateCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateCard()` |
 | `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC` | `CardUpdateService` | `checkChangeInRecord()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
 | `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC-EXIT` | `CardUpdateService` | `checkChangeInRecord()` | `PERFORM THRU` exit label — structured early-`return` boundary of `checkChangeInRecord()` |
-| `COCRDUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `COCRDUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handle()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handle()` |
+| `COCRDUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `COCRDUPC.cbl` | `ABEND-ROUTINE-EXIT` | `GlobalExceptionHandler` | `handleUnexpected()` | `PERFORM THRU` exit label — structured early-`return` boundary of `handleUnexpected()` |
 
 ### COTRN00C.cbl — Transaction list (txn `CT00`)
 
@@ -480,8 +480,8 @@ server-side session.
 | `COTRN02C.cbl` | `SEND-TRNADD-SCREEN` | `TransactionController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COTRN02C.cbl` | `RECEIVE-TRNADD-SCREEN` | `TransactionController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COTRN02C.cbl` | `POPULATE-HEADER-INFO` | `TransactionAddService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COTRN02C.cbl` | `READ-CXACAIX-FILE` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
-| `COTRN02C.cbl` | `READ-CCXREF-FILE` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
+| `COTRN02C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
+| `COTRN02C.cbl` | `READ-CCXREF-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
 | `COTRN02C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COTRN02C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
 | `COTRN02C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
@@ -502,7 +502,7 @@ server-side session.
 | `COBIL00C.cbl` | `POPULATE-HEADER-INFO` | `BillPaymentService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COBIL00C.cbl` | `READ-ACCTDAT-FILE` | `AccountRepository` | `findById()` | READ ACCTDAT -> JPA finder |
 | `COBIL00C.cbl` | `UPDATE-ACCTDAT-FILE` | `BillPaymentService` | `updateAcctdatFile()` | @Transactional REWRITE -> repository save |
-| `COBIL00C.cbl` | `READ-CXACAIX-FILE` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
+| `COBIL00C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
 | `COBIL00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COBIL00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
 | `COBIL00C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
@@ -535,16 +535,16 @@ server-side session.
 | `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
 | `COUSR00C.cbl` | `PROCESS-PAGE-FORWARD` | `UserListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
 | `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserListService` | `previousPage()` | PF7 page-up -> Pageable previous page query |
-| `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserListService` | `mapToDto()` | User row -> UserSecurityDto list element |
+| `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserListService` | `mapToDto()` | User row -> UserDto list element |
 | `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserListService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR00C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `COUSR00C.cbl` | `SEND-USRLST-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR00C.cbl` | `RECEIVE-USRLST-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserListService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` | `UserSecurityRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
-| `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserSecurityRepository` | `findAll(Pageable)` | VSAM READNEXT -> next page element |
-| `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` | `UserSecurityRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
-| `COUSR00C.cbl` | `ENDBR-USER-SEC-FILE` | `UserSecurityRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
+| `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
+| `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM READNEXT -> next page element |
+| `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
+| `COUSR00C.cbl` | `ENDBR-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
 
 ### COUSR01C.cbl — User add (txn `CU01`)
 
@@ -556,7 +556,7 @@ server-side session.
 | `COUSR01C.cbl` | `SEND-USRADD-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR01C.cbl` | `RECEIVE-USRADD-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COUSR01C.cbl` | `POPULATE-HEADER-INFO` | `UserAddService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COUSR01C.cbl` | `WRITE-USER-SEC-FILE` | `UserSecurityRepository` | `save()` | WRITE USRSEC -> JPA insert (BCrypt-hashed password) |
+| `COUSR01C.cbl` | `WRITE-USER-SEC-FILE` | `UserRepository` | `save()` | WRITE USRSEC -> JPA insert (BCrypt-hashed password) |
 | `COUSR01C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserAddService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR01C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserAddService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 
@@ -571,7 +571,7 @@ server-side session.
 | `COUSR02C.cbl` | `SEND-USRUPD-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR02C.cbl` | `RECEIVE-USRUPD-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserUpdateService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COUSR02C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findBySecUsrId()` | READ USRSEC -> JPA finder |
+| `COUSR02C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
 | `COUSR02C.cbl` | `UPDATE-USER-SEC-FILE` | `UserUpdateService` | `updateUserSecFile()` | @Transactional REWRITE -> repository save |
 | `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
@@ -587,7 +587,7 @@ server-side session.
 | `COUSR03C.cbl` | `SEND-USRDEL-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR03C.cbl` | `RECEIVE-USRDEL-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserDeleteService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COUSR03C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findBySecUsrId()` | READ USRSEC -> JPA finder |
+| `COUSR03C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
 | `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` | `UserDeleteService` | `deleteUserSecFile()` | @Transactional DELETE -> repository delete |
 | `COUSR03C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserDeleteService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR03C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserDeleteService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
@@ -596,8 +596,12 @@ server-side session.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDate()` | Date-validation mainline -> LocalDate parse/validate (replaces LE CEEDAYS) |
-| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateDate()` | `PERFORM THRU` exit label — structured early-`return` boundary of `validateDate()` |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateCcyymmdd()` | Date-validation mainline for an 8-char `CCYYMMDD` string -> `LocalDate` parse/validate (replaces LE CEEDAYS); enforces exact length 8 and all-digit content before parsing |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDateParts()` | Same validation entered from separate `YYYY`/`MM`/`DD` segments (assembles then validates); used where callers supply discrete date fields |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `isValidDate()` | Non-throwing boolean predicate variant of the `CCYYMMDD` date-validation routine |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `parseIsoDate()` | Strict hyphenated `uuuu-MM-dd` parse used where a date arrives in ISO form |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDateOfBirth()` | Date-of-birth validation (not-null, strictly before current date); overloads for segment and `LocalDate` inputs |
+| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateCcyymmdd()` | `PERFORM THRU` exit label — structured early-`return` boundary of the date-validation routine |
 
 ## 4. Batch Programs — Paragraph → Java Mapping
 
@@ -611,7 +615,8 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 |---|---|---|---|---|
 | `CBTRN01C.cbl` | `MAIN-PARA` | `DailyTransactionReader` | `process()` | Batch mainline -> chunk-oriented Step (reader/processor/writer) driven by READACCT (daily-txn validation driver) |
 | `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `DailyTransactionReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
-| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `DailyTransactionReader` | `lookupCardXref()` | XREF keyed lookup -> CardCrossReferenceRepository |
+| `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
+| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `DailyTransactionReader` | `lookupCardXref()` | XREF keyed lookup -> CardXrefRepository |
 | `CBTRN01C.cbl` | `3000-READ-ACCOUNT` | `AccountRepository` | `findById()` | ACCTFILE keyed read -> JPA finder |
 | `CBTRN01C.cbl` | `0000-DALYTRAN-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBTRN01C.cbl` | `0100-CUSTFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
@@ -625,8 +630,8 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN01C.cbl` | `9300-CARDFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN01C.cbl` | `9400-ACCTFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN01C.cbl` | `9500-TRANFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBTRN01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBTRN01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBTRN01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBTRN02C.cbl — Transaction posting engine (job `POSTTRAN`)
 
@@ -656,8 +661,8 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN02C.cbl` | `9400-ACCTFILE-CLOSE` | `TransactionPostingProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN02C.cbl` | `9500-TCATBALF-CLOSE` | `TransactionPostingProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `TransactionPostingProcessor` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
-| `CBTRN02C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBTRN02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBTRN02C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBTRN02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBTRN03C.cbl — Transaction detail report (job `TRANREPT`)
 
@@ -678,7 +683,7 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN03C.cbl` | `0300-TRANTYPE-OPEN` | `TransactionReportProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBTRN03C.cbl` | `0400-TRANCATG-OPEN` | `TransactionReportProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBTRN03C.cbl` | `0500-DATEPARM-OPEN` | `TransactionReportProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` | `TransactionReportProcessor` | `lookupCardXref()` | XREF keyed lookup -> CardCrossReferenceRepository |
+| `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` | `TransactionReportProcessor` | `lookupCardXref()` | XREF keyed lookup -> CardXrefRepository |
 | `CBTRN03C.cbl` | `1500-B-LOOKUP-TRANTYPE` | `TransactionReportProcessor` | `lookupTranType()` | TRANTYPE lookup -> TransactionTypeRepository (enrichment) |
 | `CBTRN03C.cbl` | `1500-C-LOOKUP-TRANCATG` | `TransactionReportProcessor` | `lookupTranCategory()` | TRANCATG lookup -> TransactionCategoryRepository (enrichment) |
 | `CBTRN03C.cbl` | `9000-TRANFILE-CLOSE` | `TransactionReportProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
@@ -687,39 +692,42 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN03C.cbl` | `9300-TRANTYPE-CLOSE` | `TransactionReportProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN03C.cbl` | `9400-TRANCATG-CLOSE` | `TransactionReportProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN03C.cbl` | `9500-DATEPARM-CLOSE` | `TransactionReportProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN03C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBTRN03C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBTRN03C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBTRN03C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBACT01C.cbl — Account master file reader (job `READACCT`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `AccountFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
 | `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` | `AccountFileReader` | `logRecord()` | DISPLAY record -> structured debug log of mapped entity |
 | `CBACT01C.cbl` | `0000-ACCTFILE-OPEN` | `AccountFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBACT01C.cbl` | `9000-ACCTFILE-CLOSE` | `AccountFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT01C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBACT01C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBACT01C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBACT01C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBACT02C.cbl — Card master file reader (job `READCARD`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CBACT02C.cbl` | `1000-CARDFILE-GET-NEXT` | `CardFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT02C.cbl` | `1000-CARDFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
 | `CBACT02C.cbl` | `0000-CARDFILE-OPEN` | `CardFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBACT02C.cbl` | `9000-CARDFILE-CLOSE` | `CardFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT02C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBACT02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBACT02C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBACT02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBACT03C.cbl — Card cross-reference file reader (job `READXREF`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CBACT03C.cbl` | `1000-XREFFILE-GET-NEXT` | `CrossReferenceFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT03C.cbl` | `1000-XREFFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
 | `CBACT03C.cbl` | `0000-XREFFILE-OPEN` | `CrossReferenceFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBACT03C.cbl` | `9000-XREFFILE-CLOSE` | `CrossReferenceFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT03C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBACT03C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBACT03C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBACT03C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBACT04C.cbl — Interest calculation (job `INTCALC`)
 
@@ -733,7 +741,7 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `InterestCalculationProcessor` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBACT04C.cbl` | `1050-UPDATE-ACCOUNT` | `AccountRepository` | `save()` | Account balance rewrite -> JPA save within @Transactional chunk |
 | `CBACT04C.cbl` | `1100-GET-ACCT-DATA` | `AccountRepository` | `findById()` | ACCTFILE keyed read -> JPA finder |
-| `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardCrossReferenceRepository` | `findByXrefAcctId()` | XREF keyed read -> JPA finder |
+| `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardXrefRepository` | `findByXrefAcctId()` | XREF keyed read -> JPA finder |
 | `CBACT04C.cbl` | `1200-GET-INTEREST-RATE` | `InterestCalculationProcessor` | `getInterestRate()` | DISCGRP keyed lookup -> DisclosureGroupRepository |
 | `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` | `InterestCalculationProcessor` | `getDefaultInterestRate()` | DEFAULT disclosure-group fallback when specific group key not found |
 | `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` | `InterestCalculationProcessor` | `computeInterest()` | Formula (TRAN-CAT-BAL * DIS-INT-RATE)/1200 in BigDecimal, RoundingMode.HALF_EVEN |
@@ -745,18 +753,19 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBACT04C.cbl` | `9300-ACCTFILE-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBACT04C.cbl` | `9400-TRANFILE-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestCalculationProcessor` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
-| `CBACT04C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBACT04C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBACT04C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBACT04C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBCUS01C.cbl — Customer master file reader (job `READCUST`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CBCUS01C.cbl` | `1000-CUSTFILE-GET-NEXT` | `CustomerFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBCUS01C.cbl` | `1000-CUSTFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
 | `CBCUS01C.cbl` | `0000-CUSTFILE-OPEN` | `CustomerFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
 | `CBCUS01C.cbl` | `9000-CUSTFILE-CLOSE` | `CustomerFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBCUS01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
-| `CBCUS01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `map()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
+| `CBCUS01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
+| `CBCUS01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
 ### CBSTM03A.CBL — Statement generation (text + HTML) (job `CREASTMT`)
 
@@ -786,7 +795,7 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBSTM03A.CBL` | `9200-XREFFILE-CLOSE` | `StatementProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBSTM03A.CBL` | `9300-CUSTFILE-CLOSE` | `StatementProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBSTM03A.CBL` | `9400-ACCTFILE-CLOSE` | `StatementProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBSTM03A.CBL` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handle()` | ABEND routine -> @ControllerAdvice exception translation (CardDemoException) |
+| `CBSTM03A.CBL` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 
 ### CBSTM03B.CBL — Callable file-service subroutine (job `CREASTMT (file-service subroutine)`)
 
@@ -815,29 +824,29 @@ services and externalized JSON resources.
 
 | Copybook | Record / Purpose | Java Target | Notes |
 |---|---|---|---|
-| `CVACT01Y.cpy` | ACCOUNT-RECORD (300B) | `model.entity.Account` (+ `repository.AccountRepository`) | COMP-3 `ACCT-CURR-BAL`/`ACCT-CREDIT-LIMIT` → `BigDecimal(2)`; `@Version` optimistic lock |
-| `CVACT02Y.cpy` | CARD-RECORD (150B) | `model.entity.Card` (+ `repository.CardRepository`) | FK to `Account`; active-status enum; `@Version` |
+| `CVACT01Y.cpy` | ACCOUNT-RECORD (300B) | `entity.Account` (+ `repository.AccountRepository`) | COMP-3 `ACCT-CURR-BAL`/`ACCT-CREDIT-LIMIT` → `BigDecimal(2)`; `@Version` optimistic lock |
+| `CVACT02Y.cpy` | CARD-RECORD (150B) | `entity.Card` (+ `repository.CardRepository`) | FK to `Account`; active-status enum; `@Version` |
 | `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `entity.CardXref` (+ `repository.CardXrefRepository`) | XREFFILE base+AIX READ @ `27d6c6f`: base key `XREF-CARD-NUM` READ → inherited `findById()`; CXACAIX alternate index (`XREF-ACCT-ID`, `KEYS(11,25) NONUNIQUEKEY`) → `findByXrefAcctId()`; `CHAR(16)` PK mapped via `@JdbcTypeCode(SqlTypes.CHAR)`; FILLER X(14) not persisted |
-| `CVCUS01Y.cpy` | CUSTOMER-RECORD (500B) | `model.entity.Customer` (+ `repository.CustomerRepository`) | `@Version`; 500-byte field mapping; SSN handling |
-| `CUSTREC.cpy` | CUSTOMER-RECORD (shared copy) | `model.entity.Customer` | Same 500B layout as `CVCUS01Y` (shared record definition) |
-| `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `model.entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT`; timestamp fields |
-| `CVTRA06Y.cpy` | DALYTRAN-RECORD (350B) | `model.entity.DailyTransaction` (+ `repository.DailyTransactionRepository`) | Batch staging table; mirrors `Transaction` layout |
-| `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `model.entity.TransactionCategoryBalance` + `model.key.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
+| `CVCUS01Y.cpy` | CUSTOMER-RECORD (500B) | `entity.Customer` (+ `repository.CustomerRepository`) | `@Version`; 500-byte field mapping; SSN handling |
+| `CUSTREC.cpy` | CUSTOMER-RECORD (shared copy) | `entity.Customer` | Same 500B layout as `CVCUS01Y` (shared record definition) |
+| `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT`; timestamp fields |
+| `CVTRA06Y.cpy` | DALYTRAN-RECORD (350B) | `entity.DailyTransaction` (+ `repository.DailyTransactionRepository`) | Batch staging table; mirrors `Transaction` layout |
+| `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `entity.TransactionCategoryBalance` + `entity.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
 | `CVTRA02Y.cpy` | DIS-GROUP-RECORD (50B) | `com.carddemo.entity.DisclosureGroup` + `com.carddemo.entity.DisclosureGroupId` | `@EmbeddedId` (`DisclosureGroupId`); `DIS-INT-RATE S9(04)V99` → `BigDecimal` `dis_int_rate NUMERIC(6,2)` (precision=6, scale=2); feeds interest formula `(TRAN-CAT-BAL × DIS-INT-RATE)/1200` (CBACT04C → `InterestProcessor`, HALF_EVEN); no `@Version`; FILLER X(28) not persisted; @ `27d6c6f` |
-| `CVTRA03Y.cpy` | TRAN-TYPE-RECORD | `model.entity.TransactionType` | 2-byte type-code PK; read-only reference data |
+| `CVTRA03Y.cpy` | TRAN-TYPE-RECORD | `entity.TransactionType` | 2-byte type-code PK; read-only reference data |
 | `CVTRA03Y.cpy` | TRAN-TYPE → TransactionTypeConverter (enum bridge) | `entity.TransactionTypeConverter` | JPA `@Converter(autoApply=false)`: `enums.TransactionTypeCode` ↔ `transactions.tran_type_cd CHAR(2)`; null/blank-safe decode; @ `27d6c6f` |
-| `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `model.entity.TransactionCategory` + `model.key.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
+| `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `entity.TransactionCategory` + `entity.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
 | `CSUSR01Y.cpy` | SEC-USER-DATA (80B) | `com.carddemo.entity.User` | Plaintext password → BCrypt column `VARCHAR(60)` (constraint C-003); `user_type` kept as `CHAR(1)` String (no enum) |
-| `COSTM01.CPY` | Statement TRNX reporting layout | `model.dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
-| `COMEN02Y.cpy` | Main-menu option table (10) | `service.menu.MainMenuService` + `model.dto.MenuOption` | 10-option routing metadata |
-| `COADM02Y.cpy` | Admin-menu option table (4) | `service.menu.AdminMenuService` + `model.dto.MenuOption` | 4-option admin routing metadata |
-| `COCOM01Y.cpy` | CARDDEMO-COMMAREA | `model.dto.CommArea` + JWT claims / `SignOnResponse` | Cross-screen state → stateless JWT + DTO; no server session |
+| `COSTM01.CPY` | Statement TRNX reporting layout | `dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
+| `COMEN02Y.cpy` | Main-menu option table (10) | `service.menu.MainMenuService` + `dto.MenuOption` | 10-option routing metadata |
+| `COADM02Y.cpy` | Admin-menu option table (4) | `service.menu.AdminMenuService` + `dto.MenuOption` | 4-option admin routing metadata |
+| `COCOM01Y.cpy` | CARDDEMO-COMMAREA | `dto.CommArea` + JWT claims / `SignOnResponse` | Cross-screen state → stateless JWT + DTO; no server session |
 | `CVCRD01Y.cpy` | CC-WORK-AREAS (card work) | Request-context work fields (transient) | Card scratch/work fields → per-request context |
-| `CSDAT01Y.cpy` | Date working storage | `service.shared.DateValidationService` | Date WS fields → `java.time.LocalDate` |
-| `CSUTLDWY.cpy` | Date-validation work fields | `service.shared.DateValidationService` | CCYYMMDD / leap-year / range work area |
-| `CSUTLDPY.cpy` | Date-parameter passing area | `service.shared.DateValidationService` | Date parameter structure for validation calls |
-| `CSLKPCDY.cpy` | NANPA / US-state / ZIP lookup tables | `service.shared.ValidationLookupService` + `resources/validation/*.json` | Externalized to `nanpa-area-codes.json`, `us-state-codes.json`, `state-zip-prefixes.json` |
-| `CSMSG01Y.cpy` | User-message constants | Message constants / `model.enums` | Response message catalog |
+| `CSDAT01Y.cpy` | Date working storage | `service.DateValidationService` | Date WS fields → `java.time.LocalDate` |
+| `CSUTLDWY.cpy` | Date-validation work fields | `service.DateValidationService` | CCYYMMDD / leap-year / range work area |
+| `CSUTLDPY.cpy` | Date-parameter passing area | `service.DateValidationService` | Date parameter structure for validation calls |
+| `CSLKPCDY.cpy` | NANPA / US-state / ZIP lookup tables | `service.ValidationLookupService` + `resources/validation/*.json` | Externalized to `nanpa-area-codes.json`, `us-state-codes.json`, `state-zip-prefixes.json` |
+| `CSMSG01Y.cpy` | User-message constants | Message constants / `enums` | Response message catalog |
 | `CSMSG02Y.cpy` | ABEND-DATA message structure | Exception message constants (`GlobalExceptionHandler`) | Abend messages → structured error payloads |
 | `COTTL01Y.cpy` | Banner / title constants | Application title constants | Header/title metadata in responses |
 | `CSSETATY.cpy` | Invalid-field highlight attributes | Controller bean-validation error mapping | Field highlight → structured `400` field-error responses |
@@ -867,10 +876,10 @@ behavior).
 | `COTRN02.bms` | `COTRN02.CPY` | `TransactionDto` (add) | `TransactionController` | Txn-add field contract |
 | `COBIL00.bms` | `COBIL00.CPY` | `BillPaymentRequest` | `BillingController` | Bill-pay field contract |
 | `CORPT00.bms` | `CORPT00.CPY` | `ReportRequest` | `ReportController` | Report-criteria fields (monthly/yearly/custom) |
-| `COUSR00.bms` | `COUSR00.CPY` | `UserSecurityDto` (list) | `UserAdminController` | User-list field contract |
-| `COUSR01.bms` | `COUSR01.CPY` | `UserSecurityDto` (add) | `UserAdminController` | User-add field contract |
-| `COUSR02.bms` | `COUSR02.CPY` | `UserSecurityDto` (update) | `UserAdminController` | User-update field contract |
-| `COUSR03.bms` | `COUSR03.CPY` | `UserSecurityDto` (delete) | `UserAdminController` | User-delete field contract |
+| `COUSR00.bms` | `COUSR00.CPY` | `UserDto` (list) | `UserAdminController` | User-list field contract |
+| `COUSR01.bms` | `COUSR01.CPY` | `UserDto` (add) | `UserAdminController` | User-add field contract |
+| `COUSR02.bms` | `COUSR02.CPY` | `UserDto` (update) | `UserAdminController` | User-update field contract |
+| `COUSR03.bms` | `COUSR03.CPY` | `UserDto` (delete) | `UserAdminController` | User-delete field contract |
 
 ## 7. JCL → Spring Batch / Schema / Storage / Lifecycle
 
@@ -1000,9 +1009,9 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `service.billing.BillPaymentService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
 | `service.report.ReportSubmissionService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
 | `service.admin.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserAdminController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
-| `service.shared.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
-| `service.shared.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
-| `service.shared.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |
+| `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
+| `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
+| `service.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |
 | `batch.processors.TransactionPostingProcessor` / `batch.writers.{TransactionWriter,RejectWriter}` | `CBTRN02C.cbl` (+ `POSTTRAN` JCL) |
 | `batch.processors.InterestCalculationProcessor` | `CBACT04C.cbl` (+ `INTCALC` JCL) |
 | `batch.processors.TransactionCombineProcessor` | `COMBTRAN` JCL |
@@ -1010,7 +1019,7 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `batch.processors.StatementProcessor` / `batch.writers.StatementWriter` / `batch.readers.StatementFileService` | `CBSTM03A.CBL`, `CBSTM03B.CBL` (+ `CREASTMT` JCL, `COSTM01`) |
 | `batch.readers.{AccountFileReader,CardFileReader,CrossReferenceFileReader,CustomerFileReader,DailyTransactionReader}` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` |
 | `batch.jobs.BatchPipelineOrchestrator` | `PRTCATBL` JCL + overall pipeline sequencing |
-| `model.entity.*` (11 entities) | `CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`/`CUSTREC`, `CVTRA05Y`, `CVTRA06Y`, `CVTRA01Y`, `CVTRA02Y`, `CVTRA03Y`, `CVTRA04Y`, `CSUSR01Y` |
+| `entity.*` (11 entities) | `CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`/`CUSTREC`, `CVTRA05Y`, `CVTRA06Y`, `CVTRA01Y`, `CVTRA02Y`, `CVTRA03Y`, `CVTRA04Y`, `CSUSR01Y` |
 | `exception.*` + `GlobalExceptionHandler` | FILE STATUS codes + ABEND routines across all programs (`CSMSG02Y`) |
 
 ## 10. Gate 8 Coverage Attestation

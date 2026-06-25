@@ -43,6 +43,12 @@ import org.springframework.stereotype.Component;
 public class FileStatusMapper {
 
     /**
+     * Operation label applied when a raw status is resolved outside an explicit
+     * I/O operation, such as the {@link #isSuccess(String)} convenience check.
+     */
+    private static final String STATUS_CHECK_OPERATION = "FILE STATUS CHECK";
+
+    /**
      * Translates a {@link FileStatusCode} into the matching outcome, returning
      * normally for benign statuses and throwing the corresponding typed
      * exception otherwise.
@@ -97,13 +103,12 @@ public class FileStatusMapper {
      * @throws DuplicateRecordException when the resolved status is
      *                                  {@link FileStatusCode#DUPLICATE_KEY}
      * @throws FileAccessException      when the resolved status is a logic or
-     *                                  I/O error
-     * @throws IllegalArgumentException when {@code twoCharStatus} is
-     *                                  {@code null}, blank, or not a recognized
-     *                                  non-{@code 9x} code
+     *                                  I/O error, or when {@code twoCharStatus}
+     *                                  is {@code null}, blank, or not a
+     *                                  recognized non-{@code 9x} code
      */
     public void check(String twoCharStatus, String operation, Object key) {
-        check(FileStatusCode.fromCode(twoCharStatus), operation, key);
+        check(resolve(twoCharStatus, operation), operation, key);
     }
 
     /**
@@ -135,11 +140,32 @@ public class FileStatusMapper {
      * @param twoCharStatus the raw two-character status value
      * @return {@code true} only when the resolved status is
      *         {@link FileStatusCode#SUCCESS}
-     * @throws IllegalArgumentException when {@code twoCharStatus} is
-     *                                  {@code null}, blank, or not a recognized
-     *                                  non-{@code 9x} code
+     * @throws FileAccessException when {@code twoCharStatus} is {@code null},
+     *                             blank, or not a recognized non-{@code 9x} code
      */
     public boolean isSuccess(String twoCharStatus) {
-        return isSuccess(FileStatusCode.fromCode(twoCharStatus));
+        return isSuccess(resolve(twoCharStatus, STATUS_CHECK_OPERATION));
+    }
+
+    /**
+     * Resolves a raw two-character {@code FILE STATUS} value into a
+     * {@link FileStatusCode}, converting any unrecognized, {@code null}, or
+     * blank value into a typed {@link FileAccessException}. This keeps every
+     * file-status failure inside the typed exception hierarchy so callers never
+     * encounter a raw {@link IllegalArgumentException} from status parsing.
+     *
+     * @param twoCharStatus the raw two-character status value; the {@code 9x}
+     *                      family resolves to {@link FileStatusCode#LOGIC_ERROR}
+     * @param operation     the name of the operation used for diagnostics
+     * @return the resolved {@link FileStatusCode}
+     * @throws FileAccessException when {@code twoCharStatus} is {@code null},
+     *                             blank, or not a recognized non-{@code 9x} code
+     */
+    private static FileStatusCode resolve(String twoCharStatus, String operation) {
+        try {
+            return FileStatusCode.fromCode(twoCharStatus);
+        } catch (IllegalArgumentException ex) {
+            throw new FileAccessException(operation, twoCharStatus, ex);
+        }
     }
 }

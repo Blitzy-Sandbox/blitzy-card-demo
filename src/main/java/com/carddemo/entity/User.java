@@ -22,6 +22,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.io.Serializable;
 import java.util.Objects;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * JPA entity for the security/authentication user record.
@@ -63,9 +65,14 @@ public class User implements Serializable {
 
     /**
      * Primary key. COBOL {@code SEC-USR-ID PIC X(08)} mapped to a fixed-length
-     * {@code CHAR(8)} column; not generated (assigned by the application).
+     * {@code CHAR(8)} column; not generated (assigned by the application). The
+     * {@link JdbcTypeCode}{@code (SqlTypes.CHAR)} binding makes the Hibernate
+     * {@code validate} schema check expect the JDBC {@code CHAR} type so it
+     * matches the PostgreSQL {@code bpchar} column and the application boots
+     * cleanly under {@code ddl-auto: validate}.
      */
     @Id
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "user_id", length = 8, columnDefinition = "char(8)")
     private String userId;
 
@@ -86,8 +93,12 @@ public class User implements Serializable {
 
     /**
      * Role discriminator. COBOL {@code SEC-USR-TYPE PIC X(01)} mapped to
-     * {@code CHAR(1)} ({@code A} = admin, {@code U} = user).
+     * {@code CHAR(1)} ({@code A} = admin, {@code U} = user). The
+     * {@link JdbcTypeCode}{@code (SqlTypes.CHAR)} binding aligns this
+     * {@code String} mapping with the fixed-length {@code CHAR(1)} column so
+     * Hibernate schema validation accepts the PostgreSQL {@code bpchar} type.
      */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "user_type", length = 1, columnDefinition = "char(1)")
     private String userType;
 
