@@ -1,0 +1,197 @@
+# =============================================================================
+# CardDemo - BASE Spring Boot configuration (profile-agnostic).
+#
+# Loaded for EVERY profile. Profile-specific overrides (LocalStack / Testcontainers
+# endpoints, log levels, injected credentials) live in:
+#   - application-local.yml  (local development against Docker Compose / LocalStack)
+#   - application-test.yml    (Testcontainers integration profile)
+#
+# All secrets/credentials are ${ENV_VAR} placeholders only; this base file carries
+# non-secret operational defaults (ports, region, logical resource names) suitable
+# for local development. Design rationale is recorded in DECISION_LOG.md, not here.
+# =============================================================================
+
+spring:
+  application:
+    name: carddemo
+  # Developer convenience: when no profile is selected (SPRING_PROFILES_ACTIVE /
+  # -Dspring-boot.run.profiles), fall back to "local". Never hardcode profiles.active.
+  profiles:
+    default: local
+  main:
+    # Quoted to keep YAML from coercing the unquoted token off -> boolean false.
+    banner-mode: "off"
+  # Allow in-flight requests / batch chunks to finish on shutdown (paired with
+  # server.shutdown: graceful below).
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  # ---------------------------------------------------------------------------
+  # Datasource - PostgreSQL 16, fully env-driven with local-dev defaults that
+  # match docker-compose. The "carddemo" password is a LOCAL-DEV default only;
+  # real deployments override POSTGRES_PASSWORD via the environment.
+  # ---------------------------------------------------------------------------
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:carddemo}
+    username: ${POSTGRES_USER:carddemo}
+    password: ${POSTGRES_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      pool-name: CardDemoHikariPool
+
+  # ---------------------------------------------------------------------------
+  # JPA / Hibernate - Flyway owns the schema; Hibernate only validates that the
+  # entity mappings agree with the Flyway-created tables. Never create/update.
+  # ---------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # ---------------------------------------------------------------------------
+  # Flyway - schema migration (V1 schema, V2 indexes, V3 seed) under
+  # classpath:db/migration (sibling db/ folder of this resources root).
+  # ---------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    validate-on-migrate: true
+
+  # ---------------------------------------------------------------------------
+  # Spring Batch - jobs MUST NOT auto-run on boot; they are triggered explicitly
+  # (REST / scheduler) or via the SQS FIFO report-bridge consumer. Spring Batch
+  # owns its BATCH_* metadata tables (not part of Flyway's business schema).
+  # ---------------------------------------------------------------------------
+  batch:
+    job:
+      enabled: false
+    jdbc:
+      initialize-schema: always
+      table-prefix: BATCH_
+
+  # ---------------------------------------------------------------------------
+  # Spring Cloud AWS (3.3.0) - base region + credential placeholders only.
+  # Empty credential defaults let the default AWS credential chain apply when
+  # unset; local/test profiles inject test/test. The LocalStack endpoint
+  # override lives in application-local.yml / application-test.yml, NOT here.
+  # ---------------------------------------------------------------------------
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID:}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:}
+
+# -----------------------------------------------------------------------------
+# Server - port, graceful shutdown, and structured error surface (no stack
+# traces) so GlobalExceptionHandler / bean-validation errors are visible.
+# -----------------------------------------------------------------------------
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+
+# -----------------------------------------------------------------------------
+# Actuator / Observability - health (with k8s probes + readiness gated on DB),
+# Prometheus scrape endpoint, common metric tag, full tracing sampling locally,
+# and OTLP trace export to Jaeger.
+# -----------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: always
+      group:
+        readiness:
+          include: readinessState,db
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+  metrics:
+    tags:
+      application: carddemo
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  tracing:
+    sampling:
+      probability: ${TRACING_SAMPLE_RATE:1.0}
+  otlp:
+    tracing:
+      endpoint: ${OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+  info:
+    env:
+      enabled: true
+
+# Build/runtime identity surfaced at /actuator/info.
+info:
+  app:
+    name: CardDemo
+    description: Cloud-native Java 25 + Spring Boot migration of the AWS CardDemo mainframe application
+    version: 1.0.0
+
+# -----------------------------------------------------------------------------
+# CardDemo custom namespace - externalized resource names + security + batch
+# tuning that the @ConfigurationProperties / @Value beans bind to. The S3/SQS/SNS
+# names MUST match localstack-init/init-aws.sh.
+# -----------------------------------------------------------------------------
+carddemo:
+  aws:
+    s3:
+      input-bucket: ${S3_INPUT_BUCKET:carddemo-batch-input}
+      output-bucket: ${S3_OUTPUT_BUCKET:carddemo-batch-output}
+      statement-bucket: ${S3_STATEMENT_BUCKET:carddemo-statements}
+    sqs:
+      # FIFO queue for the CORPT00C -> SQS report-submission bridge (F-011).
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+    sns:
+      # Matches the topic name provisioned by localstack-init/init-aws.sh.
+      topic: ${SNS_REPORT_TOPIC:carddemo-notifications}
+  security:
+    jwt:
+      # No default: must be supplied by the environment (fail-fast in non-local).
+      secret: ${JWT_SECRET}
+      expiration-ms: ${JWT_EXPIRATION_MS:3600000}
+      issuer: carddemo
+  batch:
+    chunk-size: ${BATCH_CHUNK_SIZE:100}
+    interest:
+      # Legacy CBACT04C PARM '2022071800' decodes to run-date 2022-07-18
+      # (see app/jcl/INTCALC.jcl); overridable as a job parameter.
+      default-run-date: ${INTEREST_RUN_DATE:2022-07-18}
+
+# -----------------------------------------------------------------------------
+# Logging - baseline levels only. logback-spring.xml owns appenders / JSON
+# encoding; logging.config is intentionally NOT set (Spring Boot auto-detects it).
+# -----------------------------------------------------------------------------
+logging:
+  level:
+    root: INFO
+    com.carddemo: INFO
+    org.springframework.batch: INFO
+    org.flywaydb: INFO
