@@ -19,11 +19,11 @@ package com.carddemo.service;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtException;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.io.Decoders;
 import io.jsonwebtoken.security.Keys;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Date;
 import javax.crypto.SecretKey;
@@ -60,9 +60,11 @@ public class JwtTokenService {
     /**
      * Creates the token service from externalized signing configuration.
      *
-     * @param secret       the HMAC-SHA shared secret; it must be at least
-     *                     32 bytes (256 bits) so that it is strong enough for
-     *                     HS256, otherwise key derivation fails fast at startup
+     * @param secret       the Base64-encoded HMAC-SHA shared secret; it is
+     *                     Base64-decoded before use and the decoded key must be
+     *                     at least 32 bytes (256 bits) so that it is strong
+     *                     enough for HS256, otherwise key derivation fails fast
+     *                     at startup
      * @param expirationMs the token time-to-live, in milliseconds, measured from
      *                     the instant of issuance
      * @param issuer       the {@code iss} value stamped into every issued token
@@ -72,7 +74,7 @@ public class JwtTokenService {
             @Value("${carddemo.security.jwt.secret}") String secret,
             @Value("${carddemo.security.jwt.expiration-ms}") long expirationMs,
             @Value("${carddemo.security.jwt.issuer}") String issuer) {
-        this.signingKey = Keys.hmacShaKeyFor(secret.getBytes(StandardCharsets.UTF_8));
+        this.signingKey = Keys.hmacShaKeyFor(Decoders.BASE64.decode(secret));
         this.expirationMs = expirationMs;
         this.issuer = issuer;
     }

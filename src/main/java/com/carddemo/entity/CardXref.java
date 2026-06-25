@@ -172,18 +172,4 @@ public class CardXref implements Serializable {
     public int hashCode() {
         return Objects.hash(xrefCardNum);
     }
-
-    /**
-     * Returns a concise, human-readable representation of this cross-reference.
-     *
-     * @return a string describing the card number, customer id, and account id
-     */
-    @Override
-    public String toString() {
-        return "CardXref{"
-                + "xrefCardNum='" + xrefCardNum + '\''
-                + ", xrefCustId=" + xrefCustId
-                + ", xrefAcctId=" + xrefAcctId
-                + '}';
-    }
 }

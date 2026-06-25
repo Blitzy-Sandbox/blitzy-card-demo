@@ -16,7 +16,7 @@ public record StatementDto(
         @Size(max = 4) @Pattern(regexp = "\\d{1,4}") String categoryCode,
         @Size(max = 10) String source,
         @Size(max = 100) String description,
-        @Digits(integer = 9, fraction = 2) BigDecimal amount,
+        @Digits(integer = 10, fraction = 2) BigDecimal amount,
         @Size(max = 9) @Pattern(regexp = "\\d{1,9}") String merchantId,
         @Size(max = 50) String merchantName,
         @Size(max = 50) String merchantCity,

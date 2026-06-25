@@ -429,29 +429,4 @@ public class Account implements Serializable {
     public int hashCode() {
         return Objects.hash(acctId);
     }
-
-    /**
-     * Returns a diagnostic representation of this account. The entity holds no
-     * secrets, so every field is rendered.
-     *
-     * @return a string representation of this account
-     */
-    @Override
-    public String toString() {
-        return "Account{"
-                + "acctId=" + acctId
-                + ", activeStatus=" + activeStatus
-                + ", currBal=" + currBal
-                + ", creditLimit=" + creditLimit
-                + ", cashCreditLimit=" + cashCreditLimit
-                + ", openDate=" + openDate
-                + ", expirationDate=" + expirationDate
-                + ", reissueDate=" + reissueDate
-                + ", currCycCredit=" + currCycCredit
-                + ", currCycDebit=" + currCycDebit
-                + ", addrZip=" + addrZip
-                + ", groupId=" + groupId
-                + ", version=" + version
-                + '}';
-    }
 }

@@ -347,7 +347,7 @@
       "id": 5,
       "type": "stat",
       "title": "Total Transaction Amount",
-      "description": "Aggregate monetary value posted, from the Micrometer DistributionSummary carddemo.transaction.amount.total (PromQL carddemo_transaction_amount_total_sum). Secondary series shows transaction count (_count).",
+      "description": "Aggregate monetary value posted, from the Micrometer DistributionSummary carddemo.transaction.amount.total (PromQL carddemo_transaction_amount_sum; Micrometer strips the reserved _total suffix from non-counter meters). Secondary series shows transaction count (carddemo_transaction_amount_count).",
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
@@ -415,7 +415,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(carddemo_transaction_amount_total_sum)",
+          "expr": "sum(carddemo_transaction_amount_sum)",
           "legendFormat": "total amount",
           "range": true,
           "refId": "A"
@@ -426,7 +426,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum(carddemo_transaction_amount_total_count)",
+          "expr": "sum(carddemo_transaction_amount_count)",
           "legendFormat": "count",
           "range": true,
           "refId": "B"

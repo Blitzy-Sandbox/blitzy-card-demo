@@ -2,26 +2,18 @@
 <!--
     CardDemo - Structured Logging Configuration (Observability rule).
 
-    Purpose
-      Realizes the "Observability" deliverable: structured logging with correlation IDs and
-      trace/span propagation, shipped with the initial implementation.
+    Operational notes (factual; needed to maintain this file):
+      - Filename MUST be "logback-spring.xml" (not "logback.xml") so Spring Boot processes the
+        <springProfile> / <springProperty> extension elements used below.
+      - MDC keys consumed here are populated by:
+          com.carddemo.observability.CorrelationIdFilter -> "correlationId" (per HTTP request)
+          Micrometer Tracing (OpenTelemetry bridge)       -> "traceId" and "spanId"
+      - Output contract: non-"local" profiles (test, default, container) emit single-line JSON to
+        STDOUT (JSON_CONSOLE); the "local" profile emits human-readable colored text (PLAIN_CONSOLE).
+        Both emit correlationId / traceId / spanId whenever those keys are present in the MDC.
 
-    Companion components (populate the SLF4J MDC consumed below)
-      - com.carddemo.observability.CorrelationIdFilter -> MDC key "correlationId" (per HTTP request).
-      - Micrometer Tracing (OpenTelemetry bridge)       -> MDC keys "traceId" and "spanId".
-
-    Why this file is named "logback-spring.xml" (not "logback.xml")
-      Spring Boot only processes the <springProfile> and <springProperty> extension elements when
-      the Logback configuration is named "logback-spring.xml"; "logback.xml" is loaded by Logback
-      itself too early for those extensions to be understood.
-
-    Output contract
-      - Non-"local" profiles (test, default, container): single-line JSON to STDOUT (JSON_CONSOLE).
-      - "local" profile: human-readable colored text to STDOUT (PLAIN_CONSOLE), still carrying the IDs.
-      Both surfaces emit correlationId / traceId / spanId whenever those keys are present in the MDC.
-
-    Design rationale (profile split, field naming, restricted MDC emission) is documented in
-    DECISION_LOG.md per the Explainability rule, intentionally kept out of verbose XML comments.
+    Design rationale (profile split, field naming, restricted MDC emission, and the file-naming
+    requirement) is recorded in DECISION_LOG.md (decision D-027) per the Explainability rule.
 -->
 <configuration>
 

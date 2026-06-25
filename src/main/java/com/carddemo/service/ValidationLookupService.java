@@ -39,8 +39,13 @@ import java.util.Set;
  * ({@code 1260-EDIT-US-PHONE-NUM}, {@code 1270-EDIT-US-STATE-CD},
  * {@code 1280-EDIT-US-STATE-ZIP-CD}):</p>
  * <ul>
- *   <li>{@code VALID-PHONE-AREA-CODE} &mdash; North-American Numbering Plan
- *       (NANPA) three-digit area codes.</li>
+ *   <li>{@code VALID-GENERAL-PURP-CODE} &mdash; the general-purpose subset of
+ *       North-American Numbering Plan (NANPA) three-digit area codes accepted
+ *       by phone validation. The legacy account-update edit
+ *       ({@code COACTUPC} paragraph {@code 1265-EDIT-US-PHONE-NUM-A}) tests
+ *       {@code IF VALID-GENERAL-PURP-CODE}, so easy-recognizable / special
+ *       codes (for example {@code 200}, {@code 211}, {@code 911}) are rejected
+ *       even though they are valid NANPA assignments.</li>
  *   <li>{@code VALID-US-STATE-CODE} &mdash; two-character US state codes.</li>
  *   <li>{@code VALID-US-STATE-ZIP-CD2-COMBO} &mdash; valid combinations of a
  *       state code with the first two digits of its ZIP code.</li>
@@ -48,11 +53,13 @@ import java.util.Set;
  *
  * <p>The value lists are not embedded in this class. They are sourced from the
  * classpath JSON resources under {@code validation/} so the data is owned in a
- * single place. The loader is intentionally tolerant of the resource layout: an
- * area-code or state-code resource may be a bare JSON array or an object whose
- * field values are arrays (every array element is collected), and the
- * state/ZIP resource may be an array of {@code "SSNN"} combinations or an object
- * keyed by state code with arrays of two-digit ZIP prefixes.</p>
+ * single place. The NANPA resource exposes the copybook lists as named arrays;
+ * phone validation reads only the {@code validGeneralPurposeCodes} array so the
+ * easy-recognizable codes (preserved alongside for copybook fidelity) never
+ * enter the phone-validation lookup. The state-code and state/ZIP resources are
+ * each a single named array (a bare array or an object whose field values are
+ * arrays is also accepted), with the state/ZIP combinations expressed as
+ * {@code "SSNN"} entries.</p>
  *
  * <p>All lookup data is loaded once in {@link #load()} and stored in unmodifiable
  * {@link Set} instances; the populated service is effectively immutable and the
@@ -62,6 +69,14 @@ import java.util.Set;
 public class ValidationLookupService {
 
     private static final String AREA_CODES_RESOURCE = "validation/nanpa-area-codes.json";
+
+    /**
+     * The single NANPA array consumed by phone validation. Only the
+     * general-purpose codes are loaded, mirroring the COBOL
+     * {@code VALID-GENERAL-PURP-CODE} {@code 88}-level used by {@code COACTUPC};
+     * easy-recognizable / special codes are intentionally excluded.
+     */
+    private static final String GENERAL_PURPOSE_CODES_FIELD = "validGeneralPurposeCodes";
 
     private static final String STATE_CODES_RESOURCE = "validation/us-state-codes.json";
 
@@ -97,7 +112,10 @@ public class ValidationLookupService {
     @PostConstruct
     void load() {
         Set<String> loadedAreaCodes = new HashSet<>();
-        collectArrayStrings(readResource(AREA_CODES_RESOURCE), loadedAreaCodes, false);
+        collectArrayStrings(
+                requireArrayField(readResource(AREA_CODES_RESOURCE),
+                        GENERAL_PURPOSE_CODES_FIELD, AREA_CODES_RESOURCE),
+                loadedAreaCodes, false);
         requireNonEmpty(loadedAreaCodes, AREA_CODES_RESOURCE);
         this.areaCodes = Set.copyOf(loadedAreaCodes);
 
@@ -115,11 +133,14 @@ public class ValidationLookupService {
     /**
      * Validates a three-digit NANPA telephone area code.
      *
-     * <p>Mirrors the COBOL {@code 88}-level {@code VALID-PHONE-AREA-CODE}
-     * condition.</p>
+     * <p>Mirrors the COBOL {@code 88}-level {@code VALID-GENERAL-PURP-CODE}
+     * condition tested by {@code COACTUPC} phone validation. Easy-recognizable /
+     * special codes (for example {@code 200}, {@code 211}, {@code 911}) are
+     * rejected because they are not general-purpose codes.</p>
      *
      * @param areaCode the candidate area code; may be {@code null} or padded
-     * @return {@code true} when the trimmed value is a known area code
+     * @return {@code true} when the trimmed value is a known general-purpose
+     *         area code
      */
     public boolean isValidAreaCode(String areaCode) {
         if (areaCode == null) {
@@ -185,6 +206,30 @@ public class ValidationLookupService {
             throw new UncheckedIOException(
                     "Unable to load validation resource from classpath: " + resourcePath, ex);
         }
+    }
+
+    /**
+     * Resolves a required named array field from a parsed JSON resource, failing
+     * fast when the field is absent or is not a JSON array.
+     *
+     * <p>Used for the NANPA resource so phone validation consumes exactly one
+     * named list ({@code validGeneralPurposeCodes}) instead of every array the
+     * resource happens to contain.</p>
+     *
+     * @param root         the parsed resource root node
+     * @param fieldName    the required array field name
+     * @param resourcePath the resource path, for diagnostics
+     * @return the array node for {@code fieldName}
+     * @throws IllegalStateException when the field is missing or not an array
+     */
+    private static JsonNode requireArrayField(JsonNode root, String fieldName, String resourcePath) {
+        JsonNode field = root.get(fieldName);
+        if (field == null || !field.isArray()) {
+            throw new IllegalStateException(
+                    "Validation resource " + resourcePath
+                            + " must contain the array field '" + fieldName + "'");
+        }
+        return field;
     }
 
     private static void collectArrayStrings(JsonNode node, Set<String> target, boolean upperCase) {

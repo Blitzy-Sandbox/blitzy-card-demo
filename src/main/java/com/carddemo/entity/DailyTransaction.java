@@ -37,27 +37,11 @@ import org.hibernate.type.SqlTypes;
  * {@code transactions} table exactly; the table is seeded empty and populated
  * from the daily transaction feed prior to each posting run.
  *
- * <p>Staging-specific design notes:
- * <ul>
- *   <li>{@code tranTypeCd} is intentionally a raw {@link String} ({@code CHAR(2)})
- *       rather than a typed enum or a converted value. Staging rows are
- *       unvalidated batch input that must load without throwing; the four-stage
- *       posting cascade validates the type code separately downstream.</li>
- *   <li>No optimistic-lock {@code version} column exists for staging rows, so
- *       this entity deliberately declares no {@code @Version} field.</li>
- *   <li>The monetary {@code tranAmt} is a {@link BigDecimal} with scale 2 to
- *       preserve COBOL {@code PIC S9(09)V99} decimal exactness; floating-point
- *       types are never used.</li>
- *   <li>The fixed-width {@code CHAR} columns ({@code tranId}, {@code tranTypeCd},
- *       {@code cardNum}, {@code origTs}, {@code procTs}) declare
- *       {@code @JdbcTypeCode(SqlTypes.CHAR)} so the provider binds and validates
- *       them as SQL {@code CHAR}, matching the Flyway {@code daily_transaction}
- *       schema under {@code ddl-auto=validate} (a {@link String} field otherwise
- *       defaults to {@code VARCHAR}, which fails schema validation against a
- *       {@code CHAR} column).</li>
- *   <li>The trailing copybook {@code FILLER PIC X(20)} carries no data and is
- *       therefore not mapped to a column.</li>
- * </ul>
+ * <p>Design rationale for the staging-specific mapping choices (raw {@link String}
+ * type code, absence of an optimistic-lock {@code @Version} column, fixed-width
+ * {@code CHAR} JDBC binding via {@code @JdbcTypeCode}, and the unmapped trailing
+ * copybook {@code FILLER}) is recorded in {@code DECISION_LOG.md} (decision D-026)
+ * per the Explainability rule.
  */
 @Entity
 @Table(name = "daily_transaction")
@@ -431,29 +415,5 @@ public class DailyTransaction implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(tranId);
-    }
-
-    /**
-     * Returns a diagnostic string representation of this staging transaction.
-     *
-     * @return a string containing the field values of this entity
-     */
-    @Override
-    public String toString() {
-        return "DailyTransaction{"
-                + "tranId='" + tranId + '\''
-                + ", tranTypeCd='" + tranTypeCd + '\''
-                + ", tranCatCd=" + tranCatCd
-                + ", tranSource='" + tranSource + '\''
-                + ", tranDesc='" + tranDesc + '\''
-                + ", tranAmt=" + tranAmt
-                + ", merchantId=" + merchantId
-                + ", merchantName='" + merchantName + '\''
-                + ", merchantCity='" + merchantCity + '\''
-                + ", merchantZip='" + merchantZip + '\''
-                + ", cardNum='" + cardNum + '\''
-                + ", origTs='" + origTs + '\''
-                + ", procTs='" + procTs + '\''
-                + '}';
     }
 }

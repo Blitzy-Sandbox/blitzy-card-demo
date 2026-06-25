@@ -48,7 +48,7 @@ public final class TransactionDto {
             @Size(max = 16) String transactionId,
             @Size(max = 8) String date,
             @Size(max = 26) String description,
-            @Digits(integer = 9, fraction = 2) BigDecimal amount
+            @Digits(integer = 10, fraction = 2) BigDecimal amount
     ) {
     }
 
@@ -97,7 +97,7 @@ public final class TransactionDto {
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String categoryCode,
             @Size(max = 10) String source,
             @Size(max = 60) String description,
-            @Digits(integer = 9, fraction = 2) BigDecimal amount,
+            @Digits(integer = 10, fraction = 2) BigDecimal amount,
             @Size(max = 10) String originDate,
             @Size(max = 10) String processDate,
             @Size(max = 9) @Pattern(regexp = "\\d{0,9}") String merchantId,
@@ -137,7 +137,7 @@ public final class TransactionDto {
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String categoryCode,
             @Size(max = 10) String source,
             @Size(max = 60) String description,
-            @Digits(integer = 9, fraction = 2) BigDecimal amount,
+            @Digits(integer = 10, fraction = 2) BigDecimal amount,
             @Size(max = 10) String originDate,
             @Size(max = 10) String processDate,
             @Size(max = 9) @Pattern(regexp = "\\d{0,9}") String merchantId,
