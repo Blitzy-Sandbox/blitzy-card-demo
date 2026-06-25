@@ -1,0 +1,67 @@
+# ============================================================================
+# Prometheus server configuration — CardDemo (COBOL → Java/Spring Boot migration)
+# ============================================================================
+#
+# Purpose
+#   Scrape configuration for the Prometheus server that monitors the CardDemo
+#   Spring Boot application. This file is mounted into the `prometheus` service
+#   defined in docker-compose.yml and the server UI is surfaced at
+#   http://localhost:9090 (see project-guide §10.B "Port Reference").
+#
+# Metrics source
+#   The application exposes metrics in the Prometheus exposition format at
+#   `/actuator/prometheus`, produced by Spring Boot Actuator together with the
+#   `micrometer-registry-prometheus` registry (tech-spec §0.7.1).
+#
+# Custom business metrics emitted by the application (no relabeling required —
+# the app publishes these directly through Micrometer):
+#   * carddemo.batch.records.processed  — counter, one series per batch job
+#   * carddemo.batch.records.rejected   — counter, tagged with the reject reason
+#   * carddemo.auth.attempts            — counter, tagged success / failure
+#   * carddemo.transaction.amount.total — distribution summary of posted amounts
+#
+# This configuration intentionally uses only long-stable Prometheus settings so
+# it loads cleanly in any pinned Prometheus 2.x / 3.x image.
+# ============================================================================
+
+global:
+  # Default interval at which targets are scraped when a job does not override it.
+  scrape_interval: 15s
+  # How frequently recording / alerting rules are evaluated. No rule files are
+  # wired in yet, but the field is set for completeness and forward-compatibility.
+  evaluation_interval: 15s
+  # Labels attached to every time series and to any data sent to external
+  # systems (federation, remote-write, Alertmanager). Useful when this instance
+  # is aggregated alongside others.
+  external_labels:
+    application: carddemo
+    environment: local
+
+scrape_configs:
+  # --------------------------------------------------------------------------
+  # CardDemo Spring Boot application
+  # --------------------------------------------------------------------------
+  # Scraped slightly faster than the global default so batch-job and request
+  # metrics stay fresh on the Grafana dashboard (docs/grafana-dashboard.json).
+  - job_name: 'carddemo-app'
+    metrics_path: '/actuator/prometheus'
+    scrape_interval: 10s
+    static_configs:
+      # `app` is the docker-compose service name; 8080 is the application's
+      # container port. Prometheus resolves it over the shared compose network.
+      #
+      # If you instead run the application on the host (e.g. `mvn spring-boot:run`)
+      # while Prometheus runs in Docker, replace the target below with
+      # 'host.docker.internal:8080' so the container can reach the host process.
+      - targets: ['app:8080']
+        labels:
+          service: carddemo-app
+
+  # --------------------------------------------------------------------------
+  # Prometheus self-monitoring
+  # --------------------------------------------------------------------------
+  # Lets Prometheus scrape its own runtime metrics, available on the default
+  # /metrics path of its HTTP port (9090).
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
