@@ -902,6 +902,29 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 |---|---|---|---|
 | `CARDDAT` / `CARDAIX` (`CVACT02Y.cpy`) | `READ` / `REWRITE` / `STARTBR`+`READNEXT`/`READPREV` browse @ `27d6c6f` | `repository.CardRepository` | `findById` (keyed `READ` by `CARD-NUM`) · `save` (`REWRITE`/`WRITE`, `@Version` optimistic lock) · `findByCardAcctId` and `findByCardAcctId(Pageable)` (`CARDAIX` `NONUNIQUEKEY` by `CARD-ACCT-ID`) · `findAll(Pageable)` (unfiltered card-number browse) |
 
+#### 7.1.2 Customer VSAM access paths → `CustomerRepository` methods
+
+| VSAM File (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `CUSTFILE` (`CVCUS01Y.cpy` / `CUSTREC.cpy`, RECLN 500, key `CUST-ID PIC 9(09)`) | keyed `READ` / `REWRITE` (`COACTVWC`, `COACTUPC`) · sequential key-order `READ` (`CBCUS01C`) @ `27d6c6f` | `repository.CustomerRepository` | `findById` (keyed `READ` by `CUST-ID`) · `save` (`REWRITE`, `COACTUPC` dual-record ACCOUNT+CUSTOMER atomic update, `@Version` optimistic lock) · `findAll(Sort)` / `findAll()` (`CBCUS01C` sequential master read in key order, consumed by `batch.readers.CustomerFileReader`) |
+
+#### 7.1.3 USRSEC VSAM access paths → `UserRepository` methods
+
+| VSAM File (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `USRSEC` (`CSUSR01Y.cpy`, 80B, key `SEC-USR-ID`) | keyed `READ` / `WRITE` / `REWRITE` / `DELETE` / `STARTBR`+`READNEXT`/`READPREV` browse @ `27d6c6f` | `repository.UserRepository` | `findById` (keyed `READ` by `SEC-USR-ID` — sign-on `COSGN00C`, read-before-update `COUSR02C`, read-before-delete `COUSR03C`) · `findAll(Pageable)` with `Sort.by("userId")` (`STARTBR`/`READNEXT`/`READPREV` user-list browse `COUSR00C`, PF7/PF8 → page params) · `save` (`WRITE` add `COUSR01C` / `REWRITE` update `COUSR02C`) · `deleteById` (`DELETE` `COUSR03C`). No custom finders — all access is by the primary key; plaintext→BCrypt credential verification is an `AuthService` concern (C-003), never in the repository. |
+
+#### 7.1.4 DALYTRAN staging access path → `DailyTransactionRepository` methods
+
+| Staging File (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `DALYTRAN` (`CVTRA06Y.cpy`) | sequential `READ` (CBTRN02C `1000-DALYTRAN-GET-NEXT`, `OPEN INPUT`) / keyed `READ` / `WRITE`+`REWRITE` of the daily feed @ `27d6c6f` | `repository.DailyTransactionRepository` | `findAll` / `findAll(Pageable)` (sequential staging scan in key order via the chunk-oriented posting reader) · `findById` (keyed `READ` by `DALYTRAN-ID`) · `save` (`WRITE`/`REWRITE` of the staging feed); no custom finders — no non-key access path |
+
+#### 7.1.5 Transaction-type VSAM access path → `TransactionTypeRepository` method
+
+| VSAM File / Index (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `TRANTYPE` (`CVTRA03Y.cpy`) | keyed `READ` for report enrichment (`CBTRN03C` `1500-B-LOOKUP-TRANTYPE`) @ `27d6c6f` | `repository.TransactionTypeRepository` | TRANTYPE (CVTRA03Y): keyed `READ` → `findById` (by `TRAN-TYPE`, `CHAR(2)` `String` key) · full load → `findAll` (enrichment caching) · `WRITE`/`REWRITE` → `save`. No custom finders; the composite-keyed `TRANCATG` table is served separately by `TransactionCategoryRepository`. |
 ### 7.2 Batch pipeline → Spring Batch jobs
 
 | JCL Job | COBOL Driver | Java Target | Notes |
