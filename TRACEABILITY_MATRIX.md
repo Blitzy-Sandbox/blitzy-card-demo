@@ -817,7 +817,7 @@ services and externalized JSON resources.
 |---|---|---|---|
 | `CVACT01Y.cpy` | ACCOUNT-RECORD (300B) | `model.entity.Account` (+ `repository.AccountRepository`) | COMP-3 `ACCT-CURR-BAL`/`ACCT-CREDIT-LIMIT` → `BigDecimal(2)`; `@Version` optimistic lock |
 | `CVACT02Y.cpy` | CARD-RECORD (150B) | `model.entity.Card` (+ `repository.CardRepository`) | FK to `Account`; active-status enum; `@Version` |
-| `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `model.entity.CardCrossReference` (+ `repository.CardCrossReferenceRepository`) | CXACAIX alternate index → `findByXrefAcctId()` |
+| `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `entity.CardXref` (+ `repository.CardXrefRepository`) | CXACAIX alternate index → `findByXrefAcctId()`; `CHAR(16)` PK mapped via `@JdbcTypeCode(SqlTypes.CHAR)`; FILLER X(14) not persisted |
 | `CVCUS01Y.cpy` | CUSTOMER-RECORD (500B) | `model.entity.Customer` (+ `repository.CustomerRepository`) | `@Version`; 500-byte field mapping; SSN handling |
 | `CUSTREC.cpy` | CUSTOMER-RECORD (shared copy) | `model.entity.Customer` | Same 500B layout as `CVCUS01Y` (shared record definition) |
 | `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `model.entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT`; timestamp fields |
@@ -825,8 +825,8 @@ services and externalized JSON resources.
 | `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `model.entity.TransactionCategoryBalance` + `model.key.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
 | `CVTRA02Y.cpy` | DIS-GROUP-RECORD | `model.entity.DisclosureGroup` + `model.key.DisclosureGroupId` | `@EmbeddedId`; `BigDecimal` interest rate; DEFAULT fallback |
 | `CVTRA03Y.cpy` | TRAN-TYPE-RECORD | `model.entity.TransactionType` | 2-byte type-code PK; read-only reference data |
-| `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `model.entity.TransactionCategory` + `model.key.TransactionCategoryId` | `@EmbeddedId` (typeCode + catCode) |
-| `CSUSR01Y.cpy` | SEC-USER-DATA (80B) | `model.entity.UserSecurity` + `model.enums.UserType` | Plaintext password → BCrypt column (constraint C-003) |
+| `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `model.entity.TransactionCategory` + `model.key.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
+| `CSUSR01Y.cpy` | SEC-USER-DATA (80B) | `com.carddemo.entity.User` | Plaintext password → BCrypt column `VARCHAR(60)` (constraint C-003); `user_type` kept as `CHAR(1)` String (no enum) |
 | `COSTM01.CPY` | Statement TRNX reporting layout | `model.dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
 | `COMEN02Y.cpy` | Main-menu option table (10) | `service.menu.MainMenuService` + `model.dto.MenuOption` | 10-option routing metadata |
 | `COADM02Y.cpy` | Admin-menu option table (4) | `service.menu.AdminMenuService` + `model.dto.MenuOption` | 4-option admin routing metadata |
