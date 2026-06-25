@@ -825,6 +825,7 @@ services and externalized JSON resources.
 | `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `model.entity.TransactionCategoryBalance` + `model.key.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
 | `CVTRA02Y.cpy` | DIS-GROUP-RECORD | `model.entity.DisclosureGroup` + `model.key.DisclosureGroupId` | `@EmbeddedId`; `BigDecimal` interest rate; DEFAULT fallback |
 | `CVTRA03Y.cpy` | TRAN-TYPE-RECORD | `model.entity.TransactionType` | 2-byte type-code PK; read-only reference data |
+| `CVTRA03Y.cpy` | TRAN-TYPE → TransactionTypeConverter (enum bridge) | `entity.TransactionTypeConverter` | JPA `@Converter(autoApply=false)`: `enums.TransactionTypeCode` ↔ `transactions.tran_type_cd CHAR(2)`; null/blank-safe decode; @ `27d6c6f` |
 | `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `model.entity.TransactionCategory` + `model.key.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
 | `CSUSR01Y.cpy` | SEC-USER-DATA (80B) | `com.carddemo.entity.User` | Plaintext password → BCrypt column `VARCHAR(60)` (constraint C-003); `user_type` kept as `CHAR(1)` String (no enum) |
 | `COSTM01.CPY` | Statement TRNX reporting layout | `model.dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
