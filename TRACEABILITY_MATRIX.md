@@ -371,8 +371,8 @@ server-side session.
 | `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardDetailService` | `editCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `editCard()` |
 | `COCRDSLC.cbl` | `9000-READ-DATA` | `CardRepository` | `findById()` | VSAM READ -> JPA finder |
 | `COCRDSLC.cbl` | `9000-READ-DATA-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
-| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findByCardNumAndAccountId()` | CARDDAT composite-key read -> JPA finder |
-| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findByCardNumAndAccountId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByCardNumAndAccountId()` |
+| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | CARDDAT keyed read by `CARD-NUM` (account-id cross-checked) -> JPA finder |
+| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COCRDSLC.cbl` | `9150-GETCARD-BYACCT` | `CardRepository` | `findByCardAcctId()` | CARDDAT by-account read -> JPA finder |
 | `COCRDSLC.cbl` | `9150-GETCARD-BYACCT-EXIT` | `CardRepository` | `findByCardAcctId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByCardAcctId()` |
 | `COCRDSLC.cbl` | `SEND-LONG-TEXT` | `CardController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
@@ -422,8 +422,8 @@ server-side session.
 | `COCRDUPC.cbl` | `3400-SEND-SCREEN-EXIT` | `CardController` | `buildResponse()` | `PERFORM THRU` exit label — structured early-`return` boundary of `buildResponse()` |
 | `COCRDUPC.cbl` | `9000-READ-DATA` | `CardRepository` | `findById()` | VSAM READ -> JPA finder |
 | `COCRDUPC.cbl` | `9000-READ-DATA-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
-| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findByCardNumAndAccountId()` | CARDDAT composite-key read -> JPA finder |
-| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findByCardNumAndAccountId()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findByCardNumAndAccountId()` |
+| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | CARDDAT keyed read by `CARD-NUM` (account-id cross-checked) -> JPA finder |
+| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | `PERFORM THRU` exit label — structured early-`return` boundary of `findById()` |
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING` | `CardUpdateService` | `updateCard()` | @Transactional REWRITE CARDDAT -> repository save; @Version optimistic lock |
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING-EXIT` | `CardUpdateService` | `updateCard()` | `PERFORM THRU` exit label — structured early-`return` boundary of `updateCard()` |
 | `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC` | `CardUpdateService` | `checkChangeInRecord()` | Re-read-and-compare concurrency guard -> JPA @Version optimistic lock (OptimisticLockException) |
@@ -817,13 +817,13 @@ services and externalized JSON resources.
 |---|---|---|---|
 | `CVACT01Y.cpy` | ACCOUNT-RECORD (300B) | `model.entity.Account` (+ `repository.AccountRepository`) | COMP-3 `ACCT-CURR-BAL`/`ACCT-CREDIT-LIMIT` → `BigDecimal(2)`; `@Version` optimistic lock |
 | `CVACT02Y.cpy` | CARD-RECORD (150B) | `model.entity.Card` (+ `repository.CardRepository`) | FK to `Account`; active-status enum; `@Version` |
-| `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `entity.CardXref` (+ `repository.CardXrefRepository`) | CXACAIX alternate index → `findByXrefAcctId()`; `CHAR(16)` PK mapped via `@JdbcTypeCode(SqlTypes.CHAR)`; FILLER X(14) not persisted |
+| `CVACT03Y.cpy` | CARD-XREF-RECORD (50B) | `entity.CardXref` (+ `repository.CardXrefRepository`) | XREFFILE base+AIX READ @ `27d6c6f`: base key `XREF-CARD-NUM` READ → inherited `findById()`; CXACAIX alternate index (`XREF-ACCT-ID`, `KEYS(11,25) NONUNIQUEKEY`) → `findByXrefAcctId()`; `CHAR(16)` PK mapped via `@JdbcTypeCode(SqlTypes.CHAR)`; FILLER X(14) not persisted |
 | `CVCUS01Y.cpy` | CUSTOMER-RECORD (500B) | `model.entity.Customer` (+ `repository.CustomerRepository`) | `@Version`; 500-byte field mapping; SSN handling |
 | `CUSTREC.cpy` | CUSTOMER-RECORD (shared copy) | `model.entity.Customer` | Same 500B layout as `CVCUS01Y` (shared record definition) |
 | `CVTRA05Y.cpy` | TRAN-RECORD (350B) | `model.entity.Transaction` (+ `repository.TransactionRepository`) | `BigDecimal` `TRAN-AMT`; timestamp fields |
 | `CVTRA06Y.cpy` | DALYTRAN-RECORD (350B) | `model.entity.DailyTransaction` (+ `repository.DailyTransactionRepository`) | Batch staging table; mirrors `Transaction` layout |
 | `CVTRA01Y.cpy` | TRAN-CAT-BAL-RECORD | `model.entity.TransactionCategoryBalance` + `model.key.TransactionCategoryBalanceId` | `@EmbeddedId` (acctId + typeCode + catCode) |
-| `CVTRA02Y.cpy` | DIS-GROUP-RECORD | `model.entity.DisclosureGroup` + `model.key.DisclosureGroupId` | `@EmbeddedId`; `BigDecimal` interest rate; DEFAULT fallback |
+| `CVTRA02Y.cpy` | DIS-GROUP-RECORD (50B) | `com.carddemo.entity.DisclosureGroup` + `com.carddemo.entity.DisclosureGroupId` | `@EmbeddedId` (`DisclosureGroupId`); `DIS-INT-RATE S9(04)V99` → `BigDecimal` `dis_int_rate NUMERIC(6,2)` (precision=6, scale=2); feeds interest formula `(TRAN-CAT-BAL × DIS-INT-RATE)/1200` (CBACT04C → `InterestProcessor`, HALF_EVEN); no `@Version`; FILLER X(28) not persisted; @ `27d6c6f` |
 | `CVTRA03Y.cpy` | TRAN-TYPE-RECORD | `model.entity.TransactionType` | 2-byte type-code PK; read-only reference data |
 | `CVTRA03Y.cpy` | TRAN-TYPE → TransactionTypeConverter (enum bridge) | `entity.TransactionTypeConverter` | JPA `@Converter(autoApply=false)`: `enums.TransactionTypeCode` ↔ `transactions.tran_type_cd CHAR(2)`; null/blank-safe decode; @ `27d6c6f` |
 | `CVTRA04Y.cpy` | TRAN-CAT-RECORD | `model.entity.TransactionCategory` + `model.key.TransactionCategoryId` | `@EmbeddedId`; `TRAN-CAT-KEY` group → `TransactionCategoryId` (`tranTypeCd` + `tranCatCd`) @ `27d6c6f` |
@@ -895,6 +895,12 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 | `DUSRSECJ.jcl` | IDCAMS DEFINE USRSEC KSDS | `V1__create_schema.sql` | `user_security` table (80B; BCrypt password column) |
 | `DEFCUST.jcl` | IDCAMS DEFINE customer (alt) | `V1__create_schema.sql` | Customer cluster define (consolidated into `customers`) |
 | `TRANIDX.jcl` | IDCAMS BLDINDEX | `V2__create_indexes.sql` | Transaction secondary index build |
+
+#### 7.1.1 Card VSAM access paths → `CardRepository` methods
+
+| VSAM File / Index (Copybook) | Access Pattern | Java Target | Repository Methods |
+|---|---|---|---|
+| `CARDDAT` / `CARDAIX` (`CVACT02Y.cpy`) | `READ` / `REWRITE` / `STARTBR`+`READNEXT`/`READPREV` browse @ `27d6c6f` | `repository.CardRepository` | `findById` (keyed `READ` by `CARD-NUM`) · `save` (`REWRITE`/`WRITE`, `@Version` optimistic lock) · `findByCardAcctId` and `findByCardAcctId(Pageable)` (`CARDAIX` `NONUNIQUEKEY` by `CARD-ACCT-ID`) · `findAll(Pageable)` (unfiltered card-number browse) |
 
 ### 7.2 Batch pipeline → Spring Batch jobs
 

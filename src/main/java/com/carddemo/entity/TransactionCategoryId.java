@@ -21,6 +21,9 @@ import jakarta.persistence.Embeddable;
 import java.io.Serializable;
 import java.util.Objects;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
 /**
  * Composite primary key for the {@code transaction_category} lookup table,
  * translated from the COBOL {@code TRAN-CAT-KEY} group in copybook
@@ -47,12 +50,15 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Two-character transaction type code, from COBOL
      * {@code TRAN-TYPE-CD PIC X(02)}. Mapped to the {@code CHAR(2)} column
-     * {@code tran_type_cd}; {@code columnDefinition = "char(2)"} aligns the
-     * Hibernate {@code validate} schema check with the PostgreSQL
-     * {@code bpchar} type so the application boots under {@code ddl-auto:
-     * validate}.
+     * {@code tran_type_cd}. The {@link JdbcTypeCode}{@code (SqlTypes.CHAR)}
+     * binding makes the Hibernate {@code validate} schema check expect the
+     * JDBC {@code CHAR} type so it matches the PostgreSQL {@code bpchar}
+     * column and the application boots cleanly under {@code ddl-auto:
+     * validate}; {@code columnDefinition = "char(2)"} additionally fixes the
+     * generated DDL width.
      */
     @Column(name = "tran_type_cd", length = 2, columnDefinition = "char(2)")
+    @JdbcTypeCode(SqlTypes.CHAR)
     private String tranTypeCd;
 
     /**

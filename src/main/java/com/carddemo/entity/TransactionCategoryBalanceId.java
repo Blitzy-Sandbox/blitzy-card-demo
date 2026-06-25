@@ -20,6 +20,8 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Embeddable;
 import java.io.Serializable;
 import java.util.Objects;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 /**
  * Composite primary key for the {@code transaction_category_balance} table.
@@ -36,9 +38,10 @@ import java.util.Objects;
  * ({@code PRIMARY KEY (acct_id, type_cd, cat_cd)}) exactly so that the
  * Hibernate {@code ddl-auto=validate} check passes. On this table the
  * type-code column is {@code type_cd}, a {@code CHAR(2)} ({@code bpchar})
- * column; it is mapped with an explicit {@code char(2)} column definition so
- * the validated type matches PostgreSQL rather than defaulting to
- * {@code varchar}.</p>
+ * column; the {@code typeCd} field is annotated with
+ * {@code @JdbcTypeCode(SqlTypes.CHAR)} (in addition to the explicit
+ * {@code char(2)} column definition) so the validated JDBC type matches the
+ * PostgreSQL {@code CHAR} column rather than defaulting to {@code varchar}.</p>
  */
 @Embeddable
 public class TransactionCategoryBalanceId implements Serializable {
@@ -49,7 +52,16 @@ public class TransactionCategoryBalanceId implements Serializable {
     @Column(name = "acct_id")
     private Long acctId;
 
-    /** Transaction type code (COBOL {@code TRANCAT-TYPE-CD PIC X(02)}). */
+    /**
+     * Transaction type code (COBOL {@code TRANCAT-TYPE-CD PIC X(02)}). Mapped to
+     * the fixed-width {@code CHAR(2)} column via
+     * {@link JdbcTypeCode}{@code (}{@link SqlTypes#CHAR}{@code )} so that
+     * Hibernate {@code ddl-auto: validate} matches the {@code CHAR(2)} column
+     * declared in {@code V1__create_schema.sql} (a plain {@link String}
+     * otherwise maps to {@code VARCHAR}, which fails validation against a
+     * {@code CHAR} column).
+     */
+    @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "type_cd", length = 2, columnDefinition = "char(2)")
     private String typeCd;
 
