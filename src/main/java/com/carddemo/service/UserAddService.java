@@ -16,6 +16,7 @@
 package com.carddemo.service;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 import com.carddemo.dto.UserDto;
@@ -192,7 +193,7 @@ public class UserAddService {
                 userId,
                 request.firstName(),
                 request.lastName(),
-                passwordEncoder.encode(request.password()),
+                passwordEncoder.encode(request.password().toUpperCase(Locale.ROOT)),
                 request.userType());
 
         try {

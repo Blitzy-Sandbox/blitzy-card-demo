@@ -472,8 +472,8 @@ server-side session.
 |---|---|---|---|---|
 | `COTRN02C.cbl` | `MAIN-PARA` | `TransactionController` | `addTransaction()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless TransactionController [POST /api/transactions] |
 | `COTRN02C.cbl` | `PROCESS-ENTER-KEY` | `TransactionAddService` | `addTransaction()` | AID=ENTER primary action -> service business method |
-| `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validateInputKeyFields()` | Input validation -> @Valid DTO constraints + service checks |
-| `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validateInputDataFields()` | Input validation -> @Valid DTO constraints + service checks |
+| `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validateAndResolveKeyFields()` | Key-field numeric/presence checks + CXACAIX/CCXREF cross-reference resolution (account-id -> card via `resolveByAccountId`/`findByXrefAcctId`; card -> account via `resolveByCardNumber`/`findById`); runs before data-field validation |
+| `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validateDataFields()` | Input validation -> @Valid DTO constraints + service checks |
 | `COTRN02C.cbl` | `ADD-TRANSACTION` | `TransactionAddService` | `addTransaction()` | @Transactional WRITE -> repository save (auto-ID generation) |
 | `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` | `TransactionAddService` | `prefillFromLast()` | Copy prior transaction -> pre-populate add-request defaults |
 | `COTRN02C.cbl` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
@@ -481,7 +481,7 @@ server-side session.
 | `COTRN02C.cbl` | `RECEIVE-TRNADD-SCREEN` | `TransactionController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COTRN02C.cbl` | `POPULATE-HEADER-INFO` | `TransactionAddService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COTRN02C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
-| `COTRN02C.cbl` | `READ-CCXREF-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
+| `COTRN02C.cbl` | `READ-CCXREF-FILE` | `CardXrefRepository` | `findById()` | READ CCXREF by primary key (`XREF-CARD-NUM`) -> inherited `findById` primary-key lookup (validates the card, derives the account) |
 | `COTRN02C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COTRN02C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
 | `COTRN02C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
@@ -494,36 +494,36 @@ server-side session.
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COBIL00C.cbl` | `MAIN-PARA` | `BillingController` | `payBill()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless BillingController [POST /api/billing/pay] |
-| `COBIL00C.cbl` | `PROCESS-ENTER-KEY` | `BillPaymentService` | `payBill()` | AID=ENTER primary action -> service business method |
-| `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` | `BillPaymentService` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
+| `COBIL00C.cbl` | `PROCESS-ENTER-KEY` | `BillingService` | `payBill()` | AID=ENTER primary action -> service business method |
+| `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` | `BillingService` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
 | `COBIL00C.cbl` | `RETURN-TO-PREV-SCREEN` | `BillingController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `COBIL00C.cbl` | `SEND-BILLPAY-SCREEN` | `BillingController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COBIL00C.cbl` | `RECEIVE-BILLPAY-SCREEN` | `BillingController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COBIL00C.cbl` | `POPULATE-HEADER-INFO` | `BillPaymentService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COBIL00C.cbl` | `POPULATE-HEADER-INFO` | `BillingService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COBIL00C.cbl` | `READ-ACCTDAT-FILE` | `AccountRepository` | `findById()` | READ ACCTDAT -> JPA finder |
-| `COBIL00C.cbl` | `UPDATE-ACCTDAT-FILE` | `BillPaymentService` | `updateAcctdatFile()` | @Transactional REWRITE -> repository save |
+| `COBIL00C.cbl` | `UPDATE-ACCTDAT-FILE` | `BillingService` | `updateAcctdatFile()` | @Transactional REWRITE -> repository save |
 | `COBIL00C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findByXrefAcctId()` | READ CXACAIX/CCXREF -> JPA finder (alternate index) |
 | `COBIL00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COBIL00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
 | `COBIL00C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
 | `COBIL00C.cbl` | `WRITE-TRANSACT-FILE` | `TransactionRepository` | `save()` | WRITE TRANSACT -> JPA insert |
-| `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN` | `BillPaymentService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
-| `COBIL00C.cbl` | `INITIALIZE-ALL-FIELDS` | `BillPaymentService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN` | `BillingService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COBIL00C.cbl` | `INITIALIZE-ALL-FIELDS` | `BillingService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 
 ### CORPT00C.cbl — Report submit (txn `CR00`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CORPT00C.cbl` | `MAIN-PARA` | `ReportController` | `submitReport()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless ReportController [POST /api/reports/submit] |
-| `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportSubmissionService` | `submitReport()` | AID=ENTER primary action -> service business method |
-| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportSubmissionService` | `submitReport()` | CICS internal reader job submit -> publish to SQS FIFO carddemo-report-jobs.fifo |
-| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportSubmissionService` | `publishToQueue()` | TDQ JOBS WRITEQ (source spelling preserved) -> SQS FIFO message publish |
+| `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportService` | `submitReport()` | AID=ENTER primary action -> service business method |
+| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportService` | `submitReport()` | CICS internal reader job submit -> publish to SQS FIFO carddemo-report-jobs.fifo |
+| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportService` | `publishToQueue()` | TDQ JOBS WRITEQ (source spelling preserved) -> SQS FIFO message publish |
 | `CORPT00C.cbl` | `RETURN-TO-PREV-SCREEN` | `ReportController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `CORPT00C.cbl` | `SEND-TRNRPT-SCREEN` | `ReportController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `CORPT00C.cbl` | `RETURN-TO-CICS` | `ReportController` | `buildResponse()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
 | `CORPT00C.cbl` | `RECEIVE-TRNRPT-SCREEN` | `ReportController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportSubmissionService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportSubmissionService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 
 ### COUSR00C.cbl — User list (txn `CU00`)
 
@@ -566,13 +566,13 @@ server-side session.
 |---|---|---|---|---|
 | `COUSR02C.cbl` | `MAIN-PARA` | `UserAdminController` | `updateUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [PUT /api/admin/users/{id}] |
 | `COUSR02C.cbl` | `PROCESS-ENTER-KEY` | `UserUpdateService` | `updateUser()` | AID=ENTER primary action -> service business method |
-| `COUSR02C.cbl` | `UPDATE-USER-INFO` | `UserUpdateService` | `updateUserInfo()` | @Transactional REWRITE -> repository save |
+| `COUSR02C.cbl` | `UPDATE-USER-INFO` | `UserUpdateService` | `updateUser()` | @Transactional REWRITE -> repository save |
 | `COUSR02C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `COUSR02C.cbl` | `SEND-USRUPD-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COUSR02C.cbl` | `RECEIVE-USRUPD-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserUpdateService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COUSR02C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
-| `COUSR02C.cbl` | `UPDATE-USER-SEC-FILE` | `UserUpdateService` | `updateUserSecFile()` | @Transactional REWRITE -> repository save |
+| `COUSR02C.cbl` | `UPDATE-USER-SEC-FILE` | `UserUpdateService` | `updateUser()` | @Transactional REWRITE -> repository save |
 | `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 | `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
 
@@ -648,13 +648,13 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 | `CBTRN02C.cbl` | `1500-A-LOOKUP-XREF` | `TransactionPostingProcessor` | `validateCardXref()` | Stage 1: card/xref existence; reject code 100 (INVALID CARD NUMBER) |
 | `CBTRN02C.cbl` | `1500-B-LOOKUP-ACCT` | `TransactionPostingProcessor` | `validateAccount()` | Stages 2-4: account existence (101), credit-limit/overlimit (102), after-expiration (103) |
 | `CBTRN02C.cbl` | `2000-POST-TRANSACTION` | `TransactionPostingProcessor` | `process()` | Posting orchestration -> ItemProcessor.process() (valid txns) |
-| `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` | `RejectWriter` | `write()` | Rejected record -> S3 rejects file with reason trailer (DALYREJS equivalent) |
+| `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` | `RejectTransactionWriter` | `write()` | Rejected record -> S3 rejects file with reason trailer (DALYREJS equivalent) |
 | `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `TransactionPostingProcessor` | `updateCategoryBalance()` | Category-balance upsert dispatch (create-or-update branch) |
 | `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `TransactionCategoryBalanceRepository` | `findById()` | Keyed READ TCATBAL on full composite key {acctId,typeCd,catCd} -> JPA findById (FILE STATUS `23` not-found -> create branch) |
 | `CBTRN02C.cbl` | `2700-A-CREATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | New category-balance row -> JPA insert |
 | `CBTRN02C.cbl` | `2700-B-UPDATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Category-balance accumulation -> JPA update |
 | `CBTRN02C.cbl` | `2800-UPDATE-ACCOUNT-REC` | `AccountRepository` | `save()` | Account balance rewrite -> JPA save within @Transactional chunk |
-| `CBTRN02C.cbl` | `2900-WRITE-TRANSACTION-FILE` | `TransactionWriter` | `write()` | Posted transaction -> DB insert + S3 backup |
+| `CBTRN02C.cbl` | `2900-WRITE-TRANSACTION-FILE` | `PostedTransactionWriter` | `write()` | Posted transaction -> DB insert + S3 backup |
 | `CBTRN02C.cbl` | `9000-DALYTRAN-CLOSE` | `TransactionPostingProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN02C.cbl` | `9100-TRANFILE-CLOSE` | `TransactionPostingProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN02C.cbl` | `9200-XREFFILE-CLOSE` | `TransactionPostingProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
@@ -734,27 +734,27 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBACT04C.cbl` | `0000-TCATBALF-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT04C.cbl` | `0100-XREFFILE-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT04C.cbl` | `0200-DISCGRP-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT04C.cbl` | `0300-ACCTFILE-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT04C.cbl` | `0400-TRANFILE-OPEN` | `InterestCalculationProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `InterestCalculationProcessor` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT04C.cbl` | `0000-TCATBALF-OPEN` | `InterestProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT04C.cbl` | `0100-XREFFILE-OPEN` | `InterestProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT04C.cbl` | `0200-DISCGRP-OPEN` | `InterestProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT04C.cbl` | `0300-ACCTFILE-OPEN` | `InterestProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT04C.cbl` | `0400-TRANFILE-OPEN` | `InterestProcessor` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `InterestProcessor` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `TransactionCategoryBalanceRepository` | `findAll()` | Sequential TCATBAL scan (ACCESS MODE SEQUENTIAL) -> JPA findAll() / findAll(Pageable) backing the chunk reader |
 | `CBACT04C.cbl` | `1050-UPDATE-ACCOUNT` | `AccountRepository` | `save()` | Account balance rewrite -> JPA save within @Transactional chunk |
 | `CBACT04C.cbl` | `1100-GET-ACCT-DATA` | `AccountRepository` | `findById()` | ACCTFILE keyed read -> JPA finder |
 | `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardXrefRepository` | `findByXrefAcctId()` | XREF keyed read -> JPA finder |
-| `CBACT04C.cbl` | `1200-GET-INTEREST-RATE` | `InterestCalculationProcessor` | `getInterestRate()` | DISCGRP keyed lookup -> DisclosureGroupRepository |
-| `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` | `InterestCalculationProcessor` | `getDefaultInterestRate()` | DEFAULT disclosure-group fallback when specific group key not found |
-| `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` | `InterestCalculationProcessor` | `computeInterest()` | Formula (TRAN-CAT-BAL * DIS-INT-RATE)/1200 in BigDecimal, RoundingMode.HALF_EVEN |
-| `CBACT04C.cbl` | `1300-B-WRITE-TX` | `TransactionWriter` | `write()` | Interest/fee transaction -> DB insert + S3 backup |
-| `CBACT04C.cbl` | `1400-COMPUTE-FEES` | `InterestCalculationProcessor` | `computeFees()` | Monthly fee computation in BigDecimal (HALF_EVEN) |
-| `CBACT04C.cbl` | `9000-TCATBALF-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT04C.cbl` | `9100-XREFFILE-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT04C.cbl` | `9200-DISCGRP-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT04C.cbl` | `9300-ACCTFILE-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT04C.cbl` | `9400-TRANFILE-CLOSE` | `InterestCalculationProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestCalculationProcessor` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
+| `CBACT04C.cbl` | `1200-GET-INTEREST-RATE` | `InterestProcessor` | `resolveInterestRate()` | DISCGRP keyed lookup -> DisclosureGroupRepository |
+| `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` | `InterestProcessor` | `resolveInterestRate()` | DEFAULT disclosure-group fallback, absorbed into `resolveInterestRate` when the specific group key is not found |
+| `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` | `InterestProcessor` | `computeMonthlyInterest()` | Formula (TRAN-CAT-BAL * DIS-INT-RATE)/1200 in BigDecimal, RoundingMode.HALF_EVEN |
+| `CBACT04C.cbl` | `1300-B-WRITE-TX` | `PostedTransactionWriter` | `write()` | Interest/fee transaction -> DB insert + S3 backup |
+| `CBACT04C.cbl` | `1400-COMPUTE-FEES` | `InterestProcessor` | `—` | Intentionally empty in COBOL (`1400-COMPUTE-FEES` is a `* To be implemented` stub containing only `EXIT.`); no fee logic exists, so no Java method — documented no-op |
+| `CBACT04C.cbl` | `9000-TCATBALF-CLOSE` | `InterestProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT04C.cbl` | `9100-XREFFILE-CLOSE` | `InterestProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT04C.cbl` | `9200-DISCGRP-CLOSE` | `InterestProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT04C.cbl` | `9300-ACCTFILE-CLOSE` | `InterestProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT04C.cbl` | `9400-TRANFILE-CLOSE` | `InterestProcessor` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestProcessor` | `currentTimestamp()` | EXEC CICS ASKTIME / DB2 timestamp format -> java.time.LocalDateTime / Instant |
 | `CBACT04C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBACT04C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -982,9 +982,9 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 
 | JCL Job | COBOL Driver | Java Target | Notes |
 |---|---|---|---|
-| `POSTTRAN.jcl` | `CBTRN02C.cbl` | `batch.jobs.DailyTransactionPostingJob` (+ `TransactionPostingProcessor`, `TransactionWriter`, `RejectWriter`) | 4-stage validation cascade; condition codes → `JobExecutionDecider` |
-| `INTCALC.jcl` | `CBACT04C.cbl` | `batch.jobs.InterestCalculationJob` (+ `InterestCalculationProcessor`) | PARM date `2022071800` → `JobParameters`; `(bal×rate)/1200` `BigDecimal` HALF_EVEN |
-| `COMBTRAN.jcl` | (DFSORT/REPRO) | `batch.jobs.CombineTransactionsJob` (+ `TransactionCombineProcessor`) | DFSORT concat + sort by txn-id → Java `Comparator` (identical key/duplicate semantics) |
+| `POSTTRAN.jcl` | `CBTRN02C.cbl` | `batch.jobs.DailyTransactionPostingJob` (+ `TransactionPostingProcessor`, `PostedTransactionWriter`, `RejectTransactionWriter`) | 4-stage validation cascade; condition codes → `JobExecutionDecider` |
+| `INTCALC.jcl` | `CBACT04C.cbl` | `batch.jobs.InterestCalculationJob` (+ `InterestProcessor`) | PARM date `2022071800` → `JobParameters`; `(bal×rate)/1200` `BigDecimal` HALF_EVEN |
+| `COMBTRAN.jcl` | (DFSORT/REPRO) | `batch.job.CombineTransactionsJobConfig` (+ `TransactionCombineComparator`) | DFSORT concat + sort by txn-id → Java `Comparator` (identical key/duplicate semantics) |
 | `TRANREPT.jcl` | `CBTRN03C.cbl` | `batch.jobs.TransactionReportJob` (+ `TransactionReportProcessor`) | Date-window report; XREF/TRANTYPE/TRANCATG enrichment; S3 output |
 | `CREASTMT.JCL` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `batch.jobs.StatementGenerationJob` (+ `StatementProcessor`, `StatementWriter`) | Text + HTML statements → S3 |
 | `PRTCATBL.jcl` | (category-balance print) | `batch.jobs.BatchPipelineOrchestrator` | Category-balance print step + overall sequencing / condition-code logic |
@@ -1004,7 +1004,7 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 |---|---|---|---|
 | `DEFGDGB.jcl` | Define GDG base | `localstack-init/init-aws.sh` | GDG generations → versioned S3 objects (3 buckets) |
 | `REPTFILE.jcl` | Report dataset (GDG) | `localstack-init/init-aws.sh` | `carddemo-batch-output` bucket |
-| `DALYREJS.jcl` | Daily rejects dataset (GDG) | `localstack-init/init-aws.sh` (+ `batch.writers.RejectWriter`) | Rejects object with reason trailers |
+| `DALYREJS.jcl` | Daily rejects dataset (GDG) | `localstack-init/init-aws.sh` (+ `batch.writers.RejectTransactionWriter`) | Rejects object with reason trailers |
 
 ### 7.5 CICS region / lifecycle / backup JCL → Spring Boot lifecycle (REFERENCE)
 
@@ -1050,15 +1050,15 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `service.transaction.TransactionListService` / `controller.TransactionController` | `COTRN00C.cbl` (+ `COTRN00` BMS) |
 | `service.transaction.TransactionDetailService` | `COTRN01C.cbl` (+ `COTRN01` BMS) |
 | `service.transaction.TransactionAddService` | `COTRN02C.cbl` (+ `COTRN02` BMS) |
-| `service.billing.BillPaymentService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
-| `service.report.ReportSubmissionService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
+| `service.billing.BillingService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
+| `service.report.ReportService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
 | `service.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserAdminController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
 | `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
 | `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
 | `service.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |
-| `batch.processors.TransactionPostingProcessor` / `batch.writers.{TransactionWriter,RejectWriter}` | `CBTRN02C.cbl` (+ `POSTTRAN` JCL) |
-| `batch.processors.InterestCalculationProcessor` | `CBACT04C.cbl` (+ `INTCALC` JCL) |
-| `batch.processors.TransactionCombineProcessor` | `COMBTRAN` JCL |
+| `batch.processors.TransactionPostingProcessor` / `batch.writers.{PostedTransactionWriter,RejectTransactionWriter}` | `CBTRN02C.cbl` (+ `POSTTRAN` JCL) |
+| `batch.processors.InterestProcessor` | `CBACT04C.cbl` (+ `INTCALC` JCL) |
+| `batch.processor.TransactionCombineComparator` / `batch.job.CombineTransactionsJobConfig` | `COMBTRAN` JCL |
 | `batch.processors.TransactionReportProcessor` | `CBTRN03C.cbl` (+ `TRANREPT` JCL, `CVTRA07Y`) |
 | `batch.processors.StatementProcessor` / `batch.writers.StatementWriter` / `batch.readers.StatementFileService` | `CBSTM03A.CBL`, `CBSTM03B.CBL` (+ `CREASTMT` JCL, `COSTM01`) |
 | `batch.readers.{AccountFileReader,CardFileReader,CrossReferenceFileReader,CustomerFileReader,DailyTransactionReader}` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` |

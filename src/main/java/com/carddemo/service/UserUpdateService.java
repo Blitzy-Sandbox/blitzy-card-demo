@@ -22,6 +22,8 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserRepository;
 
+import java.util.Locale;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataAccessException;
@@ -190,7 +192,7 @@ public class UserUpdateService {
 
         String newPassword = request.password();
         if (!isBlank(newPassword)) {
-            user.setPassword(passwordEncoder.encode(newPassword));
+            user.setPassword(passwordEncoder.encode(newPassword.toUpperCase(Locale.ROOT)));
         }
 
         User saved;

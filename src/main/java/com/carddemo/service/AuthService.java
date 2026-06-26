@@ -25,6 +25,8 @@ import io.micrometer.core.instrument.Counter;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -58,12 +60,20 @@ import org.springframework.stereotype.Service;
  * </ul>
  *
  * <p>Every sign-on attempt, successful or not, is counted on the
- * {@code carddemo.auth.attempts} meter. The detail messages are reproduced
- * verbatim from the COBOL source for behavioral parity. Credentials and issued
- * tokens are never logged nor echoed in any exception message.</p>
+ * {@code carddemo.auth.attempts} meter. The blank-field validation messages are
+ * reproduced verbatim from the COBOL source. The post-lookup credential-failure
+ * paths, however, deliberately return a single <em>generic</em> external detail
+ * ({@link #MESSAGE_INVALID_CREDENTIALS}) rather than the legacy
+ * "User not found"/"Wrong Password" distinction, so the {@code 401} response
+ * cannot be used for remote user enumeration; the specific legacy reason is
+ * retained only in an internal {@code WARN} log keyed by user id (never the
+ * password). Credentials and issued tokens are never logged nor echoed in any
+ * exception message.</p>
  */
 @Service
 public class AuthService {
+
+    private static final Logger log = LoggerFactory.getLogger(AuthService.class);
 
     /** Detail message when the submitted user id is blank ({@code COSGN00C} line 120). */
     private static final String MESSAGE_ENTER_USER_ID = "Please enter User ID ...";
@@ -79,6 +89,15 @@ public class AuthService {
 
     /** Detail message for any other lookup failure ({@code COSGN00C} line 254, {@code WS-RESP-CD} other). */
     private static final String MESSAGE_UNABLE_TO_VERIFY = "Unable to verify the User ...";
+
+    /**
+     * Single generic external detail returned for every post-lookup credential
+     * failure (no matching user, wrong password, or lookup error). Returning one
+     * indistinguishable message prevents the {@code 401} response from leaking
+     * whether a given user id exists (remote user enumeration). The specific
+     * legacy reason is preserved only in the internal {@code WARN} log.
+     */
+    private static final String MESSAGE_INVALID_CREDENTIALS = "Invalid signon credentials. Try again ...";
 
     /** Field-error key identifying the user-id input. */
     private static final String FIELD_USER_ID = "userId";
@@ -152,7 +171,8 @@ public class AuthService {
         User user = findUser(userId);
 
         if (!passwordEncoder.matches(password, user.getPassword())) {
-            throw new AuthenticationFailedException(MESSAGE_WRONG_PASSWORD);
+            log.warn("Sign-on failed for user id {}: {}", userId, MESSAGE_WRONG_PASSWORD);
+            throw new AuthenticationFailedException(MESSAGE_INVALID_CREDENTIALS);
         }
 
         String userType = user.getUserType();
@@ -165,6 +185,12 @@ public class AuthService {
      * {@code EVALUATE WS-RESP-CD} outcomes of {@code READ-USER-SEC-FILE} into
      * their Java equivalents.
      *
+     * <p>Both the not-found and lookup-error outcomes raise an
+     * {@link AuthenticationFailedException} carrying the generic
+     * {@link #MESSAGE_INVALID_CREDENTIALS} detail (so the external {@code 401}
+     * does not disclose whether the user id exists); the specific legacy reason
+     * is logged internally at {@code WARN} keyed by the user id.</p>
+     *
      * @param userId the normalized (trimmed, upper-cased) user id
      * @return the matching {@link User} record
      * @throws AuthenticationFailedException if no record exists for the id
@@ -176,8 +202,13 @@ public class AuthService {
         try {
             found = userRepository.findById(userId);
         } catch (DataAccessException ex) {
-            throw new AuthenticationFailedException(MESSAGE_UNABLE_TO_VERIFY, ex);
+            log.warn("Sign-on lookup failed for user id {}: {}", userId, MESSAGE_UNABLE_TO_VERIFY, ex);
+            throw new AuthenticationFailedException(MESSAGE_INVALID_CREDENTIALS, ex);
         }
-        return found.orElseThrow(() -> new AuthenticationFailedException(MESSAGE_USER_NOT_FOUND));
+        if (found.isEmpty()) {
+            log.warn("Sign-on failed for user id {}: {}", userId, MESSAGE_USER_NOT_FOUND);
+            throw new AuthenticationFailedException(MESSAGE_INVALID_CREDENTIALS);
+        }
+        return found.get();
     }
 }

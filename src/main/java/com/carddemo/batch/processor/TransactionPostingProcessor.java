@@ -18,12 +18,10 @@ package com.carddemo.batch.processor;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,9 +37,6 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.service.DateValidationService;
-
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.DistributionSummary;
 
 /**
  * Spring Batch {@link ItemProcessor} that posts one staged daily-transaction
@@ -72,22 +67,34 @@ import io.micrometer.core.instrument.DistributionSummary;
  * once the account is found, and a record that fails both carries
  * {@link RejectReasonCode#ACCOUNT_EXPIRED} (the later assignment wins).</p>
  *
- * <p>A valid record returns its posted {@link Transaction}; the configured chunk
- * writer persists it. A rejected record returns {@code null} to filter it out of
- * the main writer and increments the per-reason rejected-record counter; the
- * category-balance and account updates are dependent read-modify-writes
- * performed here. The whole posting operation runs under
- * {@link Transactional @Transactional(rollbackFor = Exception.class)} so the
- * category-balance update, the account update, and the chunk writer's
+ * <p>Every record yields a {@link PostingResult}, never {@code null}: a valid
+ * record produces a {@link PostingResult.Posted} carrying its posted
+ * {@link Transaction}, and a rejected record produces a
+ * {@link PostingResult.Rejected} carrying the reconstructed 350-byte
+ * {@code CVTRA06Y} record image plus its {@link RejectReasonCode}. The downstream
+ * {@code PostingResultWriter} fans both arms out to their durable sinks &mdash;
+ * posted transactions to the database and rejected records to the 430-byte
+ * {@code DALYREJS}-equivalent S3 object &mdash; so no rejected record is ever
+ * silently dropped. For posted records the category-balance and account updates
+ * are dependent read-modify-writes performed here. The whole posting operation
+ * runs under {@link Transactional @Transactional(rollbackFor = Exception.class)}
+ * so the category-balance update, the account update, and the chunk writer's
  * transaction insert commit as one unit of work; the {@link Account} entity's
  * {@code @Version} column provides optimistic-locking detection.</p>
+ *
+ * <p>This processor deliberately records no Micrometer metrics. Record-count and
+ * amount metrics are owned exclusively by the durable writers
+ * ({@code PostedTransactionWriter} and {@link
+ * com.carddemo.batch.writer.RejectTransactionWriter}), which increment their
+ * meters only after a successful persist/upload, so a chunk that rolls back after
+ * processing is never counted.</p>
  *
  * <p>All monetary arithmetic uses {@link BigDecimal} at scale {@value #MONEY_SCALE}
  * with {@link RoundingMode#HALF_EVEN} and {@link BigDecimal#compareTo}; no binary
  * floating point participates in a financial decision.</p>
  */
 @Component
-public class TransactionPostingProcessor implements ItemProcessor<DailyTransaction, Transaction> {
+public class TransactionPostingProcessor implements ItemProcessor<DailyTransaction, PostingResult> {
 
     private static final Logger log = LoggerFactory.getLogger(TransactionPostingProcessor.class);
 
@@ -104,9 +111,6 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     private final AccountRepository accountRepository;
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
     private final DateValidationService dateValidationService;
-    private final Counter batchRecordsProcessedCounter;
-    private final Map<RejectReasonCode, Counter> batchRecordsRejectedCounters;
-    private final DistributionSummary transactionAmountSummary;
 
     /**
      * Creates the processor with its auto-configured collaborators.
@@ -123,46 +127,31 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
      * @param dateValidationService                supplies the 26-character
      *                                             processing timestamp; must not
      *                                             be {@code null}
-     * @param batchRecordsProcessedCounter         counter incremented once per
-     *                                             successfully posted record
-     *                                             (metric
-     *                                             {@code carddemo.batch.records.processed})
-     * @param batchRecordsRejectedCounters         per-reason rejected-record
-     *                                             counters (metric
-     *                                             {@code carddemo.batch.records.rejected});
-     *                                             keyed by {@link RejectReasonCode}
-     * @param transactionAmountSummary             observability-only distribution
-     *                                             of posted monetary amounts
-     *                                             (metric
-     *                                             {@code carddemo.transaction.amount.total})
      */
     public TransactionPostingProcessor(
             CardXrefRepository cardXrefRepository,
             AccountRepository accountRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
-            DateValidationService dateValidationService,
-            @Qualifier("batchRecordsProcessedCounter") Counter batchRecordsProcessedCounter,
-            Map<RejectReasonCode, Counter> batchRecordsRejectedCounters,
-            DistributionSummary transactionAmountSummary) {
+            DateValidationService dateValidationService) {
         this.cardXrefRepository = cardXrefRepository;
         this.accountRepository = accountRepository;
         this.transactionCategoryBalanceRepository = transactionCategoryBalanceRepository;
         this.dateValidationService = dateValidationService;
-        this.batchRecordsProcessedCounter = batchRecordsProcessedCounter;
-        this.batchRecordsRejectedCounters = batchRecordsRejectedCounters;
-        this.transactionAmountSummary = transactionAmountSummary;
     }
 
     /**
      * Validates and posts a single staged daily transaction.
      *
      * @param item the staged daily transaction to post; must not be {@code null}
-     * @return the posted {@link Transaction} for the chunk writer to persist, or
-     *         {@code null} when the record is rejected (filtered from the writer)
+     * @return a {@link PostingResult.Posted} carrying the posted
+     *         {@link Transaction} when the record is valid, or a
+     *         {@link PostingResult.Rejected} carrying the 350-byte record image and
+     *         {@link RejectReasonCode} when the record is rejected; never
+     *         {@code null}
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public Transaction process(DailyTransaction item) {
+    public PostingResult process(DailyTransaction item) {
         ValidationOutcome outcome = validate(item);
         if (outcome.reason() != RejectReasonCode.NONE) {
             return reject(item, outcome.reason());
@@ -176,9 +165,7 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
             return reject(item, updateReason);
         }
 
-        batchRecordsProcessedCounter.increment();
-        transactionAmountSummary.record(item.getTranAmt().doubleValue());
-        return posted;
+        return new PostingResult.Posted(posted);
     }
 
     /**
@@ -293,23 +280,27 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     }
 
     /**
-     * Records a rejected record: increments the per-reason rejected-record
-     * counter and filters the item out of the main writer.
+     * Builds the rejected-record result, reconstructing the 350-byte
+     * {@code CVTRA06Y} record image so the downstream writer can emit the
+     * 430-byte {@code DALYREJS}-equivalent reject record. This mirrors the COBOL
+     * {@code 2500-WRITE-REJECT-REC} paragraph, which writes the original daily
+     * transaction image followed by the reject reason.
+     *
+     * <p>No metric is incremented here; the rejected-record counter is owned by
+     * {@link com.carddemo.batch.writer.RejectTransactionWriter} and increments
+     * only after the reject record is durably written.</p>
      *
      * @param item   the rejected daily transaction
      * @param reason the reject reason; never {@link RejectReasonCode#NONE}
-     * @return {@code null}, signalling the chunk to drop the item
+     * @return a {@link PostingResult.Rejected} carrying the 350-byte record image
+     *         and the reject reason
      */
-    private Transaction reject(DailyTransaction item, RejectReasonCode reason) {
-        Counter counter = batchRecordsRejectedCounters.get(reason);
-        if (counter != null) {
-            counter.increment();
-        }
+    private PostingResult reject(DailyTransaction item, RejectReasonCode reason) {
         if (log.isDebugEnabled()) {
             log.debug("Rejected daily transaction {}: {} {}",
                     item.getTranId(), reason.getFormattedCode(), reason.getDescription());
         }
-        return null;
+        return new PostingResult.Rejected(DailyTransactionRecordImage.render(item), reason);
     }
 
     /**

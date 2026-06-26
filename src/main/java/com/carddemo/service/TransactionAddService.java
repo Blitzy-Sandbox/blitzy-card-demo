@@ -16,18 +16,21 @@
 package com.carddemo.service;
 
 import com.carddemo.dto.TransactionDto;
+import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Transaction;
 import com.carddemo.enums.TransactionTypeCode;
 import com.carddemo.exception.DuplicateRecordException;
 import com.carddemo.exception.FileAccessException;
-import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
+import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionRepository;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -126,6 +129,9 @@ public class TransactionAddService {
     private static final String MSG_ORIG_DATE_INVALID = "Orig Date - Not a valid date...";
     private static final String MSG_PROC_DATE_INVALID = "Proc Date - Not a valid date...";
     private static final String MSG_ACCT_ID_NOT_FOUND = "Account ID NOT found...";
+    private static final String MSG_CARD_NUM_NOT_FOUND = "Card Number NOT found...";
+    private static final String MSG_XREF_ACCT_LOOKUP = "Unable to lookup Acct in XREF AIX file...";
+    private static final String MSG_XREF_CARD_LOOKUP = "Unable to lookup Card # in XREF file...";
     private static final String MSG_DUP_TRAN_ID = "Tran ID already exist...";
     private static final String MSG_UNABLE_TO_ADD = "Unable to Add Transaction...";
 
@@ -144,6 +150,7 @@ public class TransactionAddService {
     private static final String KEY_MERCHANT_ZIP = "merchantZip";
 
     private final TransactionRepository transactionRepository;
+    private final CardXrefRepository cardXrefRepository;
     private final DateValidationService dateValidationService;
 
     /**
@@ -151,11 +158,17 @@ public class TransactionAddService {
      *
      * @param transactionRepository repository for the {@link Transaction} fact table,
      *                              providing the highest-identifier finder and the insert
+     * @param cardXrefRepository    repository for the card / account cross-reference
+     *                              ({@code CVACT03Y}), resolving the
+     *                              {@code READ-CXACAIX-FILE} (account alternate index) and
+     *                              {@code READ-CCXREF-FILE} (card primary key) lookups
      * @param dateValidationService service validating the origination and processing dates
      */
     public TransactionAddService(TransactionRepository transactionRepository,
+                                 CardXrefRepository cardXrefRepository,
                                  DateValidationService dateValidationService) {
         this.transactionRepository = transactionRepository;
+        this.cardXrefRepository = cardXrefRepository;
         this.dateValidationService = dateValidationService;
     }
 
@@ -163,30 +176,38 @@ public class TransactionAddService {
      * Adds a new transaction as one atomic unit of work.
      *
      * <p>The flow mirrors {@code COTRN02C}: the confirmation flag is checked
-     * first; the key and data fields are edited in the legacy order; the next
-     * sequential identifier is generated from the current highest identifier;
-     * and the assembled record is inserted within the same transaction so that
-     * the read-highest-then-write sequence commits atomically.</p>
+     * first; the key fields are edited and resolved against the card / account
+     * cross-reference (deriving the card number from the account, or validating
+     * the supplied card number and deriving its account); the data fields are
+     * edited; the next sequential identifier is generated from the current
+     * highest identifier; and the assembled record is inserted within the same
+     * transaction so that the read-highest-then-write sequence commits
+     * atomically.</p>
      *
      * @param request the submitted add payload
      * @return the created transaction rendered as a {@link TransactionDto.Detail}
-     * @throws ValidationException     if the confirmation flag is missing or declined,
-     *                                 the confirmation flag is not {@code Y}/{@code N},
-     *                                 or any field edit fails
-     * @throws RecordNotFoundException if no card number is available to link the transaction
+     * @throws ValidationException      if the confirmation flag is missing or declined,
+     *                                  the confirmation flag is not {@code Y}/{@code N},
+     *                                  any field edit fails, or the supplied account or
+     *                                  card number is not present in the cross-reference
      * @throws DuplicateRecordException if the generated identifier already exists
-     * @throws FileAccessException     if the insert fails for any other data-access reason
+     * @throws FileAccessException      if the cross-reference lookup or the insert fails
+     *                                  for any other data-access reason
      */
     @Transactional(rollbackFor = Exception.class)
     public TransactionDto.Detail addTransaction(TransactionDto.AddRequest request) {
         validateConfirmation(request.confirm());
 
-        Map<String, String> fieldErrors = validateFields(request);
+        // VALIDATE-INPUT-KEY-FIELDS runs (and resolves the cross-reference)
+        // before VALIDATE-INPUT-DATA-FIELDS; the resolved card number is the
+        // value derived from the account alternate index or the validated
+        // submitted card number.
+        Map<String, String> fieldErrors = new LinkedHashMap<>();
+        String cardNumber = validateAndResolveKeyFields(request, fieldErrors);
+        validateDataFields(request, fieldErrors);
         if (!fieldErrors.isEmpty()) {
             throw new ValidationException(firstMessage(fieldErrors), fieldErrors);
         }
-
-        String cardNumber = resolveCardNumber(request);
 
         String tranId = generateNextTransactionId();
         if (transactionRepository.existsById(tranId)) {
@@ -222,42 +243,109 @@ public class TransactionAddService {
     }
 
     /**
-     * Runs the {@code VALIDATE-INPUT-KEY-FIELDS} and
-     * {@code VALIDATE-INPUT-DATA-FIELDS} edits in their COBOL order and collects
-     * per-field failures into an insertion-ordered map.
+     * Edits and resolves the account / card search key
+     * ({@code VALIDATE-INPUT-KEY-FIELDS}), reproducing the legacy
+     * {@code EVALUATE TRUE} cross-reference logic.
      *
-     * @param request the submitted add payload
-     * @return a map keyed by request field name; empty when every edit passes
-     */
-    private Map<String, String> validateFields(TransactionDto.AddRequest request) {
-        Map<String, String> errors = new LinkedHashMap<>();
-        validateKeyFields(request, errors);
-        validateDataFields(request, errors);
-        return errors;
-    }
-
-    /**
-     * Edits the account / card search key ({@code VALIDATE-INPUT-KEY-FIELDS}):
-     * an account identifier (when supplied) or a card number must be numeric,
-     * and at least one of the two must be present.
+     * <p>When an account identifier is supplied it takes precedence (the first
+     * true {@code WHEN}): it must be numeric, and it is resolved through the
+     * account alternate index ({@code READ-CXACAIX-FILE},
+     * {@link CardXrefRepository#findByXrefAcctId(Long)}) to derive the card
+     * number ({@code MOVE XREF-CARD-NUM TO CARDNINI}). Otherwise, when a card
+     * number is supplied it must be numeric and is validated through the
+     * cross-reference primary key ({@code READ-CCXREF-FILE},
+     * {@link CardXrefRepository#findById(Object)}); the card number is retained
+     * and its account is derived ({@code MOVE XREF-ACCT-ID TO ACTIDINI}). When
+     * neither is supplied the legacy "must be entered" message is recorded.</p>
      *
      * @param request the submitted add payload
      * @param errors  the accumulating per-field error map
+     * @return the resolved card number when the key edits pass, or {@code null}
+     *         when a key error was recorded
+     * @throws FileAccessException if a cross-reference lookup fails for a reason
+     *                             other than not-found
      */
-    private static void validateKeyFields(TransactionDto.AddRequest request, Map<String, String> errors) {
+    private String validateAndResolveKeyFields(TransactionDto.AddRequest request, Map<String, String> errors) {
         boolean hasAccount = !isBlank(request.accountId());
         boolean hasCard = !isBlank(request.cardNumber());
         if (hasAccount) {
-            if (!isNumeric(request.accountId())) {
-                errors.put(KEY_ACCOUNT_ID, MSG_ACCT_ID_NUMERIC);
-            }
-        } else if (hasCard) {
-            if (!isNumeric(request.cardNumber())) {
-                errors.put(KEY_CARD_NUMBER, MSG_CARD_NUM_NUMERIC);
-            }
-        } else {
-            errors.put(KEY_ACCOUNT_ID, MSG_ACCT_OR_CARD_REQUIRED);
+            return resolveByAccountId(request.accountId(), errors);
         }
+        if (hasCard) {
+            return resolveByCardNumber(request.cardNumber(), errors);
+        }
+        errors.put(KEY_ACCOUNT_ID, MSG_ACCT_OR_CARD_REQUIRED);
+        return null;
+    }
+
+    /**
+     * Resolves the card number from a supplied account identifier through the
+     * {@code READ-CXACAIX-FILE} alternate-index path.
+     *
+     * <p>The numeric class test short-circuits before the read, matching the
+     * COBOL {@code IF ACTIDINI IS NOT NUMERIC} guard that issues its message
+     * before {@code PERFORM READ-CXACAIX-FILE}. A not-found account is recorded
+     * as the {@code DFHRESP(NOTFND)} field message; any other data-access
+     * failure maps to {@link FileAccessException} (the {@code WHEN OTHER}
+     * "Unable to lookup Acct in XREF AIX file" outcome). Because the alternate
+     * index is non-unique the first matching cross-reference row supplies the
+     * card number.</p>
+     *
+     * @param accountId the submitted account identifier
+     * @param errors    the accumulating per-field error map
+     * @return the derived card number, or {@code null} when not numeric or not found
+     * @throws FileAccessException if the alternate-index lookup fails
+     */
+    private String resolveByAccountId(String accountId, Map<String, String> errors) {
+        if (!isNumeric(accountId)) {
+            errors.put(KEY_ACCOUNT_ID, MSG_ACCT_ID_NUMERIC);
+            return null;
+        }
+        List<CardXref> matches;
+        try {
+            matches = cardXrefRepository.findByXrefAcctId(Long.valueOf(accountId.trim()));
+        } catch (DataAccessException ex) {
+            throw new FileAccessException(MSG_XREF_ACCT_LOOKUP, ex);
+        }
+        if (matches.isEmpty()) {
+            errors.put(KEY_ACCOUNT_ID, MSG_ACCT_ID_NOT_FOUND);
+            return null;
+        }
+        return matches.get(0).getXrefCardNum();
+    }
+
+    /**
+     * Validates a supplied card number through the {@code READ-CCXREF-FILE}
+     * primary-key path and retains it as the transaction card number.
+     *
+     * <p>The numeric class test short-circuits before the read, matching the
+     * COBOL {@code IF CARDNINI IS NOT NUMERIC} guard. A not-found card is
+     * recorded as the {@code DFHRESP(NOTFND)} field message; any other
+     * data-access failure maps to {@link FileAccessException} (the
+     * {@code WHEN OTHER} "Unable to lookup Card # in XREF file" outcome).</p>
+     *
+     * @param cardNumber the submitted card number
+     * @param errors     the accumulating per-field error map
+     * @return the validated card number, or {@code null} when not numeric or not found
+     * @throws FileAccessException if the primary-key lookup fails
+     */
+    private String resolveByCardNumber(String cardNumber, Map<String, String> errors) {
+        if (!isNumeric(cardNumber)) {
+            errors.put(KEY_CARD_NUMBER, MSG_CARD_NUM_NUMERIC);
+            return null;
+        }
+        String trimmed = cardNumber.trim();
+        Optional<CardXref> found;
+        try {
+            found = cardXrefRepository.findById(trimmed);
+        } catch (DataAccessException ex) {
+            throw new FileAccessException(MSG_XREF_CARD_LOOKUP, ex);
+        }
+        if (found.isEmpty()) {
+            errors.put(KEY_CARD_NUMBER, MSG_CARD_NUM_NOT_FOUND);
+            return null;
+        }
+        return trimmed;
     }
 
     /**
@@ -330,24 +418,6 @@ public class TransactionAddService {
         } else if (!dateValidationService.isValidDate(toCcyymmdd(value))) {
             errors.put(key, invalidMessage);
         }
-    }
-
-    /**
-     * Resolves the card number that links the transaction to its card
-     * ({@code TRAN-CARD-NUM}). The COBOL derives this value through the card /
-     * account cross-reference; when no card number is available the lookup is
-     * surfaced with the legacy not-found message.
-     *
-     * @param request the submitted add payload
-     * @return the non-blank card number
-     * @throws RecordNotFoundException if no card number is available
-     */
-    private static String resolveCardNumber(TransactionDto.AddRequest request) {
-        String cardNumber = trimToEmpty(request.cardNumber());
-        if (cardNumber.isEmpty()) {
-            throw new RecordNotFoundException(MSG_ACCT_ID_NOT_FOUND);
-        }
-        return cardNumber;
     }
 
     /**

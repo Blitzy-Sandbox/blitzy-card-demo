@@ -2,7 +2,7 @@
 
 > The modernized migration of the **AWS CardDemo** mainframe credit-card management
 > application — re-platformed from **COBOL / CICS / VSAM / JCL** to a cloud-native
-> **Java 25 LTS + Spring Boot 3.5.11** service with **100% behavioral parity**.
+> **Java 25 LTS + Spring Boot 3.5.15** service targeting **100% behavioral parity**.
 
 CardDemo is a credit-card management system covering **Account**, **Card**,
 **Transaction**, **Billing**, **Reporting**, and **User Administration**. This
@@ -77,7 +77,7 @@ modernization principles applied throughout the migration:
 | Layer | Technology | Version |
 |-------|------------|---------|
 | Language / Runtime | Java (OpenJDK / Eclipse Temurin) | **25.0.2 LTS** |
-| Application framework | Spring Boot (Web, Data JPA, Batch, Security, Validation, Actuator) | **3.5.11** |
+| Application framework | Spring Boot (Web, Data JPA, Batch, Security, Validation, Actuator) | **3.5.15** |
 | Persistence | PostgreSQL | **16** |
 | Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | **11.x** (Boot-managed) |
 | ORM / JPA provider | Hibernate (via Spring Data JPA) | **6.x** |
@@ -169,7 +169,7 @@ The full before/after architecture is documented with Mermaid diagrams in
 [`docs/architecture-before-after.md`](docs/architecture-before-after.md):
 
 - **Diagram 1 — BEFORE: Legacy Mainframe** (`app/`, frozen reference @ `27d6c6f`)
-- **Diagram 2 — AFTER: Java 25 + Spring Boot 3.5.11** (greenfield)
+- **Diagram 2 — AFTER: Java 25 + Spring Boot 3.5.15** (greenfield)
 - **Diagram 3 — Contract-Preservation Linkages** (Legacy ↔ Target)
 - **Diagram 4 — Report Submission Bridge & 4-Stage Posting Validation**
 
@@ -184,7 +184,7 @@ The full before/after architecture is documented with Mermaid diagrams in
 | **Docker** | 28.x+ | Container runtime for PostgreSQL, LocalStack, and the observability stack |
 | **Docker Compose** | v2 plugin | Invoked as `docker compose` (not the legacy `docker-compose` script) |
 | **Git** | 2.x+ | Version control |
-| `LOCALSTACK_AUTH_TOKEN` | — | Environment variable required for LocalStack Pro features (local dev) |
+| `LOCALSTACK_AUTH_TOKEN` | optional | Only needed if you switch the `localstack` service to a **Pro** image; the default community image needs no token |
 | AWS CLI | optional | Only needed for manual S3/SQS/SNS inspection against LocalStack |
 
 > **Maven is not required separately** — use the bundled wrapper `./mvnw`, which pins
@@ -214,10 +214,26 @@ export JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64
 
 **3. Start local infrastructure** (PostgreSQL, LocalStack, Jaeger, Prometheus, Grafana)
 
-```bash
-# LocalStack Pro auth token (required for local AWS emulation)
-export LOCALSTACK_AUTH_TOKEN=<your-token>
+First create your local `.env` from the template. The Compose services **fail fast** if the
+required secrets are missing, so this must happen *before* `docker compose up`:
 
+```bash
+cp .env.example .env
+```
+
+Edit `.env` and set the three required secrets:
+
+- `POSTGRES_PASSWORD` — any local database password
+- `JWT_SECRET` — a Base64 value of at least 32 bytes (e.g. `openssl rand -base64 48`)
+- `GF_SECURITY_ADMIN_PASSWORD` — the local Grafana admin password
+
+> `LOCALSTACK_AUTH_TOKEN` is **optional** and left empty by default. The Compose file uses
+> the community image `localstack/localstack:3.8.1`, which needs no token. Only set a token
+> if you switch the `localstack` service to a Pro image for Pro-only features.
+
+Then start the stack:
+
+```bash
 docker compose up -d
 ```
 
@@ -251,10 +267,19 @@ Flyway applies the schema and seed migrations on first startup.
 
 **5. Verify the application is up**
 
+The application serves business endpoints on port `8080`, while Spring Boot Actuator
+(health, metrics) is served on the separate **management port `9091`** (see `application.yml`
+and `DECISION_LOG.md` D-033). When you run the app on the host via `./mvnw` (step 4), query
+the management port directly:
+
 ```bash
-curl -s http://localhost:8080/actuator/health | python3 -m json.tool
+curl -s http://localhost:9091/actuator/health | python3 -m json.tool
 # Expected: {"status": "UP", "components": {"db": {"status": "UP"}, ...}}
 ```
+
+> If you instead run the application inside Docker Compose, port `9091` is intentionally
+> **not published** to the host. Query it from within the container network instead:
+> `docker compose exec app curl -fsS http://localhost:9091/actuator/health`
 
 ### Seed Credentials
 
@@ -362,11 +387,14 @@ the `SPRING_PROFILES_ACTIVE` environment variable.
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `JAVA_HOME` | Yes | System default | Path to the JDK 25 installation |
-| `LOCALSTACK_AUTH_TOKEN` | Yes (local dev) | — | LocalStack Pro authentication token |
+| `LOCALSTACK_AUTH_TOKEN` | No | _(empty)_ | Only needed for a LocalStack **Pro** image; the default community image needs no token |
 | `POSTGRES_DB` | No | `carddemo` | PostgreSQL database name |
 | `POSTGRES_USER` | No | `carddemo` | PostgreSQL username |
-| `POSTGRES_PASSWORD` | No | `carddemo` | PostgreSQL password |
+| `POSTGRES_PASSWORD` | Yes (local dev) | _(none — fail-fast)_ | PostgreSQL password; required secret, no committed default |
+| `JWT_SECRET` | Yes (local dev) | _(none — fail-fast)_ | JWT signing secret; Base64, **≥ 32 bytes** (e.g. `openssl rand -base64 48`) |
+| `GF_SECURITY_ADMIN_PASSWORD` | Yes (local dev) | _(none — fail-fast)_ | Grafana admin password for the observability stack |
 | `SERVER_PORT` | No | `8080` | Application server port |
+| `MANAGEMENT_SERVER_PORT` | No | `9091` | Actuator (health/metrics) management port |
 | `SPRING_PROFILES_ACTIVE` | No | `default` | Active Spring profile (`local`, `test`) |
 | `AWS_ACCESS_KEY_ID` | No | `test` (local) | AWS access key (LocalStack) |
 | `AWS_SECRET_ACCESS_KEY` | No | `test` (local) | AWS secret key (LocalStack) |
@@ -459,8 +487,10 @@ COBOL business logic exactly:
   Expiration* — routing each failure to the rejects output with its specific reject reason
   code. Posting runs inside a `@Transactional(rollbackFor = Exception.class)` boundary.
 - **INTCALC — Interest calculation.** Computes monthly interest as
-  `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` using `BigDecimal` with `RoundingMode.HALF_EVEN`,
-  reproducing the COBOL `COMPUTE ... ROUNDED` result bit-for-bit.
+  `(TRAN-CAT-BAL × DIS-INT-RATE) / 1200` using `BigDecimal` at scale 2 with
+  `RoundingMode.HALF_EVEN`. The legacy `CBACT04C` `COMPUTE` is **not** `ROUNDED`; the
+  migration deliberately applies banker's rounding (`HALF_EVEN`) as a documented
+  modernization of the non-`ROUNDED` COBOL arithmetic — see `DECISION_LOG.md`.
 - **COMBTRAN — Combine & sort.** Concatenates and sorts transactions by transaction id
   (the DFSORT replacement), preserving the legacy sort-key ordering and duplicate handling.
 - **CREASTMT — Statement generation.** Produces account statements in both text and HTML
@@ -508,8 +538,8 @@ all enabled out of the box.
 
 | Service | URL | Credentials |
 |---------|-----|-------------|
-| Application health | http://localhost:8080/actuator/health | — |
-| Prometheus metrics (scrape) | http://localhost:8080/actuator/prometheus | — |
+| Application health | `http://localhost:9091/actuator/health` (host run) — internal `app:9091` under Compose | — |
+| Prometheus metrics (scrape) | `http://app:9091/actuator/prometheus` (in-network) | — |
 | Jaeger tracing UI | http://localhost:16686 | — |
 | Prometheus server | http://localhost:9090 | — |
 | Grafana dashboards | http://localhost:3000 | `admin` / `admin` |
@@ -550,7 +580,7 @@ all enabled out of the box.
 
 ```
 .
-├── pom.xml                          # Maven build (Spring Boot 3.5.11, Java 25, all deps)
+├── pom.xml                          # Maven build (Spring Boot 3.5.15, Java 25, all deps)
 ├── mvnw, mvnw.cmd, .mvn/            # Maven wrapper (pins Maven 3.9.9)
 ├── Dockerfile                       # Multi-stage build → runnable image
 ├── docker-compose.yml               # 6 services: postgres, localstack, app, jaeger, prometheus, grafana
@@ -639,7 +669,7 @@ lines)** with full business-logic preservation.
 | **Testcontainers Docker socket** | Integration tests need access to the Docker daemon. Ensure Docker is running and your user can reach the Docker socket; otherwise tests fail with "connection refused". |
 | **Flyway migration ordering** | Migrations apply in `V1 → V2 → V3` order. Never edit an already-applied migration; add a new `V{n}__*.sql` instead, or reset the dev database with `docker compose down -v`. |
 | **Port conflicts** | If `docker compose up` fails, check for processes already bound to `5432`, `4566`, `8080`, `16686`, `9090`, or `3000` (e.g., `lsof -i :5432`). |
-| **`LOCALSTACK_AUTH_TOKEN` missing** | LocalStack init fails without the token; export it before `docker compose up -d` and ensure `localstack-init/init-aws.sh` is executable. |
+| **`localstack-init` did not provision resources** | The init script creates the S3/SQS/SNS resources on startup; ensure `localstack-init/init-aws.sh` is executable. The default community image needs no `LOCALSTACK_AUTH_TOKEN` — only set one if you switched the `localstack` service to a Pro image. |
 | **Maven wrapper permission denied** | Run `chmod +x mvnw`. |
 
 
@@ -666,11 +696,21 @@ the full text and [`NOTICE`](NOTICE) for attribution.
 
 ## Project Status
 
-**Development-complete migration.** All 28 COBOL programs have been migrated to Java with
-100% behavioral parity across the 22 features, the full test suite passes, and the build is
-clean. Remaining work is limited to path-to-production activities (CI/CD pipeline,
-production profile, deployment manifests, and security hardening), which are out of scope
-for this migration.
+**CP4 milestone — in progress.** This checkpoint delivers the online REST controllers, the
+online business-service layer, and the Spring Batch processors and writers (the 4-stage
+posting cascade, interest calculation, combine/sort, statement and report generation, and
+the posted/reject S3 writers). The unit test suite passes and the build is clean. The
+migration is **not** yet development-complete — later checkpoints remain.
+
+Work remaining beyond this milestone (later checkpoints / final sign-off):
+
+- **Batch job wiring** — the end-to-end `PostTransactionJobConfig` (POSTTRAN) and the
+  remaining job configurations that assemble the processors and writers into runnable jobs.
+- **Validation gates** — Gate 1 / Gate 4 byte-equivalent end-to-end batch runs against the
+  named ASCII fixtures, the Gate 3 performance baseline, and the Gate 8 integration
+  sign-off (≥80% line coverage and OWASP dependency-check with zero critical/high CVEs).
+- **Path-to-production** — CI/CD pipeline, production Spring profile, deployment manifests,
+  and security hardening (explicitly out of scope for the migration architecture).
 
 For the detailed status, completion metrics, success criteria, and the list of remaining
 work items, see [`docs/project-guide.md`](docs/project-guide.md).

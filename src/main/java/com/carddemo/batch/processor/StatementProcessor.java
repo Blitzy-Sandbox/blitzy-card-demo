@@ -351,10 +351,10 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
         records.add(HTML_TR_CLOSE);
         records.add(HTML_TR_OPEN);
         records.add(HTML_TD_GREY);
-        records.add("<p style=\"font-size:16px\">" + cut(fixed(buildName(customer), 50), "  ") + "  </p>");
-        records.add("<p>" + cut(fixed(customer.getAddrLine1(), 50), "  ") + "  </p>");
-        records.add("<p>" + cut(fixed(customer.getAddrLine2(), 50), "  ") + "  </p>");
-        records.add("<p>" + cut(fixed(buildAddressCityLine(customer), TEXT_WIDTH), "  ") + "  </p>");
+        records.add("<p style=\"font-size:16px\">" + cut(fixed(htmlEscape(buildName(customer)), 50), "  ") + "  </p>");
+        records.add("<p>" + cut(fixed(htmlEscape(customer.getAddrLine1()), 50), "  ") + "  </p>");
+        records.add("<p>" + cut(fixed(htmlEscape(customer.getAddrLine2()), 50), "  ") + "  </p>");
+        records.add("<p>" + cut(fixed(htmlEscape(buildAddressCityLine(customer)), TEXT_WIDTH), "  ") + "  </p>");
         records.add(HTML_TD_CLOSE);
         records.add(HTML_TR_CLOSE);
         records.add(HTML_TR_OPEN);
@@ -388,10 +388,10 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
         for (StatementDto line : lines) {
             records.add(HTML_TR_OPEN);
             records.add(HTML_TD_ID);
-            records.add("<p>" + fixed(line.transactionId(), TRAN_ID_WIDTH) + "</p>");
+            records.add("<p>" + fixed(htmlEscape(line.transactionId()), TRAN_ID_WIDTH) + "</p>");
             records.add(HTML_TD_CLOSE);
             records.add(HTML_TD_DETAILS);
-            records.add("<p>" + fixed(line.description(), TRAN_DESC_WIDTH) + "</p>");
+            records.add("<p>" + fixed(htmlEscape(line.description()), TRAN_DESC_WIDTH) + "</p>");
             records.add(HTML_TD_CLOSE);
             records.add(HTML_TD_AMOUNT);
             records.add("<p>" + formatSuppressed(line.amount()) + "</p>");
@@ -479,6 +479,35 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
         builder.append(safe);
         while (builder.length() < width) {
             builder.append(' ');
+        }
+        return builder.toString();
+    }
+
+    /**
+     * Replaces the HTML metacharacters {@code & < > " '} in a dynamic value with
+     * their character-entity references. The ampersand is replaced first so that
+     * the entities introduced for the remaining characters are not re-encoded. A
+     * {@code null} value yields an empty string, and a value containing none of
+     * the metacharacters is returned unchanged.
+     *
+     * @param value the dynamic value to encode
+     * @return the encoded value, never {@code null}
+     */
+    private static String htmlEscape(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(value.length());
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            switch (c) {
+                case '&' -> builder.append("&amp;");
+                case '<' -> builder.append("&lt;");
+                case '>' -> builder.append("&gt;");
+                case '"' -> builder.append("&quot;");
+                case '\'' -> builder.append("&#39;");
+                default -> builder.append(c);
+            }
         }
         return builder.toString();
     }
