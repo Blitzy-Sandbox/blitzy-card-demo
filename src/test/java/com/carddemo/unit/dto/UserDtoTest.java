@@ -29,7 +29,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  * reflection — <strong>no</strong> {@code @SpringBootTest}, Spring context, Testcontainers
  * or Mockito. It pins the four defining, name-drift-resistant requirements of the contract:
  * <ul>
- *   <li>{@code CreateRequest} has exactly five {@code @NotBlank} fields;</li>
+ *   <li>{@code CreateRequest} carries no {@code @NotBlank}: presence is validated at the
+ *       service layer for byte-exact COUSR01C parity (P-2; DECISION_LOG D-056), so an
+ *       all-blank (within-length) request raises no DTO-layer violation, while the five
+ *       {@code @Size} upper bounds remain;</li>
  *   <li>{@code UpdateRequest.password} is OPTIONAL (a blank value is allowed);</li>
  *   <li>{@code DeleteResponse} carries NO {@code password} component;</li>
  *   <li>{@code userType} is a width-1 {@link String} (never an enum).</li>
@@ -156,14 +159,19 @@ class UserDtoTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("CreateRequest: all five fields are @NotBlank - blanks fire on every field")
-    void createRequestAllFiveNotBlankFire() {
+    @DisplayName("CreateRequest: all-blank fields raise NO DTO-layer violation (presence delegated to UserAddService for byte-exact text)")
+    void createRequestAllBlankHasNoDtoViolation() {
+        // P-2 parity: CreateRequest deliberately carries no @NotBlank. Blank "" satisfies
+        // every @Size(max=N) (length 0), so an all-blank request raises ZERO DTO-layer
+        // violations and reaches UserAddService, which emits the byte-exact COUSR01C
+        // PROCESS-ENTER-KEY literals ("First Name can NOT be empty...", etc.) in the
+        // legacy field order. Service-layer coverage lives in UserAddServiceTest's ordered
+        // empty-field cascade. See DECISION_LOG D-056.
         Set<ConstraintViolation<UserDto.CreateRequest>> violations =
                 validator.validate(new UserDto.CreateRequest("", "", "", "", ""));
-        // Blank "" satisfies @Size(max=N) (length 0), so only the five @NotBlank constraints fire.
-        assertThat(violations).hasSize(5);
-        assertThat(violatedPaths(violations))
-                .contains("firstName", "lastName", "userId", "password", "userType");
+        assertThat(violations)
+                .as("with @NotBlank removed, all-blank (within-length) fields must raise no DTO-layer violation")
+                .isEmpty();
     }
 
     @Test

@@ -16,7 +16,6 @@
  */
 package com.carddemo.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -37,12 +36,22 @@ public final class AuthDto {
     /**
      * Request body for {@code POST /api/auth/signin}.
      *
+     * <p>Blank/empty {@code userId} and {@code password} are intentionally
+     * <em>not</em> rejected here with a {@code @NotBlank} constraint. Doing so
+     * would emit the generic Bean Validation default ("must not be blank") and
+     * shadow the byte-exact COBOL on-screen literals ("Please enter User ID ...",
+     * "Please enter Password ...") that {@code AuthService.signin} raises in the
+     * legacy COSGN00C field-evaluation order. Presence validation is therefore
+     * delegated to the service layer to preserve 100% behavioral parity
+     * (AAP &sect;0.7.1.1); see DECISION_LOG D-056. The {@code @Size(max = 8)}
+     * upper bound mirrors the fixed-width {@code X(8)} fields and remains here.
+     *
      * @param userId   the user identifier supplied at signon ({@code USERID X(8)})
      * @param password the password supplied at signon ({@code PASSWD X(8)})
      */
     public record SigninRequest(
-            @NotBlank @Size(max = 8) String userId,
-            @NotBlank @Size(max = 8) String password
+            @Size(max = 8) String userId,
+            @Size(max = 8) String password
     ) {
     }
 

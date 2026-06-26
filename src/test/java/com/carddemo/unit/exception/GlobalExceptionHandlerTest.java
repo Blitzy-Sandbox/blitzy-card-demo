@@ -19,6 +19,7 @@ import java.lang.reflect.Method;
 import java.net.URI;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import ch.qos.logback.classic.Logger;
@@ -50,17 +51,26 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.MethodParameter;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpInputMessage;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 
 /**
  * Pure JUnit 5 + Mockito unit test for {@link GlobalExceptionHandler}, the
@@ -180,6 +190,33 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    @DisplayName("RecordNotFoundException (message-only ctor) -> 404 surfacing the byte-exact key-free message (P-4)")
+    void recordNotFoundMessageOnlySurfacesByteExactDetail() {
+        // The message-only constructor carries a deliberate, key-free legacy literal
+        // (COUSR02C/COUSR03C 'User ID NOT found...'). entityType is null, so the handler
+        // must surface the verbatim message to reproduce the on-screen COBOL text (AAP 0.7.1.1).
+        RecordNotFoundException ex = new RecordNotFoundException("User ID NOT found...");
+
+        ResponseEntity<ProblemDetail> response = handler.handleRecordNotFound(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.NOT_FOUND, "Resource Not Found");
+        assertThat(body.getDetail()).isEqualTo("User ID NOT found...");
+    }
+
+    @Test
+    @DisplayName("DuplicateRecordException (message-only ctor) -> 409 surfacing the byte-exact key-free message (P-3)")
+    void duplicateRecordMessageOnlySurfacesByteExactDetail() {
+        // The message-only constructor carries the key-free COUSR01C literal 'User ID already exist...'.
+        // entityType is null, so the handler surfaces the verbatim message (AAP 0.7.1.1).
+        DuplicateRecordException ex = new DuplicateRecordException("User ID already exist...");
+
+        ResponseEntity<ProblemDetail> response = handler.handleDuplicateRecord(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.CONFLICT, "Duplicate Resource");
+        assertThat(body.getDetail()).isEqualTo("User ID already exist...");
+    }
+
+    @Test
     @DisplayName("ConcurrentUpdateException -> 409 CONFLICT with byte-exact parity message")
     void concurrentUpdateMapsTo409AndParityMessage() {
         ConcurrentUpdateException ex = new ConcurrentUpdateException();
@@ -282,6 +319,73 @@ class GlobalExceptionHandlerTest {
         ProblemDetail body = assertProblem(response, HttpStatus.BAD_REQUEST, "Validation Failed");
         assertThat(body.getDetail()).isEqualTo("Request validation failed");
         assertThat(body.getProperties()).containsKey("errors");
+    }
+
+    @Test
+    @DisplayName("HttpMessageNotReadableException -> 400 with a generic, leak-free malformed-request detail (F-1)")
+    void httpMessageNotReadableMapsTo400() {
+        // A malformed/empty/missing JSON body must be a client error (400), not a 500.
+        HttpInputMessage inputMessage = mock(HttpInputMessage.class);
+        HttpMessageNotReadableException ex =
+                new HttpMessageNotReadableException("JSON parse error: " + SECRET, inputMessage);
+
+        ResponseEntity<ProblemDetail> response = handler.handleHttpMessageNotReadable(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.BAD_REQUEST, "Malformed Request");
+        assertThat(body.getDetail())
+                .isEqualTo("The request body could not be read; ensure it is well-formed JSON.");
+        // The parser message can echo fragments of the bad payload; it must never reach the body.
+        assertThat(body.getDetail()).doesNotContain(SECRET);
+    }
+
+    @Test
+    @DisplayName("HttpMediaTypeNotSupportedException -> 415 (F-1)")
+    void httpMediaTypeNotSupportedMapsTo415() {
+        HttpMediaTypeNotSupportedException ex =
+                new HttpMediaTypeNotSupportedException(MediaType.TEXT_PLAIN, List.of(MediaType.APPLICATION_JSON));
+
+        ResponseEntity<ProblemDetail> response = handler.handleHttpMediaTypeNotSupported(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type");
+        assertThat(body.getDetail())
+                .isEqualTo("The request Content-Type is not supported; use application/json.");
+    }
+
+    @Test
+    @DisplayName("HttpRequestMethodNotSupportedException -> 405 with an Allow header listing supported methods (F-1)")
+    void httpRequestMethodNotSupportedMapsTo405WithAllow() {
+        HttpRequestMethodNotSupportedException ex =
+                new HttpRequestMethodNotSupportedException("POST", List.of("GET"));
+
+        ResponseEntity<ProblemDetail> response = handler.handleHttpRequestMethodNotSupported(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed");
+        assertThat(body.getDetail()).isEqualTo("The HTTP method is not supported for this resource.");
+        // RFC 7231 6.5.5: the 405 response MUST advertise the supported methods via Allow.
+        assertThat(response.getHeaders().getAllow()).containsExactly(HttpMethod.GET);
+    }
+
+    @Test
+    @DisplayName("NoResourceFoundException (unmapped path) -> 404 with the generic not-found detail (F-1)")
+    void noResourceFoundMapsTo404() {
+        NoResourceFoundException ex = new NoResourceFoundException(HttpMethod.GET, "/api/nonexistent/path");
+
+        ResponseEntity<ProblemDetail> response = handler.handleNoHandlerFound(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.NOT_FOUND, "Resource Not Found");
+        assertThat(body.getDetail()).isEqualTo("The requested resource could not be found.");
+    }
+
+    @Test
+    @DisplayName("NoHandlerFoundException (unmapped path) -> 404 with the generic not-found detail (F-1)")
+    void noHandlerFoundMapsTo404() {
+        NoHandlerFoundException ex =
+                new NoHandlerFoundException("GET", "/api/nonexistent/path", new org.springframework.http.HttpHeaders());
+
+        ResponseEntity<ProblemDetail> response = handler.handleNoHandlerFound(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.NOT_FOUND, "Resource Not Found");
+        assertThat(body.getDetail()).isEqualTo("The requested resource could not be found.");
     }
 
     @Test

@@ -29,9 +29,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code 27d6c6f}: {@code USERID X(8)}, {@code PASSWD X(8)}, and the single-character
  *       {@code SEC-USR-TYPE X(1)} ({@code 'A'} routes to the admin menu {@code COADM01C}).</li>
  *   <li><strong>Bean Validation</strong> &mdash; a standalone jakarta {@link Validator}
- *       confirms the {@code @NotBlank}/{@code @Size(max = 8)} constraints fire on the
- *       expected property paths, that the inclusive {@code X(8)} boundary passes, and that
- *       {@code userType} is capped at one character while the JWT {@code token} is
+ *       confirms the {@code @Size(max = 8)} constraints fire on the expected property
+ *       paths and that the inclusive {@code X(8)} boundary passes. {@code SigninRequest}
+ *       carries no {@code @NotBlank}: blank presence is validated at the service layer so
+ *       the byte-exact COSGN00C literals are emitted (P-2; DECISION_LOG D-056), so a blank
+ *       (within-length) field must raise no DTO-layer violation. {@code userType} on
+ *       {@code SigninResponse} is capped at one character while the JWT {@code token} is
  *       unconstrained.</li>
  * </ol>
  *
@@ -140,25 +143,32 @@ class AuthDtoTest {
     // ---------------------------------------------------------------------
 
     @Test
-    @DisplayName("SigninRequest: blank userId violates @NotBlank on path 'userId'")
-    void signinRequestBlankUserIdFails() {
+    @DisplayName("SigninRequest: blank userId raises NO DTO-layer violation (presence delegated to AuthService for byte-exact text)")
+    void signinRequestBlankUserIdHasNoDtoViolation() {
+        // P-2 parity: SigninRequest deliberately carries no @NotBlank. A blank
+        // userId must NOT be rejected at the DTO boundary, so that AuthService.signin
+        // can raise the byte-exact COSGN00C literal "Please enter User ID ..." instead
+        // of the generic Bean Validation default. Service-layer coverage lives in
+        // AuthServiceTest.blankUserId_raisesValidationException. See DECISION_LOG D-056.
         AuthDto.SigninRequest request = new AuthDto.SigninRequest("", "secret");
         Set<ConstraintViolation<AuthDto.SigninRequest>> violations = validator.validate(request);
-        assertThat(violations).isNotEmpty();
         assertThat(violations)
-                .as("a blank userId must raise a violation on property 'userId'")
-                .anyMatch(violation -> violation.getPropertyPath().toString().equals("userId"));
+                .as("a blank (but within-length) userId must not raise any DTO-layer constraint violation")
+                .isEmpty();
     }
 
     @Test
-    @DisplayName("SigninRequest: blank password violates @NotBlank on path 'password'")
-    void signinRequestBlankPasswordFails() {
+    @DisplayName("SigninRequest: blank password raises NO DTO-layer violation (presence delegated to AuthService for byte-exact text)")
+    void signinRequestBlankPasswordHasNoDtoViolation() {
+        // P-2 parity: a blank password must reach AuthService so it can raise the
+        // byte-exact COSGN00C literal "Please enter Password ..." rather than the
+        // generic "must not be blank". Service-layer coverage lives in
+        // AuthServiceTest.blankPassword_raisesValidationException. See DECISION_LOG D-056.
         AuthDto.SigninRequest request = new AuthDto.SigninRequest("user1", "  ");
         Set<ConstraintViolation<AuthDto.SigninRequest>> violations = validator.validate(request);
-        assertThat(violations).isNotEmpty();
         assertThat(violations)
-                .as("a blank password must raise a violation on property 'password'")
-                .anyMatch(violation -> violation.getPropertyPath().toString().equals("password"));
+                .as("a blank (but within-length) password must not raise any DTO-layer constraint violation")
+                .isEmpty();
     }
 
     @Test

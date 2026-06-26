@@ -21,6 +21,7 @@ import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 import jakarta.persistence.OptimisticLockException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -32,14 +33,20 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.validation.FieldError;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.servlet.NoHandlerFoundException;
+import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 /**
  * Centralized {@code @RestControllerAdvice} that maps application and framework
@@ -77,26 +84,68 @@ public class GlobalExceptionHandler {
 
     private static final String SLUG_INTERNAL = "internal";
 
+    private static final String TITLE_MALFORMED_REQUEST = "Malformed Request";
+
+    private static final String DETAIL_MALFORMED_REQUEST =
+            "The request body could not be read; ensure it is well-formed JSON.";
+
+    private static final String SLUG_MALFORMED_REQUEST = "malformed-request";
+
+    private static final String TITLE_UNSUPPORTED_MEDIA_TYPE = "Unsupported Media Type";
+
+    private static final String DETAIL_UNSUPPORTED_MEDIA_TYPE =
+            "The request Content-Type is not supported; use application/json.";
+
+    private static final String SLUG_UNSUPPORTED_MEDIA_TYPE = "unsupported-media-type";
+
+    private static final String TITLE_METHOD_NOT_ALLOWED = "Method Not Allowed";
+
+    private static final String DETAIL_METHOD_NOT_ALLOWED =
+            "The HTTP method is not supported for this resource.";
+
+    private static final String SLUG_METHOD_NOT_ALLOWED = "method-not-allowed";
+
+    private static final String TITLE_NOT_FOUND = "Resource Not Found";
+
+    private static final String SLUG_NOT_FOUND = "not-found";
+
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex,
             HttpServletRequest request) {
         // Log only the non-sensitive entity type plus the correlation ID (added by problem()).
-        // The exception message and key can contain record identifiers (card numbers, account,
-        // customer, or user IDs) and must never be logged or returned to the caller (R1).
+        // The entity-typed constructor's key can contain record identifiers (card numbers, account,
+        // customer, or user IDs) and must never be logged (R1).
         log.warn("Record not found -> 404 (entityType={})", safeEntityType(ex.getEntityType()));
-        ProblemDetail body = problem(HttpStatus.NOT_FOUND, "Resource Not Found",
-                notFoundDetail(ex.getEntityType()), "not-found", request);
+        // Detail selection preserves byte-exact COBOL parity (AAP 0.7.1.1) without leaking keys (R1):
+        //   - entity-typed ctor (entityType present): the message embeds the lookup key, so emit the
+        //     generic, key-free, entity-aware detail derived solely from the non-sensitive type;
+        //   - message-only ctor (entityType absent): the message is a deliberate key-free legacy
+        //     literal (e.g. "User ID NOT found...", "Transaction ID NOT found..."), so surface it
+        //     verbatim to reproduce the on-screen COBOL text.
+        String entityType = ex.getEntityType();
+        String detail = (entityType != null && !entityType.isBlank())
+                ? notFoundDetail(entityType)
+                : messageOrDefault(ex.getMessage(), GENERIC_NOT_FOUND_DETAIL);
+        ProblemDetail body = problem(HttpStatus.NOT_FOUND, TITLE_NOT_FOUND,
+                detail, SLUG_NOT_FOUND, request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 
     @ExceptionHandler(DuplicateRecordException.class)
     public ResponseEntity<ProblemDetail> handleDuplicateRecord(DuplicateRecordException ex,
             HttpServletRequest request) {
-        // Sanitized logging/response: the exception message and key embed the record identifier,
-        // so only the non-sensitive entity type is logged and the response detail is generic (R1).
+        // Sanitized logging: the entity-typed constructor's key embeds the record identifier, so only
+        // the non-sensitive entity type is logged (R1).
         log.warn("Duplicate record -> 409 (entityType={})", safeEntityType(ex.getEntityType()));
+        // Detail selection mirrors handleRecordNotFound: entity-typed ctor -> generic key-free detail
+        // (R1); message-only ctor -> the byte-exact key-free legacy literal (e.g.
+        // "User ID already exist...", "Tran ID already exist...") surfaced verbatim (AAP 0.7.1.1).
+        String entityType = ex.getEntityType();
+        String detail = (entityType != null && !entityType.isBlank())
+                ? duplicateDetail(entityType)
+                : messageOrDefault(ex.getMessage(), GENERIC_DUPLICATE_DETAIL);
         ProblemDetail body = problem(HttpStatus.CONFLICT, "Duplicate Resource",
-                duplicateDetail(ex.getEntityType()), "duplicate", request);
+                detail, "duplicate", request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 
@@ -207,6 +256,65 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 
+    // ------------------------------------------------------------------
+    // Framework request errors (Spring MVC) -> correct 4xx client status.
+    //
+    // Without explicit handlers, these standard request-processing exceptions
+    // fall through to handleUnexpected(Exception.class) and render as HTTP 500
+    // logged at ERROR, mislabeling client mistakes as server faults and raising
+    // false 5xx alerts. Each reuses the shared RFC 7807 problem() envelope and
+    // is logged at WARN (a client error, not a server fault). The exception
+    // message is never surfaced in the body (it can echo fragments of the bad
+    // request); a fixed, safe detail is returned instead (R1).
+    // ------------------------------------------------------------------
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ProblemDetail> handleHttpMessageNotReadable(HttpMessageNotReadableException ex,
+            HttpServletRequest request) {
+        // Malformed, empty, or missing request body (for example, invalid JSON).
+        log.warn("Unreadable request body -> 400 (exceptionType={})", ex.getClass().getName());
+        ProblemDetail body = problem(HttpStatus.BAD_REQUEST, TITLE_MALFORMED_REQUEST,
+                DETAIL_MALFORMED_REQUEST, SLUG_MALFORMED_REQUEST, request);
+        return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleHttpMediaTypeNotSupported(HttpMediaTypeNotSupportedException ex,
+            HttpServletRequest request) {
+        // The request Content-Type is not one the endpoint consumes (for example, text/plain).
+        log.warn("Unsupported media type -> 415 (contentType={})", ex.getContentType());
+        ProblemDetail body = problem(HttpStatus.UNSUPPORTED_MEDIA_TYPE, TITLE_UNSUPPORTED_MEDIA_TYPE,
+                DETAIL_UNSUPPORTED_MEDIA_TYPE, SLUG_UNSUPPORTED_MEDIA_TYPE, request);
+        return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ProblemDetail> handleHttpRequestMethodNotSupported(
+            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        // A valid path invoked with an unsupported HTTP method (for example, POST on a GET resource).
+        log.warn("Method not allowed -> 405 (method={})", ex.getMethod());
+        ProblemDetail body = problem(HttpStatus.METHOD_NOT_ALLOWED, TITLE_METHOD_NOT_ALLOWED,
+                DETAIL_METHOD_NOT_ALLOWED, SLUG_METHOD_NOT_ALLOWED, request);
+        // RFC 7231 6.5.5: a 405 response MUST carry an Allow header listing the methods the
+        // resource supports, so HTTP and CORS-preflight clients can recover.
+        Set<HttpMethod> supported = ex.getSupportedHttpMethods();
+        ResponseEntity.BodyBuilder builder = ResponseEntity.status(body.getStatus());
+        if (supported != null && !supported.isEmpty()) {
+            builder.allow(supported.toArray(new HttpMethod[0]));
+        }
+        return builder.body(body);
+    }
+
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
+    public ResponseEntity<ProblemDetail> handleNoHandlerFound(Exception ex,
+            HttpServletRequest request) {
+        // An unmapped path: no controller handler and no static resource matched the request.
+        log.warn("No handler for request -> 404 (exceptionType={})", ex.getClass().getName());
+        ProblemDetail body = problem(HttpStatus.NOT_FOUND, TITLE_NOT_FOUND,
+                GENERIC_NOT_FOUND_DETAIL, SLUG_NOT_FOUND, request);
+        return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
     @ExceptionHandler(DataAccessException.class)
     public ResponseEntity<ProblemDetail> handleDataAccess(DataAccessException ex,
             HttpServletRequest request) {
@@ -264,6 +372,22 @@ public class GlobalExceptionHandler {
         return (entityType != null && !entityType.isBlank())
                 ? "A " + entityType + " with the supplied identifier already exists."
                 : GENERIC_DUPLICATE_DETAIL;
+    }
+
+    /**
+     * Returns {@code message} when it is present and non-blank, otherwise the
+     * supplied generic {@code fallback}. Used by the not-found and duplicate
+     * handlers to surface a deliberate, key-free legacy literal carried by the
+     * message-only exception constructor (byte-exact COBOL parity, AAP 0.7.1.1)
+     * while never returning a {@code null} or empty detail.
+     *
+     * @param message  the exception message, may be {@code null} or blank
+     * @param fallback the non-sensitive generic detail to use when no usable
+     *                 message is present, never {@code null}
+     * @return the message when usable, otherwise the fallback
+     */
+    private static String messageOrDefault(String message, String fallback) {
+        return (message != null && !message.isBlank()) ? message : fallback;
     }
 
     private ProblemDetail problem(HttpStatus status, String title, String detail,

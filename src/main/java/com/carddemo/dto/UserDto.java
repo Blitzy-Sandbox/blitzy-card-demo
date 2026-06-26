@@ -47,13 +47,26 @@ public final class UserDto {
      * {@code LNAME X(20)}, {@code USERID X(8)}, {@code PASSWD X(8)},
      * {@code USRTYPE X(1)}) at SHA {@code 27d6c6f}. The {@code password} is
      * plaintext on the wire only and is stored BCrypt-hashed by the service.
+     *
+     * <p>Blank/empty fields are intentionally <em>not</em> rejected here with
+     * {@code @NotBlank}. The COUSR01C PROCESS-ENTER-KEY logic emits specific
+     * byte-exact on-screen literals in a defined field order ("First Name can
+     * NOT be empty...", "Last Name can NOT be empty...", "User ID can NOT be
+     * empty...", "Password can NOT be empty...", "User Type can NOT be
+     * empty..."); a {@code @NotBlank} at this boundary would shadow them with
+     * the generic Bean Validation default ("must not be blank"). Presence
+     * validation is therefore delegated to {@code UserAddService} to preserve
+     * 100% behavioral parity (AAP &sect;0.7.1.1) and to keep the ADD path
+     * consistent with the UPDATE path (which is already {@code @Size}-only);
+     * see DECISION_LOG D-056. The {@code @Size} upper bounds mirror the
+     * fixed-width COBOL pictures and remain here.
      */
     public record CreateRequest(
-            @NotBlank @Size(max = 20) String firstName,
-            @NotBlank @Size(max = 20) String lastName,
-            @NotBlank @Size(max = 8) String userId,
-            @NotBlank @Size(max = 8) String password,
-            @NotBlank @Size(max = 1) String userType
+            @Size(max = 20) String firstName,
+            @Size(max = 20) String lastName,
+            @Size(max = 8) String userId,
+            @Size(max = 8) String password,
+            @Size(max = 1) String userType
     ) {}
 
     /**
