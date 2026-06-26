@@ -1,5 +1,5 @@
 # =============================================================================
-# CardDemo - Multi-stage container image (COBOL -> Java 25 / Spring Boot 3.5.15)
+# CardDemo - Multi-stage container image (COBOL -> Java 25 / Spring Boot 3.5.11)
 #
 # Produces a slim, runnable image of the CardDemo Spring Boot application by:
 #   Stage 1 (builder) - compiling and packaging the executable Spring Boot JAR

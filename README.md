@@ -2,7 +2,7 @@
 
 > The modernized migration of the **AWS CardDemo** mainframe credit-card management
 > application — re-platformed from **COBOL / CICS / VSAM / JCL** to a cloud-native
-> **Java 25 LTS + Spring Boot 3.5.15** service targeting **100% behavioral parity**.
+> **Java 25 LTS + Spring Boot 3.5.11** service targeting **100% behavioral parity**.
 
 CardDemo is a credit-card management system covering **Account**, **Card**,
 **Transaction**, **Billing**, **Reporting**, and **User Administration**. This
@@ -77,7 +77,7 @@ modernization principles applied throughout the migration:
 | Layer | Technology | Version |
 |-------|------------|---------|
 | Language / Runtime | Java (OpenJDK / Eclipse Temurin) | **25.0.2 LTS** |
-| Application framework | Spring Boot (Web, Data JPA, Batch, Security, Validation, Actuator) | **3.5.15** |
+| Application framework | Spring Boot (Web, Data JPA, Batch, Security, Validation, Actuator) | **3.5.11** |
 | Persistence | PostgreSQL | **16** |
 | Schema migration | Flyway (`flyway-core` + `flyway-database-postgresql`) | **11.x** (Boot-managed) |
 | ORM / JPA provider | Hibernate (via Spring Data JPA) | **6.x** |
@@ -169,7 +169,7 @@ The full before/after architecture is documented with Mermaid diagrams in
 [`docs/architecture-before-after.md`](docs/architecture-before-after.md):
 
 - **Diagram 1 — BEFORE: Legacy Mainframe** (`app/`, frozen reference @ `27d6c6f`)
-- **Diagram 2 — AFTER: Java 25 + Spring Boot 3.5.15** (greenfield)
+- **Diagram 2 — AFTER: Java 25 + Spring Boot 3.5.11** (greenfield)
 - **Diagram 3 — Contract-Preservation Linkages** (Legacy ↔ Target)
 - **Diagram 4 — Report Submission Bridge & 4-Stage Posting Validation**
 
@@ -542,7 +542,7 @@ all enabled out of the box.
 | Prometheus metrics (scrape) | `http://app:9091/actuator/prometheus` (in-network) | — |
 | Jaeger tracing UI | http://localhost:16686 | — |
 | Prometheus server | http://localhost:9090 | — |
-| Grafana dashboards | http://localhost:3000 | `admin` / `admin` |
+| Grafana dashboards | http://localhost:3000 | `admin` / your `GF_SECURITY_ADMIN_PASSWORD` from `.env` (no default — see `.env.example`) |
 
 ### Ports
 
@@ -580,14 +580,14 @@ all enabled out of the box.
 
 ```
 .
-├── pom.xml                          # Maven build (Spring Boot 3.5.15, Java 25, all deps)
+├── pom.xml                          # Maven build (Spring Boot 3.5.11, Java 25, all deps)
 ├── mvnw, mvnw.cmd, .mvn/            # Maven wrapper (pins Maven 3.9.9)
 ├── Dockerfile                       # Multi-stage build → runnable image
 ├── docker-compose.yml               # 6 services: postgres, localstack, app, jaeger, prometheus, grafana
 ├── prometheus.yml                   # Prometheus scrape config
 ├── localstack-init/
 │   └── init-aws.sh                  # Provisions S3 buckets + SQS FIFO + SNS topic
-├── DECISION_LOG.md                  # 18 architectural decisions (rationale + alternatives)
+├── DECISION_LOG.md                  # 55 architectural decisions (rationale + alternatives)
 ├── TRACEABILITY_MATRIX.md           # Bidirectional COBOL ↔ Java mapping (100% paragraphs)
 ├── README.md                        # This file
 ├── app/                             # Frozen COBOL reference @ 27d6c6f (cbl, cpy, cpy-bms, bms, jcl, data)
@@ -638,7 +638,7 @@ lines)** with full business-logic preservation.
 - **[`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md)** maps **100% of COBOL paragraphs**
   to their Java methods, with the single intentionally-unmapped reserved copybook
   documented as a known gap.
-- **[`DECISION_LOG.md`](DECISION_LOG.md)** records the **18 architectural decisions** taken
+- **[`DECISION_LOG.md`](DECISION_LOG.md)** records the **55 architectural decisions** taken
   during the migration (decision, alternatives, rationale, risks).
 
 ---

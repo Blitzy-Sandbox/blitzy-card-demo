@@ -48,6 +48,9 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.ClassOrderer;
@@ -92,18 +95,15 @@ import software.amazon.awssdk.services.sqs.model.SendMessageRequest;
  * Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.5.11 application achieves 100% behavioral
  * parity with the frozen COBOL corpus (source SHA {@code 27d6c6f}).
  *
- * <h2>Why this class is named {@code GateVerificationIT} (a recorded decision)</h2>
- * The Agent Action Plan names this deliverable {@code GateVerificationTest}. It is
- * deliberately renamed to {@code GateVerificationIT} because it requires real
- * Testcontainers infrastructure (PostgreSQL&nbsp;16 + LocalStack) and therefore MUST
- * execute in the Maven <strong>Failsafe</strong> {@code integration-test}/{@code verify}
- * phase, not the Surefire unit phase. The project routes container-backed suites by the
- * {@code *IT.java} suffix (Failsafe {@code <include>**&#47;*IT.java</include>}; Surefire
- * {@code <exclude>**&#47;*IT.java</exclude>}), matching the sibling rename precedent
- * {@code BatchPipelineE2ETest}&rarr;{@code BatchPipelineE2EIT}. This rename is recorded as
- * a decision in {@code DECISION_LOG.md} (a root deliverable owned by another agent); the
- * rationale is echoed here so it is co-located with the code. This file does not create
- * {@code DECISION_LOG.md}.
+ * <h2>Maven lifecycle binding</h2>
+ * This suite executes in the Maven <strong>Failsafe</strong> {@code integration-test}/{@code verify}
+ * phase and is routed there by its {@code *IT.java} suffix (Failsafe
+ * {@code <include>**&#47;*IT.java</include>}; Surefire {@code <exclude>**&#47;*IT.java</exclude>}); it
+ * requires the real Testcontainers infrastructure (PostgreSQL&nbsp;16 + LocalStack) owned by
+ * {@link AbstractIntegrationIT}. The deliverable is named {@code GateVerificationIT} rather than the
+ * Agent Action Plan's literal {@code GateVerificationTest}; the rationale for that naming decision is
+ * recorded in {@code DECISION_LOG.md} (entry D-051), per the Explainability rule. This file does not
+ * create {@code DECISION_LOG.md}.
  *
  * <h2>Real I/O only &mdash; no mocks, no H2</h2>
  * Gates&nbsp;1 and&nbsp;4 require processing production-representative input end-to-end
@@ -1515,15 +1515,26 @@ public class GateVerificationIT extends AbstractIntegrationIT {
     // =====================================================================
 
     /**
-     * Gate&nbsp;8 is the consolidated sign-off. It asserts what is programmatically
-     * verifiable in this run — E2E capability (Gates&nbsp;1/4), the multi-subsystem job
-     * scope (Gate&nbsp;7), and the canonical AWS interface contracts (Gate&nbsp;5) — and
-     * documents pointers to the authoritative build-time evidence for the rest:
-     * &ge;80% line coverage (JaCoCo {@code jacoco:check}), zero critical/high CVEs
-     * (OWASP dependency-check), and the 100%-paragraph traceability matrix
-     * ({@code TRACEABILITY_MATRIX.md}, a root deliverable owned by another agent). It
-     * never creates those external artifacts and never fails merely because one is
-     * absent; when present they are read and asserted.
+     * Gate&nbsp;8 is the consolidated integration sign-off. It asserts what is
+     * programmatically verifiable in this run &mdash; E2E capability (Gates&nbsp;1/4), the
+     * multi-subsystem job scope (Gate&nbsp;7), and the canonical AWS interface contracts
+     * (Gate&nbsp;5) &mdash; and enforces the coverage and CVE obligations as follows.
+     *
+     * <p>The authoritative thresholds are enforced by the Maven {@code verify} goals bound in
+     * {@code pom.xml}: {@code jacoco:check} fails the build below 80% line coverage, and
+     * {@code dependency-check:check} ({@code failBuildOnCVSS=7}) fails the build on any
+     * critical/high CVE. This sign-off does <strong>not</strong> rubber-stamp those
+     * obligations: it <strong>fails</strong> if either check was skipped (the
+     * {@code jacoco.skip} / {@code dependency-check.skip} system properties), and, when the
+     * generated reports are present in {@code target/}, it parses them and
+     * <strong>asserts</strong> &ge;80% line coverage and zero critical/high CVEs. In a
+     * single-pass {@code mvn verify} the reports are produced by the {@code jacoco:report}
+     * and {@code dependency-check:check} goals later in the same {@code verify} phase (after
+     * this integration test runs), so when a report is not yet present the build-failing
+     * verify goal is the enforcement; absence is never treated as a pass.
+     *
+     * <p>The 100%-paragraph traceability matrix ({@code TRACEABILITY_MATRIX.md}) is asserted
+     * when present. This class never creates any of those external artifacts.
      */
     @Nested
     @Order(8)
@@ -1542,10 +1553,16 @@ public class GateVerificationIT extends AbstractIntegrationIT {
             assertThat(reportQueue()).as("SQS FIFO report interface (Gate 5)").isEqualTo(SQS_REPORT_QUEUE);
             assertThat(inBucket()).as("S3 input interface (Gate 5)").isEqualTo(S3_INPUT_BUCKET);
 
-            // Coverage >= 80% line: read the JaCoCo report if present; else document the build gate.
-            documentCoverageEvidence();
-            // OWASP zero critical/high: enforced by dependency-check at build time.
-            LOGGER.info("GATE8 OWASP zero critical/high CVEs is enforced by dependency-check-maven at 'mvn verify'");
+            // --- Coverage & CVE sign-off ------------------------------------------
+            // (1) Neither gate may be skipped: a skipped check cannot sign off. This closes
+            //     the defect where -Djacoco.skip / -Ddependency-check.skip let the sign-off
+            //     pass without proving coverage or CVE posture.
+            assertGateChecksNotSkipped();
+            // (2) Assert the thresholds against the generated reports when present. The reports
+            //     are produced by the verify-phase jacoco/owasp goals, which are themselves the
+            //     authoritative build-failing enforcement of these thresholds.
+            assertCoverageAtLeast80WhenPresent();
+            assertNoCriticalOrHighCvesWhenPresent();
             // Traceability matrix 100% of COBOL paragraphs (root deliverable; asserted when present).
             assertTraceabilityMatrixWhenPresent();
 
@@ -1560,29 +1577,89 @@ public class GateVerificationIT extends AbstractIntegrationIT {
             }
         }
 
-        /** Reads the JaCoCo CSV export (if present) and logs the aggregate line coverage. */
-        private void documentCoverageEvidence() throws IOException {
+        /**
+         * Fails the sign-off if the coverage or CVE checks were skipped. The skip system
+         * properties are propagated to the Failsafe-forked test JVM, so a build invoked with
+         * {@code -Djacoco.skip=true} or {@code -Ddependency-check.skip=true} is rejected here
+         * rather than silently signing off (the defect this sign-off previously had).
+         */
+        private void assertGateChecksNotSkipped() {
+            boolean jacocoSkipped = Boolean.parseBoolean(System.getProperty("jacoco.skip", "false"));
+            boolean owaspSkipped = Boolean.parseBoolean(System.getProperty("dependency-check.skip", "false"));
+            assertThat(jacocoSkipped)
+                    .as("Gate 8 sign-off requires JaCoCo coverage; do not pass -Djacoco.skip=true to 'mvn verify'")
+                    .isFalse();
+            assertThat(owaspSkipped)
+                    .as("Gate 8 sign-off requires the OWASP CVE scan; do not pass -Ddependency-check.skip=true "
+                            + "to 'mvn verify'")
+                    .isFalse();
+        }
+
+        /**
+         * Reads the JaCoCo CSV export and asserts aggregate line coverage is &ge;80% when the
+         * report is present. In a single-pass {@code mvn verify} the CSV is produced by
+         * {@code jacoco:report} later in the same {@code verify} phase (after this integration
+         * test runs), and {@code jacoco:check} is the authoritative build-failing gate; when
+         * the report is already present (a re-run over an existing {@code target/}) coverage is
+         * additionally asserted here.
+         */
+        private void assertCoverageAtLeast80WhenPresent() throws IOException {
             Path jacocoCsv = Paths.get("target", "site", "jacoco", "jacoco.csv");
-            if (Files.exists(jacocoCsv)) {
-                long covered = 0L;
-                long missed = 0L;
-                List<String> lines = Files.readAllLines(jacocoCsv, StandardCharsets.UTF_8);
-                for (int i = 1; i < lines.size(); i++) {
-                    String[] cols = lines.get(i).split(",");
-                    // JaCoCo CSV columns: ...,LINE_MISSED(7),LINE_COVERED(8),...
-                    if (cols.length >= 9) {
-                        missed += parseLongSafe(cols[7]);
-                        covered += parseLongSafe(cols[8]);
+            if (!Files.exists(jacocoCsv)) {
+                LOGGER.info("GATE8 JaCoCo CSV not yet present at {}; the >=80% line-coverage gate is enforced by "
+                        + "jacoco:check later in this same 'mvn verify'", jacocoCsv);
+                return;
+            }
+            long covered = 0L;
+            long missed = 0L;
+            List<String> lines = Files.readAllLines(jacocoCsv, StandardCharsets.UTF_8);
+            for (int i = 1; i < lines.size(); i++) {
+                String[] cols = lines.get(i).split(",");
+                // JaCoCo CSV columns: ...,LINE_MISSED(7),LINE_COVERED(8),...
+                if (cols.length >= 9) {
+                    missed += parseLongSafe(cols[7]);
+                    covered += parseLongSafe(cols[8]);
+                }
+            }
+            long total = covered + missed;
+            double linePct = total > 0 ? (100.0 * covered / total) : 0.0;
+            LOGGER.info("GATE8 JaCoCo line coverage = {}% (covered={} missed={})",
+                    String.format(Locale.ROOT, "%.2f", linePct), covered, missed);
+            assertThat(total).as("the JaCoCo CSV reports instrumented lines").isGreaterThan(0L);
+            assertThat(linePct)
+                    .as("Gate 8 requires >=80%% line coverage (JaCoCo aggregate)")
+                    .isGreaterThanOrEqualTo(80.0);
+        }
+
+        /**
+         * Asserts zero critical/high CVEs from the OWASP dependency-check JSON report when
+         * present. {@code dependency-check:check} ({@code failBuildOnCVSS=7}) is the
+         * authoritative build-failing gate in the same {@code verify}; this additionally
+         * parses the generated JSON report (when present) and asserts no dependency carries a
+         * CRITICAL or HIGH vulnerability.
+         */
+        private void assertNoCriticalOrHighCvesWhenPresent() throws IOException {
+            Path jsonReport = Paths.get("target", "dependency-check-report.json");
+            if (!Files.exists(jsonReport)) {
+                LOGGER.info("GATE8 OWASP JSON report not yet present at {}; zero critical/high CVEs is enforced by "
+                        + "dependency-check:check (failBuildOnCVSS=7) later in this same 'mvn verify'", jsonReport);
+                return;
+            }
+            JsonNode root = new ObjectMapper().readTree(jsonReport.toFile());
+            List<String> offenders = new ArrayList<>();
+            for (JsonNode dependency : root.path("dependencies")) {
+                for (JsonNode vulnerability : dependency.path("vulnerabilities")) {
+                    String severity = vulnerability.path("severity").asText("").trim().toUpperCase(Locale.ROOT);
+                    if ("CRITICAL".equals(severity) || "HIGH".equals(severity)) {
+                        offenders.add(dependency.path("fileName").asText("?") + " -> "
+                                + vulnerability.path("name").asText("?") + " (" + severity + ")");
                     }
                 }
-                double linePct = (covered + missed) > 0 ? (100.0 * covered / (covered + missed)) : 0.0;
-                LOGGER.info("GATE8 JaCoCo line coverage = {}% (covered={} missed={}); the authoritative >=80% gate "
-                                + "is the jacoco:check build rule",
-                        String.format(Locale.ROOT, "%.2f", linePct), covered, missed);
-            } else {
-                LOGGER.info("GATE8 JaCoCo report not present at {}; coverage >=80% is enforced by the jacoco:check "
-                        + "build rule at 'mvn verify'", jacocoCsv);
             }
+            LOGGER.info("GATE8 OWASP dependency-check parsed; critical/high CVE count = {}", offenders.size());
+            assertThat(offenders)
+                    .as("Gate 8 requires zero critical/high CVEs (OWASP dependency-check report)")
+                    .isEmpty();
         }
 
         /** Parses a long, returning 0 for any non-numeric cell. */

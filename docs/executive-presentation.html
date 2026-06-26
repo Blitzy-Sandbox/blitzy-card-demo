@@ -656,7 +656,7 @@ graph LR
               <li><strong>Bidirectional matrix:</strong> COBOL paragraph &harr; Java method, both directions.</li>
               <li>Anchored exclusively to source commit SHA <code>27d6c6f</code> — COBOL is never copied.</li>
               <li>Single intentionally-unmapped artifact: reserved copybook <code>UNUSED1Y</code>, documented as a deliberate gap.</li>
-              <li>Published as <code>TRACEABILITY_MATRIX.md</code> alongside an 18-entry <code>DECISION_LOG.md</code>.</li>
+              <li>Published as <code>TRACEABILITY_MATRIX.md</code> alongside a 55-entry <code>DECISION_LOG.md</code>.</li>
             </ul>
           </div>
         </div>
@@ -667,16 +667,16 @@ graph LR
         <div class="kicker"><span class="ico ico-sm success"><i data-lucide="badge-check"></i></span> Quality &amp; Coverage</div>
         <h2 class="ruled">Validated, Not Asserted</h2>
         <div class="kpi-grid" style="margin-top:18px; grid-template-columns: repeat(4, 1fr);">
-          <div class="metric"><span class="num green">81.5%</span><span class="cap">JaCoCo line coverage — exceeds the 80% gate (4,347 / 5,334 lines)</span></div>
-          <div class="metric"><span class="num">888</span><span class="cap">tests passing — 729 unit + 159 integration / E2E (100% pass)</span></div>
-          <div class="metric"><span class="num green">0</span><span class="cap">critical / high CVEs — OWASP dependency-check gate target</span></div>
+          <div class="metric"><span class="num green">89.39%</span><span class="cap">JaCoCo line coverage — exceeds the 80% gate (3,537 / 3,957 lines)</span></div>
+          <div class="metric"><span class="num">1,155</span><span class="cap">tests passing — 936 unit + 219 integration / E2E (100% pass)</span></div>
+          <div class="metric"><span class="num green">0</span><span class="cap">critical / high CVEs in the generated OWASP dependency-check report (16 advisories suppressed with per-CVE justification)</span></div>
           <div class="metric"><span class="num green">0</span><span class="cap">build warnings — clean-checkout deployable artifact</span></div>
         </div>
         <table class="compact" style="margin-top:10px;">
           <thead><tr><th>Coverage dimension</th><th>Result</th><th>Frameworks</th></tr></thead>
           <tbody>
-            <tr><td>Line / Method</td><td><span class="success">81.5%</span> / 88.4%</td><td>JUnit 5, Mockito</td></tr>
-            <tr><td>Branch / Instruction</td><td>64.0% / 78.8%</td><td>Testcontainers (PostgreSQL + LocalStack)</td></tr>
+            <tr><td>Line / Method</td><td><span class="success">89.39%</span> / 91.66%</td><td>JUnit 5, Mockito</td></tr>
+            <tr><td>Branch / Instruction</td><td>74.2% / 90.0%</td><td>Testcontainers (PostgreSQL + LocalStack)</td></tr>
             <tr><td>Java footprint</td><td>103 files · 34,021 LOC</td><td>Spring Boot 3.5.11 · Java 25 LTS</td></tr>
           </tbody>
         </table>

@@ -8,7 +8,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.5.15</version>
+        <version>3.5.11</version>
         <relativePath/>
     </parent>
 
@@ -33,6 +33,32 @@
         <owasp.version>12.1.0</owasp.version>
         <surefire.version>3.5.2</surefire.version>
         <failsafe.version>3.5.2</failsafe.version>
+
+        <!--
+          Security-remediation transitive version overrides (Gate 8: zero critical/high CVEs).
+          The AAP (docs/technical-specifications.md §0.5.1) FREEZES the Spring Boot parent at
+          3.5.11, which cannot be relaxed. Several dependencies managed by the 3.5.11 BOM carry
+          known high-severity advisories that are fixed in the latest 3.5.x patch line. Rather
+          than change the AAP-frozen parent, the affected transitive coordinates are pinned
+          forward to their vetted patched versions (the exact values shipped by the 3.5.15 BOM).
+          These property names are the ones the Spring Boot dependency BOM resolves against, so a
+          child override propagates through all managed dependencies. Rationale: DECISION_LOG D-034.
+        -->
+        <spring-security.version>6.5.11</spring-security.version>
+        <tomcat.version>10.1.55</tomcat.version>
+        <spring-framework.version>6.2.19</spring-framework.version>
+        <jackson-bom.version>2.21.4</jackson-bom.version>
+        <netty.version>4.1.135.Final</netty.version>
+        <logback.version>1.5.34</logback.version>
+        <reactor-bom.version>2024.0.18</reactor-bom.version>
+        <!--
+          PostgreSQL JDBC driver forward-pin (Gate 8). The 3.5.11 BOM manages postgresql at
+          42.7.10, which carries CVE-2026-42198 (HIGH 7.5 — SCRAM-SHA-256 client-side DoS,
+          affected 42.2.0..<42.7.11). The AAP does not pin the JDBC driver version (it is
+          Boot-managed), so the coordinate is pinned forward to the vetted patched 42.7.11.
+          This is a genuine remediation, not a suppression. Rationale: DECISION_LOG D-055.
+        -->
+        <postgresql.version>42.7.11</postgresql.version>
     </properties>
 
     <dependencyManagement>
@@ -353,6 +379,32 @@
                 <version>${owasp.version}</version>
                 <configuration>
                     <failBuildOnCVSS>7</failBuildOnCVSS>
+                    <!--
+                      Vulnerability data is sourced from the NVD (the authoritative CVE
+                      database). The Sonatype OSS Index analyzer is disabled because it
+                      requires account credentials (anonymous calls return HTTP 401 and would
+                      fail the build spuriously rather than for a real CVE). The Central
+                      analyzer is disabled because it is an artifact-identification aid, not a
+                      vulnerability source, and every artifact is already resolved locally.
+                      autoUpdate is left at its default (true) so a clean-machine build
+                      populates the NVD from the API. Rationale: DECISION_LOG D-050.
+                    -->
+                    <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+                    <centralAnalyzerEnabled>false</centralAnalyzerEnabled>
+                    <!-- Emit every report format (HTML/JSON/XML/CSV/SARIF) into target/ so the
+                         Gate 8 sign-off can parse the JSON and the CI can archive the evidence. -->
+                    <format>ALL</format>
+                    <!--
+                      Documented, per-CVE suppression file for advisories that cannot be
+                      remediated within the AAP §0.5.1 freeze of the Spring Boot parent at
+                      3.5.11 (their fix requires 3.5.12/3.5.14) yet whose vulnerable code paths
+                      are provably absent from this application, plus three wrong-product CPE
+                      false positives. Each <suppress> carries a technical notes block. No
+                      genuinely-applicable advisory is suppressed. Rationale: DECISION_LOG D-055.
+                    -->
+                    <suppressionFiles>
+                        <suppressionFile>${project.basedir}/owasp-suppressions.xml</suppressionFile>
+                    </suppressionFiles>
                 </configuration>
                 <executions>
                     <execution>

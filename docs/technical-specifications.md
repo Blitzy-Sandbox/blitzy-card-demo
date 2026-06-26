@@ -698,13 +698,13 @@ The entire refactor executes in ONE phase. Every target file is mapped to its so
 
 | COBOL Pattern | Java Replacement |
 |---|---|
-| `COPY COCOM01Y` | `import com.cardemo.model.dto.CommArea;` |
-| `COPY CVACT01Y` | `import com.cardemo.model.entity.Account;` |
-| `COPY CVACT02Y` | `import com.cardemo.model.entity.Card;` |
-| `COPY CVCUS01Y` / `COPY CUSTREC` | `import com.cardemo.model.entity.Customer;` |
-| `COPY CVACT03Y` | `import com.cardemo.model.entity.CardCrossReference;` |
-| `COPY CVTRA05Y` | `import com.cardemo.model.entity.Transaction;` |
-| `COPY CSUSR01Y` | `import com.cardemo.model.entity.UserSecurity;` |
+| `COPY COCOM01Y` | `import com.carddemo.model.dto.CommArea;` |
+| `COPY CVACT01Y` | `import com.carddemo.model.entity.Account;` |
+| `COPY CVACT02Y` | `import com.carddemo.model.entity.Card;` |
+| `COPY CVCUS01Y` / `COPY CUSTREC` | `import com.carddemo.model.entity.Customer;` |
+| `COPY CVACT03Y` | `import com.carddemo.model.entity.CardCrossReference;` |
+| `COPY CVTRA05Y` | `import com.carddemo.model.entity.Transaction;` |
+| `COPY CSUSR01Y` | `import com.carddemo.model.entity.UserSecurity;` |
 | `COPY DFHAID` / `COPY CSSTRPFY` | Controller-level request mapping (no direct equivalent) |
 | `COPY CSSETATY` | `@Valid` + field-level validation annotations |
 | `CALL 'CSUTLDTC'` | `@Autowired DateValidationService` |

@@ -50,16 +50,18 @@ those by hand.
 | **Docker engine** | **28.x** | Plus the **Docker Compose v2** plugin (`docker compose`, not the legacy `docker-compose`). Runs PostgreSQL, LocalStack, and the observability stack. |
 | **Git** | 2.x+ | To clone the repository. |
 | **Maven** | **3.9.9** | **No separate install required** — the repository ships the Maven Wrapper (`./mvnw` on macOS/Linux, `mvnw.cmd` on Windows). Always invoke builds through the wrapper so everyone uses the same pinned Maven version. |
-| **`LOCALSTACK_AUTH_TOKEN`** | — | An environment variable holding a valid **LocalStack Pro** auth token. **Required:** the LocalStack image used by `docker-compose.yml` and by the Testcontainers integration suite will not start S3/SQS/SNS without it. |
+| **Local secrets (`.env`)** | — | Copy `.env.example` to `.env` and set three secrets — `POSTGRES_PASSWORD`, `JWT_SECRET` (Base64 key decoding to ≥ 32 bytes), and `GF_SECURITY_ADMIN_PASSWORD`. Docker Compose auto-loads `.env`; these have **no committed defaults** and `docker compose up` fails fast if any is unset (DECISION_LOG D-036). |
 
 > **Why no Maven install?** The bundled wrapper `./mvnw` downloads and runs the exact pinned Maven
 > **3.9.9** for you, guaranteeing reproducible builds across machines. Use `./mvnw …` everywhere this
 > guide shows a Maven command.
 
-> **Why the LocalStack token?** All AWS interactions are **LocalStack-only** (zero live-AWS
-> dependencies). Without `LOCALSTACK_AUTH_TOKEN` exported, `docker compose up` cannot bring up the AWS
-> emulator and the integration/E2E tests that exercise S3, SQS, and SNS will fail to start their
-> containers.
+> **LocalStack is the free community image — no token required.** All AWS interactions are
+> **LocalStack-only** (zero live-AWS dependencies). Both `docker-compose.yml` and the Testcontainers
+> integration suite use the community **`localstack/localstack:3.8.1`** image, which provides S3, SQS,
+> and SNS with no license. A `LOCALSTACK_AUTH_TOKEN` is **optional** and needed **only** if you
+> deliberately switch the `localstack` service to a Pro image
+> (`LOCALSTACK_IMAGE=localstack/localstack-pro:latest`).
 
 ---
 
@@ -73,11 +75,25 @@ Run these six steps in order. Every command is copy-paste ready.
 git clone <repo-url> && cd <repo>
 ```
 
-**2. Export your LocalStack Pro auth token** (required for S3/SQS/SNS via LocalStack).
+**2. Create your local secrets file.** Copy the template and fill in the three required secrets. The
+fail-fast Docker Compose setup (DECISION_LOG D-036) ships **no committed defaults**, so a clean
+checkout will not start until these are set.
 
 ```bash
-export LOCALSTACK_AUTH_TOKEN=<your-token>
+cp .env.example .env
+# Generate a strong Base64 JWT signing key (decodes to >= 32 bytes for HS256):
+openssl rand -base64 48
+# Then edit .env and set the three secrets:
+#   POSTGRES_PASSWORD=<choose a strong local value>
+#   JWT_SECRET=<paste the openssl output above>
+#   GF_SECURITY_ADMIN_PASSWORD=<choose a strong local value>
 ```
+
+> Docker Compose auto-loads `.env` from the repository root (step 4). When you instead run the app
+> **from source** (step 5), export the same variables into your shell first, e.g.
+> `set -a; source .env; set +a`. No `LOCALSTACK_AUTH_TOKEN` is needed for the default community
+> LocalStack image. The integration suite (`./mvnw clean verify`, step 3) uses Testcontainers with its
+> own ephemeral test secrets and does **not** read `.env`.
 
 **3. Build, test, and run all quality gates** — compiles with zero warnings, runs the unit + integration
 + E2E suites, enforces the JaCoCo coverage gate (≥ 80% line coverage), and runs the OWASP
@@ -101,10 +117,19 @@ of rebuilding the container image.
 ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-**6. Verify the application is healthy.**
+**6. Verify the application is healthy.** Actuator endpoints (health, info, metrics, Prometheus) are
+served on the **management port `9091`** — separate from the public REST API on `8080`. Compose keeps
+`9091` **internal to the Compose network** (only `8080` is published to the host, per DECISION_LOG
+D-033), so check health one of two ways:
 
 ```bash
-curl http://localhost:8080/actuator/health
+# (a) Containerized app (after `docker compose up -d`) — query from inside the Compose network,
+#     or simply read the container HEALTHCHECK status reported by `docker compose ps`:
+docker compose exec app curl -fsS http://localhost:9091/actuator/health
+docker compose ps
+
+# (b) App run from source (step 5) — the management port is on localhost directly:
+curl http://localhost:9091/actuator/health
 ```
 
 ### What each Docker Compose service is for
@@ -115,18 +140,23 @@ curl http://localhost:8080/actuator/health
 |---------|---------|
 | `postgres` | **PostgreSQL 16** — the system of record. Flyway applies `V1` (schema) → `V2` (indexes) → `V3` (seed data) on startup. Replaces the legacy VSAM KSDS datasets. |
 | `localstack` | **AWS emulator** — provides S3 (batch file staging / statements / reports), SQS FIFO (report submission), and SNS (notifications) with zero live-AWS dependencies. |
-| `app` | The **CardDemo Spring Boot** application, exposing the REST API on port `8080`. |
+| `app` | The **CardDemo Spring Boot** application. The public REST API is on port `8080` (published to the host); Actuator/management endpoints are on the internal port `9091` (not published, per DECISION_LOG D-033). |
 | `jaeger` | **Distributed tracing UI** — collects OpenTelemetry spans exported by the app via the Micrometer tracing bridge. |
-| `prometheus` | **Metrics server** — scrapes the app's `/actuator/prometheus` endpoint (config in `prometheus.yml`). |
+| `prometheus` | **Metrics server** — scrapes the app's metrics at `app:9091/actuator/prometheus` over the Compose network (config in `prometheus.yml`). |
 | `grafana` | **Dashboards** — visualizes the Prometheus metrics using the template in [`./grafana-dashboard.json`](./grafana-dashboard.json). |
 
 ### Verify it's running
 
-**Health check** — should report the application and its dependencies as up:
+**Health check** — should report the application and its dependencies as up. Health lives on the
+management port `9091` (see step 6 for why), so use the Compose-network form for the containerized app:
 
 ```bash
-curl http://localhost:8080/actuator/health
+# Containerized (docker compose up -d): management port 9091 is internal to the Compose network.
+docker compose exec app curl -fsS http://localhost:9091/actuator/health
 # Expected: {"status":"UP"}
+
+# App run from source: 9091 is on localhost directly.
+curl http://localhost:9091/actuator/health
 ```
 
 **Sign in to obtain a JWT** — the API is stateless and secured with JSON Web Tokens. Authenticate with a
@@ -162,14 +192,14 @@ change a port or credential there, update it here too.
 
 | Service | URL / Port | Credentials / Notes |
 |---------|-----------|---------------------|
-| **CardDemo application** | `http://localhost:8080` | The REST API base. No UI — call endpoints directly. |
-| Actuator health | `http://localhost:8080/actuator/health` | Returns `{"status":"UP"}` with composite indicators for the database, S3, and SQS. No auth. |
-| Prometheus scrape endpoint (on app) | `http://localhost:8080/actuator/prometheus` | Micrometer metrics in Prometheus exposition format. Scraped by the Prometheus server. |
-| **PostgreSQL 16** | `localhost:5432` | Database `carddemo` / user `carddemo` / password `carddemo`. |
-| **LocalStack** (S3, SQS, SNS) | `http://localhost:4566` | AWS emulator endpoint. Requires `LOCALSTACK_AUTH_TOKEN`. |
+| **CardDemo application** (public REST API) | `http://localhost:8080` | The REST API base. No UI — call endpoints directly. Published to the host. |
+| Actuator health | `http://localhost:9091/actuator/health` | On the **management port `9091`** (separate from the API). In Compose, `9091` is **not published** (D-033) — reach it via `docker compose exec app curl http://localhost:9091/actuator/health`, or directly on `localhost:9091` when running from source. Returns `{"status":"UP"}` with composite indicators for the database, S3, and SQS. No auth. |
+| Prometheus scrape endpoint (on app) | `http://app:9091/actuator/prometheus` | Micrometer metrics in Prometheus exposition format, on management port `9091`. Scraped by the Prometheus server over the Compose network (see `prometheus.yml`). |
+| **PostgreSQL 16** | `localhost:5432` | Database `carddemo` / user `carddemo` / password = your `POSTGRES_PASSWORD` from `.env` (no default; see `.env.example`). |
+| **LocalStack** (S3, SQS, SNS) | `http://localhost:4566` | AWS emulator endpoint, community image `localstack/localstack:3.8.1`. **No auth token required.** |
 | **Jaeger UI** | `http://localhost:16686` | Distributed tracing UI. OTLP ingest on gRPC **`4317`** and HTTP **`4318`**. |
 | **Prometheus UI** | `http://localhost:9090` | Query metrics and inspect scrape targets. |
-| **Grafana** | `http://localhost:3000` | Login **`admin` / `admin`**. Dashboards visualize the custom CardDemo metrics. |
+| **Grafana** | `http://localhost:3000` | Login `admin` / your `GF_SECURITY_ADMIN_PASSWORD` from `.env` (no default; see `.env.example`). Dashboards visualize the custom CardDemo metrics. |
 
 > **Observability metrics.** The app publishes custom business metrics at `/actuator/prometheus`,
 > scraped by Prometheus and visualized in [`./grafana-dashboard.json`](./grafana-dashboard.json):
@@ -310,9 +340,12 @@ Read these before you write code — each one corresponds to a parity- or build-
   edit a migration that has already been applied** — Flyway validates checksums and will refuse to start.
   To change the schema, **add a new versioned file** `V<n>__<description>.sql`.
 
-- **LocalStack auth token.** A missing or invalid **`LOCALSTACK_AUTH_TOKEN`** breaks S3/SQS/SNS startup
-  in `docker compose` **and** the Testcontainers integration/E2E tests. Export it before building or
-  running (see [Prerequisites](#prerequisites)).
+- **Missing `.env` secrets (fail-fast).** `docker compose` requires three secrets with **no committed
+  defaults** — `POSTGRES_PASSWORD`, `JWT_SECRET`, and `GF_SECURITY_ADMIN_PASSWORD` (DECISION_LOG D-036).
+  If any is unset, `docker compose up` **fails fast** at startup. Run `cp .env.example .env` and set all
+  three before building or running (see [Prerequisites](#prerequisites) and Quick Start step 2). The
+  default LocalStack is the free community image `localstack/localstack:3.8.1` — **no
+  `LOCALSTACK_AUTH_TOKEN` is required**; it is needed only if you opt into a LocalStack Pro image.
 
 - **Fixed-width record parsing.** When reading the COBOL data fixtures, honor the **exact column offsets
   and record lengths** — ACCOUNT **300**, CARD **150**, CARD-XREF **50**, CUSTOMER **500**, TRAN **350**,

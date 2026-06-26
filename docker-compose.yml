@@ -1,6 +1,6 @@
 # =============================================================================
 # CardDemo — local end-to-end Docker Compose stack
-# (COBOL mainframe -> Java 25 / Spring Boot 3.5.15 migration)
+# (COBOL mainframe -> Java 25 / Spring Boot 3.5.11 migration)
 #
 # Brings up the COMPLETE local environment so a clean machine can run the
 # CardDemo application end-to-end with ZERO live-AWS dependencies, satisfying the

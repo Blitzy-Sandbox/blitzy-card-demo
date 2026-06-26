@@ -1,0 +1,256 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OWASP dependency-check suppression file (Gate 8: zero critical/high CVEs).
+
+  PURPOSE.
+  A clean `mvn -B clean verify` runs OWASP dependency-check with failBuildOnCVSS=7,
+  so the build fails on any advisory with an effective CVSS >= 7 (HIGH/CRITICAL).
+  Scanning the AAP-frozen Spring Boot 3.5.11 dependency set against the June-2026 NVD
+  surfaces 17 distinct HIGH/CRITICAL advisories. Of these:
+
+    * 1 is a GENUINELY-APPLICABLE advisory and is REMEDIATED by a version bump, NOT
+      suppressed (postgresql 42.7.10 -> 42.7.11 for CVE-2026-42198; see pom.xml
+      <postgresql.version> and DECISION_LOG D-055).
+
+    * 16 are suppressed below. Every one falls into exactly one of two categories:
+        (A) WRONG-PRODUCT / WRONG-ARTIFACT CPE FALSE POSITIVE — dependency-check matched
+            an advisory for a different product (or a different jar of the same project)
+            to an artifact whose code does not contain the vulnerable component; or
+        (B) NOT-APPLICABLE under the AAP freeze — the advisory is real for Spring Boot
+            core but its fix requires 3.5.12/3.5.14, while AAP (docs/technical-
+            specifications.md) Sec 0.5.1 FREEZES spring-boot-starter-parent at 3.5.11
+            (per the D1 precedence rule the frozen version cannot be relaxed), AND the
+            vulnerable auto-configuration code path is provably absent from this
+            application (the enabling dependency or configuration is not present).
+
+  No genuinely-applicable, exploitable advisory is suppressed. Each <suppress> below
+  records the technical basis (verified against the dependency tree and source). The
+  total suppression count (16) is well under the Gate 6 audit threshold of 50.
+  Full rationale: DECISION_LOG D-055.
+
+  Schema: https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!-- =====================================================================
+         CATEGORY B: Spring Boot core advisories (real, but fix needs 3.5.12/
+         3.5.14; AAP Sec 0.5.1 freezes the parent at 3.5.11). Each vulnerable
+         auto-config code path is absent from this application. The CVE id pins
+         each suppression to one specific advisory on the spring-boot core jars
+         (spring-boot, spring-boot-starter-web) at 3.5.11.
+         ===================================================================== -->
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-40974 (CRITICAL 9.8) — Spring Boot Cassandra auto-configuration omits
+            SSL hostname verification. NOT APPLICABLE: this application declares no Cassandra
+            dependency (no spring-boot-starter-data-cassandra; verified absent from the
+            dependency tree), so the vulnerable CassandraAutoConfiguration code path is not on
+            the classpath and cannot execute. Fixed in Spring Boot 3.5.14; the parent is frozen
+            at 3.5.11 by AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-40974</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-40971 (CRITICAL 9.1) — Spring Boot RabbitMQ auto-configuration omits SSL
+            hostname verification when an SSL bundle is used. NOT APPLICABLE: this application
+            declares no AMQP/RabbitMQ dependency (no spring-boot-starter-amqp; verified absent),
+            so RabbitAutoConfiguration is not on the classpath. Fixed in 3.5.14; parent frozen at
+            3.5.11 by AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-40971</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-22731 (HIGH 8.1) — Actuator authentication bypass when an auth-required
+            endpoint is declared under a path also configured as a Health Group "additional-path".
+            NOT APPLICABLE: this application configures no health-group additional-path
+            (management.endpoint.health.group.readiness uses only include: readinessState,db in
+            application.yml — no additional-path), and actuator is bound to an isolated, non-
+            published management port 9091 (DECISION_LOG D-033). The vulnerable mapping does not
+            exist. Fixed in 3.5.12; parent frozen at 3.5.11 by AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-22731</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-22733 (HIGH 8.1) — Actuator authentication bypass via the CloudFoundry
+            actuator endpoint path. NOT APPLICABLE: this application has no CloudFoundry
+            integration (no cloudfoundry configuration or dependency; verified absent), so the
+            CloudFoundry actuator endpoint is never registered. Fixed in 3.5.12; parent frozen at
+            3.5.11 by AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-22733</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-40972 (HIGH 7.5) — Timing attack against the Spring Boot DevTools remote
+            secret used to upload changed classes. NOT APPLICABLE: this application does not use
+            Spring Boot DevTools (no spring-boot-devtools dependency; verified absent) and exposes
+            no remote DevTools endpoint. Fixed in 3.5.14; parent frozen at 3.5.11 by AAP Sec 0.5.1.
+            See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-40972</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-40975 (HIGH 7.5) — The ${random.value} property placeholder is not a suitable
+            source of cryptographic secrets. NOT APPLICABLE: this application does not use
+            ${random.value} (verified absent from sources and resources); secrets (JWT_SECRET,
+            datasource credentials) are supplied via environment variables / .env per AAP
+            "no hardcoded credentials". Advisory addressed in 3.5.14; parent frozen at 3.5.11 by
+            AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-40975</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-40973 (HIGH 7.0) — A local attacker can hijack the ApplicationTemp directory
+            when server.servlet.session.persistent=true. NOT APPLICABLE: this application does not
+            enable persistent sessions (server.servlet.session.persistent is not set to true;
+            verified absent) and is a stateless JWT REST service with no server-side session
+            persistence (AAP stateless session model). Fixed in 3.5.14; parent frozen at 3.5.11 by
+            AAP Sec 0.5.1. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot.*@3\.5\.11$</packageUrl>
+        <cve>CVE-2026-40973</cve>
+    </suppress>
+
+    <!-- =====================================================================
+         CATEGORY A: Wrong-product / wrong-artifact CPE false positives.
+         ===================================================================== -->
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-34478 (HIGH 7.5) — FALSE POSITIVE. The advisory affects Apache Log4j CORE's
+            Rfc5424Layout (a class shipped in log4j-core). The classpath contains only
+            log4j-api-2.24.3 (the API facade) and log4j-to-slf4j-2.24.3 (the bridge routing the
+            Log4j2 API to SLF4J/Logback); log4j-core is NOT present (verified: 0 matches in the
+            dependency tree). The vulnerable Layout classes do not exist on the classpath and this
+            application uses Logback (logback-spring.xml), not Log4j2. dependency-check matched the
+            log4j-core advisory to the log4j-api jar via the shared cpe:apache:log4j. See
+            DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2026-34478</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-34479 (HIGH 7.5) — FALSE POSITIVE. Affects Apache Log4j CORE's Log4j1XmlLayout
+            (Log4j 1->2 bridge layout, shipped in log4j-core). log4j-core is absent (only log4j-api
+            facade + log4j-to-slf4j bridge present); the application uses Logback. Same cpe over-
+            match as CVE-2026-34478. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2026-34479</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-34480 (HIGH 7.5) — FALSE POSITIVE. Affects Apache Log4j CORE's XmlLayout
+            (shipped in log4j-core). log4j-core is absent (only log4j-api facade + log4j-to-slf4j
+            bridge present); the application uses Logback. Same cpe over-match as CVE-2026-34478.
+            See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2026-34480</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-34481 (HIGH 7.5) — FALSE POSITIVE. Affects Apache Log4j CORE's
+            JsonTemplateLayout (shipped in log4j-core). log4j-core is absent (only log4j-api facade
+            + log4j-to-slf4j bridge present); the application uses Logback. Same cpe over-match as
+            CVE-2026-34478. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+        <cve>CVE-2026-34481</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2025-7962 (HIGH 7.5) — FALSE POSITIVE. The advisory is an SMTP injection in
+            Jakarta Mail / Eclipse Angus MAIL versions prior to 2.0.2 (cpe:eclipse:jakarta_mail,
+            cpe:eclipse:angus_mail). The flagged artifact is org.eclipse.angus:angus-ACTIVATION
+            2.0.3 — the Jakarta Activation implementation, a different artifact that contains no
+            mail/SMTP code. This application declares no Jakarta Mail / angus-mail dependency
+            (verified: 0 matches) and performs no mail/SMTP operations (no JavaMailSender /
+            jakarta.mail usage in sources). Wrong-artifact CPE match. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.eclipse\.angus/angus-activation@.*$</packageUrl>
+        <cve>CVE-2025-7962</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-42154 (HIGH 7.5) — FALSE POSITIVE. The advisory affects the Prometheus
+            monitoring SERVER's /api/v1/read remote-read endpoint (snappy decompression memory
+            allocation); its fixed versions 3.5.3 / 3.11.3 are Prometheus-server releases. The
+            flagged artifact is io.micrometer:micrometer-registry-prometheus 1.15.9 — a Java client
+            library that EXPORTS metrics in Prometheus text format and embeds no Prometheus server
+            and no /api/v1/read endpoint. Wrong-product CPE match (prometheus server vs micrometer
+            client). See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.micrometer/micrometer-registry-prometheus@.*$</packageUrl>
+        <cve>CVE-2026-42154</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-39883 (HIGH 7.0) — FALSE POSITIVE. The advisory affects the OpenTelemetry-GO
+            SDK (a PATH-hijacking issue on Darwin/macOS; fixed in Go module v1.43.0). The flagged
+            artifact is the Java io.opentelemetry.semconv:opentelemetry-semconv 1.32.0 (a passive
+            semantic-conventions constants jar). Different language/product (Go SDK vs Java jar) and
+            Darwin-specific; this service runs on Linux. Wrong-product CPE match. See DECISION_LOG
+            D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+        <cve>CVE-2026-39883</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-24051 (HIGH 7.0) — FALSE POSITIVE. Same family as CVE-2026-39883: an
+            OpenTelemetry-GO Darwin/macOS PATH-hijacking issue (fixed in Go module v1.40.0). The
+            flagged artifact is the Java opentelemetry-semconv 1.32.0 constants jar. Different
+            language/product and Darwin-specific; runtime is Linux. Wrong-product CPE match. See
+            DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+        <cve>CVE-2026-24051</cve>
+    </suppress>
+
+    <suppress>
+        <notes><![CDATA[
+            CVE-2026-42582 (HIGH 7.5) — NOT APPLICABLE. The advisory is in Netty's HTTP/3 QPACK
+            decoder (io.netty.handler.codec.http3.QpackDecoder unbounded allocation). This
+            application is a servlet (Tomcat) REST service and does NOT use Netty HTTP/3: the
+            netty-codec-http3 module is not on the classpath and no HTTP/3 listener is configured.
+            Several netty modules (netty-transport, netty-transport-classes-epoll, netty-codec,
+            netty-handler, ...) are present transitively (AWS SDK async client) and share the
+            generic cpe:netty:netty:4.1.135 CPE, so dependency-check flags this HTTP/3 advisory on
+            each of them; the packageUrl regex below therefore scopes the suppression to ALL
+            io.netty modules at the pinned version. The vulnerable QPACK decoder is never
+            instantiated in any of them on this servlet stack. The fix is netty 4.2.13.Final, a
+            4.1->4.2 minor-line migration with compatibility risk against the AWS SDK; netty is
+            pinned to 4.1.135.Final by DECISION_LOG D-034. See DECISION_LOG D-055.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.netty/.*@.*$</packageUrl>
+        <cve>CVE-2026-42582</cve>
+    </suppress>
+
+</suppressions>
