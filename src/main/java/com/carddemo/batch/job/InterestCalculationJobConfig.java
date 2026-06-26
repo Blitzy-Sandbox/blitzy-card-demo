@@ -24,11 +24,15 @@ import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import com.carddemo.repository.TransactionRepository;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -131,6 +135,36 @@ public class InterestCalculationJobConfig {
      * {@code 2022071800}).
      */
     private static final String RUN_DATE_TIME_SUFFIX = "00";
+
+    /**
+     * Exact character length of the legacy run-date parameter
+     * ({@code PARM-DATE PIC X(10)}, the JCL {@code PARM='2022071800'}).
+     */
+    static final int RUN_DATE_PARAM_LENGTH = 10;
+
+    /**
+     * Human-readable description of the required run-date layout, used in the
+     * {@link InterestJobParametersValidator} diagnostics: {@code yyyyMMddHH}
+     * (eight-digit calendar date followed by a two-digit {@code 00..23} hour).
+     */
+    static final String RUN_DATE_PARAM_FORMAT = "yyyyMMddHH";
+
+    /**
+     * Offset at which the two-digit hour begins within the ten-character run
+     * date ({@code yyyyMMdd|HH}).
+     */
+    private static final int RUN_DATE_HOUR_OFFSET = 8;
+
+    /** Highest valid hour-of-day in the run-date {@code HH} component. */
+    private static final int RUN_DATE_MAX_HOUR = 23;
+
+    /**
+     * Strict parser for the eight-character date portion ({@code uuuuMMdd}); the
+     * {@link ResolverStyle#STRICT} resolver rejects non-existent calendar dates
+     * such as {@code 20220732} or {@code 20221318}.
+     */
+    private static final DateTimeFormatter RUN_DATE_DATE_PART_PARSER =
+            DateTimeFormatter.ofPattern("uuuuMMdd").withResolverStyle(ResolverStyle.STRICT);
 
     private final JobRepository jobRepository;
     private final PlatformTransactionManager transactionManager;
@@ -277,6 +311,7 @@ public class InterestCalculationJobConfig {
     @Bean
     public Job interestCalculationJob(Step interestCalculationStep) {
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(new InterestJobParametersValidator())
                 .start(interestCalculationStep)
                 .build();
     }
@@ -318,5 +353,79 @@ public class InterestCalculationJobConfig {
      */
     public static String formatRunDate(LocalDate runDate) {
         return RUN_DATE_FORMATTER.format(runDate) + RUN_DATE_TIME_SUFFIX;
+    }
+
+    /**
+     * Validates the late-bound run-date job parameter before the job is launched,
+     * so a missing or malformed {@code parmDate} fails deterministically at launch
+     * rather than producing malformed transaction identifiers downstream (the
+     * processor builds each interest {@code TRAN-ID} as {@code parmDate} plus a
+     * six-digit suffix). The check enforces a non-blank value of exactly
+     * {@value #RUN_DATE_PARAM_LENGTH} digits in the {@value #RUN_DATE_PARAM_FORMAT}
+     * legacy layout (a valid calendar date and a {@code 00..23} hour).
+     *
+     * @param runDate the supplied {@link #RUN_DATE_PARAMETER_KEY} value, possibly
+     *                {@code null}
+     * @throws JobParametersInvalidException if the value is absent, the wrong
+     *                                       length, non-numeric, or not a valid
+     *                                       {@code yyyyMMddHH} instant
+     */
+    static void validateRunDateParameter(String runDate) throws JobParametersInvalidException {
+        if (runDate == null || runDate.isBlank()) {
+            throw new JobParametersInvalidException(
+                    "Interest job parameter '" + RUN_DATE_PARAMETER_KEY
+                            + "' is required and must not be blank");
+        }
+        if (runDate.length() != RUN_DATE_PARAM_LENGTH || !isAllDigits(runDate)) {
+            throw new JobParametersInvalidException(
+                    "Interest job parameter '" + RUN_DATE_PARAMETER_KEY + "' must be exactly "
+                            + RUN_DATE_PARAM_LENGTH + " digits in '" + RUN_DATE_PARAM_FORMAT
+                            + "' format (e.g. 2022071800); got: " + runDate);
+        }
+        try {
+            LocalDate.parse(runDate.substring(0, RUN_DATE_HOUR_OFFSET), RUN_DATE_DATE_PART_PARSER);
+        } catch (DateTimeParseException ex) {
+            throw new JobParametersInvalidException(
+                    "Interest job parameter '" + RUN_DATE_PARAMETER_KEY
+                            + "' has an invalid calendar date: " + runDate);
+        }
+        int hour = Integer.parseInt(runDate.substring(RUN_DATE_HOUR_OFFSET, RUN_DATE_PARAM_LENGTH));
+        if (hour > RUN_DATE_MAX_HOUR) {
+            throw new JobParametersInvalidException(
+                    "Interest job parameter '" + RUN_DATE_PARAMETER_KEY
+                            + "' has an invalid hour (expected 00-" + RUN_DATE_MAX_HOUR + "): " + runDate);
+        }
+    }
+
+    /**
+     * Reports whether {@code value} is composed exclusively of ASCII digits.
+     *
+     * @param value the non-null string to test
+     * @return {@code true} when every character is an ASCII digit
+     */
+    private static boolean isAllDigits(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * {@link JobParametersValidator} for the interest-calculation job: enforces a
+     * required, well-formed {@link #RUN_DATE_PARAMETER_KEY} before launch. Wired
+     * via {@link JobBuilder#validator(JobParametersValidator)} on
+     * {@link #interestCalculationJob(Step)} so an invalid launch is rejected with
+     * a {@link JobParametersInvalidException} rather than failing mid-step.
+     */
+    static final class InterestJobParametersValidator implements JobParametersValidator {
+
+        @Override
+        public void validate(JobParameters parameters) throws JobParametersInvalidException {
+            String runDate = parameters == null ? null : parameters.getString(RUN_DATE_PARAMETER_KEY);
+            validateRunDateParameter(runDate);
+        }
     }
 }

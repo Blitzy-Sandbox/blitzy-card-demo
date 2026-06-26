@@ -24,6 +24,7 @@ import com.carddemo.entity.TransactionCategoryBalanceId;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
 import io.awspring.cloud.s3.S3Template;
 import java.math.BigDecimal;
+import java.math.BigInteger;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -37,6 +38,8 @@ import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
@@ -193,6 +196,23 @@ public class BatchPipelineOrchestrator {
 
     /** Total zoned digit count of the balance used by the backup unload (9 + 2). */
     private static final int BALANCE_ZONED_WIDTH = BALANCE_INT_DIGITS + BALANCE_SCALE;
+
+    /**
+     * Zoned-decimal overpunch characters for a non-negative trailing digit
+     * {@code 0-9}, encoding the sign into the final byte of a signed
+     * {@code PIC S9(n)V99 USAGE DISPLAY} field (positive {@code 0} renders as
+     * {@code '{'}, {@code 1-9} as {@code 'A'-'I'}).
+     */
+    private static final char[] POSITIVE_OVERPUNCH =
+            {'{', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'};
+
+    /**
+     * Zoned-decimal overpunch characters for a negative trailing digit
+     * {@code 0-9} (negative {@code 0} renders as {@code '}'}, {@code 1-9} as
+     * {@code 'J'-'R'}).
+     */
+    private static final char[] NEGATIVE_OVERPUNCH =
+            {'}', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R'};
 
     /** Single-blank inter-field separator emitted by the DFSORT {@code X} positions. */
     private static final String FIELD_SEPARATOR = " ";
@@ -512,6 +532,7 @@ public class BatchPipelineOrchestrator {
                     .on(ANY_EXIT_STATUS).to(printCategoryBalanceStep)
                 .build();
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(new PipelineJobParametersValidator())
                 .start(pipelineFlow)
                 .end()
                 .build();
@@ -527,18 +548,60 @@ public class BatchPipelineOrchestrator {
      * {@link InterestCalculationJobConfig#RUN_DATE_PARAMETER_KEY} and the report
      * window bounds keyed by {@code reportStartDate} and {@code reportEndDate}.
      *
+     * <p>The three bounds are validated deterministically before the parameters
+     * are assembled, so a malformed launch fails fast at the call site with an
+     * {@link IllegalArgumentException} rather than corrupting downstream interest
+     * transaction IDs or producing an incorrect report window mid-pipeline. The
+     * same checks are re-applied by {@link PipelineJobParametersValidator} on the
+     * master job, covering parameters assembled by any other launcher.</p>
+     *
      * @param parmDate        the interest run date in the legacy ten-character
      *                        {@code yyyyMMddHH} form (for example {@code 2022071800})
      * @param reportStartDate the inclusive report-window start ({@code yyyy-MM-dd})
      * @param reportEndDate   the inclusive report-window end ({@code yyyy-MM-dd})
      * @return the assembled job parameters for the master pipeline job
+     * @throws IllegalArgumentException if {@code parmDate} is not a valid
+     *                                  {@code yyyyMMddHH} value, if either report bound is not a valid
+     *                                  {@code yyyy-MM-dd} date, or if the report start is after the end
      */
     public static JobParameters pipelineJobParameters(String parmDate, String reportStartDate, String reportEndDate) {
+        try {
+            InterestCalculationJobConfig.validateRunDateParameter(parmDate);
+            TransactionReportJobConfig.validateReportDateWindow(reportStartDate, reportEndDate);
+        } catch (JobParametersInvalidException ex) {
+            throw new IllegalArgumentException(
+                    "Invalid CardDemo batch pipeline job parameters: " + ex.getMessage(), ex);
+        }
         return new JobParametersBuilder()
                 .addString(InterestCalculationJobConfig.RUN_DATE_PARAMETER_KEY, parmDate)
                 .addString(TransactionReportJobConfig.START_DATE_PARAM, reportStartDate)
                 .addString(TransactionReportJobConfig.END_DATE_PARAM, reportEndDate)
                 .toJobParameters();
+    }
+
+    /**
+     * {@link JobParametersValidator} for the master pipeline job. It reuses the
+     * per-job validation owned by {@link InterestCalculationJobConfig} (the
+     * {@code yyyyMMddHH} interest run date) and {@link TransactionReportJobConfig}
+     * (the {@code yyyy-MM-dd} report window with {@code start <= end}), so the
+     * composed pipeline enforces exactly the same parameter contract as the
+     * individual jobs. Wired via {@link JobBuilder#validator(JobParametersValidator)}
+     * on {@link #carddemoBatchPipelineJob} so an invalid launch is rejected with a
+     * {@link JobParametersInvalidException} before any step executes.
+     */
+    static final class PipelineJobParametersValidator implements JobParametersValidator {
+
+        @Override
+        public void validate(JobParameters parameters) throws JobParametersInvalidException {
+            String parmDate = parameters == null
+                    ? null : parameters.getString(InterestCalculationJobConfig.RUN_DATE_PARAMETER_KEY);
+            String reportStartDate = parameters == null
+                    ? null : parameters.getString(TransactionReportJobConfig.START_DATE_PARAM);
+            String reportEndDate = parameters == null
+                    ? null : parameters.getString(TransactionReportJobConfig.END_DATE_PARAM);
+            InterestCalculationJobConfig.validateRunDateParameter(parmDate);
+            TransactionReportJobConfig.validateReportDateWindow(reportStartDate, reportEndDate);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -621,8 +684,12 @@ public class BatchPipelineOrchestrator {
     /**
      * Formats a category balance into the PRTCATBL {@code STEP05R} backup unload
      * line: the zoned account id, transaction type, category code, and the
-     * eleven-digit zoned balance, concatenated without separators. The writer
-     * pads the result to {@value #BACKUP_RECORD_WIDTH} bytes.
+     * eleven-character signed-zoned balance, concatenated without separators.
+     * The backup unload is the byte-for-byte IDCAMS {@code REPRO} image of the
+     * {@code TCATBALF} VSAM record, so {@code TRAN-CAT-BAL PIC S9(09)V99} is
+     * rendered with its trailing-byte overpunch sign (see
+     * {@link #signedZonedBalance(BigDecimal)}). The writer pads the result to
+     * {@value #BACKUP_RECORD_WIDTH} bytes.
      *
      * @param balance the category balance to format; never {@code null}
      * @return the formatted backup line (28 significant characters)
@@ -632,7 +699,7 @@ public class BatchPipelineOrchestrator {
         return zonedDigits(acctId(id), ACCT_ID_WIDTH)
                 + charField(id.getTypeCd(), TYPE_CD_WIDTH)
                 + zonedDigits(catCd(id), CAT_CD_WIDTH)
-                + zonedBalance(balance.getTranCatBal());
+                + signedZonedBalance(balance.getTranCatBal());
     }
 
     /**
@@ -716,21 +783,37 @@ public class BatchPipelineOrchestrator {
     }
 
     /**
-     * Renders a balance as {@value #BALANCE_ZONED_WIDTH} zoned (zero-padded)
-     * decimal digits with no decimal point: the absolute value scaled to two
-     * fraction digits, the integer part zero-padded to
-     * {@value #BALANCE_INT_DIGITS} digits followed by the two fraction digits.
+     * Renders a balance as the {@value #BALANCE_ZONED_WIDTH}-character
+     * signed-zoned {@code PIC S9(09)V99 USAGE DISPLAY} field that the
+     * {@code TCATBALF} VSAM record stores: the value scaled to
+     * {@value #BALANCE_SCALE} fraction digits ({@link RoundingMode#HALF_EVEN}),
+     * its magnitude zero-padded to {@value #BALANCE_ZONED_WIDTH} digits, and the
+     * sign encoded as a trailing-byte overpunch on the final digit (positive
+     * {@code 0-9} render as {@code '{'} and {@code 'A'-'I'}, negative as
+     * {@code '}'} and {@code 'J'-'R'}). This preserves byte-equivalence with the
+     * legacy IDCAMS {@code REPRO} unload, including the sign of negative
+     * category balances. Mirrors the encoding applied to other signed
+     * {@code PIC S9(09)V99} fields in {@code DailyTransactionRecordImage}.
      *
      * @param value the balance to render; may be {@code null} (treated as zero)
-     * @return the eleven-character zoned balance
+     * @return the eleven-character signed-zoned balance
      */
-    private static String zonedBalance(BigDecimal value) {
-        BigDecimal scaled = scaleBalance(value);
-        String plain = scaled.toPlainString();
-        int dot = plain.indexOf('.');
-        String intDigits = dot < 0 ? plain : plain.substring(0, dot);
-        String fracDigits = dot < 0 ? "" : plain.substring(dot + 1);
-        return padDigits(intDigits, BALANCE_INT_DIGITS) + padFraction(fracDigits);
+    private static String signedZonedBalance(BigDecimal value) {
+        BigDecimal scaled = (value == null ? BigDecimal.ZERO : value)
+                .setScale(BALANCE_SCALE, RoundingMode.HALF_EVEN);
+        boolean negative = scaled.signum() < 0;
+        BigInteger units = scaled.abs().unscaledValue();
+
+        String digits = units.toString();
+        if (digits.length() > BALANCE_ZONED_WIDTH) {
+            digits = digits.substring(digits.length() - BALANCE_ZONED_WIDTH);
+        } else if (digits.length() < BALANCE_ZONED_WIDTH) {
+            digits = "0".repeat(BALANCE_ZONED_WIDTH - digits.length()) + digits;
+        }
+
+        int lastDigit = digits.charAt(BALANCE_ZONED_WIDTH - 1) - '0';
+        char overpunch = (negative ? NEGATIVE_OVERPUNCH : POSITIVE_OVERPUNCH)[lastDigit];
+        return digits.substring(0, BALANCE_ZONED_WIDTH - 1) + overpunch;
     }
 
     /**

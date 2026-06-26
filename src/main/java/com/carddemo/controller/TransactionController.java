@@ -81,11 +81,16 @@ public class TransactionController {
     }
 
     /**
-     * Returns one page of transactions, optionally filtered ({@code COTRN00C} /
-     * {@code CT00}).
+     * Returns one page of transactions, optionally positioned at a transaction-id
+     * filter ({@code COTRN00C} / {@code CT00}).
+     *
+     * <p>A blank {@code transactionId} browses from the start; a numeric value
+     * positions the browse at the first transaction id greater than or equal to
+     * it; a non-numeric value is rejected as {@code 400 Bad Request} by the
+     * service ({@code 'Tran ID must be Numeric ...'}).</p>
      *
      * @param transactionId optional transaction-id filter ({@code TRNIDIN});
-     *                      {@code null} means no filter
+     *                      {@code null} or blank means no filter
      * @param page          the zero-based page index; must not be negative
      * @return {@code 200 OK} with the requested page of transaction summaries
      */

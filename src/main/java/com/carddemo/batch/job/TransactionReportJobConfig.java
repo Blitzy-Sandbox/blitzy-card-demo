@@ -24,8 +24,11 @@ import com.carddemo.entity.Transaction;
 import com.carddemo.repository.TransactionRepository;
 import io.awspring.cloud.s3.S3Template;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.format.ResolverStyle;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -33,6 +36,9 @@ import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Supplier;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobParameters;
+import org.springframework.batch.core.JobParametersInvalidException;
+import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.Step;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.core.job.builder.JobBuilder;
@@ -59,47 +65,26 @@ import org.springframework.transaction.PlatformTransactionManager;
  * fixed-width lines (the {@code TRANREPT} DD {@code LRECL=133} and the COBOL
  * {@code FD-REPTFILE-REC PIC X(133)}) to the Amazon S3 output bucket.
  *
- * <p>The three legacy {@code TRANREPT} JCL steps collapse into one
- * chunk-oriented Spring Batch step:</p>
- * <ul>
- *   <li>{@code STEP05R EXEC PROC=REPROC} &mdash; the IDCAMS unload of
- *       {@code TRANSACT.VSAM.KSDS} is unnecessary because the transaction
- *       master is already the {@code transactions} relational table read
- *       through {@link TransactionRepository}.</li>
- *   <li>{@code STEP05R EXEC PGM=SORT} &mdash; the DFSORT
- *       {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}
- *       date window (on the first ten characters of the processing timestamp)
- *       is realized by {@link TransactionRepository#findByProcessingDateWindow(String, String)},
- *       and the {@code SORT FIELDS=(TRAN-CARD-NUM,A)} ascending card-number
- *       ordering is realized by the {@linkplain #transactionReportReader stable
- *       in-memory re-sort} applied here.</li>
- *   <li>{@code STEP10R EXEC PGM=CBTRN03C} &mdash; the report rendering,
- *       enrichment lookups, paging, and control-break totalling are performed by
- *       the injected {@link TransactionReportProcessor}; the formatted lines are
- *       written to S3 by {@link FixedWidthS3ItemWriter}.</li>
- * </ul>
- *
- * <p><b>Ordering contract.</b> {@link TransactionRepository#findByProcessingDateWindow(String, String)}
- * returns its rows ordered by {@code tranId} ascending, but the by-card control
- * breaks of {@code CBTRN03C} ({@code WS-CURR-CARD-NUM}) require ascending
- * card-number order. The reader therefore re-sorts the windowed result with a
- * stable comparator keyed on {@code cardNum} first and {@code tranId} second, so
- * the processor observes the same record sequence the DFSORT step produced.</p>
+ * <p>The job is a single chunk-oriented step: {@link #transactionReportReader}
+ * supplies the windowed transactions in ascending {@code cardNum} then
+ * {@code tranId} order (the by-card control-break order
+ * {@link TransactionReportProcessor} requires), the processor renders the detail
+ * lines with page, account, and grand totals, and {@link FixedWidthS3ItemWriter}
+ * writes the {@value #REPORT_RECORD_WIDTH}-byte lines to the S3 output bucket.
+ * The reporting window is applied by
+ * {@link TransactionRepository#findByProcessingDateWindow(String, String)}.</p>
  *
  * <p><b>Job parameters.</b> Two required job parameters carry the inclusive
- * reporting window (the COBOL {@code DATEPARM} {@code WS-START-DATE} /
- * {@code WS-END-DATE} and the JCL {@code PARM-START-DATE} / {@code PARM-END-DATE}):
- * {@code reportStartDate} and {@code reportEndDate}, both {@code String} values
- * in {@code YYYY-MM-DD} form. The same two keys are late-bound by
- * {@link TransactionReportProcessor} (for the printed name-header date range), so
- * a single launch drives both the window filter and the header rendering.</p>
+ * reporting window: {@code reportStartDate} and {@code reportEndDate}, both
+ * {@code yyyy-MM-dd} {@code String} values validated before launch by
+ * {@link ReportJobParametersValidator}. The same two keys are late-bound by
+ * {@link TransactionReportProcessor} for the printed name-header date range, so a
+ * single launch drives both the window filter and the header rendering.</p>
  *
- * <p>The job is wired with the fluent {@link JobBuilder} / {@link StepBuilder}
- * API (no factories, no {@code @EnableBatchProcessing}) and is never auto-run on
- * startup ({@code spring.batch.job.enabled=false}); it is triggered explicitly by
- * the pipeline orchestrator or the report-request consumer. Rationale and the
- * full paragraph-to-method mapping are recorded in {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md}.</p>
+ * <p>The job uses the fluent {@link JobBuilder} / {@link StepBuilder} API and is
+ * not auto-run on startup ({@code spring.batch.job.enabled=false}); it is
+ * triggered explicitly by the pipeline orchestrator or the report-request
+ * consumer.</p>
  */
 @Configuration
 public class TransactionReportJobConfig {
@@ -118,6 +103,18 @@ public class TransactionReportJobConfig {
 
     /** Required job-parameter key carrying the inclusive window end ({@code YYYY-MM-DD}). */
     static final String END_DATE_PARAM = "reportEndDate";
+
+    /** Canonical pattern, for diagnostics, of the required {@code YYYY-MM-DD} window bounds. */
+    static final String REPORT_DATE_PARAM_FORMAT = "yyyy-MM-dd";
+
+    /**
+     * Strict ISO calendar parser ({@code uuuu-MM-dd}, {@link ResolverStyle#STRICT}) used to
+     * validate the {@value #START_DATE_PARAM}/{@value #END_DATE_PARAM} window bounds before
+     * launch. Strict resolution rejects impossible dates such as {@code 2022-13-01} or
+     * {@code 2022-02-30} that lenient parsing would otherwise roll over.
+     */
+    private static final DateTimeFormatter REPORT_DATE_PARSER =
+            DateTimeFormatter.ofPattern("uuuu-MM-dd").withResolverStyle(ResolverStyle.STRICT);
 
     /** S3 key prefix grouping the report objects that replace the {@code TRANREPT(+1)} GDG generations. */
     private static final String REPORT_OBJECT_KEY_PREFIX = "transaction-report/";
@@ -308,6 +305,7 @@ public class TransactionReportJobConfig {
     @Bean
     public Job transactionReportJob(Step transactionReportStep) {
         return new JobBuilder(JOB_NAME, jobRepository)
+                .validator(new ReportJobParametersValidator())
                 .start(transactionReportStep)
                 .build();
     }
@@ -327,6 +325,76 @@ public class TransactionReportJobConfig {
                 + "-"
                 + UUID.randomUUID().toString().substring(0, 8)
                 + REPORT_OBJECT_KEY_SUFFIX;
+    }
+
+    /**
+     * Validates the inclusive reporting window carried by the
+     * {@value #START_DATE_PARAM} and {@value #END_DATE_PARAM} job parameters.
+     * Both bounds are required, must be well-formed {@value #REPORT_DATE_PARAM_FORMAT}
+     * calendar dates, and the start must not be after the end. Centralizing the
+     * check here lets both the {@link ReportJobParametersValidator job validator}
+     * and the pipeline orchestrator reuse identical semantics, guaranteeing the
+     * windowed query ({@link TransactionRepository#findByProcessingDateWindow(String, String)})
+     * and the printed header date range are driven by deterministic, pre-validated
+     * bounds rather than failing late or producing an empty/incorrect window.
+     *
+     * @param reportStartDate the inclusive window start bound ({@value #REPORT_DATE_PARAM_FORMAT})
+     * @param reportEndDate   the inclusive window end bound ({@value #REPORT_DATE_PARAM_FORMAT})
+     * @throws JobParametersInvalidException if either bound is missing, malformed, or {@code start > end}
+     */
+    static void validateReportDateWindow(String reportStartDate, String reportEndDate)
+            throws JobParametersInvalidException {
+        LocalDate start = parseReportBound(START_DATE_PARAM, reportStartDate);
+        LocalDate end = parseReportBound(END_DATE_PARAM, reportEndDate);
+        if (start.isAfter(end)) {
+            throw new JobParametersInvalidException(
+                    "Transaction-report window start '" + reportStartDate
+                            + "' must not be after end '" + reportEndDate + "'");
+        }
+    }
+
+    /**
+     * Parses and validates a single required {@value #REPORT_DATE_PARAM_FORMAT} window bound.
+     *
+     * @param parameterKey the job-parameter key, used only for diagnostics
+     * @param value        the raw parameter value
+     * @return the parsed {@link LocalDate}
+     * @throws JobParametersInvalidException if {@code value} is missing or not a strict
+     *                                       {@value #REPORT_DATE_PARAM_FORMAT} calendar date
+     */
+    private static LocalDate parseReportBound(String parameterKey, String value)
+            throws JobParametersInvalidException {
+        if (value == null || value.isBlank()) {
+            throw new JobParametersInvalidException(
+                    "Transaction-report job parameter '" + parameterKey
+                            + "' is required and must not be blank");
+        }
+        try {
+            return LocalDate.parse(value, REPORT_DATE_PARSER);
+        } catch (DateTimeParseException ex) {
+            throw new JobParametersInvalidException(
+                    "Transaction-report job parameter '" + parameterKey + "' must be a valid '"
+                            + REPORT_DATE_PARAM_FORMAT + "' date (e.g. 2022-07-18); got: " + value);
+        }
+    }
+
+    /**
+     * {@link JobParametersValidator} for the transaction-report job: enforces the
+     * required, well-formed {@value #START_DATE_PARAM}/{@value #END_DATE_PARAM}
+     * window with {@code start <= end} before launch. Wired via
+     * {@link JobBuilder#validator(JobParametersValidator)} on
+     * {@link #transactionReportJob(Step)} so an invalid launch is rejected with a
+     * {@link JobParametersInvalidException} rather than producing an incorrect or
+     * empty reporting window mid-step.
+     */
+    static final class ReportJobParametersValidator implements JobParametersValidator {
+
+        @Override
+        public void validate(JobParameters parameters) throws JobParametersInvalidException {
+            String start = parameters == null ? null : parameters.getString(START_DATE_PARAM);
+            String end = parameters == null ? null : parameters.getString(END_DATE_PARAM);
+            validateReportDateWindow(start, end);
+        }
     }
 
     /**

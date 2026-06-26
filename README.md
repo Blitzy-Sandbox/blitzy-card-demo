@@ -696,19 +696,33 @@ the full text and [`NOTICE`](NOTICE) for attribution.
 
 ## Project Status
 
-**CP4 milestone — in progress.** This checkpoint delivers the online REST controllers, the
-online business-service layer, and the Spring Batch processors and writers (the 4-stage
-posting cascade, interest calculation, combine/sort, statement and report generation, and
-the posted/reject S3 writers). The unit test suite passes and the build is clean. The
-migration is **not** yet development-complete — later checkpoints remain.
+**CP6 milestone — complete.** This checkpoint assembles the Spring Batch jobs and the master
+pipeline orchestrator, adds the Transaction and Billing REST controllers (completing all eight
+online controllers), and proves the system end-to-end with Testcontainers integration tests on
+real PostgreSQL and LocalStack (S3 / SQS / SNS). The unit and integration suites pass and the
+build is clean under `-Xlint:all -Werror`. Only the final consolidated validation-gate harness
+remains before sign-off.
 
-Work remaining beyond this milestone (later checkpoints / final sign-off):
+Delivered in this milestone:
 
-- **Batch job wiring** — the end-to-end `PostTransactionJobConfig` (POSTTRAN) and the
-  remaining job configurations that assemble the processors and writers into runnable jobs.
-- **Validation gates** — Gate 1 / Gate 4 byte-equivalent end-to-end batch runs against the
-  named ASCII fixtures, the Gate 3 performance baseline, and the Gate 8 integration
-  sign-off (≥80% line coverage and OWASP dependency-check with zero critical/high CVEs).
+- **Batch job assembly** — `PostTransactionJobConfig` (POSTTRAN), `InterestCalculationJobConfig`
+  (INTCALC), `CombineTransactionsJobConfig` (COMBTRAN), `TransactionReportJobConfig` (TRANREPT),
+  and `StatementJobConfig` (CREASTMT) wire the processors, readers, and writers into runnable
+  Spring Batch 5 jobs, each with launch-time job-parameter validation.
+- **Pipeline orchestrator** — `BatchPipelineOrchestrator` sequences the jobs in JCL order with
+  the `TRANBKP STEP10 COND=(4,LT)` posting-return-code gate (`PostingReturnCodeDecider` →
+  `categoryBalanceBackupStep`) and the parallel report/statement split, producing the PRTCATBL
+  40-byte print line and the 50-byte signed-zoned-overpunch backup record.
+- **End-to-end tests** — batch integration tests (posting, interest, combine, report, statement,
+  and the full pipeline) and an online-flow integration test exercise the real datastore and AWS
+  emulation, including a log-safe Gate 3 performance capture (elapsed time, records/sec,
+  throughput, peak memory) for the pipeline run.
+
+Work remaining (final sign-off):
+
+- **Consolidated validation-gate harness** — the single `GateVerificationTest` consolidating the
+  Gate 1 / Gate 4 byte-equivalent evidence against the named ASCII fixtures, the Gate 3 baseline,
+  Gate 8 ≥80% line coverage, and the OWASP dependency-check zero critical/high CVE gate.
 - **Path-to-production** — CI/CD pipeline, production Spring profile, deployment manifests,
   and security hardening (explicitly out of scope for the migration architecture).
 

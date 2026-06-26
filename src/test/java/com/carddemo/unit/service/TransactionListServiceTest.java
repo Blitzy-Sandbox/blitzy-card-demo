@@ -23,6 +23,7 @@ import java.util.List;
 import com.carddemo.dto.TransactionDto;
 import com.carddemo.entity.Transaction;
 import com.carddemo.enums.TransactionTypeCode;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.TransactionRepository;
 import com.carddemo.service.TransactionListService;
 
@@ -38,11 +39,13 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -57,9 +60,24 @@ import static org.mockito.Mockito.when;
  * {@code STARTBR}/{@code READNEXT}/{@code READPREV} across the ten-row
  * {@code COTRN00} display array ({@code TRNID01I}..{@code TRNID10I}) with PF7/PF8
  * page navigation &mdash; becomes stateless Spring Data pagination of fixed page
- * size&nbsp;{@code 10}. An optional card-number filter narrows the browse to one
- * card's transactions; when absent the full transaction set is browsed in
- * {@code TRAN-ID} ascending order, reproducing the key-sequenced VSAM read.</p>
+ * size&nbsp;{@code 10}, ordered by {@code TRAN-ID} ascending.</p>
+ *
+ * <p><strong>Transaction-id filter ({@code TRNIDINI}).</strong> The suite pins
+ * the three filter outcomes of {@code COTRN00C} paragraph
+ * {@code PROCESS-ENTER-KEY}: a blank filter browses the whole dataset via
+ * {@code findAll(Pageable)} ({@code MOVE LOW-VALUES TO TRAN-ID}); a numeric
+ * filter positions the browse via
+ * {@code findByTranIdGreaterThanEqual(key, Pageable)} ({@code MOVE TRNIDINI TO
+ * TRAN-ID}, {@code STARTBR ... GTEQ}), left-zero-padding a short value to the
+ * sixteen-character {@code TRAN-ID} key width; and a non-numeric filter is
+ * rejected with {@link ValidationException} carrying
+ * {@code 'Tran ID must be Numeric ...'} ({@code COTRN00C} line&nbsp;214). The
+ * row-selection edit {@code 'Invalid selection. Valid value is S'}
+ * ({@code COTRN00C} line&nbsp;199) acts on the {@code SEL00nnI} flags that drive
+ * the {@code XCTL} to the detail program {@code COTRN01C}; on this stateless list
+ * contract that navigation is the separate {@code GET /api/transactions/{id}}
+ * resource, so the list service exposes no row-select field and the suite does
+ * not assert that message here.</p>
  *
  * <p><strong>Framework-free isolation.</strong> The suite bootstraps no Spring
  * {@code ApplicationContext}; it uses no {@code @SpringBootTest}, {@code MockMvc},
@@ -67,23 +85,21 @@ import static org.mockito.Mockito.when;
  * {@link TransactionRepository}, is Mockito-mocked and constructor-injected into
  * the service, keeping every test fast, deterministic, and decoupled from JPA.</p>
  *
- * <p><strong>Page indexing.</strong> The compiled service treats the
- * {@code pageNumber} argument as a zero-based index, clamped with
- * {@code Math.max(pageNumber, 0)}. For the unfiltered browse the clamped index
- * is passed straight into {@code PageRequest.of(index, 10, Sort.by(ASC,
- * "tranId"))}; for the card-filtered path the same index slices the
- * {@code findByCardNumOrderByTranIdAsc} result in memory at the
- * {@code PAGE_SIZE}&nbsp;=&nbsp;10 boundary. {@link TransactionDto.ListResponse#pageNumber()}
- * echoes that clamped index as a {@link String}, and
- * {@link TransactionDto.ListResponse#transactionIdFilter()} is always
- * {@code null} because the compiled {@code buildResponse} sets it so. The
- * {@link ArgumentCaptor} tests lock both the size ({@code 10}) and the zero-based
- * index that reach the repository.</p>
+ * <p><strong>Page indexing.</strong> The service treats the {@code pageNumber}
+ * argument as a zero-based index, clamped with {@code Math.max(pageNumber, 0)},
+ * and passes it into {@code PageRequest.of(index, 10, Sort.by(ASC, "tranId"))} on
+ * both the unfiltered and positioned paths.
+ * {@link TransactionDto.ListResponse#pageNumber()} echoes that clamped index as a
+ * {@link String}; {@link TransactionDto.ListResponse#transactionIdFilter()} is
+ * {@code null} for an unfiltered browse and echoes the supplied filter otherwise.
+ * The {@link ArgumentCaptor} tests lock the size ({@code 10}), the zero-based
+ * index, the ascending {@code tranId} sort, and the positioning key reaching the
+ * repository.</p>
  *
- * <p><strong>Empty pages are normal.</strong> A card with no transactions, an
- * empty unfiltered page, and a page index beyond the available data all yield an
- * empty {@code transactions()} list with no thrown exception, mirroring the
- * legacy end-of-data screen behavior rather than an error.</p>
+ * <p><strong>Empty pages are normal.</strong> A filter with no matches, an empty
+ * unfiltered page, and a page index beyond the available data all yield an empty
+ * {@code transactions()} list with no thrown exception, mirroring the legacy
+ * end-of-data screen behavior rather than an error.</p>
  *
  * <p><strong>Parity assertions (Gate&nbsp;1 / Gate&nbsp;4).</strong> Each list
  * row is mapped exactly as {@code COTRN00C} paragraph {@code POPULATE-TRAN-DATA}
@@ -95,21 +111,6 @@ import static org.mockito.Mockito.when;
  * {@code compareTo} semantics ({@code isEqualByComparingTo}) and never as
  * {@code double}/{@code float}.</p>
  *
- * <p><strong>Validation divergence (compiled source authoritative).</strong>
- * {@code COTRN00C} carries two screen-field edits &mdash;
- * {@code 'Invalid selection. Valid value is S'} (line&nbsp;199, for a row-select
- * flag other than {@code S}) and {@code 'Tran ID must be Numeric ...'}
- * (line&nbsp;214, for a non-numeric {@code TRNIDINI} filter). Both act on
- * {@code COTRN00} terminal fields (the {@code SEL00nnI} selection flags and the
- * numeric tran-id filter) that the stateless {@code listTransactions(String,
- * int)} API does not expose: row selection is re-homed to the detail endpoint
- * ({@code GET /api/transactions/{id}}), and this service accepts only a
- * card-number filter. The compiled service therefore performs neither edit and
- * throws no {@code ValidationException}. Per "assert verbatim where reachable",
- * those messages have no reachable code path here; the suite instead pins the
- * actual behavior &mdash; a supplied filter is treated as an opaque card token
- * and flows straight to the by-card finder without a numeric edit.</p>
- *
  * <p>{@code MockitoExtension} runs in its default strict-stub mode, so each test
  * registers only the stub its exercised path consumes.</p>
  */
@@ -118,8 +119,14 @@ import static org.mockito.Mockito.when;
 class TransactionListServiceTest {
 
     /**
-     * Sixteen-character card number used across the card-filtered scenarios,
-     * matching the {@code TRAN-CARD-NUM PIC X(16)} width.
+     * Sixteen-digit numeric {@code TRNIDINI} positioning filter used across the
+     * filtered scenarios, matching the {@code TRAN-ID PIC X(16)} key width.
+     */
+    private static final String TRAN_ID_FILTER = "0000000000000001";
+
+    /**
+     * Sixteen-character card number carried on the sample rows
+     * ({@code TRAN-CARD-NUM PIC X(16)}); the list projection does not read it.
      */
     private static final String CARD = "0500000000000001";
 
@@ -136,11 +143,11 @@ class TransactionListServiceTest {
     // -----------------------------------------------------------------
 
     /**
-     * Builds a fully populated {@link Transaction} on {@link #CARD}. Only the
-     * fields the list projection reads &mdash; {@code tranId}, {@code origTs}
-     * (date source), {@code tranDesc} (truncated), and {@code tranAmt} &mdash;
-     * vary per call; the remaining fields carry representative, non-null values
-     * that the projection ignores.
+     * Builds a fully populated {@link Transaction}. Only the fields the list
+     * projection reads &mdash; {@code tranId}, {@code origTs} (date source),
+     * {@code tranDesc} (truncated), and {@code tranAmt} &mdash; vary per call; the
+     * remaining fields carry representative, non-null values that the projection
+     * ignores.
      *
      * @param tranId   the sixteen-character transaction identifier (primary key)
      * @param cardNum  the sixteen-character card number
@@ -168,12 +175,12 @@ class TransactionListServiceTest {
     }
 
     // -----------------------------------------------------------------
-    // Phase 1 — list by card filter: rows mapped to TransactionSummary
+    // Phase 1 — numeric filter: positioned browse, rows mapped to summaries
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("card filter: page 0 returns every card transaction mapped to a TransactionSummary")
-    void cardFilterMapsRowsToSummaries() {
+    @DisplayName("numeric filter: positioned page maps every row to a TransactionSummary and echoes the filter")
+    void numericFilterMapsRowsToSummaries() {
         Transaction t1 = tx("0000000000000001", CARD, "GROCERY STORE",
                 new BigDecimal("12.34"), "2023-05-17 12:34:56.123456");
         Transaction t2 = tx("0000000000000002", CARD, "GAS STATION REFUEL",
@@ -183,9 +190,10 @@ class TransactionListServiceTest {
         Transaction t3 = tx("0000000000000003", CARD, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123",
                 new BigDecimal("100.5"), "2023-12-25 23:59:59.999999");
         List<Transaction> rows = List.of(t1, t2, t3);
-        when(transactionRepository.findByCardNumOrderByTranIdAsc(CARD)).thenReturn(rows);
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(rows));
 
-        TransactionDto.ListResponse response = service.listTransactions(CARD, 0);
+        TransactionDto.ListResponse response = service.listTransactions(TRAN_ID_FILTER, 0);
 
         assertThat(response.transactions()).hasSize(3);
         assertThat(response.transactions())
@@ -208,8 +216,8 @@ class TransactionListServiceTest {
         assertThat(response.transactions().get(2).amount())
                 .isEqualByComparingTo(new BigDecimal("100.50"));
         assertThat(response.pageNumber()).isEqualTo("0");
-        assertThat(response.transactionIdFilter()).isNull();
-        verify(transactionRepository).findByCardNumOrderByTranIdAsc(CARD);
+        assertThat(response.transactionIdFilter()).isEqualTo(TRAN_ID_FILTER);
+        verify(transactionRepository).findByTranIdGreaterThanEqual(anyString(), any(Pageable.class));
     }
 
     @Test
@@ -226,9 +234,10 @@ class TransactionListServiceTest {
         Transaction tNull = tx("0000000000000004", CARD, null,
                 new BigDecimal("4.00"), "2023-01-02 00:00:00.000000");
         List<Transaction> rows = List.of(tExact, tOver, tShort, tNull);
-        when(transactionRepository.findByCardNumOrderByTranIdAsc(CARD)).thenReturn(rows);
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(rows));
 
-        TransactionDto.ListResponse response = service.listTransactions(CARD, 0);
+        TransactionDto.ListResponse response = service.listTransactions(TRAN_ID_FILTER, 0);
 
         assertThat(response.transactions().get(0).description()).isEqualTo(exactly26);
         assertThat(response.transactions().get(1).description()).isEqualTo(exactly26);
@@ -250,9 +259,10 @@ class TransactionListServiceTest {
         Transaction noTs = tx("0000000000000005", CARD, "D",
                 new BigDecimal("1.00"), null);                // null -> null
         List<Transaction> rows = List.of(sample, century, tenChars, tooShort, noTs);
-        when(transactionRepository.findByCardNumOrderByTranIdAsc(CARD)).thenReturn(rows);
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(rows));
 
-        TransactionDto.ListResponse response = service.listTransactions(CARD, 0);
+        TransactionDto.ListResponse response = service.listTransactions(TRAN_ID_FILTER, 0);
 
         assertThat(response.transactions().get(0).date()).isEqualTo("05/17/23");
         assertThat(response.transactions().get(1).date()).isEqualTo("12/31/99");
@@ -262,38 +272,53 @@ class TransactionListServiceTest {
     }
 
     // -----------------------------------------------------------------
-    // Phase 2 — paging: PAGE_SIZE = 10, zero-based index, page echo
+    // Phase 2 — positioning + paging: PAGE_SIZE = 10, zero-based index, sort
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("card filter paging: PAGE_SIZE=10 sliced in memory over the zero-based page index")
-    void cardFilterPagesInMemoryAtPageSizeTen() {
-        List<Transaction> twelve = new ArrayList<>();
-        for (int i = 1; i <= 12; i++) {
-            String id = String.format("%016d", i);
-            twelve.add(tx(id, CARD, "TXN " + i, new BigDecimal(i + ".00"),
-                    "2023-03-15 10:00:00.000000"));
+    @DisplayName("numeric filter: positions via findByTranIdGreaterThanEqual with size 10, the page index, and ascending tranId sort")
+    void numericFilterPositionsBrowseWithCapturedPageable() {
+        List<Transaction> ten = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            ten.add(tx(String.format("%016d", i), CARD, "TXN " + i,
+                    new BigDecimal(i + ".00"), "2023-03-15 10:00:00.000000"));
         }
-        when(transactionRepository.findByCardNumOrderByTranIdAsc(CARD)).thenReturn(twelve);
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(ten));
 
-        // Page 0 -> the first ten rows (TRAN-ID 0000000000000001..0000000000000010).
-        TransactionDto.ListResponse page0 = service.listTransactions(CARD, 0);
-        assertThat(page0.transactions()).hasSize(10);
-        assertThat(page0.transactions().get(0).transactionId()).isEqualTo("0000000000000001");
-        assertThat(page0.transactions().get(9).transactionId()).isEqualTo("0000000000000010");
-        assertThat(page0.pageNumber()).isEqualTo("0");
+        TransactionDto.ListResponse response = service.listTransactions(TRAN_ID_FILTER, 1);
 
-        // Page 1 -> the remaining two rows.
-        TransactionDto.ListResponse page1 = service.listTransactions(CARD, 1);
-        assertThat(page1.transactions()).hasSize(2);
-        assertThat(page1.transactions().get(0).transactionId()).isEqualTo("0000000000000011");
-        assertThat(page1.transactions().get(1).transactionId()).isEqualTo("0000000000000012");
-        assertThat(page1.pageNumber()).isEqualTo("1");
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(transactionRepository)
+                .findByTranIdGreaterThanEqual(keyCaptor.capture(), pageableCaptor.capture());
+        assertThat(keyCaptor.getValue()).isEqualTo(TRAN_ID_FILTER);
+        Pageable captured = pageableCaptor.getValue();
+        assertThat(captured.getPageSize()).isEqualTo(10);
+        assertThat(captured.getPageNumber()).isEqualTo(1);
+        assertThat(captured.getSort()).isEqualTo(Sort.by(Sort.Direction.ASC, "tranId"));
+        assertThat(response.transactions()).hasSize(10);
+        assertThat(response.pageNumber()).isEqualTo("1");
+        assertThat(response.transactionIdFilter()).isEqualTo(TRAN_ID_FILTER);
+    }
 
-        // Page 2 -> beyond the available data: an empty page, not an exception.
-        TransactionDto.ListResponse page2 = service.listTransactions(CARD, 2);
-        assertThat(page2.transactions()).isEmpty();
-        assertThat(page2.pageNumber()).isEqualTo("2");
+    @Test
+    @DisplayName("short numeric filter is left-zero-padded to the sixteen-character TRAN-ID key before positioning")
+    void shortNumericFilterIsLeftZeroPaddedToSixteen() {
+        List<Transaction> rows = List.of(tx("0000000000000005", CARD, "TXN",
+                new BigDecimal("5.00"), "2023-03-15 10:00:00.000000"));
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(rows));
+
+        TransactionDto.ListResponse response = service.listTransactions("5", 0);
+
+        ArgumentCaptor<String> keyCaptor = ArgumentCaptor.forClass(String.class);
+        verify(transactionRepository)
+                .findByTranIdGreaterThanEqual(keyCaptor.capture(), any(Pageable.class));
+        // "5" positions at the zero-padded key, but the echoed filter is the user's input.
+        assertThat(keyCaptor.getValue()).isEqualTo("0000000000000005");
+        assertThat(response.transactionIdFilter()).isEqualTo("5");
+        assertThat(response.transactions()).hasSize(1);
     }
 
     @Test
@@ -338,7 +363,7 @@ class TransactionListServiceTest {
     }
 
     @Test
-    @DisplayName("blank filter is normalized to 'not supplied' and routes to findAll, not the by-card finder")
+    @DisplayName("blank filter is normalized to 'not supplied' and routes to findAll, not the positioning finder")
     void blankFilterRoutesToFindAll() {
         List<Transaction> one = List.of(tx("0000000000000001", CARD, "TXN",
                 new BigDecimal("9.99"), "2023-03-15 10:00:00.000000"));
@@ -348,8 +373,10 @@ class TransactionListServiceTest {
         TransactionDto.ListResponse response = service.listTransactions("   ", 0);
 
         assertThat(response.transactions()).hasSize(1);
+        assertThat(response.transactionIdFilter()).isNull();
         verify(transactionRepository).findAll(any(Pageable.class));
-        verify(transactionRepository, never()).findByCardNumOrderByTranIdAsc(anyString());
+        verify(transactionRepository, never())
+                .findByTranIdGreaterThanEqual(anyString(), any(Pageable.class));
     }
 
     // -----------------------------------------------------------------
@@ -357,17 +384,17 @@ class TransactionListServiceTest {
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("card filter with no matches: empty list, no exception (legacy end-of-data outcome)")
-    void cardFilterEmptyReturnsEmptyWithoutThrowing() {
-        List<Transaction> none = List.of();
-        when(transactionRepository.findByCardNumOrderByTranIdAsc(CARD)).thenReturn(none);
+    @DisplayName("numeric filter with no matches: empty list, no exception (legacy end-of-data outcome)")
+    void numericFilterEmptyReturnsEmptyWithoutThrowing() {
+        when(transactionRepository.findByTranIdGreaterThanEqual(anyString(), any(Pageable.class)))
+                .thenReturn(new PageImpl<>(List.of()));
 
         TransactionDto.ListResponse response =
-                assertDoesNotThrow(() -> service.listTransactions(CARD, 0));
+                assertDoesNotThrow(() -> service.listTransactions(TRAN_ID_FILTER, 0));
 
         assertThat(response.transactions()).isEmpty();
         assertThat(response.pageNumber()).isEqualTo("0");
-        assertThat(response.transactionIdFilter()).isNull();
+        assertThat(response.transactionIdFilter()).isEqualTo(TRAN_ID_FILTER);
     }
 
     @Test
@@ -385,26 +412,18 @@ class TransactionListServiceTest {
     }
 
     // -----------------------------------------------------------------
-    // Phase 4 — validation divergence (compiled source authoritative)
+    // Phase 4 — transaction-id numeric edit (COTRN00C line 214)
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("divergence: a supplied filter is an opaque card token — the legacy numeric/selection edits are not reachable here")
-    void suppliedFilterIsNotNumericallyValidated() {
-        // COTRN00C raised 'Tran ID must be Numeric ...' (line 214) for a non-numeric
-        // TRNIDINI filter and 'Invalid selection. Valid value is S' (line 199) for a
-        // bad row-select flag. Both edits act on COTRN00 terminal fields that the
-        // stateless listTransactions(String, int) API does not expose, so the
-        // compiled service performs neither edit and raises no ValidationException.
-        // This test pins that divergence: a non-numeric filter flows straight to the
-        // by-card finder and returns normally.
-        List<Transaction> none = List.of();
-        when(transactionRepository.findByCardNumOrderByTranIdAsc("NOT-NUMERIC")).thenReturn(none);
+    @DisplayName("non-numeric filter is rejected with 'Tran ID must be Numeric ...' and never touches the repository")
+    void nonNumericFilterThrowsTranIdMustBeNumeric() {
+        // COTRN00C PROCESS-ENTER-KEY: IF TRNIDINI NOT NUMERIC -> 'Tran ID must be Numeric ...'
+        // (line 214). The edit fires before any STARTBR, so the repository is untouched.
+        assertThatThrownBy(() -> service.listTransactions("12AB", 0))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage("Tran ID must be Numeric ...");
 
-        TransactionDto.ListResponse response =
-                assertDoesNotThrow(() -> service.listTransactions("NOT-NUMERIC", 0));
-
-        assertThat(response.transactions()).isEmpty();
-        verify(transactionRepository).findByCardNumOrderByTranIdAsc("NOT-NUMERIC");
+        verifyNoInteractions(transactionRepository);
     }
 }

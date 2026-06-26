@@ -436,7 +436,7 @@ server-side session.
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COTRN00C.cbl` | `MAIN-PARA` | `TransactionController` | `listTransactions()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless TransactionController [GET /api/transactions] |
-| `COTRN00C.cbl` | `PROCESS-ENTER-KEY` | `TransactionListService` | `listTransactions()` | AID=ENTER primary action -> service business method |
+| `COTRN00C.cbl` | `PROCESS-ENTER-KEY` | `TransactionListService` | `listTransactions()` | AID=ENTER primary action -> service business method. `TRNIDINI` filter edit (D-048): blank -> `findAll(Pageable)` browse from start (`MOVE LOW-VALUES TO TRAN-ID`); numeric -> positioned `findByTranIdGreaterThanEqual` (`STARTBR ... GTEQ`); non-numeric -> `ValidationException("Tran ID must be Numeric ...")` (line 214) -> HTTP 400. The `SEL00nnI` row-select edit (`'Invalid selection. Valid value is S'`, line 199) is re-homed to `GET /api/transactions/{id}` (`COTRN01C`), so the list contract carries no row-select field |
 | `COTRN00C.cbl` | `PROCESS-PF7-KEY` | `TransactionListService` | `previousPage()` | PF7 page-up -> Pageable previous page query |
 | `COTRN00C.cbl` | `PROCESS-PF8-KEY` | `TransactionListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
 | `COTRN00C.cbl` | `PROCESS-PAGE-FORWARD` | `TransactionListService` | `nextPage()` | PF8 page-down -> Pageable next page query |
@@ -447,8 +447,8 @@ server-side session.
 | `COTRN00C.cbl` | `SEND-TRNLST-SCREEN` | `TransactionController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
 | `COTRN00C.cbl` | `RECEIVE-TRNLST-SCREEN` | `TransactionController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
 | `COTRN00C.cbl` | `POPULATE-HEADER-INFO` | `TransactionListService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `COTRN00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
-| `COTRN00C.cbl` | `READNEXT-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READNEXT -> next page element |
+| `COTRN00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` / `findByTranIdGreaterThanEqual(String, Pageable)` | VSAM STARTBR -> open Pageable browse: an unfiltered browse positions at the start via `findAll(Pageable)`; a numeric `TRNIDINI` filter positions at the key via `findByTranIdGreaterThanEqual` (`STARTBR ... GTEQ`, D-048) |
+| `COTRN00C.cbl` | `READNEXT-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` / `findByTranIdGreaterThanEqual(String, Pageable)` | VSAM READNEXT -> next page element (forward read from the positioned key, caller `Sort.by(ASC,"tranId")`) |
 | `COTRN00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM READPREV -> previous page element |
 | `COTRN00C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | `findAll(Pageable)` | VSAM ENDBR -> close browse cursor |
 
@@ -613,23 +613,23 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBTRN01C.cbl` | `MAIN-PARA` | `DailyTransactionReader` | `process()` | Batch mainline -> chunk-oriented Step (reader/processor/writer) driven by READACCT (daily-txn validation driver) |
-| `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `DailyTransactionReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBTRN01C.cbl` | `MAIN-PARA` | `DailyTransactionItemReader` | `process()` | Batch mainline -> chunk-oriented Step (reader/processor/writer) driven by READACCT (daily-txn validation driver) |
+| `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `DailyTransactionItemReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
-| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `DailyTransactionReader` | `lookupCardXref()` | XREF keyed lookup -> CardXrefRepository |
+| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `DailyTransactionItemReader` | `lookupCardXref()` | XREF keyed lookup -> CardXrefRepository |
 | `CBTRN01C.cbl` | `3000-READ-ACCOUNT` | `AccountRepository` | `findById()` | ACCTFILE keyed read -> JPA finder |
-| `CBTRN01C.cbl` | `0000-DALYTRAN-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `0100-CUSTFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `0200-XREFFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `0300-CARDFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `0400-ACCTFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `0500-TRANFILE-OPEN` | `DailyTransactionReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBTRN01C.cbl` | `9000-DALYTRAN-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `9100-CUSTFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `9200-XREFFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `9300-CARDFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `9400-ACCTFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
-| `CBTRN01C.cbl` | `9500-TRANFILE-CLOSE` | `DailyTransactionReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `0000-DALYTRAN-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `0100-CUSTFILE-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `0200-XREFFILE-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `0300-CARDFILE-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `0400-ACCTFILE-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `0500-TRANFILE-OPEN` | `DailyTransactionItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBTRN01C.cbl` | `9000-DALYTRAN-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `9100-CUSTFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `9200-XREFFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `9300-CARDFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `9400-ACCTFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBTRN01C.cbl` | `9500-TRANFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBTRN01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBTRN01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -700,11 +700,11 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `AccountFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `AccountItemReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
-| `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` | `AccountFileReader` | `logRecord()` | DISPLAY record -> structured debug log of mapped entity |
-| `CBACT01C.cbl` | `0000-ACCTFILE-OPEN` | `AccountFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT01C.cbl` | `9000-ACCTFILE-CLOSE` | `AccountFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` | `AccountItemReader` | `logRecord()` | DISPLAY record -> structured debug log of mapped entity |
+| `CBACT01C.cbl` | `0000-ACCTFILE-OPEN` | `AccountItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT01C.cbl` | `9000-ACCTFILE-CLOSE` | `AccountItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBACT01C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBACT01C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -712,10 +712,10 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBACT02C.cbl` | `1000-CARDFILE-GET-NEXT` | `CardFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT02C.cbl` | `1000-CARDFILE-GET-NEXT` | `CardItemReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBACT02C.cbl` | `1000-CARDFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
-| `CBACT02C.cbl` | `0000-CARDFILE-OPEN` | `CardFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT02C.cbl` | `9000-CARDFILE-CLOSE` | `CardFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT02C.cbl` | `0000-CARDFILE-OPEN` | `CardItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT02C.cbl` | `9000-CARDFILE-CLOSE` | `CardItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBACT02C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBACT02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -723,10 +723,10 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBACT03C.cbl` | `1000-XREFFILE-GET-NEXT` | `CrossReferenceFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBACT03C.cbl` | `1000-XREFFILE-GET-NEXT` | `CardXrefItemReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBACT03C.cbl` | `1000-XREFFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
-| `CBACT03C.cbl` | `0000-XREFFILE-OPEN` | `CrossReferenceFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBACT03C.cbl` | `9000-XREFFILE-CLOSE` | `CrossReferenceFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBACT03C.cbl` | `0000-XREFFILE-OPEN` | `CardXrefItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBACT03C.cbl` | `9000-XREFFILE-CLOSE` | `CardXrefItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBACT03C.cbl` | `9999-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBACT03C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -762,10 +762,10 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBCUS01C.cbl` | `1000-CUSTFILE-GET-NEXT` | `CustomerFileReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
+| `CBCUS01C.cbl` | `1000-CUSTFILE-GET-NEXT` | `CustomerItemReader` | `read()` | Sequential READ NEXT -> ItemReader.read() (null at EOF) |
 | `CBCUS01C.cbl` | `1000-CUSTFILE-GET-NEXT` | `FileStatusMapper` | `isEndOfFile()` / `isSuccess()` | AT END (FILE STATUS `10`) and success (`00`) evaluation within the read loop -> typed status predicates |
-| `CBCUS01C.cbl` | `0000-CUSTFILE-OPEN` | `CustomerFileReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
-| `CBCUS01C.cbl` | `9000-CUSTFILE-CLOSE` | `CustomerFileReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
+| `CBCUS01C.cbl` | `0000-CUSTFILE-OPEN` | `CustomerItemReader` | `open()` | FD OPEN -> Spring Batch ItemStream.open() / reader init (JPA datasource) |
+| `CBCUS01C.cbl` | `9000-CUSTFILE-CLOSE` | `CustomerItemReader` | `close()` | FD CLOSE -> Spring Batch ItemStream.close() / reader teardown |
 | `CBCUS01C.cbl` | `Z-ABEND-PROGRAM` | `GlobalExceptionHandler` | `handleUnexpected()` | ABEND routine -> @ControllerAdvice exception translation (catch-all Exception → HTTP 500) |
 | `CBCUS01C.cbl` | `Z-DISPLAY-IO-STATUS` | `FileStatusMapper` | `check()` | FILE STATUS display -> status-code-to-exception mapping + structured log |
 
@@ -803,20 +803,20 @@ The 10 batch programs. JCL step sequencing and condition codes are preserved by 
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBSTM03B.CBL` | `0000-START` | `StatementFileService` | `process()` | Batch mainline -> chunk-oriented Step (reader/processor/writer) driven by CREASTMT (file-service subroutine) |
-| `CBSTM03B.CBL` | `9999-GOBACK` | `StatementFileService` | `process()` | GOBACK / step return -> ItemProcessor completion |
-| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `StatementFileService` | `trnxfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
-| `CBSTM03B.CBL` | `1900-EXIT` | `StatementFileService` | `trnxfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `trnxfileProc()` |
-| `CBSTM03B.CBL` | `1999-EXIT` | `StatementFileService` | `trnxfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `trnxfileProc()` |
-| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `StatementFileService` | `xreffileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
-| `CBSTM03B.CBL` | `2900-EXIT` | `StatementFileService` | `xreffileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `xreffileProc()` |
-| `CBSTM03B.CBL` | `2999-EXIT` | `StatementFileService` | `xreffileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `xreffileProc()` |
-| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `StatementFileService` | `custfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
-| `CBSTM03B.CBL` | `3900-EXIT` | `StatementFileService` | `custfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `custfileProc()` |
-| `CBSTM03B.CBL` | `3999-EXIT` | `StatementFileService` | `custfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `custfileProc()` |
-| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `StatementFileService` | `acctfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
-| `CBSTM03B.CBL` | `4900-EXIT` | `StatementFileService` | `acctfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `acctfileProc()` |
-| `CBSTM03B.CBL` | `4999-EXIT` | `StatementFileService` | `acctfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `acctfileProc()` |
+| `CBSTM03B.CBL` | `0000-START` | `FileServiceReader` | `process()` | Batch mainline -> chunk-oriented Step (reader/processor/writer) driven by CREASTMT (file-service subroutine) |
+| `CBSTM03B.CBL` | `9999-GOBACK` | `FileServiceReader` | `process()` | GOBACK / step return -> ItemProcessor completion |
+| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `FileServiceReader` | `trnxfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
+| `CBSTM03B.CBL` | `1900-EXIT` | `FileServiceReader` | `trnxfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `trnxfileProc()` |
+| `CBSTM03B.CBL` | `1999-EXIT` | `FileServiceReader` | `trnxfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `trnxfileProc()` |
+| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `FileServiceReader` | `xreffileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
+| `CBSTM03B.CBL` | `2900-EXIT` | `FileServiceReader` | `xreffileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `xreffileProc()` |
+| `CBSTM03B.CBL` | `2999-EXIT` | `FileServiceReader` | `xreffileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `xreffileProc()` |
+| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `FileServiceReader` | `custfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
+| `CBSTM03B.CBL` | `3900-EXIT` | `FileServiceReader` | `custfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `custfileProc()` |
+| `CBSTM03B.CBL` | `3999-EXIT` | `FileServiceReader` | `custfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `custfileProc()` |
+| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `FileServiceReader` | `acctfileProc()` | File-service request op (OPEN/READ/READ-K/CLOSE) -> injected reader bean method |
+| `CBSTM03B.CBL` | `4900-EXIT` | `FileServiceReader` | `acctfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `acctfileProc()` |
+| `CBSTM03B.CBL` | `4999-EXIT` | `FileServiceReader` | `acctfileProc()` | `PERFORM THRU` exit label — structured early-`return` boundary of `acctfileProc()` |
 
 ## 5. Copybooks → Entities / DTOs / Enums / Services
 
@@ -853,7 +853,7 @@ services and externalized JSON resources.
 | `COTTL01Y.cpy` | Banner / title constants | Application title constants | Header/title metadata in responses |
 | `CSSETATY.cpy` | Invalid-field highlight attributes | Controller bean-validation error mapping | Field highlight → structured `400` field-error responses |
 | `CSSTRPFY.cpy` | EIBAID / PF-key equates | Controller request params / resource paths | PF3/PF7/PF8 (exit/page) → REST params & paths |
-| `CVTRA07Y.cpy` | Daily-txn report header/detail/total lines | `batch.processors.TransactionReportProcessor` + report DTO | Report header/detail/total formatting layout |
+| `CVTRA07Y.cpy` | Daily-txn report header/detail/total lines | `batch.processor.TransactionReportProcessor` + report DTO | Report header/detail/total formatting layout |
 | `UNUSED1Y.cpy` | Reserved / unused (80B) | **— (none)** | **Intentionally unmapped — reserved/unused; no behavior to migrate** (see §8) |
 
 ### 5.1 Field-Level Mapping: `CVTRA05Y` → `entity.Transaction` (posted `transactions`)
@@ -947,7 +947,7 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 
 | VSAM File (Copybook) | Access Pattern | Java Target | Repository Methods |
 |---|---|---|---|
-| `CUSTFILE` (`CVCUS01Y.cpy` / `CUSTREC.cpy`, RECLN 500, key `CUST-ID PIC 9(09)`) | keyed `READ` / `REWRITE` (`COACTVWC`, `COACTUPC`) · sequential key-order `READ` (`CBCUS01C`) @ `27d6c6f` | `repository.CustomerRepository` | `findById` (keyed `READ` by `CUST-ID`) · `save` (`REWRITE`, `COACTUPC` dual-record ACCOUNT+CUSTOMER atomic update, `@Version` optimistic lock) · `findAll(Sort)` / `findAll()` (`CBCUS01C` sequential master read in key order, consumed by `batch.readers.CustomerFileReader`) |
+| `CUSTFILE` (`CVCUS01Y.cpy` / `CUSTREC.cpy`, RECLN 500, key `CUST-ID PIC 9(09)`) | keyed `READ` / `REWRITE` (`COACTVWC`, `COACTUPC`) · sequential key-order `READ` (`CBCUS01C`) @ `27d6c6f` | `repository.CustomerRepository` | `findById` (keyed `READ` by `CUST-ID`) · `save` (`REWRITE`, `COACTUPC` dual-record ACCOUNT+CUSTOMER atomic update, `@Version` optimistic lock) · `findAll(Sort)` / `findAll()` (`CBCUS01C` sequential master read in key order, consumed by `batch.reader.CustomerItemReader`) |
 
 #### 7.1.3 USRSEC VSAM access paths → `UserRepository` methods
 
@@ -982,21 +982,21 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 
 | JCL Job | COBOL Driver | Java Target | Notes |
 |---|---|---|---|
-| `POSTTRAN.jcl` | `CBTRN02C.cbl` | `batch.jobs.DailyTransactionPostingJob` (+ `TransactionPostingProcessor`, `PostedTransactionWriter`, `RejectTransactionWriter`) | 4-stage validation cascade; condition codes → `JobExecutionDecider` |
-| `INTCALC.jcl` | `CBACT04C.cbl` | `batch.jobs.InterestCalculationJob` (+ `InterestProcessor`) | PARM date `2022071800` → `JobParameters`; `(bal×rate)/1200` `BigDecimal` HALF_EVEN |
-| `COMBTRAN.jcl` | (DFSORT/REPRO) | `batch.job.CombineTransactionsJobConfig` (+ `TransactionCombineComparator`) | DFSORT concat + sort by txn-id → Java `Comparator` (identical key/duplicate semantics) |
-| `TRANREPT.jcl` | `CBTRN03C.cbl` | `batch.jobs.TransactionReportJob` (+ `TransactionReportProcessor`) | Date-window report; XREF/TRANTYPE/TRANCATG enrichment; S3 output |
-| `CREASTMT.JCL` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `batch.jobs.StatementGenerationJob` (+ `StatementProcessor`, `StatementWriter`) | Text + HTML statements → S3 |
-| `PRTCATBL.jcl` | (category-balance print) | `batch.jobs.BatchPipelineOrchestrator` | Category-balance print step + overall sequencing / condition-code logic |
+| `POSTTRAN.jcl` | `CBTRN02C.cbl` | `batch.job.PostTransactionJobConfig` (+ `batch.processor.TransactionPostingProcessor`, `batch.writer.PostingResultWriter` → `PostedTransactionWriter` / `RejectTransactionWriter`) | 4-stage validation cascade; `ExitStatus("COMPLETED_WITH_REJECTS")` for RC=4 parity; condition codes → `JobExecutionDecider` |
+| `INTCALC.jcl` | `CBACT04C.cbl` | `batch.job.InterestCalculationJobConfig` (+ `batch.processor.InterestProcessor`) | PARM date `2022071800` (`yyyyMMddHH`) → validated `JobParameters` (`InterestJobParametersValidator`); `(bal×rate)/1200` `BigDecimal` HALF_EVEN |
+| `COMBTRAN.jcl` | (DFSORT/REPRO) | `batch.job.CombineTransactionsJobConfig` (+ `batch.processor.TransactionCombineComparator`) | DFSORT concat + sort by txn-id → Java `Comparator` (identical key/duplicate semantics) |
+| `TRANREPT.jcl` | `CBTRN03C.cbl` | `batch.job.TransactionReportJobConfig` (+ `batch.processor.TransactionReportProcessor`) | Date-window report (validated `reportStartDate`/`reportEndDate`, `ReportJobParametersValidator`); XREF/TRANTYPE/TRANCATG enrichment; S3 output |
+| `CREASTMT.JCL` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `batch.job.StatementJobConfig` (+ `batch.processor.StatementProcessor`, composite `ItemStreamWriter` → two `batch.writer.FixedWidthS3ItemWriter`) | Text (80B) + HTML (100B) statements → S3 |
+| `PRTCATBL.jcl` | (category-balance print) | `batch.job.BatchPipelineOrchestrator` | Category-balance 40B print + 50B signed-zoned backup; overall JCL-order sequencing + `COND` deciders |
 
 ### 7.3 Master-file reader verification jobs → reader beans
 
 | JCL Job | COBOL Driver | Java Target | Notes |
 |---|---|---|---|
-| `READACCT.jcl` | `CBACT01C.cbl` | `batch.readers.AccountFileReader` | Account master read/verify step |
-| `READCARD.jcl` | `CBACT02C.cbl` | `batch.readers.CardFileReader` | Card master read/verify step |
-| `READXREF.jcl` | `CBACT03C.cbl` | `batch.readers.CrossReferenceFileReader` | Xref read/verify step |
-| `READCUST.jcl` | `CBCUS01C.cbl` | `batch.readers.CustomerFileReader` | Customer master read/verify step |
+| `READACCT.jcl` | `CBACT01C.cbl` | `batch.reader.AccountItemReader` | Account master read/verify step |
+| `READCARD.jcl` | `CBACT02C.cbl` | `batch.reader.CardItemReader` | Card master read/verify step |
+| `READXREF.jcl` | `CBACT03C.cbl` | `batch.reader.CardXrefItemReader` | Xref read/verify step |
+| `READCUST.jcl` | `CBCUS01C.cbl` | `batch.reader.CustomerItemReader` | Customer master read/verify step |
 
 ### 7.4 GDG / report storage provisioning → LocalStack S3 + SQS
 
@@ -1004,7 +1004,7 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 |---|---|---|---|
 | `DEFGDGB.jcl` | Define GDG base | `localstack-init/init-aws.sh` | GDG generations → versioned S3 objects (3 buckets) |
 | `REPTFILE.jcl` | Report dataset (GDG) | `localstack-init/init-aws.sh` | `carddemo-batch-output` bucket |
-| `DALYREJS.jcl` | Daily rejects dataset (GDG) | `localstack-init/init-aws.sh` (+ `batch.writers.RejectTransactionWriter`) | Rejects object with reason trailers |
+| `DALYREJS.jcl` | Daily rejects dataset (GDG) | `localstack-init/init-aws.sh` (+ `batch.writer.RejectTransactionWriter`) | Rejects object with reason trailers |
 
 ### 7.5 CICS region / lifecycle / backup JCL → Spring Boot lifecycle (REFERENCE)
 
@@ -1013,7 +1013,7 @@ provisioning becomes LocalStack S3/SQS; CICS region lifecycle JCL maps to Spring
 | `CBADMCDJ.jcl` | CICS CSD admin | Spring Boot lifecycle (REFERENCE) | No direct target — bean/endpoint registration replaces CSD |
 | `OPENFIL.jcl` | Open CICS files | Application startup (REFERENCE) | Datasource/bean init replaces explicit file open |
 | `CLOSEFIL.jcl` | Close CICS files | Application shutdown (REFERENCE) | Graceful shutdown replaces explicit file close |
-| `TRANBKP.jcl` | Transaction backup | Scheduled backup / S3 (REFERENCE) | `@Scheduled` backup to S3 replaces dataset copy |
+| `TRANBKP.jcl` | Transaction backup (`STEP10 COND=(4,LT)`) | `batch.job.BatchPipelineOrchestrator.PostingReturnCodeDecider` → `categoryBalanceBackupStep` | `STEP10 COND=(4,LT)` gate: posting RC &lt; 4 runs the gated category-balance backup step (50B signed-zoned unload to S3); RC ≥ 4 stops the pipeline |
 
 ### 7.6 Build / compile procedures → Maven (REFERENCE)
 
@@ -1056,14 +1056,14 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
 | `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
 | `service.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |
-| `batch.processors.TransactionPostingProcessor` / `batch.writers.{PostedTransactionWriter,RejectTransactionWriter}` | `CBTRN02C.cbl` (+ `POSTTRAN` JCL) |
-| `batch.processors.InterestProcessor` | `CBACT04C.cbl` (+ `INTCALC` JCL) |
-| `batch.processor.TransactionCombineComparator` / `batch.job.CombineTransactionsJobConfig` | `COMBTRAN` JCL |
-| `batch.processors.TransactionReportProcessor` | `CBTRN03C.cbl` (+ `TRANREPT` JCL, `CVTRA07Y`) |
-| `batch.processors.StatementProcessor` / `batch.writers.StatementWriter` / `batch.readers.StatementFileService` | `CBSTM03A.CBL`, `CBSTM03B.CBL` (+ `CREASTMT` JCL, `COSTM01`) |
-| `batch.readers.{AccountFileReader,CardFileReader,CrossReferenceFileReader,CustomerFileReader,DailyTransactionReader}` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` |
-| `batch.jobs.BatchPipelineOrchestrator` | `PRTCATBL` JCL + overall pipeline sequencing |
-| `repository.TransactionRepository` | `TRANSACT` (`CVTRA05Y`) @ `27d6c6f`: keyed READ → `findById` (`COTRN01C`); WRITE → `save` (`COTRN02C`); STARTBR/READNEXT browse → `findAll(Pageable)` (`COTRN00C`); READPREV-to-end → `findTopByOrderByTranIdDesc` (`COTRN02C`); date window → `findByProcessingDateWindow` (`CBTRN03C`); by-card → `findByCardNumOrderByTranIdAsc` (`CBSTM03A`) |
+| `batch.job.PostTransactionJobConfig` / `batch.processor.TransactionPostingProcessor` / `batch.writer.{PostingResultWriter,PostedTransactionWriter,RejectTransactionWriter}` | `CBTRN02C.cbl` (+ `POSTTRAN` JCL) |
+| `batch.job.InterestCalculationJobConfig` / `batch.processor.InterestProcessor` | `CBACT04C.cbl` (+ `INTCALC` JCL) |
+| `batch.job.CombineTransactionsJobConfig` / `batch.processor.TransactionCombineComparator` | `COMBTRAN` JCL |
+| `batch.job.TransactionReportJobConfig` / `batch.processor.TransactionReportProcessor` | `CBTRN03C.cbl` (+ `TRANREPT` JCL, `CVTRA07Y`) |
+| `batch.job.StatementJobConfig` / `batch.processor.StatementProcessor` / `batch.reader.FileServiceReader` / `batch.writer.FixedWidthS3ItemWriter` | `CBSTM03A.CBL`, `CBSTM03B.CBL` (+ `CREASTMT` JCL, `COSTM01`) |
+| `batch.reader.{AccountItemReader,CardItemReader,CardXrefItemReader,CustomerItemReader,DailyTransactionItemReader}` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` |
+| `batch.job.BatchPipelineOrchestrator` | `PRTCATBL` JCL + overall pipeline sequencing (+ `TRANBKP STEP10 COND=(4,LT)` gate) |
+| `repository.TransactionRepository` | `TRANSACT` (`CVTRA05Y`) @ `27d6c6f`: keyed READ → `findById` (`COTRN01C`); WRITE → `save` (`COTRN02C`); unfiltered STARTBR/READNEXT browse → `findAll(Pageable)` (`COTRN00C`); positioned STARTBR-at-`TRAN-ID` browse for a numeric `TRNIDINI` filter → `findByTranIdGreaterThanEqual(String, Pageable)` (`COTRN00C`, D-048); READPREV-to-end → `findTopByOrderByTranIdDesc` (`COTRN02C`); date window → `findByProcessingDateWindow` (`CBTRN03C`); by-card → `findByCardNumOrderByTranIdAsc` (`CBSTM03A`) |
 | `entity.*` (11 entities) | `CVACT01Y`, `CVACT02Y`, `CVACT03Y`, `CVCUS01Y`/`CUSTREC`, `CVTRA05Y`, `CVTRA06Y`, `CVTRA01Y`, `CVTRA02Y`, `CVTRA03Y`, `CVTRA04Y`, `CSUSR01Y` |
 | `exception.*` + `GlobalExceptionHandler` | FILE STATUS codes + ABEND routines across all programs (`CSMSG02Y`) |
 

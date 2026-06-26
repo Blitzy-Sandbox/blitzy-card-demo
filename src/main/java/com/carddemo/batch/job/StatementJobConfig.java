@@ -79,16 +79,12 @@ import org.springframework.transaction.PlatformTransactionManager;
  *       delegate.</li>
  * </ul>
  *
- * <p>The {@code CREASTMT} {@code COND=(0,NE)} sequential chain collapses to this
- * single guarded step; cross-job condition-code sequencing is owned by the
- * pipeline orchestrator. The chunk commit interval is bound from
- * {@code carddemo.batch.chunk-size} through
- * {@link BatchConfig.BatchTuningProperties}, the statement bucket is bound from
- * {@link AwsConfig.AwsResourceProperties}, and the job is wired with the fluent
- * {@link JobBuilder} / {@link StepBuilder} API. The job is never auto-run on
- * startup ({@code spring.batch.job.enabled=false}); it is triggered explicitly.
- * The rationale for the reader selection, the {@code COND} collapse, and the
- * composite-writer split is recorded in {@code DECISION_LOG.md} (D-047).</p>
+ * <p>The chunk commit interval is bound from {@code carddemo.batch.chunk-size}
+ * through {@link BatchConfig.BatchTuningProperties}, the statement bucket is
+ * bound from {@link AwsConfig.AwsResourceProperties}, and the job is wired with
+ * the fluent {@link JobBuilder} / {@link StepBuilder} API. The job is not
+ * auto-run on startup ({@code spring.batch.job.enabled=false}); it is triggered
+ * explicitly by the pipeline orchestrator.</p>
  */
 @Configuration
 public class StatementJobConfig {

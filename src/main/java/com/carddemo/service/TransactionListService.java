@@ -20,6 +20,7 @@ import java.util.List;
 
 import com.carddemo.dto.TransactionDto;
 import com.carddemo.entity.Transaction;
+import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.TransactionRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -43,14 +44,25 @@ import org.springframework.transaction.annotation.Transactional;
  * server-side browse cursor or conversational state is retained.</p>
  *
  * <p>Records are read in {@code TRAN-ID} ascending order, reproducing the VSAM
- * key-sequenced browse order of the legacy {@code TRANSACT} dataset. An optional
- * card-number filter narrows the list to a single card's transactions; when it
- * is absent the full transaction set is browsed. An empty page (for example, a
- * page index beyond the available data) is a normal outcome and yields an
- * empty-row {@link TransactionDto.ListResponse} rather than an exception,
- * mirroring the legacy end-of-data screen behavior; a genuine lookup failure
- * surfaces as the repository's {@code DataAccessException}, which the centralized
- * exception handler translates.</p>
+ * key-sequenced browse order of the legacy {@code TRANSACT} dataset. The
+ * {@code COTRN00C} transaction-id filter ({@code TRNIDINI}) is honored exactly as
+ * the legacy paragraph {@code PROCESS-ENTER-KEY} edits it: a blank filter browses
+ * from the start of the dataset ({@code MOVE LOW-VALUES TO TRAN-ID}); a numeric
+ * filter positions the browse at the first key greater than or equal to it
+ * ({@code MOVE TRNIDINI TO TRAN-ID} then {@code STARTBR ... GTEQ}); and a
+ * non-numeric filter is rejected with the message {@value #TRAN_ID_NOT_NUMERIC_MESSAGE}
+ * ({@code COTRN00C} line&nbsp;214). An empty page (for example, a page index
+ * beyond the available data) is a normal outcome and yields an empty-row
+ * {@link TransactionDto.ListResponse} rather than an exception, mirroring the
+ * legacy end-of-data screen behavior; a genuine lookup failure surfaces as the
+ * repository's {@code DataAccessException}, which the centralized exception
+ * handler translates.</p>
+ *
+ * <p>The {@code COTRN00} row-selection edit ({@code 'Invalid selection. Valid
+ * value is S'}, {@code COTRN00C} line&nbsp;199) acts on the {@code SEL00nnI}
+ * terminal flags that drive an {@code XCTL} to the detail program
+ * {@code COTRN01C}; that navigation is realized by the distinct REST resource
+ * {@code GET /api/transactions/{id}}, so it has no field on this list contract.</p>
  *
  * <p>Monetary amounts are carried as {@link java.math.BigDecimal} end to end, so
  * the {@code TRAN-AMT PIC S9(09)V99} scale is preserved without floating-point
@@ -77,10 +89,24 @@ public class TransactionListService {
     private static final int DESCRIPTION_DISPLAY_WIDTH = 26;
 
     /**
+     * Width of the {@code TRAN-ID PIC X(16)} key. A shorter numeric filter is
+     * left-zero-padded to this width so it positions correctly within the
+     * sixteen-digit zero-padded {@code TRANSACT} key space.
+     */
+    private static final int TRAN_ID_KEY_WIDTH = 16;
+
+    /**
      * Entity property used to order the browse, equal to the {@code TRAN-ID}
      * primary key on which the legacy {@code TRANSACT} KSDS is sequenced.
      */
     private static final String ORDER_PROPERTY = "tranId";
+
+    /**
+     * Validation message emitted for a non-numeric transaction-id filter,
+     * reproduced verbatim from {@code COTRN00C} line&nbsp;214
+     * ({@code 'Tran ID must be Numeric ...'}).
+     */
+    private static final String TRAN_ID_NOT_NUMERIC_MESSAGE = "Tran ID must be Numeric ...";
 
     private final TransactionRepository transactionRepository;
 
@@ -94,94 +120,140 @@ public class TransactionListService {
     }
 
     /**
-     * Returns one page of transactions, optionally constrained to a single card.
+     * Returns one page of transactions, optionally positioned at a transaction-id
+     * filter.
      *
-     * <p>Behavior mirrors {@code COTRN00C} at commit {@code 27d6c6f}:</p>
+     * <p>Behavior mirrors {@code COTRN00C} paragraph {@code PROCESS-ENTER-KEY} at
+     * commit {@code 27d6c6f}:</p>
      * <ul>
-     *   <li>When {@code cardNumberFilter} is supplied, the card's transactions are
-     *       read in {@code TRAN-ID} ascending order and sliced to the requested
-     *       page (the {@code TRNX} card-scoped access path).</li>
-     *   <li>Otherwise the full {@code TRANSACT} dataset is browsed in
-     *       {@code TRAN-ID} ascending order, reproducing the VSAM key-sequenced
-     *       {@code STARTBR}/{@code READNEXT} browse.</li>
-     *   <li>Both paths page at {@value #PAGE_SIZE} rows, the ten-row
+     *   <li>A blank ({@code null}, empty, or whitespace) filter browses the full
+     *       {@code TRANSACT} dataset from the start in {@code TRAN-ID} ascending
+     *       order ({@code MOVE LOW-VALUES TO TRAN-ID}), reproducing the VSAM
+     *       key-sequenced {@code STARTBR}/{@code READNEXT} browse.</li>
+     *   <li>A numeric filter positions the browse at the first {@code TRAN-ID}
+     *       greater than or equal to it ({@code MOVE TRNIDINI TO TRAN-ID}, then
+     *       {@code STARTBR ... GTEQ}); the value is left-zero-padded to the
+     *       sixteen-character key width before positioning.</li>
+     *   <li>A non-numeric filter is rejected with a {@link ValidationException}
+     *       carrying {@value #TRAN_ID_NOT_NUMERIC_MESSAGE} ({@code COTRN00C}
+     *       line&nbsp;214), which the centralized handler maps to
+     *       {@code 400 Bad Request}.</li>
+     *   <li>Every path pages at {@value #PAGE_SIZE} rows, the ten-row
      *       {@code COTRN00} display array. A page index beyond the available data
      *       yields an empty row list (the legacy end-of-data outcome), never an
      *       exception.</li>
      * </ul>
      *
-     * @param cardNumberFilter the optional card number to scope the list to;
-     *                         {@code null} or blank browses all transactions
-     * @param pageNumber       the zero-based page index; negative values are
-     *                         clamped to the first page
+     * @param transactionIdFilter the optional {@code TRAN-ID} positioning filter;
+     *                            {@code null} or blank browses from the start, a
+     *                            numeric value positions the browse, and a
+     *                            non-numeric value is rejected
+     * @param pageNumber          the zero-based page index; negative values are
+     *                            clamped to the first page
      * @return the requested page mapped to a {@link TransactionDto.ListResponse}
+     * @throws ValidationException when {@code transactionIdFilter} is supplied but
+     *                             not numeric
      */
     @Transactional(readOnly = true)
-    public TransactionDto.ListResponse listTransactions(String cardNumberFilter, int pageNumber) {
+    public TransactionDto.ListResponse listTransactions(String transactionIdFilter, int pageNumber) {
         int safePage = Math.max(pageNumber, 0);
-        String cardFilter = normalizeFilter(cardNumberFilter);
+        String filter = normalizeFilter(transactionIdFilter);
+        Pageable pageable =
+                PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY));
 
         List<Transaction> transactions;
-        if (cardFilter != null) {
-            transactions = pageCardTransactions(cardFilter, safePage);
-        } else {
-            Pageable pageable =
-                    PageRequest.of(safePage, PAGE_SIZE, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY));
+        String echoedFilter;
+        if (filter == null) {
+            // TRNIDINI = SPACES OR LOW-VALUES -> MOVE LOW-VALUES TO TRAN-ID: browse from start.
             Page<Transaction> page = transactionRepository.findAll(pageable);
             transactions = page.getContent();
+            echoedFilter = null;
+        } else {
+            // ELSE IF TRNIDINI IS NUMERIC -> position browse; otherwise reject.
+            if (!isNumeric(filter)) {
+                throw new ValidationException(TRAN_ID_NOT_NUMERIC_MESSAGE);
+            }
+            Page<Transaction> page =
+                    transactionRepository.findByTranIdGreaterThanEqual(positioningKey(filter), pageable);
+            transactions = page.getContent();
+            echoedFilter = filter;
         }
 
-        return buildResponse(safePage, transactions);
+        return buildResponse(safePage, echoedFilter, transactions);
     }
 
     /**
-     * Normalizes the optional card-number filter.
+     * Normalizes the optional transaction-id filter.
      *
-     * @param cardNumberFilter the raw filter value
-     * @return the trimmed card number when supplied, or {@code null} when the
-     *         filter is absent (null or blank)
+     * @param transactionIdFilter the raw filter value
+     * @return the trimmed filter when supplied, or {@code null} when the filter is
+     *         absent (null or blank), mirroring the {@code TRNIDINI = SPACES OR
+     *         LOW-VALUES} test
      */
-    private static String normalizeFilter(String cardNumberFilter) {
-        if (cardNumberFilter == null) {
+    private static String normalizeFilter(String transactionIdFilter) {
+        if (transactionIdFilter == null) {
             return null;
         }
-        String trimmed = cardNumberFilter.trim();
+        String trimmed = transactionIdFilter.trim();
         return trimmed.isEmpty() ? null : trimmed;
     }
 
     /**
-     * Reads a single card's transactions in {@code TRAN-ID} ascending order and
-     * returns the slice for the requested page.
+     * Reports whether the supplied filter is composed exclusively of ASCII digits,
+     * reproducing the COBOL {@code TRNIDINI IS NUMERIC} class test (which accepts
+     * only the characters {@code '0'} through {@code '9'}).
      *
-     * @param cardNumber the card number to scope the read to
-     * @param pageNumber the zero-based page index
-     * @return the transactions on the requested page, or an empty list when the
-     *         page lies beyond the available data
+     * @param filter the non-null, non-empty trimmed filter
+     * @return {@code true} when every character is an ASCII digit
      */
-    private List<Transaction> pageCardTransactions(String cardNumber, int pageNumber) {
-        List<Transaction> ordered = transactionRepository.findByCardNumOrderByTranIdAsc(cardNumber);
-        long fromIndex = (long) pageNumber * PAGE_SIZE;
-        if (fromIndex >= ordered.size()) {
-            return List.of();
+    private static boolean isNumeric(String filter) {
+        for (int i = 0; i < filter.length(); i++) {
+            char c = filter.charAt(i);
+            if (c < '0' || c > '9') {
+                return false;
+            }
         }
-        int start = (int) fromIndex;
-        int end = Math.min(start + PAGE_SIZE, ordered.size());
-        return ordered.subList(start, end);
+        return true;
     }
 
     /**
-     * Builds the list response from the resolved transactions and the page index.
+     * Builds the sixteen-character {@code TRAN-ID} positioning key from a numeric
+     * filter, left-zero-padding shorter values so they align with the zero-padded
+     * {@code TRANSACT} key space. A value already at least sixteen characters wide
+     * is used unchanged, so it positions at or past the end of the key space.
      *
-     * @param pageNumber   the zero-based page index being returned
-     * @param transactions the transactions on the current page
+     * @param numericFilter the validated, digits-only filter
+     * @return the positioning key for {@code STARTBR ... GTEQ}
+     */
+    private static String positioningKey(String numericFilter) {
+        if (numericFilter.length() >= TRAN_ID_KEY_WIDTH) {
+            return numericFilter;
+        }
+        StringBuilder key = new StringBuilder(TRAN_ID_KEY_WIDTH);
+        for (int i = numericFilter.length(); i < TRAN_ID_KEY_WIDTH; i++) {
+            key.append('0');
+        }
+        key.append(numericFilter);
+        return key.toString();
+    }
+
+    /**
+     * Builds the list response from the resolved transactions, the page index, and
+     * the echoed transaction-id filter.
+     *
+     * @param pageNumber          the zero-based page index being returned
+     * @param transactionIdFilter the filter to echo ({@code TRNIDIN}), or
+     *                            {@code null} for the unfiltered browse
+     * @param transactions        the transactions on the current page
      * @return the populated {@link TransactionDto.ListResponse}
      */
-    private static TransactionDto.ListResponse buildResponse(int pageNumber, List<Transaction> transactions) {
+    private static TransactionDto.ListResponse buildResponse(int pageNumber, String transactionIdFilter,
+            List<Transaction> transactions) {
         List<TransactionDto.TransactionSummary> summaries = new ArrayList<>(transactions.size());
         for (Transaction transaction : transactions) {
             summaries.add(toSummary(transaction));
         }
-        return new TransactionDto.ListResponse(Integer.toString(pageNumber), null, summaries);
+        return new TransactionDto.ListResponse(Integer.toString(pageNumber), transactionIdFilter, summaries);
     }
 
     /**

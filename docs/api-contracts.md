@@ -330,10 +330,14 @@ Entity` (well-formed request that violates a business rule).
 
 - **Purpose.** List transactions. Replaces transaction-list screen (**CT00**, `COTRN00C`).
 - **Auth.** USER.
-- **Query params.** `page` (0-based, default `0`), `size` (default `10`), optional `cardNumber`
-  (16) / `accountId` (11) filters.
+- **Query params.** `page` (0-based, default `0`; the page size is fixed at the ten-row `COTRN00`
+  display array inside the service) and an optional `transactionId` filter (`TRNIDIN`). A blank
+  `transactionId` browses from the start; a numeric value positions the browse at the first
+  transaction id greater than or equal to it (`MOVE TRNIDINI TO TRAN-ID`, `STARTBR … GTEQ`); a
+  non-numeric value is rejected with `400 Bad Request` and the message `Tran ID must be Numeric ...`
+  (`COTRN00C` line 214).
 - **Response — `Page<TransactionDto>`.**
-- **Status codes.** `200 OK`, `401 Unauthorized`.
+- **Status codes.** `200 OK`, `400 Bad Request` (non-numeric `transactionId`), `401 Unauthorized`.
 
 #### `GET /api/transactions/{id}`
 

@@ -21,12 +21,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.carddemo.batch.job.BatchPipelineOrchestrator;
 import com.carddemo.batch.job.InterestCalculationJobConfig;
 
+import java.lang.management.ManagementFactory;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.MemoryType;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -34,6 +38,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
@@ -113,6 +120,9 @@ import software.amazon.awssdk.services.s3.model.S3Object;
 @DisplayName("BatchPipeline E2E IT — orchestrated carddemoBatchPipelineJob vs real PostgreSQL + LocalStack (Gates 1/4/5)")
 public class BatchPipelineE2EIT extends AbstractIntegrationIT {
 
+    /** Emits the Gate 3 performance baseline as structured, log-safe metrics (no sensitive data). */
+    private static final Logger LOGGER = LoggerFactory.getLogger(BatchPipelineE2EIT.class);
+
     // ---------------------------------------------------------------------
     // Application tables (mutated/asserted via the inherited JdbcTemplate)
     // ---------------------------------------------------------------------
@@ -181,6 +191,34 @@ public class BatchPipelineE2EIT extends AbstractIntegrationIT {
     private static final String BACKUP_OBJECT_PREFIX = "category-balance-backup/TCATBAL-BKUP-";
 
     // ---------------------------------------------------------------------
+    // PRTCATBL byte geometry (CVTRA01Y RECLN 50 / app/jcl/PRTCATBL.jcl). The
+    // orchestrator's own width/offset constants are package-private, so the
+    // contract is repeated here exactly as the production formatter emits it.
+    // ---------------------------------------------------------------------
+    /** STEP10R DFSORT formatted print line ({@code LRECL=40}). */
+    private static final int PRINT_RECORD_WIDTH = 40;
+    /** STEP05R IDCAMS REPRO backup unload line ({@code LRECL=50}). */
+    private static final int BACKUP_RECORD_WIDTH = 50;
+    /** Composite-key width preceding the balance in the backup image: acct(11)+type(2)+cat(4). */
+    private static final int TCATBAL_KEY_WIDTH = 17;
+    /** Offset of the 11-character signed-zoned balance inside the backup image. */
+    private static final int BACKUP_BALANCE_OFFSET = TCATBAL_KEY_WIDTH;
+    /** Zoned width of {@code TRAN-CAT-BAL PIC S9(09)V99} (9 integer + 2 fraction digits). */
+    private static final int BACKUP_BALANCE_WIDTH = 11;
+    /** Width of the {@code TTTTTTTTT.TT} magnitude mask in the print line. */
+    private static final int PRINT_BALANCE_WIDTH = 12;
+
+    /** Trailing-byte overpunch for a non-negative low-order digit 0-9 ({@code '{'}, {@code 'A'-'I'}). */
+    private static final char[] POSITIVE_OVERPUNCH =
+            {'{', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'};
+    /** Trailing-byte overpunch for a negative low-order digit 0-9 ({@code '}'}, {@code 'J'-'R'}). */
+    private static final char[] NEGATIVE_OVERPUNCH =
+            {'}', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R'};
+
+    /** Number of representative clean transactions staged for the Gate 3 throughput baseline. */
+    private static final int GATE3_BATCH_SIZE = 25;
+
+    // ---------------------------------------------------------------------
     // Reject reason codes + byte-exact reason text (CBTRN02C cascade)
     // ---------------------------------------------------------------------
     private static final String CODE_CARD_NOT_FOUND = "0100";
@@ -219,6 +257,16 @@ public class BatchPipelineE2EIT extends AbstractIntegrationIT {
     private static final String DANGLING_CARD = "7000000000000001";
     private static final long DANGLING_ACCT_ID = 70_000_000_001L;
     private static final long DANGLING_CUST_ID = 700_000_001L;
+
+    /**
+     * Test-owned account id used to stage signed category balances for the PRTCATBL
+     * contract. {@code transaction_category_balance} has no foreign key, and the
+     * backup/print steps read only the {@code TCATBALF} record (no account or
+     * cross-reference resolution), so this id needs no master/xref rows.
+     */
+    private static final long TCATBAL_TEST_ACCT_ID = 79_000_000_001L;
+    /** Transaction-type code used for the test-owned signed category balances. */
+    private static final String TCATBAL_TEST_TYPE = "PU";
 
     /**
      * Seeded account 1 drives the deterministic interest assertion: it owns a single
@@ -623,6 +671,161 @@ public class BatchPipelineE2EIT extends AbstractIntegrationIT {
         return new BigDecimal(value).setScale(2, RoundingMode.HALF_EVEN);
     }
 
+    // =====================================================================
+    // PRTCATBL print / backup byte-contract helpers
+    // =====================================================================
+
+    /**
+     * Asserts that the PRTCATBL print and backup objects honour their COBOL byte
+     * contracts: exactly one object of each kind, every print line
+     * {@value #PRINT_RECORD_WIDTH} bytes and every backup line
+     * {@value #BACKUP_RECORD_WIDTH} bytes, both emitted in ascending composite-key
+     * order, and every backup balance carrying a valid trailing-byte overpunch sign
+     * (signed-zoned {@code PIC S9(09)V99}).
+     */
+    private void assertCategoryBalanceContractWellFormed() {
+        List<String> backupKeys = keysWithPrefix(outputBucket(), BACKUP_OBJECT_PREFIX);
+        assertThat(backupKeys).as("the COND=(4,LT) backup step uploaded exactly one unload object").hasSize(1);
+        List<String> backupLines = fixedWidthLines(readObjectBytes(outputBucket(), backupKeys.get(0)));
+        assertThat(backupLines).as("the backup unload is not empty").isNotEmpty();
+        for (String line : backupLines) {
+            assertThat(line.length()).as("every backup line is exactly 50 bytes").isEqualTo(BACKUP_RECORD_WIDTH);
+            String balance = line.substring(BACKUP_BALANCE_OFFSET, BACKUP_BALANCE_OFFSET + BACKUP_BALANCE_WIDTH);
+            assertThat(isValidSignedZonedBalance(balance))
+                    .as("backup balance '%s' is a valid signed-zoned field with an overpunch sign", balance)
+                    .isTrue();
+        }
+        assertThat(linesAreAscending(backupLines))
+                .as("backup lines are in ascending composite-key order").isTrue();
+
+        List<String> printKeys = keysWithPrefix(outputBucket(), PRINT_OBJECT_PREFIX);
+        assertThat(printKeys).as("the PRTCATBL print step uploaded exactly one print object").hasSize(1);
+        List<String> printLines = fixedWidthLines(readObjectBytes(outputBucket(), printKeys.get(0)));
+        assertThat(printLines).as("the print output is not empty").isNotEmpty();
+        for (String line : printLines) {
+            assertThat(line.length()).as("every print line is exactly 40 bytes").isEqualTo(PRINT_RECORD_WIDTH);
+        }
+        assertThat(linesAreAscending(printLines))
+                .as("print lines are in ascending composite-key order").isTrue();
+    }
+
+    /**
+     * Returns the 11-character signed-zoned balance segment of the backup line whose
+     * composite key matches the supplied account/type/category.
+     */
+    private String backupBalanceSegment(List<String> backupLines, long acctId, String type, int cat) {
+        String keyPrefix = String.format(Locale.ROOT, "%011d%s%04d", acctId, type, cat);
+        String line = backupLines.stream()
+                .filter(candidate -> candidate.startsWith(keyPrefix))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no backup line for key " + keyPrefix));
+        return line.substring(BACKUP_BALANCE_OFFSET, BACKUP_BALANCE_OFFSET + BACKUP_BALANCE_WIDTH);
+    }
+
+    /**
+     * Returns the 12-character {@code TTTTTTTTT.TT} magnitude segment of the print
+     * line whose composite key matches the supplied account/type/category. The print
+     * line separates its fields with single blanks (the DFSORT {@code X} positions).
+     */
+    private String printBalanceSegment(List<String> printLines, long acctId, String type, int cat) {
+        String keyPrefix = String.format(Locale.ROOT, "%011d %s %04d ", acctId, type, cat);
+        String line = printLines.stream()
+                .filter(candidate -> candidate.startsWith(keyPrefix))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no print line for key " + keyPrefix));
+        return line.substring(keyPrefix.length(), keyPrefix.length() + PRINT_BALANCE_WIDTH);
+    }
+
+    /** Returns {@code true} when the lines are in non-decreasing lexical order. */
+    private static boolean linesAreAscending(List<String> lines) {
+        for (int i = 1; i < lines.size(); i++) {
+            if (lines.get(i - 1).compareTo(lines.get(i)) > 0) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
+     * Returns {@code true} when {@code segment} is a valid 11-character signed-zoned
+     * {@code PIC S9(09)V99} field: ten leading digits and a trailing overpunch byte
+     * drawn from either the positive or the negative sign set.
+     */
+    private static boolean isValidSignedZonedBalance(String segment) {
+        if (segment.length() != BACKUP_BALANCE_WIDTH) {
+            return false;
+        }
+        for (int i = 0; i < BACKUP_BALANCE_WIDTH - 1; i++) {
+            if (!Character.isDigit(segment.charAt(i))) {
+                return false;
+            }
+        }
+        return isOverpunch(segment.charAt(BACKUP_BALANCE_WIDTH - 1));
+    }
+
+    /** Returns {@code true} when {@code c} is a zoned-decimal overpunch sign byte. */
+    private static boolean isOverpunch(char c) {
+        for (char positive : POSITIVE_OVERPUNCH) {
+            if (positive == c) {
+                return true;
+            }
+        }
+        for (char negative : NEGATIVE_OVERPUNCH) {
+            if (negative == c) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Removes any test-owned category-balance rows for the given account (idempotent). */
+    private void deleteTestOwnedCategoryBalances(long acctId) {
+        jdbcTemplate.update("DELETE FROM " + TCATBAL_TABLE + " WHERE acct_id = ?", acctId);
+    }
+
+    /**
+     * Launches a single named step of the orchestrated pipeline in isolation through a
+     * freshly wired {@link JobLauncherTestUtils}. The master job is a {@code FlowJob}
+     * (a {@code StepLocator}), so its steps can be resolved and run individually with a
+     * unique {@code run.id}.
+     *
+     * @param stepName the step bean name to launch
+     * @return the resulting job execution
+     */
+    private JobExecution launchStepInPipeline(String stepName) {
+        JobLauncherTestUtils utils = new JobLauncherTestUtils();
+        utils.setJobLauncher(jobLauncher);
+        utils.setJobRepository(jobRepository);
+        utils.setJob(pipelineJob);
+        return utils.launchStep(stepName, new JobParametersBuilder()
+                .addLong("run.id", RUN_ID_SEQUENCE.incrementAndGet())
+                .toJobParameters());
+    }
+
+    // =====================================================================
+    // Gate 3 performance-capture helpers
+    // =====================================================================
+
+    /** Resets the heap memory pools' peak-usage counters so the next measure reflects one run window. */
+    private static void resetHeapPeakUsage() {
+        for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+            if (pool.getType() == MemoryType.HEAP) {
+                pool.resetPeakUsage();
+            }
+        }
+    }
+
+    /** Returns the sum of the peak used bytes across all heap memory pools. */
+    private static long peakHeapUsageBytes() {
+        long peak = 0L;
+        for (MemoryPoolMXBean pool : ManagementFactory.getMemoryPoolMXBeans()) {
+            if (pool.getType() == MemoryType.HEAP) {
+                peak += pool.getPeakUsage().getUsed();
+            }
+        }
+        return peak;
+    }
+
 
     // =====================================================================
     // Tests
@@ -709,11 +912,10 @@ public class BatchPipelineE2EIT extends AbstractIntegrationIT {
             assertThat(line.length()).as("every report line is exactly 133 bytes").isEqualTo(REPORT_RECORD_WIDTH);
         }
 
-        // The backup gate ran and the print step wrote its category-balance objects.
-        assertThat(keysWithPrefix(outputBucket(), BACKUP_OBJECT_PREFIX))
-                .as("the COND=(4,LT) backup step uploaded its unload").isNotEmpty();
-        assertThat(keysWithPrefix(outputBucket(), PRINT_OBJECT_PREFIX))
-                .as("the PRTCATBL print step uploaded its formatted output").isNotEmpty();
+        // The backup gate ran and the print step wrote its category-balance objects;
+        // both honour the PRTCATBL byte contract (40-byte magnitude print line and
+        // 50-byte signed-zoned backup image), in ascending composite-key order.
+        assertCategoryBalanceContractWellFormed();
 
         // The statement leg wrote both presentations to the statements bucket.
         assertThat(keysWithPrefix(statementBucket(), STATEMENT_TEXT_PREFIX))
@@ -1077,9 +1279,121 @@ public class BatchPipelineE2EIT extends AbstractIntegrationIT {
             }
         }
 
-        // --- Category-balance print contract: the PRTCATBL object exists ---
-        assertThat(keysWithPrefix(outputBucket(), PRINT_OBJECT_PREFIX))
-                .as("the PRTCATBL category-balance print object was produced").isNotEmpty();
+        // --- Category-balance print/backup contract: 40-byte magnitude print line
+        //     and 50-byte signed-zoned backup image, in ascending composite-key order ---
+        assertCategoryBalanceContractWellFormed();
+    }
+
+    /**
+     * Proves the PRTCATBL print and backup steps preserve the signed-zoned overpunch
+     * sign of {@code TRAN-CAT-BAL PIC S9(09)V99} — the CP6 byte-equivalence defect.
+     *
+     * <p>Three test-owned category balances of known sign and magnitude (positive,
+     * zero, negative) are staged on an account with no master row, then the
+     * {@code categoryBalanceBackupStep} (STEP05R IDCAMS REPRO unload) and
+     * {@code printCategoryBalanceStep} (STEP10R DFSORT print) are launched in isolation
+     * against the REAL PostgreSQL + LocalStack backends. The 50-byte backup image must
+     * encode the sign in the trailing balance byte (positive {@code 12345.67} -&gt;
+     * {@code 'G'}, zero -&gt; {@code '{'}, negative {@code 12345.67} -&gt; {@code 'P'}),
+     * while the 40-byte print line renders the magnitude only (the negative and
+     * positive rows produce identical {@code 000012345.67} text).</p>
+     */
+    @Test
+    @DisplayName("PRTCATBL backup preserves the signed-zoned overpunch for negative balances; the print drops the sign")
+    void categoryBalanceBackupPreservesSignedZonedOverpunchForNegativeBalances() {
+        deleteTestOwnedCategoryBalances(TCATBAL_TEST_ACCT_ID);
+        insertTransactionCategoryBalance(TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 1, scaled("12345.67"));
+        insertTransactionCategoryBalance(TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 2, scaled("0.00"));
+        insertTransactionCategoryBalance(TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 3, scaled("-12345.67"));
+        try {
+            // --- STEP05R backup unload (raw IDCAMS REPRO image, signed-zoned balance) ---
+            JobExecution backupExecution = launchStepInPipeline(STEP_BACKUP);
+            assertThat(backupExecution.getStatus())
+                    .as("the category-balance backup step completes").isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> backupKeys = keysWithPrefix(outputBucket(), BACKUP_OBJECT_PREFIX);
+            assertThat(backupKeys).as("the backup step wrote exactly one unload object").hasSize(1);
+            List<String> backupLines = fixedWidthLines(readObjectBytes(outputBucket(), backupKeys.get(0)));
+            for (String line : backupLines) {
+                assertThat(line.length()).as("every backup line is exactly 50 bytes").isEqualTo(BACKUP_RECORD_WIDTH);
+            }
+            assertThat(linesAreAscending(backupLines)).as("backup lines are in ascending key order").isTrue();
+
+            assertThat(backupBalanceSegment(backupLines, TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 1))
+                    .as("a positive balance keeps a positive overpunch on the trailing byte")
+                    .isEqualTo("0000123456G");
+            assertThat(backupBalanceSegment(backupLines, TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 2))
+                    .as("a zero balance encodes the positive-zero overpunch")
+                    .isEqualTo("0000000000{");
+            assertThat(backupBalanceSegment(backupLines, TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 3))
+                    .as("a negative balance encodes a negative overpunch (the CP6 byte-equivalence defect)")
+                    .isEqualTo("0000123456P");
+
+            // --- STEP10R formatted print (DFSORT EDIT magnitude, sign dropped) ---
+            JobExecution printExecution = launchStepInPipeline(STEP_PRINT);
+            assertThat(printExecution.getStatus())
+                    .as("the category-balance print step completes").isEqualTo(BatchStatus.COMPLETED);
+
+            List<String> printKeys = keysWithPrefix(outputBucket(), PRINT_OBJECT_PREFIX);
+            assertThat(printKeys).as("the print step wrote exactly one print object").hasSize(1);
+            List<String> printLines = fixedWidthLines(readObjectBytes(outputBucket(), printKeys.get(0)));
+            for (String line : printLines) {
+                assertThat(line.length()).as("every print line is exactly 40 bytes").isEqualTo(PRINT_RECORD_WIDTH);
+            }
+            assertThat(printBalanceSegment(printLines, TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 3))
+                    .as("the print line drops the sign and shows the magnitude")
+                    .isEqualTo("000012345.67");
+            assertThat(printBalanceSegment(printLines, TCATBAL_TEST_ACCT_ID, TCATBAL_TEST_TYPE, 1))
+                    .as("the positive row renders the same magnitude as the negative row")
+                    .isEqualTo("000012345.67");
+        } finally {
+            deleteTestOwnedCategoryBalances(TCATBAL_TEST_ACCT_ID);
+        }
+    }
+
+    /**
+     * Gate 3 performance baseline. A representative batch of clean transactions is
+     * driven through the full orchestrated pipeline against the REAL PostgreSQL +
+     * LocalStack backends, and the run's elapsed time, records processed,
+     * throughput (records/sec), and peak heap usage are captured and emitted as a
+     * single structured, log-safe metrics line. The capture is asserted (not silently
+     * skipped) so the Gate 3 evidence is reproducible before the FINAL gate harness.
+     */
+    @Test
+    @DisplayName("Gate 3: the full pipeline run captures an elapsed/throughput/peak-memory baseline (log-safe)")
+    void fullPipelineCapturesGate3PerformanceBaseline() throws Exception {
+        for (int i = 0; i < GATE3_BATCH_SIZE; i++) {
+            insertDailyTransaction(nextTranId(), "01", 1, SMALL_AMOUNT, CLEAN_CARD, IN_WINDOW_ORIG_DATE);
+        }
+
+        resetHeapPeakUsage();
+        long startNanos = System.nanoTime();
+        JobExecution execution = launch(pipelineJob, params(INTEREST_PARM_DATE, WIDE_WINDOW_START, WIDE_WINDOW_END));
+        long elapsedNanos = System.nanoTime() - startNanos;
+
+        assertThat(execution.getStatus())
+                .as("the benchmarked pipeline run completes end-to-end").isEqualTo(BatchStatus.COMPLETED);
+
+        long recordsProcessed = execution.getStepExecutions().stream()
+                .mapToLong(StepExecution::getReadCount).sum();
+        double elapsedMillis = elapsedNanos / 1_000_000.0;
+        double elapsedSeconds = elapsedNanos / 1_000_000_000.0;
+        double recordsPerSecond = elapsedSeconds > 0 ? recordsProcessed / elapsedSeconds : 0.0;
+        long peakHeapBytes = peakHeapUsageBytes();
+
+        // Log-safe Gate 3 baseline evidence: pure metrics, no sensitive data.
+        LOGGER.info("GATE3 baseline pipeline={} records={} elapsedMs={} recordsPerSec={} peakHeapBytes={}",
+                BatchPipelineOrchestrator.JOB_NAME,
+                recordsProcessed,
+                String.format(Locale.ROOT, "%.1f", elapsedMillis),
+                String.format(Locale.ROOT, "%.2f", recordsPerSecond),
+                peakHeapBytes);
+
+        assertThat(recordsProcessed)
+                .as("the pipeline processed at least the staged batch").isGreaterThanOrEqualTo(GATE3_BATCH_SIZE);
+        assertThat(elapsedNanos).as("a positive elapsed time was captured").isPositive();
+        assertThat(recordsPerSecond).as("a positive throughput was captured").isGreaterThan(0.0);
+        assertThat(peakHeapBytes).as("a positive peak-heap figure was captured").isPositive();
     }
 }
 

@@ -19,6 +19,8 @@ package com.carddemo.repository;
 import com.carddemo.entity.Transaction;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -45,13 +47,21 @@ import org.springframework.stereotype.Repository;
  *   <li>{@code WRITE} of a posted transaction (program {@code COTRN02C} add and
  *       the batch posting engine) &rarr; inherited
  *       {@link JpaRepository#save(Object)}.</li>
- *   <li>{@code STARTBR}/{@code READNEXT}/{@code READPREV} browse in
- *       {@code TRAN-ID} order (program {@code COTRN00C} list, PF7/PF8
- *       navigation) &rarr; inherited
+ *   <li>Unfiltered {@code STARTBR}/{@code READNEXT}/{@code READPREV} browse in
+ *       {@code TRAN-ID} order (program {@code COTRN00C} list with a blank
+ *       {@code TRNIDINI} filter, PF7/PF8 navigation) &rarr; inherited
  *       {@link JpaRepository#findAll(org.springframework.data.domain.Pageable)}
  *       with a caller-supplied {@code Sort.by("tranId")} to preserve the VSAM
  *       browse order; no dedicated finder is declared for the unfiltered
  *       list.</li>
+ *   <li>Positioned {@code STARTBR}-at-{@code TRAN-ID} browse (program
+ *       {@code COTRN00C} list with a numeric {@code TRNIDINI} filter:
+ *       {@code MOVE TRNIDINI TO TRAN-ID}, {@code EXEC CICS STARTBR
+ *       DATASET(TRANSACT) RIDFLD(TRAN-ID) GTEQ}, then {@code READNEXT}) &rarr;
+ *       {@link #findByTranIdGreaterThanEqual(String, Pageable)}, which positions
+ *       the key-sequenced browse at the first {@code TRAN-ID} greater than or
+ *       equal to the supplied key and returns the requested page in the
+ *       caller-supplied {@code Sort.by("tranId")} order.</li>
  *   <li>{@code STARTBR}+{@code READPREV}-to-end "find highest existing
  *       {@code TRAN-ID}" (program {@code COTRN02C}, used to auto-generate the
  *       next identifier) &rarr; {@link #findTopByOrderByTranIdDesc()}.</li>
@@ -82,6 +92,30 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         never {@code null}
      */
     List<Transaction> findByCardNumOrderByTranIdAsc(String cardNum);
+
+    /**
+     * Returns one page of transactions whose {@code TRAN-ID} is greater than or
+     * equal to the supplied key, in the order carried by {@code pageable}.
+     *
+     * <p>Reproduces the positioned browse of the {@code COTRN00C} list screen
+     * ({@code CT00}) when a numeric {@code TRNIDINI} filter is supplied:
+     * {@code MOVE TRNIDINI OF COTRN0AI TO TRAN-ID} followed by
+     * {@code EXEC CICS STARTBR DATASET(TRANSACT) RIDFLD(TRAN-ID)} with the
+     * implied {@code GTEQ} positioning and {@code READNEXT} forward read. The
+     * derived keyword {@code GreaterThanEqual} on the {@code TranId} property
+     * binds to the entity {@code @Id} field {@code tranId}
+     * ({@code TRAN-ID PIC X(16)}); the page index, size (the ten-row
+     * {@code COTRN00} display array), and {@code Sort.by("tranId")} ascending
+     * ordering are supplied by the caller through {@code pageable}, so the VSAM
+     * key-sequenced browse order is preserved without a server-side cursor.</p>
+     *
+     * @param tranId   the inclusive lower-bound {@code TRAN-ID} positioning key
+     *                 (sixteen-character, the legacy {@code STARTBR} {@code RIDFLD})
+     * @param pageable the page index, size, and {@code tranId} sort to apply
+     * @return the requested page of transactions positioned at or after
+     *         {@code tranId}, never {@code null}
+     */
+    Page<Transaction> findByTranIdGreaterThanEqual(String tranId, Pageable pageable);
 
     /**
      * Returns the single highest-keyed transaction (maximum {@code TRAN-ID}),
