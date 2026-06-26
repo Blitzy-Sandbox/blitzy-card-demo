@@ -130,7 +130,12 @@ class RepositoryPersistenceIT {
         assertThat(cardRepository.count()).isPositive();
         assertThat(cardXrefRepository.count()).isPositive();
         assertThat(customerRepository.count()).isPositive();
-        assertThat(dailyTransactionRepository.count()).isPositive();
+        // daily_transaction is the unposted posting-staging input (CVTRA06Y): the Flyway V3
+        // seed populates master/reference tables only, so this table is queryable but starts
+        // EMPTY. dailytran.txt is loaded as batch INPUT by the POSTTRAN job IT, not by Flyway.
+        assertThat(dailyTransactionRepository.count())
+                .as("staging table is queryable and intentionally not seeded")
+                .isZero();
         assertThat(transactionTypeRepository.count()).isPositive();
         assertThat(userRepository.count()).isPositive();
     }
