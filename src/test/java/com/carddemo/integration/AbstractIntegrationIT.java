@@ -125,8 +125,9 @@ import java.util.regex.Pattern;
  * <h2>Data isolation</h2>
  * Flyway&nbsp;V3 seeds the reference / master tables (accounts, cards, card_xref,
  * customers, disclosure_group, transaction_category_balance, transaction_category,
- * transaction_type and the seeded users {@code ADMIN001}/{@code USER0001}), while the
- * {@code transactions} and {@code daily_transaction} tables start empty. A mutating IT
+ * transaction_type, the seeded users {@code ADMIN001}/{@code USER0001}) and the
+ * {@code daily_transaction} staging feed (300 rows from {@code dailytran.txt}), while the
+ * posted {@code transactions} table starts empty. A mutating IT
  * should keep the shared data deterministic by either annotating the test
  * {@code @Transactional} (Spring rolls the test transaction back) or cleaning up
  * explicitly. Batch-job ITs <strong>cannot</strong> be {@code @Transactional} — the job

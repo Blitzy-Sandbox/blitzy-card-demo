@@ -54,12 +54,12 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       {@code app/jcl/CUSTFILE.jcl}) &rarr; {@code findAll(Sort.by("custId"))}.</li>
  * </ul>
  *
- * <h2>Why the SSN assertions matter</h2>
+ * <h2>SSN fixed-width preservation</h2>
  * COBOL {@code CUST-SSN PIC 9(09)} is migrated to a fixed-width {@code CHAR(9)}
  * {@link String} (never a numeric type). Several seeded SSNs begin with {@code 0}
- * (for example customer&nbsp;1 = {@code 020973888}); a numeric mapping would silently
- * drop those leading zeros and corrupt the value. These tests are the regression guard
- * that the leading zero — and the full nine-character width — survives every round-trip.
+ * (for example customer&nbsp;1 = {@code 020973888}); a numeric mapping would drop those
+ * leading zeros. These tests assert the leading zero and the full nine-character width
+ * survive every round-trip.
  *
  * <h2>Optimistic-locking parity</h2>
  * The {@link Customer} {@code @Version} column reproduces the COBOL re-read-and-compare
@@ -80,7 +80,7 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
  *       {@link #update_seededCustomerField_incrementsVersion()});</li>
  *   <li>tests that must observe <em>real</em> cross-transaction behaviour — a true
  *       reload from the database, two detached copies for the optimistic-lock race, or a
- *       committed row read back through raw JDBC — are deliberately <strong>not</strong>
+ *       committed row read back through raw JDBC — are <strong>not</strong>
  *       transactional and instead operate on dedicated {@code cust_id}s far outside the
  *       seeded range ({@code 9_000_000_00x}), cleaning them up in a {@code finally} block
  *       so the table always returns to its fifty-row baseline.</li>
@@ -92,7 +92,7 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
     /** Flyway V3 seeds exactly this many customer rows from {@code app/data/ASCII/custdata.txt}. */
     private static final long SEEDED_CUSTOMER_COUNT = 50L;
 
-    /** First seeded customer ({@code cust_id} 1); its SSN intentionally carries a leading zero. */
+    /** First seeded customer ({@code cust_id} 1); its SSN carries a leading zero. */
     private static final Long SEEDED_CUST_ID = 1L;
     private static final String SEEDED_CUST_ID_SSN = "020973888";
     private static final int SEEDED_CUST_ID_FICO = 274;
@@ -125,7 +125,7 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
         Customer customer = customerRepository.findById(SEEDED_CUST_ID).orElseThrow();
 
         // SSN must be the fixed-width nine-character string CHAR(9) with the leading zero
-        // preserved — proof that CUST-SSN PIC 9(09) was NOT migrated to a numeric type.
+        // preserved, confirming CUST-SSN PIC 9(09) is mapped as a fixed-width string, not a number.
         assertThat(customer.getSsn())
                 .as("seeded SSN must keep all nine characters including the leading zero")
                 .isEqualTo(SEEDED_CUST_ID_SSN)
@@ -187,10 +187,10 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
      * first-level-cache hit) — return every field exactly as written, including a
      * nine-character SSN.
      *
-     * <p>This test is intentionally <strong>not</strong> {@link Transactional}: a real
-     * cross-transaction reload is required to prove the database actually stored and returned
-     * the value. It uses a dedicated {@code cust_id} outside the seeded range and removes it in
-     * a {@code finally} block so the fifty-row seed baseline is preserved.
+     * <p>This test is <strong>not</strong> {@link Transactional}: a cross-transaction reload
+     * reads the value back from the database (not a first-level-cache hit). It uses a
+     * dedicated {@code cust_id} outside the seeded range and removes it in a {@code finally}
+     * block so the fifty-row seed baseline is preserved.
      */
     @Test
     @DisplayName("save(new customer): persists, assigns @Version 0, and reloads with the SSN round-tripping exactly")
@@ -255,10 +255,10 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
      * exact "record changed by another user" outcome of the COBOL re-read-and-compare
      * paragraph {@code 9300-CHECK-CHANGE-IN-REC}.
      *
-     * <p>This test is intentionally <strong>not</strong> {@link Transactional}: each
-     * repository call must run in its own transaction so the two reads return distinct
-     * <em>detached</em> copies that observe the same starting version. It uses a dedicated
-     * {@code cust_id} and cleans it up in a {@code finally} block.
+     * <p>This test is <strong>not</strong> {@link Transactional}: each repository call runs
+     * in its own transaction so the two reads return distinct <em>detached</em> copies that
+     * observe the same starting version. It uses a dedicated {@code cust_id} and cleans it up
+     * in a {@code finally} block.
      */
     @Test
     @DisplayName("optimistic locking: a stale concurrent update throws ObjectOptimisticLockingFailureException")
@@ -268,9 +268,9 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
         customerRepository.findById(custId).ifPresent(customerRepository::delete);
         customerRepository.saveAndFlush(newCustomer(custId, "000654321", 700));
         try {
-            // Two independent reads model two concurrent users. Because this method is not
-            // @Transactional, each call runs in its own transaction and returns a DETACHED
-            // copy, so both observe the same starting @Version.
+            // Two independent reads model two concurrent users. This method is not
+            // @Transactional, so each call runs in its own transaction and returns a DETACHED
+            // copy; both observe the same starting @Version.
             Customer userA = customerRepository.findById(custId).orElseThrow();
             Customer userB = customerRepository.findById(custId).orElseThrow();
             assertThat(userA.getVersion())
@@ -293,13 +293,13 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
     }
 
     // =====================================================================================
-    // Phase 4 — SSN / String fidelity (leading-zero regression guard)
+    // Phase 4 — SSN / String fidelity (leading-zero preservation)
     // =====================================================================================
 
     /**
      * Reads several seeded customers whose SSNs begin with {@code 0} and asserts each is read
-     * back as the full nine-character string with its leading zero intact — a regression guard
-     * against any future numeric mapping of {@code CUST-SSN PIC 9(09)} on the read path.
+     * back as the full nine-character string with its leading zero intact, confirming
+     * {@code CUST-SSN PIC 9(09)} is mapped as a fixed-width string on the read path.
      */
     @Test
     @DisplayName("SSN fidelity (read): seeded SSNs beginning with 0 are read back as full 9-char strings")
@@ -313,8 +313,8 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
     /**
      * Stores a brand-new customer whose SSN begins with {@code 0} and asserts it is read back
      * with the leading zero preserved through <em>both</em> the ORM read path (a real reload)
-     * and a raw JDBC read of the {@code CHAR(9)} column — independent proof that the database
-     * persists the value verbatim and that Hibernate never coerces it to a number.
+     * and a raw JDBC read of the {@code CHAR(9)} column — independently confirming the database
+     * persists the value verbatim and that Hibernate does not coerce it to a number.
      *
      * <p>Not {@link Transactional}: the row is committed so the raw JDBC read observes it, then
      * removed in a {@code finally} block.
@@ -370,7 +370,7 @@ class CustomerRepositoryIT extends AbstractIntegrationIT {
 
     /**
      * Builds a transient {@link Customer} with the given key, SSN and FICO score plus sensible,
-     * contract-faithful defaults for the remaining fields. The {@code version} is intentionally
+     * contract-faithful defaults for the remaining fields. The {@code version} is
      * left {@code null} so Spring Data treats the entity as new and issues an {@code INSERT}
      * (rather than a {@code merge}), letting Hibernate assign the initial {@code @Version} of 0.
      *

@@ -62,15 +62,15 @@ import static org.mockito.Mockito.when;
  * service collapses that read-then-rewrite into a single transactional
  * <em>validate-fetch-apply-save</em>.</p>
  *
- * <p><strong>Conditional BCrypt (constraint C-003).</strong> The legacy
- * mandatory {@code 'Password can NOT be empty...'} edit is deliberately relaxed:
- * the password is optional on {@link UserDto.UpdateRequest}. When a non-blank
+ * <p><strong>Conditional BCrypt (constraint C-003).</strong> The password is
+ * optional on {@link UserDto.UpdateRequest}, whereas the legacy
+ * {@code 'Password can NOT be empty...'} edit was mandatory. When a non-blank
  * password is supplied it is re-encoded through the injected
  * {@link PasswordEncoder}; when it is {@code null} or blank the stored BCrypt
  * hash is preserved unchanged and {@link PasswordEncoder#encode(CharSequence)}
  * is never invoked. Both directions are asserted here.</p>
  *
- * <p>The suite is deliberately framework-free: it bootstraps <strong>no</strong>
+ * <p>The suite is framework-free: it bootstraps <strong>no</strong>
  * Spring {@code ApplicationContext}, uses <strong>no</strong>
  * {@code @SpringBootTest}, {@code MockMvc}, Testcontainers, or live database, and
  * touches no AWS or network resource. The collaborators
@@ -79,11 +79,11 @@ import static org.mockito.Mockito.when;
  * in isolation. {@link MockitoExtension} runs with strict stubbing, so each test
  * stubs only the interactions it exercises.</p>
  *
- * <p>Because {@link User} carries no {@code @Version} attribute there is no
- * optimistic-locking branch (unlike the account and card update services), so no
+ * <p>{@link User} carries no {@code @Version} attribute, so there is no
+ * optimistic-locking branch (unlike the account and card update services) and no
  * concurrency-conflict scenario is exercised. Exception detail messages are
- * asserted <strong>verbatim</strong> because they form part of the observable,
- * byte-equivalent behavior guarded by Gate&nbsp;1 and Gate&nbsp;4; the literals
+ * asserted <strong>verbatim</strong>; they form part of the observable,
+ * byte-equivalent behavior covered by Gate&nbsp;1 and Gate&nbsp;4; the literals
  * are reproduced exactly from the compiled {@link UserUpdateService} (themselves
  * byte-exact copies of the {@code COUSR02C} working-storage literals @
  * {@code 27d6c6f}).</p>

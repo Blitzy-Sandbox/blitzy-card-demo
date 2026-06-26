@@ -75,8 +75,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code localstack-init/init-aws.sh}, which is not executed inside the Testcontainers
  * container). Each test that creates its own SQS queue and SNS→SQS subscription tracks
  * those resources and removes them in {@link #tearDown()}; the shared canonical topic is
- * deliberately left in place (the base class owns its lifecycle). The tests are therefore
- * independently re-runnable and leak no resources.
+ * left in place and its lifecycle is owned by the base class. Each test creates and removes
+ * its own resources.
  */
 @DisplayName("SNS notification bridge IT — LocalStack publish + SNS→SQS fan-out (Gate 5)")
 public class SnsIntegrationIT extends AbstractIntegrationIT {
@@ -274,10 +274,9 @@ public class SnsIntegrationIT extends AbstractIntegrationIT {
      * it, and subscribes it to the canonical topic with raw message delivery enabled. The
      * created queue URL and subscription ARN are tracked for teardown.
      *
-     * <p>A standard (non-FIFO) queue is used because the canonical topic is a standard SNS
-     * topic; SNS can only fan out to a FIFO queue from a FIFO topic. Raw message delivery
-     * is enabled so the SQS body is exactly the published payload (no SNS JSON envelope),
-     * which keeps the body and attribute assertions precise.</p>
+     * <p>A standard (non-FIFO) queue is used: the canonical topic is a standard SNS topic,
+     * and SNS fans out to a FIFO queue only from a FIFO topic. Raw message delivery is
+     * enabled, so the SQS body is exactly the published payload with no SNS JSON envelope.</p>
      *
      * @param sns      the SNS client to use
      * @param sqs      the SQS client to use

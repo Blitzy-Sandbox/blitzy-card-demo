@@ -38,10 +38,10 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 /**
  * Integration test for {@link CardRepository} exercised against a <em>real</em>
  * PostgreSQL&nbsp;16 instance (Flyway-seeded) provisioned by Testcontainers via the
- * shared {@link AbstractIntegrationIT} base. There is intentionally no H2 and no
- * mock: the suite must prove VSAM-fidelity behaviour against the live schema and the
- * {@code idx_cards_acct_id} secondary index, so Hibernate runs with
- * {@code ddl-auto=validate} and every derived query is parsed and executed by the
+ * shared {@link AbstractIntegrationIT} base. The suite uses no H2 and no mock: it
+ * exercises VSAM-fidelity behaviour against the live schema and the
+ * {@code idx_cards_acct_id} secondary index, with Hibernate running at
+ * {@code ddl-auto=validate} and every derived query parsed and executed by the
  * database.
  *
  * <h2>Legacy mapping verified here</h2>
@@ -314,10 +314,10 @@ class CardRepositoryIT extends AbstractIntegrationIT {
     @Test
     @DisplayName("save(stale Card): a concurrent update makes the stale save throw the optimistic-lock failure")
     void staleSaveThrowsOptimisticLockingFailure() {
-        // Seed a synthetic card to mutate concurrently. This test is deliberately NOT
-        // @Transactional: each findById must run in its own transaction so the two reads
-        // return two distinct detached instances. A single shared persistence context would
-        // hand back one managed instance and could not model the cross-user conflict.
+        // Seed a synthetic card to mutate concurrently. This test is NOT @Transactional:
+        // each findById runs in its own transaction so the two reads return two distinct
+        // detached instances, modelling the cross-user conflict. A single shared persistence
+        // context would return one managed instance for both reads.
         cardRepository.saveAndFlush(new Card(OPT_LOCK_CARD_NUM, OPT_LOCK_ACCT_ID, 222,
                 "Opt Lock IT", "2031-06-30", "Y", null));
         try {

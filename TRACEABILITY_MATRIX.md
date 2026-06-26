@@ -138,11 +138,11 @@ server-side session.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COSGN00C.cbl` | `MAIN-PARA` | `AuthController` | `authenticate()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless AuthController [POST /api/auth/signin] |
-| `COSGN00C.cbl` | `PROCESS-ENTER-KEY` | `AuthenticationService` | `authenticate()` | BCrypt verification replaces plaintext password compare; issues JWT on success |
-| `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `POST /api/auth/signin (response)` | BMS sign-on map (COSGN00) -> JSON response payload |
-| `COSGN00C.cbl` | `SEND-PLAIN-TEXT` | `AuthController` | `buildErrorResponse()` | SEND TEXT (error/long message) -> structured error response body |
-| `COSGN00C.cbl` | `POPULATE-HEADER-INFO` | `AuthenticationService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COSGN00C.cbl` | `MAIN-PARA` | `AuthController` | `signin()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless AuthController [POST /api/auth/signin] |
+| `COSGN00C.cbl` | `PROCESS-ENTER-KEY` | `AuthService` | `signin()` | BCrypt verification replaces plaintext password compare; issues JWT on success |
+| `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `signin()` | BMS sign-on map (COSGN00) -> `ResponseEntity<AuthDto.SigninResponse>` JSON payload |
+| `COSGN00C.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | `handleAuthenticationFailed()` | SEND TEXT (error/long message) -> centralized structured error response (`ProblemDetail`) |
+| `COSGN00C.cbl` | `POPULATE-HEADER-INFO` | `AuthService` | `signin()` | Screen header (title/program/date/time) -> `AuthDto.SigninResponse` fields |
 | `COSGN00C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | VSAM READ USRSEC -> JPA finder on User |
 
 ### COMEN01C.cbl — Main menu (txn `CM00`)
@@ -516,20 +516,20 @@ server-side session.
 |---|---|---|---|---|
 | `CORPT00C.cbl` | `MAIN-PARA` | `ReportController` | `submitReport()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless ReportController [POST /api/reports/submit] |
 | `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportService` | `submitReport()` | AID=ENTER primary action -> service business method |
-| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportService` | `submitReport()` | CICS internal reader job submit -> publish to SQS FIFO carddemo-report-jobs.fifo |
-| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportService` | `publishToQueue()` | TDQ JOBS WRITEQ (source spelling preserved) -> SQS FIFO message publish |
-| `CORPT00C.cbl` | `RETURN-TO-PREV-SCREEN` | `ReportController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
-| `CORPT00C.cbl` | `SEND-TRNRPT-SCREEN` | `ReportController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
-| `CORPT00C.cbl` | `RETURN-TO-CICS` | `ReportController` | `buildResponse()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
-| `CORPT00C.cbl` | `RECEIVE-TRNRPT-SCREEN` | `ReportController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
-| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportService` | `publishReportRequest()` | CICS internal reader job submit -> publish to SQS FIFO carddemo-report-jobs.fifo |
+| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportService` | `publishReportRequest()` | TDQ JOBS WRITEQ (source spelling preserved) -> SQS FIFO message publish |
+| `CORPT00C.cbl` | `RETURN-TO-PREV-SCREEN` | `ReportController` | `submitReport()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
+| `CORPT00C.cbl` | `SEND-TRNRPT-SCREEN` | `ReportController` | `submitReport()` | BMS SEND MAP -> `ResponseEntity<Void>` 202 Accepted |
+| `CORPT00C.cbl` | `RETURN-TO-CICS` | `ReportController` | `submitReport()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
+| `CORPT00C.cbl` | `RECEIVE-TRNRPT-SCREEN` | `ReportController` | `submitReport(SubmitRequest)` | BMS RECEIVE MAP -> `@Valid @RequestBody ReportDto.SubmitRequest` binding |
+| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportService` | `submitReport()` | Screen header (title/program/date/time) -> service response assembly |
+| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportService` | `submitReport()` | Working-storage / screen reset -> stateless per-request handling |
 
 ### COUSR00C.cbl — User list (txn `CU00`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COUSR00C.cbl` | `MAIN-PARA` | `UserAdminController` | `listUsers()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [GET /api/admin/users] |
+| `COUSR00C.cbl` | `MAIN-PARA` | `UserController` | `listUsers()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserController [GET /api/admin/users] |
 | `COUSR00C.cbl` | `PROCESS-ENTER-KEY` | `UserListService` | `listUsers()` | AID=ENTER primary action -> service business method |
 | `COUSR00C.cbl` | `PROCESS-PF7-KEY` | `UserListService` | `listUsers()` | PF7 page-up -> Pageable previous page query |
 | `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserListService` | `listUsers()` | PF8 page-down -> Pageable next page query |
@@ -537,9 +537,9 @@ server-side session.
 | `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserListService` | `listUsers()` | PF7 page-up -> Pageable previous page query |
 | `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserListService` | `toSummary()` | User row -> UserDto list element |
 | `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserListService` | `listUsers()` | Working-storage / screen reset -> new response DTO instance (stateless) |
-| `COUSR00C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
-| `COUSR00C.cbl` | `SEND-USRLST-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
-| `COUSR00C.cbl` | `RECEIVE-USRLST-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
+| `COUSR00C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | `listUsers()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
+| `COUSR00C.cbl` | `SEND-USRLST-SCREEN` | `UserController` | `listUsers()` | BMS SEND MAP -> `ResponseEntity<UserDto.ListResponse>` |
+| `COUSR00C.cbl` | `RECEIVE-USRLST-SCREEN` | `UserController` | `listUsers()` | BMS RECEIVE MAP -> `@RequestParam` query binding (userId filter, page) |
 | `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserListService` | `listUsers()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM STARTBR -> open Pageable browse |
 | `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserRepository` | `findAll(Pageable)` | VSAM READNEXT -> next page element |
@@ -550,42 +550,42 @@ server-side session.
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COUSR01C.cbl` | `MAIN-PARA` | `UserAdminController` | `addUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [POST /api/admin/users] |
+| `COUSR01C.cbl` | `MAIN-PARA` | `UserController` | `addUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserController [POST /api/admin/users] |
 | `COUSR01C.cbl` | `PROCESS-ENTER-KEY` | `UserAddService` | `addUser()` | AID=ENTER primary action -> service business method |
-| `COUSR01C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
-| `COUSR01C.cbl` | `SEND-USRADD-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
-| `COUSR01C.cbl` | `RECEIVE-USRADD-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COUSR01C.cbl` | `POPULATE-HEADER-INFO` | `UserAddService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COUSR01C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | `addUser()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
+| `COUSR01C.cbl` | `SEND-USRADD-SCREEN` | `UserController` | `addUser()` | BMS SEND MAP -> `ResponseEntity<UserDto.UserSummary>` (201 Created) |
+| `COUSR01C.cbl` | `RECEIVE-USRADD-SCREEN` | `UserController` | `addUser(CreateRequest)` | BMS RECEIVE MAP -> `@Valid @RequestBody UserDto.CreateRequest` binding |
+| `COUSR01C.cbl` | `POPULATE-HEADER-INFO` | `UserAddService` | `addUser()` | Screen header (title/program/date/time) -> `UserDto.UserSummary` assembly |
 | `COUSR01C.cbl` | `WRITE-USER-SEC-FILE` | `UserRepository` | `save()` | WRITE USRSEC -> JPA insert (BCrypt-hashed password) |
-| `COUSR01C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserAddService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
-| `COUSR01C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserAddService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COUSR01C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserAddService` | `addUser()` | Working-storage / screen reset -> stateless per-request handling |
+| `COUSR01C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserAddService` | `addUser()` | Working-storage / screen reset -> stateless per-request handling |
 
 ### COUSR02C.cbl — User update (txn `CU02`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COUSR02C.cbl` | `MAIN-PARA` | `UserAdminController` | `updateUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [PUT /api/admin/users/{id}] |
+| `COUSR02C.cbl` | `MAIN-PARA` | `UserController` | `updateUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserController [PUT /api/admin/users/{userId}] |
 | `COUSR02C.cbl` | `PROCESS-ENTER-KEY` | `UserUpdateService` | `updateUser()` | AID=ENTER primary action -> service business method |
 | `COUSR02C.cbl` | `UPDATE-USER-INFO` | `UserUpdateService` | `updateUser()` | @Transactional REWRITE -> repository save |
-| `COUSR02C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
-| `COUSR02C.cbl` | `SEND-USRUPD-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
-| `COUSR02C.cbl` | `RECEIVE-USRUPD-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
-| `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserUpdateService` | `populateHeader()` | Screen header (title/program/date/time) -> response metadata fields |
+| `COUSR02C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | `updateUser()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
+| `COUSR02C.cbl` | `SEND-USRUPD-SCREEN` | `UserController` | `updateUser()` | BMS SEND MAP -> `ResponseEntity<UserDto.UserSummary>` (200 OK) |
+| `COUSR02C.cbl` | `RECEIVE-USRUPD-SCREEN` | `UserController` | `updateUser(UpdateRequest)` | BMS RECEIVE MAP -> `@Valid @RequestBody UserDto.UpdateRequest` binding |
+| `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserUpdateService` | `updateUser()` | Screen header (title/program/date/time) -> `UserDto.UserSummary` assembly |
 | `COUSR02C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
 | `COUSR02C.cbl` | `UPDATE-USER-SEC-FILE` | `UserUpdateService` | `updateUser()` | @Transactional REWRITE -> repository save |
-| `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
-| `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserUpdateService` | `resetState()` | Working-storage / screen reset -> new response DTO instance (stateless) |
+| `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserUpdateService` | `updateUser()` | Working-storage / screen reset -> stateless per-request handling |
+| `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserUpdateService` | `updateUser()` | Working-storage / screen reset -> stateless per-request handling |
 
 ### COUSR03C.cbl — User delete (txn `CU03`)
 
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `COUSR03C.cbl` | `MAIN-PARA` | `UserAdminController` | `deleteUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserAdminController [DELETE /api/admin/users/{id}] |
+| `COUSR03C.cbl` | `MAIN-PARA` | `UserController` | `deleteUser()` | CICS pseudo-conversational entry (EIBCALEN dispatch) -> stateless UserController [DELETE /api/admin/users/{userId}] |
 | `COUSR03C.cbl` | `PROCESS-ENTER-KEY` | `UserDeleteService` | `deleteUser()` | AID=ENTER primary action -> service business method |
 | `COUSR03C.cbl` | `DELETE-USER-INFO` | `UserDeleteService` | `deleteUser()` | @Transactional DELETE -> repository delete |
-| `COUSR03C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserAdminController` | `buildResponse()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
-| `COUSR03C.cbl` | `SEND-USRDEL-SCREEN` | `UserAdminController` | `buildResponse()` | BMS SEND MAP -> JSON response DTO |
-| `COUSR03C.cbl` | `RECEIVE-USRDEL-SCREEN` | `UserAdminController` | `bindRequest()` | BMS RECEIVE MAP -> @RequestBody/@Valid request DTO binding |
+| `COUSR03C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | `deleteUser()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
+| `COUSR03C.cbl` | `SEND-USRDEL-SCREEN` | `UserController` | `deleteUser()` | BMS SEND MAP -> `ResponseEntity<UserDto.DeleteResponse>` (200 OK) |
+| `COUSR03C.cbl` | `RECEIVE-USRDEL-SCREEN` | `UserController` | `deleteUser(userId)` | BMS RECEIVE MAP -> `@PathVariable userId` (no request body) |
 | `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserDeleteService` | `deleteUser()` | Screen header (title/program/date/time) -> response metadata fields |
 | `COUSR03C.cbl` | `READ-USER-SEC-FILE` | `UserRepository` | `findById()` | READ USRSEC -> JPA finder |
 | `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` | `UserDeleteService` | `deleteUser()` | @Transactional DELETE -> repository delete |
@@ -842,7 +842,7 @@ services and externalized JSON resources.
 | `COSTM01.CPY` | Statement TRNX reporting layout | `dto.StatementDto` | Statement layout consumed by `StatementProcessor` (CBSTM03A) |
 | `COMEN02Y.cpy` | Main-menu option table (10) | `service.MenuService` + `dto.MenuOption` | 10-option routing metadata |
 | `COADM02Y.cpy` | Admin-menu option table (4) | `service.MenuService` + `dto.MenuOption` | 4-option admin routing metadata |
-| `COCOM01Y.cpy` | CARDDEMO-COMMAREA | `dto.CommArea` + JWT claims / `SignOnResponse` | Cross-screen state → stateless JWT + DTO; no server session |
+| `COCOM01Y.cpy` | CARDDEMO-COMMAREA | JWT claims (`JwtTokenService`) + per-request DTOs (e.g. `AuthDto.SigninResponse`) | Cross-screen state → stateless JWT + DTO; no server session |
 | `CVCRD01Y.cpy` | CC-WORK-AREAS (card work) | Request-context work fields (transient) | Card scratch/work fields → per-request context |
 | `CSDAT01Y.cpy` | Date working storage | `service.DateValidationService` | Date WS fields → `java.time.LocalDate` |
 | `CSUTLDWY.cpy` | Date-validation work fields | `service.DateValidationService` | CCYYMMDD / leap-year / range work area |
@@ -895,7 +895,7 @@ behavior).
 
 | BMS Mapset | Symbolic Map | Java DTO(s) | Controller | Notes |
 |---|---|---|---|---|
-| `COSGN00.bms` | `COSGN00.CPY` | `SignOnRequest`, `SignOnResponse` | `AuthController` | Sign-on field layout → auth request/response |
+| `COSGN00.bms` | `COSGN00.CPY` | `AuthDto.SigninRequest`, `AuthDto.SigninResponse` | `AuthController` | Sign-on field layout → auth request/response |
 | `COMEN01.bms` | `COMEN01.CPY` | `MenuOption` (response) | `MenuController` | Main-menu field layout |
 | `COADM01.bms` | `COADM01.CPY` | `MenuOption` (response) | `MenuController` | Admin-menu field layout |
 | `COACTVW.bms` | `COACTVW.CPY` | `AccountDto` (view) | `AccountController` | Account view field lengths |
@@ -907,11 +907,11 @@ behavior).
 | `COTRN01.bms` | `COTRN01.CPY` | `TransactionDto` (detail) | `TransactionController` | Txn-detail field contract |
 | `COTRN02.bms` | `COTRN02.CPY` | `TransactionDto` (add) | `TransactionController` | Txn-add field contract |
 | `COBIL00.bms` | `COBIL00.CPY` | `BillPaymentRequest` | `BillingController` | Bill-pay field contract |
-| `CORPT00.bms` | `CORPT00.CPY` | `ReportRequest` | `ReportController` | Report-criteria fields (monthly/yearly/custom) |
-| `COUSR00.bms` | `COUSR00.CPY` | `UserDto` (list) | `UserAdminController` | User-list field contract |
-| `COUSR01.bms` | `COUSR01.CPY` | `UserDto` (add) | `UserAdminController` | User-add field contract |
-| `COUSR02.bms` | `COUSR02.CPY` | `UserDto` (update) | `UserAdminController` | User-update field contract |
-| `COUSR03.bms` | `COUSR03.CPY` | `UserDto` (delete) | `UserAdminController` | User-delete field contract |
+| `CORPT00.bms` | `CORPT00.CPY` | `ReportDto.SubmitRequest` | `ReportController` | Report-criteria fields (monthly/yearly/custom) |
+| `COUSR00.bms` | `COUSR00.CPY` | `UserDto.ListResponse` / `UserDto.UserSummary` | `UserController` | User-list field contract |
+| `COUSR01.bms` | `COUSR01.CPY` | `UserDto.CreateRequest` / `UserDto.UserSummary` | `UserController` | User-add field contract |
+| `COUSR02.bms` | `COUSR02.CPY` | `UserDto.UpdateRequest` / `UserDto.UserSummary` | `UserController` | User-update field contract |
+| `COUSR03.bms` | `COUSR03.CPY` | `UserDto.DeleteResponse` | `UserController` | User-delete field contract |
 
 ## 7. JCL → Spring Batch / Schema / Storage / Lifecycle
 
@@ -1040,7 +1040,7 @@ This index summarizes the reverse lookup at the class level for quick navigation
 
 | Java Class | Originating COBOL Program(s) / Copybook(s) |
 |---|---|
-| `service.auth.AuthenticationService` / `controller.AuthController` | `COSGN00C.cbl` (+ `COSGN00` BMS, `COCOM01Y`, `CSUSR01Y`) |
+| `service.AuthService` / `controller.AuthController` | `COSGN00C.cbl` (+ `COSGN00` BMS, `COCOM01Y`, `CSUSR01Y`) |
 | `service.MenuService` / `controller.MenuController` | `COMEN01C.cbl`, `COADM01C.cbl` (+ `COMEN02Y`, `COADM02Y`) |
 | `service.AccountViewService` / `controller.AccountController` | `COACTVWC.cbl` (+ `COACTVW` BMS) |
 | `service.AccountUpdateService` | `COACTUPC.cbl` (+ `COACTUP` BMS) |
@@ -1051,8 +1051,8 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `service.transaction.TransactionDetailService` | `COTRN01C.cbl` (+ `COTRN01` BMS) |
 | `service.transaction.TransactionAddService` | `COTRN02C.cbl` (+ `COTRN02` BMS) |
 | `service.billing.BillingService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
-| `service.report.ReportService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
-| `service.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserAdminController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
+| `service.ReportService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
+| `service.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
 | `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
 | `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |
 | `service.FileStatusMapper` | FILE STATUS handling across all programs (`CBTRN02C.cbl` reference) |

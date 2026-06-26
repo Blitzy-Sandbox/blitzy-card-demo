@@ -50,10 +50,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
  *       null tests below assert exactly that nulls-last behaviour.</li>
  * </ul>
  *
- * <p>This is intentionally the simplest, lowest-dependency test in the package:
- * no mocks, no Spring context, no Testcontainers, and no I/O. The job-level,
- * end-to-end combine behaviour is covered separately by the integration suite
- * ({@code CombineTransactionsJobIT}); the two are complementary, not redundant.
+ * <p>This is a low-dependency unit test: no mocks, no Spring context, no
+ * Testcontainers, and no I/O. The job-level, end-to-end combine behaviour is
+ * covered separately by the integration suite ({@code CombineTransactionsJobIT}).
  *
  * <p>Because {@link Transaction#equals(Object)}/{@link Transaction#hashCode()}
  * are derived solely from {@code tranId}, two distinct instances that share a

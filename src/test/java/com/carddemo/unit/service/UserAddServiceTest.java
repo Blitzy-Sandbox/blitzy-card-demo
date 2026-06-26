@@ -66,7 +66,7 @@ import static org.mockito.Mockito.when;
  * call: the ordered empty-field cascade, a duplicate-key guard, BCrypt password
  * hashing (constraint C-003), and the keyed insert.</p>
  *
- * <p>The suite is deliberately framework-free: it bootstraps <strong>no</strong>
+ * <p>The suite is framework-free: it bootstraps <strong>no</strong>
  * Spring {@code ApplicationContext}, uses <strong>no</strong>
  * {@code @SpringBootTest}, {@code MockMvc}, Testcontainers, or live database, and
  * touches no AWS or network resource. The two collaborators,
@@ -75,8 +75,8 @@ import static org.mockito.Mockito.when;
  * complete add contract is asserted in isolation. {@link MockitoExtension} runs
  * with strict stubbing, so each test stubs only the interactions it exercises.</p>
  *
- * <p>Exception detail messages are asserted <strong>verbatim</strong> because
- * they form part of the observable, byte-equivalent behavior guarded by
+ * <p>Exception detail messages are asserted <strong>verbatim</strong>; they
+ * form part of the observable, byte-equivalent behavior covered by
  * Gate&nbsp;1 and Gate&nbsp;4. The five ordered empty-field literals, the
  * duplicate literal, and the add-failure literal are reproduced exactly from the
  * compiled {@link UserAddService} (themselves byte-exact copies of the
@@ -104,7 +104,7 @@ class UserAddServiceTest {
 
     /**
      * The plaintext credential supplied on the wire ({@code PASSWD X(8)}). It is
-     * a synthetic, non-secret value used solely to prove it is BCrypt-encoded
+     * a synthetic, non-secret value used to assert it is BCrypt-encoded
      * before persistence and never stored or returned in the clear.
      */
     private static final String RAW_PASSWORD = "rawpass";

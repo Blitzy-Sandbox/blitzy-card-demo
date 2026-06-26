@@ -37,9 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Integration test for {@link TransactionCategoryBalanceRepository} against a
  * real, Flyway-seeded PostgreSQL&nbsp;16 instance (Testcontainers, via
- * {@link AbstractIntegrationIT}). It is deliberately <em>not</em> backed by H2
- * or a mock: the whole point of this suite is to prove the repository behaves
- * correctly against the production database contract.
+ * {@link AbstractIntegrationIT}). It is not backed by H2 or a mock; it exercises
+ * the repository against the production database contract (PostgreSQL&nbsp;16).
  *
  * <h2>What is under test</h2>
  * The {@code transaction_category_balance} table is the per
@@ -105,8 +104,8 @@ class TransactionCategoryBalanceRepositoryIT extends AbstractIntegrationIT {
     private static final int KNOWN_CAT_CD = 1;
 
     /**
-     * An account id deliberately outside the seeded range {@code 1..50} (and within
-     * the COBOL {@code PIC 9(11)} domain) used to assert "not found" behavior.
+     * An account id outside the seeded range {@code 1..50} (and within the COBOL
+     * {@code PIC 9(11)} domain) used to assert "not found" behavior.
      */
     private static final long ABSENT_ACCT_ID = 99_999_999_999L;
 

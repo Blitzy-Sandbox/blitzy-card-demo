@@ -43,78 +43,85 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code daily_transaction} schema.
  *
  * <h2>What {@code daily_transaction} models</h2>
- * The table is the <em>unposted</em> posting-staging input for the legacy batch
- * pipeline: copybook {@code CVTRA06Y} ({@code DALYTRAN-RECORD}, RECLN&nbsp;350) @
- * {@code 27d6c6f}, read sequentially by the {@code CBTRN01C} driver and consumed
- * record-by-record by the {@code CBTRN02C} posting engine under JCL
- * {@code POSTTRAN.jcl}. In the migration it is the input the Spring Batch posting
- * job (realized by {@code TransactionPostingProcessor}) reads before applying the
- * four-stage validation cascade.
+ * The table is the posting-staging input for the legacy batch pipeline: copybook
+ * {@code CVTRA06Y} ({@code DALYTRAN-RECORD}, RECLN&nbsp;350) @ {@code 27d6c6f}, read
+ * sequentially by the {@code CBTRN01C} driver and consumed record-by-record by the
+ * {@code CBTRN02C} posting engine under JCL {@code POSTTRAN.jcl}. In the migration it
+ * is the input the Spring Batch posting job (realized by
+ * {@code TransactionPostingProcessor}) reads before applying the four-stage validation
+ * cascade.
  *
- * <h2>The staging table starts EMPTY</h2>
- * Unlike the master / reference tables, {@code daily_transaction} is
- * <strong>not seeded by Flyway</strong>: it is the transient daily feed, populated
- * from {@code app/data/ASCII/dailytran.txt} (300 records) as batch <em>input</em>
- * during the POSTTRAN job IT — never by the {@code V3} seed migration. This is the
- * design fixed by the migration contract (the {@code V1} schema annotates the table
- * "posting staging, seeded empty", and {@link AbstractIntegrationIT} documents that
- * the {@code transactions} and {@code daily_transaction} tables start empty), so the
- * first assertions here verify the empty-staging contract directly.
+ * <h2>The staging table is seeded from {@code dailytran.txt}</h2>
+ * {@code V3__seed_data.sql} seeds {@code daily_transaction} from
+ * {@code app/data/ASCII/dailytran.txt} (300 records, copybook {@code CVTRA06Y}), so a
+ * freshly migrated schema contains the 300-row daily feed. The
+ * {@code DALYTRAN-AMT S9(09)V99} zoned-overpunch sign is decoded to
+ * {@code NUMERIC(11,2)}, and the posting batch reads the feed through
+ * {@link DailyTransactionRepository}. The first assertions verify the seeded row
+ * count and decode fidelity.
  *
  * <h2>Raw, unvalidated transaction-type code</h2>
  * {@link DailyTransaction#getTranTypeCd()} is a plain {@link String} bound to a
- * {@code CHAR(2)} column with <strong>no attribute converter</strong>: a staging
- * record holds the two-character {@code DALYTRAN-TYPE-CD} exactly as read from the
- * daily file. This is deliberately different from the posted {@code Transaction}
- * entity, whose type code is mapped through {@code TransactionTypeConverter}.
- * Validation of the code (against the seven {@code TRAN-TYPE} values {@code 01}..{@code 07})
- * happens later, in {@code TransactionPostingProcessor} — not at the staging boundary.
- * The tests below prove that fidelity by round-tripping codes that are <em>not</em>
- * valid enum constants (for example {@code "99"} and {@code "ZZ"}) verbatim.
+ * {@code CHAR(2)} column with no attribute converter: a staging record holds the
+ * two-character {@code DALYTRAN-TYPE-CD} exactly as read from the daily file. The posted
+ * {@code Transaction} entity maps its type code through {@code TransactionTypeConverter};
+ * staging does not. Code validation (against the seven {@code TRAN-TYPE} values
+ * {@code 01}..{@code 07}) runs later in {@code TransactionPostingProcessor}. The seeded
+ * fixture contains only the valid codes {@code 01} and {@code 03}; a synthetic insert
+ * below round-trips codes that are not valid enum constants ({@code "99"}, {@code "ZZ"})
+ * to confirm the staging layer stores the code verbatim.
  *
  * <h2>Data isolation</h2>
- * The shared PostgreSQL container is reused across every {@code *IT}, so each
- * mutating test here is {@code @Transactional}: Spring rolls the test transaction
- * back, leaving {@code daily_transaction} empty before and after. Reads are forced
- * to hit the database (rather than the persistence-context first-level cache) by
- * flushing and clearing the {@link EntityManager}, so the assertions exercise the
- * real PostgreSQL round-trip — including the fixed-width {@code CHAR} JDBC bindings
- * and the {@code NUMERIC(11,2)} monetary scale.
+ * The shared PostgreSQL container is reused across every {@code *IT}, so each mutating
+ * test here is {@code @Transactional}: Spring rolls the test transaction back, restoring
+ * the seeded 300-row baseline before and after. Read-only tests assert the seeded state
+ * directly. Reads are forced to hit the database (rather than the persistence-context
+ * first-level cache) by flushing and clearing the {@link EntityManager}, so the
+ * assertions exercise the real PostgreSQL round-trip &mdash; including the fixed-width
+ * {@code CHAR} JDBC bindings and the {@code NUMERIC(11,2)} monetary scale.
  */
-@DisplayName("DailyTransactionRepository IT — empty posting-staging table on real PostgreSQL 16 "
-        + "(CVTRA06Y / CBTRN01C\u2192CBTRN02C / POSTTRAN)")
+@DisplayName("DailyTransactionRepository IT — seeded posting-staging table on real PostgreSQL 16 "
+        + "(CVTRA06Y / dailytran.txt / CBTRN01C\u2192CBTRN02C / POSTTRAN)")
 class DailyTransactionRepositoryIT extends AbstractIntegrationIT {
 
+    /** Row count seeded into {@code daily_transaction} from {@code dailytran.txt}. */
+    private static final long SEEDED_ROW_COUNT = 300L;
+
     /**
-     * A 26-character origination timestamp matching the {@code DALYTRAN-ORIG-TS
-     * PIC X(26)} width and the {@code dailytran.txt} format
-     * ({@code YYYY-MM-DD HH:MM:SS.mmmmmm}). Because it exactly fills the
-     * {@code CHAR(26)} column it round-trips verbatim with no padding or trimming,
-     * which lets the read-back assertions check timestamp fidelity (AAP §0.6.4).
+     * A 26-character origination timestamp matching the {@code DALYTRAN-ORIG-TS PIC
+     * X(26)} width and the {@code dailytran.txt} format
+     * ({@code YYYY-MM-DD HH:MM:SS.mmmmmm}). It fills the {@code CHAR(26)} column exactly,
+     * so it round-trips verbatim and lets the read-back assertions check timestamp
+     * fidelity (AAP &sect;0.6.4). Every seeded fixture row carries this value.
      */
     private static final String ORIG_TS = "2022-06-10 19:27:53.000000";
+
+    /** First seeded fixture row: {@code DALYTRAN-ID} of the {@code dailytran.txt} line 1. */
+    private static final String SEEDED_ID_1 = "0000000000683580";
+
+    /** Second seeded fixture row: {@code DALYTRAN-ID} of the {@code dailytran.txt} line 2. */
+    private static final String SEEDED_ID_2 = "0000000001774260";
 
     /** Repository under test — the staging access replacing {@code DALYTRAN-FILE}. */
     @Autowired
     private DailyTransactionRepository dailyTransactionRepository;
 
     /**
-     * JPA entity manager used purely to {@code flush()} pending writes to PostgreSQL
-     * and {@code clear()} the first-level cache, so subsequent repository reads issue
-     * real {@code SELECT}s against the container database rather than returning
-     * managed instances from the persistence context.
+     * JPA entity manager used to {@code flush()} pending writes to PostgreSQL and
+     * {@code clear()} the first-level cache, so subsequent repository reads issue real
+     * {@code SELECT}s against the container database rather than returning managed
+     * instances from the persistence context.
      */
     @PersistenceContext
     private EntityManager entityManager;
 
     /**
-     * Builds a fully populated {@link DailyTransaction} mirroring the
-     * {@code dailytran.txt} record shape (copybook {@code CVTRA06Y}). All
-     * fixed-width {@code CHAR} fields are sized to their exact column widths so they
-     * round-trip verbatim: {@code tranId}/{@code cardNum} are 16 characters and
-     * {@code origTs} is the 26-character {@link #ORIG_TS}. The processing timestamp
-     * ({@code DALYTRAN-PROC-TS}) is left {@code null} because a freshly staged record
-     * is <em>unposted</em> — the posting engine ({@code CBTRN02C}) stamps it later.
+     * Builds a fully populated {@link DailyTransaction} mirroring the {@code dailytran.txt}
+     * record shape (copybook {@code CVTRA06Y}). Fixed-width {@code CHAR} fields are sized to
+     * their exact column widths so they round-trip verbatim: {@code tranId}/{@code cardNum}
+     * are 16 characters and {@code origTs} is the 26-character {@link #ORIG_TS}. The
+     * processing timestamp ({@code DALYTRAN-PROC-TS}) is {@code null} for an unposted record;
+     * {@code CBTRN02C} stamps it at posting time.
      *
      * @param tranId      the 16-character {@code DALYTRAN-ID} primary key
      * @param rawTypeCode the raw two-character {@code DALYTRAN-TYPE-CD} (stored verbatim)
@@ -142,116 +149,114 @@ class DailyTransactionRepositoryIT extends AbstractIntegrationIT {
     }
 
     // ---------------------------------------------------------------------------------
-    // Phase 1 — empty posting-staging state (Flyway does not seed daily_transaction).
+    // Phase 1 — seeded posting-staging state (Flyway V3 seeds daily_transaction).
     // ---------------------------------------------------------------------------------
 
     /**
-     * The staging table is empty on a freshly migrated schema: the {@code V3} seed
-     * populates only the master / reference tables, while {@code dailytran.txt} is
-     * loaded as batch <em>input</em> by the POSTTRAN job — not by Flyway.
+     * The staging table is seeded with the 300-row {@code dailytran.txt} feed by
+     * {@code V3__seed_data.sql}.
      */
     @Test
-    @DisplayName("count() == 0 initially — Flyway V3 does not seed the staging table")
-    void countIsZeroInitiallyBecauseFlywayDoesNotSeedStaging() {
+    @DisplayName("count() == 300 — Flyway V3 seeds the staging table from dailytran.txt")
+    void countMatchesSeededDailytranFeed() {
         assertThat(dailyTransactionRepository.count())
-                .as("daily_transaction is the unposted posting-staging input (CVTRA06Y); "
-                        + "Flyway V3 seeds master/reference tables only, so the staging table "
-                        + "starts empty and is filled from dailytran.txt as batch INPUT by POSTTRAN")
-                .isZero();
+                .as("daily_transaction is seeded from dailytran.txt (CVTRA06Y, 300 rows)")
+                .isEqualTo(SEEDED_ROW_COUNT);
     }
 
     /**
-     * {@code findAll()} returns nothing on the empty staging table, confirming the
-     * sequential-read entry point ({@code CBTRN01C} driver) sees no records until the
-     * daily feed is loaded.
+     * The sequential-read entry point ({@code CBTRN01C} driver) sees all 300 seeded rows.
      */
     @Test
-    @DisplayName("findAll() is empty on the fresh staging table")
-    void findAllIsEmptyOnFreshStagingTable() {
+    @DisplayName("findAll() returns the 300 seeded staging rows")
+    void findAllReturnsAllSeededStagingRows() {
         assertThat(dailyTransactionRepository.findAll())
-                .as("no staging records exist until the daily feed is loaded as batch input")
-                .isEmpty();
+                .as("sequential scan returns the seeded daily feed")
+                .hasSize((int) SEEDED_ROW_COUNT);
+    }
+
+    /**
+     * The first two seeded fixture rows decode with byte fidelity: the
+     * {@code DALYTRAN-AMT S9(09)V99} overpunch sign yields {@code 504.77} (positive) and
+     * {@code -919.00} (negative) at {@code NUMERIC(11,2)} scale&nbsp;2; the raw two-character
+     * {@code DALYTRAN-TYPE-CD}, the 16-character {@code DALYTRAN-CARD-NUM}, the
+     * {@code DALYTRAN-SOURCE} and the 26-character {@code DALYTRAN-ORIG-TS} are preserved
+     * exactly.
+     */
+    @Test
+    @DisplayName("seeded fixture rows decode with byte fidelity (overpunch sign, CHAR widths, timestamp)")
+    void seededFixtureRowsDecodeWithByteFidelity() {
+        DailyTransaction row1 = dailyTransactionRepository.findById(SEEDED_ID_1).orElseThrow();
+        assertThat(row1.getTranTypeCd()).isEqualTo("01");
+        assertThat(row1.getTranAmt()).isEqualByComparingTo("504.77");
+        assertThat(row1.getTranAmt().scale()).isEqualTo(2);
+        assertThat(row1.getCardNum()).isEqualTo("4859452612877065");
+        assertThat(row1.getTranSource()).isEqualTo("POS TERM");
+        assertThat(row1.getOrigTs()).isEqualTo(ORIG_TS);
+
+        DailyTransaction row2 = dailyTransactionRepository.findById(SEEDED_ID_2).orElseThrow();
+        assertThat(row2.getTranTypeCd()).isEqualTo("03");
+        assertThat(row2.getTranAmt())
+                .as("DALYTRAN-AMT negative overpunch sign preserved")
+                .isEqualByComparingTo("-919.00");
+        assertThat(row2.getTranAmt().scale()).isEqualTo(2);
     }
 
     // ---------------------------------------------------------------------------------
-    // Phase 2 — sequential staging read (the CBTRN01C driver feeding CBTRN02C). Mutating
-    // tests are @Transactional so the shared staging table is restored to empty by rollback.
+    // Phase 2 — staging read fidelity. Mutating tests are @Transactional so the seeded
+    // 300-row baseline is restored by rollback.
     // ---------------------------------------------------------------------------------
 
     /**
-     * Inserts a handful of staging records mirroring the {@code dailytran.txt} shape,
-     * reloads them from PostgreSQL and asserts that the raw {@code DALYTRAN-TYPE-CD}
-     * is stored and returned <strong>verbatim</strong>. The batch deliberately
-     * includes codes that are <em>not</em> valid {@code TRAN-TYPE} enum constants
-     * ({@code "99"}, {@code "ZZ"}) to prove the staging layer applies no enum
-     * conversion and no validation — that responsibility belongs to
-     * {@code TransactionPostingProcessor} downstream. The 26-character origination
-     * timestamp is also checked for verbatim {@code CHAR(26)} fidelity (AAP §0.6.4).
+     * Inserts staging records whose {@code DALYTRAN-TYPE-CD} values are not valid
+     * {@code TRAN-TYPE} enum constants ({@code "99"}, {@code "ZZ"}) using primary keys that
+     * are absent from the seeded fixture, then reloads them from PostgreSQL and asserts the
+     * raw code is stored and returned verbatim. The staging layer applies no enum conversion
+     * and no validation; that responsibility belongs to {@code TransactionPostingProcessor}
+     * downstream. The 26-character origination timestamp is also checked for verbatim
+     * {@code CHAR(26)} fidelity (AAP &sect;0.6.4).
      */
     @Test
     @Transactional
-    @DisplayName("staging rows read back with RAW tran_type_cd verbatim — no enum conversion, no validation")
-    void insertedRecordsAreReadBackWithRawTransactionTypeCodeVerbatim() {
-        assertThat(dailyTransactionRepository.count()).as("staging table empty before insert").isZero();
+    @DisplayName("staging rows store RAW tran_type_cd verbatim — no enum conversion, no validation")
+    void stagingStoresRawTransactionTypeCodeVerbatim() {
+        long baseline = dailyTransactionRepository.count();
 
-        List<DailyTransaction> dailyFeed = List.of(
-                stagingRecord("0000000000683580", "01", "Purchase at Abshire-Lowe",
-                        new BigDecimal("504.77"), "4859452612877065"),
-                stagingRecord("0000000001774260", "03", "Return item at Nitzsche, Nicolas and Lowe",
-                        new BigDecimal("-919.00"), "0927987108636232"),
-                stagingRecord("0000000006292564", "02", "Payment received",
-                        new BigDecimal("67.88"), "6009619150674526"),
-                stagingRecord("0000000009101861", "99", "Raw code 99 — not a known TRAN-TYPE enum",
+        dailyTransactionRepository.saveAll(List.of(
+                stagingRecord("TESTRAW990000001", "99", "Raw code 99 — not a known TRAN-TYPE enum",
                         new BigDecimal("281.77"), "8040580410348680"),
-                stagingRecord("0000000010142252", "ZZ", "Raw code ZZ — alpha, never enum-valid",
-                        new BigDecimal("454.66"), "5656830544981216"));
-
-        dailyTransactionRepository.saveAll(dailyFeed);
+                stagingRecord("TESTRAWZZ0000001", "ZZ", "Raw code ZZ — alpha, never enum-valid",
+                        new BigDecimal("454.66"), "5656830544981216")));
         entityManager.flush();
-        entityManager.clear(); // force findAll() to read from PostgreSQL, not the L1 cache
+        entityManager.clear(); // force reads to hit PostgreSQL, not the L1 cache
 
-        List<DailyTransaction> reloaded = dailyTransactionRepository.findAll();
-        assertThat(reloaded).as("every staged record is read back by the sequential scan").hasSize(5);
+        assertThat(dailyTransactionRepository.count()).isEqualTo(baseline + 2);
 
-        // RAW fidelity: the two-character code is persisted and returned exactly as written,
-        // including the codes ("99","ZZ") that are NOT valid TransactionTypeCode constants (01..07).
-        assertThat(reloaded)
-                .as("DALYTRAN-TYPE-CD is stored verbatim — staging applies no enum converter")
-                .extracting(DailyTransaction::getTranTypeCd)
-                .containsExactlyInAnyOrder("01", "03", "02", "99", "ZZ");
+        DailyTransaction raw99 = dailyTransactionRepository.findById("TESTRAW990000001").orElseThrow();
+        assertThat(raw99.getTranTypeCd()).isEqualTo("99");
+        assertThat(raw99.getOrigTs()).isEqualTo(ORIG_TS);
 
-        // 26-character origination timestamp preserved verbatim through CHAR(26).
-        assertThat(reloaded)
-                .as("DALYTRAN-ORIG-TS X(26) preserved exactly")
-                .extracting(DailyTransaction::getOrigTs)
-                .containsOnly(ORIG_TS);
+        DailyTransaction rawZz = dailyTransactionRepository.findById("TESTRAWZZ0000001").orElseThrow();
+        assertThat(rawZz.getTranTypeCd()).isEqualTo("ZZ");
     }
 
     /**
-     * A keyed read by {@code DALYTRAN-ID} ({@code findById}) returns the known
-     * inserted staging record with all of its fields intact, and a lookup for an
-     * absent key returns an empty {@link Optional}.
+     * A keyed read by {@code DALYTRAN-ID} ({@code findById}) returns the seeded staging
+     * record with its fields intact, and a lookup for a key absent from the seeded fixture
+     * returns an empty {@link Optional}.
      */
     @Test
-    @Transactional
-    @DisplayName("findById(DALYTRAN-ID) returns the known staging record; absent key returns empty")
-    void findByIdReturnsTheKnownStagingRecord() {
-        String tranId = "0000000010229018";
-        dailyTransactionRepository.save(stagingRecord(
-                tranId, "01", "Purchase at Gislason-Medhurst",
-                new BigDecimal("849.99"), "7379335634661142"));
-        entityManager.flush();
-        entityManager.clear(); // force findById() to issue a real SELECT
+    @DisplayName("findById(DALYTRAN-ID) returns the seeded staging record; absent key returns empty")
+    void findByIdReturnsSeededRecordAndEmptyForAbsentKey() {
+        Optional<DailyTransaction> found = dailyTransactionRepository.findById(SEEDED_ID_1);
 
-        Optional<DailyTransaction> found = dailyTransactionRepository.findById(tranId);
-
-        assertThat(found).as("keyed READ by DALYTRAN-ID returns the staged record").isPresent();
+        assertThat(found).as("keyed READ by DALYTRAN-ID returns the seeded record").isPresent();
         DailyTransaction record = found.orElseThrow();
-        assertThat(record.getTranId()).isEqualTo(tranId);
+        assertThat(record.getTranId()).isEqualTo(SEEDED_ID_1);
         assertThat(record.getTranTypeCd()).isEqualTo("01");
-        assertThat(record.getCardNum()).isEqualTo("7379335634661142");
+        assertThat(record.getCardNum()).isEqualTo("4859452612877065");
         assertThat(record.getOrigTs()).isEqualTo(ORIG_TS);
-        assertThat(record.getTranAmt()).isEqualByComparingTo("849.99");
+        assertThat(record.getTranAmt()).isEqualByComparingTo("504.77");
 
         assertThat(dailyTransactionRepository.findById("9999999999999999"))
                 .as("a key with no staged record returns Optional.empty")
@@ -259,92 +264,91 @@ class DailyTransactionRepositoryIT extends AbstractIntegrationIT {
     }
 
     // ---------------------------------------------------------------------------------
-    // Phase 3 — persist / delete round-trips. @Transactional rollback restores empty.
+    // Phase 3 — persist / delete round-trips on top of the seeded baseline. @Transactional
+    // rollback restores the seeded 300-row state.
     // ---------------------------------------------------------------------------------
 
     /**
-     * {@code saveAll} persists a batch whose size matches the subsequent
-     * {@code count()} (verified both through the repository and at the database level
-     * via {@code JdbcTemplate}), and {@code deleteAll} clears the table back to empty.
-     * The surrounding test transaction rolls back regardless, so the shared staging
-     * table is left empty for every other {@code *IT}.
+     * {@code saveAll} adds a batch of synthetic rows (keys absent from the seeded fixture)
+     * on top of the seeded baseline, raising the count by the batch size (verified through
+     * both the repository and {@code JdbcTemplate}); {@code deleteAllById} removes exactly
+     * those rows and returns the count to the seeded baseline. The surrounding transaction
+     * rolls back, leaving the seeded staging table intact for every other {@code *IT}.
      */
     @Test
     @Transactional
-    @DisplayName("saveAll then deleteAll round-trips the row count and restores the empty staging table")
-    void saveAllThenDeleteAllRoundTripsRowCountAndRestoresEmpty() {
-        assertThat(dailyTransactionRepository.count()).as("staging table empty before insert").isZero();
+    @DisplayName("saveAll then deleteAllById round-trips the row count against the seeded baseline")
+    void saveAllThenDeleteByIdRoundTripsAgainstSeededBaseline() {
+        long baseline = dailyTransactionRepository.count();
+        assertThat(baseline).isEqualTo(SEEDED_ROW_COUNT);
 
-        List<DailyTransaction> dailyFeed = List.of(
-                stagingRecord("0000000016259484", "03", "Return item at Sipes Inc",
+        List<String> ids = List.of(
+                "TESTRT0000000001", "TESTRT0000000002", "TESTRT0000000003", "TESTRT0000000004");
+        dailyTransactionRepository.saveAll(List.of(
+                stagingRecord(ids.get(0), "03", "Return item at Sipes Inc",
                         new BigDecimal("-56.77"), "4011500891777367"),
-                stagingRecord("0000000017874199", "01", "Purchase at Legros Group",
+                stagingRecord(ids.get(1), "01", "Purchase at Legros Group",
                         new BigDecimal("373.66"), "8040580410348680"),
-                stagingRecord("0000000019065428", "03", "Return item at Turcotte Group",
+                stagingRecord(ids.get(2), "03", "Return item at Turcotte Group",
                         new BigDecimal("-535.88"), "6503535181795992"),
-                stagingRecord("0000000021711604", "01", "Purchase at Gleason, Shanahan and Reynolds",
-                        new BigDecimal("416.11"), "9501733721429893"));
-
-        dailyTransactionRepository.saveAll(dailyFeed);
+                stagingRecord(ids.get(3), "01", "Purchase at Gleason, Shanahan and Reynolds",
+                        new BigDecimal("416.11"), "9501733721429893")));
         dailyTransactionRepository.flush();
 
         assertThat(dailyTransactionRepository.count())
-                .as("count() matches the number of staged records")
-                .isEqualTo(4L);
+                .as("count() rises by the number of inserted rows")
+                .isEqualTo(baseline + 4);
         assertThat(countRows("daily_transaction"))
                 .as("database-level row count via JdbcTemplate agrees with the repository")
-                .isEqualTo(4L);
+                .isEqualTo(baseline + 4);
 
-        dailyTransactionRepository.deleteAll();
+        dailyTransactionRepository.deleteAllById(ids);
         dailyTransactionRepository.flush();
 
         assertThat(dailyTransactionRepository.count())
-                .as("deleteAll empties the staging table")
-                .isZero();
+                .as("deleteAllById removes exactly the inserted rows, restoring the seeded baseline")
+                .isEqualTo(baseline);
     }
 
     /**
-     * The {@code DALYTRAN-AMT PIC S9(09)V99} monetary value round-trips through the
-     * {@code NUMERIC(11,2)} column at scale&nbsp;2 with its sign and precision intact.
-     * A scale-1 literal is normalized to scale&nbsp;2 by the column definition. Values
-     * are compared with {@code compareTo} (via {@code isEqualByComparingTo}) so the
-     * assertion is about numeric equality, and the scale is checked explicitly. A final
-     * read straight from PostgreSQL via {@code JdbcTemplate} confirms the value is
-     * stored natively at scale&nbsp;2 (no JPA caching involved).
+     * The {@code DALYTRAN-AMT PIC S9(09)V99} monetary value round-trips through
+     * {@code NUMERIC(11,2)} at scale&nbsp;2 with sign and precision intact. Seeded rows cover
+     * a positive ({@code 504.77}) and a negative ({@code -919.00}) value; a synthetic insert
+     * with a scale-1 literal ({@code 829.5}) is normalized to scale&nbsp;2 by the column. A
+     * final {@code JdbcTemplate} read of a seeded row confirms the value is stored natively at
+     * scale&nbsp;2 (no JPA caching involved).
      */
     @Test
     @Transactional
     @DisplayName("tran_amt round-trips at NUMERIC(11,2) — scale 2 and sign preserved (compareTo)")
     void tranAmtRoundTripsAtScaleTwoPreservingSignAndPrecision() {
-        dailyTransactionRepository.saveAll(List.of(
-                stagingRecord("0000000025430891", "01", "Debit with cents",
-                        new BigDecimal("94.33"), "3260763612337560"),
-                stagingRecord("0000000028097268", "03", "Credit (negative amount)",
-                        new BigDecimal("-250.22"), "7094142751055551"),
-                stagingRecord("0000000030755266", "01", "Scale-1 literal normalized by the column",
-                        new BigDecimal("829.5"), "3766281984155154")));
+        DailyTransaction positive = dailyTransactionRepository.findById(SEEDED_ID_1).orElseThrow();
+        assertThat(positive.getTranAmt()).isEqualByComparingTo("504.77");
+        assertThat(positive.getTranAmt().scale()).as("NUMERIC(11,2) yields scale 2").isEqualTo(2);
+
+        DailyTransaction negative = dailyTransactionRepository.findById(SEEDED_ID_2).orElseThrow();
+        assertThat(negative.getTranAmt()).as("negative amounts retain their sign")
+                .isEqualByComparingTo("-919.00");
+        assertThat(negative.getTranAmt().scale()).isEqualTo(2);
+
+        dailyTransactionRepository.save(stagingRecord("TESTSCALE0000001", "01",
+                "Scale-1 literal normalized by the column", new BigDecimal("829.5"),
+                "3766281984155154"));
         entityManager.flush();
         entityManager.clear(); // re-read from PostgreSQL so scale reflects the NUMERIC(11,2) column
 
-        DailyTransaction debit = dailyTransactionRepository.findById("0000000025430891").orElseThrow();
-        assertThat(debit.getTranAmt()).isEqualByComparingTo("94.33");
-        assertThat(debit.getTranAmt().scale()).as("NUMERIC(11,2) yields scale 2").isEqualTo(2);
-
-        DailyTransaction credit = dailyTransactionRepository.findById("0000000028097268").orElseThrow();
-        assertThat(credit.getTranAmt()).as("negative amounts retain their sign").isEqualByComparingTo("-250.22");
-        assertThat(credit.getTranAmt().scale()).isEqualTo(2);
-
-        DailyTransaction normalized = dailyTransactionRepository.findById("0000000030755266").orElseThrow();
+        DailyTransaction normalized =
+                dailyTransactionRepository.findById("TESTSCALE0000001").orElseThrow();
         assertThat(normalized.getTranAmt()).isEqualByComparingTo("829.50");
         assertThat(normalized.getTranAmt().scale())
                 .as("a scale-1 input is normalized to scale 2 by NUMERIC(11,2)")
                 .isEqualTo(2);
 
-        // DB-native proof (bypasses JPA entirely): read the raw NUMERIC from PostgreSQL.
+        // DB-native read (bypasses JPA): the seeded NUMERIC value straight from PostgreSQL.
         BigDecimal dbAmount = jdbcTemplate.queryForObject(
                 "SELECT tran_amt FROM daily_transaction WHERE tran_id = ?",
-                BigDecimal.class, "0000000025430891");
-        assertThat(dbAmount).as("value is stored natively in PostgreSQL").isEqualByComparingTo("94.33");
+                BigDecimal.class, SEEDED_ID_1);
+        assertThat(dbAmount).as("value is stored natively in PostgreSQL").isEqualByComparingTo("504.77");
         assertThat(dbAmount.scale()).isEqualTo(2);
     }
 }

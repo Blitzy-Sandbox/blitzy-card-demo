@@ -64,11 +64,10 @@ import static org.mockito.Mockito.when;
  * </ol>
  *
  * <p>Every user-visible detail message is asserted <strong>verbatim</strong> against the
- * compiled service constants &mdash; which themselves reproduce {@code COSGN00C.cbl} lines
- * 120, 125, 242, 249, and 254 exactly &mdash; because byte-equivalent messages are
- * Gate&nbsp;1 / Gate&nbsp;4 critical for behavioral parity.</p>
+ * compiled service constants, which reproduce {@code COSGN00C.cbl} lines 120, 125, 242,
+ * 249, and 254 exactly. Byte-equivalent messages are covered by Gate&nbsp;1 / Gate&nbsp;4.</p>
  *
- * <p>The suite is deliberately framework-free: it bootstraps <strong>no</strong> Spring
+ * <p>The suite is framework-free: it bootstraps <strong>no</strong> Spring
  * {@code ApplicationContext}, uses <strong>no</strong> {@code @SpringBootTest},
  * Testcontainers, {@code spring-security-test}, database, AWS, or network resource. The four
  * collaborators ({@link UserRepository}, {@link PasswordEncoder}, {@link JwtTokenService}, and

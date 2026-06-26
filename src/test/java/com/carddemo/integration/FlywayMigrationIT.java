@@ -59,15 +59,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * changes row counts), which keeps the exact-count assertions deterministic even though the
  * container is shared across the suite.
  *
- * <h2>Note on {@code daily_transaction}</h2>
- * The {@code daily_transaction} staging table is <strong>not</strong> seeded by {@code V3}
- * (see {@code DECISION_LOG} D-026): it is the transient, unposted daily feed that the
- * {@code CBTRN02C} posting pipeline loads as runtime <em>input</em> (never the {@code V3}
- * seed migration), so it starts empty on a freshly migrated schema — the same empty-staging
- * contract documented on {@link AbstractIntegrationIT} and asserted by
- * {@code DailyTransactionRepositoryIT} / {@code RepositoryPersistenceIT}. The posted
- * {@code transactions} table, which likewise has no fixture, also remains empty until the
- * posting batch runs. This test verifies both empty starting states explicitly.
+ * <h2>Note on {@code daily_transaction} and {@code transactions}</h2>
+ * The {@code daily_transaction} staging table <strong>is</strong> seeded by {@code V3} from
+ * {@code app/data/ASCII/dailytran.txt} (copybook {@code CVTRA06Y}, 300 rows): it is the daily
+ * posting feed the {@code CBTRN02C} pipeline reads as input, so a freshly migrated schema holds
+ * the full 300-row feed (the {@code DALYTRAN-AMT} zoned-overpunch sign decoded to
+ * {@code NUMERIC(11,2)}). The posted {@code transactions} table has no ASCII fixture and remains
+ * empty until the posting batch runs. This test verifies the seeded staging count and the empty
+ * posted table explicitly.
  */
 @DisplayName("Flyway migration IT — V1/V2/V3 schema, indexes & seed on real PostgreSQL 16")
 public class FlywayMigrationIT extends AbstractIntegrationIT {
@@ -194,12 +193,13 @@ public class FlywayMigrationIT extends AbstractIntegrationIT {
     // =====================================================================================
 
     /**
-     * Asserts the exact seeded row count of every reference/master table against the row
-     * count of its source ASCII fixture, proving {@code V3} loaded each fixture in full with
-     * no dropped or duplicated records.
+     * Asserts the exact seeded row count of every fixture-backed table against the row count
+     * of its source ASCII fixture, proving {@code V3} loaded all 9 fixtures in full with no
+     * dropped or duplicated records — the 8 reference/master tables plus the
+     * {@code daily_transaction} staging feed ({@code dailytran.txt}).
      */
     @Test
-    @DisplayName("V3: reference tables seeded with exact fixture row counts")
+    @DisplayName("V3: fixture-backed tables seeded with exact ASCII-fixture row counts (all 9 fixtures)")
     void referenceTableSeedCountsMatchFixtures() {
         assertThat(countRows("accounts")).isEqualTo(50L);                      // acctdata.txt
         assertThat(countRows("cards")).isEqualTo(50L);                         // carddata.txt
@@ -209,6 +209,7 @@ public class FlywayMigrationIT extends AbstractIntegrationIT {
         assertThat(countRows("transaction_category_balance")).isEqualTo(50L);  // tcatbal.txt
         assertThat(countRows("transaction_category")).isEqualTo(18L);          // trancatg.txt
         assertThat(countRows("transaction_type")).isEqualTo(7L);               // trantype.txt
+        assertThat(countRows("daily_transaction")).isEqualTo(300L);            // dailytran.txt
     }
 
     /**
@@ -223,17 +224,16 @@ public class FlywayMigrationIT extends AbstractIntegrationIT {
     }
 
     /**
-     * Asserts that the {@code daily_transaction} staging table starts empty on a freshly
-     * migrated schema. Per {@code DECISION_LOG} D-026 the staging table is the transient,
-     * unposted daily feed that the {@code CBTRN02C} posting pipeline loads as runtime input
-     * — it is intentionally <em>not</em> populated by the {@code V3} seed migration. The
-     * sibling {@code DailyTransactionRepositoryIT} and {@code RepositoryPersistenceIT}
-     * assert the same empty-staging contract.
+     * Asserts that the {@code daily_transaction} staging table is seeded with the full
+     * {@code dailytran.txt} feed (copybook {@code CVTRA06Y}, 300 rows) on a freshly migrated
+     * schema. The staging table is the daily posting feed the {@code CBTRN02C} pipeline reads as
+     * input; the sibling {@code DailyTransactionRepositoryIT} and {@code RepositoryPersistenceIT}
+     * assert the same seeded staging contract and the per-field decode fidelity.
      */
     @Test
-    @DisplayName("V3: daily_transaction staging table starts empty (loaded by the posting batch, not seeded)")
-    void dailyTransactionStagingStartsEmpty() {
-        assertThat(countRows("daily_transaction")).isZero();
+    @DisplayName("V3: daily_transaction staging seeded with the 300-row dailytran.txt feed")
+    void dailyTransactionStagingSeededFromFixture() {
+        assertThat(countRows("daily_transaction")).isEqualTo(300L);
     }
 
     /**

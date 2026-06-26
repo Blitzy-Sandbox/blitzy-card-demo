@@ -256,12 +256,12 @@ class AccountRepositoryIT extends AbstractIntegrationIT {
     // =====================================================================================
     // Phase 3 — Optimistic locking (COACTUPC 9300-CHECK-CHANGE-IN-REC re-read-and-compare).
     //
-    // Technique: this test is intentionally NOT @Transactional. Each repository call runs
-    // in its own transaction, so the two findById results are genuinely detached copies
-    // (both at version 0). Saving copy A advances the persisted version to 1; saving the
-    // stale copy B then fails the version check exactly as the COBOL guard rejected an
-    // update to a record another user had already changed. The dedicated row is removed in
-    // @AfterEach so the shared seed stays at 50 rows.
+    // This test is NOT @Transactional. Each repository call runs in its own transaction, so
+    // the two findById results are detached copies (both at version 0). Saving copy A
+    // advances the persisted version to 1; saving the stale copy B then fails the version
+    // check, matching the COBOL guard that rejected an update to a record another user had
+    // already changed. The dedicated row is removed in @AfterEach so the shared seed stays
+    // at 50 rows.
     // =====================================================================================
 
     @Test
