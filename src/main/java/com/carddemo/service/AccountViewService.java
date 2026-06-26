@@ -164,7 +164,8 @@ public class AccountViewService {
                 customer.getGovtIssuedId(),
                 customer.getPhoneNum2(),
                 customer.getEftAccountId(),
-                customer.getPriCardHolderInd());
+                customer.getPriCardHolderInd(),
+                account.getVersion());
     }
 
     /**

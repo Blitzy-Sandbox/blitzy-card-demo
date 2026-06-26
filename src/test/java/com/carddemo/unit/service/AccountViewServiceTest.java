@@ -55,7 +55,8 @@ import static org.mockito.Mockito.when;
  * &mdash; the card cross-reference ({@code 9200-GETCARDXREF-BYACCT}), then the
  * account master ({@code 9300-GETACCTDATA-BYACCT}), then the customer master
  * ({@code 9400-GETCUSTDATA-BYCUST}) &mdash; and folds the joined account and
- * customer fields into the 29-field {@link AccountDto.ViewResponse} exactly as the
+ * customer fields into the 30-field {@link AccountDto.ViewResponse} (29 data fields
+ * plus the optimistic-locking {@code version} token) exactly as the
  * COBOL screen-population paragraph {@code 1200-SETUP-SCREEN-VARS} does. The three
  * not-found outcomes preserve the program's user-visible message text verbatim
  * (confirmed against {@code COACTVWC.cbl} lines&nbsp;130/132/134), which is
@@ -162,11 +163,11 @@ class AccountViewServiceTest {
     }
 
     // -----------------------------------------------------------------
-    // Happy path — full 29-field mapping (xref → account → customer join)
+    // Happy path — full 30-field mapping (xref → account → customer join)
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("getAccount: maps the joined account+customer onto all 29 ViewResponse fields")
+    @DisplayName("getAccount: maps the joined account+customer onto all 30 ViewResponse fields")
     void getAccountMapsAllViewResponseFields() {
         when(cardXrefRepository.findByXrefAcctId(ACCOUNT_ID)).thenReturn(List.of(cardXref));
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
@@ -213,6 +214,9 @@ class AccountViewServiceTest {
         assertThat(response.governmentId()).isEqualTo("DL123456789");
         assertThat(response.eftAccountId()).isEqualTo("EFT0000001");
         assertThat(response.primaryCardHolder()).isEqualTo("Y");
+        // F-05-1: the optimistic-locking version token is surfaced so the client can
+        // echo it back on a subsequent update (9300-CHECK-CHANGE-IN-REC parity).
+        assertThat(response.version()).isEqualTo(0L);
     }
 
     // -----------------------------------------------------------------

@@ -123,7 +123,7 @@ class CardDetailServiceTest {
     // -----------------------------------------------------------------
 
     @Test
-    @DisplayName("getCard: maps every Detail field from the persisted card (account zero-padded to 11 digits, expiry split MM/YYYY)")
+    @DisplayName("getCard: maps every Detail field from the persisted card (account zero-padded to 11 digits, expiry split MM/DD/YYYY)")
     void getCardHappyPathMapsAllFields() {
         when(cardRepository.findById(VALID_CARD)).thenReturn(Optional.of(sampleCard()));
 
@@ -137,6 +137,11 @@ class CardDetailServiceTest {
         assertThat(detail.cardStatus()).isEqualTo("Y");
         assertThat(detail.expiryMonth()).isEqualTo("12");
         assertThat(detail.expiryYear()).isEqualTo("2024");
+        // F-08-2: the day segment of the persisted expiration date (2024-12-31) is
+        // now surfaced on read so a stateless client can round-trip the card update.
+        assertThat(detail.expiryDay()).isEqualTo("31");
+        // The optimistic-locking version token is surfaced for the read-modify-write echo.
+        assertThat(detail.version()).isEqualTo(0L);
 
         // The lookup key passed to CARDDAT equals the supplied card number.
         verify(cardRepository).findById(VALID_CARD);
@@ -155,6 +160,7 @@ class CardDetailServiceTest {
         assertThat(detail.cardStatus()).isEqualTo("N");
         assertThat(detail.expiryMonth()).isEqualTo("06");
         assertThat(detail.expiryYear()).isEqualTo("2030");
+        assertThat(detail.expiryDay()).isEqualTo("30"); // F-08-2: day segment of 2030-06-30
     }
 
     @Test

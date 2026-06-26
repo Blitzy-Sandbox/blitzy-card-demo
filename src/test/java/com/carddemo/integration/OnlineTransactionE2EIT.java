@@ -290,9 +290,12 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
      * each submission is a genuine change rather than a {@code No change detected} reject.
      *
      * @param creditLimit the credit-limit value to submit (scale 2)
+     * @param version     the optimistic-lock token the client last read, echoed back so
+     *                    the cross-request version check (F-05-1) accepts a fresh write;
+     *                    a parallel round has every writer share one read-time value
      * @return the request payload as an ordered JSON-serialisable map
      */
-    private Map<String, Object> validAccountUpdate(BigDecimal creditLimit) {
+    private Map<String, Object> validAccountUpdate(BigDecimal creditLimit, long version) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("accountId", Long.toString(ACCOUNT_UPDATE_ID));
         body.put("accountStatus", "Y");
@@ -329,7 +332,22 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         body.put("phone1Line", "0123");
         body.put("eftAccountId", "1234567890");
         body.put("primaryCardHolder", "Y");
+        body.put("version", version);
         return body;
+    }
+
+    /**
+     * Reads the current optimistic-lock {@code version} token for
+     * {@link #ACCOUNT_UPDATE_ID} through the real account-view endpoint, so an update can
+     * echo the value the client last read (the F-05-1 cross-request round-trip contract).
+     *
+     * @return the persisted account version
+     */
+    private long currentAccountVersion() {
+        ResponseEntity<String> response = httpGet("/api/accounts/" + ACCOUNT_UPDATE_ID, userAuthHeaders());
+        assertThat(response.getStatusCode().value())
+                .as("reading the current account version must succeed").isEqualTo(200);
+        return json(response.getBody()).path("version").asLong();
     }
 
     // ----------------------------------------------------------------------------------
@@ -456,7 +474,14 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         JsonNode errors = body.path("errors");
         assertThat(errors.isObject()).as("400 body must carry a field-keyed 'errors' map").isTrue();
         assertThat(errors.has("userId")).isTrue();
-        assertThat(errors.has("password")).isTrue();
+        // COSGN00C validates the sign-on fields in PROCESS-ENTER-KEY order and short-circuits
+        // on the first blank field (DECISION_LOG D-056: presence validation moved to the service
+        // so the byte-exact COBOL literal is emitted). With userId blank, the service returns the
+        // byte-exact "Please enter User ID ..." and the field-error map carries userId ONLY -
+        // password is never reached, so it is intentionally absent from the errors map.
+        assertThat(body.path("detail").asText()).isEqualTo("Please enter User ID ...");
+        assertThat(errors.path("userId").asText()).isEqualTo("Please enter User ID ...");
+        assertThat(errors.has("password")).isFalse();
     }
 
     // ==================================================================================
@@ -490,7 +515,13 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
 
         JsonNode body = assertProblem(response, 404);
         assertThat(body.path("title").asText()).isEqualTo("Resource Not Found");
-        assertThat(body.path("detail").asText()).contains("could not be found");
+        // The account-view not-found cascade (COACTVWC) checks the card-xref FIRST; an account
+        // with no xref entry surfaces the byte-exact COBOL literal via the message-only
+        // RecordNotFoundException constructor (entityType null -> detail = the literal, per
+        // DECISION_LOG D-057). This is the QA-verified F-004 not-found cascade message, not the
+        // generic entity-typed "could not be found" wording.
+        assertThat(body.path("detail").asText())
+                .isEqualTo("Did not find this account in account card xref file");
     }
 
     @Test
@@ -500,9 +531,14 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         snapshotForRestore("accounts", "acct_id", ACCOUNT_UPDATE_ID);
         snapshotForRestore("customers", "cust_id", 2L);
 
+        // Read the current optimistic-lock version so the first update echoes the value
+        // last read (9300-CHECK-CHANGE-IN-REC round-trip); the seeded record sits at its
+        // initial version until this update advances it.
+        long baselineVersion = currentAccountVersion();
+
         // A single, well-formed update commits cleanly (200) and returns the refreshed view.
         ResponseEntity<String> ok = httpWrite(HttpMethod.PUT, "/api/accounts/" + ACCOUNT_UPDATE_ID,
-                userJsonHeaders(), validAccountUpdate(new BigDecimal("1000.00")));
+                userJsonHeaders(), validAccountUpdate(new BigDecimal("1000.00"), baselineVersion));
         assertThat(ok.getStatusCode().value()).as("first update must succeed").isEqualTo(200);
         assertThat(money(json(ok.getBody()), "creditLimit")).isEqualByComparingTo("1000.00");
 
@@ -539,13 +575,17 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
             // the same @Version: writers that loaded the pre-commit version fail at flush with an
             // optimistic-lock conflict (409). The per-round band keeps values unique across rounds.
             int base = 2000 + attempt * CONCURRENT_WRITERS;
+            // All writers read the SAME current version, then race to advance it: the first
+            // to commit wins (200) while the rest fail either the explicit cross-request
+            // version check or the @Version flush and surface the 409 parity message.
+            long roundVersion = currentAccountVersion();
             List<Future<ResponseEntity<String>>> futures = new ArrayList<>();
             for (int i = 0; i < CONCURRENT_WRITERS; i++) {
                 BigDecimal creditLimit = new BigDecimal((base + i) + ".00");
                 Callable<ResponseEntity<String>> task = () -> {
                     barrier.await(FUTURE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
                     return httpWrite(HttpMethod.PUT, "/api/accounts/" + ACCOUNT_UPDATE_ID,
-                            userJsonHeaders(), validAccountUpdate(creditLimit));
+                            userJsonHeaders(), validAccountUpdate(creditLimit, roundVersion));
                 };
                 futures.add(pool.submit(task));
             }
@@ -613,6 +653,13 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         // The update mutates the embossed name; snapshot the card row for restore.
         snapshotForRestore("cards", "card_num", SEEDED_CARD_NUMBER);
 
+        // Read the current card version so the update echoes the value last read
+        // (F-05-1 optimistic-lock round-trip); the day segment is now exposed on read.
+        ResponseEntity<String> currentCard = httpGet(
+                "/api/cards/" + SEEDED_CARD_NUMBER + "?accountId=" + ACCOUNT_UPDATE_ID, userAuthHeaders());
+        assertThat(currentCard.getStatusCode().value()).isEqualTo(200);
+        long cardVersion = json(currentCard.getBody()).path("version").asLong();
+
         Map<String, Object> update = new LinkedHashMap<>();
         update.put("accountId", SEEDED_CARD_ACCOUNT_ID);
         update.put("cardNumber", SEEDED_CARD_NUMBER);
@@ -621,6 +668,7 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         update.put("expiryMonth", "08");
         update.put("expiryYear", "2024");
         update.put("expiryDay", "11");
+        update.put("version", cardVersion);
 
         ResponseEntity<String> ok =
                 httpWrite(HttpMethod.PUT, "/api/cards/" + SEEDED_CARD_NUMBER, userJsonHeaders(), update);

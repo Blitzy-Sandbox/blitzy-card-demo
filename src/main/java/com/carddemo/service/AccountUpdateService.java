@@ -206,6 +206,8 @@ public class AccountUpdateService {
             throw new ValidationException(firstMessage(fieldErrors), fieldErrors);
         }
 
+        verifyVersion(account, request.version());
+
         boolean accountChanged = applyAccountChanges(account, request);
         boolean customerChanged = applyCustomerChanges(customer, request);
         if (!accountChanged && !customerChanged) {
@@ -215,6 +217,31 @@ public class AccountUpdateService {
         persist(account, customer);
 
         return toViewResponse(account, customer);
+    }
+
+    /**
+     * Reproduces the COBOL {@code 9300-CHECK-CHANGE-IN-REC} re-read-and-compare
+     * guard on the stateless REST surface. The client echoes the {@code version}
+     * it last read on {@link AccountDto.UpdateRequest}; if it no longer matches
+     * the freshly loaded account's JPA {@code @Version}, another transaction
+     * committed between the client's read and this write, so the update is
+     * rejected with a {@link ConcurrentUpdateException} (HTTP 409) instead of
+     * silently overwriting the intervening change. A {@code null} client version
+     * is treated as a mismatch so a caller that omits the token cannot bypass the
+     * guard. The account version is the single optimistic-locking token for the
+     * dual ACCOUNT+CUSTOMER unit of work; the in-flight {@code @Version} check at
+     * flush time still guards a truly concurrent parallel write.
+     *
+     * @param account       the freshly loaded account carrying the current version
+     * @param clientVersion the version the client last read, echoed on the request
+     * @throws ConcurrentUpdateException if the versions differ or the client
+     *                                   version is {@code null}
+     */
+    private void verifyVersion(Account account, Long clientVersion) {
+        Long current = account.getVersion();
+        if (clientVersion == null || !clientVersion.equals(current)) {
+            throw new ConcurrentUpdateException();
+        }
     }
 
     private void validateAccountId(Long accountId) {
@@ -797,7 +824,8 @@ public class AccountUpdateService {
                 customer.getGovtIssuedId(),
                 customer.getPhoneNum2(),
                 customer.getEftAccountId(),
-                customer.getPriCardHolderInd());
+                customer.getPriCardHolderInd(),
+                account.getVersion());
     }
 
     private static String assembleDate(String year, String month, String day) {

@@ -93,6 +93,8 @@ public class CardUpdateService {
     private static final int EXPIRY_YEAR_END = 4;
     private static final int EXPIRY_MONTH_BEGIN = 5;
     private static final int EXPIRY_MONTH_END = 7;
+    private static final int EXPIRY_DAY_BEGIN = 8;
+    private static final int EXPIRY_DAY_END = 10;
     private static final int EXPIRY_DATE_LENGTH = 10;
     private static final int EXPIRY_YEAR_WIDTH = 4;
     private static final int EXPIRY_SEGMENT_WIDTH = 2;
@@ -146,6 +148,7 @@ public class CardUpdateService {
         validateInputs(request);
         validateExpiryDate(request);
         Card card = loadCard(accountId, cardNumber);
+        verifyVersion(card, request.version());
         ensureChangeDetected(card, request);
         applyChanges(card, request);
         Card saved = persist(card);
@@ -233,6 +236,30 @@ public class CardUpdateService {
         return card;
     }
 
+    /**
+     * Reproduces the COBOL {@code 9300-CHECK-CHANGE-IN-REC} re-read-and-compare
+     * guard on the stateless REST surface. The client echoes the {@code version}
+     * it last read on {@link CardDto.UpdateRequest}; if it no longer matches the
+     * freshly loaded card's JPA {@code @Version}, another transaction committed
+     * between the client's read and this write, so the update is rejected with a
+     * {@link ConcurrentUpdateException} (HTTP 409) instead of silently overwriting
+     * the intervening change. A {@code null} client version is treated as a
+     * mismatch so a caller that omits the token cannot bypass the guard; the
+     * in-flight {@code @Version} check at flush time still guards a truly
+     * concurrent parallel write.
+     *
+     * @param card          the freshly loaded card carrying the current version
+     * @param clientVersion the version the client last read, echoed on the request
+     * @throws ConcurrentUpdateException if the versions differ or the client
+     *                                   version is {@code null}
+     */
+    private static void verifyVersion(Card card, Long clientVersion) {
+        Long current = card.getVersion();
+        if (clientVersion == null || !clientVersion.equals(current)) {
+            throw new ConcurrentUpdateException();
+        }
+    }
+
     private static void ensureChangeDetected(Card card, CardDto.UpdateRequest request) {
         boolean nameSame = equalsIgnoreCaseTrimmed(request.cardholderName(), card.getEmbossedName());
         boolean statusSame = equalsIgnoreCaseTrimmed(request.cardStatus(), card.getActiveStatus());
@@ -262,9 +289,11 @@ public class CardUpdateService {
         String expirationDate = trimToEmpty(card.getExpirationDate());
         String expiryYear = "";
         String expiryMonth = "";
+        String expiryDay = "";
         if (expirationDate.length() >= EXPIRY_DATE_LENGTH) {
             expiryYear = expirationDate.substring(EXPIRY_YEAR_BEGIN, EXPIRY_YEAR_END);
             expiryMonth = expirationDate.substring(EXPIRY_MONTH_BEGIN, EXPIRY_MONTH_END);
+            expiryDay = expirationDate.substring(EXPIRY_DAY_BEGIN, EXPIRY_DAY_END);
         }
         String accountId = (card.getCardAcctId() == null)
                 ? null
@@ -275,7 +304,9 @@ public class CardUpdateService {
                 card.getEmbossedName(),
                 card.getActiveStatus(),
                 expiryMonth,
-                expiryYear);
+                expiryYear,
+                expiryDay,
+                card.getVersion());
     }
 
     private static String assembleExpiry(CardDto.UpdateRequest request) {

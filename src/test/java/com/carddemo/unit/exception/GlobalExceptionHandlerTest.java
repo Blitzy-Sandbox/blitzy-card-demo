@@ -65,6 +65,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -363,6 +364,36 @@ class GlobalExceptionHandlerTest {
         assertThat(body.getDetail()).isEqualTo("The HTTP method is not supported for this resource.");
         // RFC 7231 6.5.5: the 405 response MUST advertise the supported methods via Allow.
         assertThat(response.getHeaders().getAllow()).containsExactly(HttpMethod.GET);
+    }
+
+    @Test
+    @DisplayName("MethodArgumentTypeMismatchException -> 400 with a generic, leak-free invalid-parameter detail (F-04-1)")
+    void methodArgumentTypeMismatchMapsTo400() throws NoSuchMethodException {
+        // A non-numeric value supplied for a numeric path variable or request parameter (for
+        // example GET /api/accounts/abc or GET /api/cards?accountId=abc) is a client mistake and
+        // must map to 400, never fall through to handleUnexpected as a 500. A real MethodParameter
+        // is required; any public JDK method serves as the reflective target.
+        Method method = String.class.getMethod("substring", int.class);
+        MethodParameter parameter = new MethodParameter(method, 0);
+        MethodArgumentTypeMismatchException ex = new MethodArgumentTypeMismatchException(
+                "abc-" + SECRET, Long.class, "accountId", parameter,
+                new NumberFormatException("For input string: \"abc-" + SECRET + "\""));
+
+        ResponseEntity<ProblemDetail> response = handler.handleMethodArgumentTypeMismatch(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.BAD_REQUEST, "Invalid Parameter");
+        assertThat(body.getDetail()).isEqualTo("A request parameter has an invalid format.");
+        // The rejected value can carry adversarial input; it must never reach the response body...
+        assertThat(body.getDetail()).doesNotContain(SECRET);
+        // ...nor the diagnostic log. The handler logs only the parameter name (safe), so the
+        // captured WARN event must name the parameter and must not echo the rejected value.
+        assertThat(logCapture.list)
+                .as("type-mismatch must emit a diagnostic event naming the parameter")
+                .isNotEmpty();
+        for (ILoggingEvent event : logCapture.list) {
+            assertThat(event.getFormattedMessage()).contains("accountId");
+            assertThat(event.getFormattedMessage()).doesNotContain(SECRET);
+        }
     }
 
     @Test

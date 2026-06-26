@@ -158,7 +158,7 @@ class CardUpdateServiceTest {
      */
     private static CardDto.UpdateRequest request(String name, String status,
                                                  String month, String year, String day) {
-        return new CardDto.UpdateRequest(ACCOUNT_ID_STR, CARD_NUMBER, name, status, month, year, day);
+        return new CardDto.UpdateRequest(ACCOUNT_ID_STR, CARD_NUMBER, name, status, month, year, day, 0L);
     }
 
     /**
@@ -170,7 +170,7 @@ class CardUpdateServiceTest {
      * @return the assembled update request
      */
     private static CardDto.UpdateRequest keyRequest(String account, String card) {
-        return new CardDto.UpdateRequest(account, card, "JOHN", "Y", "12", "2025", "31");
+        return new CardDto.UpdateRequest(account, card, "JOHN", "Y", "12", "2025", "31", 0L);
     }
 
     /** A fully valid request that changes the name, status, and expiry of {@link #storedCard()}. */
@@ -225,6 +225,12 @@ class CardUpdateServiceTest {
         assertThat(detail.cardStatus()).isEqualTo("N");
         assertThat(detail.expiryMonth()).isEqualTo("11");
         assertThat(detail.expiryYear()).isEqualTo("2030");
+        // F-08-2: the day segment is now surfaced on the Detail so an API-only
+        // read-modify-write can echo it back (the assembled date is 2030-11-15).
+        assertThat(detail.expiryDay()).isEqualTo("15");
+        // The optimistic-locking token is surfaced; the mock saveAndFlush returns the
+        // same instance, so the version is unchanged (0L) at the unit level.
+        assertThat(detail.version()).isEqualTo(0L);
 
         // The Card handed to the repository carries the mutated, byte-assembled values.
         ArgumentCaptor<Card> captor = ArgumentCaptor.forClass(Card.class);
@@ -386,6 +392,25 @@ class CardUpdateServiceTest {
                 .hasMessage("Record changed by some one else. Please review")
                 .hasMessage(ConcurrentUpdateException.DEFAULT_MESSAGE)
                 .hasCause(cause);
+    }
+
+    @Test
+    @DisplayName("Phase 4: stale client version (request behind persisted record) -> ConcurrentUpdateException; never persists")
+    void rejectsStaleClientVersionBeforePersist() {
+        // 9300-CHECK-CHANGE-IN-REC cross-request parity (QA F-05-1): the caller read
+        // the card at version 0 (the token echoed in request.version()) but the
+        // persisted row has since advanced to version 2. The explicit version
+        // comparison must reject the stale write with the byte-exact 409 message
+        // BEFORE saveAndFlush, mirroring the already-correct parallel-contention path.
+        Card advanced = new Card(CARD_NUMBER, ACCOUNT_ID, 123, "JOHN DOE", "2025-12-31", "Y", 2L);
+        when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(advanced));
+
+        // validChangingRequest() echoes version 0L - stale relative to the persisted 2L.
+        assertThatThrownBy(() -> service.updateCard(ACCOUNT_ID, CARD_NUMBER, validChangingRequest()))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage(ConcurrentUpdateException.DEFAULT_MESSAGE);
+
+        verify(cardRepository, never()).saveAndFlush(any(Card.class));
     }
 
     // ======================================================================

@@ -270,8 +270,8 @@ Entity` (well-formed request that violates a business rule).
   either both rows commit or neither does.
 - **Optimistic locking.** JPA `@Version` reproduces the legacy `9300-CHECK-CHANGE-IN-REC` re-read-and-compare
   guard. If the persisted version no longer matches the `version` the client read, the server responds
-  **`409 Conflict`** with the message **"record changed by another user"** — the exact outcome the COBOL
-  paragraph produced when the record had changed underneath the user.
+  **`409 Conflict`** with the byte-exact message **"Record changed by some one else. Please review"** — the
+  exact outcome the COBOL paragraph produced when the record had changed underneath the user.
 - **Status codes.** `200 OK`, `400 Bad Request` (validation), `401 Unauthorized`, `404 Not Found`,
   `409 Conflict` (optimistic-lock collision), `422 Unprocessable Entity` (cross-field business-rule
   violation).
@@ -312,6 +312,11 @@ Entity` (well-formed request that violates a business rule).
   | `expirationDate` | string (`CCYY-MM-DD`) | `CARD-EXPIRAION-DATE X(10)` |
   | `activeStatus` | string (1) | `CARD-ACTIVE-STATUS X(01)` |
 
+- **Expiry segments and version token.** Alongside the assembled `expirationDate`, the detail surfaces the
+  expiry as discrete `expiryMonth` / `expiryYear` / **`expiryDay`** segments (the BMS `EXPMON` / `EXPYEAR` /
+  `EXPDAY` fields) plus the `version` optimistic-lock token, so a client can read every field the
+  card-update contract requires and echo it back (a stateless read-modify-write); the legacy `COCRDUPC`
+  pre-filled the day from the held VSAM image, which the REST surface exposes on read instead.
 - **Status codes.** `200 OK`, `401 Unauthorized`, `404 Not Found`.
 
 #### `PUT /api/cards/{cardNum}`
@@ -321,7 +326,7 @@ Entity` (well-formed request that violates a business rule).
 - **Path param.** `cardNum` — 16-character card number.
 - **Request — `CardDto`** — the card fields above plus a `version` field.
 - **Optimistic locking.** As with account update, `@Version` reproduces `9300-CHECK-CHANGE-IN-REC`; a stale
-  version yields **`409 Conflict`** ("record changed by another user").
+  version yields **`409 Conflict`** ("Record changed by some one else. Please review").
 - **Status codes.** `200 OK`, `400 Bad Request`, `401 Unauthorized`, `404 Not Found`, `409 Conflict`.
 
 ### Transactions — `TransactionController`
@@ -762,7 +767,7 @@ A `PUT /api/accounts/00000000001` carrying a stale `version` returns `409 Confli
   "timestamp": "2025-05-20T14:40:02.001000",
   "status": 409,
   "error": "Conflict",
-  "message": "record changed by another user",
+  "message": "Record changed by some one else. Please review",
   "path": "/api/accounts/00000000001"
 }
 ```

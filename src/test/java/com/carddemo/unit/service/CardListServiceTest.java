@@ -34,6 +34,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -252,6 +253,15 @@ class CardListServiceTest {
         verify(cardRepository).findByCardAcctId(eq(ACCOUNT_ID), pageableCaptor.capture());
         assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(7);
         assertThat(pageableCaptor.getValue().getPageNumber()).isEqualTo(1);
+        // P-2: pagination MUST be deterministically ordered by the card-number key
+        // (the legacy VSAM browse is strictly card-number keyed), so the PageRequest
+        // carries an explicit ascending Sort on cardNum rather than relying on the
+        // implicit PK index, which is not guaranteed across query plans.
+        Sort sort = pageableCaptor.getValue().getSort();
+        assertThat(sort.isSorted()).isTrue();
+        assertThat(sort.getOrderFor("cardNum")).isNotNull();
+        assertThat(sort.getOrderFor("cardNum").getDirection()).isEqualTo(Sort.Direction.ASC);
+        assertThat(sort).isEqualTo(Sort.by("cardNum").ascending());
         assertThat(response.pageNumber()).isEqualTo("1");
     }
 
@@ -290,6 +300,26 @@ class CardListServiceTest {
         assertThat(response.accountIdFilter()).isNull();
         assertThat(response.cardNumberFilter()).isNull();
         assertThat(response.pageNumber()).isEqualTo("0");
+    }
+
+    @Test
+    @DisplayName("no filter: the unfiltered findAll(Pageable) browse is also ascending-sorted on cardNum (P-2)")
+    void unfilteredBrowseIsSortedByCardNumAscending() {
+        List<Card> cards = List.of(
+                card("0000000000000001", "Y"),
+                card("0000000000000002", "N"));
+        when(cardRepository.findAll(any(Pageable.class)))
+                .thenReturn(new PageImpl<>(cards));
+
+        service.listCards(null, null, 0);
+
+        // P-2: the same explicitly-ordered PageRequest must flow into the unfiltered
+        // findAll(Pageable) browse path, not only the account-filtered finder, so that
+        // full-list pagination is deterministically card-number keyed like the VSAM browse.
+        ArgumentCaptor<Pageable> pageableCaptor = ArgumentCaptor.forClass(Pageable.class);
+        verify(cardRepository).findAll(pageableCaptor.capture());
+        assertThat(pageableCaptor.getValue().getPageSize()).isEqualTo(7);
+        assertThat(pageableCaptor.getValue().getSort()).isEqualTo(Sort.by("cardNum").ascending());
     }
 
     @Test

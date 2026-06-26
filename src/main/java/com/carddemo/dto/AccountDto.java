@@ -19,7 +19,6 @@ package com.carddemo.dto;
 import java.math.BigDecimal;
 
 import jakarta.validation.constraints.Digits;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -40,9 +39,14 @@ import jakarta.validation.constraints.Size;
  * the update map does. The two shapes intentionally differ in segmentation so
  * that each map's external field contract is preserved verbatim.</p>
  *
- * <p>This type carries the field contract only; transaction orchestration,
- * optimistic-locking version checks and date/segment assembly are the
- * responsibility of the controller and service layers.</p>
+ * <p>Both records additionally expose the JPA {@code @Version} optimistic-locking
+ * token as a {@code version} component: {@link ViewResponse} emits the value last
+ * read so a client can echo it on update, and {@link UpdateRequest} requires it so
+ * the service can reject a stale cross-request read with HTTP 409, reproducing the
+ * legacy {@code 9300-CHECK-CHANGE-IN-REC} re-read-and-compare guard on the
+ * stateless REST surface. Transaction orchestration, the version comparison
+ * itself, and date/segment assembly remain the responsibility of the service
+ * layer.</p>
  */
 public final class AccountDto {
 
@@ -85,7 +89,8 @@ public final class AccountDto {
             @Size(max = 20) String governmentId,
             @Size(max = 13) String phone2,
             @Size(max = 10) String eftAccountId,
-            @Size(max = 1) String primaryCardHolder) {
+            @Size(max = 1) String primaryCardHolder,
+            Long version) {
     }
 
     /**
@@ -99,7 +104,7 @@ public final class AccountDto {
      * function-key fields of the source map are intentionally excluded.
      */
     public record UpdateRequest(
-            @NotBlank @Size(max = 11) @Pattern(regexp = "\\d{1,11}") String accountId,
+            @Size(max = 11) @Pattern(regexp = "\\d{1,11}") String accountId,
             @Size(max = 1) String accountStatus,
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String openYear,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String openMonth,
@@ -113,12 +118,12 @@ public final class AccountDto {
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String dobYear,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String dobMonth,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String dobDay,
-            @Digits(integer = 10, fraction = 2) BigDecimal creditLimit,
-            @Digits(integer = 10, fraction = 2) BigDecimal cashCreditLimit,
-            @Digits(integer = 10, fraction = 2) BigDecimal currentBalance,
-            @Digits(integer = 10, fraction = 2) BigDecimal currentCycleCredit,
+            BigDecimal creditLimit,
+            BigDecimal cashCreditLimit,
+            BigDecimal currentBalance,
+            BigDecimal currentCycleCredit,
             @Size(max = 10) String accountGroupId,
-            @Digits(integer = 10, fraction = 2) BigDecimal currentCycleDebit,
+            BigDecimal currentCycleDebit,
             @Size(max = 9) @Pattern(regexp = "\\d{1,9}") String customerId,
             @Size(max = 3) @Pattern(regexp = "\\d{0,3}") String ssnPart1,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String ssnPart2,
@@ -141,6 +146,7 @@ public final class AccountDto {
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String phone2Line,
             @Size(max = 20) String governmentId,
             @Size(max = 10) String eftAccountId,
-            @Size(max = 1) String primaryCardHolder) {
+            @Size(max = 1) String primaryCardHolder,
+            Long version) {
     }
 }

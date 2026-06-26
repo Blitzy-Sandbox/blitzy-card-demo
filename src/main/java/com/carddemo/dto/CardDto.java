@@ -68,7 +68,13 @@ public final class CardDto {
      * Card detail response. Derived from the {@code COCRDSL} screen fields
      * {@code ACCTSID X(11)}, {@code CARDSID X(16)}, {@code CRDNAME X(50)},
      * {@code CRDSTCD X(1)}, {@code EXPMON X(2)}, {@code EXPYEAR X(4)} at commit
-     * {@code 27d6c6f}. Expiry is kept as separate month and year segments.
+     * {@code 27d6c6f}. Expiry is kept as separate month, year, and day segments;
+     * the {@code expiryDay} segment is surfaced from the persisted expiration date
+     * (beyond the literal {@code COCRDSL} MM/YY map) so a stateless client can
+     * perform a read-modify-write using only API-exposed fields, mirroring the way
+     * {@code COCRDUPC} pre-filled the day from the VSAM record. The {@code version}
+     * component carries the JPA {@code @Version} token last read so it can be
+     * echoed on update.
      *
      * @param accountId      the account identifier ({@code ACCTSID}, max 11 digits)
      * @param cardNumber     the card number ({@code CARDSID}, max 16 digits)
@@ -76,6 +82,8 @@ public final class CardDto {
      * @param cardStatus     the single-character card status code ({@code CRDSTCD})
      * @param expiryMonth    the expiry month segment ({@code EXPMON}, max 2 digits)
      * @param expiryYear     the expiry year segment ({@code EXPYEAR}, max 4 digits)
+     * @param expiryDay      the expiry day segment (max 2 digits), from the persisted date
+     * @param version        the optimistic-locking version token last read
      */
     public record Detail(
             @Size(max = 11) @Pattern(regexp = "\\d{1,11}") String accountId,
@@ -83,7 +91,9 @@ public final class CardDto {
             @Size(max = 50) String cardholderName,
             @Size(max = 1) String cardStatus,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String expiryMonth,
-            @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String expiryYear
+            @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String expiryYear,
+            @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String expiryDay,
+            Long version
     ) {
     }
 
@@ -100,6 +110,10 @@ public final class CardDto {
      * @param expiryMonth    the expiry month segment ({@code EXPMON}, max 2 digits)
      * @param expiryYear     the expiry year segment ({@code EXPYEAR}, max 4 digits)
      * @param expiryDay      the expiry day segment ({@code EXPDAY}, max 2 digits)
+     * @param version        the optimistic-locking version token the client last
+     *                       read; required so a stale cross-request update is
+     *                       rejected with HTTP 409, reproducing the legacy
+     *                       {@code 9300-CHECK-CHANGE-IN-REC} guard
      */
     public record UpdateRequest(
             @NotBlank @Size(max = 11) @Pattern(regexp = "\\d{1,11}") String accountId,
@@ -108,7 +122,8 @@ public final class CardDto {
             @Size(max = 1) String cardStatus,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String expiryMonth,
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String expiryYear,
-            @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String expiryDay
+            @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String expiryDay,
+            Long version
     ) {
     }
 }

@@ -409,6 +409,32 @@ class AccountUpdateServiceTest {
         verify(customerRepository, never()).save(any(Customer.class));
     }
 
+    @Test
+    @DisplayName("updateAccount: stale client version (request behind persisted record) -> ConcurrentUpdateException, no record is saved")
+    void updateAccountStaleClientVersionThrowsAndSavesNothing() {
+        // COBOL 9300/9700-CHECK-CHANGE-IN-REC parity for the CROSS-REQUEST stale-read
+        // scenario the QA report flagged as F-05-1 (silent lost update): the caller
+        // read the account at version 0 (the token echoed back in request.version())
+        // but another transaction has since advanced the persisted record to version
+        // 2. The explicit version comparison must reject the stale write with the
+        // byte-exact 409 message BEFORE any change is applied or persisted, mirroring
+        // the parallel-contention path. The 1200-EDIT-MAP-INPUTS field cascade still
+        // runs first (so the loaded records are fully validated), hence the same load
+        // and lookup stubs as the no-change test.
+        Account account = matchingAccount();
+        account.setVersion(2L);
+        stubLoads(account, matchingCustomer());
+        stubValidLookups();
+
+        // validRequest().build() echoes version 0L - stale relative to the persisted 2L.
+        assertThatThrownBy(() -> service.updateAccount(ACCOUNT_ID, validRequest().build()))
+                .isInstanceOf(ConcurrentUpdateException.class)
+                .hasMessage("Record changed by some one else. Please review");
+
+        verify(accountRepository, never()).save(any(Account.class));
+        verify(customerRepository, never()).save(any(Customer.class));
+    }
+
     // =================================================================
     // Phase 6 - transactional rollback intent
     // =================================================================
@@ -564,7 +590,8 @@ class AccountUpdateServiceTest {
                 null, null, null, null, null, null, // addressLine1, state, addressLine2, zipCode, city, country
                 null, null, null,          // phone1Area, phone1Prefix, phone1Line
                 null, null, null,          // phone2Area, phone2Prefix, phone2Line
-                null, null, null);         // governmentId, eftAccountId, primaryCardHolder
+                null, null, null,          // governmentId, eftAccountId, primaryCardHolder
+                0L);                       // version (no-input check fires before the version compare)
     }
 
     /**
@@ -624,7 +651,8 @@ class AccountUpdateServiceTest {
                     "90001", "Anytown", "USA",                // zipCode, city, country
                     "415", "555", "1234",                     // phone1Area, phone1Prefix, phone1Line
                     null, null, null,                         // phone2Area, phone2Prefix, phone2Line
-                    "GID12345", "1234567890", "Y");           // governmentId, eftAccountId, primaryCardHolder
+                    "GID12345", "1234567890", "Y",            // governmentId, eftAccountId, primaryCardHolder
+                    0L);                                      // version (equals loaded entity -> verifyVersion passes)
         }
     }
 }

@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * with no Spring context, no Mockito, no Testcontainers and no I/O — only a standalone Jakarta
  * Bean Validation {@link Validator}. The non-negotiable guarantees verified here are:</p>
  * <ul>
- *   <li>{@code ViewResponse} has EXACTLY 29 record components, in the documented order;</li>
+ *   <li>{@code ViewResponse} has EXACTLY 30 record components, in the documented order;</li>
  *   <li>both records expose EXACTLY five {@link BigDecimal} {@code @Digits(integer=10, fraction=2)}
  *       monetary fields ({@code creditLimit}, {@code cashCreditLimit}, {@code currentBalance},
  *       {@code currentCycleCredit}, {@code currentCycleDebit}) and contain NO floating-point
@@ -44,8 +44,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       {@code reissueDate}/{@code dateOfBirth}/{@code ssn}/{@code phone1}/{@code phone2}
  *       equivalents;</li>
  *   <li>{@code accountStatus} is a {@code String} of width 1 (NOT an enum);</li>
- *   <li>neither record carries a {@code version} component (optimistic locking lives on the JPA
- *       entity, never the DTO);</li>
+ *   <li>both records carry a {@code version} component — the JPA {@code @Version} optimistic-locking
+ *       token surfaced so a stateless client can echo it and a stale cross-request update is rejected
+ *       (HTTP 409), reproducing {@code 9300-CHECK-CHANGE-IN-REC};</li>
  *   <li>the declared {@code @Size}/{@code @Pattern}/{@code @Digits}/{@code @NotBlank} constraints
  *       behave at their documented boundaries.</li>
  * </ul>
@@ -124,7 +125,8 @@ class AccountDtoTest {
                 "GOVTID0001",
                 "(123)456-7891",
                 "EFT0000001",
-                "Y");
+                "Y",
+                0L);
     }
 
     /**
@@ -178,7 +180,8 @@ class AccountDtoTest {
                 "7890",
                 "GOVTID0001",
                 "EFT0000001",
-                "Y");
+                "Y",
+                0L);
     }
 
     /** A fully contract-valid view response. */
@@ -196,8 +199,8 @@ class AccountDtoTest {
     // ---------------------------------------------------------------------
 
     @Test
-    void viewResponseHasExactlyTwentyNineComponents() {
-        assertThat(AccountDto.ViewResponse.class.getRecordComponents()).hasSize(29);
+    void viewResponseHasExactlyThirtyComponents() {
+        assertThat(AccountDto.ViewResponse.class.getRecordComponents()).hasSize(30);
     }
 
     @Test
@@ -208,7 +211,7 @@ class AccountDtoTest {
                 "currentCycleDebit", "customerId", "ssn", "dateOfBirth", "ficoScore",
                 "firstName", "middleName", "lastName", "addressLine1", "state",
                 "addressLine2", "zipCode", "city", "country", "phone1",
-                "governmentId", "phone2", "eftAccountId", "primaryCardHolder");
+                "governmentId", "phone2", "eftAccountId", "primaryCardHolder", "version");
     }
 
     @Test
@@ -260,9 +263,9 @@ class AccountDtoTest {
     }
 
     @Test
-    void updateRequestHasNoVersionField() {
-        assertThat(names(AccountDto.ViewResponse.class)).doesNotContain("version");
-        assertThat(names(AccountDto.UpdateRequest.class)).doesNotContain("version");
+    void bothRecordsHaveVersionField() {
+        assertThat(names(AccountDto.ViewResponse.class)).contains("version");
+        assertThat(names(AccountDto.UpdateRequest.class)).contains("version");
     }
 
     @Test

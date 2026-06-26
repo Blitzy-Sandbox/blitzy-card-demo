@@ -112,7 +112,9 @@ public class CardDetailService {
                 card.getEmbossedName(),
                 card.getActiveStatus(),
                 extractExpiryMonth(expirationDate),
-                extractExpiryYear(expirationDate));
+                extractExpiryYear(expirationDate),
+                extractExpiryDay(expirationDate),
+                card.getVersion());
     }
 
     /**
@@ -155,5 +157,25 @@ public class CardDetailService {
             return "";
         }
         return expirationDate.substring(5, 7);
+    }
+
+    /**
+     * Extracts the {@code DD} day segment from a {@code YYYY-MM-DD} date.
+     *
+     * <p>The legacy {@code COCRDSL} detail map shows only MM/YY; the day is
+     * surfaced here from the persisted expiration date so a stateless client can
+     * perform a read-modify-write against {@code COCRDUP} (which requires the day)
+     * using only API-exposed fields, mirroring the way {@code COCRDUPC} pre-filled
+     * the day from the VSAM record.</p>
+     *
+     * @param expirationDate the ten-character expiration date; may be
+     *                       {@code null} or shorter than expected
+     * @return the two-character day segment, or an empty string when absent
+     */
+    private static String extractExpiryDay(String expirationDate) {
+        if (expirationDate == null || expirationDate.length() < 10) {
+            return "";
+        }
+        return expirationDate.substring(8, 10);
     }
 }

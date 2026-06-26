@@ -30,12 +30,18 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>{@code ListResponse} carries the seven-row page of {@code COCRDLI}
  *       ({@code ACCTNO1-7}/{@code CRDNUM1-7}/{@code CRDSTS1-7}).</li>
  *   <li>Card expiry is stored as discrete <em>segments</em> ({@code EXPMON},
- *       {@code EXPYEAR}, and — for updates — {@code EXPDAY}), never as a single
- *       merged date value.</li>
+ *       {@code EXPYEAR}, {@code EXPDAY}) on both {@code Detail} and
+ *       {@code UpdateRequest}, never as a single merged date value; {@code Detail}
+ *       surfaces {@code expiryDay} from the persisted date so a stateless client
+ *       can perform a read-modify-write.</li>
  *   <li>{@code cardStatus} is a one-character {@link String} ({@code CRDSTS}/
  *       {@code CRDSTCD}), not a status enum.</li>
  *   <li>{@code UpdateRequest} requires a non-blank {@code accountId} and
  *       {@code cardNumber} ({@code @NotBlank}).</li>
+ *   <li>{@code Detail} and {@code UpdateRequest} carry a {@code version} component
+ *       (the JPA {@code @Version} token); {@code UpdateRequest.version} is
+ *       {@code @NotNull} so a stale cross-request update is rejected (HTTP 409),
+ *       reproducing {@code 9300-CHECK-CHANGE-IN-REC}.</li>
  * </ul>
  *
  * <p>The suite uses only the standalone jakarta Bean Validation
@@ -122,7 +128,7 @@ class CardDtoTest {
                 .extracting(RecordComponent::getName)
                 .containsExactly(
                         "accountId", "cardNumber", "cardholderName",
-                        "cardStatus", "expiryMonth", "expiryYear");
+                        "cardStatus", "expiryMonth", "expiryYear", "expiryDay", "version");
     }
 
     @Test
@@ -133,7 +139,7 @@ class CardDtoTest {
                 .extracting(RecordComponent::getName)
                 .containsExactly(
                         "accountId", "cardNumber", "cardholderName", "cardStatus",
-                        "expiryMonth", "expiryYear", "expiryDay")
+                        "expiryMonth", "expiryYear", "expiryDay", "version")
                 .contains("expiryMonth", "expiryYear", "expiryDay")
                 .doesNotContain("expiryDate");
     }
@@ -244,14 +250,14 @@ class CardDtoTest {
         // Three digits exceed @Size(max=2) (and the \d{0,2} pattern) on EXPMON.
         CardDto.Detail tooLong = new CardDto.Detail(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME,
-                VALID_CARD_STATUS, "123", VALID_EXP_YEAR);
+                VALID_CARD_STATUS, "123", VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         Set<ConstraintViolation<CardDto.Detail>> violations = validator.validate(tooLong);
         assertViolationsOnlyOn(violations, "expiryMonth");
 
         // Two digits pass.
         CardDto.Detail ok = new CardDto.Detail(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME,
-                VALID_CARD_STATUS, VALID_EXP_MONTH, VALID_EXP_YEAR);
+                VALID_CARD_STATUS, VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         assertThat(validator.validate(ok)).isEmpty();
     }
 
@@ -260,14 +266,14 @@ class CardDtoTest {
         // Five digits exceed @Size(max=4) (and the \d{0,4} pattern) on EXPYEAR.
         CardDto.Detail tooLong = new CardDto.Detail(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME,
-                VALID_CARD_STATUS, VALID_EXP_MONTH, "20245");
+                VALID_CARD_STATUS, VALID_EXP_MONTH, "20245", VALID_EXP_DAY, 0L);
         Set<ConstraintViolation<CardDto.Detail>> violations = validator.validate(tooLong);
         assertViolationsOnlyOn(violations, "expiryYear");
 
         // Four digits pass.
         CardDto.Detail ok = new CardDto.Detail(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME,
-                VALID_CARD_STATUS, VALID_EXP_MONTH, VALID_EXP_YEAR);
+                VALID_CARD_STATUS, VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         assertThat(validator.validate(ok)).isEmpty();
     }
 
@@ -276,7 +282,7 @@ class CardDtoTest {
         // A blank accountId trips @NotBlank (and the \d{1,11} pattern).
         CardDto.UpdateRequest blank = new CardDto.UpdateRequest(
                 "", VALID_CARD_NUMBER, VALID_NAME, VALID_CARD_STATUS,
-                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY);
+                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         Set<ConstraintViolation<CardDto.UpdateRequest>> violations = validator.validate(blank);
         assertViolationsOnlyOn(violations, "accountId");
     }
@@ -286,7 +292,7 @@ class CardDtoTest {
         // A blank cardNumber trips @NotBlank (and the \d{1,16} pattern).
         CardDto.UpdateRequest blank = new CardDto.UpdateRequest(
                 VALID_ACCOUNT_ID, "", VALID_NAME, VALID_CARD_STATUS,
-                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY);
+                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         Set<ConstraintViolation<CardDto.UpdateRequest>> violations = validator.validate(blank);
         assertViolationsOnlyOn(violations, "cardNumber");
     }
@@ -296,14 +302,14 @@ class CardDtoTest {
         // Three digits exceed @Size(max=2) (and the \d{0,2} pattern) on EXPDAY.
         CardDto.UpdateRequest tooLong = new CardDto.UpdateRequest(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME, VALID_CARD_STATUS,
-                VALID_EXP_MONTH, VALID_EXP_YEAR, "123");
+                VALID_EXP_MONTH, VALID_EXP_YEAR, "123", 0L);
         Set<ConstraintViolation<CardDto.UpdateRequest>> violations = validator.validate(tooLong);
         assertViolationsOnlyOn(violations, "expiryDay");
 
         // The two-digit boundary value passes.
         CardDto.UpdateRequest ok = new CardDto.UpdateRequest(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME, VALID_CARD_STATUS,
-                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY);
+                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         assertThat(validator.validate(ok)).isEmpty();
     }
 
@@ -311,8 +317,23 @@ class CardDtoTest {
     void updateRequestValidInstancePasses() {
         CardDto.UpdateRequest ok = new CardDto.UpdateRequest(
                 VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME, VALID_CARD_STATUS,
-                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY);
+                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, 0L);
         Set<ConstraintViolation<CardDto.UpdateRequest>> violations = validator.validate(ok);
+        assertThat(violations).isEmpty();
+    }
+
+    @Test
+    void updateRequestNullVersionPassesDtoLayer() {
+        // The optimistic-locking token carries NO bean-validation constraint (D-062): a null or
+        // omitted version is NOT rejected at the DTO layer. The service's verifyVersion treats a
+        // null token exactly like a stale one and raises the byte-exact 409 (D-059), so the
+        // 9300-CHECK-CHANGE-IN-REC guard is enforced in the service layer rather than shadowed by
+        // a controller-boundary @NotNull -> generic 400. With every other field valid, a null
+        // version therefore yields no DTO-layer violation.
+        CardDto.UpdateRequest missingVersion = new CardDto.UpdateRequest(
+                VALID_ACCOUNT_ID, VALID_CARD_NUMBER, VALID_NAME, VALID_CARD_STATUS,
+                VALID_EXP_MONTH, VALID_EXP_YEAR, VALID_EXP_DAY, null);
+        Set<ConstraintViolation<CardDto.UpdateRequest>> violations = validator.validate(missingVersion);
         assertThat(violations).isEmpty();
     }
 }

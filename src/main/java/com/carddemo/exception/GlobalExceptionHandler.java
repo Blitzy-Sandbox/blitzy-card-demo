@@ -45,6 +45,7 @@ import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
@@ -90,6 +91,13 @@ public class GlobalExceptionHandler {
             "The request body could not be read; ensure it is well-formed JSON.";
 
     private static final String SLUG_MALFORMED_REQUEST = "malformed-request";
+
+    private static final String TITLE_TYPE_MISMATCH = "Invalid Parameter";
+
+    private static final String DETAIL_TYPE_MISMATCH =
+            "A request parameter has an invalid format.";
+
+    private static final String SLUG_TYPE_MISMATCH = "type-mismatch";
 
     private static final String TITLE_UNSUPPORTED_MEDIA_TYPE = "Unsupported Media Type";
 
@@ -275,6 +283,20 @@ public class GlobalExceptionHandler {
         log.warn("Unreadable request body -> 400 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.BAD_REQUEST, TITLE_MALFORMED_REQUEST,
                 DETAIL_MALFORMED_REQUEST, SLUG_MALFORMED_REQUEST, request);
+        return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ProblemDetail> handleMethodArgumentTypeMismatch(
+            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        // A path variable or request parameter could not be converted to its declared type
+        // (for example, a non-numeric value supplied for a Long-typed account id or filter).
+        // This is a client mistake, not a server fault, so it MUST be 400 rather than falling
+        // through to handleUnexpected as a 500. Log only the parameter name (safe); the rejected
+        // value (ex.getValue()) is never logged or surfaced, as it can echo adversarial input (R1).
+        log.warn("Parameter type mismatch -> 400 (name={})", ex.getName());
+        ProblemDetail body = problem(HttpStatus.BAD_REQUEST, TITLE_TYPE_MISMATCH,
+                DETAIL_TYPE_MISMATCH, SLUG_TYPE_MISMATCH, request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 

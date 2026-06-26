@@ -26,6 +26,7 @@ import com.carddemo.repository.CardRepository;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -145,7 +146,11 @@ public class CardListService {
         if (cardFilter != null) {
             cards = resolveSpecificCard(effectiveAccountId, cardFilter, safePage);
         } else {
-            Pageable pageable = PageRequest.of(safePage, PAGE_SIZE);
+            // Explicit ascending sort on the cardNum primary key (P-2): the legacy VSAM browse
+            // is strictly card-number keyed, so pagination MUST be deterministically ordered.
+            // Without an explicit Sort, page ordering depends on the query plan / PostgreSQL
+            // version and could overlap or skip rows across pages.
+            Pageable pageable = PageRequest.of(safePage, PAGE_SIZE, Sort.by("cardNum").ascending());
             Page<Card> page = accountSupplied
                     ? cardRepository.findByCardAcctId(accountIdFilter, pageable)
                     : cardRepository.findAll(pageable);
