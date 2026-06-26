@@ -387,7 +387,7 @@ class CombineTransactionsJobIT extends AbstractIntegrationIT {
             BigDecimal amount, String merchantName) {
         return new Transaction(
                 tranId,                     // TRAN-ID            X(16) — natural primary key
-                type,                       // TRAN-TYPE-CD       X(02) via TransactionTypeConverter
+                type.getCode(),             // TRAN-TYPE-CD       X(02) raw write-through (CVTRA05Y PIC X(2))
                 1,                          // TRAN-CAT-CD        9(04)
                 "POS",                      // TRAN-SOURCE        X(10)
                 "Combine IT transaction",   // TRAN-DESC          X(100)

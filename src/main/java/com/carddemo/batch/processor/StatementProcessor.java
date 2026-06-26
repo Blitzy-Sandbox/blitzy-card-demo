@@ -243,8 +243,7 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementProc
      */
     public StatementDto toStatementDto(Transaction transaction) {
         Objects.requireNonNull(transaction, "transaction must not be null");
-        String transactionType =
-                transaction.getTransactionType() == null ? null : transaction.getTransactionType().getCode();
+        String transactionType = transaction.getTranTypeCd();
         String categoryCode =
                 transaction.getTranCatCd() == null ? null : String.valueOf(transaction.getTranCatCd());
         String merchantId =

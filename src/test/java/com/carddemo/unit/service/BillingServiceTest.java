@@ -44,11 +44,14 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -153,6 +156,14 @@ class BillingServiceTest {
     @Mock
     private DateValidationService dateValidationService;
 
+    // A bare PlatformTransactionManager mock is sufficient: the real
+    // TransactionTemplate the service builds over it runs its action callback
+    // synchronously (getTransaction() yields a null status, commit()/rollback()
+    // are no-ops on the mock), so each retried payment attempt executes inline on
+    // the test thread without an NPE.
+    @Mock
+    private PlatformTransactionManager transactionManager;
+
     @InjectMocks
     private BillingService service;
 
@@ -214,12 +225,12 @@ class BillingServiceTest {
 
         // Capture the persisted payment transaction and pin every hardcoded field.
         ArgumentCaptor<Transaction> transactionCaptor = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(transactionCaptor.capture());
+        verify(transactionRepository).insert(transactionCaptor.capture());
         Transaction saved = transactionCaptor.getValue();
 
         assertThat(saved.getTranId()).isEqualTo(FIRST_TRAN_ID);
-        assertThat(saved.getTransactionType()).isEqualTo(TransactionTypeCode.PAYMENT);
-        assertThat(saved.getTransactionType().getCode()).isEqualTo("02");
+        assertThat(saved.getTranTypeCd()).isEqualTo(TransactionTypeCode.PAYMENT.getCode());
+        assertThat(saved.getTranTypeCd()).isEqualTo("02");
         assertThat(saved.getTranCatCd()).isEqualTo(2);
         assertThat(saved.getTranSource()).isEqualTo("POS TERM");
         assertThat(saved.getTranDesc()).isEqualTo("BILL PAYMENT - ONLINE");
@@ -242,6 +253,11 @@ class BillingServiceTest {
         assertThat(response.accountId()).isEqualTo(ACCOUNT_ID_TEXT);
         assertThat(response.currentBalance()).isEqualByComparingTo(BigDecimal.ZERO);
         assertThat(response.confirm()).isEqualTo("Y");
+        // The response surfaces the generated transaction id and the byte-exact
+        // COBIL00C success banner (two spaces after "successful.", trailing period).
+        assertThat(response.transactionId()).isEqualTo(FIRST_TRAN_ID);
+        assertThat(response.confirmationMessage())
+                .isEqualTo("Payment successful.  Your Transaction ID is " + FIRST_TRAN_ID + ".");
     }
 
     @Test
@@ -257,7 +273,7 @@ class BillingServiceTest {
                 service.payBill(new BillingDto.PayRequest(ACCOUNT_ID_TEXT, "y"));
 
         ArgumentCaptor<Transaction> transactionCaptor = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(transactionCaptor.capture());
+        verify(transactionRepository).insert(transactionCaptor.capture());
         assertThat(transactionCaptor.getValue().getTranAmt())
                 .isEqualByComparingTo(new BigDecimal("75.50"));
         verify(accountRepository).save(any());
@@ -278,24 +294,55 @@ class BillingServiceTest {
         service.payBill(new BillingDto.PayRequest(ACCOUNT_ID_TEXT, "Y"));
 
         ArgumentCaptor<Transaction> transactionCaptor = ArgumentCaptor.forClass(Transaction.class);
-        verify(transactionRepository).save(transactionCaptor.capture());
+        verify(transactionRepository).insert(transactionCaptor.capture());
         assertThat(transactionCaptor.getValue().getTranId()).isEqualTo("0000000000000042");
     }
 
     @Test
-    @DisplayName("payBill: a collision on the generated TRAN-ID raises DuplicateRecordException and writes nothing")
-    void payBillDuplicateTransactionIdThrowsAndWritesNothing() {
+    @DisplayName("payBill: a transient TRAN-ID collision is retried and the next attempt completes the payment (concurrency parity, Issue #6)")
+    void payBillTransientCollisionThenRetrySucceeds() {
         Account account = accountWithBalance(new BigDecimal("250.00"));
         when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
         when(cardXrefRepository.findByXrefAcctId(ACCOUNT_ID)).thenReturn(List.of(cardXref()));
         when(transactionRepository.findTopByOrderByTranIdDesc()).thenReturn(Optional.empty());
-        when(transactionRepository.existsById(FIRST_TRAN_ID)).thenReturn(true);
+        when(dateValidationService.currentTimestamp()).thenReturn(FIXED_TIMESTAMP);
+        // The first attempt loses the id race (a concurrent payment claimed the id,
+        // raising a primary-key violation); the retry re-reads the highest id and
+        // commits the payment — serialized exactly as legacy CICS/VSAM record
+        // locking did, rather than surfacing a 500.
+        when(transactionRepository.insert(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "duplicate key value violates unique constraint \"pk_transactions\""))
+                .thenReturn(existingTransaction(FIRST_TRAN_ID));
+
+        BillingDto.PayResponse response =
+                service.payBill(new BillingDto.PayRequest(ACCOUNT_ID_TEXT, "Y"));
+
+        assertThat(response.transactionId()).isEqualTo(FIRST_TRAN_ID);
+        assertThat(response.currentBalance()).isEqualByComparingTo(BigDecimal.ZERO);
+        // The write was attempted twice; the balance was committed once, on the retry.
+        verify(transactionRepository, times(2)).insert(any(Transaction.class));
+        verify(accountRepository).save(any());
+    }
+
+    @Test
+    @DisplayName("payBill: a persistent TRAN-ID collision exhausts retries -> DuplicateRecordException and writes nothing")
+    void payBillDuplicateTransactionIdExhaustsRetriesAndThrows() {
+        Account account = accountWithBalance(new BigDecimal("250.00"));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(cardXrefRepository.findByXrefAcctId(ACCOUNT_ID)).thenReturn(List.of(cardXref()));
+        when(transactionRepository.findTopByOrderByTranIdDesc()).thenReturn(Optional.empty());
+        when(dateValidationService.currentTimestamp()).thenReturn(FIXED_TIMESTAMP);
+        // Every attempt collides, so the bounded retry exhausts and surfaces the
+        // byte-exact legacy duplicate message; the account balance is never saved.
+        when(transactionRepository.insert(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "duplicate key value violates unique constraint \"pk_transactions\""));
 
         assertThatThrownBy(() -> service.payBill(new BillingDto.PayRequest(ACCOUNT_ID_TEXT, "Y")))
                 .isInstanceOf(DuplicateRecordException.class)
                 .hasMessage(MSG_TRAN_DUPLICATE);
 
-        verify(transactionRepository, never()).save(any());
         verify(accountRepository, never()).save(any());
     }
 
@@ -315,7 +362,7 @@ class BillingServiceTest {
                 .hasMessage(MSG_NOTHING_TO_PAY);
 
         verify(cardXrefRepository, never()).findByXrefAcctId(any());
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insert(any());
         verify(accountRepository, never()).save(any());
     }
 
@@ -376,6 +423,9 @@ class BillingServiceTest {
         assertThat(response.accountId()).isEqualTo(ACCOUNT_ID_TEXT);
         assertThat(response.currentBalance()).isNull();
         assertThat(response.confirm()).isEqualTo("N");
+        // Cancel path writes no payment: no transaction id, no success banner.
+        assertThat(response.transactionId()).isNull();
+        assertThat(response.confirmationMessage()).isNull();
 
         verifyNoRepositoryWrites();
         verify(accountRepository, never()).findById(any());
@@ -440,7 +490,7 @@ class BillingServiceTest {
      * common post-condition for every non-confirmed or failing path.
      */
     private void verifyNoRepositoryWrites() {
-        verify(transactionRepository, never()).save(any());
+        verify(transactionRepository, never()).insert(any());
         verify(accountRepository, never()).save(any());
     }
 }

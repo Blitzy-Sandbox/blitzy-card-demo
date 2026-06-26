@@ -21,7 +21,6 @@ import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategory;
 import com.carddemo.entity.TransactionCategoryId;
 import com.carddemo.entity.TransactionType;
-import com.carddemo.enums.TransactionTypeCode;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryRepository;
 import com.carddemo.repository.TransactionTypeRepository;
@@ -256,8 +255,7 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Li
             currentXrefAcctId = lookupAccountId(cardNum);
         }
 
-        final TransactionTypeCode transactionType = transaction.getTransactionType();
-        final String typeCode = (transactionType == null) ? null : transactionType.getCode();
+        final String typeCode = transaction.getTranTypeCd();
         final String typeDesc = lookupTypeDescription(typeCode);
         final Integer categoryCode = transaction.getTranCatCd();
         final String categoryDesc = lookupCategoryDescription(typeCode, categoryCode);

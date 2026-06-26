@@ -1,8 +1,6 @@
 package com.carddemo.unit.entity;
 
 import com.carddemo.entity.Transaction;
-import com.carddemo.entity.TransactionTypeConverter;
-import com.carddemo.enums.TransactionTypeCode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Convert;
 import jakarta.persistence.Id;
@@ -18,10 +16,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Unit tests for the {@link Transaction} entity (COBOL CVTRA05Y TRAN-RECORD, RECLN 350 @ 27d6c6f).
- * Key parity: transactionType is the typed {@link TransactionTypeCode} mapped through
- * {@link TransactionTypeConverter} (@Convert); origTs/procTs are 26-char text timestamps, NOT temporal types.
+ * Key parity: tranTypeCd is a raw {@link String} mapped to a {@code char(2)} column with NO attribute
+ * converter, preserving the open COBOL {@code PIC X(2)} write-through semantics (an unknown code such as
+ * {@code "99"} round-trips verbatim); origTs/procTs are 26-char text timestamps, NOT temporal types.
  */
-@DisplayName("Transaction entity - CVTRA05Y (350B): typed transactionType via @Convert, NO @Version")
+@DisplayName("Transaction entity - CVTRA05Y (350B): raw String tranTypeCd (no converter), NO @Version")
 class TransactionTest {
 
     private static Field field(String name) throws NoSuchFieldException {
@@ -71,14 +70,17 @@ class TransactionTest {
     }
 
     @Test
-    @DisplayName("transactionType is the typed enum mapped via @Convert(TransactionTypeConverter) on column tran_type_cd")
-    void transactionTypeUsesConverter() throws NoSuchFieldException {
-        Field f = field("transactionType");
-        assertThat(f.getType()).isEqualTo(TransactionTypeCode.class);
-        Convert convert = f.getAnnotation(Convert.class);
-        assertThat(convert).as("@Convert must be present on transactionType").isNotNull();
-        assertThat(convert.converter()).isEqualTo(TransactionTypeConverter.class);
+    @DisplayName("tranTypeCd is a raw String on column tran_type_cd char(2) with NO attribute converter (open PIC X(2))")
+    void tranTypeCdIsRawCharStringWithoutConverter() throws NoSuchFieldException {
+        Field f = field("tranTypeCd");
+        assertThat(f.getType())
+                .as("tran_type_cd must be a raw String for COBOL PIC X(2) write-through parity")
+                .isEqualTo(String.class);
+        assertThat(f.isAnnotationPresent(Convert.class))
+                .as("tran_type_cd must NOT use an attribute converter (open PIC X(2), not a closed enum)")
+                .isFalse();
         assertThat(f.getAnnotation(Column.class).name()).isEqualTo("tran_type_cd");
+        assertThat(f.getAnnotation(Column.class).length()).isEqualTo(2);
     }
 
     @Test

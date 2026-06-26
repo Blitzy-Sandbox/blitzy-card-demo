@@ -32,6 +32,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.dao.DataAccessException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -116,6 +117,13 @@ public class GlobalExceptionHandler {
     private static final String TITLE_NOT_FOUND = "Resource Not Found";
 
     private static final String SLUG_NOT_FOUND = "not-found";
+
+    private static final String TITLE_DATA_CONFLICT = "Data Conflict";
+
+    private static final String DETAIL_DATA_CONFLICT =
+            "The request could not be completed because it conflicts with the current state of the data.";
+
+    private static final String SLUG_DATA_CONFLICT = "data-conflict";
 
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(RecordNotFoundException ex,
@@ -334,6 +342,24 @@ public class GlobalExceptionHandler {
         log.warn("No handler for request -> 404 (exceptionType={})", ex.getClass().getName());
         ProblemDetail body = problem(HttpStatus.NOT_FOUND, TITLE_NOT_FOUND,
                 GENERIC_NOT_FOUND_DETAIL, SLUG_NOT_FOUND, request);
+        return ResponseEntity.status(body.getStatus()).body(body);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ProblemDetail> handleDataIntegrityViolation(DataIntegrityViolationException ex,
+            HttpServletRequest request) {
+        // A database integrity constraint (for example, a primary-key collision on a generated
+        // transaction id under concurrent writes) is a client-resolvable conflict with the current
+        // data state, NOT a server fault. It is more specific than DataAccessException, so this
+        // handler takes precedence and maps it to 409 rather than letting it fall through to the
+        // 500 handleDataAccess path (QA Issue #6). The services retry transaction-id collisions
+        // internally and only surface a DuplicateRecordException after exhaustion; this handler is
+        // the safety net that guarantees a stray integrity violation never becomes a 500.
+        // Log at WARN with only the exception type: the throwable message can embed SQL fragments
+        // and rejected values and must never be logged or surfaced (R1).
+        log.warn("Data integrity violation -> 409 (exceptionType={})", ex.getClass().getName());
+        ProblemDetail body = problem(HttpStatus.CONFLICT, TITLE_DATA_CONFLICT,
+                DETAIL_DATA_CONFLICT, SLUG_DATA_CONFLICT, request);
         return ResponseEntity.status(body.getStatus()).body(body);
     }
 

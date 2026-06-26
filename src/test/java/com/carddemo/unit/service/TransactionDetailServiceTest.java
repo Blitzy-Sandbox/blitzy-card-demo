@@ -82,7 +82,7 @@ import static org.mockito.Mockito.when;
  * {@link String} carrying the two-character {@code TRAN-TYPE-CD} code (for
  * example {@code "01"}), <em>not</em> a {@link TransactionTypeCode} enum value.
  * The compiled service renders it via
- * {@code transaction.getTransactionType().getCode()}. Accordingly this suite
+ * {@code transaction.getTranTypeCd()} (the raw {@code char(2)} value). Accordingly this suite
  * asserts {@code detail.transactionType()} equals
  * {@code TransactionTypeCode.PURCHASE.getCode()} ({@code "01"}) rather than
  * asserting enum identity, in keeping with the compiled
@@ -110,15 +110,17 @@ class TransactionDetailServiceTest {
      * {@code "01"}), category {@code 5}, source {@code "POS"}, a
      * {@link BigDecimal} amount of {@code 123.45}, merchant {@code 42}
      * ("ACME GROCERY", Seattle, 98101), card {@code "5500000000000004"}, and the
-     * 26-character origination/processing timestamps preserved verbatim. A fresh
-     * instance is returned per call so no mutable state is shared between tests.
+     * stored 26-character origination/processing timestamps (which the detail
+     * mapper truncates to the leftmost 10 characters per the COTRN01 PIC X(10)
+     * contract). A fresh instance is returned per call so no mutable state is
+     * shared between tests.
      *
      * @return a fully populated {@link Transaction}
      */
     private static Transaction sampleTransaction() {
         Transaction transaction = new Transaction();
         transaction.setTranId(TXN_ID);
-        transaction.setTransactionType(TransactionTypeCode.PURCHASE);
+        transaction.setTranTypeCd(TransactionTypeCode.PURCHASE.getCode());
         transaction.setTranCatCd(5);
         transaction.setTranSource("POS");
         transaction.setTranDesc("GROCERY STORE PURCHASE");
@@ -155,14 +157,20 @@ class TransactionDetailServiceTest {
         assertThat(detail.description()).isEqualTo("GROCERY STORE PURCHASE");
         // Monetary amount compared by value (compareTo), never scale-sensitive equals.
         assertThat(detail.amount()).isEqualByComparingTo(new BigDecimal("123.45"));
-        // Origination/processing dates surface the verbatim 26-character timestamps.
-        assertThat(detail.originDate()).isEqualTo("2023-01-15 10:30:00.000000");
-        assertThat(detail.processDate()).isEqualTo("2023-01-16 02:00:00.000000");
+        // Origination/processing dates are truncated to the leftmost 10 characters
+        // (the uuuu-MM-dd date), reproducing the COTRN01.CPY TORIGDTI/TPROCDTI
+        // PIC X(10) field width. The stored 26-character timestamp's time-of-day
+        // component is never surfaced on the detail projection.
+        assertThat(detail.originDate()).isEqualTo("2023-01-15");
+        assertThat(detail.processDate()).isEqualTo("2023-01-16");
         // merchantId 42 -> PIC 9(09) zero-padded code.
         assertThat(detail.merchantId()).isEqualTo("000000042");
         assertThat(detail.merchantName()).isEqualTo("ACME GROCERY");
         assertThat(detail.merchantCity()).isEqualTo("SEATTLE");
         assertThat(detail.merchantZip()).isEqualTo("98101");
+        // The read/detail path carries no COBOL confirmation banner (it is emitted
+        // only on the add path), so confirmationMessage is null and JSON-omitted.
+        assertThat(detail.confirmationMessage()).isNull();
 
         // The keyed read uses the supplied transaction identifier exactly once.
         verify(transactionRepository).findById(TXN_ID);
@@ -186,7 +194,7 @@ class TransactionDetailServiceTest {
     @DisplayName("getTransaction: a different transaction type renders its own two-character code (PAYMENT -> '02')")
     void getTransactionTransactionTypeRenderedAsTwoCharCode() {
         Transaction transaction = sampleTransaction();
-        transaction.setTransactionType(TransactionTypeCode.PAYMENT);
+        transaction.setTranTypeCd(TransactionTypeCode.PAYMENT.getCode());
         when(transactionRepository.findById(TXN_ID)).thenReturn(Optional.of(transaction));
 
         TransactionDto.Detail detail = service.getTransaction(TXN_ID);
@@ -199,7 +207,7 @@ class TransactionDetailServiceTest {
     @DisplayName("getTransaction: null optional fields (type/category/merchant id) map to null Detail components")
     void getTransactionNullOptionalFieldsMapToNull() {
         Transaction transaction = sampleTransaction();
-        transaction.setTransactionType(null);
+        transaction.setTranTypeCd(null);
         transaction.setTranCatCd(null);
         transaction.setMerchantId(null);
         when(transactionRepository.findById(TXN_ID)).thenReturn(Optional.of(transaction));

@@ -50,6 +50,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.core.MethodParameter;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpInputMessage;
 import org.springframework.http.HttpMethod;
@@ -454,15 +455,37 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
-    @DisplayName("DataAccessException -> 500 with a generic, non-leaking detail")
+    @DisplayName("DataAccessException (non-integrity) -> 500 with a generic, non-leaking detail")
     void dataAccessMapsTo500Generic() {
-        DataIntegrityViolationException ex =
-                new DataIntegrityViolationException(SECRET + " - bad SQL constraint");
+        // A non-integrity data-access failure (for example, a lost data-store
+        // connection) is a genuine server fault. A DataIntegrityViolationException
+        // is deliberately NOT used here: it is more specific and routes to the
+        // dedicated 409 handler (see dataIntegrityViolationMapsTo409), not this 500 path.
+        DataAccessResourceFailureException ex =
+                new DataAccessResourceFailureException(SECRET + " - data store unreachable");
 
         ResponseEntity<ProblemDetail> response = handler.handleDataAccess(ex, request);
 
         ProblemDetail body = assertProblem(response, HttpStatus.INTERNAL_SERVER_ERROR, "Internal Error");
         assertThat(body.getDetail()).isEqualTo(GENERIC_DETAIL);
+        assertThat(body.getDetail()).doesNotContain("Exception", "SQL", "at com.", SECRET);
+        assertNoSensitiveLogging();
+    }
+
+    @Test
+    @DisplayName("DataIntegrityViolationException -> 409 CONFLICT with a generic, non-leaking detail (Issue #6 safety net)")
+    void dataIntegrityViolationMapsTo409() {
+        // A data-integrity violation that escapes service-level handling (for
+        // example, a stray transaction-id primary-key collision) is a
+        // client-resolvable conflict, not a server fault: it must map to 409, never
+        // fall through to the 500 path. The throwable message embeds SECRET to
+        // prove it is never surfaced or logged (R1).
+        DataIntegrityViolationException ex =
+                new DataIntegrityViolationException(SECRET + " - duplicate key violates unique constraint");
+
+        ResponseEntity<ProblemDetail> response = handler.handleDataIntegrityViolation(ex, request);
+
+        ProblemDetail body = assertProblem(response, HttpStatus.CONFLICT, "Data Conflict");
         assertThat(body.getDetail()).doesNotContain("Exception", "SQL", "at com.", SECRET);
         assertNoSensitiveLogging();
     }

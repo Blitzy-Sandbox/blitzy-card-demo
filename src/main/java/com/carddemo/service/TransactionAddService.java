@@ -18,7 +18,6 @@ package com.carddemo.service;
 import com.carddemo.dto.TransactionDto;
 import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Transaction;
-import com.carddemo.enums.TransactionTypeCode;
 import com.carddemo.exception.DuplicateRecordException;
 import com.carddemo.exception.FileAccessException;
 import com.carddemo.exception.ValidationException;
@@ -35,7 +34,9 @@ import java.util.Optional;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Transaction add service backing {@code POST /api/transactions} (CICS
@@ -89,6 +90,27 @@ public class TransactionAddService {
     /** Identifier value used before the first transaction exists ({@code ENDFILE} branch). */
     private static final long EMPTY_HIGHEST_ID = 0L;
 
+    /**
+     * Maximum number of generate-id-then-insert attempts before surfacing a
+     * duplicate-identifier failure. Each attempt runs in its own short
+     * transaction; a {@code DataIntegrityViolationException} on the primary-key
+     * insert means a concurrent request claimed the same identifier first, so the
+     * highest id is re-read and the insert retried — reproducing the serialized
+     * "find last id then add one" behaviour CICS/VSAM provided through record
+     * locking. The bound is generous enough to absorb realistic online
+     * concurrency while still terminating deterministically.
+     */
+    private static final int MAX_TRAN_ID_ATTEMPTS = 25;
+
+    /** Fixed width of the {@code TTYPCD PIC X(02)} type-code screen field. */
+    private static final int TYPE_CODE_WIDTH = 2;
+
+    /** Fixed width of the {@code TCATCD PIC X(04)} category-code screen field. */
+    private static final int CATEGORY_CODE_WIDTH = 4;
+
+    /** Fixed width of the {@code MID PIC X(09)} merchant-id screen field. */
+    private static final int MERCHANT_ID_WIDTH = 9;
+
     /** Exact length of a hyphenated {@code YYYY-MM-DD} date. */
     private static final int ISO_DATE_LENGTH = 10;
 
@@ -134,6 +156,16 @@ public class TransactionAddService {
     private static final String MSG_XREF_CARD_LOOKUP = "Unable to lookup Card # in XREF file...";
     private static final String MSG_DUP_TRAN_ID = "Tran ID already exist...";
     private static final String MSG_UNABLE_TO_ADD = "Unable to Add Transaction...";
+    /**
+     * Byte-exact prefix of the {@code COTRN02C} success banner. The legacy
+     * program builds the confirmation with
+     * {@code STRING 'Transaction added successfully. ' ' Your Tran ID is ' TRAN-ID '.'},
+     * which concatenates a literal ending in {@code ". "} with a literal
+     * beginning in {@code " Your"} — yielding exactly two spaces after the first
+     * period — followed by the 16-character transaction id and a trailing period.
+     * The id and trailing period are appended at the call site.
+     */
+    private static final String MSG_ADD_SUCCESS_PREFIX = "Transaction added successfully.  Your Tran ID is ";
 
     private static final String KEY_ACCOUNT_ID = "accountId";
     private static final String KEY_CARD_NUMBER = "cardNumber";
@@ -154,6 +186,15 @@ public class TransactionAddService {
     private final DateValidationService dateValidationService;
 
     /**
+     * Programmatic transaction boundary for a single generate-id-then-insert
+     * attempt. Configured {@code REQUIRES_NEW} so every retry runs in a fresh,
+     * isolated transaction: a primary-key collision rolls back only that attempt
+     * (leaving it free to recompute the highest id and retry) rather than marking
+     * an enclosing transaction rollback-only.
+     */
+    private final TransactionTemplate transactionTemplate;
+
+    /**
      * Creates the service with its mandatory collaborators.
      *
      * @param transactionRepository repository for the {@link Transaction} fact table,
@@ -163,13 +204,20 @@ public class TransactionAddService {
      *                              {@code READ-CXACAIX-FILE} (account alternate index) and
      *                              {@code READ-CCXREF-FILE} (card primary key) lookups
      * @param dateValidationService service validating the origination and processing dates
+     * @param transactionManager    platform transaction manager backing the
+     *                              per-attempt {@link TransactionTemplate} used to
+     *                              make each generate-id-then-insert retry an
+     *                              isolated, atomic unit of work
      */
     public TransactionAddService(TransactionRepository transactionRepository,
                                  CardXrefRepository cardXrefRepository,
-                                 DateValidationService dateValidationService) {
+                                 DateValidationService dateValidationService,
+                                 PlatformTransactionManager transactionManager) {
         this.transactionRepository = transactionRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.dateValidationService = dateValidationService;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -179,10 +227,13 @@ public class TransactionAddService {
      * first; the key fields are edited and resolved against the card / account
      * cross-reference (deriving the card number from the account, or validating
      * the supplied card number and deriving its account); the data fields are
-     * edited; the next sequential identifier is generated from the current
-     * highest identifier; and the assembled record is inserted within the same
-     * transaction so that the read-highest-then-write sequence commits
-     * atomically.</p>
+     * edited; then the next sequential identifier is generated from the current
+     * highest identifier and the assembled record is inserted. The
+     * generate-then-insert step runs in its own short transaction and is retried
+     * on a primary-key collision (see {@link #insertWithGeneratedId}), so
+     * concurrent adds each obtain a unique sequential identifier and commit —
+     * reproducing the serialized record-locking guarantee CICS/VSAM provided
+     * rather than failing a legitimate concurrent request.</p>
      *
      * @param request the submitted add payload
      * @return the created transaction rendered as a {@link TransactionDto.Detail}
@@ -190,11 +241,11 @@ public class TransactionAddService {
      *                                  the confirmation flag is not {@code Y}/{@code N},
      *                                  any field edit fails, or the supplied account or
      *                                  card number is not present in the cross-reference
-     * @throws DuplicateRecordException if the generated identifier already exists
+     * @throws DuplicateRecordException if a unique identifier cannot be generated
+     *                                  within {@link #MAX_TRAN_ID_ATTEMPTS} attempts
      * @throws FileAccessException      if the cross-reference lookup or the insert fails
      *                                  for any other data-access reason
      */
-    @Transactional(rollbackFor = Exception.class)
     public TransactionDto.Detail addTransaction(TransactionDto.AddRequest request) {
         validateConfirmation(request.confirm());
 
@@ -209,18 +260,17 @@ public class TransactionAddService {
             throw new ValidationException(firstMessage(fieldErrors), fieldErrors);
         }
 
-        String tranId = generateNextTransactionId();
-        if (transactionRepository.existsById(tranId)) {
-            throw new DuplicateRecordException(MSG_DUP_TRAN_ID);
-        }
-
-        TransactionTypeCode transactionType = TransactionTypeCode.fromCode(request.typeCode().trim());
+        // ADD-TRANSACTION moves TTYPCDI straight into TRAN-TYPE-CD with no
+        // TRANTYPE existence check, so the raw two-character code is written
+        // verbatim (open PIC X(02) domain; e.g. "99" is accepted), preserving
+        // 100% behavioral parity (AAP 0.7.1.1). Numeric/width validity was
+        // already enforced by validateDataFields above.
+        String typeCode = request.typeCode().trim();
         BigDecimal amount = request.amount().setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
 
-        Transaction transaction = buildTransaction(tranId, request, cardNumber, transactionType, amount);
-        persist(transaction);
+        String tranId = insertWithGeneratedId(request, cardNumber, typeCode, amount);
 
-        return toDetail(tranId, request, cardNumber, transactionType, amount);
+        return toDetail(tranId, request, cardNumber, typeCode, amount);
     }
 
     /**
@@ -359,12 +409,12 @@ public class TransactionAddService {
     private void validateDataFields(TransactionDto.AddRequest request, Map<String, String> errors) {
         if (isBlank(request.typeCode())) {
             errors.put(KEY_TYPE_CODE, MSG_TYPE_EMPTY);
-        } else if (!isNumeric(request.typeCode())) {
+        } else if (!isFixedWidthNumeric(request.typeCode(), TYPE_CODE_WIDTH)) {
             errors.put(KEY_TYPE_CODE, MSG_TYPE_NUMERIC);
         }
         if (isBlank(request.categoryCode())) {
             errors.put(KEY_CATEGORY_CODE, MSG_CAT_EMPTY);
-        } else if (!isNumeric(request.categoryCode())) {
+        } else if (!isFixedWidthNumeric(request.categoryCode(), CATEGORY_CODE_WIDTH)) {
             errors.put(KEY_CATEGORY_CODE, MSG_CAT_NUMERIC);
         }
         if (isBlank(request.source())) {
@@ -384,7 +434,7 @@ public class TransactionAddService {
                 MSG_PROC_DATE_FORMAT, MSG_PROC_DATE_INVALID, errors);
         if (isBlank(request.merchantId())) {
             errors.put(KEY_MERCHANT_ID, MSG_MID_EMPTY);
-        } else if (!isNumeric(request.merchantId())) {
+        } else if (!isFixedWidthNumeric(request.merchantId(), MERCHANT_ID_WIDTH)) {
             errors.put(KEY_MERCHANT_ID, MSG_MID_NUMERIC);
         }
         if (isBlank(request.merchantName())) {
@@ -439,39 +489,72 @@ public class TransactionAddService {
     }
 
     /**
-     * Inserts the assembled transaction, translating data-access failures to the
-     * legacy {@code WRITE-TRANSACT-FILE} outcomes.
+     * Generates the next sequential identifier and inserts the assembled
+     * transaction, retrying on a primary-key collision so concurrent adds are
+     * serialized rather than rejected.
      *
-     * @param transaction the transaction to insert
-     * @throws DuplicateRecordException if the identifier already exists ({@code DUPKEY}/{@code DUPREC})
-     * @throws FileAccessException      if the insert fails for any other reason
+     * <p>Each attempt runs in its own {@code REQUIRES_NEW} transaction
+     * ({@link #transactionTemplate}): the current highest identifier is read,
+     * the record is assembled with {@code highest + 1}, and
+     * {@link TransactionRepository#insert} forces an INSERT (via
+     * {@code EntityManager.persist}+{@code flush}) — and
+     * therefore the primary-key uniqueness check — to execute immediately, inside
+     * that transaction. When a concurrent request has already committed the same
+     * identifier the flush raises {@link DataIntegrityViolationException}; the
+     * attempt's transaction rolls back in isolation and the loop re-reads the
+     * highest id and tries again. This reproduces the serialized
+     * "find last id then add one" behaviour that CICS/VSAM provided through
+     * record locking, translating the legacy {@code WRITE-TRANSACT-FILE}
+     * {@code DUPKEY}/{@code DUPREC} outcome into a bounded retry rather than a
+     * failed request.</p>
+     *
+     * @param request    the validated add payload
+     * @param cardNumber the resolved card number
+     * @param typeCode   the raw two-character transaction type code, written verbatim
+     * @param amount     the normalized monetary amount
+     * @return the generated sixteen-character identifier of the inserted transaction
+     * @throws DuplicateRecordException if a unique identifier cannot be obtained
+     *                                  within {@link #MAX_TRAN_ID_ATTEMPTS} attempts
+     * @throws FileAccessException      if the insert fails for any other data-access reason
      */
-    private void persist(Transaction transaction) {
-        try {
-            transactionRepository.save(transaction);
-        } catch (DataIntegrityViolationException ex) {
-            throw new DuplicateRecordException(MSG_DUP_TRAN_ID, ex);
-        } catch (DataAccessException ex) {
-            throw new FileAccessException(MSG_UNABLE_TO_ADD, ex);
+    private String insertWithGeneratedId(TransactionDto.AddRequest request, String cardNumber,
+            String typeCode, BigDecimal amount) {
+        DataIntegrityViolationException lastCollision = null;
+        for (int attempt = 1; attempt <= MAX_TRAN_ID_ATTEMPTS; attempt++) {
+            try {
+                return transactionTemplate.execute(status -> {
+                    String tranId = generateNextTransactionId();
+                    Transaction transaction = buildTransaction(tranId, request, cardNumber, typeCode, amount);
+                    transactionRepository.insert(transaction);
+                    return tranId;
+                });
+            } catch (DataIntegrityViolationException ex) {
+                // A concurrent request claimed this identifier first; re-read the
+                // highest id and retry within the attempt bound.
+                lastCollision = ex;
+            } catch (DataAccessException ex) {
+                throw new FileAccessException(MSG_UNABLE_TO_ADD, ex);
+            }
         }
+        throw new DuplicateRecordException(MSG_DUP_TRAN_ID, lastCollision);
     }
 
     /**
      * Assembles the {@link Transaction} record from the validated request,
      * mirroring the {@code ADD-TRANSACTION} field moves.
      *
-     * @param tranId          the generated identifier
-     * @param request         the validated add payload
-     * @param cardNumber      the resolved card number
-     * @param transactionType the resolved transaction type
-     * @param amount          the normalized monetary amount
+     * @param tranId     the generated identifier
+     * @param request    the validated add payload
+     * @param cardNumber the resolved card number
+     * @param typeCode   the raw two-character transaction type code, written verbatim
+     * @param amount     the normalized monetary amount
      * @return the populated, unsaved transaction
      */
     private static Transaction buildTransaction(String tranId, TransactionDto.AddRequest request,
-            String cardNumber, TransactionTypeCode transactionType, BigDecimal amount) {
+            String cardNumber, String typeCode, BigDecimal amount) {
         Transaction transaction = new Transaction();
         transaction.setTranId(tranId);
-        transaction.setTransactionType(transactionType);
+        transaction.setTranTypeCd(typeCode);
         transaction.setTranCatCd(Integer.valueOf(request.categoryCode().trim()));
         transaction.setTranSource(request.source());
         transaction.setTranDesc(request.description());
@@ -489,19 +572,19 @@ public class TransactionAddService {
     /**
      * Renders the saved transaction as a detail view.
      *
-     * @param tranId          the generated identifier
-     * @param request         the validated add payload
-     * @param cardNumber      the resolved card number
-     * @param transactionType the resolved transaction type
-     * @param amount          the normalized monetary amount
+     * @param tranId     the generated identifier
+     * @param request    the validated add payload
+     * @param cardNumber the resolved card number
+     * @param typeCode   the raw two-character transaction type code
+     * @param amount     the normalized monetary amount
      * @return the detail view of the created transaction
      */
     private static TransactionDto.Detail toDetail(String tranId, TransactionDto.AddRequest request,
-            String cardNumber, TransactionTypeCode transactionType, BigDecimal amount) {
+            String cardNumber, String typeCode, BigDecimal amount) {
         return new TransactionDto.Detail(
                 tranId,
                 cardNumber,
-                transactionType.getCode(),
+                typeCode,
                 request.categoryCode().trim(),
                 request.source(),
                 request.description(),
@@ -511,7 +594,8 @@ public class TransactionAddService {
                 request.merchantId().trim(),
                 request.merchantName(),
                 request.merchantCity(),
-                request.merchantZip());
+                request.merchantZip(),
+                MSG_ADD_SUCCESS_PREFIX + tranId + ".");
     }
 
     /**
@@ -576,6 +660,28 @@ public class TransactionAddService {
      */
     private static boolean isNumeric(String value) {
         return isAllDigits(trimToEmpty(value));
+    }
+
+    /**
+     * Reports whether a fixed-width numeric screen field satisfies the COBOL
+     * {@code IS NUMERIC} class test on a {@code PIC 9(width)} field.
+     *
+     * <p>On the mainframe the value occupies a fixed-width field that is
+     * space-padded on input; an under-width entry such as {@code "5"} in a
+     * {@code PIC X(02)} field becomes {@code "5 "}, which fails {@code IS
+     * NUMERIC} because of the embedded space. This is reproduced by requiring
+     * the trimmed value to be exactly {@code width} characters, all digits.
+     * Codes that are full-width digits but reference no lookup row (for example
+     * {@code "99"}) still pass, mirroring the COBOL add path which performs no
+     * existence check.</p>
+     *
+     * @param value the candidate value
+     * @param width the fixed field width
+     * @return {@code true} when the value is exactly {@code width} ASCII digits
+     */
+    private static boolean isFixedWidthNumeric(String value, int width) {
+        String trimmed = trimToEmpty(value);
+        return trimmed.length() == width && isAllDigits(trimmed);
     }
 
     /**

@@ -16,9 +16,7 @@
  */
 package com.carddemo.entity;
 
-import com.carddemo.enums.TransactionTypeCode;
 import jakarta.persistence.Column;
-import jakarta.persistence.Convert;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
@@ -38,10 +36,16 @@ import org.hibernate.type.SqlTypes;
  * 16-character identifier is the natural primary key; the trailing 20-byte
  * copybook {@code FILLER} is reserved padding and is not persisted.
  *
- * <p>The two-character {@code TRAN-TYPE-CD} is exposed as a typed
- * {@link TransactionTypeCode} via {@link TransactionTypeConverter}; the
- * underlying {@code tran_type_cd} column remains {@code CHAR(2)}. Monetary
- * amounts use {@link BigDecimal} (scale 2) for decimal exactness, and the two
+ * <p>The two-character {@code TRAN-TYPE-CD} is persisted verbatim as a raw
+ * {@code String} mapped directly to the {@code tran_type_cd} {@code CHAR(2)}
+ * column. The legacy {@code COTRN02C}/{@code CBTRN02C} add and posting paths
+ * move the submitted code straight into {@code TRAN-TYPE-CD} with no
+ * existence check against the {@code TRANTYPE} reference file (copybook
+ * {@code CVTRA03Y} @ {@code 27d6c6f}), so the column is an open
+ * {@code PIC X(02)} domain; modeling it as a closed enum would reject codes
+ * the COBOL program legitimately accepts (for example {@code "99"}), breaking
+ * 100% behavioral parity (AAP &sect;0.7.1.1). Monetary amounts use
+ * {@link BigDecimal} (scale 2) for decimal exactness, and the two
  * timestamp columns are preserved as fixed-width {@code CHAR(26)} text to retain
  * the legacy {@code YYYY-MM-DD HH:MM:SS.mmmmmm} format byte-for-byte.
  */
@@ -57,11 +61,15 @@ public class Transaction implements Serializable {
     @Column(name = "tran_id", length = 16, columnDefinition = "char(16)")
     private String tranId;
 
-    /** {@code TRAN-TYPE-CD PIC X(02)} — transaction type code, typed via the converter. */
-    @Convert(converter = TransactionTypeConverter.class)
+    /**
+     * {@code TRAN-TYPE-CD PIC X(02)} — transaction type code, persisted verbatim
+     * as a raw two-character {@code String} to preserve the open {@code PIC X(02)}
+     * domain (the legacy add/posting paths write the code with no {@code TRANTYPE}
+     * existence check), matching COBOL behavior bit-for-bit (AAP &sect;0.7.1.1).
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_type_cd", length = 2, columnDefinition = "char(2)")
-    private TransactionTypeCode transactionType;
+    private String tranTypeCd;
 
     /** {@code TRAN-CAT-CD PIC 9(04)} — transaction category code. */
     @Column(name = "tran_cat_cd")
@@ -122,7 +130,7 @@ public class Transaction implements Serializable {
      * Creates a fully populated posted transaction.
      *
      * @param tranId          the transaction identifier ({@code TRAN-ID})
-     * @param transactionType the transaction type ({@code TRAN-TYPE-CD})
+     * @param tranTypeCd      the transaction type code ({@code TRAN-TYPE-CD})
      * @param tranCatCd       the transaction category code ({@code TRAN-CAT-CD})
      * @param tranSource      the origination source ({@code TRAN-SOURCE})
      * @param tranDesc        the transaction description ({@code TRAN-DESC})
@@ -135,12 +143,12 @@ public class Transaction implements Serializable {
      * @param origTs          the origination timestamp text ({@code TRAN-ORIG-TS})
      * @param procTs          the processing timestamp text ({@code TRAN-PROC-TS})
      */
-    public Transaction(String tranId, TransactionTypeCode transactionType, Integer tranCatCd,
+    public Transaction(String tranId, String tranTypeCd, Integer tranCatCd,
             String tranSource, String tranDesc, BigDecimal tranAmt, Long merchantId,
             String merchantName, String merchantCity, String merchantZip,
             String cardNum, String origTs, String procTs) {
         this.tranId = tranId;
-        this.transactionType = transactionType;
+        this.tranTypeCd = tranTypeCd;
         this.tranCatCd = tranCatCd;
         this.tranSource = tranSource;
         this.tranDesc = tranDesc;
@@ -173,21 +181,21 @@ public class Transaction implements Serializable {
     }
 
     /**
-     * Returns the transaction type ({@code TRAN-TYPE-CD}).
+     * Returns the raw two-character transaction type code ({@code TRAN-TYPE-CD}).
      *
-     * @return the transaction type
+     * @return the transaction type code, for example {@code "01"} or {@code "99"}
      */
-    public TransactionTypeCode getTransactionType() {
-        return transactionType;
+    public String getTranTypeCd() {
+        return tranTypeCd;
     }
 
     /**
-     * Sets the transaction type ({@code TRAN-TYPE-CD}).
+     * Sets the raw two-character transaction type code ({@code TRAN-TYPE-CD}).
      *
-     * @param transactionType the transaction type to set
+     * @param tranTypeCd the transaction type code to set, persisted verbatim
      */
-    public void setTransactionType(TransactionTypeCode transactionType) {
-        this.transactionType = transactionType;
+    public void setTranTypeCd(String tranTypeCd) {
+        this.tranTypeCd = tranTypeCd;
     }
 
     /**

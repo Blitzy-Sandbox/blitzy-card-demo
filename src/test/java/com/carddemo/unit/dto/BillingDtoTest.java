@@ -112,13 +112,21 @@ class BillingDtoTest {
 
     @Test
     void payResponseComponentsInOrder() {
-        // NOTE: the real BillingDto.PayResponse models exactly three components
-        // (no optional paymentTransactionId), so the count asserted here is 3.
+        // PayResponse models the three business fields plus the two success-only
+        // fields surfaced for COBIL00C parity (#4): transactionId and the byte-exact
+        // confirmationMessage banner, both @JsonInclude(NON_NULL) so they are omitted
+        // from the JSON response on the confirm = N cancel path.
         assertThat(componentNames(BillingDto.PayResponse.class))
-                .containsExactly("accountId", "currentBalance", "confirm");
+                .containsExactly("accountId", "currentBalance", "confirm",
+                        "transactionId", "confirmationMessage");
         // CURBAL <- ACCT-CURR-BAL S9(10)V99 must be BigDecimal, never a binary float.
         assertThat(component(BillingDto.PayResponse.class, "currentBalance").getType())
                 .isEqualTo(BigDecimal.class);
+        // transactionId (TRAN-ID PIC X(16)) and confirmationMessage are Strings.
+        assertThat(component(BillingDto.PayResponse.class, "transactionId").getType())
+                .isEqualTo(String.class);
+        assertThat(component(BillingDto.PayResponse.class, "confirmationMessage").getType())
+                .isEqualTo(String.class);
     }
 
     // ------------------------------------------------------------------
@@ -136,11 +144,13 @@ class BillingDtoTest {
     // ------------------------------------------------------------------
 
     @Test
-    void payRequestBlankAccountIdFails() {
-        // @NotBlank rejects an empty account id (ACTIDIN is the mandatory input).
+    void payRequestBlankAccountIdAcceptedByDto() {
+        // Parity fix (QA #3): @NotBlank removed and @Pattern relaxed to "\\d{0,11}" so a blank
+        // account id reaches BillingService.payBill, which emits the byte-exact
+        // "Acct ID can NOT be empty..." message (AAP 0.7.1.1; mirrors D-056/D-062).
         BillingDto.PayRequest request = new BillingDto.PayRequest("", "Y");
         Set<ConstraintViolation<BillingDto.PayRequest>> violations = validator.validate(request);
-        assertThat(hasViolationOn(violations, "accountId")).isTrue();
+        assertThat(hasViolationOn(violations, "accountId")).isFalse();
     }
 
     @Test
@@ -166,18 +176,20 @@ class BillingDtoTest {
     }
 
     @Test
-    void payRequestConfirmInvalidCharFailsPattern() {
-        // @Pattern("[YyNn]?") rejects any character other than Y/y/N/n (or empty).
+    void payRequestConfirmWithinOneCharAcceptedByDto() {
+        // Parity fix (QA #3): @Pattern("[YyNn]?") was removed so an out-of-range flag like 'X'
+        // reaches BillingService, which emits the byte-exact "Invalid value. Valid values are
+        // (Y/N)..." message. Only @Size(max=1) remains, so a single character passes the DTO.
         BillingDto.PayRequest invalidConfirm = new BillingDto.PayRequest("12345678901", "X");
         Set<ConstraintViolation<BillingDto.PayRequest>> invalidViolations =
                 validator.validate(invalidConfirm);
-        assertThat(hasViolationOn(invalidViolations, "confirm")).isTrue();
+        assertThat(hasViolationOn(invalidViolations, "confirm")).isFalse();
 
         // 'Y' is accepted.
         BillingDto.PayRequest yesConfirm = new BillingDto.PayRequest("12345678901", "Y");
         assertThat(hasViolationOn(validator.validate(yesConfirm), "confirm")).isFalse();
 
-        // The empty string is accepted by the optional regex [YyNn]?.
+        // The empty string is accepted (within @Size(max=1)).
         BillingDto.PayRequest emptyConfirm = new BillingDto.PayRequest("12345678901", "");
         assertThat(hasViolationOn(validator.validate(emptyConfirm), "confirm")).isFalse();
     }
@@ -196,12 +208,12 @@ class BillingDtoTest {
     void payResponseCurrentBalanceOverScaleFailsDigits() {
         // 3 fractional digits exceeds fraction = 2.
         BillingDto.PayResponse overScale =
-                new BillingDto.PayResponse("12345678901", new BigDecimal("1.234"), "Y");
+                new BillingDto.PayResponse("12345678901", new BigDecimal("1.234"), "Y", null, null);
         assertThat(hasViolationOn(validator.validate(overScale), "currentBalance")).isTrue();
 
         // 11 integer digits exceeds integer = 10.
         BillingDto.PayResponse overInteger =
-                new BillingDto.PayResponse("12345678901", new BigDecimal("12345678901.12"), "Y");
+                new BillingDto.PayResponse("12345678901", new BigDecimal("12345678901.12"), "Y", null, null);
         assertThat(hasViolationOn(validator.validate(overInteger), "currentBalance")).isTrue();
     }
 
@@ -209,7 +221,7 @@ class BillingDtoTest {
     void payResponseCurrentBalanceBoundaryPasses() {
         // 10 integer digits + 2 fractional digits is the S9(10)V99 boundary and must pass.
         BillingDto.PayResponse boundary =
-                new BillingDto.PayResponse("12345678901", new BigDecimal("1234567890.99"), "Y");
+                new BillingDto.PayResponse("12345678901", new BigDecimal("1234567890.99"), "Y", null, null);
         assertThat(hasViolationOn(validator.validate(boundary), "currentBalance")).isFalse();
     }
 }

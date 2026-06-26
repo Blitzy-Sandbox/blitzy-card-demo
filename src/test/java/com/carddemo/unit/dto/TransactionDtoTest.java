@@ -113,7 +113,8 @@ class TransactionDtoTest {
                 merchantId,
                 "Acme Stores",
                 "Springfield",
-                "12345-6789");
+                "12345-6789",
+                null);
     }
 
     private static TransactionDto.Detail validDetail() {
@@ -174,19 +175,23 @@ class TransactionDtoTest {
     }
 
     @Test
-    void detailHasThirteenComponentsInOrder() {
+    void detailHasFourteenComponentsInOrder() {
         RecordComponent[] components = TransactionDto.Detail.class.getRecordComponents();
-        assertThat(components).hasSize(13);
+        assertThat(components).hasSize(14);
         assertThat(components).extracting(RecordComponent::getName)
                 .containsExactly(
                         "transactionId", "cardNumber", "transactionType", "categoryCode",
                         "source", "description", "amount", "originDate", "processDate",
-                        "merchantId", "merchantName", "merchantCity", "merchantZip");
+                        "merchantId", "merchantName", "merchantCity", "merchantZip",
+                        "confirmationMessage");
         // NOTE: Detail.transactionType is a validated String (@Size(max=2) @Pattern "\\d{2}")
         // in the real source, not the TransactionTypeCode enum.
         assertThat(components[2].getType()).isEqualTo(String.class);
         assertThat(components[4].getType()).isEqualTo(String.class);
         assertThat(components[6].getType()).isEqualTo(BigDecimal.class);
+        // confirmationMessage is the trailing add-success banner String, omitted
+        // from JSON when null (the detail/read path).
+        assertThat(components[13].getType()).isEqualTo(String.class);
     }
 
     @Test
@@ -276,37 +281,41 @@ class TransactionDtoTest {
     }
 
     @Test
-    void addRequestBlankAccountIdFails() {
-        // A blank accountId trips both @NotBlank and @Pattern("\\d{1,11}"); every
-        // resulting violation is reported against the "accountId" path.
+    void addRequestBlankAccountIdAcceptedByDto() {
+        // Parity fix (QA #1): @NotBlank was removed and @Pattern relaxed to "\\d{0,11}" so the
+        // documented card-only add path is reachable. A blank accountId now produces NO bean
+        // violation; TransactionAddService.validateAndResolveKeyFields() owns the byte-exact
+        // "Account or Card Number must be entered..." cascade at runtime (mirrors D-056/D-062).
         Set<ConstraintViolation<TransactionDto.AddRequest>> violations =
                 validator.validate(addRequest("", "01", "Y"));
-        assertThat(violations).isNotEmpty();
-        assertThat(violations).allSatisfy(violation ->
-                assertThat(violation.getPropertyPath().toString()).isEqualTo("accountId"));
+        assertThat(violations).isEmpty();
     }
 
     @Test
-    void addRequestTypeCodeMustBeTwoDigits() {
-        // A single digit does not satisfy the exact two-digit pattern \d{2}.
-        assertThat(onlyViolationPath(validator.validate(addRequest("12345678901", "1", "Y"))))
-                .isEqualTo("typeCode");
-        // Two non-digit characters fail the same pattern.
-        assertThat(onlyViolationPath(validator.validate(addRequest("12345678901", "ab", "Y"))))
-                .isEqualTo("typeCode");
-        // Exactly two digits is accepted.
+    void addRequestTypeCodeWithinTwoCharsAcceptedByDto() {
+        // Parity fix (QA #3): the shadowing @Pattern("\\d{2}") was removed from typeCode so the
+        // service emits the byte-exact "Type CD must be Numeric..." message in the legacy
+        // field-evaluation order. Only @Size(max=2) remains at the DTO boundary, so size-valid
+        // values pass the DTO and are adjudicated by TransactionAddService at runtime.
+        assertThat(validator.validate(addRequest("12345678901", "1", "Y"))).isEmpty();
+        assertThat(validator.validate(addRequest("12345678901", "ab", "Y"))).isEmpty();
         assertThat(validator.validate(addRequest("12345678901", "01", "Y"))).isEmpty();
+        // Three characters exceed the X(02) width -> @Size violation on typeCode.
+        assertThat(onlyViolationPath(validator.validate(addRequest("12345678901", "123", "Y"))))
+                .isEqualTo("typeCode");
     }
 
     @Test
-    void addRequestConfirmInvalidCharFailsPattern() {
-        Set<ConstraintViolation<TransactionDto.AddRequest>> violations =
-                validator.validate(addRequest("12345678901", "01", "Q"));
-        assertThat(onlyViolationPath(violations)).isEqualTo("confirm");
-
-        // The pattern "[YyNn]?" accepts Y/y/N/n and the empty string.
+    void addRequestConfirmWithinOneCharAcceptedByDto() {
+        // Parity fix (QA #3): the shadowing @Pattern("[YyNn]?") was removed from confirm so the
+        // service emits the byte-exact "Invalid value. Valid values are (Y/N)..." message. Only
+        // @Size(max=1) remains, so any single character (including 'Q') passes the DTO boundary.
+        assertThat(validator.validate(addRequest("12345678901", "01", "Q"))).isEmpty();
         assertThat(validator.validate(addRequest("12345678901", "01", "Y"))).isEmpty();
         assertThat(validator.validate(addRequest("12345678901", "01", ""))).isEmpty();
+        // Two characters exceed the single-character flag width -> @Size violation on confirm.
+        assertThat(onlyViolationPath(validator.validate(addRequest("12345678901", "01", "YY"))))
+                .isEqualTo("confirm");
     }
 
     @Test

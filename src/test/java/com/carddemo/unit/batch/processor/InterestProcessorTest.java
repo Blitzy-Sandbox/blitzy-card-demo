@@ -378,8 +378,8 @@ class InterestProcessorTest {
         Transaction tx = processor.process(balance(1L, new BigDecimal("1000.00")));
 
         // Type '01' (PURCHASE) and category 5 ('05').
-        assertThat(tx.getTransactionType()).isEqualTo(TransactionTypeCode.fromCode("01"));
-        assertThat(tx.getTransactionType()).isEqualTo(TransactionTypeCode.PURCHASE);
+        assertThat(tx.getTranTypeCd()).isEqualTo("01");
+        assertThat(tx.getTranTypeCd()).isEqualTo(TransactionTypeCode.PURCHASE.getCode());
         assertThat(tx.getTranCatCd()).isEqualTo(CAT_CD);
         // Source label 'System' (TransactionSource.SYSTEM), asserted as the exact string.
         assertThat(tx.getTranSource())

@@ -176,7 +176,7 @@ class TransactionReportProcessorTest {
         Transaction tran = new Transaction();
         tran.setTranId(tranId);
         tran.setCardNum(cardNum);
-        tran.setTransactionType(TransactionTypeCode.PURCHASE);
+        tran.setTranTypeCd(TransactionTypeCode.PURCHASE.getCode());
         tran.setTranCatCd(catCd);
         tran.setTranSource(SOURCE);
         tran.setTranAmt(amount);

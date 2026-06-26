@@ -118,12 +118,15 @@ public class TransactionDetailService {
                 transaction.getTranSource(),
                 transaction.getTranDesc(),
                 transaction.getTranAmt(),
-                transaction.getOrigTs(),
-                transaction.getProcTs(),
+                toScreenDate(transaction.getOrigTs()),
+                toScreenDate(transaction.getProcTs()),
                 formatMerchantId(transaction.getMerchantId()),
                 transaction.getMerchantName(),
                 transaction.getMerchantCity(),
-                transaction.getMerchantZip());
+                transaction.getMerchantZip(),
+                // Detail/read path carries no COBOL confirmation banner; null is
+                // omitted from the JSON response via @JsonInclude(NON_NULL).
+                null);
     }
 
     /**
@@ -135,9 +138,7 @@ public class TransactionDetailService {
      *         carries no type
      */
     private static String mapTransactionType(Transaction transaction) {
-        return transaction.getTransactionType() == null
-                ? null
-                : transaction.getTransactionType().getCode();
+        return transaction.getTranTypeCd();
     }
 
     /**
@@ -161,5 +162,31 @@ public class TransactionDetailService {
      */
     private static String formatMerchantId(Long merchantId) {
         return merchantId == null ? null : String.format("%09d", merchantId);
+    }
+
+    /**
+     * Renders an origin/process timestamp as the leftmost ten characters of the
+     * stored value, reproducing the byte-accurate field contract of the legacy
+     * detail screen.
+     *
+     * <p>The COBOL symbolic map {@code COTRN01.CPY} declares the origin and
+     * process date display fields {@code TORIGDTI} and {@code TPROCDTI} as
+     * {@code PIC X(10)}, and {@code COTRN01C} populates them with
+     * {@code MOVE TRAN-ORIG-TS TO TORIGDTI} / {@code MOVE TRAN-PROC-TS TO TPROCDTI}.
+     * A COBOL alphanumeric {@code MOVE} into a shorter receiving field truncates
+     * on the right, so a 26-character timestamp such as
+     * {@code "2026-06-26 20:58:44.959503"} is presented on the screen as the
+     * leftmost ten characters {@code "2026-06-26"} (the {@code uuuu-MM-dd} date),
+     * never exposing the time-of-day component. This method reproduces that
+     * truncation exactly so the REST detail projection matches the legacy
+     * observable output rather than leaking the full timestamp.
+     *
+     * @param ts the stored 26-character timestamp; may be {@code null}
+     * @return the leftmost ten characters of {@code ts}, the whole value when it
+     *         is shorter than ten characters, or {@code null} when {@code ts} is
+     *         {@code null}
+     */
+    private static String toScreenDate(String ts) {
+        return ts == null ? null : ts.substring(0, Math.min(10, ts.length()));
     }
 }

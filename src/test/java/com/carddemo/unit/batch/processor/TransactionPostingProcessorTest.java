@@ -395,9 +395,9 @@ class TransactionPostingProcessorTest {
             assertThat(result).isInstanceOf(PostingResult.Posted.class);
             Transaction posted = ((PostingResult.Posted) result).transaction();
             assertThat(posted.getTranId()).isEqualTo(TRAN_ID);
-            assertThat(posted.getTransactionType())
-                    .isEqualTo(TransactionTypeCode.PURCHASE)
-                    .isEqualTo(TransactionTypeCode.fromCode(TYPE_CD));
+            assertThat(posted.getTranTypeCd())
+                    .isEqualTo(TransactionTypeCode.PURCHASE.getCode())
+                    .isEqualTo(TYPE_CD);
             assertThat(posted.getTranCatCd()).isEqualTo(CAT_CD);
             assertThat(posted.getTranSource()).isEqualTo(SOURCE);
             assertThat(posted.getTranDesc()).isEqualTo(DESC);

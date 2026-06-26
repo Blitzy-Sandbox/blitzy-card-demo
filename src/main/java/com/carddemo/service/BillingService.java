@@ -32,8 +32,11 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Bill-payment service backing {@code POST /api/billing/pay} (CICS transaction
@@ -60,7 +63,8 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>Post</strong> &mdash; auto-generate the next transaction
  *       identifier, build the payment transaction with the byte-exact legacy
  *       field values, persist it, decrement the balance and persist the
- *       account &mdash; all inside one {@code @Transactional} scope.</li>
+ *       account &mdash; all inside one short {@code REQUIRES_NEW} transaction
+ *       per attempt.</li>
  * </ul>
  *
  * <p>Monetary values are held as {@link BigDecimal} scaled to two fraction
@@ -68,6 +72,13 @@ import org.springframework.transaction.annotation.Transactional;
  * never used so that decimal arithmetic stays exact. The next-identifier
  * generation is reproduced internally (the legacy program writes the payment
  * transaction directly), so no other service is invoked for it.</p>
+ *
+ * <p>To reproduce the serialized record-locking guarantee CICS/VSAM provided,
+ * identifier generation and the two writes execute inside a per-attempt
+ * {@code REQUIRES_NEW} transaction that is retried on a transaction-identifier
+ * primary-key collision; legitimate concurrent payments therefore all succeed
+ * with unique sequential ids instead of returning a server error
+ * (QA Issue #6).</p>
  *
  * <p>The component is stateless and therefore thread-safe; all collaborators are
  * supplied through constructor injection.</p>
@@ -84,8 +95,15 @@ public class BillingService {
     /** Transaction identifier seed used when no transaction yet exists. */
     private static final long FIRST_TRAN_ID = 1L;
 
-    /** {@code TRAN-TYPE-CD} value hardcoded by the legacy bill-payment write. */
-    private static final String TRAN_TYPE_PAYMENT_CODE = "02";
+    /**
+     * Maximum number of generate-id-then-insert attempts for the payment
+     * transaction before surfacing a duplicate-identifier failure. Each attempt
+     * runs in its own short transaction; a {@code DataIntegrityViolationException}
+     * on the primary-key insert means a concurrent request claimed the same
+     * identifier first, so the highest id is re-read and the payment retried —
+     * reproducing the serialized record-locking guarantee CICS/VSAM provided.
+     */
+    private static final int MAX_TRAN_ID_ATTEMPTS = 25;
 
     /** {@code TRAN-CAT-CD} value hardcoded by the legacy bill-payment write. */
     private static final int BILL_PAYMENT_CATEGORY_CODE = 2;
@@ -129,29 +147,55 @@ public class BillingService {
     /** Byte-exact message for a duplicate transaction identifier. */
     private static final String MSG_TRAN_DUPLICATE = "Tran ID already exist...";
 
+    /**
+     * Byte-exact prefix of the {@code COBIL00C} payment-success banner. The legacy
+     * program builds the confirmation with
+     * {@code STRING 'Payment successful. ' ' Your Transaction ID is ' TRAN-ID '.'},
+     * concatenating a literal ending in {@code ". "} with a literal beginning in
+     * {@code " Your"} — yielding exactly two spaces after the first period —
+     * followed by the 16-character transaction id and a trailing period. The id
+     * and trailing period are appended at the call site.
+     */
+    private static final String MSG_PAY_SUCCESS_PREFIX = "Payment successful.  Your Transaction ID is ";
+
     private final AccountRepository accountRepository;
     private final CardXrefRepository cardXrefRepository;
     private final TransactionRepository transactionRepository;
     private final DateValidationService dateValidationService;
 
     /**
-     * Creates a bill-payment service with its collaborating repositories and the
-     * shared date utility.
+     * Programmatic transaction boundary used to make each generate-id-then-write
+     * payment attempt its own short unit of work. It is configured with
+     * {@code PROPAGATION_REQUIRES_NEW} so that a primary-key collision rolls back
+     * only the failed attempt — leaving the retry free to re-read the highest
+     * identifier and try again — rather than poisoning an enclosing transaction.
+     */
+    private final TransactionTemplate transactionTemplate;
+
+    /**
+     * Creates a bill-payment service with its collaborating repositories, the
+     * shared date utility, and the platform transaction manager used to scope
+     * each payment attempt.
      *
      * @param accountRepository     account master access ({@code ACCTDAT})
      * @param cardXrefRepository    card cross-reference access ({@code CXACAIX})
      * @param transactionRepository posted-transaction access ({@code TRANSACT})
      * @param dateValidationService supplier of the 26-character processing
      *                              timestamp
+     * @param transactionManager    platform transaction manager backing the
+     *                              per-attempt {@link TransactionTemplate}
      */
     public BillingService(AccountRepository accountRepository,
             CardXrefRepository cardXrefRepository,
             TransactionRepository transactionRepository,
-            DateValidationService dateValidationService) {
+            DateValidationService dateValidationService,
+            PlatformTransactionManager transactionManager) {
         this.accountRepository = accountRepository;
         this.cardXrefRepository = cardXrefRepository;
         this.transactionRepository = transactionRepository;
         this.dateValidationService = dateValidationService;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.transactionTemplate.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
     }
 
     /**
@@ -159,8 +203,19 @@ public class BillingService {
      * transaction and decrementing the account balance to zero as a single
      * atomic unit of work (CICS {@code SYNCPOINT} parity).
      *
-     * <p>The rollback boundary spans both writes: if persisting the transaction
-     * or the updated account fails for any reason, neither change is committed.</p>
+     * <p>Each attempt runs in its own {@code REQUIRES_NEW} transaction whose
+     * rollback boundary spans both writes: if persisting the transaction or the
+     * updated account fails for any reason, neither change is committed. When the
+     * failure is a transaction-identifier primary-key collision with a concurrent
+     * payment, the highest identifier is re-read and the attempt retried, so
+     * legitimate concurrent payments all succeed with unique sequential ids
+     * rather than surfacing a server error (QA Issue #6 concurrency parity).</p>
+     *
+     * <p>Up-front input validation (account-id presence and confirmation flag) is
+     * performed once, outside the retry boundary, because it neither writes nor
+     * benefits from a fresh read. The account is (re-)loaded <em>inside</em> each
+     * attempt so its {@code @Version} is current and the zero-or-negative-balance
+     * guard reflects the latest committed state.</p>
      *
      * @param request the bill-payment request carrying the account identifier
      *                and the {@code Y}/{@code N} confirmation flag
@@ -173,10 +228,10 @@ public class BillingService {
      * @throws RecordNotFoundException if the account or its card cross-reference
      *                                 cannot be located
      * @throws BusinessRuleException   if the account balance is zero or negative
-     * @throws DuplicateRecordException if the generated transaction identifier
-     *                                 already exists
+     * @throws DuplicateRecordException if a unique transaction identifier cannot
+     *                                 be generated after the configured number of
+     *                                 attempts
      */
-    @Transactional(rollbackFor = Exception.class)
     public BillingDto.PayResponse payBill(BillingDto.PayRequest request) {
         String accountIdText = request.accountId();
         if (accountIdText == null || accountIdText.isBlank()) {
@@ -189,25 +244,31 @@ public class BillingService {
         }
         String confirmFlag = confirm.trim();
         if (CONFIRM_NO.equalsIgnoreCase(confirmFlag)) {
-            return new BillingDto.PayResponse(accountIdText, null, CONFIRM_NO);
+            // Cancel path: no payment is written, so transactionId and the success
+            // banner are null (omitted from the JSON response via @JsonInclude).
+            return new BillingDto.PayResponse(accountIdText, null, CONFIRM_NO, null, null);
         }
         if (!CONFIRM_YES.equalsIgnoreCase(confirmFlag)) {
             throw new ValidationException(MSG_CONFIRM_INVALID);
         }
 
         long accountId = parseAccountId(accountIdText);
-        Account account = accountRepository.findById(accountId)
-                .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
+        PaymentResult result = executePaymentWithRetry(accountId);
 
-        BigDecimal currentBalance = account.getCurrBal();
-        if (currentBalance == null || currentBalance.compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessRuleException(MSG_NOTHING_TO_PAY);
-        }
+        return new BillingDto.PayResponse(accountIdText, result.newBalance(), CONFIRM_YES,
+                result.tranId(), MSG_PAY_SUCCESS_PREFIX + result.tranId() + ".");
+    }
 
-        String cardNumber = resolveCardNumber(accountId);
-        BigDecimal newBalance = postPayment(account, currentBalance, cardNumber);
-
-        return new BillingDto.PayResponse(accountIdText, newBalance, CONFIRM_YES);
+    /**
+     * Outcome of a posted bill payment: the generated transaction identifier and
+     * the account balance after the payment. Surfacing the identifier lets
+     * {@link #payBill} echo it and render the byte-exact {@code COBIL00C} success
+     * banner that names the transaction id.
+     *
+     * @param tranId     the 16-character zero-padded transaction identifier
+     * @param newBalance the account balance after the full-balance payment
+     */
+    private record PaymentResult(String tranId, BigDecimal newBalance) {
     }
 
     /**
@@ -243,46 +304,90 @@ public class BillingService {
     }
 
     /**
-     * Writes the full-balance payment transaction and decrements the account
-     * balance within the caller's transaction.
+     * Posts the full-balance payment, retrying on a transaction-identifier
+     * primary-key collision so that concurrent payments serialize cleanly the way
+     * CICS/VSAM record locking did, rather than surfacing a {@code 500}
+     * (QA Issue #6).
      *
-     * @param account        the loaded account to update
-     * @param currentBalance the current balance, paid in full
-     * @param cardNumber     the resolved card number for the transaction
-     * @return the new account balance after the payment
-     * @throws DuplicateRecordException if the generated identifier already exists
+     * <p>Each attempt runs in its own {@code REQUIRES_NEW} transaction (via
+     * {@link #transactionTemplate}) that:</p>
+     * <ol>
+     *   <li>(re-)loads the account by key inside the attempt so its
+     *       {@code @Version} is current and the zero-or-negative-balance guard
+     *       reflects the latest committed state;</li>
+     *   <li>resolves the card number through the account alternate index;</li>
+     *   <li>generates the next identifier from the highest existing id;</li>
+     *   <li>{@code insert}s the payment (INSERT-only) so a duplicate-key violation is
+     *       raised <em>inside</em> the attempt (rolling it back) instead of at an
+     *       outer commit; and</li>
+     *   <li>decrements the account balance to zero.</li>
+     * </ol>
+     *
+     * <p>A {@link DataIntegrityViolationException} means a concurrent payment
+     * claimed the same identifier first; the highest id is re-read and the
+     * payment retried. Validation failures (account-not-found,
+     * nothing-to-pay) are not {@code DataIntegrityViolationException}s, so they
+     * propagate immediately without consuming a retry. After
+     * {@link #MAX_TRAN_ID_ATTEMPTS} unsuccessful attempts a
+     * {@link DuplicateRecordException} is raised.</p>
+     *
+     * @param accountId the numeric account identifier to pay in full
+     * @return the generated transaction identifier and the new account balance
+     *         after the payment
+     * @throws RecordNotFoundException  if the account or its card cross-reference
+     *                                  cannot be located
+     * @throws BusinessRuleException    if the account balance is zero or negative
+     * @throws DuplicateRecordException if a unique identifier cannot be generated
+     *                                  within {@link #MAX_TRAN_ID_ATTEMPTS} attempts
      */
-    private BigDecimal postPayment(Account account, BigDecimal currentBalance, String cardNumber) {
-        String tranId = nextTransactionId();
-        if (transactionRepository.existsById(tranId)) {
-            throw new DuplicateRecordException(MSG_TRAN_DUPLICATE);
+    private PaymentResult executePaymentWithRetry(long accountId) {
+        DataIntegrityViolationException lastCollision = null;
+        for (int attempt = 1; attempt <= MAX_TRAN_ID_ATTEMPTS; attempt++) {
+            try {
+                return transactionTemplate.execute(status -> {
+                    Account account = accountRepository.findById(accountId)
+                            .orElseThrow(() -> new RecordNotFoundException(MSG_ACCT_NOT_FOUND));
+
+                    BigDecimal currentBalance = account.getCurrBal();
+                    if (currentBalance == null || currentBalance.compareTo(BigDecimal.ZERO) <= 0) {
+                        throw new BusinessRuleException(MSG_NOTHING_TO_PAY);
+                    }
+
+                    String cardNumber = resolveCardNumber(accountId);
+                    String tranId = nextTransactionId();
+                    BigDecimal paymentAmount = currentBalance.setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
+                    String timestamp = dateValidationService.currentTimestamp();
+
+                    Transaction payment = new Transaction(
+                            tranId,
+                            TransactionTypeCode.PAYMENT.getCode(),
+                            BILL_PAYMENT_CATEGORY_CODE,
+                            TRAN_SOURCE_POS_TERM,
+                            TRAN_DESC_BILL_PAYMENT,
+                            paymentAmount,
+                            BILL_PAYMENT_MERCHANT_ID,
+                            BILL_PAYMENT_MERCHANT_NAME,
+                            NOT_APPLICABLE,
+                            NOT_APPLICABLE,
+                            cardNumber,
+                            timestamp,
+                            timestamp);
+                    transactionRepository.insert(payment);
+
+                    BigDecimal newBalance = currentBalance.subtract(paymentAmount)
+                            .setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
+                    account.setCurrBal(newBalance);
+                    accountRepository.save(account);
+
+                    return new PaymentResult(tranId, newBalance);
+                });
+            } catch (DataIntegrityViolationException ex) {
+                // A concurrent payment claimed the same transaction id; re-read
+                // the highest id on the next attempt.
+                lastCollision = ex;
+            }
         }
-
-        BigDecimal paymentAmount = currentBalance.setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
-        String timestamp = dateValidationService.currentTimestamp();
-
-        Transaction payment = new Transaction(
-                tranId,
-                TransactionTypeCode.fromCode(TRAN_TYPE_PAYMENT_CODE),
-                BILL_PAYMENT_CATEGORY_CODE,
-                TRAN_SOURCE_POS_TERM,
-                TRAN_DESC_BILL_PAYMENT,
-                paymentAmount,
-                BILL_PAYMENT_MERCHANT_ID,
-                BILL_PAYMENT_MERCHANT_NAME,
-                NOT_APPLICABLE,
-                NOT_APPLICABLE,
-                cardNumber,
-                timestamp,
-                timestamp);
-        transactionRepository.save(payment);
-
-        BigDecimal newBalance = currentBalance.subtract(paymentAmount)
-                .setScale(MONEY_SCALE, RoundingMode.HALF_EVEN);
-        account.setCurrBal(newBalance);
-        accountRepository.save(account);
-
-        return newBalance;
+        throw new DuplicateRecordException(MSG_TRAN_DUPLICATE, lastCollision);
     }
 
     /**

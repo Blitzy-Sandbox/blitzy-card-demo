@@ -326,9 +326,9 @@ public class PostTransactionJobIT extends AbstractIntegrationIT {
         assertThat(posted.getTranAmt().compareTo(WITHIN_LIMIT_AMT)).as("TRAN-AMT preserved").isZero();
         assertThat(posted.getCardNum()).as("TRAN-CARD-NUM preserved").isEqualTo(TEST_CARD_NUM);
         assertThat(posted.getOrigTs()).as("TRAN-ORIG-TS preserved verbatim (26 chars)").isEqualTo(origTs);
-        assertThat(posted.getTransactionType())
-                .as("raw '01' round-trips through TransactionTypeConverter to PURCHASE")
-                .isEqualTo(TransactionTypeCode.PURCHASE);
+        assertThat(posted.getTranTypeCd())
+                .as("raw '01' is written through verbatim to tran_type_cd (CVTRA05Y PIC X(2))")
+                .isEqualTo(TransactionTypeCode.PURCHASE.getCode());
         assertThat(posted.getProcTs())
                 .as("TRAN-PROC-TS stamped by 2000-POST (CHAR(26))")
                 .isNotNull()

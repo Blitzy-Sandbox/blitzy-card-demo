@@ -23,7 +23,6 @@ import com.carddemo.entity.DisclosureGroupId;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategoryBalance;
 import com.carddemo.enums.TransactionSource;
-import com.carddemo.enums.TransactionTypeCode;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.DisclosureGroupRepository;
@@ -335,7 +334,7 @@ public class InterestProcessor implements ItemProcessor<TransactionCategoryBalan
 
         return new Transaction(
                 transactionId,
-                TransactionTypeCode.fromCode(INTEREST_TRANSACTION_TYPE_CODE),
+                INTEREST_TRANSACTION_TYPE_CODE,
                 INTEREST_TRANSACTION_CATEGORY_CODE,
                 TransactionSource.SYSTEM.getLabel(),
                 description,

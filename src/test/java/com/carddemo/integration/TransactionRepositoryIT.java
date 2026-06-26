@@ -81,9 +81,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * singleton container. To prove behaviour against the <em>database</em> rather
  * than the first-level persistence-context cache, each read assertion is preceded
  * by an {@link #flushAndClear()} that flushes pending inserts and detaches all
- * managed entities, forcing a real {@code SELECT} that re-runs
- * {@link com.carddemo.entity.TransactionTypeConverter} and re-materialises the
- * fixed-width {@code CHAR} columns.
+ * managed entities, forcing a real {@code SELECT} that re-materialises the
+ * fixed-width {@code CHAR} columns (including the raw {@code char(2)} tran_type_cd
+ * read straight back into a {@link String}, with no attribute converter).
  */
 @Transactional
 @DisplayName("TransactionRepository IT — PostgreSQL 16 + Flyway (VSAM TRANSACT fidelity)")
@@ -133,7 +133,7 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
             BigDecimal amt, String origTs, String procTs) {
         return new Transaction(
                 tranId,                          // TRAN-ID            X(16)
-                type,                            // TRAN-TYPE-CD       X(02) via converter
+                type.getCode(),                  // TRAN-TYPE-CD       X(02) raw write-through
                 1,                               // TRAN-CAT-CD        9(04)
                 "POS",                           // TRAN-SOURCE        X(10)
                 "Integration test transaction",  // TRAN-DESC          X(100)
@@ -204,11 +204,11 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
     }
 
     // =====================================================================================
-    // Phase 2 — TransactionTypeConverter round-trip (enum ↔ 2-char tran_type_cd).
+    // Phase 2 — tran_type_cd raw CHAR(2) String round-trip (write-through, open PIC X(2)).
     // =====================================================================================
 
     @Test
-    @DisplayName("converter round-trips PAYMENT ↔ tran_type_cd \"02\" (write path + read path)")
+    @DisplayName("tran_type_cd round-trips PAYMENT code \"02\" raw (write path + read path)")
     void transactionType_payment_roundTripsThroughConverter() {
         String id = tranId(2001);
         transactionRepository.save(newTransaction(id, CARD_DEFAULT, TransactionTypeCode.PAYMENT,
@@ -218,14 +218,14 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
         // Write path: the raw CHAR(2) column holds exactly "02".
         assertThat(rawTypeCode(id)).isEqualTo("02");
 
-        // Read path: a fresh SELECT re-runs the converter, resolving "02" → PAYMENT.
+        // Read path: a fresh SELECT re-materialises the raw CHAR(2) value "02" as a String.
         Transaction reloaded = transactionRepository.findById(id).orElseThrow();
-        assertThat(reloaded.getTransactionType()).isEqualTo(TransactionTypeCode.PAYMENT);
-        assertThat(reloaded.getTransactionType().getCode()).isEqualTo("02");
+        assertThat(reloaded.getTranTypeCd()).isEqualTo(TransactionTypeCode.PAYMENT.getCode());
+        assertThat(reloaded.getTranTypeCd()).isEqualTo("02");
     }
 
     @Test
-    @DisplayName("converter round-trips PURCHASE ↔ tran_type_cd \"01\" (write path + read path)")
+    @DisplayName("tran_type_cd round-trips PURCHASE code \"01\" raw (write path + read path)")
     void transactionType_purchase_roundTripsThroughConverter() {
         String id = tranId(2002);
         transactionRepository.save(newTransaction(id, CARD_DEFAULT, TransactionTypeCode.PURCHASE,
@@ -235,8 +235,8 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
         assertThat(rawTypeCode(id)).isEqualTo("01");
 
         Transaction reloaded = transactionRepository.findById(id).orElseThrow();
-        assertThat(reloaded.getTransactionType()).isEqualTo(TransactionTypeCode.PURCHASE);
-        assertThat(reloaded.getTransactionType().getCode()).isEqualTo("01");
+        assertThat(reloaded.getTranTypeCd()).isEqualTo(TransactionTypeCode.PURCHASE.getCode());
+        assertThat(reloaded.getTranTypeCd()).isEqualTo("01");
     }
 
     // =====================================================================================
@@ -406,7 +406,7 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
     void fullRecord_allFieldsRoundTrip() {
         String id = tranId(7001);
         Transaction original = new Transaction(
-                id, TransactionTypeCode.REFUND, 4096, "ONLINE", "Refund for returned item",
+                id, TransactionTypeCode.REFUND.getCode(), 4096, "ONLINE", "Refund for returned item",
                 new BigDecimal("250.00"), 987654321L, "GLOBEX CORP", "PORTLAND", "97201",
                 CARD_A, "2022-05-20 11:22:33.123456", "2022-05-21 00:11:22.000099");
         transactionRepository.save(original);
@@ -414,7 +414,7 @@ class TransactionRepositoryIT extends AbstractIntegrationIT {
 
         Transaction r = transactionRepository.findById(id).orElseThrow();
         assertThat(r.getTranId()).isEqualTo(id);
-        assertThat(r.getTransactionType()).isEqualTo(TransactionTypeCode.REFUND);
+        assertThat(r.getTranTypeCd()).isEqualTo(TransactionTypeCode.REFUND.getCode());
         assertThat(r.getTranCatCd()).isEqualTo(4096);
         assertThat(r.getTranSource()).isEqualTo("ONLINE");
         assertThat(r.getTranDesc()).isEqualTo("Refund for returned item");

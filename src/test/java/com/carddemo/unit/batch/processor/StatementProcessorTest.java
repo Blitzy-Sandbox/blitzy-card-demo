@@ -233,7 +233,7 @@ class StatementProcessorTest {
         // mapping normalises to scale 2.
         String descriptionPadded = descriptionTrimmed + "          ";
         Transaction transaction = new Transaction(
-                "TXN0000000000099", TransactionTypeCode.PURCHASE, 5, "POS",
+                "TXN0000000000099", TransactionTypeCode.PURCHASE.getCode(), 5, "POS",
                 descriptionPadded, new BigDecimal("10.5"), 123_456_789L,
                 "STARBUCKS", "SEATTLE", "98101", CARD_NUM, ORIG_TS, PROC_TS);
 
@@ -376,7 +376,7 @@ class StatementProcessorTest {
         malicious.setAddrLine1("<img&\"bad\">");
         malicious.setFicoCreditScore(700);
         Transaction transaction = new Transaction(
-                "<x>", TransactionTypeCode.PURCHASE, 1, "POS", "<b>x</b>&\"'",
+                "<x>", TransactionTypeCode.PURCHASE.getCode(), 1, "POS", "<b>x</b>&\"'",
                 new BigDecimal("10.00"), 123_456_789L, "M", "C", "Z",
                 CARD_NUM, ORIG_TS, PROC_TS);
         wire(malicious, List.of(transaction));
@@ -437,7 +437,7 @@ class StatementProcessorTest {
      */
     private static Transaction baselineTransaction(String tranId, TransactionTypeCode type,
             BigDecimal amount, String description) {
-        return new Transaction(tranId, type, 1, "POS", description, amount, 100_000_001L,
+        return new Transaction(tranId, type.getCode(), 1, "POS", description, amount, 100_000_001L,
                 "MERCHANT NAME", "SEATTLE", "98101", CARD_NUM, ORIG_TS, PROC_TS);
     }
 

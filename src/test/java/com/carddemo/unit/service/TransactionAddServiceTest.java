@@ -42,6 +42,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.PlatformTransactionManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -176,6 +177,13 @@ class TransactionAddServiceTest {
     private CardXrefRepository cardXrefRepository;
     @Mock
     private DateValidationService dateValidationService;
+    // A bare PlatformTransactionManager mock is sufficient: the real
+    // TransactionTemplate the service builds over it executes its action
+    // callback synchronously (getTransaction() returns a null status, and
+    // commit()/rollback() are no-ops on the mock), so each retry attempt runs
+    // inline on the test thread with no NPE.
+    @Mock
+    private PlatformTransactionManager transactionManager;
 
     @InjectMocks
     private TransactionAddService service;
@@ -246,10 +254,9 @@ class TransactionAddServiceTest {
                 .thenReturn(List.of(new CardXref(SUBMITTED_CARD, 1L, ACCOUNT_ID_N)));
     }
 
-    /** Stubs the id-generation reads so the table is empty and the first id is free. */
+    /** Stubs the id-generation read so the table is empty and the first id is one. */
     private void stubFirstIdAvailable() {
         when(transactionRepository.findTopByOrderByTranIdDesc()).thenReturn(Optional.empty());
-        when(transactionRepository.existsById(FIRST_TRAN_ID)).thenReturn(false);
     }
 
     // =================================================================
@@ -268,7 +275,7 @@ class TransactionAddServiceTest {
         assertThat(detail.cardNumber()).isEqualTo(SUBMITTED_CARD);
         assertThat(detail.transactionId()).isEqualTo(FIRST_TRAN_ID);
         verify(cardXrefRepository, never()).findById(anyString());
-        verify(transactionRepository).save(captor.capture());
+        verify(transactionRepository).insert(captor.capture());
         assertThat(captor.getValue().getCardNum()).isEqualTo(SUBMITTED_CARD);
     }
 
@@ -283,7 +290,7 @@ class TransactionAddServiceTest {
 
         assertThat(detail.cardNumber()).isEqualTo(SUBMITTED_CARD);
         verify(cardXrefRepository, never()).findByXrefAcctId(anyLong());
-        verify(transactionRepository).save(any(Transaction.class));
+        verify(transactionRepository).insert(any(Transaction.class));
     }
 
     @Test
@@ -307,7 +314,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE)))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_ACCT_NOT_FOUND);
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     @Test
@@ -318,7 +325,7 @@ class TransactionAddServiceTest {
         assertThatThrownBy(() -> service.addTransaction(request("", SUBMITTED_CARD, TYPE_CODE)))
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_CARD_NOT_FOUND);
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     @Test
@@ -384,7 +391,6 @@ class TransactionAddServiceTest {
         stubAccountResolvesToSubmittedCard();
         when(transactionRepository.findTopByOrderByTranIdDesc())
                 .thenReturn(Optional.of(transactionWithId(HIGHEST_TRAN_ID)));
-        when(transactionRepository.existsById(NEXT_TRAN_ID)).thenReturn(false);
         ArgumentCaptor<Transaction> captor = ArgumentCaptor.forClass(Transaction.class);
 
         TransactionDto.Detail detail = service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE));
@@ -403,13 +409,17 @@ class TransactionAddServiceTest {
         assertThat(detail.merchantName()).isEqualTo(MERCHANT_NAME);
         assertThat(detail.merchantCity()).isEqualTo(MERCHANT_CITY);
         assertThat(detail.merchantZip()).isEqualTo(MERCHANT_ZIP);
+        // The detail surfaces the byte-exact COTRN02C success banner naming the
+        // generated transaction id (two spaces after "successfully.", trailing period).
+        assertThat(detail.confirmationMessage())
+                .isEqualTo("Transaction added successfully.  Your Tran ID is " + NEXT_TRAN_ID + ".");
 
         // The persisted entity mirrors the COBOL ADD-TRANSACTION field moves.
-        verify(transactionRepository).save(captor.capture());
+        verify(transactionRepository).insert(captor.capture());
         Transaction saved = captor.getValue();
         assertThat(saved.getTranId()).isEqualTo(NEXT_TRAN_ID);
         assertThat(saved.getCardNum()).isEqualTo(SUBMITTED_CARD);
-        assertThat(saved.getTransactionType()).isEqualTo(TransactionTypeCode.PURCHASE);
+        assertThat(saved.getTranTypeCd()).isEqualTo(TransactionTypeCode.PURCHASE.getCode());
         assertThat(saved.getTranCatCd()).isEqualTo(1);
         assertThat(saved.getTranSource()).isEqualTo(SOURCE);
         assertThat(saved.getTranDesc()).isEqualTo(DESCRIPTION);
@@ -435,7 +445,7 @@ class TransactionAddServiceTest {
         TransactionDto.Detail detail = service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE));
 
         assertThat(detail.transactionId()).isEqualTo(FIRST_TRAN_ID);
-        verify(transactionRepository).save(any(Transaction.class));
+        verify(transactionRepository).insert(any(Transaction.class));
     }
 
     // =================================================================
@@ -449,7 +459,7 @@ class TransactionAddServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_CONFIRM);
 
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
         verify(cardXrefRepository, never()).findByXrefAcctId(anyLong());
     }
 
@@ -460,7 +470,7 @@ class TransactionAddServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_INVALID_YN);
 
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     @Test
@@ -472,7 +482,7 @@ class TransactionAddServiceTest {
                 .isInstanceOf(ValidationException.class)
                 .hasMessage(MSG_CONFIRM);
 
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     // =================================================================
@@ -489,7 +499,7 @@ class TransactionAddServiceTest {
                 .hasMessage(MSG_ACCT_OR_CARD);
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsExactly(entry("accountId", MSG_ACCT_OR_CARD));
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
         verify(cardXrefRepository, never()).findByXrefAcctId(anyLong());
         verify(cardXrefRepository, never()).findById(anyString());
     }
@@ -506,7 +516,7 @@ class TransactionAddServiceTest {
                 .hasMessage(MSG_TYPE_EMPTY);
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsExactly(entry("typeCode", MSG_TYPE_EMPTY));
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     @Test
@@ -522,7 +532,7 @@ class TransactionAddServiceTest {
                 .hasMessage(MSG_AMOUNT_FORMAT);
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsExactly(entry("amount", MSG_AMOUNT_FORMAT));
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     @Test
@@ -537,7 +547,7 @@ class TransactionAddServiceTest {
                 .hasMessage(MSG_ORIG_DATE_FORMAT);
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsExactly(entry("originDate", MSG_ORIG_DATE_FORMAT));
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        verify(transactionRepository, never()).insert(any(Transaction.class));
     }
 
     // =================================================================
@@ -546,29 +556,39 @@ class TransactionAddServiceTest {
     // =================================================================
 
     @Test
-    @DisplayName("addTransaction: a pre-existing generated id -> DuplicateRecordException 'Tran ID already exist...'")
-    void duplicateIdViaExistsByIdRejected() {
+    @DisplayName("addTransaction: a transient id collision is retried and the next attempt succeeds (concurrency parity, Issue #6)")
+    void transientCollisionThenRetrySucceeds() {
         stubAccountResolvesToSubmittedCard();
         when(transactionRepository.findTopByOrderByTranIdDesc())
                 .thenReturn(Optional.of(transactionWithId(HIGHEST_TRAN_ID)));
-        when(transactionRepository.existsById(NEXT_TRAN_ID)).thenReturn(true);
+        // The first attempt loses the id race: a concurrent writer claimed the same
+        // id, so the flush raises a primary-key violation. The retry re-reads the
+        // highest id and commits — reproducing the serialized record-locking the
+        // legacy CICS/VSAM write provided, instead of surfacing a 500.
+        when(transactionRepository.insert(any(Transaction.class)))
+                .thenThrow(new DataIntegrityViolationException(
+                        "duplicate key value violates unique constraint \"pk_transactions\""))
+                .thenReturn(transactionWithId(NEXT_TRAN_ID));
 
-        assertThatThrownBy(() -> service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE)))
-                .isInstanceOf(DuplicateRecordException.class)
-                .hasMessage(MSG_DUP_TRAN_ID);
-        verify(transactionRepository, never()).save(any(Transaction.class));
+        TransactionDto.Detail detail = service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE));
+
+        assertThat(detail.transactionId()).isEqualTo(NEXT_TRAN_ID);
+        // The write was attempted twice: the collision rolled back attempt one, the
+        // retry committed attempt two.
+        verify(transactionRepository, times(2)).insert(any(Transaction.class));
     }
 
     @Test
-    @DisplayName("addTransaction: a unique-key violation on save surfaces as a duplicate (DUPKEY/DUPREC parity)")
+    @DisplayName("addTransaction: a persistent unique-key violation exhausts retries -> DuplicateRecordException (DUPKEY/DUPREC parity)")
     void duplicateIdViaIntegrityViolationRejected() {
         stubAccountResolvesToSubmittedCard();
         when(transactionRepository.findTopByOrderByTranIdDesc())
                 .thenReturn(Optional.of(transactionWithId(HIGHEST_TRAN_ID)));
-        when(transactionRepository.existsById(NEXT_TRAN_ID)).thenReturn(false);
         DataIntegrityViolationException integrityViolation =
                 new DataIntegrityViolationException("duplicate key value violates unique constraint \"transactions_pkey\"");
-        when(transactionRepository.save(any(Transaction.class))).thenThrow(integrityViolation);
+        // Every attempt collides, so the bounded retry exhausts and surfaces the
+        // byte-exact legacy duplicate message, carrying the last collision as cause.
+        when(transactionRepository.insert(any(Transaction.class))).thenThrow(integrityViolation);
 
         assertThatThrownBy(() -> service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE)))
                 .isInstanceOf(DuplicateRecordException.class)
@@ -582,10 +602,9 @@ class TransactionAddServiceTest {
         stubAccountResolvesToSubmittedCard();
         when(transactionRepository.findTopByOrderByTranIdDesc())
                 .thenReturn(Optional.of(transactionWithId(HIGHEST_TRAN_ID)));
-        when(transactionRepository.existsById(NEXT_TRAN_ID)).thenReturn(false);
         DataAccessResourceFailureException dataAccessFailure =
                 new DataAccessResourceFailureException("simulated data-store connection failure");
-        when(transactionRepository.save(any(Transaction.class))).thenThrow(dataAccessFailure);
+        when(transactionRepository.insert(any(Transaction.class))).thenThrow(dataAccessFailure);
 
         assertThatThrownBy(() -> service.addTransaction(request(ACCOUNT_ID, "", TYPE_CODE)))
                 .isInstanceOf(FileAccessException.class)
@@ -599,7 +618,7 @@ class TransactionAddServiceTest {
     // =================================================================
 
     @Test
-    @DisplayName("addTransaction: executes resolve -> validate-date -> find-highest -> duplicate-guard -> write in order")
+    @DisplayName("addTransaction: executes resolve -> validate-date -> find-highest -> write in order")
     void happyPathExecutesCobolCascadeInOrder() {
         stubAccountResolvesToSubmittedCard();
         stubFirstIdAvailable();
@@ -611,8 +630,9 @@ class TransactionAddServiceTest {
         // Both the origination and processing dates are calendar-checked (twice),
         // and both occur before the highest-id read.
         inOrder.verify(dateValidationService, times(2)).isValidDate(anyString());
+        // Inside the retried unit of work: read the highest id, then flush the
+        // write (the prior racy existsById pre-check was removed for Issue #6).
         inOrder.verify(transactionRepository).findTopByOrderByTranIdDesc();
-        inOrder.verify(transactionRepository).existsById(FIRST_TRAN_ID);
-        inOrder.verify(transactionRepository).save(any(Transaction.class));
+        inOrder.verify(transactionRepository).insert(any(Transaction.class));
     }
 }

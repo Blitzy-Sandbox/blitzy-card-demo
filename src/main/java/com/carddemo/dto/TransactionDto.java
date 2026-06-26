@@ -3,9 +3,10 @@ package com.carddemo.dto;
 import java.math.BigDecimal;
 import java.util.List;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Digits;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -89,6 +90,12 @@ public final class TransactionDto {
      * @param merchantName    the merchant name ({@code MNAME}, max 30)
      * @param merchantCity    the merchant city ({@code MCITY}, max 25)
      * @param merchantZip     the merchant ZIP code ({@code MZIP}, max 10)
+     * @param confirmationMessage the byte-exact COBOL success banner emitted by
+     *                        {@code COTRN02C} after a successful add
+     *                        ({@code "Transaction added successfully.  Your Tran
+     *                        ID is <id>."}); {@code null} — and therefore omitted
+     *                        from the JSON response — on the read/detail path,
+     *                        which carries no confirmation banner
      */
     public record Detail(
             @Size(max = 16) String transactionId,
@@ -103,7 +110,8 @@ public final class TransactionDto {
             @Size(max = 9) @Pattern(regexp = "\\d{0,9}") String merchantId,
             @Size(max = 30) String merchantName,
             @Size(max = 25) String merchantCity,
-            @Size(max = 10) String merchantZip
+            @Size(max = 10) String merchantZip,
+            @JsonInclude(JsonInclude.Include.NON_NULL) String confirmationMessage
     ) {
     }
 
@@ -115,7 +123,10 @@ public final class TransactionDto {
      * {@code MID X(9)}, {@code MNAME X(30)}, {@code MCITY X(25)},
      * {@code MZIP X(10)}, and {@code CONFIRM X(1)} at commit {@code 27d6c6f}.
      *
-     * @param accountId    the account identifier ({@code ACTIDIN}, max 11 digits, required)
+     * @param accountId    the account identifier ({@code ACTIDIN}, max 11 digits); optional —
+     *                     either an account id or a {@code cardNumber} may be supplied, and the
+     *                     {@code COTRN02C} {@code VALIDATE-INPUT-KEY-FIELDS} cascade resolves the
+     *                     key (account-only, card-only, or the "must be entered" message)
      * @param cardNumber   the card number ({@code CARDNIN}, max 16 digits)
      * @param typeCode     the two-character transaction type code ({@code TTYPCD})
      * @param categoryCode the transaction category code ({@code TCATCD}, max 4 digits)
@@ -131,20 +142,20 @@ public final class TransactionDto {
      * @param confirm      the add-confirmation flag ({@code CONFIRM}, Y/N)
      */
     public record AddRequest(
-            @NotBlank @Size(max = 11) @Pattern(regexp = "\\d{1,11}") String accountId,
-            @Size(max = 16) @Pattern(regexp = "\\d{0,16}") String cardNumber,
-            @Size(max = 2) @Pattern(regexp = "\\d{2}") String typeCode,
-            @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String categoryCode,
+            @Size(max = 11) @Pattern(regexp = "\\d{0,11}") String accountId,
+            @Size(max = 16) String cardNumber,
+            @Size(max = 2) String typeCode,
+            @Size(max = 4) String categoryCode,
             @Size(max = 10) String source,
             @Size(max = 60) String description,
             @Digits(integer = 10, fraction = 2) BigDecimal amount,
             @Size(max = 10) String originDate,
             @Size(max = 10) String processDate,
-            @Size(max = 9) @Pattern(regexp = "\\d{0,9}") String merchantId,
+            @Size(max = 9) String merchantId,
             @Size(max = 30) String merchantName,
             @Size(max = 25) String merchantCity,
             @Size(max = 10) String merchantZip,
-            @Size(max = 1) @Pattern(regexp = "[YyNn]?") String confirm
+            @Size(max = 1) String confirm
     ) {
     }
 }

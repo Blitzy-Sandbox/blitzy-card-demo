@@ -522,7 +522,7 @@ public class TransactionReportJobIT extends AbstractIntegrationIT {
     private void persist(int sequence, String cardNum, String amount, String processingDate) {
         final Transaction transaction = new Transaction(
                 tranId(sequence),
-                DEFAULT_TYPE,
+                DEFAULT_TYPE.getCode(),
                 DEFAULT_CATEGORY,
                 "POS",
                 "INTEGRATION TEST TRANSACTION",

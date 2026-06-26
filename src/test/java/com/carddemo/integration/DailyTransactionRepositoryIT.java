@@ -64,8 +64,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link DailyTransaction#getTranTypeCd()} is a plain {@link String} bound to a
  * {@code CHAR(2)} column with no attribute converter: a staging record holds the
  * two-character {@code DALYTRAN-TYPE-CD} exactly as read from the daily file. The posted
- * {@code Transaction} entity maps its type code through {@code TransactionTypeConverter};
- * staging does not. Code validation (against the seven {@code TRAN-TYPE} values
+ * {@code Transaction} entity likewise stores its {@code TRAN-TYPE-CD} as a raw
+ * {@code CHAR(2)} String (write-through, no attribute converter). Code validation
+ * (against the seven {@code TRAN-TYPE} values
  * {@code 01}..{@code 07}) runs later in {@code TransactionPostingProcessor}. The seeded
  * fixture contains only the valid codes {@code 01} and {@code 03}; a synthetic insert
  * below round-trips codes that are not valid enum constants ({@code "99"}, {@code "ZZ"})

@@ -75,7 +75,7 @@ import org.springframework.stereotype.Repository;
  * </ul>
  */
 @Repository
-public interface TransactionRepository extends JpaRepository<Transaction, String> {
+public interface TransactionRepository extends JpaRepository<Transaction, String>, TransactionRepositoryCustom {
 
     /**
      * Returns every transaction for the given card number, ordered by

@@ -160,7 +160,7 @@ class TransactionListServiceTest {
             BigDecimal tranAmt, String origTs) {
         return new Transaction(
                 tranId,
-                TransactionTypeCode.PURCHASE,
+                TransactionTypeCode.PURCHASE.getCode(),
                 100,
                 "POS",
                 tranDesc,

@@ -32,7 +32,6 @@ import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategoryBalance;
 import com.carddemo.entity.TransactionCategoryBalanceId;
 import com.carddemo.enums.RejectReasonCode;
-import com.carddemo.enums.TransactionTypeCode;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
@@ -216,7 +215,7 @@ public class TransactionPostingProcessor implements ItemProcessor<DailyTransacti
     private Transaction buildPostedTransaction(DailyTransaction item) {
         return new Transaction(
                 item.getTranId(),
-                TransactionTypeCode.fromCode(item.getTranTypeCd()),
+                item.getTranTypeCd(),
                 item.getTranCatCd(),
                 item.getTranSource(),
                 item.getTranDesc(),

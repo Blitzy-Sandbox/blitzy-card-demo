@@ -472,7 +472,7 @@ public class StatementJobIT extends AbstractIntegrationIT {
     private void persistStatementTransaction(String tranId, String description, BigDecimal amount) {
         transactionRepository.save(new Transaction(
                 tranId,                              // TRAN-ID            X(16)
-                TransactionTypeCode.PURCHASE,        // TRAN-TYPE-CD       X(02) via converter
+                TransactionTypeCode.PURCHASE.getCode(), // TRAN-TYPE-CD     X(02) raw write-through
                 1,                                   // TRAN-CAT-CD        9(04)
                 "POS",                               // TRAN-SOURCE        X(10)
                 description,                          // TRAN-DESC          X(100)

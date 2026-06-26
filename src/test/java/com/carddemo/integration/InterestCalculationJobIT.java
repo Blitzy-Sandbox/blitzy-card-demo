@@ -233,9 +233,9 @@ class InterestCalculationJobIT extends AbstractIntegrationIT {
                 .isEqualTo(expectedTransactionCount);
 
         for (Transaction tx : generated) {
-            assertThat(tx.getTransactionType())
+            assertThat(tx.getTranTypeCd())
                     .as("interest transactions carry transaction type '01' (PURCHASE) per CBACT04C")
-                    .isEqualTo(TransactionTypeCode.PURCHASE);
+                    .isEqualTo(TransactionTypeCode.PURCHASE.getCode());
             assertThat(tx.getTranCatCd())
                     .as("interest transactions carry category code 5")
                     .isEqualTo(INTEREST_TRAN_CAT_CD);
