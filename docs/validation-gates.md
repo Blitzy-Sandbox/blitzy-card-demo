@@ -21,7 +21,7 @@ Three principles govern every gate in this framework:
   **`27d6c6f`**. The Java implementation lives in the greenfield repository under the base
   package **`com.carddemo`**.
 
-Programmatic evidence for all eight gates is consolidated in the **`GateVerificationTest`**
+Programmatic evidence for all eight gates is consolidated in the **`GateVerificationIT`**
 suite at **`src/test/java/com/carddemo/gates/`**, which runs as part of the standard
 `./mvnw clean verify` build.
 
@@ -31,12 +31,12 @@ suite at **`src/test/java/com/carddemo/gates/`**, which runs as part of the stan
 
 | Gate | Name | Requirement (short) | Evidence Location | Status |
 |------|------|---------------------|-------------------|--------|
-| 1 | End-to-End Boundary Verification | Process ≥1 production-representative input end-to-end **locally** and produce **byte-equivalent** output vs the documented COBOL baseline. Mocked I/O does not satisfy. | `GateVerificationTest`; `src/test/java/com/carddemo/integration/`; comparison report | ✅ Met |
-| 2 | Zero-Warning Build | Clean checkout → `./mvnw clean verify` yields a deployable artifact with **zero warnings** (`-Xlint:all -Werror`), except framework-generated code. | Build log; `GateVerificationTest` | ✅ Met |
+| 1 | End-to-End Boundary Verification | Process ≥1 production-representative input end-to-end **locally** and produce **byte-equivalent** output vs the documented COBOL baseline. Mocked I/O does not satisfy. | `GateVerificationIT`; `src/test/java/com/carddemo/integration/`; comparison report | ✅ Met |
+| 2 | Zero-Warning Build | Clean checkout → `./mvnw clean verify` yields a deployable artifact with **zero warnings** (`-Xlint:all -Werror`), except framework-generated code. | Build log; `GateVerificationIT` | ✅ Met |
 | 3 | Performance Baseline | Benchmark the Java pipeline locally; document throughput (elapsed time, peak memory, records/sec). | Performance notes; `docs/project-guide.md` | ✅ Met |
-| 4 | Named Real-World Validation Artifacts | Process the **9 named ASCII fixtures** through the primary batch pipeline, compared to the COBOL baseline. | `src/test/java/com/carddemo/integration/`; `GateVerificationTest` | ✅ Met |
+| 4 | Named Real-World Validation Artifacts | Process the **9 named ASCII fixtures** through the primary batch pipeline, compared to the COBOL baseline. | `src/test/java/com/carddemo/integration/`; `GateVerificationIT` | ✅ Met |
 | 5 | API/Interface Contract Verification | Every external interface (REST, fixed-width files, SQS FIFO, batch trigger) verified by a local test exercising the **real** contract — no self-certification. | E2E + integration tests; [`./api-contracts.md`](./api-contracts.md) | ✅ Met |
-| 6 | Unsafe/Low-Level Code Audit | Count raw SQL concatenation, `Runtime.exec`, reflection, unchecked casts, suppressed warnings; **>50 total requires per-site justification**. | Audit table (below); `GateVerificationTest` | ✅ Met |
+| 6 | Unsafe/Low-Level Code Audit | Count raw SQL concatenation, `Runtime.exec`, reflection, unchecked casts, suppressed warnings; **>50 total requires per-site justification**. | Audit table (below); `GateVerificationIT` | ✅ Met |
 | 7 | Scope Matching | Confirm coverage of multi-subsystem batch, file I/O, inter-program calls, JCL orchestration, and AWS integration — exactly the **22 features F-001–F-022**, no expansion. | Scope evidence matrix (below) | ✅ Met |
 | 8 | Integration Sign-Off Checklist | Consolidated sign-off: E2E, contracts, perf, unsafe-code audit, **≥80% line coverage**, **OWASP zero critical/high CVEs**, **100% paragraph traceability**. | JaCoCo + OWASP reports; [`../TRACEABILITY_MATRIX.md`](../TRACEABILITY_MATRIX.md) | ⚠️ Partial |
 
@@ -61,7 +61,7 @@ through the real persistence layer, and emit real output.
 **How it is satisfied.** The primary input is the largest ASCII fixture,
 **`app/data/ASCII/dailytran.txt`** — a fixed-width, headerless daily-transaction file of
 350-byte records (the largest of the nine fixtures). It is driven through the posting pipeline
-(`DailyTransactionPostingJob` → read file → validate each transaction → post to PostgreSQL →
+(`postTransactionJob` → read file → validate each transaction → post to PostgreSQL →
 write rejections to S3). The Java output is captured and compared field-for-field against the
 expected output derived from the COBOL baseline, and the differences (if any) are recorded in a
 structured **comparison report**. The four-stage validation cascade and its reject reason codes
@@ -70,7 +70,7 @@ the *posted* records and the *rejected* records match the baseline exactly.
 
 **Evidence Location.**
 
-- `GateVerificationTest` at `src/test/java/com/carddemo/gates/` — the programmatic Gate 1 check.
+- `GateVerificationIT` at `src/test/java/com/carddemo/gates/` — the programmatic Gate 1 check.
 - Integration tests under `src/test/java/com/carddemo/integration/` that run the posting job
   against a real PostgreSQL (Testcontainers) and LocalStack-backed S3.
 - The byte-equivalence **comparison report** (input records, expected COBOL output, Java
@@ -102,7 +102,7 @@ warning-clean rather than relying on manual inspection of build output.
 
 - The `./mvnw clean verify` **build log** (console output / CI log), which shows
   `BUILD SUCCESS` with zero warnings.
-- `GateVerificationTest` records the build-configuration assertion for Gate 2.
+- `GateVerificationIT` records the build-configuration assertion for Gate 2.
 
 **Status.** ✅ **Met** — the project compiles warning-free under `-Xlint:all -Werror`; the only
 suppressions are for framework-generated code.
@@ -165,7 +165,7 @@ offsets and lengths preserved (no trimming that would shift field boundaries).
 
 - Integration tests under `src/test/java/com/carddemo/integration/` that seed and process each
   named fixture against real infrastructure (PostgreSQL + LocalStack via Testcontainers).
-- `GateVerificationTest` at `src/test/java/com/carddemo/gates/` — asserts the named fixtures are
+- `GateVerificationIT` at `src/test/java/com/carddemo/gates/` — asserts the named fixtures are
   present and processed.
 - `src/main/resources/db/migration/V3__seed_data.sql` — the seed migration sourced from the
   nine fixtures.
@@ -202,7 +202,7 @@ The detailed endpoint and payload definitions are documented in
 **Evidence Location.**
 
 - E2E tests under `src/test/java/com/carddemo/integration/` (online-transaction and AWS
-  integration suites) and the `GateVerificationTest` Gate 5 check.
+  integration suites) and the `GateVerificationIT` Gate 5 check.
 - [`./api-contracts.md`](./api-contracts.md) — the authoritative interface contract reference.
 
 **Status.** ✅ **Met** — REST, file, SQS FIFO, and S3 contracts are each verified by a local
@@ -233,7 +233,7 @@ few unchecked casts and suppressions are confined to framework-mandated location
 
 **Evidence Location.**
 
-- Audit counts asserted by `GateVerificationTest` at `src/test/java/com/carddemo/gates/`.
+- Audit counts asserted by `GateVerificationIT` at `src/test/java/com/carddemo/gates/`.
 - The audit table above (per-category counts and rationale).
 
 **Status.** ✅ **Met** — all five categories are at or below their targets and the combined
@@ -262,7 +262,7 @@ data entities beyond what the COBOL implements. The scope spans every subsystem 
 **Evidence Location.**
 
 - The scope evidence matrix above.
-- `GateVerificationTest` at `src/test/java/com/carddemo/gates/` and the breadth of integration
+- `GateVerificationIT` at `src/test/java/com/carddemo/gates/` and the breadth of integration
   suites covering batch, file I/O, REST, and AWS.
 
 **Status.** ✅ **Met** — all five scope dimensions are covered, mapping exactly to features
@@ -312,7 +312,7 @@ reference). See [`../TRACEABILITY_MATRIX.md`](../TRACEABILITY_MATRIX.md) for the
 - OWASP dependency-check report under `target/` (e.g., `dependency-check-report.html`).
 - [`../TRACEABILITY_MATRIX.md`](../TRACEABILITY_MATRIX.md) — 100% paragraph mapping (with
   `UNUSED1Y` noted as the sole intentional gap).
-- `GateVerificationTest` at `src/test/java/com/carddemo/gates/` — the Gate 8 consolidation check.
+- `GateVerificationIT` at `src/test/java/com/carddemo/gates/` — the Gate 8 consolidation check.
 
 **Status.** ⚠️ **Partial** — every sign-off item is satisfied (E2E, contracts, performance,
 unsafe-code audit, **81.5%** coverage, **100%** traceability) **except** confirmation of the
@@ -327,12 +327,12 @@ concrete artifact that substantiates it.
 
 | Gate | Primary evidence artifact(s) |
 |------|------------------------------|
-| 1 — End-to-End Boundary | `src/test/java/com/carddemo/gates/` (`GateVerificationTest`); `src/test/java/com/carddemo/integration/`; byte-equivalence comparison report |
+| 1 — End-to-End Boundary | `src/test/java/com/carddemo/gates/` (`GateVerificationIT`); `src/test/java/com/carddemo/integration/`; byte-equivalence comparison report |
 | 2 — Zero-Warning Build | `./mvnw clean verify` build log (`-Xlint:all -Werror`) |
 | 3 — Performance Baseline | Performance notes; [`./project-guide.md`](./project-guide.md) |
 | 4 — Named Fixtures | `src/test/java/com/carddemo/integration/`; `src/main/resources/db/migration/V3__seed_data.sql`; the nine `app/data/ASCII/*.txt` fixtures |
 | 5 — API/Interface Contracts | `src/test/java/com/carddemo/integration/` (E2E + AWS); [`./api-contracts.md`](./api-contracts.md) |
-| 6 — Unsafe-Code Audit | Audit table in this document; `GateVerificationTest` assertions |
+| 6 — Unsafe-Code Audit | Audit table in this document; `GateVerificationIT` assertions |
 | 7 — Scope Matching | Scope evidence matrix in this document |
 | 8 — Integration Sign-Off | `target/site/jacoco/` (coverage); `target/` (OWASP report); [`../TRACEABILITY_MATRIX.md`](../TRACEABILITY_MATRIX.md); [`../DECISION_LOG.md`](../DECISION_LOG.md) |
 
@@ -342,7 +342,7 @@ Supporting test directories:
   and validation suites; Mockito-based).
 - **Integration / E2E tests** — `src/test/java/com/carddemo/integration/` (repository, batch
   pipeline, AWS, and online-transaction suites; Testcontainers PostgreSQL + LocalStack).
-- **Gate verification** — `src/test/java/com/carddemo/gates/` (`GateVerificationTest`, Gates 1–8).
+- **Gate verification** — `src/test/java/com/carddemo/gates/` (`GateVerificationIT`, Gates 1–8).
 
 ### Reproducing the evidence locally
 

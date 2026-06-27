@@ -23,7 +23,7 @@ or copy** those files — they exist only to document the exact behavior the Jav
 
 | Layer | Technology | Version |
 |-------|-----------|---------|
-| Language / Runtime | Java (Adoptium/Temurin OpenJDK) — **LTS** | **25.0.2** |
+| Language / Runtime | Java (Adoptium/Temurin OpenJDK) — **LTS** | **25.0.3** |
 | Application framework | Spring Boot | **3.5.11** |
 | Build | Maven (via bundled `./mvnw` wrapper) | **3.9.9** |
 | Database | PostgreSQL | **16** |
@@ -46,7 +46,7 @@ those by hand.
 
 | Prerequisite | Version | Notes |
 |--------------|---------|-------|
-| **JDK** | **25.0.2 LTS** | Adoptium / Eclipse Temurin OpenJDK. Set `JAVA_HOME` to the JDK 25 install if it is not your default JVM. |
+| **JDK** | **25.0.3 LTS** | Adoptium / Eclipse Temurin OpenJDK. Set `JAVA_HOME` to the JDK 25 install if it is not your default JVM. |
 | **Docker engine** | **28.x** | Plus the **Docker Compose v2** plugin (`docker compose`, not the legacy `docker-compose`). Runs PostgreSQL, LocalStack, and the observability stack. |
 | **Git** | 2.x+ | To clone the repository. |
 | **Maven** | **3.9.9** | **No separate install required** — the repository ships the Maven Wrapper (`./mvnw` on macOS/Linux, `mvnw.cmd` on Windows). Always invoke builds through the wrapper so everyone uses the same pinned Maven version. |
@@ -319,7 +319,7 @@ base Java package is **`com.carddemo`**. The frozen COBOL/JCL REFERENCE lives un
 ├── src/test/java/com/carddemo/
 │   ├── unit/                        # Mockito unit tests
 │   ├── integration/                 # Testcontainers PostgreSQL + LocalStack
-│   └── gates/                       # GateVerificationTest (Gates 1–8)
+│   └── gates/                       # GateVerificationIT (Gates 1–8)
 │
 ├── app/                            # FROZEN REFERENCE — legacy COBOL (cbl/cpy/cpy-bms/bms/jcl/data) @ 27d6c6f
 └── samples/                        # FROZEN REFERENCE — legacy build JCL (BATCMP, BMSCMP, CICCMP)
@@ -456,7 +456,7 @@ authoring time. Treat each as a future effort, not part of the present migration
 
 ---
 
-_This guide targets Java **25.0.2 LTS** + Spring Boot **3.5.11**. Legacy COBOL references are anchored to
+_This guide targets Java **25.0.3 LTS** + Spring Boot **3.5.11**. Legacy COBOL references are anchored to
 source commit **`27d6c6f`** and are read-only specification. If any command, port, or credential here ever
 drifts from `docker-compose.yml` or `pom.xml`, treat those files as the source of truth and update this
 guide to match._

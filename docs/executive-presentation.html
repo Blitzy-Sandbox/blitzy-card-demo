@@ -415,6 +415,7 @@
         <div class="kicker"><span class="ico ico-sm danger"><i data-lucide="server"></i></span> Before</div>
         <h2 class="ruled">Legacy z/OS Architecture</h2>
         <pre class="mermaid">
+%%{init: {'themeVariables': {'fontSize': '13px'}}}%%
 graph TB
   TERM["3270 Terminal"] --> CICS["CICS CICSAWSA&lt;br/&gt;pseudo-conv.&lt;br/&gt;+ COMMAREA"]
   CICS --> BMS["17 BMS Mapsets&lt;br/&gt;+ 17 sym. maps"]
@@ -656,7 +657,7 @@ graph LR
               <li><strong>Bidirectional matrix:</strong> COBOL paragraph &harr; Java method, both directions.</li>
               <li>Anchored exclusively to source commit SHA <code>27d6c6f</code> — COBOL is never copied.</li>
               <li>Single intentionally-unmapped artifact: reserved copybook <code>UNUSED1Y</code>, documented as a deliberate gap.</li>
-              <li>Published as <code>TRACEABILITY_MATRIX.md</code> alongside a 55-entry <code>DECISION_LOG.md</code>.</li>
+              <li>Published as <code>TRACEABILITY_MATRIX.md</code> alongside a 71-entry <code>DECISION_LOG.md</code>.</li>
             </ul>
           </div>
         </div>
@@ -677,7 +678,7 @@ graph LR
           <tbody>
             <tr><td>Line / Method</td><td><span class="success">89.39%</span> / 91.66%</td><td>JUnit 5, Mockito</td></tr>
             <tr><td>Branch / Instruction</td><td>74.2% / 90.0%</td><td>Testcontainers (PostgreSQL + LocalStack)</td></tr>
-            <tr><td>Java footprint</td><td>103 files · 34,021 LOC</td><td>Spring Boot 3.5.11 · Java 25 LTS</td></tr>
+            <tr><td>Java footprint</td><td>111 files · 23,188 LOC (main; 213 · 55,290 with tests)</td><td>Spring Boot 3.5.11 · Java 25 LTS</td></tr>
           </tbody>
         </table>
       </section>

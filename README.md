@@ -253,7 +253,10 @@ docker compose exec postgres pg_isready -U carddemo
 
 # LocalStack (S3 / SQS / SNS)
 curl -s http://localhost:4566/_localstack/health | python3 -m json.tool
-# Expected: {"services": {"s3": "available", "sqs": "available", "sns": "available"}}
+# Expected: the services block reports s3/sqs/sns as "running"
+#   {"services": {... "s3": "running", "sqs": "running", "sns": "running" ...}}
+# (LocalStack reports "running" once a service has been invoked/provisioned; an
+#  as-yet-unused service may briefly report "available".)
 ```
 
 **4. Run the application** (`local` profile, connecting to the Docker Compose services)
@@ -457,26 +460,33 @@ curl -s http://localhost:8080/api/accounts/00000000001 \
   -H "Authorization: Bearer ${TOKEN}" | python3 -m json.tool
 ```
 
-**Add a transaction:**
+**Add a transaction:** the add is a preview→confirm flow (CT02 semantics), so the body must include every
+contract field — `source`, `originDate`, `processDate`, the four `merchant*` fields, and `confirm: "Y"` —
+and the `cardNumber` must belong to the `accountId` (the example uses card `9680294154603697` on account
+`00000000001`):
 
 ```bash
 curl -s -X POST http://localhost:8080/api/transactions \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"accountId": "00000000001", "cardNumber": "4111111111111111", "typeCode": "01", "categoryCode": "0001", "description": "GROCERY STORE PURCHASE", "amount": "125.50"}' \
+  -d '{"accountId": "00000000001", "cardNumber": "9680294154603697", "typeCode": "01", "categoryCode": "0001", "source": "POS", "description": "GROCERY STORE PURCHASE", "amount": "125.50", "originDate": "2025-01-15", "processDate": "2025-01-15", "merchantId": "000000123", "merchantName": "ACME GROCERY", "merchantCity": "DALLAS", "merchantZip": "75001", "confirm": "Y"}' \
   | python3 -m json.tool
-# Expected: 201 Created with the persisted transaction and server-generated id
+# Expected: 201 Created with the persisted transaction (transactionType, originDate/processDate,
+# server-generated transactionId, and a confirmationMessage). A request without confirm:"Y" (or
+# missing source/originDate/processDate) returns 400 with "Confirm to add this transaction...".
 ```
 
-**Submit a report** (asynchronous SQS FIFO bridge):
+**Submit a report** (asynchronous SQS FIFO bridge): the report type is chosen with the
+`monthly`/`yearly`/`custom` flags and a custom window is given as discrete date segments, with
+`confirm: "Y"` to submit:
 
 ```bash
-curl -s -X POST http://localhost:8080/api/reports/submit \
+curl -s -i -X POST http://localhost:8080/api/reports/submit \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "Content-Type: application/json" \
-  -d '{"reportType": "CUSTOM", "startDate": "2025-01-01", "endDate": "2025-01-31"}' \
-  | python3 -m json.tool
-# Expected: 202 Accepted; the request is queued to carddemo-report-jobs.fifo
+  -d '{"custom": "Y", "startMonth": "01", "startDay": "01", "startYear": "2025", "endMonth": "01", "endDay": "31", "endYear": "2025", "confirm": "Y"}'
+# Expected: 202 Accepted with an EMPTY body; the request is queued to carddemo-report-jobs.fifo.
+# (Using reportType/startDate/endDate instead returns 400 "Select a report type to print report...".)
 ```
 
 > The full request/response schemas, validation rules, role model, PF-key mappings, and
@@ -622,7 +632,7 @@ all enabled out of the box.
 └── src/test/java/com/carddemo/
     ├── unit/                        # Service / processor / model unit tests (Mockito)
     ├── integration/                 # Testcontainers PostgreSQL + LocalStack ITs
-    └── gates/                       # GateVerificationTest (Gates 1–8)
+    └── gates/                       # GateVerificationIT (Gates 1–8)
 ```
 
 ---
@@ -642,8 +652,8 @@ traceability to the source is anchored exclusively to commit SHA **`27d6c6f`**.
 | JCL jobs | 29 | Spring Batch jobs, Flyway migrations, LocalStack provisioning |
 | ASCII data fixtures | 9 | Flyway `V3` seed data |
 
-The migration translated the 28 COBOL programs into **103 Java source files (~34,021
-lines)** with full business-logic preservation.
+The migration translated the 28 COBOL programs into **111 Java main-source files (~23,188
+lines)** with full business-logic preservation (213 files / ~55,290 lines including the test suite).
 
 - **[`TRACEABILITY_MATRIX.md`](TRACEABILITY_MATRIX.md)** maps **100% of COBOL paragraphs**
   to their Java methods, with the single intentionally-unmapped reserved copybook
@@ -730,7 +740,7 @@ Delivered in this milestone:
 
 Work remaining (final sign-off):
 
-- **Consolidated validation-gate harness** — the single `GateVerificationTest` consolidating the
+- **Consolidated validation-gate harness** — the single `GateVerificationIT` consolidating the
   Gate 1 / Gate 4 byte-equivalent evidence against the named ASCII fixtures, the Gate 3 baseline,
   Gate 8 ≥80% line coverage, and the OWASP dependency-check zero critical/high CVE gate.
 - **Path-to-production** — CI/CD pipeline, production Spring profile, deployment manifests,

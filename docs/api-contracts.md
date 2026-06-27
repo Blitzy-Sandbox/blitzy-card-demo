@@ -81,22 +81,23 @@ token-based.
 **Behavior.** The server looks up the user in the `users` table (the relational successor to the VSAM
 `USRSEC` file, seeded from `CSUSR01Y` records) and **BCrypt-verifies** the supplied password against the
 stored hash. On success it returns a **signed JWT**; on failure it returns `401 Unauthorized`. The JWT
-encodes the user id and role and is the **only** state carried between requests — there is **no
-server-side session**, which is the stateless replacement for the legacy pseudo-conversational COMMAREA
-(`COCOM01Y`).
+encodes the user id and the `userType` flag and is the **only** state carried between requests — there is
+**no server-side session**, which is the stateless replacement for the legacy pseudo-conversational
+COMMAREA (`COCOM01Y`).
 
-**Response body — `SigninResponse`:**
+**Response body — `SigninResponse`** (exactly three fields — `token`, `userId`, `userType`):
 
 ```json
 {
+  "token": "eyJhbGciOiJIUzM4NCJ9.<claims>.<signature>",
   "userId": "USER0001",
-  "userType": "U",
-  "role": "USER",
-  "token": "eyJhbGciOiJIUzI1NiJ9.<claims>.<signature>",
-  "tokenType": "Bearer",
-  "expiresInSeconds": 3600
+  "userType": "U"
 }
 ```
+
+The `userType` flag (`U` for a standard user, `A` for an administrator) is also encoded as a claim inside
+the signed JWT; role authorization is derived from it server-side. The body carries no `role`, `tokenType`,
+or `expiresInSeconds` field.
 
 ### Presenting the token
 
@@ -145,22 +146,22 @@ as noted in the per-endpoint sections.
 | Legacy Txn ID | Legacy Program | HTTP Method + Path | Request DTO | Response DTO | Auth / Role |
 |---|---|---|---|---|---|
 | CC00 | `COSGN00C` | `POST /api/auth/signin` | `SigninRequest` | `SigninResponse` | Public (issues JWT) |
-| CM00 | `COMEN01C` | `GET /api/menu/main` | — | `MenuDto` | USER |
-| CA00 | `COADM01C` | `GET /api/menu/admin` | — | `MenuDto` | ADMIN |
-| CAVW | `COACTVWC` | `GET /api/accounts/{id}` | — | `AccountDto` | USER |
-| CAUP | `COACTUPC` | `PUT /api/accounts/{id}` | `AccountDto` | `AccountDto` | USER — `@Version` optimistic lock; dual-record (ACCOUNT+CUSTOMER) atomic update |
-| CCLI | `COCRDLIC` | `GET /api/cards` | — | `Page<CardDto>` | USER — pagination: PF7/PF8 → `page`/`size` |
-| CCDL | `COCRDSLC` | `GET /api/cards/{cardNum}` | — | `CardDto` | USER |
-| CCUP | `COCRDUPC` | `PUT /api/cards/{cardNum}` | `CardDto` | `CardDto` | USER — `@Version` optimistic lock |
-| CT00 | `COTRN00C` | `GET /api/transactions` | — | `Page<TransactionDto>` | USER |
-| CT01 | `COTRN01C` | `GET /api/transactions/{id}` | — | `TransactionDto` | USER |
-| CT02 | `COTRN02C` | `POST /api/transactions` | `TransactionDto` | `TransactionDto` | USER — auto-ID generation + confirmation |
-| CB00 | `COBIL00C` | `POST /api/billing/pay` | `BillPaymentRequest` | `BillPaymentResponse` | USER |
-| CR00 | `CORPT00C` | `POST /api/reports/submit` | `ReportSubmitRequest` | `ReportSubmitResponse` | USER — publishes to **SQS FIFO** (TDQ `JOBS` bridge) |
-| CU00 | `COUSR00C` | `GET /api/admin/users` | — | `Page<UserDto>` | ADMIN |
-| CU01 | `COUSR01C` | `POST /api/admin/users` | `UserDto` | `UserDto` | ADMIN — add user |
-| CU02 | `COUSR02C` | `PUT /api/admin/users/{userId}` | `UserDto` | `UserDto` | ADMIN — update user |
-| CU03 | `COUSR03C` | `DELETE /api/admin/users/{userId}` | — | `204 No Content` | ADMIN — delete user |
+| CM00 | `COMEN01C` | `GET /api/menu/main` | — | `MenuDto.MenuResponse` | USER |
+| CA00 | `COADM01C` | `GET /api/menu/admin` | — | `MenuDto.MenuResponse` | ADMIN |
+| CAVW | `COACTVWC` | `GET /api/accounts/{id}` | — | `AccountDto.ViewResponse` | USER |
+| CAUP | `COACTUPC` | `PUT /api/accounts/{id}` | `AccountDto.UpdateRequest` | `AccountDto.ViewResponse` | USER — `@Version` optimistic lock; dual-record (ACCOUNT+CUSTOMER) atomic update |
+| CCLI | `COCRDLIC` | `GET /api/cards` | — | `CardDto.ListResponse` | USER — pagination: PF7/PF8 → `page` (no `size`) |
+| CCDL | `COCRDSLC` | `GET /api/cards/{cardNum}` | — | `CardDto.Detail` | USER |
+| CCUP | `COCRDUPC` | `PUT /api/cards/{cardNum}` | `CardDto.UpdateRequest` | `CardDto.Detail` | USER — `@Version` optimistic lock |
+| CT00 | `COTRN00C` | `GET /api/transactions` | — | `TransactionDto.ListResponse` | USER |
+| CT01 | `COTRN01C` | `GET /api/transactions/{id}` | — | `TransactionDto.Detail` | USER |
+| CT02 | `COTRN02C` | `POST /api/transactions` | `TransactionDto.AddRequest` | `TransactionDto.Detail` | USER — auto-ID generation + confirm flow |
+| CB00 | `COBIL00C` | `POST /api/billing/pay` | `BillingDto.PayRequest` | `BillingDto.PayResponse` | USER |
+| CR00 | `CORPT00C` | `POST /api/reports/submit` | `ReportDto.SubmitRequest` | `ResponseEntity<Void>` (202, empty body) | USER — publishes to **SQS FIFO** (TDQ `JOBS` bridge) |
+| CU00 | `COUSR00C` | `GET /api/admin/users` | — | `UserDto.ListResponse` | ADMIN |
+| CU01 | `COUSR01C` | `POST /api/admin/users` | `UserDto.CreateRequest` | `UserDto.UserSummary` | ADMIN — add user |
+| CU02 | `COUSR02C` | `PUT /api/admin/users/{userId}` | `UserDto.UpdateRequest` | `UserDto.UserSummary` | ADMIN — update user |
+| CU03 | `COUSR03C` | `DELETE /api/admin/users/{userId}` | — | `UserDto.DeleteResponse` (200) | ADMIN — delete user |
 
 **Controller inventory (8 total).** The 17 online programs collapse into eight controllers:
 
@@ -186,8 +187,9 @@ as noted in the per-endpoint sections.
 
 Each functional group below documents purpose, method/path, parameters, request fields with validation,
 response shape, the HTTP status codes returned, and the originating COBOL program and transaction id.
-Common status codes used throughout: `200 OK` (success), `201 Created` (resource created), `204 No Content`
-(successful delete), `400 Bad Request` (bean-validation failure), `401 Unauthorized` (missing/invalid JWT),
+Common status codes used throughout: `200 OK` (success, including the user-delete endpoint, which returns
+the deleted record rather than `204`), `201 Created` (resource created), `202 Accepted` (report submission
+queued, empty body), `400 Bad Request` (bean-validation failure), `401 Unauthorized` (missing/invalid JWT),
 `403 Forbidden` (authenticated but insufficient role), `404 Not Found` (resource absent — the relational
 successor to VSAM `FILE STATUS 23`), `409 Conflict` (optimistic-lock collision), and `422 Unprocessable
 Entity` (well-formed request that violates a business rule).
@@ -206,7 +208,10 @@ Entity` (well-formed request that violates a business rule).
   | `userId` | string | required, `@Size(max = 8)` | `USERIDI PIC X(8)` / `SEC-USR-ID X(08)` |
   | `password` | string | required, `@Size(max = 8)` | `PASSWDI PIC X(8)` / `SEC-USR-PWD X(08)` |
 
-- **Response — `SigninResponse`** (`userId`, `userType`, `role`, `token`, `tokenType`, `expiresInSeconds`).
+- **Response — `SigninResponse`** (`token`, `userId`, `userType`) — exactly three fields. `userType` is the
+  raw legacy flag (`U` for a standard user, `A` for an administrator); role derivation happens server-side
+  from this flag. The signed JWT itself carries the `userType` claim, so no separate `role`, `tokenType`,
+  or expiry field is returned in the body.
 - **Status codes.** `200 OK` (valid credentials), `400 Bad Request` (missing/oversized fields),
   `401 Unauthorized` (unknown user or BCrypt mismatch).
 
@@ -217,8 +222,10 @@ Entity` (well-formed request that violates a business rule).
 - **Purpose.** Return the standard user menu. Replaces the main menu screen (**CM00**, `COMEN01C`); options
   are sourced from `COMEN02Y` (**10 options**, all type `U`).
 - **Auth.** USER.
-- **Response — `MenuDto`** — an ordered list of `{ optionNumber, label, targetProgram, requiredRole }`
-  entries (10 entries for the main menu).
+- **Response — `MenuDto.MenuResponse`** — an object `{ title, options }` where `title` is the menu name
+  (`"Main Menu"`) and `options` is an ordered array of `{ optionNumber, optionName }` entries (10 entries
+  for the main menu). The option label is `optionName`; the response carries no `targetProgram` or
+  `requiredRole` field (menu filtering by role is applied server-side before the list is returned).
 - **Status codes.** `200 OK`, `401 Unauthorized`.
 
 #### `GET /api/menu/admin`
@@ -226,7 +233,8 @@ Entity` (well-formed request that violates a business rule).
 - **Purpose.** Return the administrator menu. Replaces the admin menu screen (**CA00**, `COADM01C`); options
   are sourced from `COADM02Y`.
 - **Auth.** ADMIN.
-- **Response — `MenuDto`** — ordered admin option list.
+- **Response — `MenuDto.MenuResponse`** — the same `{ title, options:[{ optionNumber, optionName }] }`
+  shape as the main menu, carrying the administrator option set.
 - **Status codes.** `200 OK`, `401 Unauthorized`, `403 Forbidden` (non-admin principal).
 
 ### Accounts — `AccountController`
@@ -238,20 +246,42 @@ Entity` (well-formed request that violates a business rule).
   500 B) records.
 - **Auth.** USER.
 - **Path param.** `id` — 11-digit account id (`ACCT-ID PIC 9(11)`), e.g. `00000000001`.
-- **Response — `AccountDto`** (representative fields):
+- **Response — `AccountDto.ViewResponse`** — a **flat** object with **30 top-level fields** (the ACCOUNT and
+  CUSTOMER records are merged into a single flat DTO; there is **no** nested `customer` object). The fields,
+  in serialization order, are:
 
   | Field | Type | Legacy source |
   |---|---|---|
-  | `accountId` | string (11 digits) | `ACCT-ID 9(11)` |
-  | `activeStatus` | string (1) | `ACCT-ACTIVE-STATUS X(01)` |
-  | `currentBalance` | decimal (scale 2) | `ACCT-CURR-BAL S9(10)V99` |
-  | `creditLimit` | decimal (scale 2) | `ACCT-CREDIT-LIMIT S9(10)V99` |
-  | `cashCreditLimit` | decimal (scale 2) | `ACCT-CASH-CREDIT-LIMIT S9(10)V99` |
-  | `currentCycleCredit` | decimal (scale 2) | `ACCT-CURR-CYC-CREDIT S9(10)V99` |
-  | `currentCycleDebit` | decimal (scale 2) | `ACCT-CURR-CYC-DEBIT S9(10)V99` |
-  | `openDate` / `expirationDate` / `reissueDate` | string (`CCYY-MM-DD`) | `X(10)` date fields |
-  | `groupId` | string (10) | `ACCT-GROUP-ID X(10)` |
-  | `customer` | embedded customer view | `CUSTOMER-RECORD` (500 B) |
+  | `accountId` | string | `ACCT-ID 9(11)` |
+  | `accountStatus` | string (1) | `ACCT-ACTIVE-STATUS X(01)` |
+  | `openDate` | string (`CCYY-MM-DD`) | `ACCT-OPEN-DATE X(10)` |
+  | `creditLimit` | number (2 dp) | `ACCT-CREDIT-LIMIT S9(10)V99` |
+  | `expirationDate` | string (`CCYY-MM-DD`) | `ACCT-EXPIRAION-DATE X(10)` |
+  | `cashCreditLimit` | number (2 dp) | `ACCT-CASH-CREDIT-LIMIT S9(10)V99` |
+  | `reissueDate` | string (`CCYY-MM-DD`) | `ACCT-REISSUE-DATE X(10)` |
+  | `currentBalance` | number (2 dp) | `ACCT-CURR-BAL S9(10)V99` |
+  | `currentCycleCredit` | number (2 dp) | `ACCT-CURR-CYC-CREDIT S9(10)V99` |
+  | `accountGroupId` | string (10) | `ACCT-GROUP-ID X(10)` |
+  | `currentCycleDebit` | number (2 dp) | `ACCT-CURR-CYC-DEBIT S9(10)V99` |
+  | `customerId` | string | `CUST-ID 9(09)` |
+  | `ssn` | string (9) | `CUST-SSN 9(09)` |
+  | `dateOfBirth` | string (`CCYY-MM-DD`) | `CUST-DOB-YYYY-MM-DD X(10)` |
+  | `ficoScore` | string | `CUST-FICO-CREDIT-SCORE 9(03)` |
+  | `firstName` | string (25) | `CUST-FIRST-NAME X(25)` |
+  | `middleName` | string (25) | `CUST-MIDDLE-NAME X(25)` |
+  | `lastName` | string (25) | `CUST-LAST-NAME X(25)` |
+  | `addressLine1` | string (50) | `CUST-ADDR-LINE-1 X(50)` |
+  | `state` | string (2) | `CUST-ADDR-STATE-CD X(02)` |
+  | `addressLine2` | string (50) | `CUST-ADDR-LINE-2 X(50)` |
+  | `zipCode` | string | `CUST-ADDR-ZIP X(10)` |
+  | `city` | string (50) | `CUST-ADDR-LINE-3` (city portion) |
+  | `country` | string (3) | `CUST-ADDR-COUNTRY-CD X(03)` |
+  | `phone1` | string | `CUST-PHONE-NUM-1 X(15)` |
+  | `governmentId` | string | `CUST-GOVT-ISSUED-ID X(20)` |
+  | `phone2` | string | `CUST-PHONE-NUM-2 X(15)` |
+  | `eftAccountId` | string | `CUST-EFT-ACCOUNT-ID X(10)` |
+  | `primaryCardHolder` | string (1) | `CUST-PRI-CARD-HOLDER-IND X(01)` |
+  | `version` | number | JPA `@Version` (optimistic-lock token) |
 
 - **Status codes.** `200 OK`, `401 Unauthorized`, `404 Not Found` (no such account).
 
@@ -261,9 +291,10 @@ Entity` (well-formed request that violates a business rule).
   `COACTUPC`, the largest legacy program at 4,236 LOC).
 - **Auth.** USER.
 - **Path param.** `id` — 11-digit account id.
-- **Request — `AccountDto`** — the account fields above plus the embedded customer fields and a `version`
-  field for optimistic locking. Monetary fields validate as `@Digits(integer = 10, fraction = 2)`; the
-  `version` echoes the value last read.
+- **Request — `AccountDto.UpdateRequest`** — a **flat** body carrying the account and customer fields
+  (the same flat field set as the view response, **not** a nested `customer` object) plus a `version` field
+  for optimistic locking. Monetary fields validate as `@Digits(integer = 10, fraction = 2)`; the `version`
+  echoes the value last read.
 - **Dual-record atomic update.** The legacy program rewrites **both** the ACCOUNT record and the CUSTOMER
   record. The Java implementation performs both updates inside a single
   `@Transactional(rollbackFor = Exception.class)` boundary, reproducing the CICS `SYNCPOINT` unit of work:
@@ -288,11 +319,17 @@ Entity` (well-formed request that violates a business rule).
   | Param | Type | Default | Legacy mapping |
   |---|---|---|---|
   | `page` | int (0-based) | `0` | **PF7** (page up) / **PF8** (page down) browse navigation |
-  | `size` | int | `10` | screen page size |
-  | `accountId` | string (11 digits), optional | — | filter by owning account |
+  | `accountId` | long (11 digits), optional | — | filter by owning account |
+  | `cardNumber` | string (16 digits), optional | — | filter by card number |
 
-- **Response — `Page<CardDto>`** — a page wrapper `{ content: [CardDto…], page, size, totalElements,
-  totalPages }`.
+  There is **no** `size` parameter — the page size is fixed at the screen-equivalent page (7 rows),
+  matching the legacy `COCRDLIC` browse window.
+
+- **Response — `CardDto.ListResponse`** — a **custom** wrapper (not a Spring `Page<>`):
+  `{ pageNumber, accountIdFilter, cardNumberFilter, cards }`, where `cards` is an array of
+  `CardSummary` objects `{ accountId, cardNumber, cardStatus }`. The wrapper carries the current
+  `pageNumber` and echoes the active filters; it does **not** expose `content`, `size`, `totalElements`,
+  or `totalPages`.
 - **Status codes.** `200 OK`, `401 Unauthorized`.
 
 #### `GET /api/cards/{cardNum}`
@@ -301,22 +338,26 @@ Entity` (well-formed request that violates a business rule).
   150 B).
 - **Auth.** USER.
 - **Path param.** `cardNum` — 16-character card number (`CARD-NUM X(16)`).
-- **Response — `CardDto`.**
+- **Response — `CardDto.Detail`** (8 fields):
 
   | Field | Type | Legacy source |
   |---|---|---|
-  | `cardNumber` | string (16) | `CARD-NUM X(16)` |
   | `accountId` | string (11 digits) | `CARD-ACCT-ID 9(11)` |
-  | `cvv` | string (3 digits) | `CARD-CVV-CD 9(03)` |
-  | `embossedName` | string (50) | `CARD-EMBOSSED-NAME X(50)` |
-  | `expirationDate` | string (`CCYY-MM-DD`) | `CARD-EXPIRAION-DATE X(10)` |
-  | `activeStatus` | string (1) | `CARD-ACTIVE-STATUS X(01)` |
+  | `cardNumber` | string (16) | `CARD-NUM X(16)` |
+  | `cardholderName` | string (50) | `CARD-EMBOSSED-NAME X(50)` |
+  | `cardStatus` | string (1) | `CARD-ACTIVE-STATUS X(01)` |
+  | `expiryMonth` | string (2) | `CARD-EXPIRAION-DATE` (month segment) |
+  | `expiryYear` | string (4) | `CARD-EXPIRAION-DATE` (year segment) |
+  | `expiryDay` | string (2) | `CARD-EXPIRAION-DATE` (day segment) |
+  | `version` | number | JPA `@Version` (optimistic-lock token) |
 
-- **Expiry segments and version token.** Alongside the assembled `expirationDate`, the detail surfaces the
-  expiry as discrete `expiryMonth` / `expiryYear` / **`expiryDay`** segments (the BMS `EXPMON` / `EXPYEAR` /
-  `EXPDAY` fields) plus the `version` optimistic-lock token, so a client can read every field the
-  card-update contract requires and echo it back (a stateless read-modify-write); the legacy `COCRDUPC`
-  pre-filled the day from the held VSAM image, which the REST surface exposes on read instead.
+- **Expiry segments and version token.** The detail surfaces the expiry as discrete
+  `expiryMonth` / `expiryYear` / **`expiryDay`** segments (the BMS `EXPMON` / `EXPYEAR` / `EXPDAY` fields)
+  plus the `version` optimistic-lock token, so a client can read every field the card-update contract
+  requires and echo it back (a stateless read-modify-write); the legacy `COCRDUPC` pre-filled the day from
+  the held VSAM image, which the REST surface exposes on read instead. There is **no** `cvv`,
+  `embossedName`, `expirationDate`, or `activeStatus` field on the response — the cardholder name is
+  `cardholderName` and the status is `cardStatus`.
 - **Status codes.** `200 OK`, `401 Unauthorized`, `404 Not Found`.
 
 #### `PUT /api/cards/{cardNum}`
@@ -324,7 +365,8 @@ Entity` (well-formed request that violates a business rule).
 - **Purpose.** Update a card. Replaces card-update screen (**CCUP**, `COCRDUPC`, 1,560 LOC).
 - **Auth.** USER.
 - **Path param.** `cardNum` — 16-character card number.
-- **Request — `CardDto`** — the card fields above plus a `version` field.
+- **Request — `CardDto.UpdateRequest`** — the card fields above (`cardholderName`, `cardStatus`, and the
+  `expiryMonth` / `expiryYear` / `expiryDay` segments) plus the `version` field echoed from the read.
 - **Optimistic locking.** As with account update, `@Version` reproduces `9300-CHECK-CHANGE-IN-REC`; a stale
   version yields **`409 Conflict`** ("Record changed by some one else. Please review").
 - **Status codes.** `200 OK`, `400 Bad Request`, `401 Unauthorized`, `404 Not Found`, `409 Conflict`.
@@ -341,7 +383,11 @@ Entity` (well-formed request that violates a business rule).
   transaction id greater than or equal to it (`MOVE TRNIDINI TO TRAN-ID`, `STARTBR … GTEQ`); a
   non-numeric value is rejected with `400 Bad Request` and the message `Tran ID must be Numeric ...`
   (`COTRN00C` line 214).
-- **Response — `Page<TransactionDto>`.**
+- **Response — `TransactionDto.ListResponse`** — a **custom** wrapper (not a Spring `Page<>`):
+  `{ pageNumber, transactionIdFilter, transactions }`, where `transactions` is an array of
+  `TransactionSummary` objects `{ transactionId, date, description, amount }` (the `date` is the
+  `MM/DD/YY` display form of the origin date). The wrapper exposes no `content`, `size`,
+  `totalElements`, or `totalPages`.
 - **Status codes.** `200 OK`, `400 Bad Request` (non-numeric `transactionId`), `401 Unauthorized`.
 
 #### `GET /api/transactions/{id}`
@@ -350,46 +396,68 @@ Entity` (well-formed request that violates a business rule).
   (`CVTRA05Y`, 350 B).
 - **Auth.** USER.
 - **Path param.** `id` — 16-character transaction id (`TRAN-ID X(16)`).
-- **Response — `TransactionDto`.**
+- **Response — `TransactionDto.Detail`** (field order as serialized):
 
   | Field | Type | Legacy source |
   |---|---|---|
-  | `transactionId` | string (16) | `TRAN-ID X(16)` |
-  | `typeCode` | string (2) | `TRAN-TYPE-CD X(02)` |
-  | `categoryCode` | string (4 digits) | `TRAN-CAT-CD 9(04)` |
-  | `source` | string (10) | `TRAN-SOURCE X(10)` |
-  | `description` | string (100) | `TRAN-DESC X(100)` |
-  | `amount` | decimal (scale 2) | `TRAN-AMT S9(09)V99` |
-  | `merchantId` | string (9 digits) | `TRAN-MERCHANT-ID 9(09)` |
-  | `merchantName` | string (50) | `TRAN-MERCHANT-NAME X(50)` |
-  | `merchantCity` | string (50) | `TRAN-MERCHANT-CITY X(50)` |
-  | `merchantZip` | string (10) | `TRAN-MERCHANT-ZIP X(10)` |
-  | `cardNumber` | string (16) | `TRAN-CARD-NUM X(16)` |
-  | `originTimestamp` | string (26, `YYYY-MM-DD HH:MM:SS.mmmmmm`) | `TRAN-ORIG-TS X(26)` |
-  | `processTimestamp` | string (26, `YYYY-MM-DD HH:MM:SS.mmmmmm`) | `TRAN-PROC-TS X(26)` |
+  | `transactionId` | string (max 16) | `TRAN-ID X(16)` |
+  | `cardNumber` | string (max 16) | `TRAN-CARD-NUM X(16)` |
+  | `transactionType` | string (2) | `TRAN-TYPE-CD X(02)` |
+  | `categoryCode` | string (max 4 digits) | `TRAN-CAT-CD 9(04)` |
+  | `source` | string (max 10) | `TRAN-SOURCE X(10)` |
+  | `description` | string (max 60) | `TRAN-DESC X(100)` (REST limit 60) |
+  | `amount` | number (2 dp) | `TRAN-AMT S9(09)V99` |
+  | `originDate` | string (max 10) | `TRAN-ORIG-TS` (date portion) |
+  | `processDate` | string (max 10) | `TRAN-PROC-TS` (date portion) |
+  | `merchantId` | string (max 9 digits) | `TRAN-MERCHANT-ID 9(09)` |
+  | `merchantName` | string (max 30) | `TRAN-MERCHANT-NAME X(50)` (REST limit 30) |
+  | `merchantCity` | string (max 25) | `TRAN-MERCHANT-CITY X(50)` (REST limit 25) |
+  | `merchantZip` | string (max 10) | `TRAN-MERCHANT-ZIP X(10)` |
+  | `confirmationMessage` | string, **omitted when null** (`@JsonInclude(NON_NULL)`) | service confirmation text |
 
+  The status flag field is named `transactionType` (not `typeCode`), and the dates are `originDate` /
+  `processDate` as `YYYY-MM-DD` strings — there are **no** `originTimestamp` / `processTimestamp` 26-character
+  fields on the response. `confirmationMessage` is populated only on the add-confirmation response and is
+  omitted from a plain detail read.
 - **Status codes.** `200 OK`, `401 Unauthorized`, `404 Not Found`.
 
 #### `POST /api/transactions`
 
 - **Purpose.** Add a transaction. Replaces transaction-add screen (**CT02**, `COTRN02C`, 1,300 LOC).
 - **Auth.** USER.
-- **Request — `TransactionDto`** (input fields from the `COTRN02` symbolic map):
+- **Request — `TransactionDto.AddRequest`** (input fields from the `COTRN02` symbolic map). All listed
+  fields participate in the contract — in particular `source`, `originDate`, `processDate`, the four
+  `merchant*` fields, and the `confirm` flag are **required by the CT02 flow**; omitting them yields a
+  `400 Bad Request`:
 
   | Field | Type | Validation | Legacy source |
   |---|---|---|---|
-  | `accountId` | string | required, 11 digits | `ACTIDINI X(11)` |
-  | `cardNumber` | string | required, length 16 | `CARDNINI X(16)` |
-  | `typeCode` | string | required, length 2 | `TTYPCDI X(2)` → `TRAN-TYPE-CD X(02)` |
-  | `categoryCode` | string | required, 4 digits | `TCATCDI X(4)` → `TRAN-CAT-CD 9(04)` |
-  | `description` | string | `@Size(max = 100)` (screen entry capped at 60) | `TDESCI X(60)` → `TRAN-DESC X(100)` |
-  | `amount` | decimal | required, `@Digits(integer = 9, fraction = 2)` | `TRNAMTI` (formatted) → `TRAN-AMT S9(09)V99` |
+  | `accountId` | string | `@Size(max = 11)`, `\d{0,11}` | `ACTIDINI X(11)` |
+  | `cardNumber` | string | `@Size(max = 16)` | `CARDNINI X(16)` |
+  | `typeCode` | string | `@Size(max = 2)` | `TTYPCDI X(2)` → `TRAN-TYPE-CD X(02)` |
+  | `categoryCode` | string | `@Size(max = 4)` | `TCATCDI X(4)` → `TRAN-CAT-CD 9(04)` |
+  | `source` | string | `@Size(max = 10)` | `TRNSRCI` → `TRAN-SOURCE X(10)` |
+  | `description` | string | `@Size(max = 60)` | `TDESCI X(60)` → `TRAN-DESC X(100)` |
+  | `amount` | decimal | `@Digits(integer = 10, fraction = 2)` | `TRNAMTI` (formatted) → `TRAN-AMT S9(09)V99` |
+  | `originDate` | string | `@Size(max = 10)` (`YYYY-MM-DD`) | `TORIGDTI` → `TRAN-ORIG-TS` (date) |
+  | `processDate` | string | `@Size(max = 10)` (`YYYY-MM-DD`) | `TPROCDTI` → `TRAN-PROC-TS` (date) |
+  | `merchantId` | string | `@Size(max = 9)` | `MIDI` → `TRAN-MERCHANT-ID 9(09)` |
+  | `merchantName` | string | `@Size(max = 30)` | `MNAMEI` → `TRAN-MERCHANT-NAME X(50)` |
+  | `merchantCity` | string | `@Size(max = 25)` | `MCITYI` → `TRAN-MERCHANT-CITY X(50)` |
+  | `merchantZip` | string | `@Size(max = 10)` | `MZIPI` → `TRAN-MERCHANT-ZIP X(10)` |
+  | `confirm` | string | `@Size(max = 1)`, `Y`/`N` | `CONFIRMI X(1)` |
 
+- **Two-step preview → confirm (CT02 semantics).** Like the legacy screen, the add is a confirm flow: a
+  request with `confirm = "N"` (or absent) returns **`400 Bad Request`** with `"Confirm to add this
+  transaction..."` (the preview gate). Only `confirm = "Y"` posts the transaction.
 - **Auto-ID + confirmation.** The transaction id is **server-generated** (the modern successor to the legacy
   auto-numbering), and the response echoes the created resource as confirmation.
-- **Response — `TransactionDto`** (the persisted transaction, including the generated `transactionId`).
-- **Status codes.** `201 Created`, `400 Bad Request` (validation), `401 Unauthorized`, `404 Not Found`
-  (unknown account/card), `422 Unprocessable Entity` (business-rule violation, e.g. invalid type/category).
+- **Response — `TransactionDto.Detail`** — the persisted transaction (the same field set documented for
+  `GET /api/transactions/{id}` above), including the generated `transactionId` and a populated
+  `confirmationMessage` such as `"Transaction added successfully.  Your Tran ID is 0000000000000001."`.
+- **Status codes.** `201 Created` (on `confirm = "Y"`), `400 Bad Request` (validation or unconfirmed
+  preview), `401 Unauthorized`, `404 Not Found` (unknown account/card), `422 Unprocessable Entity`
+  (business-rule violation, e.g. invalid type/category).
 
 ### Billing — `BillingController`
 
@@ -398,18 +466,20 @@ Entity` (well-formed request that violates a business rule).
 - **Purpose.** Pay the full current balance for an account. Replaces bill-pay screen (**CB00**,
   `COBIL00C`).
 - **Auth.** USER.
-- **Request — `BillPaymentRequest`** (input fields from the `COBIL00` symbolic map):
+- **Request — `BillingDto.PayRequest`** (input fields from the `COBIL00` symbolic map):
 
   | Field | Type | Validation | Legacy source |
   |---|---|---|---|
-  | `accountId` | string | required, 11 digits | `ACTIDINI X(11)` |
-  | `confirm` | string | required, `Y`/`N` | `CONFIRMI X(1)` |
+  | `accountId` | string | `@Size(max = 11)`, `\d{0,11}` | `ACTIDINI X(11)` |
+  | `confirm` | string | `@Size(max = 1)`, `Y`/`N` | `CONFIRMI X(1)` |
 
 - **Behavior.** When `confirm = "Y"`, the service posts a payment transaction for the account's full current
   balance and updates the balance atomically (`@Transactional`). When `confirm = "N"` (or absent), the
-  endpoint returns the amount that *would* be paid without applying it.
-- **Response — `BillPaymentResponse`** — `{ accountId, amountPaid (scale 2), newBalance (scale 2),
-  transactionId, confirmed }`.
+  endpoint returns a preview carrying the account's current balance without applying any payment.
+- **Response — `BillingDto.PayResponse`** — `{ accountId, currentBalance, confirm }` on a preview, plus
+  `transactionId` and `confirmationMessage` once a payment has been posted (both annotated
+  `@JsonInclude(NON_NULL)`, so they are **omitted from the preview response**). There are **no**
+  `amountPaid`, `newBalance`, or `confirmed` fields.
 - **Status codes.** `200 OK`, `400 Bad Request`, `401 Unauthorized`, `404 Not Found`.
 
 ### Reports — `ReportController`
@@ -419,21 +489,35 @@ Entity` (well-formed request that violates a business rule).
 - **Purpose.** Submit an asynchronous transaction report. Replaces report screen (**CR00**, `CORPT00C`),
   which wrote a JCL stream to the CICS Transient Data Queue `JOBS` to trigger a batch report.
 - **Auth.** USER.
-- **Request — `ReportSubmitRequest`.**
+- **Request — `ReportDto.SubmitRequest`.** The report type is selected with **three mutually-exclusive
+  flag fields** (`monthly` / `yearly` / `custom`, each `Y`/blank) — not a single `reportType` enum — and the
+  custom window is given as **discrete date segments** (`startMonth`/`startDay`/`startYear`,
+  `endMonth`/`endDay`/`endYear`), mirroring the `CORPT00` map. A `confirm` flag gates submission:
 
   | Field | Type | Validation | Notes |
   |---|---|---|---|
-  | `reportType` | string | required (`MONTHLY` / `YEARLY` / `CUSTOM`) | report selection from the screen |
-  | `startDate` | string (`CCYY-MM-DD`) | required for `CUSTOM` | date-window start |
-  | `endDate` | string (`CCYY-MM-DD`) | required for `CUSTOM` | date-window end |
+  | `monthly` | string | `@Size(max = 1)`, `[Yy ]?` | select the monthly report |
+  | `yearly` | string | `@Size(max = 1)`, `[Yy ]?` | select the yearly report |
+  | `custom` | string | `@Size(max = 1)`, `[Yy ]?` | select a custom date-window report |
+  | `startMonth` | string | `@Size(max = 2)`, `\d{0,2}` | custom-window start month |
+  | `startDay` | string | `@Size(max = 2)`, `\d{0,2}` | custom-window start day |
+  | `startYear` | string | `@Size(max = 4)`, `\d{0,4}` | custom-window start year |
+  | `endMonth` | string | `@Size(max = 2)`, `\d{0,2}` | custom-window end month |
+  | `endDay` | string | `@Size(max = 2)`, `\d{0,2}` | custom-window end day |
+  | `endYear` | string | `@Size(max = 4)`, `\d{0,4}` | custom-window end year |
+  | `confirm` | string | `@Size(max = 1)`, `Y`/`N` | confirm the submission |
+
+  Submitting an empty body (or unknown fields such as `reportType`/`startDate`/`endDate`, which Jackson
+  silently ignores) yields **`400 Bad Request`** with `"Select a report type to print report..."`.
 
 - **Asynchronous bridge (F-011).** The endpoint **publishes a report-request message to the SQS FIFO queue
   `carddemo-report-jobs.fifo`** (with a `MessageGroupId` and `MessageDeduplicationId`) and returns
   immediately. A consumer then triggers the Spring Batch transaction-report job. This preserves the legacy
   TDQ `JOBS` **submit-then-process** semantics: the request is accepted asynchronously and the report is
   produced out of band.
-- **Response — `ReportSubmitResponse`** — `{ requestId, status: "SUBMITTED", queue:
-  "carddemo-report-jobs.fifo" }`.
+- **Response.** The controller returns `ResponseEntity<Void>` — **`202 Accepted` with an empty body**.
+  There is no `ReportSubmitResponse` payload; the queue name and any request identifier are not echoed
+  back to the caller.
 - **Status codes.** `202 Accepted` (queued), `400 Bad Request`, `401 Unauthorized`.
 
 ### Admin Users — `UserController`
@@ -444,36 +528,47 @@ User administration replaces the four legacy user screens (**CU00**–**CU03**, 
 #### `GET /api/admin/users`
 
 - **Purpose.** List users (**CU00**, `COUSR00C`). **Auth.** ADMIN.
-- **Query params.** `page` (default `0`), `size` (default `10`).
-- **Response — `Page<UserDto>`.** **Status codes.** `200 OK`, `401`, `403`.
+- **Query params.** `page` (0-based, default `0`) and an optional `userId` filter. There is **no** `size`
+  parameter.
+- **Response — `UserDto.ListResponse`** — a **custom** wrapper (not a Spring `Page<>`):
+  `{ pageNumber, userIdFilter, users }`, where `pageNumber` is a string, `userIdFilter` echoes the active
+  filter, and `users` is an array of `UserSummary` objects `{ userId, firstName, lastName, userType }`
+  (no password is ever returned). The wrapper exposes no `content`, `size`, `totalElements`, or
+  `totalPages`.
+- **Status codes.** `200 OK`, `401`, `403`.
 
 #### `POST /api/admin/users`
 
 - **Purpose.** Add a user (**CU01**, `COUSR01C`). **Auth.** ADMIN.
-- **Request — `UserDto`.**
+- **Request — `UserDto.CreateRequest`** (field order as declared):
 
   | Field | Type | Validation | Legacy source |
   |---|---|---|---|
-  | `userId` | string | required, `@Size(max = 8)` | `SEC-USR-ID X(08)` |
-  | `firstName` | string | required, `@Size(max = 20)` | `SEC-USR-FNAME X(20)` |
-  | `lastName` | string | required, `@Size(max = 20)` | `SEC-USR-LNAME X(20)` |
-  | `password` | string | required, `@Size(max = 8)` (stored BCrypt-hashed) | `SEC-USR-PWD X(08)` |
-  | `userType` | string | required, `A` or `U` | `SEC-USR-TYPE X(01)` |
+  | `firstName` | string | `@Size(max = 20)` | `SEC-USR-FNAME X(20)` |
+  | `lastName` | string | `@Size(max = 20)` | `SEC-USR-LNAME X(20)` |
+  | `userId` | string | `@Size(max = 8)` | `SEC-USR-ID X(08)` |
+  | `password` | string | `@Size(max = 8)` (stored BCrypt-hashed) | `SEC-USR-PWD X(08)` |
+  | `userType` | string | `@Size(max = 1)` (`A` or `U`) | `SEC-USR-TYPE X(01)` |
 
-- **Response — `UserDto`** (without the password hash). **Status codes.** `201 Created`, `400`, `401`,
-  `403`, `409 Conflict` (duplicate `userId` — the relational successor to VSAM `FILE STATUS 22`).
+- **Response — `UserDto.UserSummary`** — `{ userId, firstName, lastName, userType }` (never the password
+  hash). **Status codes.** `201 Created`, `400`, `401`, `403`, `409 Conflict` (duplicate `userId` — the
+  relational successor to VSAM `FILE STATUS 22`).
 
 #### `PUT /api/admin/users/{userId}`
 
 - **Purpose.** Update a user (**CU02**, `COUSR02C`). **Auth.** ADMIN.
-- **Path param.** `userId` (8). **Request — `UserDto`** (same fields; password optional — re-hashed if
-  supplied). **Status codes.** `200 OK`, `400`, `401`, `403`, `404 Not Found`.
+- **Path param.** `userId` (8). **Request — `UserDto.UpdateRequest`** (`userId` `@NotBlank @Size(max = 8)`,
+  plus `firstName`/`lastName`/`password`/`userType`; password re-hashed if supplied).
+- **Response — `UserDto.UserSummary`** — `{ userId, firstName, lastName, userType }`.
+  **Status codes.** `200 OK`, `400`, `401`, `403`, `404 Not Found`.
 
 #### `DELETE /api/admin/users/{userId}`
 
 - **Purpose.** Delete a user (**CU03**, `COUSR03C`). **Auth.** ADMIN.
-- **Path param.** `userId` (8). **Response.** `204 No Content`. **Status codes.** `204`, `401`, `403`,
-  `404 Not Found`.
+- **Path param.** `userId` (8).
+- **Response — `UserDto.DeleteResponse`** — **`200 OK`** with the deleted user's identifying fields
+  `{ userId, firstName, lastName, userType }` (the endpoint returns the deleted record, **not** `204 No
+  Content`). **Status codes.** `200 OK`, `401`, `403`, `404 Not Found`.
 
 ---
 
@@ -491,14 +586,14 @@ prohibited.
 | Sign-in `password` | `PASSWDI PIC X(8)` / `SEC-USR-PWD X(08)` | `String` | `@NotBlank @Size(max = 8)` |
 | `accountId` | `ACCT-ID PIC 9(11)` | `String` | `@NotBlank @Pattern(regexp = "\\d{11}")` |
 | Monetary (balance, limits, amount) | `PIC S9(10)V99` (account) / `PIC S9(09)V99` (transaction) | `BigDecimal` (scale 2) | `@Digits(integer = 10, fraction = 2)` / `@Digits(integer = 9, fraction = 2)` |
-| `cardNumber` | `CARD-NUM X(16)` / `TRAN-CARD-NUM X(16)` | `String` | `@NotBlank @Size(min = 16, max = 16)` |
-| `cvv` | `CARD-CVV-CD 9(03)` | `String` | `@Pattern(regexp = "\\d{3}")` |
-| `embossedName` | `CARD-EMBOSSED-NAME X(50)` | `String` | `@Size(max = 50)` |
-| `typeCode` | `TRAN-TYPE-CD X(02)` | `String` | `@Size(min = 2, max = 2)` |
-| `categoryCode` | `TRAN-CAT-CD 9(04)` | `String` | `@Pattern(regexp = "\\d{4}")` |
-| `description` | `TRAN-DESC X(100)` | `String` | `@Size(max = 100)` |
-| `merchantId` | `TRAN-MERCHANT-ID 9(09)` | `String` | `@Pattern(regexp = "\\d{9}")` |
-| Timestamps (`originTimestamp`, `processTimestamp`) | `TRAN-ORIG-TS` / `TRAN-PROC-TS X(26)` | `String` | format `YYYY-MM-DD HH:MM:SS.mmmmmm` (26 chars) |
+| `cardNumber` | `CARD-NUM X(16)` / `TRAN-CARD-NUM X(16)` | `String` | `@Size(max = 16)` (`@Pattern(regexp = "\\d{0,16}")` on transaction) |
+| `cardholderName` | `CARD-EMBOSSED-NAME X(50)` | `String` | `@Size(max = 50)` |
+| `cardStatus` | `CARD-ACTIVE-STATUS X(01)` | `String` | `@Size(max = 1)` |
+| `transactionType` / request `typeCode` | `TRAN-TYPE-CD X(02)` | `String` | `@Size(max = 2)` (`@Pattern(regexp = "\\d{2}")` on detail) |
+| `categoryCode` | `TRAN-CAT-CD 9(04)` | `String` | `@Size(max = 4) @Pattern(regexp = "\\d{0,4}")` |
+| `description` (transaction) | `TRAN-DESC X(100)` | `String` | `@Size(max = 60)` (REST entry limit) |
+| `merchantId` | `TRAN-MERCHANT-ID 9(09)` | `String` | `@Size(max = 9) @Pattern(regexp = "\\d{0,9}")` |
+| `originDate` / `processDate` | `TRAN-ORIG-TS` / `TRAN-PROC-TS` (date portion) | `String` | `@Size(max = 10)`, format `YYYY-MM-DD` |
 | Date fields (`openDate`, `expirationDate`, …) | `X(10)` | `String` | format `CCYY-MM-DD` (10 chars) |
 | User `firstName` / `lastName` | `SEC-USR-FNAME X(20)` / `SEC-USR-LNAME X(20)` | `String` | `@Size(max = 20)` |
 | User `userType` | `SEC-USR-TYPE X(01)` | `String` | `@Pattern(regexp = "[AU]")` |
@@ -596,22 +691,24 @@ The report-submission bridge (legacy `CORPT00C` → CICS TDQ `JOBS`) is realized
 |---|---|
 | Queue name | **`carddemo-report-jobs.fifo`** |
 | Message body | JSON report request |
-| `MessageGroupId` | required (FIFO ordering group, e.g. `report-jobs`) |
-| `MessageDeduplicationId` | required (FIFO dedupe key, e.g. the request id) |
+| `MessageGroupId` | required — the constant FIFO ordering group `report-jobs` |
+| `MessageDeduplicationId` | required — a freshly generated `UUID` per submission |
 | Producer | `ReportController` / `ReportService` (`POST /api/reports/submit`) |
 | Consumer | SQS listener that triggers the Spring Batch transaction-report job |
 
-**Message body schema:**
+**Message body schema** — the published payload is the typed `ReportService.ReportRequestMessage`
+record with exactly three fields (`reportName`, `startDate`, `endDate`); `startDate`/`endDate` are
+`YYYY-MM-DD` strings:
 
 ```json
 {
-  "requestId": "b1c2d3e4-0000-4a5b-8c6d-000000000001",
-  "reportType": "CUSTOM",
+  "reportName": "Custom",
   "startDate": "2025-01-01",
-  "endDate": "2025-01-31",
-  "requestedBy": "USER0001"
+  "endDate": "2025-01-31"
 }
 ```
+
+(`reportName` is one of `Monthly`, `Yearly`, or `Custom`.)
 
 The `.fifo` suffix and the required `MessageGroupId` + `MessageDeduplicationId` attributes are mandatory for
 an Amazon SQS FIFO queue; they guarantee ordered, exactly-once delivery that mirrors the legacy
@@ -656,12 +753,9 @@ Response (`200 OK`):
 
 ```json
 {
+  "token": "eyJhbGciOiJIUzM4NCJ9.eyJzdWIiOiJVU0VSMDAwMSIsImlzcyI6ImNhcmRkZW1vIiwidXNlclR5cGUiOiJVIn0.s1gn4tur3",
   "userId": "USER0001",
-  "userType": "U",
-  "role": "USER",
-  "token": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJVU0VSMDAwMSIsInJvbGUiOiJVU0VSIn0.s1gn4tur3",
-  "tokenType": "Bearer",
-  "expiresInSeconds": 3600
+  "userType": "U"
 }
 ```
 
@@ -672,91 +766,124 @@ curl -s http://localhost:8080/api/accounts/00000000001 \
   -H "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJVU0VSMDAwMSIsInJvbGUiOiJVU0VSIn0.s1gn4tur3"
 ```
 
-Response (`200 OK`) — an `AccountDto` with the ACCOUNT + CUSTOMER join:
+Response (`200 OK`) — a **flat** `AccountDto.ViewResponse` (30 top-level fields; the ACCOUNT and CUSTOMER
+records are merged into one flat object — there is **no** nested `customer`). Monetary fields serialize as
+JSON numbers; `ficoScore` is a string and `version` is the optimistic-lock token:
 
 ```json
 {
-  "accountId": "00000000001",
-  "activeStatus": "Y",
-  "currentBalance": "1019.40",
-  "creditLimit": "20200.00",
-  "cashCreditLimit": "10200.00",
-  "currentCycleCredit": "0.00",
-  "currentCycleDebit": "0.00",
+  "accountId": "1",
+  "accountStatus": "Y",
   "openDate": "2014-11-20",
+  "creditLimit": 2020.0,
   "expirationDate": "2025-05-20",
+  "cashCreditLimit": 1020.0,
   "reissueDate": "2025-05-20",
-  "groupId": "A000000000",
-  "version": 0,
-  "customer": {
-    "customerId": "000000001",
-    "firstName": "JOHN",
-    "lastName": "DOE",
-    "addressStateCode": "TX",
-    "addressZip": "75001",
-    "ficoCreditScore": 750
-  }
+  "currentBalance": 194.0,
+  "currentCycleCredit": 0.0,
+  "accountGroupId": "",
+  "currentCycleDebit": 0.0,
+  "customerId": "1",
+  "ssn": "020973888",
+  "dateOfBirth": "1961-06-08",
+  "ficoScore": "274",
+  "firstName": "Immanuel",
+  "middleName": "Madeline",
+  "lastName": "Kessler",
+  "addressLine1": "618 Deshaun Route",
+  "state": "NC",
+  "addressLine2": "Apt. 802",
+  "zipCode": "12546",
+  "city": "Altenwerthshire",
+  "country": "USA",
+  "phone1": "(908)119-8310",
+  "governmentId": "00000000000049368437",
+  "phone2": "(373)693-8684",
+  "eftAccountId": "0053581756",
+  "primaryCardHolder": "Y",
+  "version": 0
 }
 ```
 
 ### (c) Add a transaction
+
+Adding a transaction is a **preview → confirm** flow (CT02 semantics). The request body must include every
+contract field — `source`, `originDate`, `processDate`, the four `merchant*` fields, and `confirm` are
+**required** — and `confirm` must be `"Y"` to actually post (a `"N"` or omitted `confirm` returns
+`400 Bad Request` with `"Confirm to add this transaction..."`). Use a `cardNumber` that exists for the
+account (e.g. `0500024453765740` on account `00000000050`):
 
 ```bash
 curl -s -X POST http://localhost:8080/api/transactions \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-        "accountId": "00000000001",
-        "cardNumber": "4111111111111111",
+        "accountId": "00000000050",
+        "cardNumber": "0500024453765740",
         "typeCode": "01",
         "categoryCode": "0001",
+        "source": "POS",
         "description": "GROCERY STORE PURCHASE",
-        "amount": "125.50"
+        "amount": "125.50",
+        "originDate": "2025-01-15",
+        "processDate": "2025-01-15",
+        "merchantId": "000000123",
+        "merchantName": "ACME GROCERY",
+        "merchantCity": "DALLAS",
+        "merchantZip": "75001",
+        "confirm": "Y"
       }'
 ```
 
-Response (`201 Created`) — the persisted `TransactionDto` with the server-generated id as confirmation:
+Response (`201 Created`) — the persisted `TransactionDto.Detail` with the server-generated id and a
+`confirmationMessage`. Note the status field is `transactionType` and the dates are `originDate` /
+`processDate` (`YYYY-MM-DD`), not 26-character timestamp fields:
 
 ```json
 {
-  "transactionId": "0000000000000017",
-  "typeCode": "01",
+  "transactionId": "0000000000000001",
+  "cardNumber": "0500024453765740",
+  "transactionType": "01",
   "categoryCode": "0001",
   "source": "POS",
   "description": "GROCERY STORE PURCHASE",
-  "amount": "125.50",
+  "amount": 125.5,
+  "originDate": "2025-01-15",
+  "processDate": "2025-01-15",
   "merchantId": "000000123",
   "merchantName": "ACME GROCERY",
   "merchantCity": "DALLAS",
   "merchantZip": "75001",
-  "cardNumber": "4111111111111111",
-  "originTimestamp": "2025-05-20 14:32:10.123456",
-  "processTimestamp": "2025-05-20 14:32:10.654321"
+  "confirmationMessage": "Transaction added successfully.  Your Tran ID is 0000000000000001."
 }
 ```
 
 ### (d) Submit a report (asynchronous SQS FIFO bridge)
+
+The report type is selected with the `monthly` / `yearly` / `custom` flags and a custom window is given as
+discrete date segments, with `confirm: "Y"` to submit (the legacy `CORPT00` field set):
 
 ```bash
 curl -s -X POST http://localhost:8080/api/reports/submit \
   -H "Authorization: Bearer <token>" \
   -H "Content-Type: application/json" \
   -d '{
-        "reportType": "CUSTOM",
-        "startDate": "2025-01-01",
-        "endDate": "2025-01-31"
+        "custom": "Y",
+        "startMonth": "01",
+        "startDay": "01",
+        "startYear": "2025",
+        "endMonth": "01",
+        "endDay": "31",
+        "endYear": "2025",
+        "confirm": "Y"
       }'
 ```
 
-Response (`202 Accepted`) — the request is queued to `carddemo-report-jobs.fifo`:
-
-```json
-{
-  "requestId": "b1c2d3e4-0000-4a5b-8c6d-000000000001",
-  "status": "SUBMITTED",
-  "queue": "carddemo-report-jobs.fifo"
-}
-```
+Response: **`202 Accepted` with an empty body** (`ResponseEntity<Void>`). The request is published to the
+SQS FIFO queue `carddemo-report-jobs.fifo` for out-of-band processing; no JSON payload is returned. (Using
+the wrong field names such as `reportType`/`startDate`/`endDate` produces `400 Bad Request` with
+`"Select a report type to print report..."`, because Jackson ignores the unknown fields and the resulting
+all-null request is rejected.)
 
 ### Optimistic-lock conflict (account update)
 
