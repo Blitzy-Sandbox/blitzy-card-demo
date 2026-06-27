@@ -275,6 +275,31 @@ class InterestProcessorTest {
     }
 
     @Test
+    @DisplayName("HALF_EVEN diverges from literal COBOL truncation by 0.01 on a non-terminating quotient: "
+            + "10.00 * 25.00 / 1200 -> 0.21 (COBOL COMPUTE without ROUNDED truncates -> 0.20)")
+    void process_halfEvenDivergesFromCobolTruncationByOnePenny() {
+        stubAccount(1L, new BigDecimal("100.00"));
+        when(disclosureGroupRepository.findById(any(DisclosureGroupId.class)))
+                .thenReturn(Optional.of(disclosure(GROUP_ID, new BigDecimal("25.00"))));
+
+        // (10.00 * 25.00) / 1200 = 250.0000 / 1200 = 0.208333... — a non-terminating quotient whose
+        // third decimal (8) is >= 5, the exact case where HALF_EVEN and COBOL truncation differ.
+        // CBACT04C 1300-COMPUTE-INTEREST (lines 462-465) is a COMPUTE WITHOUT a ROUNDED phrase, so the
+        // frozen COBOL TRUNCATES the quotient to scale 2 -> 0.20. The migration deliberately applies the
+        // AAP-mandated (AAP §0.1.1.1) RoundingMode.HALF_EVEN, which rounds 0.2083... UP to 0.21. This is
+        // the bounded ±0.01 deviation documented in DECISION_LOG.md D-013; this test locks the intended
+        // HALF_EVEN value AND makes the known divergence from literal COBOL explicit and testable.
+        Transaction tx = processor.process(balance(1L, new BigDecimal("10.00")));
+
+        assertThat(tx).isNotNull();
+        // The documented HALF_EVEN target:
+        assertThat(tx.getTranAmt()).isEqualByComparingTo(new BigDecimal("0.21"));
+        // Proves the AAP-sanctioned divergence: the result is NOT the literal-COBOL truncated 0.20:
+        assertThat(tx.getTranAmt()).isNotEqualByComparingTo(new BigDecimal("0.20"));
+        assertThat(tx.getTranAmt().scale()).isEqualTo(2);
+    }
+
+    @Test
     @DisplayName("multiply BEFORE divide: (1000.00 * 10.00)/1200 = 8.33, not a rearranged 10.00")
     void process_multipliesBeforeDividing() {
         stubAccount(1L, new BigDecimal("100.00"));

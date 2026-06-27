@@ -177,10 +177,24 @@ public class FixedWidthS3ItemWriter implements ItemStreamWriter<String> {
      * no record was written the upload is skipped (no empty object is created).
      * The buffer is always released.
      *
+     * <p>This method is idempotent. Spring Batch invokes {@code close()} through
+     * the step's {@link org.springframework.batch.item.ItemStream} lifecycle, and
+     * a {@code @StepScope} bean container may invoke it a second time when the
+     * step scope is destroyed. The first invocation uploads (or skips) and then
+     * releases the buffer in the {@code finally} block; any subsequent invocation
+     * short-circuits to a no-op so it never dereferences the released buffer and
+     * never logs a spurious upload failure after a successful upload.</p>
+     *
      * @throws ItemStreamException if the upload to S3 fails
      */
     @Override
     public void close() throws ItemStreamException {
+        if (buffer == null) {
+            // Already closed: the buffer was released by a prior close(), so a
+            // second invocation (e.g. from @StepScope bean destruction) is a
+            // deliberate no-op rather than an NPE rethrown as an upload failure.
+            return;
+        }
         try {
             if (lineCount == 0L) {
                 return;

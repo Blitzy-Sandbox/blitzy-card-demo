@@ -353,7 +353,7 @@ public class BatchPipelineOrchestrator {
      *
      * @return a step-scoped fixed-width S3 writer of width {@value #PRINT_RECORD_WIDTH}
      */
-    @Bean(PRINT_WRITER_BEAN)
+    @Bean(name = PRINT_WRITER_BEAN, destroyMethod = "")
     @StepScope
     public FixedWidthS3ItemWriter printCategoryBalanceWriter() {
         return new FixedWidthS3ItemWriter(
@@ -408,7 +408,7 @@ public class BatchPipelineOrchestrator {
      *
      * @return a step-scoped fixed-width S3 writer of width {@value #BACKUP_RECORD_WIDTH}
      */
-    @Bean(BACKUP_WRITER_BEAN)
+    @Bean(name = BACKUP_WRITER_BEAN, destroyMethod = "")
     @StepScope
     public FixedWidthS3ItemWriter categoryBalanceBackupWriter() {
         return new FixedWidthS3ItemWriter(

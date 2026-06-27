@@ -234,7 +234,7 @@ public class TransactionReportJobConfig {
      *
      * @return the step-scoped fixed-width S3 writer for the report output
      */
-    @Bean
+    @Bean(destroyMethod = "")
     @StepScope
     public FixedWidthS3ItemWriter transactionReportFixedWidthWriter() {
         String outputBucket = awsResourceProperties.getS3().getOutputBucket();
@@ -261,7 +261,7 @@ public class TransactionReportJobConfig {
      * @param transactionReportFixedWidthWriter the step-scoped fixed-width S3 delegate
      * @return a step-scoped, trailer-flushing writer over the processor's line lists
      */
-    @Bean
+    @Bean(destroyMethod = "")
     @StepScope
     public ItemStreamWriter<List<String>> transactionReportWriter(
             FixedWidthS3ItemWriter transactionReportFixedWidthWriter) {

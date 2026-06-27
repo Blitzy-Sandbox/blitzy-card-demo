@@ -190,7 +190,7 @@ public class StatementJobConfig {
      *                       launch
      * @return the configured 80-width statement writer
      */
-    @Bean
+    @Bean(destroyMethod = "")
     @StepScope
     public FixedWidthS3ItemWriter statementTextWriter(
             @Value("#{stepExecution.jobExecution.id}") Long jobExecutionId) {
@@ -216,7 +216,7 @@ public class StatementJobConfig {
      *                       launch
      * @return the configured 100-width statement writer
      */
-    @Bean
+    @Bean(destroyMethod = "")
     @StepScope
     public FixedWidthS3ItemWriter statementHtmlWriter(
             @Value("#{stepExecution.jobExecution.id}") Long jobExecutionId) {
