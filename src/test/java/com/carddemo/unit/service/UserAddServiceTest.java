@@ -143,6 +143,17 @@ class UserAddServiceTest {
     /** Byte-exact {@code COUSR01C} empty user-type message @ {@code 27d6c6f}. */
     private static final String USER_TYPE_EMPTY_MESSAGE = "User Type can NOT be empty...";
 
+    /**
+     * Domain message raised when {@code userType} is present but outside the
+     * canonical {@code A}/{@code U} role set. Mirrors the
+     * {@code UserAddService.USER_TYPE_INVALID_MESSAGE} constant. Unlike the empty
+     * literals this is not a {@code COUSR01C} screen literal: it backs the
+     * deliberate domain edit added per DECISION_LOG D-072 (the canonical role set
+     * is the {@code COCOM01Y} {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} /
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'} condition names).
+     */
+    private static final String USER_TYPE_INVALID_MESSAGE = "User Type must be A or U...";
+
     /** Byte-exact {@code COUSR01C} {@code DUPKEY}/{@code DUPREC} message @ {@code 27d6c6f}. */
     private static final String USER_ALREADY_EXISTS_MESSAGE = "User ID already exist...";
 
@@ -353,6 +364,67 @@ class UserAddServiceTest {
                 new UserDto.CreateRequest(blankFirstName, LAST_NAME, USER_ID, RAW_PASSWORD, USER_TYPE),
                 "firstName",
                 FIRST_NAME_EMPTY_MESSAGE);
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 2b — user-type domain edit (canonical A/U role set, D-072)
+    //
+    // The legacy COUSR01C cascade validated USRTYPE for emptiness ONLY and then
+    // applied the value verbatim; a present-but-out-of-domain value such as "Z"
+    // or a lowercase "a" would have been persisted as an undefined role (the QA
+    // MAJOR finding). The service now rejects any value that is not exactly the
+    // uppercase "A" (admin) or "U" (user) AFTER presence is confirmed, so the
+    // empty-field literal is never shadowed. The rejection carries the same
+    // single-entry field-error map and short-circuits before any hashing or
+    // persistence (reusing assertEmptyFieldRejected).
+    // -----------------------------------------------------------------
+
+    @ParameterizedTest(name = "userType=[{0}]")
+    @ValueSource(strings = {"Z", "X", "a", "u", "1", "AU", "AA", "@"})
+    @DisplayName("addUser: a present-but-invalid user type is rejected (A/U domain); nothing is hashed or written")
+    void addUserRejectsInvalidUserType(String invalidUserType) {
+        assertEmptyFieldRejected(
+                new UserDto.CreateRequest(FIRST_NAME, LAST_NAME, USER_ID, RAW_PASSWORD, invalidUserType),
+                "userType",
+                USER_TYPE_INVALID_MESSAGE);
+    }
+
+    @Test
+    @DisplayName("addUser: a lowercase 'a' is rejected as an undefined role, NOT silently treated as admin")
+    void addUserRejectsLowercaseAdminAsUndefinedRole() {
+        // The legacy MOVE USRTYPEI TO SEC-USR-TYPE stored the value verbatim, so
+        // case matters: only the uppercase 88-level VALUEs 'A'/'U' are admitted.
+        assertEmptyFieldRejected(
+                new UserDto.CreateRequest(FIRST_NAME, LAST_NAME, USER_ID, RAW_PASSWORD, "a"),
+                "userType",
+                USER_TYPE_INVALID_MESSAGE);
+    }
+
+    @Test
+    @DisplayName("addUser: the empty-field check still precedes the domain edit (blank userType -> empty literal, not domain literal)")
+    void addUserBlankUserTypeYieldsEmptyMessageNotDomainMessage() {
+        // Proves the domain edit runs only AFTER presence is established, so the
+        // byte-exact "User Type can NOT be empty..." literal is never shadowed.
+        assertEmptyFieldRejected(
+                new UserDto.CreateRequest(FIRST_NAME, LAST_NAME, USER_ID, RAW_PASSWORD, ""),
+                "userType",
+                USER_TYPE_EMPTY_MESSAGE);
+    }
+
+    @ParameterizedTest(name = "userType=[{0}]")
+    @ValueSource(strings = {"A", "U"})
+    @DisplayName("addUser: both canonical role values A (admin) and U (user) pass the domain edit and persist")
+    void addUserAcceptsCanonicalUserTypes(String validUserType) {
+        when(userRepository.existsById(USER_ID)).thenReturn(false);
+        when(passwordEncoder.encode(NORMALIZED_PASSWORD)).thenReturn(ENCODED_PASSWORD);
+
+        UserDto.UserSummary summary = userAddService.addUser(
+                new UserDto.CreateRequest(FIRST_NAME, LAST_NAME, USER_ID, RAW_PASSWORD, validUserType));
+
+        assertThat(summary.userType()).isEqualTo(validUserType);
+        ArgumentCaptor<User> captor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(captor.capture());
+        assertThat(captor.getValue().getUserType()).isEqualTo(validUserType);
     }
 
     // -----------------------------------------------------------------

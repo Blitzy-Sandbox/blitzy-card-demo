@@ -60,6 +60,18 @@ public final class UserDto {
      * consistent with the UPDATE path (which is already {@code @Size}-only);
      * see DECISION_LOG D-056. The {@code @Size} upper bounds mirror the
      * fixed-width COBOL pictures and remain here.
+     *
+     * <p>For the same reason, {@code userType} carries only {@code @Size(max = 1)}
+     * here and deliberately <em>no</em> {@code @Pattern(regexp = "[AU]")}: a
+     * pattern at this boundary would reject the empty string before
+     * {@code UserAddService} can emit the byte-exact "User Type can NOT be
+     * empty..." literal, shadowing it with the generic Bean Validation default.
+     * The canonical {@code A} (admin) / {@code U} (user) role domain &mdash;
+     * defined by the {@code COCOM01Y} condition names
+     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'} &mdash; is therefore enforced at the
+     * service level (after the presence check) by {@code UserAddService}; see
+     * DECISION_LOG D-072.
      */
     public record CreateRequest(
             @Size(max = 20) String firstName,
@@ -74,6 +86,14 @@ public final class UserDto {
      * {@code FNAME X(20)}, {@code LNAME X(20)}, {@code PASSWD X(8)},
      * {@code USRTYPE X(1)}) at SHA {@code 27d6c6f}. The {@code password} is
      * optional and supplied only when it is being changed.
+     *
+     * <p>As on {@code CreateRequest}, {@code userType} carries only
+     * {@code @Size(max = 1)} and deliberately no {@code @Pattern(regexp = "[AU]")}
+     * so the byte-exact "User Type can NOT be empty..." presence literal is not
+     * shadowed. The canonical {@code A}/{@code U} role domain (the
+     * {@code COCOM01Y} {@code 88 CDEMO-USRTYP-ADMIN}/{@code CDEMO-USRTYP-USER}
+     * condition names) is enforced at the service level by
+     * {@code UserUpdateService} after the presence check; see DECISION_LOG D-072.
      */
     public record UpdateRequest(
             @NotBlank @Size(max = 8) String userId,

@@ -548,17 +548,28 @@ User administration replaces the four legacy user screens (**CU00**–**CU03**, 
   | `lastName` | string | `@Size(max = 20)` | `SEC-USR-LNAME X(20)` |
   | `userId` | string | `@Size(max = 8)` | `SEC-USR-ID X(08)` |
   | `password` | string | `@Size(max = 8)` (stored BCrypt-hashed) | `SEC-USR-PWD X(08)` |
-  | `userType` | string | `@Size(max = 1)` (`A` or `U`) | `SEC-USR-TYPE X(01)` |
+  | `userType` | string | `@Size(max = 1)`; `A`/`U` domain enforced in `UserAddService` | `SEC-USR-TYPE X(01)` |
 
 - **Response — `UserDto.UserSummary`** — `{ userId, firstName, lastName, userType }` (never the password
   hash). **Status codes.** `201 Created`, `400`, `401`, `403`, `409 Conflict` (duplicate `userId` — the
   relational successor to VSAM `FILE STATUS 22`).
+- **`userType` domain.** The DTO carries only `@Size(max = 1)`; the canonical role domain — `A`
+  (administrator) or `U` (standard user), the `COCOM01Y` `88 CDEMO-USRTYP-ADMIN VALUE 'A'` /
+  `88 CDEMO-USRTYP-USER VALUE 'U'` condition names — is enforced by `UserAddService` **after** the
+  presence check, so a present-but-out-of-domain value (e.g. `Z`, or a lowercase `a`) is rejected with a
+  `400` validation problem (`detail` = `"User Type must be A or U..."`) and is never persisted. A DTO
+  `@Pattern(regexp = "[AU]")` is deliberately **not** used because it would reject the empty string before
+  the service can emit the byte-exact `"User Type can NOT be empty..."` literal; see DECISION_LOG D-072.
 
 #### `PUT /api/admin/users/{userId}`
 
 - **Purpose.** Update a user (**CU02**, `COUSR02C`). **Auth.** ADMIN.
 - **Path param.** `userId` (8). **Request — `UserDto.UpdateRequest`** (`userId` `@NotBlank @Size(max = 8)`,
   plus `firstName`/`lastName`/`password`/`userType`; password re-hashed if supplied).
+- **`userType` domain.** As on the add path, `UserUpdateService` enforces the `A`/`U` domain after the
+  presence check (DECISION_LOG D-072): a present-but-out-of-domain value is rejected with a `400` validation
+  problem (`detail` = `"User Type must be A or U..."`) **before** the record is read or rewritten, so a
+  rejected update never mutates the stored row.
 - **Response — `UserDto.UserSummary`** — `{ userId, firstName, lastName, userType }`.
   **Status codes.** `200 OK`, `400`, `401`, `403`, `404 Not Found`.
 
@@ -596,7 +607,7 @@ prohibited.
 | `originDate` / `processDate` | `TRAN-ORIG-TS` / `TRAN-PROC-TS` (date portion) | `String` | `@Size(max = 10)`, format `YYYY-MM-DD` |
 | Date fields (`openDate`, `expirationDate`, …) | `X(10)` | `String` | format `CCYY-MM-DD` (10 chars) |
 | User `firstName` / `lastName` | `SEC-USR-FNAME X(20)` / `SEC-USR-LNAME X(20)` | `String` | `@Size(max = 20)` |
-| User `userType` | `SEC-USR-TYPE X(01)` | `String` | `@Pattern(regexp = "[AU]")` |
+| User `userType` | `SEC-USR-TYPE X(01)` | `String` | `@Size(max = 1)`; `A`/`U` domain enforced in `UserAddService`/`UserUpdateService` after the presence check (DECISION_LOG D-072) |
 
 > **Transaction type codes** (`TRAN-TYPE-CD`, from `trantype.txt`) are a closed set: `01` Purchase,
 > `02` Payment, `03` Credit, `04` Authorization, `05` Refund, `06` Reversal, `07` Adjustment. Submissions

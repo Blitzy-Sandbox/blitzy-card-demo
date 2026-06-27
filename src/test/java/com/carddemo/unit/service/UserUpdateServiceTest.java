@@ -41,6 +41,8 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowable;
+import static org.assertj.core.api.Assertions.entry;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.inOrder;
@@ -150,6 +152,17 @@ class UserUpdateServiceTest {
 
     /** Byte-exact {@code COUSR02C} empty-user-type message @ {@code 27d6c6f}. */
     private static final String USER_TYPE_EMPTY_MESSAGE = "User Type can NOT be empty...";
+
+    /**
+     * Domain message raised when {@code userType} is present but outside the
+     * canonical {@code A}/{@code U} role set. Mirrors the
+     * {@code UserUpdateService.USER_TYPE_INVALID_MESSAGE} constant. Unlike the
+     * empty literals this is not a {@code COUSR02C} screen literal: it backs the
+     * deliberate domain edit added per DECISION_LOG D-072 (the canonical role set
+     * is the {@code COCOM01Y} {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} /
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'} condition names).
+     */
+    private static final String USER_TYPE_INVALID_MESSAGE = "User Type must be A or U...";
 
     /** Byte-exact {@code COUSR02C} record-not-found message @ {@code 27d6c6f}. */
     private static final String USER_NOT_FOUND_MESSAGE = "User ID NOT found...";
@@ -336,6 +349,80 @@ class UserUpdateServiceTest {
         verify(userRepository, never()).findById(anyString());
         verify(userRepository, never()).save(any(User.class));
         verify(passwordEncoder, never()).encode(any());
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 3b — user-type domain edit (canonical A/U role set, D-072)
+    //
+    // The legacy COUSR02C UPDATE-USER-INFO cascade validated USRTYPE for
+    // emptiness ONLY and applied the value verbatim, so a present-but-out-of-
+    // domain value (e.g. "Z" or lowercase "a") would have rewritten the USRSEC
+    // record with an undefined role (the QA MAJOR finding). The service now
+    // rejects any value that is not exactly "A" (admin) or "U" (user) AFTER
+    // presence is confirmed and, crucially, BEFORE findById, so the rejection
+    // never reads or rewrites the record (the database is never mutated).
+    // -----------------------------------------------------------------
+
+    /**
+     * Asserts that {@code updateUser} rejects the supplied invalid user type with
+     * a {@link ValidationException} carrying the domain message and a single
+     * {@code userType -> message} field-error entry, and that the rejection fires
+     * before any keyed read, rewrite, or credential hashing — so the
+     * {@code USRSEC}-equivalent row is never touched.
+     *
+     * @param invalidUserType a present (non-blank) value outside the {@code A}/{@code U} domain
+     */
+    private void assertInvalidUserTypeRejected(String invalidUserType) {
+        UserDto.UpdateRequest request = new UserDto.UpdateRequest(
+                USER_ID, UPDATED_FIRST_NAME, UPDATED_LAST_NAME, NEW_PASSWORD_PLAINTEXT, invalidUserType);
+
+        Throwable thrown = catchThrowable(() -> userUpdateService.updateUser(USER_ID, request));
+
+        assertThat(thrown)
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(USER_TYPE_INVALID_MESSAGE);
+        assertThat(((ValidationException) thrown).getFieldErrors())
+                .containsExactly(entry("userType", USER_TYPE_INVALID_MESSAGE));
+
+        // The domain edit short-circuits BEFORE the keyed read-for-update, so no
+        // record is fetched, rewritten, or re-hashed — the DB is never mutated.
+        verify(userRepository, never()).findById(anyString());
+        verify(userRepository, never()).save(any(User.class));
+        verify(passwordEncoder, never()).encode(any());
+    }
+
+    @ParameterizedTest(name = "userType=[{0}]")
+    @ValueSource(strings = {"Z", "X", "a", "u", "1", "AU", "AA", "@"})
+    @DisplayName("updateUser: a present-but-invalid user type is rejected (A/U domain); the record is never read or rewritten")
+    void updateUserRejectsInvalidUserType(String invalidUserType) {
+        assertInvalidUserTypeRejected(invalidUserType);
+    }
+
+    @Test
+    @DisplayName("updateUser: a lowercase 'a' is rejected as an undefined role, NOT silently treated as admin")
+    void updateUserRejectsLowercaseAdminAsUndefinedRole() {
+        // The legacy MOVE USRTYPEI TO SEC-USR-TYPE stored the value verbatim, so
+        // case matters: only the uppercase 88-level VALUEs 'A'/'U' are admitted.
+        assertInvalidUserTypeRejected("a");
+    }
+
+    @ParameterizedTest(name = "userType=[{0}]")
+    @ValueSource(strings = {"A", "U"})
+    @DisplayName("updateUser: both canonical role values A (admin) and U (user) pass the domain edit and persist")
+    void updateUserAcceptsCanonicalUserTypes(String validUserType) {
+        User stored = storedUser();
+        when(userRepository.findById(USER_ID)).thenReturn(Optional.of(stored));
+        when(userRepository.save(any(User.class))).thenReturn(stored);
+
+        UserDto.UpdateRequest request = new UserDto.UpdateRequest(
+                USER_ID, UPDATED_FIRST_NAME, UPDATED_LAST_NAME, null, validUserType);
+
+        UserDto.UserSummary summary = userUpdateService.updateUser(USER_ID, request);
+
+        assertThat(summary.userType()).isEqualTo(validUserType);
+        ArgumentCaptor<User> savedCaptor = ArgumentCaptor.forClass(User.class);
+        verify(userRepository).save(savedCaptor.capture());
+        assertThat(savedCaptor.getValue().getUserType()).isEqualTo(validUserType);
     }
 
     @Test

@@ -44,7 +44,8 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code EXEC CICS WRITE} of {@code SEC-USER-DATA} keyed on {@code SEC-USR-ID}
  * (paragraph {@code WRITE-USER-SEC-FILE}). Those two paragraphs collapse here
  * into a single transactional {@link #addUser(UserDto.CreateRequest)} call: the
- * ordered empty-field cascade, a duplicate-key guard, BCrypt password hashing,
+ * ordered empty-field cascade, a user-type domain edit (canonical {@code A}/{@code U}
+ * role set, DECISION_LOG D-072), a duplicate-key guard, BCrypt password hashing,
  * and the keyed insert.</p>
  *
  * <p>The legacy {@code COUSR1A} screen flow flagged the <em>first</em> empty
@@ -106,6 +107,26 @@ public class UserAddService {
      * {@code 27d6c6f}.
      */
     private static final String USER_TYPE_EMPTY_MESSAGE = "User Type can NOT be empty...";
+
+    /**
+     * Message raised when the user type is present but lies outside the canonical
+     * {@code A}/{@code U} role domain.
+     *
+     * <p>Unlike the empty-field messages above, this is deliberately <em>not</em>
+     * a byte-exact {@code COUSR01C} literal: the legacy {@code PROCESS-ENTER-KEY}
+     * {@code EVALUATE TRUE} cascade validated {@code USRTYPE} for emptiness only
+     * ({@code = SPACES OR LOW-VALUES}) and then moved its value through verbatim,
+     * so a strictly-literal port would persist any single character. The canonical
+     * user-type domain is defined by the {@code COCOM01Y} condition names
+     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'} (on which {@code COSGN00C} branches
+     * admin-vs-user at signon), and {@code docs/api-contracts.md} documents the
+     * field as {@code A} or {@code U}. Enforcing that domain here closes the
+     * "undefined persisted role" gap (QA MAJOR finding) while keeping the
+     * empty-field cascade and its byte-exact literals intact. The deviation from
+     * the strictly-literal empty-only edit is recorded in DECISION_LOG D-072.
+     */
+    private static final String USER_TYPE_INVALID_MESSAGE = "User Type must be A or U...";
 
     /**
      * Message raised when the user id already exists. Byte-exact copy of the
@@ -173,7 +194,10 @@ public class UserAddService {
      *         excluding the password
      * @throws ValidationException        if any required field is {@code null} or
      *                                    blank (byte-exact legacy message, with a
-     *                                    single-entry field-error map)
+     *                                    single-entry field-error map), or if the
+     *                                    user type is present but outside the
+     *                                    canonical {@code A}/{@code U} domain
+     *                                    (DECISION_LOG D-072)
      * @throws DuplicateRecordException   if the user id already exists
      *                                    ({@code "User ID already exist..."})
      * @throws FileAccessException        if the insert fails for any other,
@@ -222,9 +246,16 @@ public class UserAddService {
      * first-field semantics of the {@code EVALUATE TRUE} cascade without
      * dereferencing a {@code null}.</p>
      *
+     * <p>After the ordered empty-field cascade confirms the user type is present,
+     * a final domain edit rejects any value outside the canonical {@code A}/{@code U}
+     * role set (see {@link #requireValidUserType(String)} and DECISION_LOG D-072).
+     * Because the domain edit runs only once presence is established, it never
+     * shadows the byte-exact {@code "User Type can NOT be empty..."} literal.</p>
+     *
      * @param request the request to validate; may be {@code null}
      * @throws ValidationException carrying the byte-exact message of the first
-     *                             absent field
+     *                             absent field, or the domain message when the
+     *                             user type is present but not {@code A}/{@code U}
      */
     private void validateRequest(UserDto.CreateRequest request) {
         if (request == null) {
@@ -235,6 +266,32 @@ public class UserAddService {
         requireNonEmpty(request.userId(), "userId", USER_ID_EMPTY_MESSAGE);
         requireNonEmpty(request.password(), "password", PASSWORD_EMPTY_MESSAGE);
         requireNonEmpty(request.userType(), "userType", USER_TYPE_EMPTY_MESSAGE);
+        requireValidUserType(request.userType());
+    }
+
+    /**
+     * Rejects a present-but-out-of-domain user type, enforcing the canonical
+     * {@code COCOM01Y} role set ({@code A} = admin, {@code U} = user).
+     *
+     * <p>This guard runs only after {@link #requireNonEmpty} has confirmed the
+     * value is present, so the byte-exact {@code "User Type can NOT be empty..."}
+     * empty message is never shadowed. The comparison is exact and
+     * case-sensitive against the uppercase {@code 88}-level {@code VALUE}s; the
+     * value is never upper-cased because the legacy
+     * {@code MOVE USRTYPEI TO SEC-USR-TYPE} stored it verbatim, so a lowercase
+     * {@code 'a'} is correctly rejected as an undefined role rather than silently
+     * persisted (the security gap the QA MAJOR finding flagged). See
+     * DECISION_LOG D-072.</p>
+     *
+     * @param value the already-present (non-blank) user-type value to test
+     * @throws ValidationException if {@code value} is not exactly {@code "A"} or
+     *                             {@code "U"}, carrying the domain message and a
+     *                             single-entry {@code userType} field-error map
+     */
+    private static void requireValidUserType(String value) {
+        if (!"A".equals(value) && !"U".equals(value)) {
+            throw emptyFieldException("userType", USER_TYPE_INVALID_MESSAGE);
+        }
     }
 
     /**

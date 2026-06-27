@@ -934,6 +934,67 @@ public class OnlineTransactionE2EIT extends AbstractIntegrationIT {
         assertProblem(notFound, 404);
     }
 
+    @Test
+    @DisplayName("CU01: a present-but-invalid userType ('Z') is rejected (400) and the user is NOT persisted (A/U domain, D-072)")
+    void adminRejectsInvalidUserTypeOnCreate() {
+        String userId = "TESTUSR3";
+        // A length-1 value passes @Size(max=1) and therefore reaches the service,
+        // exercising the service-level A/U domain edit (not the DTO size bound).
+        Map<String, Object> create = new LinkedHashMap<>();
+        create.put("firstName", "BAD");
+        create.put("lastName", "ROLE");
+        create.put("userId", userId);
+        create.put("password", "PASS1234");
+        create.put("userType", "Z");
+
+        ResponseEntity<String> response =
+                httpWrite(HttpMethod.POST, "/api/admin/users", adminJsonHeaders(), create);
+
+        // RFC 7807 validation problem at the 400 level (not a 201 Created).
+        JsonNode body = assertProblem(response, 400);
+        assertThat(body.path("detail").asText()).isEqualTo("User Type must be A or U...");
+
+        // The invalid role must never reach the users table.
+        Integer count = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM users WHERE user_id = ?", Integer.class, userId);
+        assertThat(count).as("an invalid userType must not be persisted on create").isZero();
+    }
+
+    @Test
+    @DisplayName("CU02: a present-but-invalid userType ('Z') on update is rejected (400) and the stored row is unchanged (A/U domain, D-072)")
+    void adminRejectsInvalidUserTypeOnUpdate() {
+        String userId = "TESTUSR4";
+        // Seed a valid user (userType 'U') so we can prove the update is rejected
+        // AND that the rejection leaves the stored role untouched.
+        Map<String, Object> create = new LinkedHashMap<>();
+        create.put("firstName", "GOOD");
+        create.put("lastName", "ROLE");
+        create.put("userId", userId);
+        create.put("password", "PASS1234");
+        create.put("userType", "U");
+        ResponseEntity<String> created =
+                httpWrite(HttpMethod.POST, "/api/admin/users", adminJsonHeaders(), create);
+        assertThat(created.getStatusCode().value()).isEqualTo(201);
+
+        // Attempt to mutate the role to an out-of-domain value (length 1 -> reaches service).
+        Map<String, Object> update = new LinkedHashMap<>();
+        update.put("userId", userId);
+        update.put("firstName", "GOOD");
+        update.put("lastName", "ROLE");
+        update.put("password", "");
+        update.put("userType", "Z");
+        ResponseEntity<String> response =
+                httpWrite(HttpMethod.PUT, "/api/admin/users/" + userId, adminJsonHeaders(), update);
+
+        JsonNode body = assertProblem(response, 400);
+        assertThat(body.path("detail").asText()).isEqualTo("User Type must be A or U...");
+
+        // The stored role must remain the original 'U' — the update never mutated the row.
+        String storedType = jdbcTemplate.queryForObject(
+                "SELECT user_type FROM users WHERE user_id = ?", String.class, userId);
+        assertThat(storedType).as("a rejected update must not mutate the stored userType").isEqualTo("U");
+    }
+
     // ==================================================================================
     // Cross-cutting: observability + the security envelope
     // ==================================================================================

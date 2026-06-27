@@ -22,7 +22,9 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserRepository;
 
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -99,6 +101,25 @@ public class UserUpdateService {
     private static final String USER_TYPE_EMPTY_MESSAGE = "User Type can NOT be empty...";
 
     /**
+     * Message raised when the user type is present but lies outside the canonical
+     * {@code A}/{@code U} role domain.
+     *
+     * <p>Unlike the empty-field messages above, this is deliberately <em>not</em>
+     * a byte-exact {@code COUSR02C} literal: the legacy {@code UPDATE-USER-INFO}
+     * {@code EVALUATE TRUE} cascade validated {@code USRTYPE} for emptiness only
+     * and then applied its value verbatim, so a strictly-literal port would
+     * persist any single character. The canonical user-type domain is defined by
+     * the {@code COCOM01Y} condition names {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'}
+     * and {@code 88 CDEMO-USRTYP-USER VALUE 'U'} (on which {@code COSGN00C}
+     * branches admin-vs-user at signon), and {@code docs/api-contracts.md}
+     * documents the field as {@code A} or {@code U}. Enforcing that domain here
+     * closes the "undefined persisted role" gap (QA MAJOR finding) while keeping
+     * the empty-field cascade and its byte-exact literals intact. The deviation
+     * from the strictly-literal empty-only edit is recorded in DECISION_LOG D-072.
+     */
+    private static final String USER_TYPE_INVALID_MESSAGE = "User Type must be A or U...";
+
+    /**
      * Message raised when no user matches the supplied identifier. Byte-exact
      * copy of the {@code COUSR02C} {@code 'User ID NOT found...'} literal @
      * {@code 27d6c6f}.
@@ -144,8 +165,12 @@ public class UserUpdateService {
      * <p>Validation mirrors the legacy {@code UPDATE-USER-INFO} evaluation in
      * its original short-circuit order: the identifier, first name, last name,
      * and user type must each be present, and the first absent field raises a
-     * {@link ValidationException} carrying the byte-exact legacy message. The
-     * password is optional on {@link UserDto.UpdateRequest}: a blank value
+     * {@link ValidationException} carrying the byte-exact legacy message. Once
+     * the user type is confirmed present, a final domain edit rejects any value
+     * outside the canonical {@code A}/{@code U} role set (see
+     * {@link #requireValidUserType(String)} and DECISION_LOG D-072) before any
+     * record is read or modified, so an invalid role never mutates the database.
+     * The password is optional on {@link UserDto.UpdateRequest}: a blank value
      * leaves the stored BCrypt hash untouched, while a supplied value is encoded
      * before persistence.</p>
      *
@@ -162,7 +187,9 @@ public class UserUpdateService {
      *         excluding the password
      * @throws ValidationException     if {@code userId}, the first name, the last
      *                                 name, or the user type is {@code null} or
-     *                                 blank
+     *                                 blank, or if the user type is present but
+     *                                 outside the canonical {@code A}/{@code U}
+     *                                 domain (DECISION_LOG D-072)
      * @throws RecordNotFoundException if no user matches {@code userId}
      *                                 ({@code "User ID NOT found..."})
      * @throws FileAccessException     if the save fails for any other,
@@ -182,6 +209,7 @@ public class UserUpdateService {
         if (isBlank(request.userType())) {
             throw new ValidationException(USER_TYPE_EMPTY_MESSAGE);
         }
+        requireValidUserType(request.userType());
 
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RecordNotFoundException(USER_NOT_FOUND_MESSAGE));
@@ -209,6 +237,35 @@ public class UserUpdateService {
                 saved.getFirstName(),
                 saved.getLastName(),
                 saved.getUserType());
+    }
+
+    /**
+     * Rejects a present-but-out-of-domain user type, enforcing the canonical
+     * {@code COCOM01Y} role set ({@code A} = admin, {@code U} = user).
+     *
+     * <p>This guard runs only after the empty-field cascade has confirmed the
+     * value is present, so the byte-exact {@code "User Type can NOT be empty..."}
+     * empty message is never shadowed. The comparison is exact and
+     * case-sensitive against the uppercase {@code 88}-level {@code VALUE}s; the
+     * value is never upper-cased because the legacy
+     * {@code MOVE USRTYPEI TO SEC-USR-TYPE} stored it verbatim, so a lowercase
+     * {@code 'a'} is correctly rejected as an undefined role rather than silently
+     * persisted (the security gap the QA MAJOR finding flagged). Because the
+     * check runs before {@code findById}, an invalid role never reads or
+     * rewrites the {@code USRSEC} record, so the database is never mutated. See
+     * DECISION_LOG D-072.</p>
+     *
+     * @param value the already-present (non-blank) user-type value to test
+     * @throws ValidationException if {@code value} is not exactly {@code "A"} or
+     *                             {@code "U"}, carrying the domain message and a
+     *                             single-entry {@code userType} field-error map
+     */
+    private static void requireValidUserType(String value) {
+        if (!"A".equals(value) && !"U".equals(value)) {
+            Map<String, String> fieldErrors = new LinkedHashMap<>();
+            fieldErrors.put("userType", USER_TYPE_INVALID_MESSAGE);
+            throw new ValidationException(USER_TYPE_INVALID_MESSAGE, fieldErrors);
+        }
     }
 
     /**
