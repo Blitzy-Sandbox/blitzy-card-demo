@@ -22,6 +22,7 @@ import com.carddemo.dto.TransactionDto;
 import com.carddemo.entity.Transaction;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.TransactionRepository;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -154,6 +155,8 @@ public class TransactionListService {
      * @throws ValidationException when {@code transactionIdFilter} is supplied but
      *                             not numeric
      */
+    // Service-layer Observation (span + timer) so online txn-list traces show controller -> service.
+    @Observed(name = "carddemo.transaction.list", contextualName = "transaction-list")
     @Transactional(readOnly = true)
     public TransactionDto.ListResponse listTransactions(String transactionIdFilter, int pageNumber) {
         int safePage = Math.max(pageNumber, 0);

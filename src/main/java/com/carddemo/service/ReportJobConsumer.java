@@ -18,6 +18,9 @@ package com.carddemo.service;
 import com.carddemo.service.ReportService.ReportRequestMessage;
 
 import io.awspring.cloud.sqs.annotation.SqsListener;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -31,8 +34,10 @@ import org.springframework.batch.core.JobParametersBuilder;
 import org.springframework.batch.core.launch.JobLauncher;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.messaging.handler.annotation.Headers;
 import org.springframework.stereotype.Component;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -129,9 +134,23 @@ public class ReportJobConsumer {
     /** Identifying job-parameter key guaranteeing a unique {@code JobInstance} per submission. */
     static final String LAUNCH_ID_PARAM = "launchId";
 
+    /**
+     * Span operation name for the consumer span opened when a report-request message is
+     * received, mirroring the producer's "{destination} send" with "{destination} receive"
+     * so the publish&rarr;consume hop reads as one messaging operation in Jaeger.
+     */
+    private static final String SQS_RECEIVE_SPAN_NAME = "report-jobs receive";
+
+    /** Remote-service name attached to the consumer span, identifying the messaging system. */
+    private static final String MESSAGING_REMOTE_SERVICE = "sqs";
+
     private final JobLauncher jobLauncher;
 
     private final Job transactionReportJob;
+
+    private final Tracer tracer;
+
+    private final Propagator propagator;
 
     /**
      * Creates the consumer with the Spring Boot auto-configured {@link JobLauncher} and the
@@ -143,11 +162,22 @@ public class ReportJobConsumer {
      * @param transactionReportJob the {@code transactionReportJob} bean, injected by qualified
      *                             name so the correct job is selected in the multi-job context;
      *                             never {@code null}
+     * @param tracer               the Micrometer {@link Tracer} used to open the consumer span
+     *                             that re-parents the batch job into the producer's trace;
+     *                             never {@code null}
+     * @param propagator           the {@link Propagator} (W3C trace-context by default) that
+     *                             extracts the {@code traceparent} from the inbound SQS message
+     *                             headers so the consumer span continues the producer's trace;
+     *                             never {@code null}
      */
     public ReportJobConsumer(JobLauncher jobLauncher,
-                             @Qualifier("transactionReportJob") Job transactionReportJob) {
+                             @Qualifier("transactionReportJob") Job transactionReportJob,
+                             Tracer tracer,
+                             Propagator propagator) {
         this.jobLauncher = jobLauncher;
         this.transactionReportJob = transactionReportJob;
+        this.tracer = tracer;
+        this.propagator = propagator;
     }
 
     /**
@@ -167,53 +197,92 @@ public class ReportJobConsumer {
      * {@code INFO}, and a non-{@code COMPLETED} batch status or a launch/processing failure at
      * {@code ERROR}.</p>
      *
+     * <p><strong>Distributed tracing across the SQS boundary.</strong> The producer injects the
+     * active W3C trace context into the message headers; this method extracts it and opens a
+     * {@link Span.Kind#CONSUMER CONSUMER} span as a child of the producer span, then launches the
+     * batch job <em>within that span's scope</em> so the job/step spans re-parent beneath it. The
+     * result is a single continuous trace spanning REST submit &rarr; SQS publish &rarr; SQS
+     * consume &rarr; batch, fulfilling the Observability rule's cross-boundary tracing
+     * requirement. The span is always ended; failures are recorded on it but never rethrown, so
+     * the method stays total and the FIFO group is never head-of-line blocked.</p>
+     *
      * @param message the published report request carrying the resolved report name and the
      *                inclusive {@code YYYY-MM-DD} window bounds
+     * @param headers the inbound message headers (mapped from the SQS message attributes) from
+     *                which the W3C {@code traceparent} is extracted to continue the producer's trace
      */
     @SqsListener("${carddemo.aws.sqs.report-queue}")
-    public void onReportRequest(ReportRequestMessage message) {
-        String launchId = UUID.randomUUID().toString();
-        log.info("Received report-job request from SQS FIFO bridge: reportName={}, startDate={}, "
-                        + "endDate={}, launchId={}",
-                message.reportName(), message.startDate(), message.endDate(), launchId);
+    public void onReportRequest(ReportRequestMessage message,
+                                @Headers Map<String, Object> headers) {
+        // Continue the producer's trace across the SQS boundary: extract the W3C trace context
+        // the producer injected into the message headers and open a CONSUMER span as its child.
+        // Launching the batch job inside this span's scope re-parents the job/step spans under it.
+        Span consumerSpan = propagator.extract(headers, (carrier, key) -> {
+                    Object value = (carrier != null) ? carrier.get(key) : null;
+                    return (value != null) ? value.toString() : null;
+                })
+                .name(SQS_RECEIVE_SPAN_NAME)
+                .kind(Span.Kind.CONSUMER)
+                .remoteServiceName(MESSAGING_REMOTE_SERVICE)
+                .start();
 
-        JobParameters parameters = new JobParametersBuilder()
-                // Non-identifying: carried for traceability, excluded from JobInstance identity.
-                .addString(REPORT_NAME_PARAM, message.reportName(), false)
-                // Identifying: the required window keys the job validates and the reader binds.
-                .addString(START_DATE_PARAM, message.startDate())
-                .addString(END_DATE_PARAM, message.endDate())
-                // Identifying: makes every submission a fresh JobInstance (avoids re-run of a
-                // completed instance).
-                .addString(LAUNCH_ID_PARAM, launchId)
-                .toJobParameters();
-
+        // Make the consumer span current for the duration of the job launch so the batch
+        // job/step spans re-parent beneath it. The scope is closed explicitly in the finally
+        // block (rather than via try-with-resources) so the scope handle is referenced in-body,
+        // avoiding the -Xlint:try "auto-closeable resource scope is never referenced" warning
+        // that the zero-warning build (-Werror) treats as an error.
+        Tracer.SpanInScope scope = tracer.withSpan(consumerSpan);
         try {
-            JobExecution execution = jobLauncher.run(transactionReportJob, parameters);
-            if (execution.getStatus() == BatchStatus.COMPLETED) {
-                log.info("transactionReportJob completed for report '{}' window [{} .. {}]: "
-                                + "executionId={}, exitCode={}, launchId={}",
-                        message.reportName(), message.startDate(), message.endDate(),
-                        execution.getId(), execution.getExitStatus().getExitCode(), launchId);
-            } else {
-                log.error("transactionReportJob did not complete normally for report '{}' window "
-                                + "[{} .. {}]: executionId={}, status={}, exitCode={}, launchId={}",
-                        message.reportName(), message.startDate(), message.endDate(),
-                        execution.getId(), execution.getStatus(),
-                        execution.getExitStatus().getExitCode(), launchId);
+            String launchId = UUID.randomUUID().toString();
+            log.info("Received report-job request from SQS FIFO bridge: reportName={}, startDate={}, "
+                            + "endDate={}, launchId={}",
+                    message.reportName(), message.startDate(), message.endDate(), launchId);
+
+            JobParameters parameters = new JobParametersBuilder()
+                    // Non-identifying: carried for traceability, excluded from JobInstance identity.
+                    .addString(REPORT_NAME_PARAM, message.reportName(), false)
+                    // Identifying: the required window keys the job validates and the reader binds.
+                    .addString(START_DATE_PARAM, message.startDate())
+                    .addString(END_DATE_PARAM, message.endDate())
+                    // Identifying: makes every submission a fresh JobInstance (avoids re-run of a
+                    // completed instance).
+                    .addString(LAUNCH_ID_PARAM, launchId)
+                    .toJobParameters();
+
+            try {
+                JobExecution execution = jobLauncher.run(transactionReportJob, parameters);
+                if (execution.getStatus() == BatchStatus.COMPLETED) {
+                    log.info("transactionReportJob completed for report '{}' window [{} .. {}]: "
+                                    + "executionId={}, exitCode={}, launchId={}",
+                            message.reportName(), message.startDate(), message.endDate(),
+                            execution.getId(), execution.getExitStatus().getExitCode(), launchId);
+                } else {
+                    log.error("transactionReportJob did not complete normally for report '{}' window "
+                                    + "[{} .. {}]: executionId={}, status={}, exitCode={}, launchId={}",
+                            message.reportName(), message.startDate(), message.endDate(),
+                            execution.getId(), execution.getStatus(),
+                            execution.getExitStatus().getExitCode(), launchId);
+                }
+            } catch (JobExecutionException ex) {
+                // Launch-level failure (e.g. invalid parameters, restart): record on the span,
+                // then log and swallow so the FIFO group is not blocked by an unacknowledged message.
+                consumerSpan.error(ex);
+                log.error("Failed to launch transactionReportJob for report '{}' window [{} .. {}] "
+                                + "(launchId={})",
+                        message.reportName(), message.startDate(), message.endDate(), launchId, ex);
+            } catch (RuntimeException ex) {
+                // Defensive: any unexpected error must not propagate, or it would wedge the single
+                // FIFO message group (head-of-line block) and stall every later report.
+                consumerSpan.error(ex);
+                log.error("Unexpected error processing report-job request for report '{}' window "
+                                + "[{} .. {}] (launchId={})",
+                        message.reportName(), message.startDate(), message.endDate(), launchId, ex);
             }
-        } catch (JobExecutionException ex) {
-            // Launch-level failure (e.g. invalid parameters, restart): log and swallow so the
-            // FIFO group is not blocked by an unacknowledged message.
-            log.error("Failed to launch transactionReportJob for report '{}' window [{} .. {}] "
-                            + "(launchId={})",
-                    message.reportName(), message.startDate(), message.endDate(), launchId, ex);
-        } catch (RuntimeException ex) {
-            // Defensive: any unexpected error must not propagate, or it would wedge the single
-            // FIFO message group (head-of-line block) and stall every later report.
-            log.error("Unexpected error processing report-job request for report '{}' window "
-                            + "[{} .. {}] (launchId={})",
-                    message.reportName(), message.startDate(), message.endDate(), launchId, ex);
+        } finally {
+            // Always close the scope and end the consumer span (success or failure) so the
+            // trace is complete and the thread's previous span context is restored.
+            scope.close();
+            consumerSpan.end();
         }
     }
 }

@@ -25,6 +25,7 @@ import com.carddemo.service.AuthService;
 import com.carddemo.service.JwtTokenService;
 import io.micrometer.core.instrument.Counter;
 import java.util.Optional;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,7 +33,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.NullSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataAccessException;
@@ -71,7 +71,8 @@ import static org.mockito.Mockito.when;
  * {@code ApplicationContext}, uses <strong>no</strong> {@code @SpringBootTest},
  * Testcontainers, {@code spring-security-test}, database, AWS, or network resource. The four
  * collaborators ({@link UserRepository}, {@link PasswordEncoder}, {@link JwtTokenService}, and
- * the {@code @Qualifier("authAttemptsCounter")} {@link Counter}) are Mockito mocks injected into
+ * the two outcome-tagged {@code @Qualifier("authAttemptsSuccessCounter")} /
+ * {@code @Qualifier("authAttemptsFailureCounter")} {@link Counter}s) are Mockito mocks injected into
  * the service through its constructor. {@link MockitoExtension} runs in its default strict-stub
  * mode, so each test stubs only the collaborators it actually exercises. The whole suite is
  * clean under the project's zero-warning ({@code -Xlint:all -Werror}) build &mdash; assertions
@@ -126,10 +127,33 @@ class AuthServiceTest {
     private JwtTokenService jwtTokenService;
 
     @Mock
-    private Counter authAttemptsCounter;
+    private Counter authAttemptsSuccessCounter;
 
-    @InjectMocks
+    @Mock
+    private Counter authAttemptsFailureCounter;
+
     private AuthService authService;
+
+    /**
+     * Constructs the {@link AuthService} under test with explicit constructor wiring.
+     *
+     * <p>The service declares two same-type {@link Counter} constructor parameters
+     * ({@code authAttemptsSuccessCounter} / {@code authAttemptsFailureCounter}). Mockito's
+     * field-name-based {@code @InjectMocks} resolution cannot disambiguate two parameters of
+     * the same type unless the compiled bytecode carries parameter names (the {@code -parameters}
+     * javac flag), which this build does not enable. Explicit construction therefore guarantees
+     * each result-tagged counter mock is bound to the correct constructor parameter, keeping the
+     * success/failure metering assertions deterministic.</p>
+     */
+    @BeforeEach
+    void setUp() {
+        authService = new AuthService(
+                userRepository,
+                passwordEncoder,
+                jwtTokenService,
+                authAttemptsSuccessCounter,
+                authAttemptsFailureCounter);
+    }
 
     // =========================================================================================
     // Phase 1 — Field-presence validation guards (PROCESS-ENTER-KEY blank checks)
@@ -149,8 +173,8 @@ class AuthServiceTest {
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsEntry("userId", MSG_ENTER_USER_ID);
 
-        // The attempt is metered before any field check, so it counts even on validation failure.
-        verify(authAttemptsCounter).increment();
+        // A blank-field validation failure is a failed attempt, metered on the result=failure counter.
+        verify(authAttemptsFailureCounter).increment();
         // Validation short-circuits before the USRSEC read and any credential/token work.
         verifyNoInteractions(userRepository, passwordEncoder, jwtTokenService);
     }
@@ -169,7 +193,7 @@ class AuthServiceTest {
         assertThat(((ValidationException) thrown).getFieldErrors())
                 .containsEntry("password", MSG_ENTER_PASSWORD);
 
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsFailureCounter).increment();
         verifyNoInteractions(userRepository, passwordEncoder, jwtTokenService);
     }
 
@@ -193,7 +217,7 @@ class AuthServiceTest {
         verify(userRepository).findById(userIdCaptor.capture());
         assertThat(userIdCaptor.getValue()).isEqualTo(NORMALIZED_ADMIN_USER_ID);
 
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsFailureCounter).increment();
         // No record means no credential comparison and no token issuance.
         verifyNoInteractions(passwordEncoder, jwtTokenService);
     }
@@ -214,7 +238,7 @@ class AuthServiceTest {
         verify(userRepository).findById(userIdCaptor.capture());
         assertThat(userIdCaptor.getValue()).isEqualTo(NORMALIZED_ADMIN_USER_ID);
 
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsFailureCounter).increment();
     }
 
     // =========================================================================================
@@ -242,7 +266,7 @@ class AuthServiceTest {
         assertThat(rawPasswordCaptor.getValue()).isEqualTo(NORMALIZED_PASSWORD);
         assertThat(storedHashCaptor.getValue()).isEqualTo(STORED_PASSWORD_HASH);
 
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsFailureCounter).increment();
         // A failed credential check must never issue a token.
         verifyNoInteractions(jwtTokenService);
     }
@@ -265,7 +289,7 @@ class AuthServiceTest {
         assertThat(thrown.getMessage()).isEqualTo(MSG_INVALID_CREDENTIALS);
         assertThat(thrown.getCause()).isSameAs(dataAccessFailure);
 
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsFailureCounter).increment();
         // The read threw before any credential comparison or token issuance.
         verifyNoInteractions(passwordEncoder, jwtTokenService);
     }
@@ -293,8 +317,8 @@ class AuthServiceTest {
 
         // The token is minted from the normalized user id and the record's user type.
         verify(jwtTokenService).generateToken(NORMALIZED_ADMIN_USER_ID, ADMIN_USER_TYPE);
-        // Every attempt is metered, success included.
-        verify(authAttemptsCounter).increment();
+        // A successful attempt is metered on the result=success counter.
+        verify(authAttemptsSuccessCounter).increment();
     }
 
     @Test
@@ -318,6 +342,6 @@ class AuthServiceTest {
         assertThat(response.token()).isEqualTo("jwt-user-456");
 
         verify(jwtTokenService).generateToken(normalizedUserId, STANDARD_USER_TYPE);
-        verify(authAttemptsCounter).increment();
+        verify(authAttemptsSuccessCounter).increment();
     }
 }

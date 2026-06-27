@@ -23,6 +23,7 @@ import com.carddemo.dto.CardDto;
 import com.carddemo.entity.Card;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -131,6 +132,8 @@ public class CardListService {
      * @return the requested page mapped to a {@link CardDto.ListResponse}
      * @throws ValidationException if a supplied filter is malformed
      */
+    // Service-layer Observation (span + timer) so online card-list traces show controller -> service.
+    @Observed(name = "carddemo.card.list", contextualName = "card-list")
     @Transactional(readOnly = true)
     public CardDto.ListResponse listCards(Long accountIdFilter, String cardIdFilter, int pageNumber) {
         boolean accountSupplied = accountIdFilter != null && accountIdFilter != 0L;

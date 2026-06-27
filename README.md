@@ -378,9 +378,19 @@ Configuration is externalized through Spring profiles and YAML files under
 |---------|------|------------------|
 | **`local`** | Local development against `docker compose` | Local PostgreSQL (`:5432`) + LocalStack (`:4566`) |
 | **`test`** | Automated test runs | Disposable Testcontainers (PostgreSQL + LocalStack) |
+| **`console-plain`** | Opt-in add-on for interactive local dev (e.g. `local,console-plain`) | Switches console output from JSON to human-readable colored text |
 
 Activate a profile with `-Dspring-boot.run.profiles=<profile>` (for `spring-boot:run`) or
 the `SPRING_PROFILES_ACTIVE` environment variable.
+
+> **Log format (structured JSON by default).** Every profile — including `local` / `docker compose` —
+> emits single-line **JSON** logs to STDOUT, so the local runtime is machine-parseable out of the box:
+> `docker logs <app-container> | jq .`. Each line carries `correlationId`, `traceId`, and `spanId`
+> whenever those keys are present in the MDC. For interactive development you can switch to
+> human-readable colored text by adding the opt-in **`console-plain`** profile, e.g.
+> `SPRING_PROFILES_ACTIVE=local,console-plain` (or `-Dspring-boot.run.profiles=local,console-plain`).
+> SQL is not echoed to STDOUT in `local`; to inspect it (still as JSON) raise
+> `logging.level.org.hibernate.SQL=DEBUG`.
 
 ### Environment Variable Reference
 

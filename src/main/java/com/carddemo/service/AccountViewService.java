@@ -25,6 +25,8 @@ import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.CustomerRepository;
 
+import io.micrometer.observation.annotation.Observed;
+
 import java.util.List;
 
 import org.springframework.stereotype.Service;
@@ -106,6 +108,11 @@ public class AccountViewService {
      * @throws RecordNotFoundException if the cross-reference, account master, or
      *                                 customer master record cannot be located
      */
+    // Emit a service-layer Observation (span + timer) for this online read so traces show
+    // controller -> service, not just the HTTP/security spans. The ObservedAspect registered
+    // in ObservabilityConfig intercepts this @Observed method when invoked through the Spring
+    // proxy from the controller. The contextualName is the span name surfaced in Jaeger.
+    @Observed(name = "carddemo.account.view", contextualName = "account-view")
     @Transactional(readOnly = true)
     public AccountDto.ViewResponse getAccount(Long accountId) {
         List<CardXref> crossReferences = cardXrefRepository.findByXrefAcctId(accountId);

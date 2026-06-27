@@ -8,9 +8,12 @@
       - MDC keys consumed here are populated by:
           com.carddemo.observability.CorrelationIdFilter -> "correlationId" (per HTTP request)
           Micrometer Tracing (OpenTelemetry bridge)       -> "traceId" and "spanId"
-      - Output contract: non-"local" profiles (test, default, container) emit single-line JSON to
-        STDOUT (JSON_CONSOLE); the "local" profile emits human-readable colored text (PLAIN_CONSOLE).
-        Both emit correlationId / traceId / spanId whenever those keys are present in the MDC.
+      - Output contract: ALL profiles (local, test, default, container) emit single-line JSON to
+        STDOUT (JSON_CONSOLE) by default, so `docker logs <app> | jq .` parses cleanly out of the
+        box - including the documented local / docker-compose runtime. Activating the opt-in
+        "console-plain" profile (e.g. SPRING_PROFILES_ACTIVE=local,console-plain) switches to
+        human-readable colored text (PLAIN_CONSOLE) for interactive development.
+        Both surfaces emit correlationId / traceId / spanId whenever those keys are present in the MDC.
 
     Design rationale (profile split, field naming, restricted MDC emission, and the file-naming
     requirement) is recorded in DECISION_LOG.md (decision D-027) per the Explainability rule.
@@ -51,12 +54,14 @@
 
     <!--
         ============================================================================================
-        Non-"local" profiles (test / default / containerized runtime): single-line JSON to STDOUT.
+        Default for ALL profiles (local / test / default / containerized runtime): single-line JSON
+        to STDOUT. JSON is the out-of-the-box surface so the documented local / docker-compose
+        runtime is `jq`-parseable, satisfying the Observability rule's "verifiable locally" mandate.
         The JSON_CONSOLE appender is declared INSIDE this profile block so it is only created when
-        the profile is active - avoiding a defined-but-unreferenced appender under the "local" profile.
+        the opt-in "console-plain" profile is NOT active - avoiding a defined-but-unreferenced appender.
         ============================================================================================
     -->
-    <springProfile name="!local">
+    <springProfile name="!console-plain">
         <appender name="JSON_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
                 <providers>
@@ -114,13 +119,14 @@
 
     <!--
         ============================================================================================
-        "local" profile: human-readable colored text to STDOUT for local development. Still surfaces
+        Opt-in "console-plain" profile: human-readable colored text to STDOUT for interactive local
+        development (activate with e.g. SPRING_PROFILES_ACTIVE=local,console-plain). Still surfaces
         [correlationId] and [traceId,spanId] so developers see the same context as the JSON surface.
         The PLAIN_CONSOLE appender is declared INSIDE this profile block so it is only created when
-        the "local" profile is active.
+        the "console-plain" profile is active.
         ============================================================================================
     -->
-    <springProfile name="local">
+    <springProfile name="console-plain">
         <appender name="PLAIN_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
             <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
                 <charset>UTF-8</charset>

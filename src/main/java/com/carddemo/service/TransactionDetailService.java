@@ -22,6 +22,7 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.TransactionRepository;
 import java.util.Map;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -87,6 +88,8 @@ public class TransactionDetailService {
      *                                 identifier, carrying the message
      *                                 {@code "Transaction ID NOT found..."}
      */
+    // Service-layer Observation (span + timer) so online txn-detail traces show controller -> service.
+    @Observed(name = "carddemo.transaction.detail", contextualName = "transaction-detail")
     @Transactional(readOnly = true)
     public TransactionDto.Detail getTransaction(String transactionId) {
         if (transactionId == null || transactionId.isBlank()) {

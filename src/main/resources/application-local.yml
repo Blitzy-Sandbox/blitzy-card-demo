@@ -49,15 +49,22 @@ spring:
     password: ${POSTGRES_PASSWORD}
 
   # ---------------------------------------------------------------------------
-  # JPA - developer visibility ONLY in local: echo and pretty-print the SQL that
-  # Hibernate executes. ddl-auto stays "validate" (inherited from base; Flyway
-  # owns the schema, Hibernate never creates/updates it).
+  # JPA - show-sql is OFF in local so the STDOUT stream is uniformly single-line
+  # JSON and `docker logs <app> | jq .` parses cleanly (Issue #1 / DECISION_LOG
+  # D-027). Hibernate's show-sql writes raw, multi-line "Hibernate: ..." text via
+  # System.out, bypassing logback - which broke jq parsing of the local stream.
+  # To inspect SQL during local development, raise the logback-routed logger
+  # instead (output stays structured JSON):
+  #   logging.level.org.hibernate.SQL: DEBUG
+  #   logging.level.org.hibernate.orm.jdbc.bind: TRACE   # bound parameter values
+  # ddl-auto stays "validate" (inherited from base; Flyway owns the schema,
+  # Hibernate never creates/updates it).
   # ---------------------------------------------------------------------------
   jpa:
-    show-sql: true
+    show-sql: false
     properties:
       hibernate:
-        format_sql: true
+        format_sql: false
 
   # ---------------------------------------------------------------------------
   # Spring Cloud AWS (3.3.0) -> LocalStack. The single GLOBAL endpoint overrides

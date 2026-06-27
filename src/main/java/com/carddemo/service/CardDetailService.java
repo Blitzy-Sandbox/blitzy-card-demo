@@ -21,6 +21,7 @@ import com.carddemo.exception.RecordNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.CardRepository;
 import java.util.regex.Pattern;
+import io.micrometer.observation.annotation.Observed;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -69,6 +70,8 @@ public class CardDetailService {
      *                                 the matched card belongs to a different
      *                                 account than the one supplied
      */
+    // Service-layer Observation (span + timer) so online card-detail traces show controller -> service.
+    @Observed(name = "carddemo.card.detail", contextualName = "card-detail")
     @Transactional(readOnly = true)
     public CardDto.Detail getCard(Long accountId, String cardNumber) {
         boolean cardBlank = cardNumber == null || cardNumber.isBlank();

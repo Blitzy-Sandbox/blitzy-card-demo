@@ -203,8 +203,18 @@ change a port or credential there, update it here too.
 
 > **Observability metrics.** The app publishes custom business metrics at `/actuator/prometheus`,
 > scraped by Prometheus and visualized in [`./grafana-dashboard.json`](./grafana-dashboard.json):
-> `carddemo.batch.records.processed`, `carddemo.batch.records.rejected`, `carddemo.auth.attempts`,
-> and `carddemo.transaction.amount.total`.
+> `carddemo.batch.records.processed`, `carddemo.batch.records.rejected`, `carddemo.auth.attempts`
+> (tagged `result=success|failure`), and `carddemo.transaction.amount.total`.
+
+> **Structured JSON logs (every profile, including `local`).** The app logs single-line **JSON** to
+> STDOUT in all profiles, so the local / `docker compose` runtime is machine-parseable out of the box:
+> `docker compose logs app | jq .` (or `docker logs <app-container> | jq .`). Each line carries
+> `correlationId`, `traceId`, and `spanId` whenever present, so you can correlate a request across logs
+> and Jaeger. Prefer human-readable colored console output during interactive development? Add the
+> opt-in **`console-plain`** profile, e.g. `SPRING_PROFILES_ACTIVE=local,console-plain` (or
+> `-Dspring-boot.run.profiles=local,console-plain`). SQL is **not** echoed to STDOUT under `local` (so
+> the stream stays valid JSON); to inspect SQL, raise `logging.level.org.hibernate.SQL=DEBUG` — it is
+> routed through logback and stays JSON.
 
 ---
 

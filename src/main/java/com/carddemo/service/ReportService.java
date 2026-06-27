@@ -22,9 +22,14 @@ import com.carddemo.exception.ValidationException;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 import io.awspring.cloud.sqs.operations.SqsTemplate;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -89,6 +94,17 @@ public class ReportService {
 
     private static final String REPORT_JOBS_MESSAGE_GROUP_ID = "report-jobs";
 
+    /**
+     * Span operation name for the producer span wrapping the SQS publish. Named after
+     * the queue's logical role (mirroring messaging-span conventions of "{destination}
+     * send") so the asynchronous report-submit hop is recognisable in Jaeger as the
+     * outbound half of the publish&rarr;consume bridge.
+     */
+    private static final String SQS_PUBLISH_SPAN_NAME = "report-jobs send";
+
+    /** Remote-service name attached to the producer span, identifying the messaging system. */
+    private static final String MESSAGING_REMOTE_SERVICE = "sqs";
+
     private static final String START_DATE_LABEL = "Start Date";
     private static final String END_DATE_LABEL = "End Date";
 
@@ -133,6 +149,10 @@ public class ReportService {
 
     private final SqsTemplate sqsTemplate;
 
+    private final Tracer tracer;
+
+    private final Propagator propagator;
+
     /**
      * Creates the service with its collaborators.
      *
@@ -145,13 +165,26 @@ public class ReportService {
      * @param sqsTemplate           the Spring Cloud AWS template used to publish
      *                              the report-request message; must not be
      *                              {@code null}
+     * @param tracer                the Micrometer {@link Tracer} used to open the
+     *                              producer span around the SQS publish so the
+     *                              asynchronous report-submit hop is part of the
+     *                              caller's trace; must not be {@code null}
+     * @param propagator            the {@link Propagator} (W3C trace-context by
+     *                              default) that injects the {@code traceparent}
+     *                              into the outbound SQS message headers, linking
+     *                              the consumer's trace to this one; must not be
+     *                              {@code null}
      */
     public ReportService(DateValidationService dateValidationService,
                          AwsConfig.AwsResourceProperties awsResourceProperties,
-                         SqsTemplate sqsTemplate) {
+                         SqsTemplate sqsTemplate,
+                         Tracer tracer,
+                         Propagator propagator) {
         this.dateValidationService = dateValidationService;
         this.awsResourceProperties = awsResourceProperties;
         this.sqsTemplate = sqsTemplate;
+        this.tracer = tracer;
+        this.propagator = propagator;
     }
 
     /**
@@ -282,6 +315,17 @@ public class ReportService {
      * id serialises report submissions and the per-message {@link UUID}
      * deduplication id admits each distinct submission.</p>
      *
+     * <p><strong>Distributed tracing across the SQS boundary.</strong> A
+     * {@link Span.Kind#PRODUCER PRODUCER} span is opened as a child of the current
+     * (HTTP request) span and the {@link Propagator} injects the active W3C trace
+     * context (the {@code traceparent} field) into the outbound message headers,
+     * which Spring Cloud AWS forwards as SQS message attributes. The
+     * {@code @SqsListener} consumer extracts that context and continues the
+     * <em>same</em> trace, so an operator can follow a single trace from the REST
+     * submission through the asynchronous batch report job. This satisfies the
+     * Observability rule's "tracing across service boundaries" requirement for the
+     * flagship F-011 report bridge.</p>
+     *
      * @param reportName the resolved report name
      * @param startDate  the inclusive range start in {@code YYYY-MM-DD} form
      * @param endDate    the inclusive range end in {@code YYYY-MM-DD} form
@@ -290,14 +334,48 @@ public class ReportService {
     private void publishReportRequest(String reportName, String startDate, String endDate) {
         String queueName = awsResourceProperties.getSqs().getReportQueue();
         ReportRequestMessage payload = new ReportRequestMessage(reportName, startDate, endDate);
+
+        // PRODUCER span as a child of the current (HTTP request) span: captures the
+        // asynchronous publish hop in the caller's trace and carries the trace context
+        // that the consumer will continue, linking publish -> consume -> batch into ONE trace.
+        // A Span.Builder (from tracer.spanBuilder()) is required to set the PRODUCER kind; we
+        // parent it explicitly to the current span so it nests under the HTTP server span.
+        Span.Builder publishSpanBuilder = tracer.spanBuilder()
+                .name(SQS_PUBLISH_SPAN_NAME)
+                .kind(Span.Kind.PRODUCER)
+                .remoteServiceName(MESSAGING_REMOTE_SERVICE);
+        Span currentSpan = tracer.currentSpan();
+        if (currentSpan != null) {
+            publishSpanBuilder.setParent(currentSpan.context());
+        }
+        Span publishSpan = publishSpanBuilder.start();
+        // Make the publish span current for the duration of the send. The scope is closed
+        // explicitly in the finally block (rather than via try-with-resources) so the scope
+        // handle is referenced in-body, avoiding the -Xlint:try "auto-closeable resource scope
+        // is never referenced" warning that the zero-warning build (-Werror) treats as an error.
+        Tracer.SpanInScope scope = tracer.withSpan(publishSpan);
         try {
+            Map<String, Object> headers = new HashMap<>();
+            // Inject the W3C trace context into the carrier map. The Setter writes each
+            // propagation field (e.g. "traceparent") as a String header that Spring Cloud
+            // AWS forwards as an SQS message attribute and the consumer maps back to a header.
+            propagator.inject(publishSpan.context(), headers, (carrier, key, value) -> {
+                if (carrier != null) {
+                    carrier.put(key, value);
+                }
+            });
             sqsTemplate.send(options -> options
                     .queue(queueName)
                     .payload(payload)
+                    .headers(headers)
                     .messageGroupId(REPORT_JOBS_MESSAGE_GROUP_ID)
                     .messageDeduplicationId(UUID.randomUUID().toString()));
         } catch (RuntimeException ex) {
+            publishSpan.error(ex);
             throw new FileAccessException(MSG_WRITE_QUEUE_FAILED, ex);
+        } finally {
+            scope.close();
+            publishSpan.end();
         }
     }
 

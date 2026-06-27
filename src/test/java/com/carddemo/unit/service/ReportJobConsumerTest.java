@@ -19,11 +19,16 @@ package com.carddemo.unit.service;
 import com.carddemo.service.ReportJobConsumer;
 import com.carddemo.service.ReportService.ReportRequestMessage;
 
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 
+import org.mockito.Answers;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
@@ -38,6 +43,7 @@ import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.launch.JobLauncher;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -78,11 +84,45 @@ class ReportJobConsumerTest {
     private static final String START_DATE = "2022-01-01";
     private static final String END_DATE = "2022-07-06";
 
+    /**
+     * Inbound message headers passed to the listener. Empty because the {@link Propagator} is
+     * mocked: the unit tests verify job-launch behaviour and FIFO safety, not the trace-context
+     * extraction itself (that is exercised end-to-end against Jaeger at runtime).
+     */
+    private static final Map<String, Object> TRACE_HEADERS = Map.of();
+
     @Mock
     private JobLauncher jobLauncher;
 
     @Mock
     private Job transactionReportJob;
+
+    /** Micrometer tracer used to open the CONSUMER span that re-parents the batch job. */
+    @Mock
+    private Tracer tracer;
+
+    /** W3C propagator that extracts the inbound {@code traceparent} into a consumer {@link Span.Builder}. */
+    @Mock
+    private Propagator propagator;
+
+    /**
+     * Builder-style mock of the consumer {@link Span.Builder} returned by {@code propagator.extract};
+     * {@link Answers#RETURNS_SELF} makes the fluent {@code name/kind/remoteServiceName} calls return
+     * the mock so {@code extract(..).name(..).kind(..).start()} replays without a NPE.
+     */
+    @Mock(answer = Answers.RETURNS_SELF)
+    private Span.Builder spanBuilder;
+
+    /** The started CONSUMER span returned by {@link Span.Builder#start()}. */
+    @Mock
+    private Span consumerSpan;
+
+    /**
+     * Scope handle returned by {@code tracer.withSpan(consumerSpan)}; closed in the consumer's
+     * finally block. A mock so its {@code close()} is a no-op under test.
+     */
+    @Mock
+    private Tracer.SpanInScope spanInScope;
 
     @Captor
     private ArgumentCaptor<JobParameters> jobParametersCaptor;
@@ -91,7 +131,15 @@ class ReportJobConsumerTest {
 
     @BeforeEach
     void setUp() {
-        consumer = new ReportJobConsumer(jobLauncher, transactionReportJob);
+        consumer = new ReportJobConsumer(jobLauncher, transactionReportJob, tracer, propagator);
+
+        // Every test invokes onReportRequest, so the consumer-span chain is always exercised:
+        // extract(headers, getter) -> Span.Builder -> start() -> Span, then the job launches within
+        // the span scope. withSpan(..) returns the scope mock the consumer closes in finally;
+        // consumerSpan.end()/error(..) are no-op on the mock.
+        when(propagator.extract(any(), any())).thenReturn(spanBuilder);
+        when(spanBuilder.start()).thenReturn(consumerSpan);
+        when(tracer.withSpan(consumerSpan)).thenReturn(spanInScope);
     }
 
     /** Builds a completed {@link JobExecution} (a real object, avoiding over-stubbing). */
@@ -108,7 +156,7 @@ class ReportJobConsumerTest {
         when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
                 .thenReturn(completedExecution());
 
-        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE));
+        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS);
 
         verify(jobLauncher, times(1)).run(eq(transactionReportJob), any(JobParameters.class));
     }
@@ -119,7 +167,7 @@ class ReportJobConsumerTest {
         when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
                 .thenReturn(completedExecution());
 
-        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE));
+        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS);
 
         verify(jobLauncher).run(eq(transactionReportJob), jobParametersCaptor.capture());
         JobParameters parameters = jobParametersCaptor.getValue();
@@ -151,8 +199,8 @@ class ReportJobConsumerTest {
         when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
                 .thenReturn(completedExecution());
 
-        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE));
-        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE));
+        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS);
+        consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS);
 
         verify(jobLauncher, times(2)).run(eq(transactionReportJob), jobParametersCaptor.capture());
         List<JobParameters> launches = jobParametersCaptor.getAllValues();
@@ -173,7 +221,7 @@ class ReportJobConsumerTest {
                 .thenThrow(new JobParametersInvalidException("invalid parameters"));
 
         assertThatCode(() ->
-                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE)))
+                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS))
                 .as("a launch failure must not propagate, or it would wedge the FIFO report-jobs group")
                 .doesNotThrowAnyException();
     }
@@ -185,7 +233,7 @@ class ReportJobConsumerTest {
                 .thenThrow(new IllegalStateException("unexpected"));
 
         assertThatCode(() ->
-                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE)))
+                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS))
                 .as("an unexpected error must not propagate (head-of-line safety for the single FIFO group)")
                 .doesNotThrowAnyException();
     }
@@ -199,7 +247,7 @@ class ReportJobConsumerTest {
         when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class))).thenReturn(failed);
 
         assertThatCode(() ->
-                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE)))
+                consumer.onReportRequest(new ReportRequestMessage(REPORT_NAME, START_DATE, END_DATE), TRACE_HEADERS))
                 .as("a FAILED job status is logged, not rethrown")
                 .doesNotThrowAnyException();
         verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));

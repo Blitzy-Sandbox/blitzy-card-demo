@@ -60,7 +60,9 @@ import org.springframework.stereotype.Service;
  * </ul>
  *
  * <p>Every sign-on attempt, successful or not, is counted on the
- * {@code carddemo.auth.attempts} meter. The blank-field validation messages are
+ * {@code carddemo.auth.attempts} meter, tagged {@code result=success} or
+ * {@code result=failure} so the outcome can be broken down on the dashboard. The
+ * blank-field validation messages are
  * reproduced verbatim from the COBOL source. The post-lookup credential-failure
  * paths, however, deliberately return a single <em>generic</em> external detail
  * ({@link #MESSAGE_INVALID_CREDENTIALS}) rather than the legacy
@@ -108,29 +110,39 @@ public class AuthService {
     private final UserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtTokenService jwtTokenService;
-    private final Counter authAttemptsCounter;
+    private final Counter authAttemptsSuccessCounter;
+    private final Counter authAttemptsFailureCounter;
 
     /**
      * Creates the sign-on service with its injected collaborators.
      *
-     * @param userRepository      loads the security {@link User} record keyed by
-     *                            user id (replaces the keyed {@code USRSEC} read)
-     * @param passwordEncoder     the BCrypt encoder used to verify the submitted
-     *                            password against the stored hash
-     * @param jwtTokenService     issues the signed JWT carrying the authenticated
-     *                            identity and user type
-     * @param authAttemptsCounter the {@code carddemo.auth.attempts} meter,
-     *                            incremented once per sign-on attempt
+     * @param userRepository             loads the security {@link User} record
+     *                                   keyed by user id (replaces the keyed
+     *                                   {@code USRSEC} read)
+     * @param passwordEncoder            the BCrypt encoder used to verify the
+     *                                   submitted password against the stored hash
+     * @param jwtTokenService            issues the signed JWT carrying the
+     *                                   authenticated identity and user type
+     * @param authAttemptsSuccessCounter the {@code carddemo.auth.attempts} meter
+     *                                   tagged {@code result=success}, incremented
+     *                                   once when a sign-on attempt succeeds
+     * @param authAttemptsFailureCounter the {@code carddemo.auth.attempts} meter
+     *                                   tagged {@code result=failure}, incremented
+     *                                   once when a sign-on attempt fails for any
+     *                                   reason (blank field, no such user, wrong
+     *                                   password, or {@code USRSEC} read error)
      */
     public AuthService(
             UserRepository userRepository,
             PasswordEncoder passwordEncoder,
             JwtTokenService jwtTokenService,
-            @Qualifier("authAttemptsCounter") Counter authAttemptsCounter) {
+            @Qualifier("authAttemptsSuccessCounter") Counter authAttemptsSuccessCounter,
+            @Qualifier("authAttemptsFailureCounter") Counter authAttemptsFailureCounter) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtTokenService = jwtTokenService;
-        this.authAttemptsCounter = authAttemptsCounter;
+        this.authAttemptsSuccessCounter = authAttemptsSuccessCounter;
+        this.authAttemptsFailureCounter = authAttemptsFailureCounter;
     }
 
     /**
@@ -153,8 +165,39 @@ public class AuthService {
      *                                       record cannot be read
      */
     public AuthDto.SigninResponse signin(AuthDto.SigninRequest request) {
-        authAttemptsCounter.increment();
+        // Meter the attempt by its outcome: the verification either returns a
+        // response (success) or throws (every failure path is a RuntimeException —
+        // ValidationException for blank fields, AuthenticationFailedException for a
+        // missing user, wrong password, or USRSEC read error). Counting in this
+        // single place keeps "every attempt is counted exactly once" while tagging
+        // the result, and the counter is incremented before the exception is
+        // re-thrown so the failure is recorded even though the caller still sees it.
+        try {
+            AuthDto.SigninResponse response = verifyCredentialsAndIssueToken(request);
+            authAttemptsSuccessCounter.increment();
+            return response;
+        } catch (RuntimeException ex) {
+            authAttemptsFailureCounter.increment();
+            throw ex;
+        }
+    }
 
+    /**
+     * Performs the ordered sign-on decision flow of {@code COSGN00C} — blank-field
+     * guards, the upper-cased {@code USRSEC} keyed read, BCrypt verification, and
+     * JWT issuance — returning the response on success and throwing on any failure.
+     *
+     * <p>Extracted from {@link #signin(AuthDto.SigninRequest)} so the public method
+     * can meter the outcome (success versus failure) around it without duplicating
+     * the increment across every return and throw site.</p>
+     *
+     * @param request the sign-on request carrying the user id and password
+     * @return the response carrying the issued token, normalized user id, and user type
+     * @throws ValidationException           if the user id or password is blank
+     * @throws AuthenticationFailedException if no matching user exists, the password
+     *                                       does not match, or the record cannot be read
+     */
+    private AuthDto.SigninResponse verifyCredentialsAndIssueToken(AuthDto.SigninRequest request) {
         String submittedUserId = request.userId();
         if (submittedUserId == null || submittedUserId.isBlank()) {
             throw new ValidationException(MESSAGE_ENTER_USER_ID, Map.of(FIELD_USER_ID, MESSAGE_ENTER_USER_ID));

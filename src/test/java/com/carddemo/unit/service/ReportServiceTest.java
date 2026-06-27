@@ -29,6 +29,9 @@ import com.carddemo.service.ReportService;
 
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -45,6 +48,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -114,6 +118,33 @@ class ReportServiceTest {
     @Captor
     private ArgumentCaptor<ReportService.ReportRequestMessage> payloadCaptor;
 
+    /** Micrometer tracer used to open the PRODUCER span around the SQS publish. */
+    @Mock
+    private Tracer tracer;
+
+    /** W3C propagator that injects the {@code traceparent} into the outbound message headers. */
+    @Mock
+    private Propagator propagator;
+
+    /**
+     * Builder-style mock of the producer {@link Span.Builder}; {@link Answers#RETURNS_SELF}
+     * makes the fluent {@code name/kind/remoteServiceName/setParent} calls return the mock,
+     * so {@code tracer.spanBuilder().name(..).kind(..).start()} replays without a NPE.
+     */
+    @Mock(answer = Answers.RETURNS_SELF)
+    private Span.Builder spanBuilder;
+
+    /** The started PRODUCER span returned by {@link Span.Builder#start()}. */
+    @Mock
+    private Span publishSpan;
+
+    /**
+     * Scope handle returned by {@code tracer.withSpan(publishSpan)}; closed in the producer's
+     * finally block. A mock so its {@code close()} is a no-op under test.
+     */
+    @Mock
+    private Tracer.SpanInScope spanInScope;
+
     private ReportService service;
 
     @BeforeEach
@@ -122,7 +153,16 @@ class ReportServiceTest {
         // FIFO name without any stubbing (keeps strict-stubs verification clean).
         AwsConfig.AwsResourceProperties properties = new AwsConfig.AwsResourceProperties();
         properties.getSqs().setReportQueue(REPORT_QUEUE);
-        service = new ReportService(dateValidationService, properties, sqsTemplate);
+        service = new ReportService(dateValidationService, properties, sqsTemplate, tracer, propagator);
+
+        // Lenient: only the three confirmed-submission tests reach publishReportRequest and the
+        // producer-span chain; the validation/confirmation-gate tests throw earlier. lenient()
+        // keeps STRICT_STUBS from flagging these as unused in the non-publishing tests.
+        // tracer.currentSpan() is left unstubbed (returns null), so the parent linkage is simply
+        // skipped under test. withSpan(..) returns the scope mock the producer closes in finally.
+        lenient().when(tracer.spanBuilder()).thenReturn(spanBuilder);
+        lenient().when(spanBuilder.start()).thenReturn(publishSpan);
+        lenient().when(tracer.withSpan(publishSpan)).thenReturn(spanInScope);
     }
 
     // ------------------------------------------------------------------

@@ -40,8 +40,12 @@ import java.util.Map;
  *       {@link RejectReasonCode} numeric code 100&ndash;109), series
  *       {@code carddemo_batch_records_rejected_total{reason="..."}} so the
  *       dashboard query {@code sum by (reason) (...)} resolves.</li>
- *   <li>{@code carddemo.auth.attempts} &mdash; {@link Counter}, series
- *       {@code carddemo_auth_attempts_total}.</li>
+ *   <li>{@code carddemo.auth.attempts} &mdash; one {@link Counter} per sign-on
+ *       outcome, each tagged {@code result=success} or {@code result=failure},
+ *       exposing the two series
+ *       {@code carddemo_auth_attempts_total{result="success"}} and
+ *       {@code {result="failure"}} so the dashboard query
+ *       {@code sum by (result) (...)} resolves.</li>
  *   <li>{@code carddemo.transaction.amount.total} &mdash;
  *       {@link DistributionSummary}. Micrometer strips the reserved
  *       {@code _total} suffix from non-counter meters, so the exposed series are
@@ -53,9 +57,12 @@ import java.util.Map;
  * from startup, before the first business event is recorded. Micrometer exposes
  * the dotted meter names in snake_case; counters gain a {@code _total} suffix
  * and a distribution summary gains {@code _sum}/{@code _count}/{@code _max}. A
- * base unit is deliberately omitted from the rejected counter and the amount
- * summary because the Prometheus naming convention would otherwise append the
- * unit to the series name and break the dashboard queries.</p>
+ * base unit is deliberately omitted from the processed counter, the rejected
+ * counter, and the amount summary because the Prometheus naming convention would
+ * otherwise append the unit token to the series name (for example
+ * {@code carddemo_batch_records_processed_records_total}) and break the dashboard
+ * queries. The auth counters keep the {@code attempts} base unit only because the
+ * meter name already ends in {@code attempts}, so no token is inserted.</p>
  *
  * <p>The metric-name constants are the single source of truth for every call
  * site. The {@code @Bean} method names are the bean names used for injection
@@ -75,14 +82,33 @@ public class MetricsConfig {
     /** Authentication (sign-on) attempts. */
     public static final String AUTH_ATTEMPTS = "carddemo.auth.attempts";
 
+    /**
+     * Tag key carrying the sign-on outcome on the {@code carddemo.auth.attempts}
+     * meter. The "Auth Attempts (success vs failure)" dashboard panel aggregates
+     * with {@code sum by (result) (...)}, so the key MUST be {@code result}.
+     */
+    public static final String AUTH_RESULT_TAG = "result";
+
+    /** {@link #AUTH_RESULT_TAG} value for a successful sign-on. */
+    public static final String AUTH_RESULT_SUCCESS = "success";
+
+    /** {@link #AUTH_RESULT_TAG} value for a failed sign-on (validation, no such user, wrong password, or read error). */
+    public static final String AUTH_RESULT_FAILURE = "failure";
+
     /** Cumulative monetary amount of posted transactions (observability only). */
     public static final String TRANSACTION_AMOUNT_TOTAL = "carddemo.transaction.amount.total";
 
     @Bean
     Counter batchRecordsProcessedCounter(MeterRegistry registry) {
+        // No base unit is set so the Prometheus series name is exactly
+        // carddemo_batch_records_processed_total. A base unit ("records") would be
+        // appended by the Prometheus naming convention (the name does not already
+        // end in "records"), yielding carddemo_batch_records_processed_records_total
+        // and breaking the dashboard's primary batch-throughput panel, which queries
+        // sum(carddemo_batch_records_processed_total). This mirrors the rejected
+        // counter and the transaction distribution summary, which also omit base units.
         return Counter.builder(BATCH_RECORDS_PROCESSED)
                 .description("Total daily-transaction records successfully posted by the batch pipeline")
-                .baseUnit("records")
                 .register(registry);
     }
 
@@ -119,11 +145,50 @@ public class MetricsConfig {
         return Map.copyOf(counters);
     }
 
+    /**
+     * Registers the successful-sign-on counter on the
+     * {@code carddemo.auth.attempts} meter, tagged {@code result=success}.
+     *
+     * <p>The auth meter is split into one counter per outcome rather than a single
+     * untagged series so the "Auth Attempts (success vs failure)" dashboard panel
+     * can break attempts down with {@code sum by (result) (...)}. Both outcome
+     * counters share the {@code carddemo.auth.attempts} name and a consistent
+     * {@code result} tag key, exposing the two Prometheus series
+     * {@code carddemo_auth_attempts_total{result="success"}} and
+     * {@code {result="failure"}}; a base unit of {@code attempts} is retained (the
+     * name already ends in {@code attempts}, so no unit token is inserted and the
+     * series name stays {@code carddemo_auth_attempts_total}). Both are registered
+     * eagerly so each series is visible at {@code 0} from startup.</p>
+     *
+     * @param registry the Spring Boot auto-configured meter registry
+     * @return the successful-sign-on counter, injected as
+     *         {@code @Qualifier("authAttemptsSuccessCounter")}
+     */
     @Bean
-    Counter authAttemptsCounter(MeterRegistry registry) {
+    Counter authAttemptsSuccessCounter(MeterRegistry registry) {
         return Counter.builder(AUTH_ATTEMPTS)
-                .description("Total authentication (sign-on) attempts")
+                .description("Authentication (sign-on) attempts, by result")
                 .baseUnit("attempts")
+                .tag(AUTH_RESULT_TAG, AUTH_RESULT_SUCCESS)
+                .register(registry);
+    }
+
+    /**
+     * Registers the failed-sign-on counter on the {@code carddemo.auth.attempts}
+     * meter, tagged {@code result=failure}. See
+     * {@link #authAttemptsSuccessCounter(MeterRegistry)} for the rationale behind
+     * the outcome split and the resulting Prometheus series.
+     *
+     * @param registry the Spring Boot auto-configured meter registry
+     * @return the failed-sign-on counter, injected as
+     *         {@code @Qualifier("authAttemptsFailureCounter")}
+     */
+    @Bean
+    Counter authAttemptsFailureCounter(MeterRegistry registry) {
+        return Counter.builder(AUTH_ATTEMPTS)
+                .description("Authentication (sign-on) attempts, by result")
+                .baseUnit("attempts")
+                .tag(AUTH_RESULT_TAG, AUTH_RESULT_FAILURE)
                 .register(registry);
     }
 
