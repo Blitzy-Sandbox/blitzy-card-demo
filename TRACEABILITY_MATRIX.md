@@ -51,7 +51,7 @@ architectural decisions recorded in `DECISION_LOG.md`.
 | `enums` | `FileStatusCode`, `RejectReasonCode`, `TransactionSource`, `TransactionTypeCode`. |
 | `entity` | `@Embeddable` composite keys (`TransactionCategoryBalanceId`, `DisclosureGroupId`, `TransactionCategoryId`). |
 | `repository` | 11 Spring Data JPA repositories (replace VSAM keyed/browse access). |
-| `service.{auth,account,card,transaction,billing,report,admin,menu,shared}` | 20 service classes (online program business logic + shared utilities). |
+| `service.{auth,account,card,transaction,billing,report,admin,menu,shared}` | 20 service classes (online program business logic + shared utilities) + `ReportJobConsumer`, the SQS FIFO bridge listener that completes the F-011 submit-then-process semantic (D-069). |
 | `controller` | 8 REST controllers (replace the 17 BMS online screens). |
 | `batch.{jobs,processors,readers,writers}` | Spring Batch pipeline (replaces the JCL batch jobs). |
 | `config`, `observability`, `exception` | `SecurityConfig`/`BatchConfig`/`AwsConfig`/`JpaConfig`/`ObservabilityConfig`/`WebConfig`; `CorrelationIdFilter`/`MetricsConfig`/`HealthIndicators`; 7 custom exceptions + `GlobalExceptionHandler`. |
@@ -518,6 +518,7 @@ server-side session.
 | `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportService` | `submitReport()` | AID=ENTER primary action -> service business method |
 | `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportService` | `publishReportRequest()` | CICS internal reader job submit -> publish to SQS FIFO carddemo-report-jobs.fifo |
 | `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportService` | `publishReportRequest()` | TDQ JOBS WRITEQ (source spelling preserved) -> SQS FIFO message publish |
+| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportJobConsumer` | `onReportRequest()` | CICS internal-reader asynchronous job PICKUP/RUN half of the bridge -> `@SqsListener` consumes the FIFO message and launches `transactionReportJob` via `JobLauncher.run` (submit-then-process, D-004/D-069) |
 | `CORPT00C.cbl` | `RETURN-TO-PREV-SCREEN` | `ReportController` | `submitReport()` | Pseudo-conversational back-nav -> HTTP response (client-driven navigation) |
 | `CORPT00C.cbl` | `SEND-TRNRPT-SCREEN` | `ReportController` | `submitReport()` | BMS SEND MAP -> `ResponseEntity<Void>` 202 Accepted |
 | `CORPT00C.cbl` | `RETURN-TO-CICS` | `ReportController` | `submitReport()` | CICS RETURN -> stateless HTTP response (no COMMAREA) |
@@ -1051,7 +1052,7 @@ This index summarizes the reverse lookup at the class level for quick navigation
 | `service.transaction.TransactionDetailService` | `COTRN01C.cbl` (+ `COTRN01` BMS) |
 | `service.transaction.TransactionAddService` | `COTRN02C.cbl` (+ `COTRN02` BMS) |
 | `service.billing.BillingService` / `controller.BillingController` | `COBIL00C.cbl` (+ `COBIL00` BMS) |
-| `service.ReportService` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
+| `service.ReportService` / `service.ReportJobConsumer` / `controller.ReportController` | `CORPT00C.cbl` (+ `CORPT00` BMS) |
 | `service.UserListService` / `UserAddService` / `UserUpdateService` / `UserDeleteService` / `controller.UserController` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` (+ `COUSR00`–`COUSR03` BMS) |
 | `service.DateValidationService` | `CSUTLDTC.cbl` (+ `CSDAT01Y`, `CSUTLDWY`, `CSUTLDPY`) |
 | `service.ValidationLookupService` | `CSLKPCDY` (+ `resources/validation/*.json`) |

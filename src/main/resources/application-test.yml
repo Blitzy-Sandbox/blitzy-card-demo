@@ -121,6 +121,17 @@ carddemo:
     jwt:
       secret: Y2FyZGRlbW8tdGVzdC1wcm9maWxlLWhzMjU2LXNpZ25pbmcta2V5LW5vdC1mb3ItcHJvZHVjdGlvbi0wMTIzNDU2Nzg5
       expiration-ms: 3600000
+  # ---------------------------------------------------------------------------
+  # Report-bridge consumer (F-011). Disabled by DEFAULT for the test profile so
+  # the publish-contract suites (SqsIntegrationIT, OnlineTransactionE2EIT) can
+  # receive the published message from the FIFO queue themselves to assert the
+  # SQS contract without a live @SqsListener draining it first. The dedicated
+  # end-to-end ReportJobConsumerIT re-enables it (carddemo.report.consumer.enabled=true)
+  # to verify the full submit -> SQS -> consume -> batch -> S3 round trip.
+  # ---------------------------------------------------------------------------
+  report:
+    consumer:
+      enabled: false
 
 # -----------------------------------------------------------------------------
 # Logging - keep application logs at INFO for test diagnostics (raise to DEBUG

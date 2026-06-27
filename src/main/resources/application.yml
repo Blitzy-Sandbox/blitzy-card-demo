@@ -199,6 +199,15 @@ carddemo:
       # Legacy CBACT04C PARM '2022071800' decodes to run-date 2022-07-18
       # (see app/jcl/INTCALC.jcl); overridable as a job parameter.
       default-run-date: ${INTEREST_RUN_DATE:2022-07-18}
+  report:
+    consumer:
+      # F-011 report-bridge consumer (ReportJobConsumer @SqsListener). Enabled by
+      # default so the submit -> SQS FIFO -> consume -> batch -> S3 round trip runs
+      # in production and local development (CORPT00C -> TDQ JOBS internal-reader
+      # trigger; AAP 0.6.6 / DECISION_LOG D-004 / D-069). It is set to false in
+      # application-test.yml so the publish-contract integration tests are not
+      # drained by a live listener; ReportJobConsumerIT re-enables it explicitly.
+      enabled: ${REPORT_CONSUMER_ENABLED:true}
 
 # -----------------------------------------------------------------------------
 # Logging - baseline levels only. logback-spring.xml owns appenders / JSON

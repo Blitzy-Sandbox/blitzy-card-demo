@@ -59,7 +59,7 @@ public final class ReportDto {
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String endMonth,
             @Size(max = 2) @Pattern(regexp = "\\d{0,2}") String endDay,
             @Size(max = 4) @Pattern(regexp = "\\d{0,4}") String endYear,
-            @Size(max = 1) @Pattern(regexp = "[YyNn]?") String confirm
+            @Size(max = 1) String confirm
     ) {
     }
 }

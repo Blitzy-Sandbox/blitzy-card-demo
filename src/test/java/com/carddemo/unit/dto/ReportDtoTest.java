@@ -241,9 +241,24 @@ class ReportDtoTest {
     }
 
     @Test
-    void confirmInvalidCharFailsPattern() {
-        assertOnlyViolationsOn(validator.validate(withConfirm("Q")), "confirm");
+    void confirmRelaxedToSizeOnlySoServiceOwnsByteExactMessage() {
+        // D-070: @Pattern was removed from confirm (extending the D-056/D-062/D-065
+        // convention) so a size-valid out-of-set value passes DTO validation and
+        // reaches ReportService, which emits the byte-exact COBOL confirmation
+        // error ("\"X\" is not a valid value to confirm...") in CORPT00C parity.
+        // The DTO must therefore raise NO violation for a one-character value that
+        // is neither Y nor N.
+        assertThat(validator.validate(withConfirm("X"))).isEmpty();
+        assertThat(validator.validate(withConfirm("Q"))).isEmpty();
 
+        // The accepted (Y), cancel (N), and blank values remain DTO-valid; their
+        // semantics are owned by the service confirmation gate.
+        assertThat(validator.validate(withConfirm("Y"))).isEmpty();
         assertThat(validator.validate(withConfirm("N"))).isEmpty();
+        assertThat(validator.validate(withConfirm(""))).isEmpty();
+
+        // The retained @Size(max = 1) BMS X(1) width bound still rejects an
+        // over-width value at the DTO boundary.
+        assertOnlyViolationsOn(validator.validate(withConfirm("XX")), "confirm");
     }
 }
