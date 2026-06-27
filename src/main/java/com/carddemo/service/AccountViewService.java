@@ -164,7 +164,7 @@ public class AccountViewService {
                 customer.getAddrLine1(),
                 customer.getAddrStateCd(),
                 customer.getAddrLine2(),
-                customer.getAddrZip(),
+                truncateZipForScreen(customer.getAddrZip()),
                 customer.getAddrLine3(),
                 customer.getAddrCountryCd(),
                 customer.getPhoneNum1(),
@@ -185,5 +185,35 @@ public class AccountViewService {
      */
     private static String asText(Number value) {
         return value == null ? null : value.toString();
+    }
+
+    /**
+     * Truncates a stored ZIP/postal code to the five-character account-view
+     * screen width, reproducing the COBOL move
+     * {@code MOVE CUST-ADDR-ZIP TO ACSZIPCO} at {@code COACTVWC.cbl:515}: the
+     * persistent {@code CUST-ADDR-ZIP PIC X(10)} field (copybook
+     * {@code CVCUS01Y}) is moved into the view map's output field
+     * {@code ACSZIPCO PIC X(5)} (symbolic map {@code COACTVW}), and a COBOL
+     * alphanumeric {@code MOVE} is left-justified and truncates the surplus on
+     * the right, so the legacy screen displayed only the first five characters
+     * (for example {@code "19852-6716"} was shown as {@code "19852"}).
+     * Reproducing that truncation keeps the response byte-exact with the legacy
+     * view and within the declared {@link AccountDto.ViewResponse#zipCode()}
+     * {@code @Size(max = 5)} contract. The five characters are returned verbatim
+     * (no trimming) so they match the legacy display byte-for-byte; a
+     * {@code null} or already five-or-fewer-character value is returned
+     * unchanged. The full {@code X(10)} value remains intact in the persistent
+     * record and is unaffected by this view-time projection.
+     *
+     * @param zip the stored ZIP code (up to ten characters), which may be
+     *            {@code null}
+     * @return the first five characters of {@code zip}, or {@code zip} unchanged
+     *         when it is {@code null} or already five characters or fewer
+     */
+    private static String truncateZipForScreen(String zip) {
+        if (zip == null || zip.length() <= 5) {
+            return zip;
+        }
+        return zip.substring(0, 5);
     }
 }

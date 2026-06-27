@@ -259,4 +259,42 @@ class AccountViewServiceTest {
                 .isInstanceOf(RecordNotFoundException.class)
                 .hasMessage("Did not find associated customer in master file");
     }
+
+    // -----------------------------------------------------------------
+    // ZIP screen-width parity — COACTVWC.cbl:515 X(10) -> ACSZIPCO X(5)
+    // -----------------------------------------------------------------
+
+    @Test
+    @DisplayName("getAccount: truncates a 10-character stored ZIP to the 5-character view-screen width (COACTVWC ACSZIPCO X(5) parity)")
+    void getAccountTruncatesTenCharacterZipToFiveForScreen() {
+        // The persistent CUST-ADDR-ZIP is PIC X(10) (copybook CVCUS01Y); the COACTVW
+        // view map output field ACSZIPCO is PIC X(5), so the legacy COBOL alphanumeric
+        // MOVE at COACTVWC.cbl:515 truncated to the first five characters, displaying
+        // e.g. "19852-6716" as "19852". The view response must preserve that byte-exact
+        // 5-char screen contract (and its own @Size(max = 5)), not leak the full record.
+        customer.setAddrZip("19852-6716");
+        when(cardXrefRepository.findByXrefAcctId(ACCOUNT_ID)).thenReturn(List.of(cardXref));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.of(customer));
+
+        AccountDto.ViewResponse response = accountViewService.getAccount(ACCOUNT_ID);
+
+        assertThat(response.zipCode()).isEqualTo("19852");
+        assertThat(response.zipCode()).hasSize(5);
+    }
+
+    @Test
+    @DisplayName("getAccount: returns a ZIP of 5 or fewer characters unchanged (no padding, no trimming)")
+    void getAccountReturnsShortZipUnchanged() {
+        // A stored ZIP already within the 5-char screen width is surfaced verbatim;
+        // truncation only removes the surplus of an over-width X(10) value.
+        customer.setAddrZip("90210");
+        when(cardXrefRepository.findByXrefAcctId(ACCOUNT_ID)).thenReturn(List.of(cardXref));
+        when(accountRepository.findById(ACCOUNT_ID)).thenReturn(Optional.of(account));
+        when(customerRepository.findById(CUSTOMER_ID)).thenReturn(Optional.of(customer));
+
+        AccountDto.ViewResponse response = accountViewService.getAccount(ACCOUNT_ID);
+
+        assertThat(response.zipCode()).isEqualTo("90210");
+    }
 }

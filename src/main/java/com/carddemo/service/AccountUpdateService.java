@@ -817,7 +817,7 @@ public class AccountUpdateService {
                 customer.getAddrLine1(),
                 customer.getAddrStateCd(),
                 customer.getAddrLine2(),
-                customer.getAddrZip(),
+                truncateZipForScreen(customer.getAddrZip()),
                 customer.getAddrLine3(),
                 customer.getAddrCountryCd(),
                 customer.getPhoneNum1(),
@@ -855,6 +855,33 @@ public class AccountUpdateService {
 
     private static String toFicoString(Integer value) {
         return value == null ? null : Integer.toString(value);
+    }
+
+    /**
+     * Truncates a stored ZIP/postal code to the five-character account-screen
+     * width when re-displaying the saved record, mirroring the account-view
+     * projection ({@code AccountViewService#truncateZipForScreen}) so the
+     * post-update view agrees with the read endpoint. The legacy update map
+     * {@code COACTUP} likewise re-displays the ZIP through an
+     * {@code ACSZIPCO PIC X(5)} output field, so the persistent
+     * {@code CUST-ADDR-ZIP PIC X(10)} value is shown as its first five
+     * characters (for example {@code "19852-6716"} as {@code "19852"}). This
+     * keeps the refreshed {@link AccountDto.ViewResponse#zipCode()} within its
+     * {@code @Size(max = 5)} contract and byte-exact with the legacy screen; the
+     * five characters are returned verbatim (no trimming), and a {@code null} or
+     * already five-or-fewer-character value is returned unchanged. The full
+     * {@code X(10)} value persisted on the customer record is unaffected.
+     *
+     * @param zip the stored ZIP code (up to ten characters), which may be
+     *            {@code null}
+     * @return the first five characters of {@code zip}, or {@code zip} unchanged
+     *         when it is {@code null} or already five characters or fewer
+     */
+    private static String truncateZipForScreen(String zip) {
+        if (zip == null || zip.length() <= 5) {
+            return zip;
+        }
+        return zip.substring(0, 5);
     }
 
     private static Integer parseIntegerOrNull(String value) {

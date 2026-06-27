@@ -273,7 +273,7 @@ Entity` (well-formed request that violates a business rule).
   | `addressLine1` | string (50) | `CUST-ADDR-LINE-1 X(50)` |
   | `state` | string (2) | `CUST-ADDR-STATE-CD X(02)` |
   | `addressLine2` | string (50) | `CUST-ADDR-LINE-2 X(50)` |
-  | `zipCode` | string | `CUST-ADDR-ZIP X(10)` |
+  | `zipCode` | string (5) | `CUST-ADDR-ZIP X(10)` → `ACSZIPCO X(5)` (view truncates to the first 5 chars per `COACTVWC.cbl:515`; see DECISION_LOG D-074) |
   | `city` | string (50) | `CUST-ADDR-LINE-3` (city portion) |
   | `country` | string (3) | `CUST-ADDR-COUNTRY-CD X(03)` |
   | `phone1` | string | `CUST-PHONE-NUM-1 X(15)` |
