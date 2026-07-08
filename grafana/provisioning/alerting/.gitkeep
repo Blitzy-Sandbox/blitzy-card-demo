@@ -1,0 +1,4 @@
+# Intentionally empty. Grafana probes /etc/grafana/provisioning/{plugins,alerting}
+# on startup; this placeholder keeps the (otherwise empty) directory under version
+# control so no benign "directory not found" error is logged. Grafana only reads
+# *.yaml/*.yml here, so this file is ignored by the provisioning loader.
