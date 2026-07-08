@@ -772,7 +772,7 @@ _Paragraph count: **18** — all mapped._
 |---|---|---|---|---|
 | `CBTRN01C.cbl` | `MAIN-PARA` | `PrintReferenceJobs` | `printDailyTransactions()` | Daily-transaction validation-print mainline (reader→lookup→print) |
 | `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `PrintReferenceJobs` | `read()` | READ NEXT (DailyTransaction) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
-| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `CrossReferenceService` | `lookupXref()` | Card→account xref lookup (CrossReferenceService) |
+| `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `CardXrefRepository` | `findById()` | Card→xref lookup by card number (VSAM READ KEY IS FD-XREF-CARD-NUM → JpaRepository.findById); account-keyed xref navigation lives in `CrossReferenceService` |
 | `CBTRN01C.cbl` | `3000-READ-ACCOUNT` | `AccountRepository` | `findById()` | Account read for the daily transaction |
 | `CBTRN01C.cbl` | `0000-DALYTRAN-OPEN` | `PrintReferenceJobs` | `open()` | OPEN INPUT/OUTPUT (DailyTransaction) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBTRN01C.cbl` | `0100-CUSTFILE-OPEN` | `PrintReferenceJobs` | `open()` | OPEN INPUT/OUTPUT (Customer) → ItemStreamReader/Writer.open(ExecutionContext) |
@@ -919,7 +919,10 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `CardViewService` | (helper) | `COCRDSLC.cbl` | `9000-READ-DATA`, `9000-READ-DATA-EXIT` |
 | `CardViewService` | `processInputs()` | `COCRDSLC.cbl` | `2000-PROCESS-INPUTS`, `2000-PROCESS-INPUTS-EXIT` |
 | `CardViewService` | `validate()` | `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS`, `2200-EDIT-MAP-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT`, `2220-EDIT-CARD`, `2220-EDIT-CARD-EXIT` |
-| `CrossReferenceService` | `lookupXref()` | `CBTRN01C.cbl` | `2000-LOOKUP-XREF` |
+| `CrossReferenceService` | `findByAccount()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT`, `9200-GETCARDXREF-BYACCT-EXIT` |
+| `CrossReferenceService` | `generateNextTransactionId()` | `COTRN02C.cbl`, `COBIL00C.cbl` | `ADD-TRANSACTION` |
+| `CrossReferenceService` | `resolveCustomerId()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` |
+| `CrossReferenceService` | `resolvePrimaryCardNumber()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` |
 | `DateValidationService` | `validate()` | `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON`, `1250-EDIT-EXPIRY-MON-EXIT`, `1260-EDIT-EXPIRY-YEAR`, `1260-EDIT-EXPIRY-YEAR-EXIT` |
 | `DateValidationService` | `validateDate()` | `CSUTLDTC.cbl` | `A000-MAIN`, `A000-MAIN-EXIT` |
 | `InterestCalculationService` | `computeFees()` | `CBACT04C.cbl` | `1400-COMPUTE-FEES` |
