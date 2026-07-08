@@ -1,0 +1,161 @@
+package com.carddemo.config;
+
+import com.carddemo.observability.CorrelationIdFilter;
+import com.fasterxml.jackson.core.JsonFactoryBuilder;
+import com.fasterxml.jackson.core.StreamWriteFeature;
+import org.springframework.boot.autoconfigure.jackson.Jackson2ObjectMapperBuilderCustomizer;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+/**
+ * Spring MVC assembly for the headless REST CardDemo migration &mdash; the web-tier
+ * counterpart of the {@code config} package that shapes how the migrated service speaks
+ * JSON and how the cross-cutting request filter is wired.
+ *
+ * <p>The legacy system presented itself through 3270 BMS terminal screens driven by CICS
+ * {@code SEND MAP} / {@code RECEIVE MAP}. The migration target is deliberately
+ * <strong>headless REST-only</strong> (AAP &sect;0.3.2 / &sect;7.1): there is no browser UI,
+ * no view template, and no design system &mdash; the 17 BMS screens are replaced by REST
+ * controllers that exchange JSON. This class therefore has no view-resolution or
+ * static-resource concerns; it exists to guarantee a handful of precise web-layer
+ * contracts.</p>
+ *
+ * <h2>Responsibilities</h2>
+ * <ol>
+ *   <li><strong>{@code BigDecimal} JSON fidelity (primary).</strong> The decimal-precision
+ *       contract (AAP &sect;0.8.2, goal&nbsp;G2) requires every COBOL {@code PIC S9(n)V99} /
+ *       {@code COMP-3} monetary field to map to {@link java.math.BigDecimal} with a matching
+ *       scale, with {@code float}/{@code double} strictly prohibited for money. Evidence:
+ *       {@code app/cpy/CVACT01Y.cpy} models five {@code PIC S9(10)V99} account fields
+ *       ({@code ACCT-CURR-BAL}, {@code ACCT-CREDIT-LIMIT}, {@code ACCT-CASH-CREDIT-LIMIT},
+ *       {@code ACCT-CURR-CYC-CREDIT}, {@code ACCT-CURR-CYC-DEBIT}) and
+ *       {@code app/cpy/CVTRA05Y.cpy} models {@code TRAN-AMT} as {@code PIC S9(09)V99}. The
+ *       entity/DTO layers already carry these as scale-2 {@link java.math.BigDecimal}; this
+ *       class ensures Jackson does not silently re-introduce precision loss at the JSON
+ *       boundary by emitting scientific notation (for example {@code 1.23456789E9}). See
+ *       {@link #bigDecimalPlainCustomizer()}.</li>
+ *   <li><strong>Single execution of the correlation-ID filter.</strong>
+ *       {@link CorrelationIdFilter} is a high-precedence {@code @Component}
+ *       {@code OncePerRequestFilter}; Spring Boot would auto-register it directly with the
+ *       servlet container, while {@code config.SecurityConfig} also positions it inside the
+ *       Spring Security filter chain. To make it run exactly once per request, this class
+ *       disables the redundant servlet-container registration. See
+ *       {@link #correlationIdFilterRegistration(CorrelationIdFilter)}.</li>
+ *   <li><strong>CORS.</strong> Intentionally omitted &mdash; see the CORS note below.</li>
+ * </ol>
+ *
+ * <h2>Deliberately NOT done here</h2>
+ * <ul>
+ *   <li><strong>No {@code @EnableWebMvc}.</strong> This class implements
+ *       {@link WebMvcConfigurer} to <em>augment</em> Spring Boot's MVC auto-configuration,
+ *       never to replace it. Adding {@code @EnableWebMvc} would switch off Boot's
+ *       {@code WebMvcAutoConfiguration}, dropping the auto-configured HTTP message
+ *       converters (including the customized Jackson converter this class relies on) and the
+ *       Actuator endpoint mappings &mdash; so it is omitted by design.</li>
+ *   <li><strong>No replacement {@code ObjectMapper} bean.</strong> The {@code BigDecimal}
+ *       behaviour is contributed through a {@link Jackson2ObjectMapperBuilderCustomizer} that
+ *       augments Boot's auto-configured mapper. Declaring a whole new {@code ObjectMapper}
+ *       would discard Boot's other sensible defaults (the {@code JavaTimeModule} for
+ *       {@link java.time.LocalDate}, ISO date rendering, sensible inclusion settings, and so
+ *       on), so it is deliberately avoided.</li>
+ *   <li><strong>No exception handling.</strong> The single source of exception&rarr;HTTP
+ *       mapping is {@code controller.GlobalExceptionHandler} (a {@code @RestControllerAdvice}
+ *       discovered by component scan) which renders the {@code exception} hierarchy as
+ *       {@code dto.ErrorResponse} JSON. This class intentionally registers no
+ *       {@code @ExceptionHandler}, {@code @RestControllerAdvice}, or
+ *       {@code HandlerExceptionResolver}.</li>
+ * </ul>
+ *
+ * <h2>CORS</h2>
+ * <p>The target is an internal, headless JSON API with no browser front-end, so no
+ * cross-origin policy is configured: {@link WebMvcConfigurer#addCorsMappings} is not
+ * overridden. Omitting CORS is safer than shipping a permissive default; a conservative,
+ * property-driven policy (explicit allowed origins, never a wildcard {@code *} combined with
+ * credentials) should be added here only when a concrete cross-origin consumer is
+ * introduced.</p>
+ *
+ * <p>Design rationale, alternatives, and risks are recorded in {@code docs/decision-log.md}
+ * (notably the filter-registration ownership decision), not in code comments, per the
+ * Explainability rule. Source traceability anchor: commit SHA {@code 27d6c6f}.</p>
+ *
+ * @see CorrelationIdFilter
+ * @see Jackson2ObjectMapperBuilderCustomizer
+ * @see FilterRegistrationBean
+ */
+@Configuration
+public class WebConfig implements WebMvcConfigurer {
+
+    /**
+     * Augments Spring Boot's auto-configured Jackson {@code ObjectMapper} so that every
+     * {@link java.math.BigDecimal} is written in plain decimal notation rather than
+     * scientific notation, preserving the exact scale of the value in the JSON contract.
+     *
+     * <p>Concretely, a balance such as {@code new BigDecimal("1234567890.00")} serializes as
+     * the JSON number literal {@code 1234567890.00} (scale and trailing zeros intact) instead
+     * of {@code 1.23456789E9}. This keeps the migrated REST responses byte-faithful to the
+     * COBOL {@code PIC S9(n)V99} money semantics and satisfies the interface-contract parity
+     * gates (Gates&nbsp;1 and&nbsp;5). No {@code float}/{@code double} coercion feature is
+     * enabled and no lossy money serializer is registered &mdash; the value is emitted
+     * exactly as the {@link java.math.BigDecimal} holds it.</p>
+     *
+     * <p>The &quot;plain {@code BigDecimal}&quot; behaviour is applied at the streaming
+     * generator level by enabling the non-deprecated
+     * {@link StreamWriteFeature#WRITE_BIGDECIMAL_AS_PLAIN} on a {@code JsonFactory} built via
+     * {@link JsonFactoryBuilder}, which the customizer then installs on the builder through
+     * {@code factory(...)}. This is the warning-free equivalent of the older, now-deprecated
+     * {@code SerializationFeature.WRITE_BIGDECIMAL_AS_PLAIN} toggle (Jackson&nbsp;2.19), keeping
+     * the build clean under {@code -Xlint:all} (Gate&nbsp;2). Only the {@code JsonFactory} is
+     * supplied; Boot still applies its modules and serialization defaults on top, so
+     * {@link java.time} handling and other defaults are preserved.</p>
+     *
+     * @return a customizer that enables plain {@link java.math.BigDecimal} output on the
+     *         auto-configured mapper
+     */
+    @Bean
+    Jackson2ObjectMapperBuilderCustomizer bigDecimalPlainCustomizer() {
+        return builder -> builder.factory(new JsonFactoryBuilder()
+                .enable(StreamWriteFeature.WRITE_BIGDECIMAL_AS_PLAIN)
+                .build());
+    }
+
+    /**
+     * Registers the singleton {@link CorrelationIdFilter} with the servlet container in a
+     * <em>disabled</em> state, suppressing the automatic registration that Spring Boot would
+     * otherwise perform for a {@code @Component} servlet {@code Filter}.
+     *
+     * <p>{@link CorrelationIdFilter} is a bean-managed {@code OncePerRequestFilter} that
+     * establishes the per-request {@code correlationId} in the SLF4J MDC. Because it is both a
+     * {@code @Component} and a servlet {@code Filter}, Boot's filter auto-registration would
+     * place it directly in the servlet chain; separately, {@code config.SecurityConfig}
+     * positions the very same bean inside the Spring Security filter chain via
+     * {@code http.addFilterBefore(...)}. Left unchecked, the filter would run twice per
+     * request. Ownership of the single-execution guarantee is split by design: <em>this</em>
+     * bean disables the servlet-container registration, and {@code SecurityConfig} owns the
+     * one place the filter actually executes. Disabling here (rather than in
+     * {@code SecurityConfig}) keeps the &quot;how the filter is exposed to the container&quot;
+     * concern in the web-configuration class. The filter's {@code OncePerRequestFilter}
+     * once-guard remains a defensive safety net, but explicit suppression is the intended
+     * mechanism.</p>
+     *
+     * <p>The filter is injected as a method parameter (constructor/parameter injection only;
+     * never field injection) so the container supplies the same managed instance that carries
+     * its {@code @Order(HIGHEST_PRECEDENCE)} and shared MDC/header constants.</p>
+     *
+     * @param correlationIdFilter the container-managed correlation-ID filter singleton (never
+     *                            {@code null})
+     * @return a disabled {@link FilterRegistrationBean} that prevents duplicate servlet-level
+     *         registration of the filter
+     */
+    @Bean
+    FilterRegistrationBean<CorrelationIdFilter> correlationIdFilterRegistration(
+            final CorrelationIdFilter correlationIdFilter) {
+        final FilterRegistrationBean<CorrelationIdFilter> registration =
+                new FilterRegistrationBean<>(correlationIdFilter);
+        // Suppress the duplicate servlet-container registration; SecurityConfig positions the
+        // same filter in the security chain, giving exactly one execution per request.
+        registration.setEnabled(false);
+        return registration;
+    }
+}
