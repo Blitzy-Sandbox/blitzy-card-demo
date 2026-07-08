@@ -105,6 +105,23 @@ public class SecurityConfig {
         "/api/admin/**"
     };
 
+    /**
+     * Administrator-only <em>menu</em> surface. The legacy admin menu program {@code COADM01C}
+     * (transaction {@code CA00}) is served by {@code MenuController} under the shared
+     * {@code GET /api/menu/{type}} route, of which {@code /api/menu/admin} is the administrator
+     * view. Because that route also serves the regular-user {@code /api/menu/main} view (reachable
+     * by any authenticated caller), the admin view cannot be covered by {@link #ADMIN_PATHS} without
+     * also locking down the main menu; it is therefore matched explicitly here. This URL-level rule
+     * is method-limited to {@code GET} (the only verb the menu controller exposes) and is
+     * defense-in-depth alongside the method-level {@code @PreAuthorize("hasRole('ADMIN')")} gate on
+     * {@code MenuController#getAdminMenu}, so the administrator menu is never reachable by a
+     * {@code ROLE_USER} token even if either layer is later changed in isolation.
+     */
+    private static final String[] ADMIN_MENU_PATHS = {
+        "/api/menu/admin",
+        "/api/menu/admin/**"
+    };
+
     /** Spring role name required for the administrator surfaces; maps from {@code SEC-USR-TYPE 'A'}. */
     private static final String ROLE_ADMIN = "ADMIN";
 
@@ -205,6 +222,7 @@ public class SecurityConfig {
                 .requestMatchers(HttpMethod.POST, LOGIN_PATH).permitAll()
                 .requestMatchers(PUBLIC_ACTUATOR_PATHS).permitAll()
                 .requestMatchers(ADMIN_PATHS).hasRole(ROLE_ADMIN)
+                .requestMatchers(HttpMethod.GET, ADMIN_MENU_PATHS).hasRole(ROLE_ADMIN)
                 .anyRequest().authenticated())
             .addFilterBefore(correlationIdFilter, SecurityContextHolderFilter.class)
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
