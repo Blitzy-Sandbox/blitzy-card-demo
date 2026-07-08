@@ -61,6 +61,9 @@ public record SignonResponse(
      */
     private static final String USER_TYPE_ADMIN = "A";
 
+    /** Placeholder emitted by {@link #toString()} in place of the sensitive token. */
+    private static final String REDACTED = "[REDACTED]";
+
     /**
      * Assembles a bearer-token sign-on response, mapping the raw single-character
      * {@code SEC-USR-TYPE} code to a role name and defaulting {@link #tokenType()}
@@ -104,5 +107,29 @@ public record SignonResponse(
                 ? ""
                 : secUsrType.trim().toUpperCase(Locale.ROOT);
         return USER_TYPE_ADMIN.equals(normalized) ? ROLE_ADMIN : ROLE_USER;
+    }
+
+    /**
+     * Returns a diagnostic string that <strong>redacts the JWT {@link #token()}</strong>.
+     *
+     * <p>The bearer token is a credential-equivalent secret. A Java record's
+     * compiler-generated {@code toString()} includes every component, so it would
+     * otherwise embed the full token in any log line, exception message, or
+     * diagnostic that prints this response. This override emits the fixed
+     * placeholder {@value #REDACTED} in the token's place while showing every
+     * non-sensitive field unchanged, keeping the representation useful for
+     * debugging without leaking the session credential.</p>
+     *
+     * @return a {@code toString()} representation with the token redacted
+     */
+    @Override
+    public String toString() {
+        return "SignonResponse[token=" + REDACTED
+                + ", tokenType=" + tokenType
+                + ", userId=" + userId
+                + ", firstName=" + firstName
+                + ", lastName=" + lastName
+                + ", role=" + role
+                + "]";
     }
 }

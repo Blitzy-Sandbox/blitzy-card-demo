@@ -38,9 +38,11 @@ import jakarta.validation.constraints.Size;
  *   <li><strong>PAN masking (security).</strong> The {@code cardNumber} carried
  *       by this element is <em>always a masked Primary Account Number</em>,
  *       exposing only the last four digits (for example {@code ************1234}).
- *       Masking is performed by the producing service <em>before</em> the item is
- *       constructed; this holder never derives, unmasks, or reveals a full PAN,
- *       and a full unmasked card number must never be placed in this field.</li>
+ *       Masking is <em>enforced by the canonical constructor</em>: any supplied
+ *       value is reduced to its last four digits, so a full unmasked PAN can never
+ *       be stored, serialized, or surfaced through the record's generated
+ *       {@code toString()}. Masking is idempotent, so an already-masked value is
+ *       carried through unchanged.</li>
  *   <li><strong>Stateless &amp; immutable.</strong> As a Java {@code record} the
  *       type is a thread-safe, side-effect-free value holder carrying no business
  *       logic and performing no mutation of the supplied values.</li>
@@ -68,4 +70,44 @@ public record CardListItem(
 
         @Size(max = 1)
         String activeStatus) {
+
+    /** Number of trailing PAN digits left visible when masking. */
+    private static final int VISIBLE_PAN_DIGITS = 4;
+
+    /**
+     * Canonical (compact) constructor that <strong>enforces PAN masking</strong>.
+     *
+     * <p>{@code cardNumber} is always reduced to its last four digits via
+     * {@link #maskCardNumber(String)}, so a full unmasked Primary Account Number
+     * can never be stored in — and therefore never serialized from or printed by
+     * the generated {@code toString()} of — this response row. Masking is
+     * idempotent, so a value that is already masked is carried through unchanged.
+     * The other components are accepted verbatim.</p>
+     */
+    public CardListItem {
+        cardNumber = maskCardNumber(cardNumber);
+    }
+
+    /**
+     * Masks a card number so that only the final four digits remain visible,
+     * replacing every earlier character with {@code '*'}. Surrounding whitespace
+     * from fixed-width padding is stripped first; {@code null} is returned
+     * unchanged and a value of four or fewer characters is returned unchanged
+     * (there is nothing additional to conceal).
+     *
+     * @param cardNumber the card number to mask (may be {@code null})
+     * @return the masked card number, or the original value when there is nothing to mask
+     */
+    private static String maskCardNumber(String cardNumber) {
+        if (cardNumber == null) {
+            return null;
+        }
+        String normalized = cardNumber.strip();
+        int length = normalized.length();
+        if (length <= VISIBLE_PAN_DIGITS) {
+            return normalized;
+        }
+        return "*".repeat(length - VISIBLE_PAN_DIGITS)
+                + normalized.substring(length - VISIBLE_PAN_DIGITS);
+    }
 }

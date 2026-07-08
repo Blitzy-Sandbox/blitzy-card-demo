@@ -186,4 +186,80 @@ public record AccountUpdateRequest(
         Integer ficoScore
 
 ) {
+
+    /** Number of trailing SSN digits left visible when masking for diagnostics. */
+    private static final int SSN_VISIBLE_DIGITS = 4;
+
+    /**
+     * Returns a diagnostic string that <strong>masks the {@link #ssn()}</strong> to
+     * its last four digits.
+     *
+     * <p>{@code ssn} backs the sensitive {@code CUST-SSN} field. A Java record's
+     * compiler-generated {@code toString()} includes every component, so it would
+     * otherwise embed the raw nine-digit SSN in any log line or diagnostic that
+     * prints this request. This override shows every other field unchanged but
+     * replaces all but the trailing four SSN digits with {@code '*'} (see
+     * {@link #maskSsn(String)}), so the request stays useful for debugging without
+     * leaking PII.</p>
+     *
+     * @return a {@code toString()} representation with the SSN masked
+     */
+    @Override
+    public String toString() {
+        return "AccountUpdateRequest["
+                + "accountId=" + accountId
+                + ", activeStatus=" + activeStatus
+                + ", currentBalance=" + currentBalance
+                + ", creditLimit=" + creditLimit
+                + ", cashCreditLimit=" + cashCreditLimit
+                + ", currentCycleCredit=" + currentCycleCredit
+                + ", currentCycleDebit=" + currentCycleDebit
+                + ", openDate=" + openDate
+                + ", expirationDate=" + expirationDate
+                + ", reissueDate=" + reissueDate
+                + ", accountGroupId=" + accountGroupId
+                + ", version=" + version
+                + ", customerId=" + customerId
+                + ", firstName=" + firstName
+                + ", middleName=" + middleName
+                + ", lastName=" + lastName
+                + ", addressLine1=" + addressLine1
+                + ", addressLine2=" + addressLine2
+                + ", city=" + city
+                + ", stateCode=" + stateCode
+                + ", countryCode=" + countryCode
+                + ", zipCode=" + zipCode
+                + ", phoneNumber1=" + phoneNumber1
+                + ", phoneNumber2=" + phoneNumber2
+                + ", ssn=" + maskSsn(ssn)
+                + ", govtIssuedId=" + govtIssuedId
+                + ", dateOfBirth=" + dateOfBirth
+                + ", eftAccountId=" + eftAccountId
+                + ", primaryCardHolderIndicator=" + primaryCardHolderIndicator
+                + ", ficoScore=" + ficoScore
+                + "]";
+    }
+
+    /**
+     * Masks a Social Security Number so that only the final four digits remain
+     * visible, replacing every earlier digit with {@code '*'}. Non-digit
+     * characters are ignored when counting; {@code null} is returned unchanged and
+     * a value with four or fewer digits is returned unchanged (there is nothing
+     * additional to conceal). This mirrors the masking used by the account-view
+     * response so diagnostics are consistent across the account flows.
+     *
+     * @param ssn the raw SSN (may be {@code null})
+     * @return the masked SSN, or the original value when there is nothing to mask
+     */
+    private static String maskSsn(String ssn) {
+        if (ssn == null) {
+            return null;
+        }
+        String digits = ssn.replaceAll("\\D", "");
+        if (digits.length() <= SSN_VISIBLE_DIGITS) {
+            return ssn;
+        }
+        String visible = digits.substring(digits.length() - SSN_VISIBLE_DIGITS);
+        return "*".repeat(digits.length() - SSN_VISIBLE_DIGITS) + visible;
+    }
 }

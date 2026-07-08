@@ -3,7 +3,6 @@ nav:
   - Home: index.md
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
-  - Decision Log: decision-log.md
 plugins:
   - techdocs-core
   - mermaid2

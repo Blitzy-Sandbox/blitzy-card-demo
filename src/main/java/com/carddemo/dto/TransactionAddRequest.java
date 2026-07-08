@@ -122,4 +122,63 @@ public record TransactionAddRequest(
         Boolean confirm
 
 ) {
+
+    /** Number of trailing PAN digits left visible when masking for diagnostics. */
+    private static final int VISIBLE_PAN_DIGITS = 4;
+
+    /**
+     * Returns a diagnostic string that <strong>masks the {@link #cardNumber()}</strong>
+     * to its last four digits.
+     *
+     * <p>{@code cardNumber} is a full Primary Account Number (PAN). A Java record's
+     * compiler-generated {@code toString()} includes every component, so it would
+     * otherwise embed the full PAN in any log line or diagnostic that prints this
+     * request. This override shows every other field unchanged but replaces all but
+     * the trailing four PAN digits with {@code '*'} (see {@link #maskCardNumber(String)}),
+     * so the request stays useful for debugging without leaking the card number.</p>
+     *
+     * @return a {@code toString()} representation with the card number masked
+     */
+    @Override
+    public String toString() {
+        return "TransactionAddRequest["
+                + "accountId=" + accountId
+                + ", cardNumber=" + maskCardNumber(cardNumber)
+                + ", typeCode=" + typeCode
+                + ", categoryCode=" + categoryCode
+                + ", source=" + source
+                + ", description=" + description
+                + ", amount=" + amount
+                + ", originalTimestamp=" + originalTimestamp
+                + ", processedTimestamp=" + processedTimestamp
+                + ", merchantId=" + merchantId
+                + ", merchantName=" + merchantName
+                + ", merchantCity=" + merchantCity
+                + ", merchantZip=" + merchantZip
+                + ", confirm=" + confirm
+                + "]";
+    }
+
+    /**
+     * Masks a card number so that only the final four digits remain visible,
+     * replacing every earlier character with {@code '*'}. Surrounding whitespace
+     * from fixed-width padding is stripped first; {@code null} is returned
+     * unchanged and a value of four or fewer characters is returned unchanged
+     * (there is nothing additional to conceal).
+     *
+     * @param cardNumber the raw card number (may be {@code null})
+     * @return the masked card number, or the original value when there is nothing to mask
+     */
+    private static String maskCardNumber(String cardNumber) {
+        if (cardNumber == null) {
+            return null;
+        }
+        String normalized = cardNumber.strip();
+        int length = normalized.length();
+        if (length <= VISIBLE_PAN_DIGITS) {
+            return normalized;
+        }
+        return "*".repeat(length - VISIBLE_PAN_DIGITS)
+                + normalized.substring(length - VISIBLE_PAN_DIGITS);
+    }
 }

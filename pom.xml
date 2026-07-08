@@ -62,11 +62,16 @@
         <!--
           ================= Pinned dependency versions =================
           postgresql and flyway are also managed by the Spring Boot 3.5.11 BOM; these
-          properties override the managed values to the exact, pinned patch levels that
-          Boot 3.5.11 was validated against (42.7.10 / 11.7.2) so the pins are explicit
-          and self-documenting while remaining conflict-free with the BOM.
+          properties override the managed values with explicit, self-documenting pins
+          that remain conflict-free with the BOM.
+
+          SECURITY OVERRIDE (CVE-2026-54291): the BOM-managed pgJDBC level (42.7.10)
+          falls in the affected range >=42.7.4,<42.7.12. The driver is therefore pinned
+          up to 42.7.13 (the latest 42.7.x patch, >=42.7.12) which carries the fix; this
+          is a deliberate, security-driven override of the BOM-managed value. flyway
+          remains at the Boot 3.5.11-validated 11.7.2.
         -->
-        <postgresql.version>42.7.10</postgresql.version>
+        <postgresql.version>42.7.13</postgresql.version>
         <flyway.version>11.7.2</flyway.version>
 
         <!-- BOM coordinates imported in dependencyManagement below. -->

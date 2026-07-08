@@ -1,7 +1,13 @@
 package com.carddemo.dto;
 
+import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+
+import com.fasterxml.jackson.core.JsonGenerator;
+import com.fasterxml.jackson.databind.JsonSerializer;
+import com.fasterxml.jackson.databind.SerializerProvider;
+import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Pattern;
@@ -72,14 +78,17 @@ import jakarta.validation.constraints.Size;
  *       {@code categoryCode} and {@code merchantId} are kept as {@link String}s
  *       to preserve fixed width and any leading zeros, exactly as stored in the
  *       fixed-width record.</li>
- *   <li><strong>PAN masking.</strong> {@code cardNumber} holds the full Primary
- *       Account Number and is populated only inside internal batch / statement
- *       generation, where the complete PAN is required. The full PAN must
- *       <em>never</em> be emitted in a REST JSON body. Any REST-facing flow must
- *       expose the last-four masked form via {@link #maskedCardNumber()} or emit
- *       {@link #toMaskedView()} instead of this record. This is a documented
- *       usage contract rather than a serialization-level suppression, so the
- *       natural (batch) JSON representation still contains all thirteen keys.</li>
+ *   <li><strong>PAN masking.</strong> The in-memory {@code cardNumber} component
+ *       holds the full Primary Account Number because internal batch / statement
+ *       generation requires the complete PAN (available via {@link #cardNumber()}).
+ *       To guarantee the full PAN is <em>never</em> emitted in a JSON body, the
+ *       component is serialized through {@link MaskedCardNumberSerializer}, which
+ *       writes only the last-four masked form; the record's generated
+ *       {@code toString()} is likewise overridden to mask it. Serialization is the
+ *       only affected direction &mdash; deserialization and in-memory access are
+ *       unchanged &mdash; so all thirteen keys still appear in JSON, with
+ *       {@code cardNumber} masked. {@link #maskedCardNumber()} and
+ *       {@link #toMaskedView()} remain available for explicit masked projections.</li>
  * </ul>
  *
  * <p>This type is a stateless, immutable value holder. As a Java {@code record}
@@ -87,8 +96,9 @@ import jakarta.validation.constraints.Size;
  * share across batch worker threads.</p>
  *
  * @param cardNumber          full Primary Account Number ({@code TRNX-CARD-NUM},
- *                            {@code X(16)}); mask via {@link #maskedCardNumber()}
- *                            before any REST exposure
+ *                            {@code X(16)}); held in full in memory for internal
+ *                            batch use but always masked to the last four digits in
+ *                            JSON serialization and in {@code toString()}
  * @param transactionId       transaction identifier ({@code TRNX-ID},
  *                            {@code X(16)})
  * @param typeCode            transaction type code ({@code TRNX-TYPE-CD},
@@ -117,6 +127,7 @@ import jakarta.validation.constraints.Size;
  */
 public record StatementTransactionDto(
 
+        @JsonSerialize(using = MaskedCardNumberSerializer.class)
         @Size(max = 16) String cardNumber,
 
         @Size(max = 16) String transactionId,
@@ -188,16 +199,66 @@ public record StatementTransactionDto(
      *         {@code null}
      */
     public String maskedCardNumber() {
-        if (cardNumber == null) {
+        return mask(cardNumber);
+    }
+
+    /**
+     * Masks a Primary Account Number so that only the final
+     * {@value #VISIBLE_PAN_DIGITS} characters remain visible, replacing every
+     * earlier character with {@value #MASK_CHARACTER}. Surrounding whitespace from
+     * fixed-width padding is stripped first; a {@code null} value or one no longer
+     * than {@value #VISIBLE_PAN_DIGITS} characters is returned unchanged (there is
+     * nothing additional to conceal). This single implementation backs
+     * {@link #maskedCardNumber()}, {@link #toString()}, and
+     * {@link MaskedCardNumberSerializer}, so every externally observable form of
+     * {@code cardNumber} is masked consistently.
+     *
+     * @param pan the raw card number (may be {@code null})
+     * @return the masked PAN, or the original value when there is nothing to mask
+     */
+    private static String mask(String pan) {
+        if (pan == null) {
             return null;
         }
-        final String normalized = cardNumber.strip();
+        final String normalized = pan.strip();
         final int length = normalized.length();
         if (length <= VISIBLE_PAN_DIGITS) {
             return normalized;
         }
         final String lastDigits = normalized.substring(length - VISIBLE_PAN_DIGITS);
         return MASK_CHARACTER.repeat(length - VISIBLE_PAN_DIGITS) + lastDigits;
+    }
+
+    /**
+     * Returns a diagnostic string that <strong>masks the {@link #cardNumber()}</strong>
+     * to its last four digits.
+     *
+     * <p>A Java record's compiler-generated {@code toString()} includes every
+     * component, so it would otherwise embed the full PAN in any log line or
+     * diagnostic that prints this line. This override shows every other component
+     * unchanged but replaces the card number with its masked form (see
+     * {@link #mask(String)}), so the object stays useful for debugging without
+     * leaking the PAN.</p>
+     *
+     * @return a {@code toString()} representation with the card number masked
+     */
+    @Override
+    public String toString() {
+        return "StatementTransactionDto["
+                + "cardNumber=" + mask(cardNumber)
+                + ", transactionId=" + transactionId
+                + ", typeCode=" + typeCode
+                + ", categoryCode=" + categoryCode
+                + ", source=" + source
+                + ", description=" + description
+                + ", amount=" + amount
+                + ", merchantId=" + merchantId
+                + ", merchantName=" + merchantName
+                + ", merchantCity=" + merchantCity
+                + ", merchantZip=" + merchantZip
+                + ", originalTimestamp=" + originalTimestamp
+                + ", processedTimestamp=" + processedTimestamp
+                + "]";
     }
 
     /**
@@ -229,5 +290,35 @@ public record StatementTransactionDto(
                 originalTimestamp,
                 processedTimestamp
         );
+    }
+
+    /**
+     * Jackson serializer that emits {@code cardNumber} in its last-four masked
+     * form (see {@link #mask(String)}) so a full Primary Account Number never
+     * appears in a JSON body &mdash; even if the raw record (rather than
+     * {@link #toMaskedView()}) is accidentally serialized.
+     *
+     * <p>Only the serialization (write) direction is affected: the in-memory
+     * component still holds the full PAN for internal batch/statement generation
+     * (via {@link #cardNumber()}), and deserialization is unchanged. A {@code null}
+     * card number is written as a JSON {@code null} by Jackson's default null
+     * handling and never reaches this serializer.</p>
+     */
+    public static final class MaskedCardNumberSerializer extends JsonSerializer<String> {
+
+        /**
+         * Writes the masked form of {@code value} to the JSON stream.
+         *
+         * @param value       the raw card-number value being serialized (non-null;
+         *                    Jackson routes {@code null} through its null serializer)
+         * @param gen         the JSON generator to write to
+         * @param serializers the active serializer provider (unused)
+         * @throws IOException if writing to the generator fails
+         */
+        @Override
+        public void serialize(String value, JsonGenerator gen, SerializerProvider serializers)
+                throws IOException {
+            gen.writeString(mask(value));
+        }
     }
 }

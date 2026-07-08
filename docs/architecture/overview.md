@@ -8,14 +8,14 @@ modern target: **Java 25 LTS**, **Spring Boot 3.5.11**, **PostgreSQL 16**, and *
 behavioral baseline but is **not copied into this repository**; it is referenced only by its
 original commit SHA **`27d6c6f`** (full `7756d895ffeb65f7ea72aaa609e356d9899afcec`). This
 page carries the three top-level views; the companion pages
-[Component Interactions](./component-interactions.md) (layered request flow and the
-authentication before/after) and [Data Flow](./data-flow.md) (VSAM → PostgreSQL and
-GDG / TDQ → S3 / SQS) drill into the request, authentication, and data-migration details.
+**Component Interactions** (`component-interactions.md`, forthcoming — layered request flow and the
+authentication before/after) and **Data Flow** (`data-flow.md`, forthcoming — VSAM → PostgreSQL and
+GDG / TDQ → S3 / SQS) will drill into the request, authentication, and data-migration details.
 
 Design rationale is documented — never embedded in code comments. Every non-trivial choice
 shown here is explained in the [Decision Log](../decision-log.md), and every COBOL
 paragraph is mapped to its Java method in the [Traceability Matrix](../traceability-matrix.md).
-New contributors should start with the [Onboarding Guide](../onboarding.md).
+New contributors should start with the Onboarding Guide (`onboarding.md`, forthcoming).
 
 ## How to read these diagrams
 
@@ -226,10 +226,10 @@ decisions are recorded as [D-005, D-012, and D-015](../decision-log.md).
 
 ## See also
 
-- [Component Interactions](./component-interactions.md) — the layered Controller → Service →
+- **Component Interactions** (`component-interactions.md`, forthcoming) — the layered Controller → Service →
   Repository → Database request flow, and the COBOL sign-on vs. Spring Security JWT
   authentication before/after.
-- [Data Flow](./data-flow.md) — the VSAM → PostgreSQL data-migration mapping (Flyway) and the
+- **Data Flow** (`data-flow.md`, forthcoming) — the VSAM → PostgreSQL data-migration mapping (Flyway) and the
   GDG / TDQ → S3 / SQS staging-and-messaging before/after.
 - [Decision Log](../decision-log.md) — the rationale, alternatives, and risk for every decision
   cited on this page.

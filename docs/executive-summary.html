@@ -378,20 +378,20 @@
         <p class="subtitle">A complete tech-stack migration of the AWS CardDemo credit-card workload &mdash; 100% behavioral parity, modernized delivery, observable from day one.</p>
         <div class="kpi-strip">
           <div class="kpi-card kpi-primary">
-            <span class="kpi-value">90.1%</span>
-            <span class="kpi-label">Complete</span>
+            <span class="kpi-value">CP1</span>
+            <span class="kpi-label">Foundation Delivered</span>
           </div>
           <div class="kpi-card">
             <span class="kpi-value">28</span>
-            <span class="kpi-label">COBOL Programs</span>
+            <span class="kpi-label">COBOL Programs Mapped</span>
           </div>
           <div class="kpi-card kpi-success">
-            <span class="kpi-value">888</span>
-            <span class="kpi-label">Tests Passing</span>
+            <span class="kpi-value">11</span>
+            <span class="kpi-label">Entities + Repositories</span>
           </div>
           <div class="kpi-card">
-            <span class="kpi-value">81.5%</span>
-            <span class="kpi-label">Line Coverage</span>
+            <span class="kpi-value">0</span>
+            <span class="kpi-label">Build Warnings</span>
           </div>
         </div>
       </section>
@@ -435,21 +435,21 @@
 
       <!-- ============ SLIDE 4 — CONTENT: What Was Done (Scope) ============ -->
       <section data-transition="slide">
-        <span class="eyebrow">Scope Delivered</span>
-        <h2>What Was Migrated</h2>
+        <span class="eyebrow">Scope &amp; Target</span>
+        <h2>Migration Scope &amp; Target</h2>
         <table class="blitzy-table">
           <thead>
-            <tr><th>Legacy (COBOL / z/OS)</th><th>Delivered (Java / Spring)</th><th>Result</th></tr>
+            <tr><th>Legacy (COBOL / z/OS)</th><th>Target (Java / Spring)</th><th>CP1 Status</th></tr>
           </thead>
           <tbody>
-            <tr><td>28 COBOL programs <span class="mono">(19,254 LOC)</span></td><td>103 Java source files <span class="mono">(34,021 lines)</span></td><td class="col-num">100% translated</td></tr>
-            <tr><td>17 BMS 3270 screens</td><td>8 REST controllers</td><td class="col-num">Headless API</td></tr>
-            <tr><td>Business paragraphs</td><td>20 service classes</td><td class="col-num">Layered</td></tr>
-            <tr><td>11 VSAM datasets</td><td>11 entities + 11 repositories</td><td class="col-num">PostgreSQL 16</td></tr>
-            <tr><td>29 JCL jobs</td><td>6 Spring Batch jobs</td><td class="col-num">5-stage pipeline</td></tr>
+            <tr><td>28 COBOL programs <span class="mono">(19,254 LOC)</span></td><td>Idiomatic Java 25 / Spring Boot 3.x</td><td class="col-num">Foundation</td></tr>
+            <tr><td>17 BMS 3270 screens</td><td>8 REST controllers</td><td class="col-num">Planned</td></tr>
+            <tr><td>Business paragraphs</td><td>20 service classes</td><td class="col-num">Planned</td></tr>
+            <tr><td>11 VSAM datasets</td><td>11 entities + 11 repositories</td><td class="col-num">&#10003; Delivered</td></tr>
+            <tr><td>29 JCL jobs</td><td>5-stage Spring Batch pipeline</td><td class="col-num">Planned</td></tr>
           </tbody>
         </table>
-        <p class="prose-ref">All figures verified against the delivered build &mdash; see the Traceability Matrix (100% paragraph coverage).</p>
+        <p class="prose-ref">Columns show the legacy source and the Java/Spring <em>target</em> end-state; the <em>CP1 Status</em> column marks what is delivered at this foundation checkpoint (the data &amp; domain layer). Paragraph-level mapping is tracked in the Traceability Matrix.</p>
       </section>
 
       <!-- ============ SLIDE 5 — DIVIDER: Architecture Transformation ============ -->
@@ -493,7 +493,7 @@ graph LR
       <!-- ============ SLIDE 7 — CONTENT: After (Java / AWS) ============ -->
       <section data-transition="slide">
         <span class="eyebrow">After</span>
-        <div class="diagram-title">After &mdash; Java / Spring Boot / AWS Architecture</div>
+        <div class="diagram-title">After (Target) &mdash; Java / Spring Boot / AWS Architecture</div>
         <pre class="mermaid">
 graph LR
   subgraph PRES["Presentation"]
@@ -501,7 +501,7 @@ graph LR
   end
   subgraph LOGIC["Business Logic"]
     SVC["20 Service Classes"]
-    BAT["6 Spring Batch Jobs"]
+    BAT["5-Stage Spring Batch"]
   end
   subgraph PERSIST["Persistence and Cloud"]
     REPO["11 JPA Repositories"]
@@ -516,7 +516,7 @@ graph LR
   BAT --> AWS
         </pre>
         <div class="legend">
-          <b>Legend:</b> boxes = Spring layers; solid arrows = runtime calls; AWS accessed via Spring Cloud AWS (LocalStack-verified locally). Diagram: <b>After &mdash; Java / Spring Boot / AWS Architecture</b>.
+          <b>Legend:</b> boxes = Spring layers of the <b>target</b> architecture; solid arrows = runtime calls; AWS accessed via Spring Cloud AWS (LocalStack-verified). Diagram: <b>After (Target) &mdash; Java / Spring Boot / AWS Architecture</b>.
         </div>
       </section>
 
@@ -570,14 +570,14 @@ graph LR
       <!-- ============ SLIDE 11 — CONTENT: Testing & Build ============ -->
       <section data-transition="slide">
         <span class="eyebrow">Testing &amp; Build</span>
-        <h2>Verified, Not Asserted</h2>
+        <h2>Foundation Quality &amp; Targets</h2>
         <div class="kpi-strip">
-          <div class="kpi-card kpi-success"><span class="kpi-value">888</span><span class="kpi-label">Tests Passing (100%)</span></div>
-          <div class="kpi-card"><span class="kpi-value">729&nbsp;+&nbsp;159</span><span class="kpi-label">Unit + Integration/E2E</span></div>
-          <div class="kpi-card kpi-primary"><span class="kpi-value">81.5%</span><span class="kpi-label">Line Coverage (JaCoCo)</span></div>
-          <div class="kpi-card"><span class="kpi-value">0</span><span class="kpi-label">Build Warnings (-Xlint:all)</span></div>
+          <div class="kpi-card kpi-success"><span class="kpi-value">0</span><span class="kpi-label">Build Warnings (-Xlint:all)</span></div>
+          <div class="kpi-card"><span class="kpi-value">50</span><span class="kpi-label">Foundation Tests (CP1)</span></div>
+          <div class="kpi-card kpi-primary"><span class="kpi-value">&ge;80%</span><span class="kpi-label">Coverage Target (Gate 8)</span></div>
+          <div class="kpi-card"><span class="kpi-value">8</span><span class="kpi-label">Validation Gates</span></div>
         </div>
-        <p class="prose-ref">JaCoCo gate enforces &ge;80% line coverage; every AWS interaction is exercised against LocalStack via Testcontainers.</p>
+        <p class="prose-ref">The zero-warning build (Gate 2) is met at Checkpoint 1; CI enforces the JaCoCo &ge;80% coverage gate as the target end-state, with every AWS interaction to be exercised against LocalStack via Testcontainers (zero live AWS).</p>
       </section>
 
       <!-- ============ SLIDE 12 — CONTENT: Observability ============ -->
@@ -612,7 +612,7 @@ graph LR
             <tr><th>Open Risk</th><th>Severity</th><th>Status</th><th>Mitigation</th></tr>
           </thead>
           <tbody>
-            <tr class="risk-high"><td>No CI/CD pipeline</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-med">Open</span></td><td>Add GitHub Actions: build &rarr; test &rarr; deploy</td></tr>
+            <tr class="risk-high"><td>CI/CD pipeline not yet validated</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-med">Open</span></td><td>Validate the scaffolded <span class="mono">.github/workflows/ci.yml</span> on a runner</td></tr>
             <tr class="risk-high"><td>OWASP scan not executed</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-med">Open</span></td><td>Run <span class="mono">mvn dependency-check</span>; remediate CVEs</td></tr>
             <tr class="risk-high"><td>No production Spring profile</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-med">Open</span></td><td>Add <span class="mono">application-prod.yml</span> (AWS / PostgreSQL)</td></tr>
             <tr class="risk-high"><td>JWT secret hardcoded</td><td><span class="badge badge-high">High</span></td><td><span class="badge badge-med">Open</span></td><td>Externalize via Secrets Manager / Vault</td></tr>
@@ -635,14 +635,14 @@ graph LR
         <span class="eyebrow">Onboarding &amp; Next Steps</span>
         <h2>From Clean Machine to Running App</h2>
         <div class="icon-row">
-          <div class="icon-badge"><i data-lucide="git-branch"></i><span class="icon-title">Add CI/CD</span></div>
+          <div class="icon-badge"><i data-lucide="git-branch"></i><span class="icon-title">Validate CI/CD</span></div>
           <div class="icon-badge"><i data-lucide="shield"></i><span class="icon-title">Run OWASP</span></div>
           <div class="icon-badge"><i data-lucide="key-round"></i><span class="icon-title">Prod Profile + JWT</span></div>
           <div class="icon-badge"><i data-lucide="arrow-up-circle"></i><span class="icon-title">Boot 3.5 &rarr; 4.x</span></div>
         </div>
         <ul>
-          <li>Clean machine to running app: <span class="mono">docker compose up</span> + <span class="mono">mvn verify</span></li>
-          <li>Add CI/CD pipeline (GitHub Actions)</li>
+          <li>Clean machine to running app: <span class="mono">mvn verify</span> (a <span class="mono">docker-compose.yml</span> local stack is forthcoming)</li>
+          <li>Validate the scaffolded CI/CD pipeline (GitHub Actions)</li>
           <li>Run OWASP scan; add prod profile + externalize JWT</li>
           <li>Plan Spring Boot 3.5 &rarr; 4.x <span class="muted">(3.5 OSS EOL 2026-06-30)</span></li>
         </ul>
@@ -651,12 +651,12 @@ graph LR
       <!-- ============ SLIDE 16 — CLOSING ============ -->
       <section class="slide-closing" data-transition="slide">
         <div class="divider-icon"><i data-lucide="check-circle-2"></i></div>
-        <h1>CardDemo is Live on Modern Java</h1>
-        <p class="subtitle">100% behavioral parity, fully tested, observable, and cloud-ready. Questions?</p>
+        <h1>CardDemo Migration: Foundation Delivered</h1>
+        <p class="subtitle">Data &amp; domain foundation delivered and observable from day one &mdash; on track for 100% behavioral parity. Questions?</p>
         <div class="kpi-strip">
-          <div class="kpi-card kpi-primary"><span class="kpi-value">90.1%</span><span class="kpi-label">Complete</span></div>
-          <div class="kpi-card kpi-success"><span class="kpi-value">888</span><span class="kpi-label">Tests Passing</span></div>
-          <div class="kpi-card"><span class="kpi-value">81.5%</span><span class="kpi-label">Line Coverage</span></div>
+          <div class="kpi-card kpi-primary"><span class="kpi-value">CP1</span><span class="kpi-label">Foundation Delivered</span></div>
+          <div class="kpi-card kpi-success"><span class="kpi-value">11</span><span class="kpi-label">Entities + Repositories</span></div>
+          <div class="kpi-card"><span class="kpi-value">0</span><span class="kpi-label">Build Warnings</span></div>
         </div>
         <div class="wordmark" style="margin-top:1.2em;"><span class="dot"></span> Delivered by <b>Blitzy</b></div>
       </section>

@@ -46,14 +46,17 @@ import java.time.LocalDate;
  *       COACTVW screen width differs, it is noted inline (SSN, ZIP, phone).</li>
  * </ul>
  *
- * <h2>PII / SSN handling (decision-log item)</h2>
- * <p>{@code CUST-SSN} is sensitive PII. To preserve the legacy screen contract
- * (validation Gates 1 and 5), the raw value is carried by default; however,
- * masking to the last four digits in REST responses is recommended. This class
- * therefore offers {@link #maskSsn(String)} and {@link #withMaskedSsn()}; the
- * <em>producing service</em> decides whether to mask. Masking preserves the
- * {@link String} type and the 9-character record width. No password or other
- * credential is ever carried by this DTO.</p>
+ * <h2>PII / SSN handling (decision log D-023)</h2>
+ * <p>{@code CUST-SSN} is sensitive PII. This response therefore <strong>always
+ * masks the SSN to its last four digits</strong> (for example {@code *****6789}):
+ * the canonical constructor applies {@link #maskSsn(String)} so a full nine-digit
+ * SSN can never be serialized to JSON or leak through the record's generated
+ * {@code toString()}. Masking preserves the {@link String} type and the
+ * 9-character record width, so the account-view panel still shows the trailing
+ * digits; only the concealed leading digits differ from the legacy screen. This
+ * is a deliberate, logged security deviation from literal parity (decision log
+ * D-023, analogous to the D-002 BCrypt upgrade). No password or other credential
+ * is ever carried by this DTO.</p>
  *
  * <p>Instances are immutable, thread-safe, stateless holders (Java record).</p>
  *
@@ -81,7 +84,7 @@ import java.time.LocalDate;
  * @param zipCode                    CUST-ADDR-ZIP {@code PIC X(10)} (screen ACSZIPC is X(5)).
  * @param phoneNumber1               CUST-PHONE-NUM-1 {@code PIC X(15)} (screen ACSPHN1 is X(13), formatted).
  * @param phoneNumber2               CUST-PHONE-NUM-2 {@code PIC X(15)}.
- * @param ssn                        CUST-SSN {@code PIC 9(09)} (screen ACSTSSN is X(12)); PII &mdash; see {@link #maskSsn(String)}.
+ * @param ssn                        CUST-SSN {@code PIC 9(09)} (screen ACSTSSN is X(12)); PII &mdash; always stored masked to the last four digits by the canonical constructor (see {@link #maskSsn(String)}).
  * @param govtIssuedId               CUST-GOVT-ISSUED-ID {@code PIC X(20)}.
  * @param dateOfBirth                CUST-DOB-YYYY-MM-DD {@code PIC X(10)} (ISO yyyy-MM-dd).
  * @param eftAccountId               CUST-EFT-ACCOUNT-ID {@code PIC X(10)}.
@@ -143,7 +146,7 @@ public record AccountViewResponse(
         @Size(max = 15) String phoneNumber1,
         // CUST-PHONE-NUM-2 PIC X(15).
         @Size(max = 15) String phoneNumber2,
-        // CUST-SSN PIC 9(09) (screen ACSTSSN is X(12)); PII — see maskSsn/withMaskedSsn.
+        // CUST-SSN PIC 9(09) (screen ACSTSSN is X(12)); PII — always masked to last 4 by the canonical constructor (see maskSsn).
         @Size(max = 9) String ssn,
         // CUST-GOVT-ISSUED-ID PIC X(20).
         @Size(max = 20) String govtIssuedId,
@@ -165,12 +168,24 @@ public record AccountViewResponse(
     private static final int SSN_VISIBLE_DIGITS = 4;
 
     /**
-     * Canonical constructor that enforces the scale-2 invariant for every
-     * monetary field. Applying {@link BigDecimal#setScale(int, RoundingMode)}
-     * with {@link RoundingMode#HALF_UP} here guarantees that the DTO always
-     * carries {@code PIC S9(10)V99}-equivalent precision (AAP &sect;0.8.2),
-     * regardless of the scale of the values supplied by the mapping layer.
-     * {@code null} money values are preserved as {@code null}.
+     * Canonical constructor that enforces two invariants on every instance:
+     *
+     * <ol>
+     *   <li><strong>Scale-2 money.</strong> Applying
+     *       {@link BigDecimal#setScale(int, RoundingMode)} with
+     *       {@link RoundingMode#HALF_UP} guarantees that the DTO always carries
+     *       {@code PIC S9(10)V99}-equivalent precision (AAP &sect;0.8.2),
+     *       regardless of the scale supplied by the mapping layer; {@code null}
+     *       money values are preserved as {@code null}.</li>
+     *   <li><strong>Masked SSN (security).</strong> The {@link #ssn()} is always
+     *       reduced to its last four digits via {@link #maskSsn(String)} so this
+     *       response can <em>never</em> carry a full {@code CUST-SSN}. This closes
+     *       the PII exposure through JSON serialization and the record's generated
+     *       {@code toString()}; the raw nine-digit value is intentionally not
+     *       retained (see the "PII / SSN handling" note and decision log D-023).
+     *       Masking is idempotent, so an already-masked value passes through
+     *       unchanged.</li>
+     * </ol>
      */
     public AccountViewResponse {
         currentBalance = normalizeMoney(currentBalance);
@@ -178,6 +193,7 @@ public record AccountViewResponse(
         cashCreditLimit = normalizeMoney(cashCreditLimit);
         currentCycleCredit = normalizeMoney(currentCycleCredit);
         currentCycleDebit = normalizeMoney(currentCycleDebit);
+        ssn = maskSsn(ssn);
     }
 
     /**
@@ -215,25 +231,5 @@ public record AccountViewResponse(
         }
         String visible = digits.substring(digits.length() - SSN_VISIBLE_DIGITS);
         return "*".repeat(digits.length() - SSN_VISIBLE_DIGITS) + visible;
-    }
-
-    /**
-     * Returns a copy of this response with the {@link #ssn()} masked to its
-     * last four digits (see {@link #maskSsn(String)}). All other fields are
-     * carried over unchanged. The producing service uses this when it elects to
-     * redact PII in REST responses; the raw value is retained otherwise so the
-     * legacy screen contract (Gates 1 and 5) is preserved by default.
-     *
-     * @return a new, immutable {@code AccountViewResponse} with a masked SSN
-     */
-    public AccountViewResponse withMaskedSsn() {
-        return new AccountViewResponse(
-                accountId, activeStatus, currentBalance, creditLimit, cashCreditLimit,
-                currentCycleCredit, currentCycleDebit, openDate, expirationDate, reissueDate,
-                accountGroupId, version,
-                customerId, firstName, middleName, lastName, addressLine1, addressLine2,
-                city, stateCode, countryCode, zipCode, phoneNumber1, phoneNumber2,
-                maskSsn(ssn), govtIssuedId, dateOfBirth, eftAccountId,
-                primaryCardHolderIndicator, ficoScore);
     }
 }
