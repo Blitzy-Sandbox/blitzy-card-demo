@@ -5,7 +5,6 @@ import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
@@ -42,7 +41,10 @@ import org.testcontainers.utility.DockerImageName;
  *       batch jobs disabled, tracing/OTLP export off). That profile deliberately
  *       omits the datasource URL/username/password; they are injected below.</li>
  *   <li>{@link Testcontainers @Testcontainers} — enables the JUnit&nbsp;5
- *       extension that manages the {@link Container @Container} lifecycle.</li>
+ *       Testcontainers extension. The shared PostgreSQL container itself is
+ *       started once via the singleton-container pattern (a {@code static}
+ *       initializer, no {@code @Container}) so it survives across every concrete
+ *       subclass in the JVM.</li>
  * </ul>
  *
  * <h2>Real Flyway migrations and seed data</h2>
@@ -98,13 +100,22 @@ public abstract class AbstractRepositoryTest {
 
     /**
      * The shared PostgreSQL&nbsp;16 container backing every repository slice
-     * test. It is {@code static} so the {@link Testcontainers} extension starts
-     * it once per test class and, when the developer has enabled reuse
-     * ({@code testcontainers.reuse.enable=true} in {@code ~/.testcontainers.properties}),
-     * keeps a single container alive across the concrete subclasses and across
-     * runs — a pure performance optimization that never changes behaviour. If
-     * reuse is not enabled the container degrades gracefully to the normal
-     * per-class lifecycle.
+     * test. It follows the Testcontainers <em>singleton-container</em> pattern
+     * (the same approach as {@code AbstractBatchIntegrationTest}): the container
+     * is {@code static} and is started once in the {@code static} initializer
+     * below and is deliberately <strong>not</strong> annotated with
+     * {@code @Container}. A single instance is therefore shared across every
+     * concrete {@code *RepositoryTest} subclass in the JVM and is reaped by Ryuk
+     * at JVM exit.
+     *
+     * <p>The singleton start is required for correctness, not merely performance:
+     * because this {@code static} field is inherited by all subclasses, annotating
+     * it with {@code @Container} would let the JUnit&nbsp;5 extension stop the one
+     * shared container after the first subclass finishes, leaving every subsequent
+     * repository test class unable to connect — unless Testcontainers reuse
+     * ({@code testcontainers.reuse.enable=true}) happened to keep it alive. Starting
+     * it manually here is correct regardless of the reuse flag; {@code withReuse(true)}
+     * is retained purely as an opt-in cross-run speed-up.</p>
      *
      * <p>The image tag is exactly {@code postgres:16}, matching the tag used by
      * the sibling root context test so the whole suite pulls a single image.</p>
@@ -114,10 +125,15 @@ public abstract class AbstractRepositoryTest {
      * {@code org.testcontainers.containers.PostgreSQLContainer} is deprecated in
      * 2.x and referencing it would raise a {@code -Xlint:deprecation} warning.</p>
      */
-    @Container
     static final PostgreSQLContainer POSTGRES =
             new PostgreSQLContainer(DockerImageName.parse("postgres:16"))
                     .withReuse(true);
+
+    static {
+        // Singleton-container pattern: start the shared PostgreSQL 16 instance exactly once so it
+        // stays up for every concrete *RepositoryTest subclass in this JVM (Ryuk reaps it at exit).
+        POSTGRES.start();
+    }
 
     /**
      * Registers the running container's JDBC URL, username and password as

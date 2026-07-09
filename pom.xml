@@ -81,6 +81,13 @@
         <!-- Libraries not governed by any imported BOM (pinned explicitly). -->
         <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
         <jjwt.version>0.12.6</jjwt.version>
+        <!--
+          Awaitility — bounded, no-Thread.sleep polling for asynchronous integration tests
+          (e.g. the SQS FIFO -> @SqsListener -> Spring Batch -> S3 report bridge in
+          ReportJobLauncherIT). Test scope only; not governed by the Spring Boot BOM, so pinned
+          explicitly to the 4.2.x line (4.2.2).
+        -->
+        <awaitility.version>4.2.2</awaitility.version>
 
         <!-- ================= Pinned build-plugin versions ================= -->
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
@@ -335,6 +342,18 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>testcontainers-localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Awaitility — bounded polling for asynchronous integration tests. Used by
+          ReportJobLauncherIT to await the SQS FIFO -> @SqsListener -> transactionReportJob -> S3
+          report artifact without any Thread.sleep. Pinned explicitly (not BOM-managed).
+        -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>${awaitility.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
