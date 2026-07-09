@@ -3,6 +3,13 @@ nav:
   - Home: index.md
   - Project Guide: project-guide.md
   - Technical Specifications: technical-specifications.md
+  - Onboarding: onboarding.md
+  - Decision Log: decision-log.md
+  - Traceability Matrix: traceability-matrix.md
+  - Architecture:
+      - Overview: architecture/overview.md
+      - Component Interactions: architecture/component-interactions.md
+      - Data Flow: architecture/data-flow.md
 plugins:
   - techdocs-core
   - mermaid2

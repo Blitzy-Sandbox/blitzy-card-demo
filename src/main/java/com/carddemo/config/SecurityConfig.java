@@ -83,9 +83,19 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class SecurityConfig {
 
     /**
-     * Public signon endpoint that issues the JWT; must be reachable without a token. The canonical
-     * route is {@code /api/auth/signin} (COBOL signon transaction CC00 / program COSGN00C), matching
-     * the AuthController mapping, the onboarding guide, and the technical specification.
+     * Public signon endpoint that issues the JWT; must be reachable without a token. This is the
+     * actual route exposed by {@code AuthController} ({@code @RequestMapping("/api/auth")} +
+     * {@code @PostMapping("/login")}) for the COBOL signon transaction CC00 / program COSGN00C. A
+     * login endpoint that required prior authentication would be a chicken-and-egg contradiction, so
+     * it is explicitly {@code permitAll()}.
+     */
+    private static final String LOGIN_PATH = "/api/auth/login";
+
+    /**
+     * Legacy alias for the signon endpoint, retained as {@code permitAll()} for backward
+     * compatibility with clients and tests that reference {@code /api/auth/signin}. The live
+     * controller mapping is {@link #LOGIN_PATH}; this alias is harmless when no handler is bound to
+     * it (an unauthenticated caller simply receives a 404 rather than a 401).
      */
     private static final String SIGNON_PATH = "/api/auth/signin";
 
@@ -223,6 +233,7 @@ public class SecurityConfig {
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable())
             .authorizeHttpRequests(auth -> auth
+                .requestMatchers(HttpMethod.POST, LOGIN_PATH).permitAll()
                 .requestMatchers(HttpMethod.POST, SIGNON_PATH).permitAll()
                 .requestMatchers(PUBLIC_ACTUATOR_PATHS).permitAll()
                 .requestMatchers(ADMIN_PATHS).hasRole(ROLE_ADMIN)

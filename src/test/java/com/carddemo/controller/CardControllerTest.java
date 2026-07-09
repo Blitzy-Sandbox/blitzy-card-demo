@@ -1,6 +1,11 @@
 package com.carddemo.controller;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.everyItem;
+import static org.hamcrest.Matchers.hasSize;
+import static org.hamcrest.Matchers.matchesPattern;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.verify;
@@ -8,26 +13,29 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.Mock;
-import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
-import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
+import org.springframework.security.test.context.support.WithAnonymousUser;
+import org.springframework.security.test.context.support.WithMockUser;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.test.web.servlet.setup.MockMvcBuilders;
-import org.springframework.validation.beanvalidation.MethodValidationInterceptor;
 
+import com.carddemo.config.SecurityConfig;
+import com.carddemo.config.WebConfig;
 import com.carddemo.dto.CardListItem;
 import com.carddemo.dto.CardListResponse;
 import com.carddemo.dto.CardUpdateRequest;
@@ -36,258 +44,340 @@ import com.carddemo.dto.CardViewResponse;
 import com.carddemo.dto.PageResponse;
 import com.carddemo.exception.OptimisticLockConflictException;
 import com.carddemo.exception.ResourceNotFoundException;
+import com.carddemo.observability.CorrelationIdFilter;
 import com.carddemo.service.CardListService;
 import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.CardViewService;
+import com.carddemo.service.JwtService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * Web-layer unit test for {@link CardController} &mdash; the REST controller migrated from the
- * legacy CICS/BMS programs {@code COCRDLIC} (CCLI, card list), {@code COCRDSLC} (CCDL, card view)
- * and {@code COCRDUPC} (CCUP, card update) at frozen source commit SHA {@code 27d6c6f}.
+ * Web-slice test for {@link CardController} &mdash; the Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.5
+ * REST replacement for three legacy CICS/BMS 3270 programs (frozen COBOL source referenced
+ * read-only at commit SHA {@code 27d6c6f}): {@code COCRDLIC} (transaction {@code CCLI}, card
+ * list), {@code COCRDSLC} ({@code CCDL}, card view) and {@code COCRDUPC} ({@code CCUP}, card
+ * update).
  *
- * <p>The suite drives the controller through {@link MockMvc} with the three service collaborators
- * supplied as Mockito mocks, so it loads <strong>no</strong> Spring application context, no
- * security configuration, no database, and no AWS &mdash; keeping it fast, deterministic, and
- * fully decoupled from the other modules assembled in parallel. Two deliberate wiring choices make
- * the standalone setup behave like the running application:</p>
+ * <h2>Harness</h2>
+ * <p>The suite runs as a Spring MVC slice ({@link WebMvcTest}) that loads only the web layer for
+ * {@link CardController}, so it is fast and hermetic yet exercises the <em>real</em> HTTP stack:
+ * the shared {@link com.carddemo.controller.GlobalExceptionHandler @RestControllerAdvice} (auto
+ * detected by the slice) maps domain failures to their HTTP statuses, and the imported
+ * {@link SecurityConfig}, {@link CorrelationIdFilter} and {@link WebConfig} supply the production
+ * security filter chain, the correlation-id filter and the JSON/validation web contracts. The
+ * three card services and {@link JwtService} are replaced with Mockito mocks so no database, no
+ * AWS and no real token verification is required.</p>
+ *
+ * <p>Mockito bean overrides use {@link MockitoBean} &mdash; the non-deprecated Spring&nbsp;Boot
+ * 3.4+ replacement for {@code @MockBean} &mdash; so the build stays warning-free under
+ * {@code -Xlint:all} (Gate&nbsp;2) while preserving the mandated slice wiring
+ * ({@code @MockBean JwtService}; real {@link CorrelationIdFilter}).</p>
+ *
+ * <h2>Parity and security invariants asserted</h2>
  * <ul>
- *   <li>the shared {@link GlobalExceptionHandler} advice is registered, so domain exceptions map to
- *       their HTTP statuses (400 / 404 / 409) exactly as they do in production; and</li>
- *   <li>the controller is wrapped in a <em>method-validation AOP proxy</em>
- *       ({@link MethodValidationInterceptor}) so that the class-level {@code @Validated} together
- *       with the parameter constraints ({@code @Min} on {@code page}, {@code @Pattern}/{@code @Size}
- *       /{@code @NotBlank} on the card-number path variable) are enforced &mdash; reproducing the
- *       {@code MethodValidationPostProcessor} behaviour that {@code standaloneSetup} does not apply
- *       on its own.</li>
+ *   <li><strong>Fixed page size seven</strong> &mdash; the {@code COCRDLIC} screen array
+ *       {@code OCCURS 7 TIMES} ({@code WS-MAX-SCREEN-LINES VALUE 7}); the list page therefore
+ *       carries {@code pageSize == 7}.</li>
+ *   <li><strong>No PAN leakage / no CVV</strong> &mdash; every card number is masked to its last
+ *       four digits and no response ever contains a full sixteen-digit Primary Account Number or
+ *       any {@code cvv} field (AAP no-leakage requirement, Gate&nbsp;5).</li>
+ *   <li><strong>Optimistic-lock conflict</strong> &mdash; {@code COCRDUPC}'s
+ *       "record changed by someone else" detection surfaces as HTTP&nbsp;409 with the byte-exact
+ *       message {@code "Record changed by some one else. Please review"}.</li>
+ *   <li><strong>Filter / input validation</strong> &mdash; malformed list filters and card-number
+ *       path variables are rejected with HTTP&nbsp;400 ({@code VALIDATION_ERROR}) before any
+ *       service is invoked; an unknown card yields HTTP&nbsp;404.</li>
+ *   <li><strong>Authentication &amp; observability</strong> &mdash; {@code /api/cards/**} requires
+ *       an authenticated caller (any role); anonymous access yields HTTP&nbsp;401, and every error
+ *       body carries the MDC {@code correlationId}.</li>
  * </ul>
- *
- * <p>The Jackson converter is configured with the JSR-310 module so {@link LocalDate} request and
- * response fields serialize as ISO-8601 strings, matching the application's message converter.</p>
- *
- * <p>Behavioural assertions cover the AAP requirements for this file: the Card List page size is a
- * fixed seven rows and the filters are echoed; the one-based REST {@code page} is bridged to the
- * zero-based Spring Data index the service expects; card numbers are always masked and no CVV is
- * ever emitted; and every failure path (validation 400, not-found 404, optimistic-lock conflict
- * 409) is surfaced by the advice rather than caught in the controller.</p>
  */
-@ExtendWith(MockitoExtension.class)
-@DisplayName("CardController — card list (CCLI) + view (CCDL) + update (CCUP) REST endpoints")
+@WebMvcTest(controllers = CardController.class)
+@Import({SecurityConfig.class, CorrelationIdFilter.class, WebConfig.class})
+@DisplayName("CardController — card list (CCLI) + view (CCDL) + update (CCUP) web slice")
 class CardControllerTest {
 
+    /** Base path for the migrated card endpoints. */
+    private static final String CARDS_PATH = "/api/cards";
+
+    /** A representative 16-digit card number (PAN) used as the unmasked service-side value. */
     private static final String CARD_NUMBER = "4111111111111111";
+
+    /** The expected masked rendering of {@link #CARD_NUMBER}: twelve mask characters then last four. */
     private static final String MASKED_CARD = "************1111";
+
+    /** An 11-digit account identifier ({@code CARD-ACCT-ID PIC 9(11)}); never a 16-digit run. */
     private static final String ACCOUNT_ID = "00000000011";
 
-    @Mock
-    private CardListService cardListService;
+    /** Regex matching a fully masked card number ("one-or-more '*' then exactly four digits"). */
+    private static final String MASK_PATTERN = "\\*+\\d{4}";
 
-    @Mock
-    private CardViewService cardViewService;
+    /** Regex whose presence anywhere in a payload would indicate a leaked full PAN. */
+    private static final String FULL_PAN_PATTERN = "\\d{16}";
 
-    @Mock
-    private CardUpdateService cardUpdateService;
-
+    @Autowired
     private MockMvc mockMvc;
 
-    @BeforeEach
-    void setUp() {
-        CardController target = new CardController(cardListService, cardViewService, cardUpdateService);
+    @Autowired
+    private ObjectMapper objectMapper;
 
-        // Wrap the controller in a method-validation proxy so the class-level @Validated and the
-        // parameter constraints are enforced, matching the running application's
-        // MethodValidationPostProcessor (which MockMvcBuilders.standaloneSetup does not add).
-        ProxyFactory proxyFactory = new ProxyFactory(target);
-        proxyFactory.setProxyTargetClass(true);
-        proxyFactory.addAdvice(new MethodValidationInterceptor());
-        CardController controller = (CardController) proxyFactory.getProxy();
+    @MockitoBean
+    private CardListService cardListService;
 
-        MappingJackson2HttpMessageConverter converter = new MappingJackson2HttpMessageConverter();
-        converter.setObjectMapper(new ObjectMapper().findAndRegisterModules());
+    @MockitoBean
+    private CardViewService cardViewService;
 
-        mockMvc = MockMvcBuilders.standaloneSetup(controller)
-                .setControllerAdvice(new GlobalExceptionHandler())
-                .setMessageConverters(converter)
-                .build();
-    }
+    @MockitoBean
+    private CardUpdateService cardUpdateService;
 
-    /** A one-row list page with the fixed size of seven, carrying an already-masked card row. */
-    private CardListResponse sampleListResponse() {
-        CardListItem row = new CardListItem(ACCOUNT_ID, CARD_NUMBER, "Y");
-        PageResponse<CardListItem> page =
-                PageResponse.of(List.of(row), 1, CardListResponse.PAGE_SIZE, 1L);
+    @MockitoBean
+    private JwtService jwtService;
+
+    // ---------------------------------------------------------------------------------------------
+    // Fixtures
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * Builds a Card List page carrying the fixed seven rows of the legacy {@code COCRDLI} screen.
+     * Every row's card number is masked by the {@link CardListItem} canonical constructor, so the
+     * page never exposes a full PAN.
+     *
+     * @return a {@link CardListResponse} whose page has {@code pageSize == 7} and seven masked rows
+     */
+    private CardListResponse sevenRowListResponse() {
+        final List<CardListItem> rows = new ArrayList<>(CardListResponse.PAGE_SIZE);
+        for (int i = 1; i <= CardListResponse.PAGE_SIZE; i++) {
+            // Distinct 16-digit PANs (…1111 … …1117); each is masked to its last four digits.
+            rows.add(new CardListItem(ACCOUNT_ID, "411111111111111" + i, "Y"));
+        }
+        final PageResponse<CardListItem> page =
+                PageResponse.of(rows, 1, CardListResponse.PAGE_SIZE, CardListResponse.PAGE_SIZE);
         return new CardListResponse(ACCOUNT_ID, null, page);
     }
 
-    /** A representative card view (the DTO canonical constructor masks the PAN and omits any CVV). */
+    /**
+     * A representative single-card detail projection. The {@link CardViewResponse} canonical
+     * constructor masks the PAN and the type carries no CVV field at all.
+     *
+     * @return a masked, CVV-free {@link CardViewResponse}
+     */
     private CardViewResponse sampleViewResponse() {
         return new CardViewResponse(ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC", "Y",
+                LocalDate.of(2027, 5, 31), 7L);
+    }
+
+    /**
+     * A well-formed update request (digits-only ids, {@code Y}/{@code N} status, ISO date).
+     *
+     * @return a valid {@link CardUpdateRequest}
+     */
+    private CardUpdateRequest validUpdateRequest() {
+        return new CardUpdateRequest(ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC", "Y",
                 LocalDate.of(2027, 5, 31), 0L);
     }
 
-    /** A valid update request body as JSON (digits-only ids, Y/N status, ISO date, echoed version). */
-    private String validUpdateBody() {
-        return "{\"accountId\":\"" + ACCOUNT_ID + "\",\"cardNumber\":\"" + CARD_NUMBER + "\","
-                + "\"embossedName\":\"JOHN Q PUBLIC\",\"activeStatus\":\"Y\","
-                + "\"expirationDate\":\"2027-05-31\",\"version\":0}";
-    }
+    // ---------------------------------------------------------------------------------------------
+    // GET /api/cards — card list (COCRDLIC / CCLI)
+    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("GET /api/cards — card list (COCRDLIC / CCLI)")
     class ListCards {
 
         @Test
-        @DisplayName("page=1 -> 200, page size 7, filters echoed, masked card row")
-        void listReturnsPageOfSevenWithEchoedFilters() throws Exception {
-            when(cardListService.listCards(any(), any(), eq(0))).thenReturn(sampleListResponse());
+        @WithMockUser(roles = "USER")
+        @DisplayName("authenticated -> 200, fixed page size 7, masked rows, one-based page bridged to zero-based")
+        void listReturns200WithPageSizeSevenAndMaskedRows() throws Exception {
+            when(cardListService.listCards(any(), any(), anyInt())).thenReturn(sevenRowListResponse());
 
-            mockMvc.perform(get("/api/cards").param("page", "1").param("accountId", "11"))
+            mockMvc.perform(get(CARDS_PATH).param("accountId", "11").param("page", "1"))
                     .andExpect(status().isOk())
+                    // COCRDLIC OCCURS 7 TIMES -> the page size is exactly seven.
+                    .andExpect(jsonPath("$.page.pageSize").value(CardListResponse.PAGE_SIZE))
                     .andExpect(jsonPath("$.page.pageSize").value(7))
+                    // Seven rows on the page (<= the fixed page size), every card number masked.
+                    .andExpect(jsonPath("$.page.content", hasSize(7)))
+                    .andExpect(jsonPath("$.page.content[*].cardNumber", everyItem(matchesPattern(MASK_PATTERN))))
+                    .andExpect(jsonPath("$.page.content[0].cardNumber").value(MASKED_CARD))
                     .andExpect(jsonPath("$.accountIdFilter").value(ACCOUNT_ID))
-                    .andExpect(jsonPath("$.page.pageNumber").value(1))
-                    .andExpect(jsonPath("$.page.content[0].cardNumber").value(MASKED_CARD));
+                    .andExpect(jsonPath("$.page.pageNumber").value(1));
 
-            // One-based REST page 1 is bridged to zero-based service page 0.
+            // PF7/PF8 scroll bridge: one-based REST page 1 delegates to zero-based service page 0.
             verify(cardListService).listCards(eq(11L), isNull(), eq(0));
         }
 
         @Test
-        @DisplayName("default (no page) -> service invoked with zero-based page 0")
-        void defaultPageBridgesToZero() throws Exception {
-            when(cardListService.listCards(any(), any(), eq(0))).thenReturn(sampleListResponse());
+        @WithMockUser(roles = "USER")
+        @DisplayName("response never leaks a full PAN and never carries a cvv field")
+        void listDoesNotLeakFullPanOrCvv() throws Exception {
+            when(cardListService.listCards(any(), any(), anyInt())).thenReturn(sevenRowListResponse());
 
-            mockMvc.perform(get("/api/cards")).andExpect(status().isOk());
+            final String body = mockMvc.perform(get(CARDS_PATH))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
 
-            verify(cardListService).listCards(isNull(), isNull(), eq(0));
+            assertThat(body).doesNotContainPattern(FULL_PAN_PATTERN);
+            assertThat(body.toLowerCase(Locale.ROOT)).doesNotContain("cvv");
         }
 
         @Test
-        @DisplayName("page=3 -> service invoked with zero-based page 2 (PF7/PF8 scroll bridge)")
-        void page3BridgesToServicePage2() throws Exception {
-            when(cardListService.listCards(any(), any(), eq(2))).thenReturn(sampleListResponse());
-
-            mockMvc.perform(get("/api/cards").param("page", "3")).andExpect(status().isOk());
-
-            verify(cardListService).listCards(isNull(), isNull(), eq(2));
-        }
-
-        @Test
-        @DisplayName("page=0 violates @Min(1) -> 400, service never called")
-        void pageBelowMinimumIsRejected() throws Exception {
-            mockMvc.perform(get("/api/cards").param("page", "0"))
-                    .andExpect(status().isBadRequest());
+        @WithMockUser(roles = "USER")
+        @DisplayName("oversized cardNumber filter (>16) violates @Size -> 400 VALIDATION_ERROR, service never called")
+        void listOversizedCardFilterReturns400AndSkipsService() throws Exception {
+            mockMvc.perform(get(CARDS_PATH).param("cardNumber", "12345678901234567"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                    .andExpect(jsonPath("$.correlationId").isNotEmpty());
 
             verifyNoInteractions(cardListService);
         }
 
         @Test
-        @DisplayName("cardNumber filter longer than 16 violates @Size -> 400, service never called")
-        void oversizedCardFilterIsRejected() throws Exception {
-            mockMvc.perform(get("/api/cards").param("cardNumber", "12345678901234567"))
-                    .andExpect(status().isBadRequest());
+        @WithAnonymousUser
+        @DisplayName("anonymous -> 401 with generic body carrying the correlationId; service never called")
+        void listAnonymousReturns401() throws Exception {
+            mockMvc.perform(get(CARDS_PATH))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().exists(CorrelationIdFilter.CORRELATION_ID_HEADER))
+                    .andExpect(jsonPath("$.status").value(401))
+                    .andExpect(jsonPath("$.code").value("UNAUTHORIZED"))
+                    .andExpect(jsonPath("$.message").value("Authentication required"))
+                    .andExpect(jsonPath("$.correlationId").isNotEmpty());
 
             verifyNoInteractions(cardListService);
         }
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // GET /api/cards/{cardNumber} — card view (COCRDSLC / CCDL)
+    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("GET /api/cards/{cardNumber} — card view (COCRDSLC / CCDL)")
     class ViewCard {
 
         @Test
-        @DisplayName("valid -> 200 with masked PAN, version echoed, and no CVV field")
-        void viewReturnsMaskedCardWithoutCvv() throws Exception {
+        @WithMockUser(roles = "USER")
+        @DisplayName("valid -> 200, masked PAN, version echoed, and no CVV field anywhere")
+        void viewReturns200MaskedNoCvv() throws Exception {
             when(cardViewService.viewCard(eq(CARD_NUMBER))).thenReturn(sampleViewResponse());
 
-            mockMvc.perform(get("/api/cards/{cardNumber}", CARD_NUMBER))
+            final String body = mockMvc.perform(get(CARDS_PATH + "/{cardNumber}", CARD_NUMBER))
                     .andExpect(status().isOk())
                     .andExpect(jsonPath("$.cardNumber").value(MASKED_CARD))
+                    .andExpect(jsonPath("$.cardNumber", matchesPattern(MASK_PATTERN)))
                     .andExpect(jsonPath("$.accountId").value(ACCOUNT_ID))
                     .andExpect(jsonPath("$.expirationDate").value("2027-05-31"))
-                    .andExpect(jsonPath("$.version").value(0))
+                    .andExpect(jsonPath("$.version").value(7))
+                    // The COCRDSL projection has no CVV under any spelling.
                     .andExpect(jsonPath("$.cvv").doesNotExist())
-                    .andExpect(jsonPath("$.cardCvvCd").doesNotExist());
+                    .andExpect(jsonPath("$.cardCvvCd").doesNotExist())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(body).doesNotContainPattern(FULL_PAN_PATTERN);
+            assertThat(body.toLowerCase(Locale.ROOT)).doesNotContain("cvv");
+            verify(cardViewService).viewCard(CARD_NUMBER);
         }
 
         @Test
-        @DisplayName("unknown card -> 404 (service throws ResourceNotFoundException)")
-        void viewNotFoundReturns404() throws Exception {
+        @WithMockUser(roles = "USER")
+        @DisplayName("unknown card -> 404 (service raises ResourceNotFoundException)")
+        void viewUnknownReturns404() throws Exception {
             when(cardViewService.viewCard(eq(CARD_NUMBER)))
                     .thenThrow(new ResourceNotFoundException("Did not find this account in cards database"));
 
-            mockMvc.perform(get("/api/cards/{cardNumber}", CARD_NUMBER))
-                    .andExpect(status().isNotFound());
+            mockMvc.perform(get(CARDS_PATH + "/{cardNumber}", CARD_NUMBER))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.status").value(404));
         }
 
         @Test
-        @DisplayName("non-numeric path variable violates @Pattern -> 400, service never called")
-        void viewNonNumericPathVariableReturns400() throws Exception {
-            mockMvc.perform(get("/api/cards/{cardNumber}", "abc"))
-                    .andExpect(status().isBadRequest());
+        @WithMockUser(roles = "USER")
+        @DisplayName("non-numeric card number violates @Pattern -> 400 VALIDATION_ERROR, service never called")
+        void viewNonNumericReturns400ValidationError() throws Exception {
+            mockMvc.perform(get(CARDS_PATH + "/{cardNumber}", "abc"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"));
 
             verifyNoInteractions(cardViewService);
         }
+
+        @Test
+        @WithMockUser(roles = "USER")
+        @DisplayName("error body carries the correlationId and the X-Correlation-Id response header")
+        void viewErrorBodyCarriesCorrelationId() throws Exception {
+            when(cardViewService.viewCard(eq(CARD_NUMBER)))
+                    .thenThrow(new ResourceNotFoundException("Did not find this account in cards database"));
+
+            mockMvc.perform(get(CARDS_PATH + "/{cardNumber}", CARD_NUMBER))
+                    .andExpect(status().isNotFound())
+                    .andExpect(header().exists(CorrelationIdFilter.CORRELATION_ID_HEADER))
+                    .andExpect(jsonPath("$.correlationId").isString())
+                    .andExpect(jsonPath("$.correlationId").isNotEmpty());
+        }
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // PUT /api/cards/{cardNumber} — card update (COCRDUPC / CCUP)
+    // ---------------------------------------------------------------------------------------------
 
     @Nested
     @DisplayName("PUT /api/cards/{cardNumber} — card update (COCRDUPC / CCUP)")
     class UpdateCard {
 
         @Test
-        @DisplayName("valid body -> 200 with confirmation, new version, and masked card snapshot")
-        void updateValidReturns200() throws Exception {
-            CardUpdateResponse response =
-                    new CardUpdateResponse(sampleViewResponse(), "Changes committed to database", 1L);
+        @WithMockUser(roles = "USER")
+        @DisplayName("valid body -> 200 with confirmation, new version, and masked card snapshot (no CVV)")
+        void updateValidReturns200MaskedCard() throws Exception {
+            final CardUpdateResponse response = CardUpdateResponse.withConfirmation(sampleViewResponse());
             when(cardUpdateService.updateCard(eq(CARD_NUMBER), any(CardUpdateRequest.class)))
                     .thenReturn(response);
 
-            mockMvc.perform(put("/api/cards/{cardNumber}", CARD_NUMBER)
+            final String body = mockMvc.perform(put(CARDS_PATH + "/{cardNumber}", CARD_NUMBER)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(validUpdateBody()))
+                            .content(objectMapper.writeValueAsString(validUpdateRequest())))
                     .andExpect(status().isOk())
-                    .andExpect(jsonPath("$.message").value("Changes committed to database"))
-                    .andExpect(jsonPath("$.version").value(1))
+                    .andExpect(jsonPath("$.message").value(CardUpdateResponse.SUCCESS_MESSAGE))
+                    .andExpect(jsonPath("$.version").value(7))
                     .andExpect(jsonPath("$.card.cardNumber").value(MASKED_CARD))
-                    .andExpect(jsonPath("$.card.cvv").doesNotExist());
+                    .andExpect(jsonPath("$.card.cardNumber", matchesPattern(MASK_PATTERN)))
+                    .andExpect(jsonPath("$.card.cvv").doesNotExist())
+                    .andReturn().getResponse().getContentAsString();
+
+            assertThat(body).doesNotContainPattern(FULL_PAN_PATTERN);
+            assertThat(body.toLowerCase(Locale.ROOT)).doesNotContain("cvv");
         }
 
         @Test
-        @DisplayName("optimistic-lock conflict -> 409 with record-changed message")
-        void updateOptimisticConflictReturns409() throws Exception {
+        @WithMockUser(roles = "USER")
+        @DisplayName("optimistic-lock conflict -> 409 with the byte-exact 'record changed' message")
+        void updateOptimisticConflictReturns409ExactMessage() throws Exception {
             when(cardUpdateService.updateCard(eq(CARD_NUMBER), any(CardUpdateRequest.class)))
                     .thenThrow(new OptimisticLockConflictException());
 
-            mockMvc.perform(put("/api/cards/{cardNumber}", CARD_NUMBER)
+            mockMvc.perform(put(CARDS_PATH + "/{cardNumber}", CARD_NUMBER)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(validUpdateBody()))
+                            .content(objectMapper.writeValueAsString(validUpdateRequest())))
                     .andExpect(status().isConflict())
-                    .andExpect(jsonPath("$.message").value("Record changed by some one else. Please review"));
+                    .andExpect(jsonPath("$.status").value(409))
+                    .andExpect(jsonPath("$.message")
+                            .value("Record changed by some one else. Please review"));
         }
 
         @Test
-        @DisplayName("unknown card -> 404 (service throws ResourceNotFoundException)")
-        void updateNotFoundReturns404() throws Exception {
-            when(cardUpdateService.updateCard(eq(CARD_NUMBER), any(CardUpdateRequest.class)))
-                    .thenThrow(new ResourceNotFoundException("Did not find this account in cards database"));
+        @WithMockUser(roles = "USER")
+        @DisplayName("invalid body (activeStatus not Y/N) -> 400 with non-empty fieldErrors, service never called")
+        void updateInvalidBodyReturns400WithFieldErrors() throws Exception {
+            // activeStatus "X" violates the CardUpdateRequest @Pattern("[YN]") edit (COCRDUPC field edit).
+            final CardUpdateRequest invalid = new CardUpdateRequest(
+                    ACCOUNT_ID, CARD_NUMBER, "JOHN Q PUBLIC", "X", LocalDate.of(2027, 5, 31), 0L);
 
-            mockMvc.perform(put("/api/cards/{cardNumber}", CARD_NUMBER)
+            mockMvc.perform(put(CARDS_PATH + "/{cardNumber}", CARD_NUMBER)
                             .contentType(MediaType.APPLICATION_JSON)
-                            .content(validUpdateBody()))
-                    .andExpect(status().isNotFound());
-        }
-
-        @Test
-        @DisplayName("invalid body (blank accountId, bad status) -> 400, service never called")
-        void updateInvalidBodyReturns400() throws Exception {
-            String invalidBody = "{\"accountId\":\"\",\"cardNumber\":\"" + CARD_NUMBER + "\","
-                    + "\"embossedName\":\"JOHN Q PUBLIC\",\"activeStatus\":\"X\","
-                    + "\"expirationDate\":\"2027-05-31\",\"version\":0}";
-
-            mockMvc.perform(put("/api/cards/{cardNumber}", CARD_NUMBER)
-                            .contentType(MediaType.APPLICATION_JSON)
-                            .content(invalidBody))
-                    .andExpect(status().isBadRequest());
+                            .content(objectMapper.writeValueAsString(invalid)))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("VALIDATION_ERROR"))
+                    .andExpect(jsonPath("$.fieldErrors").isNotEmpty());
 
             verifyNoInteractions(cardUpdateService);
         }

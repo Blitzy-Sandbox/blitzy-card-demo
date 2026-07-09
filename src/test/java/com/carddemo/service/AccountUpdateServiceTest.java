@@ -4,10 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.Optional;
@@ -17,14 +21,21 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.transaction.annotation.Transactional;
 
 import com.carddemo.dto.AccountUpdateRequest;
 import com.carddemo.dto.AccountUpdateResponse;
+import com.carddemo.dto.AccountViewResponse;
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Customer;
+import com.carddemo.exception.OptimisticLockConflictException;
+import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CustomerRepository;
@@ -43,7 +54,7 @@ import com.carddemo.repository.CustomerRepository;
  * genuine end-to-end message parity produced by the {@code EDIT-DATE-CCYYMMDD}
  * translation rather than a re-stated stub.</p>
  *
- * <p>Two concerns are covered:</p>
+ * <p>The suite covers the full behavioural surface of the transaction:</p>
  * <ul>
  *   <li><strong>Input-contract guard (review finding M8):</strong> a {@code null}
  *       request body is rejected with a typed HTTP-400
@@ -55,6 +66,21 @@ import com.carddemo.repository.CustomerRepository;
  *       its part-1 exclusion, the FICO range, mandatory/alphabetic text fields and
  *       numeric ZIP/EFT &mdash; is enforced at the service boundary with the exact
  *       legacy message literals, and every failing field is reported together.</li>
+ *   <li><strong>Optimistic-concurrency parity ({@code 9700-CHECK-CHANGE-IN-REC}):</strong>
+ *       a stale caller version is rejected as a 409
+ *       {@link OptimisticLockConflictException} <em>before</em> any write
+ *       (read-then-rewrite precheck), and a persistence-layer
+ *       {@link ObjectOptimisticLockingFailureException} raised on
+ *       {@code saveAndFlush} is wrapped as the same 409 with a cause.</li>
+ *   <li><strong>Record-not-found parity ({@code DFHRESP(NOTFND)}):</strong> a
+ *       missing cross-reference, account or customer record surfaces the verbatim
+ *       legacy message as a 404 {@link ResourceNotFoundException}.</li>
+ *   <li><strong>Commit and rollback parity ({@code 9600-WRITE-PROCESSING} /
+ *       {@code EXEC CICS SYNCPOINT ROLLBACK}):</strong> the happy path rewrites
+ *       <em>both</em> masters (account first, then customer) at decimal scale&nbsp;2,
+ *       returns the new optimistic-lock version, and any pre-write failure persists
+ *       nothing &mdash; the service method carries
+ *       {@code @Transactional(rollbackFor = Exception.class)}.</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -448,6 +474,378 @@ class AccountUpdateServiceTest {
         }
     }
 
+    // ====================================================================
+    // Transaction boundary (COACTUPC EXEC CICS SYNCPOINT ROLLBACK, L4100). The
+    // update must run under a single rollback-on-any-exception transaction so a
+    // failure on the customer rewrite undoes the account rewrite, keeping the two
+    // master records from ever diverging.
+    // ====================================================================
+
+    @Test
+    @DisplayName("updateAccount is @Transactional(rollbackFor = Exception.class) — SYNCPOINT ROLLBACK parity")
+    void updateAccount_isTransactionalRollbackForException() throws NoSuchMethodException {
+        final Method method =
+                AccountUpdateService.class.getMethod("updateAccount", Long.class, AccountUpdateRequest.class);
+        final Transactional tx = method.getAnnotation(Transactional.class);
+
+        assertThat(tx)
+                .as("updateAccount must declare @Transactional so both master writes commit or roll back together")
+                .isNotNull();
+        assertThat(tx.rollbackFor())
+                .as("rollback must fire for any Exception, mirroring EXEC CICS SYNCPOINT ROLLBACK")
+                .contains(Exception.class);
+    }
+
+    @Nested
+    @DisplayName("optimistic-concurrency parity (9700-CHECK-CHANGE-IN-REC)")
+    class OptimisticLocking {
+
+        /** The version the persisted account currently stands at; the caller must echo it. */
+        private static final long CURRENT_VERSION = 5L;
+
+        private Account account;
+        private Customer customer;
+
+        @BeforeEach
+        void resolveAndRead() {
+            account = new Account();
+            account.setAcctId(VALID_ACCOUNT_ID);
+            account.setVersion(CURRENT_VERSION);
+
+            customer = new Customer();
+            customer.setCustId(VALID_CUSTOMER_ID);
+
+            // Both tests reach the account+customer reads before diverging, so these
+            // three stubs are always exercised (Mockito strict-stub safe).
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID)).thenReturn(VALID_CUSTOMER_ID);
+            when(accountRepository.findById(VALID_ACCOUNT_ID)).thenReturn(Optional.of(account));
+            when(customerRepository.findById(VALID_CUSTOMER_ID)).thenReturn(Optional.of(customer));
+        }
+
+        @Test
+        @DisplayName("stale caller version -> 409 conflict BEFORE any write (no-cause precheck)")
+        void updateAccount_versionMismatch_throwsOptimisticLockConflict() {
+            // 9700-CHECK-CHANGE-IN-REC: the row now stands at version 5, but the caller
+            // last observed version 4, so the read-then-rewrite compare fails and the
+            // update is refused before either master is rewritten.
+            final AccountUpdateRequest stale = new Req().version(CURRENT_VERSION - 1L).build();
+
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, stale))
+                    .isInstanceOfSatisfying(OptimisticLockConflictException.class,
+                            ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.CONFLICT))
+                    .hasMessage(OptimisticLockConflictException.DEFAULT_MESSAGE)
+                    .hasNoCause();
+
+            // SYNCPOINT / no-write parity: the precheck precedes 9600-WRITE-PROCESSING,
+            // so neither master is written and no reference lookup is consulted.
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+            verifyNoInteractions(lookupService);
+        }
+
+        @Test
+        @DisplayName("persistence optimistic-lock failure on saveAndFlush -> wrapped 409 with cause")
+        void updateAccount_persistOptimisticFailure_wrappedAs409() {
+            // The caller echoes the current version, so the precheck passes and every
+            // field edit succeeds; the conflict is detected by the persistence layer on
+            // the account rewrite (Hibernate StaleObjectState -> Spring
+            // ObjectOptimisticLockingFailureException) and maps to the same typed 409.
+            when(lookupService.isValidStateCode("CA")).thenReturn(true);
+            when(lookupService.isValidStateZipCombo("CA", "90210")).thenReturn(true);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(true);
+
+            final ObjectOptimisticLockingFailureException persistFailure =
+                    new ObjectOptimisticLockingFailureException(Account.class, VALID_ACCOUNT_ID);
+            when(accountRepository.saveAndFlush(any(Account.class))).thenThrow(persistFailure);
+
+            final AccountUpdateRequest request = new Req().version(CURRENT_VERSION).build();
+
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, request))
+                    .isInstanceOfSatisfying(OptimisticLockConflictException.class,
+                            ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.CONFLICT))
+                    .hasMessage(OptimisticLockConflictException.DEFAULT_MESSAGE)
+                    .hasCause(persistFailure);
+
+            // The failure surfaced on the account rewrite itself, so the account write was
+            // attempted exactly once and the customer write never ran (the legacy
+            // "account update failed -> GO TO exit" branch, before any customer REWRITE).
+            verify(accountRepository).saveAndFlush(any(Account.class));
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("record-not-found parity (DFHRESP(NOTFND) -> 404)")
+    class RecordNotFound {
+
+        @Test
+        @DisplayName("missing cross-reference row -> 404 with the verbatim xref message, no read/write")
+        void updateAccount_xrefNotFound_throwsResourceNotFound() {
+            // 9200-GETCARDXREF-BYACCT DFHRESP(NOTFND): resolveCustomerId raises the legacy
+            // "account card xref" message; no master is read or written.
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID))
+                    .thenThrow(new ResourceNotFoundException("Did not find this account in account card xref file"));
+
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, new Req().build()))
+                    .isInstanceOfSatisfying(ResourceNotFoundException.class,
+                            ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.NOT_FOUND))
+                    .hasMessage("Did not find this account in account card xref file");
+
+            verifyNoInteractions(accountRepository, customerRepository, lookupService);
+        }
+
+        @Test
+        @DisplayName("account absent from the account master -> 404 (verbatim), no write")
+        void updateAccount_accountNotFound_throwsResourceNotFound() {
+            // 9300-GETACCTDATA-BYACCT DFHRESP(NOTFND).
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID)).thenReturn(VALID_CUSTOMER_ID);
+            when(accountRepository.findById(VALID_ACCOUNT_ID)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, new Req().build()))
+                    .isInstanceOfSatisfying(ResourceNotFoundException.class,
+                            ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.NOT_FOUND))
+                    .hasMessage(AccountUpdateService.MSG_ACCT_NOT_FOUND);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("customer absent from the customer master -> 404 (verbatim), no write")
+        void updateAccount_customerNotFound_throwsResourceNotFound() {
+            // 9400-GETCUSTDATA-BYCUST DFHRESP(NOTFND): the account read succeeds but the
+            // owning customer resolved from the cross-reference is missing.
+            final Account account = new Account();
+            account.setAcctId(VALID_ACCOUNT_ID);
+            account.setVersion(0L);
+
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID)).thenReturn(VALID_CUSTOMER_ID);
+            when(accountRepository.findById(VALID_ACCOUNT_ID)).thenReturn(Optional.of(account));
+            when(customerRepository.findById(VALID_CUSTOMER_ID)).thenReturn(Optional.empty());
+
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, new Req().build()))
+                    .isInstanceOfSatisfying(ResourceNotFoundException.class,
+                            ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.NOT_FOUND))
+                    .hasMessage(AccountUpdateService.MSG_CUST_NOT_FOUND);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+    }
+
+    @Nested
+    @DisplayName("lookup/date field-edit failures (400, no write)")
+    class FieldValidationConflict {
+
+        private Account account;
+        private Customer customer;
+
+        @BeforeEach
+        void resolveAndRead() {
+            account = new Account();
+            account.setAcctId(VALID_ACCOUNT_ID);
+            account.setVersion(0L);
+
+            customer = new Customer();
+            customer.setCustId(VALID_CUSTOMER_ID);
+
+            // Every test here reaches 1200-EDIT-MAP-INPUTS, so the owning customer is
+            // resolved and both masters are read (strict-stub safe).
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID)).thenReturn(VALID_CUSTOMER_ID);
+            when(accountRepository.findById(VALID_ACCOUNT_ID)).thenReturn(Optional.of(account));
+            when(customerRepository.findById(VALID_CUSTOMER_ID)).thenReturn(Optional.of(customer));
+        }
+
+        @Test
+        @DisplayName("unrecognised state code -> 'State: is not a valid state code'")
+        void updateAccount_invalidState_throwsValidationWithFieldErrors() {
+            // 1270-EDIT-US-STATE-CD: "ZZ" clears the alphabetic edit but is not a known
+            // state, so the cross-field state+ZIP combo (1280) is skipped and only the
+            // "State" field fails.
+            when(lookupService.isValidStateCode("ZZ")).thenReturn(false);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(true);
+
+            final ValidationException ex = expectValidationFailure(new Req().stateCode("ZZ").build());
+            assertThat(ex.getFieldErrors())
+                    .containsEntry("State", "State: is not a valid state code")
+                    .hasSize(1);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("mismatched state+ZIP combo -> 'Invalid zip code for state'")
+        void updateAccount_invalidStateZipCombo_throwsValidation() {
+            // 1280-EDIT-US-STATE-ZIP-CD: the state and the ZIP each pass their own edit,
+            // but the pairing is not recognised, so the cross-field combo fails under "Zip".
+            when(lookupService.isValidStateCode("CA")).thenReturn(true);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(true);
+            when(lookupService.isValidStateZipCombo("CA", "90210")).thenReturn(false);
+
+            final ValidationException ex = expectValidationFailure(new Req().build());
+            assertThat(ex.getFieldErrors())
+                    .containsEntry("Zip", "Invalid zip code for state")
+                    .hasSize(1);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("invalid phone area code -> 'Phone Number 1: Not valid North America general purpose area code'")
+        void updateAccount_invalidPhoneArea_throwsValidation() {
+            // 1260-EDIT-US-PHONE-NUM: the primary phone's area code "415" is rejected.
+            when(lookupService.isValidStateCode("CA")).thenReturn(true);
+            when(lookupService.isValidStateZipCombo("CA", "90210")).thenReturn(true);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(false);
+
+            final ValidationException ex = expectValidationFailure(new Req().build());
+            assertThat(ex.getFieldErrors())
+                    .containsEntry("Phone Number 1",
+                            "Phone Number 1: Not valid North America general purpose area code")
+                    .hasSize(1);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+
+        @Test
+        @DisplayName("out-of-century date -> EDIT-DATE-CCYYMMDD century failure under the date field")
+        void updateAccount_invalidDate_throwsValidation() {
+            // EDIT-DATE-CCYYMMDD (delegated to the real DateValidationService): 1899 is a
+            // real LocalDate, but its century (18) is outside the legacy 19xx/20xx rule.
+            when(lookupService.isValidStateCode("CA")).thenReturn(true);
+            when(lookupService.isValidStateZipCombo("CA", "90210")).thenReturn(true);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(true);
+
+            final ValidationException ex =
+                    expectValidationFailure(new Req().openDate(LocalDate.of(1899, 6, 15)).build());
+            assertThat(ex.getFieldErrors())
+                    .containsEntry("Open Date", "Open Date : Century is not valid.")
+                    .hasSize(1);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+
+        /**
+         * Asserts that updating with {@code request} raises a typed HTTP-400
+         * {@link ValidationException} carrying the aggregate summary, and returns it
+         * for field-level assertions.
+         */
+        private ValidationException expectValidationFailure(final AccountUpdateRequest request) {
+            final Throwable thrown = catchThrowable(() -> service.updateAccount(VALID_ACCOUNT_ID, request));
+            assertThat(thrown)
+                    .isInstanceOf(ValidationException.class)
+                    .hasMessage(AccountUpdateService.MSG_VALIDATION_SUMMARY);
+            final ValidationException ex = (ValidationException) thrown;
+            assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+            return ex;
+        }
+    }
+
+    @Nested
+    @DisplayName("commit & rollback parity (9600-WRITE-PROCESSING)")
+    class SuccessAndTransaction {
+
+        /** The persisted account version before the update; the caller echoes it back. */
+        private static final long BASE_VERSION = 5L;
+
+        private Account account;
+        private Customer customer;
+
+        @BeforeEach
+        void resolveReadAndValidate() {
+            account = new Account();
+            account.setAcctId(VALID_ACCOUNT_ID);
+            account.setVersion(BASE_VERSION);
+
+            customer = new Customer();
+            customer.setCustId(VALID_CUSTOMER_ID);
+
+            // Both tests reach 1200-EDIT-MAP-INPUTS with an all-valid base request, so the
+            // reads and the three reference lookups are always exercised (strict-stub safe).
+            when(crossReferenceService.resolveCustomerId(VALID_ACCOUNT_ID)).thenReturn(VALID_CUSTOMER_ID);
+            when(accountRepository.findById(VALID_ACCOUNT_ID)).thenReturn(Optional.of(account));
+            when(customerRepository.findById(VALID_CUSTOMER_ID)).thenReturn(Optional.of(customer));
+            when(lookupService.isValidStateCode("CA")).thenReturn(true);
+            when(lookupService.isValidStateZipCombo("CA", "90210")).thenReturn(true);
+            when(lookupService.isValidPhoneAreaCode("415")).thenReturn(true);
+        }
+
+        @Test
+        @DisplayName("happy path -> both masters written (account first), scale-2 money, new version")
+        void updateAccount_success_persistsBothAndReturnsNewVersion() {
+            // Simulate the JPA @Version increment the provider applies on flush, so the
+            // response carries the *new* optimistic-lock token (COACTUPC re-displays the
+            // refreshed record after CONFIRM-UPDATE-SUCCESS).
+            when(accountRepository.saveAndFlush(any(Account.class))).thenAnswer(invocation -> {
+                final Account persisted = invocation.getArgument(0);
+                persisted.setVersion(persisted.getVersion() + 1L);
+                return persisted;
+            });
+
+            // Money arrives at a scale other than two; 1250-EDIT-SIGNED-9V2 / scale2 must
+            // normalise every amount to PIC S9(10)V99 (scale 2) with HALF_UP on write.
+            final AccountUpdateRequest request = new Req()
+                    .version(BASE_VERSION)
+                    .creditLimit(new BigDecimal("5000.005"))   // HALF_UP -> 5000.01
+                    .currentBalance(new BigDecimal("100.1"))    // scale normalised -> 100.10
+                    .build();
+
+            final AccountUpdateResponse response = service.updateAccount(VALID_ACCOUNT_ID, request);
+
+            // --- Both masters are rewritten, account BEFORE customer (REWRITE order L4066/L4086).
+            final ArgumentCaptor<Account> acctCaptor = ArgumentCaptor.forClass(Account.class);
+            final ArgumentCaptor<Customer> custCaptor = ArgumentCaptor.forClass(Customer.class);
+            final InOrder writeOrder = inOrder(accountRepository, customerRepository);
+            writeOrder.verify(accountRepository).saveAndFlush(acctCaptor.capture());
+            writeOrder.verify(customerRepository).saveAndFlush(custCaptor.capture());
+
+            // --- Decimal fidelity: every monetary field is stored at scale 2, HALF_UP (via compareTo).
+            final Account savedAccount = acctCaptor.getValue();
+            assertThat(savedAccount.getAcctCreditLimit()).isEqualByComparingTo(new BigDecimal("5000.01"));
+            assertThat(savedAccount.getAcctCreditLimit().scale()).isEqualTo(2);
+            assertThat(savedAccount.getAcctCurrBal()).isEqualByComparingTo(new BigDecimal("100.10"));
+            assertThat(savedAccount.getAcctCurrBal().scale()).isEqualTo(2);
+
+            // --- The customer change-fields were applied to the customer master.
+            final Customer savedCustomer = custCaptor.getValue();
+            assertThat(savedCustomer.getCustFirstName()).isEqualTo("John");
+            assertThat(savedCustomer.getCustAddrStateCd()).isEqualTo("CA");
+            assertThat(savedCustomer.getCustFicoCreditScore()).isEqualTo(720);
+
+            // --- The response carries the legacy confirmation and the *bumped* version.
+            assertThat(response).isNotNull();
+            assertThat(response.message()).isEqualTo(AccountUpdateService.MSG_SUCCESS);
+            assertThat(response.version()).isEqualTo(BASE_VERSION + 1L);
+
+            // --- The nested view mirrors the refreshed record (zero-padded ids, new version, scale-2 money).
+            final AccountViewResponse view = response.account();
+            assertThat(view).isNotNull();
+            assertThat(view.version()).isEqualTo(BASE_VERSION + 1L);
+            assertThat(view.accountId()).isEqualTo("00000000001");
+            assertThat(view.customerId()).isEqualTo("000000001");
+            assertThat(view.creditLimit()).isEqualByComparingTo(new BigDecimal("5000.01"));
+            assertThat(view.creditLimit().scale()).isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("validation failure after the reads persists nothing (SYNCPOINT ROLLBACK parity)")
+        void updateAccount_validationFailure_persistsNothing() {
+            // A single failing edit (blank First Name, 1225-EDIT-ALPHA-REQD) aborts before
+            // 9600-WRITE-PROCESSING; neither master may be written, so no partial update can
+            // survive — the read-then-rewrite / SYNCPOINT ROLLBACK contract.
+            assertThatThrownBy(() -> service.updateAccount(VALID_ACCOUNT_ID, new Req().firstName(null).build()))
+                    .isInstanceOf(ValidationException.class);
+
+            verify(accountRepository, never()).saveAndFlush(any());
+            verify(customerRepository, never()).saveAndFlush(any());
+        }
+    }
+
+
     /**
      * Mutable builder for the 30-component {@link AccountUpdateRequest} record,
      * initialised to an all-valid set of values. Each negative test mutates
@@ -487,7 +885,9 @@ class AccountUpdateServiceTest {
         private Integer ficoScore = 720;
 
         Req activeStatus(final String v) { this.activeStatus = v; return this; }
+        Req currentBalance(final BigDecimal v) { this.currentBalance = v; return this; }
         Req creditLimit(final BigDecimal v) { this.creditLimit = v; return this; }
+        Req version(final Long v) { this.version = v; return this; }
         Req openDate(final LocalDate v) { this.openDate = v; return this; }
         Req dateOfBirth(final LocalDate v) { this.dateOfBirth = v; return this; }
         Req ssn(final String v) { this.ssn = v; return this; }
