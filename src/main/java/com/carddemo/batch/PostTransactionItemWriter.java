@@ -15,6 +15,7 @@ import java.util.Objects;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.StepExecutionListener;
@@ -317,15 +318,50 @@ public class PostTransactionItemWriter
     }
 
     /**
-     * Publishes the final reject count and logs the step summary. The exit status is intentionally
-     * left unchanged (a {@code null} return) — {@code config/BatchConfig}'s decider maps the reject
-     * count to the {@code RETURN-CODE 4} disposition.
+     * Finalizes the reject artifact and publishes the reject count. This is where the reject file is
+     * flushed and <strong>uploaded to S3</strong> — deliberately here rather than in {@link #close()}
+     * (QA finding <strong>F4</strong>, decision {@code D-027}).
      *
-     * @param stepExecution the completed step execution; never {@code null}
-     * @return {@code null}, leaving the step exit status for the job flow to decide
+     * <p><strong>Why the upload lives here.</strong> {@code AbstractStep} persists the step and job
+     * batch/exit status <em>after</em> {@code afterStep()} returns but <em>before</em> {@code close()}
+     * runs, and it swallows any exception thrown from either callback. An upload performed in
+     * {@code close()} therefore cannot influence the recorded outcome: a failed upload was previously
+     * only logged as "Exception while closing step execution resources" while the step/job was already
+     * recorded {@code COMPLETED} — a silently lost artifact. Performing the upload here, and marking the
+     * step {@code FAILED} via {@link StepExecution#setStatus(BatchStatus)} on failure, makes that
+     * failure durable (the FAILED status is persisted by the framework right after this method).</p>
+     *
+     * <p>On a step that already failed during item processing (this callback also runs on the failure
+     * path, from {@code AbstractStep}'s finally block), the upload is skipped and the existing
+     * {@code FAILED} status is preserved. On the normal path the reject object is always uploaded — even
+     * when empty — so each run produces a new S3 version, mirroring the legacy {@code DALYREJS(+1)} GDG
+     * generation. The reject count is left in the execution context so the decider can still map it to
+     * the {@code RETURN-CODE 4} disposition.</p>
+     *
+     * @param stepExecution the completed (or failing) step execution; never {@code null}
+     * @return {@code null} on success (leaving the exit status for the job flow to decide), or
+     *         {@link ExitStatus#FAILED} when the reject-file finalization fails
      */
     @Override
     public ExitStatus afterStep(final StepExecution stepExecution) {
+        // The step already failed during item processing: do not attempt the upload, preserve FAILED.
+        if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+            log.warn("POSTTRAN step status is {} at afterStep; skipping reject-file upload",
+                    stepExecution.getStatus());
+            return null;
+        }
+        try {
+            // Flush + close the buffer, then upload. A failure here fails the step (see method Javadoc).
+            flushAndCloseRejectWriter();
+            if (this.rejectFile != null) {
+                uploadRejectFile();
+            }
+        } catch (final IOException | RuntimeException e) {
+            log.error("POSTTRAN reject-file finalization failed; failing the step", e);
+            stepExecution.addFailureException(e);
+            stepExecution.setStatus(BatchStatus.FAILED);
+            return ExitStatus.FAILED;
+        }
         publishRejectCount();
         log.info("POSTTRAN posting step complete: postedCount={} rejectCount={}",
                 this.postedCount, this.rejectCount);
@@ -372,30 +408,48 @@ public class PostTransactionItemWriter
     }
 
     /**
-     * Flushes and closes the reject buffer, uploads the reject file to S3, then deletes the temp
-     * file. The reject object is always uploaded — even when empty — so each run produces a new S3
-     * version, mirroring the legacy {@code DALYREJS(+1)} GDG generation that COBOL allocates
-     * unconditionally. The method is null-safe and idempotent: a second invocation is a no-op.
-     *
-     * @throws FileProcessingException if flushing/closing the buffer or uploading the file fails
+     * Releases the per-run reject buffer and deletes the temp file. <strong>Cleanup only</strong> (QA
+     * finding <strong>F4</strong>, decision {@code D-027}): the flush and S3 upload were moved to
+     * {@link #afterStep(StepExecution)} because {@code AbstractStep} swallows any exception thrown from
+     * {@code close()} and has already persisted the step/job status by the time {@code close()} runs, so
+     * an upload here could never fail the step. This method therefore performs no upload; it defensively
+     * closes the buffer (in case {@code afterStep} skipped it on a failed step) and removes the temp
+     * file. It is null-safe and idempotent: a second invocation is a no-op.
      */
     @Override
     public void close() {
-        try {
-            if (this.rejectWriter != null) {
-                this.rejectWriter.flush();
+        closeRejectWriterQuietly();
+        deleteTempFileQuietly();
+        this.rejectFile = null;
+    }
+
+    /**
+     * Flushes and closes the reject buffer, propagating any {@link IOException} so
+     * {@link #afterStep(StepExecution)} can fail the step. Null-safe and idempotent.
+     *
+     * @throws IOException if flushing or closing the underlying buffer fails
+     */
+    private void flushAndCloseRejectWriter() throws IOException {
+        if (this.rejectWriter != null) {
+            this.rejectWriter.flush();
+            this.rejectWriter.close();
+            this.rejectWriter = null;
+        }
+    }
+
+    /**
+     * Best-effort close of the reject buffer used during {@link #close()} cleanup. A failure is logged
+     * at {@code WARN} and never propagated (cleanup must not mask a real processing outcome).
+     */
+    private void closeRejectWriterQuietly() {
+        if (this.rejectWriter != null) {
+            try {
                 this.rejectWriter.close();
+            } catch (final IOException e) {
+                log.warn("POSTTRAN could not close the reject buffer during cleanup", e);
+            } finally {
                 this.rejectWriter = null;
             }
-            if (this.rejectFile != null) {
-                uploadRejectFile();
-            }
-        } catch (final IOException e) {
-            throw new FileProcessingException(
-                    "POSTTRAN failed to flush/close the reject buffer before upload", e);
-        } finally {
-            deleteTempFileQuietly();
-            this.rejectFile = null;
         }
     }
 

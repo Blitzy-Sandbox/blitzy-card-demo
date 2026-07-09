@@ -20,6 +20,7 @@ import com.carddemo.exception.RejectReason;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionRepository;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
@@ -127,6 +128,16 @@ class PostTransactionProcessorTest {
     @Mock
     private TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
+    /**
+     * TRANSACT master used solely by the F2 idempotency guard (D-028). Left unstubbed by the
+     * business-parity tests: an unstubbed Mockito mock returns {@code false} from
+     * {@code existsById(...)}, so the guard falls through and every existing test still exercises
+     * the full posting path exactly as before. The dedicated F2 idempotency-guard tests stub it to
+     * {@code true} to prove the re-run filter.
+     */
+    @Mock
+    private TransactionRepository transactionRepository;
+
     /** The class under test, constructed fresh per test with the deterministic clock. */
     private PostTransactionProcessor processor;
 
@@ -136,7 +147,8 @@ class PostTransactionProcessorTest {
         // No stubbing happens here: MockitoExtension runs with strict stubs, and per-test stubbing
         // keeps every stub necessary (no UnnecessaryStubbingException).
         processor = new PostTransactionProcessor(
-                cardXrefRepository, accountRepository, transactionCategoryBalanceRepository, FIXED_CLOCK);
+                cardXrefRepository, accountRepository, transactionCategoryBalanceRepository,
+                transactionRepository, FIXED_CLOCK);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -616,5 +628,50 @@ class PostTransactionProcessorTest {
         // The chunk contract guarantees a non-null item (end-of-input is the reader returning null).
         assertThatNullPointerException().isThrownBy(() -> processor.process(null));
         verifyNoInteractions(cardXrefRepository, accountRepository, transactionCategoryBalanceRepository);
+    }
+
+    // =============================================================================================
+    // F2 idempotency guard (D-028) — a daily row already in the TRANSACT master is filtered so a
+    // POSTTRAN re-run neither double-posts balances nor re-rejects; a not-yet-posted row is unchanged.
+    // =============================================================================================
+
+    @Test
+    @DisplayName("F2 idempotency: an already-posted DALYTRAN-ID returns null and skips ALL posting logic")
+    void alreadyPosted_returnsNull_andSkipsAllPostingLogic() {
+        // dailyTran(...) assigns DALYTRAN-ID = "TRN0000000000001"; the posted Transaction's PK is the
+        // same id, so the TRANSACT master already carrying that id means "posted by a prior run".
+        DailyTransaction dt = dailyTran(CARD_NUM, "50.00", ORIG_TS, TYPE_CD, CAT_CD);
+        when(transactionRepository.existsById("TRN0000000000001")).thenReturn(true);
+
+        PostingResult result = processor.process(dt);
+
+        // Returning null makes Spring Batch FILTER the item: not posted, not rejected, not counted.
+        assertThat(result).isNull();
+
+        // The guard short-circuits before 1500-VALIDATE-TRAN, so none of the posting collaborators
+        // are touched — no lookups, no balance mutation, no writes (prevents the F2 double-post).
+        verifyNoInteractions(cardXrefRepository, accountRepository, transactionCategoryBalanceRepository);
+    }
+
+    @Test
+    @DisplayName("F2 idempotency: a not-yet-posted DALYTRAN-ID falls through and posts exactly as before")
+    void notYetPosted_processesNormally() {
+        DailyTransaction dt = dailyTran(CARD_NUM, "50.00", ORIG_TS, TYPE_CD, CAT_CD);
+        // Explicit first-run guard state: the id is absent from the TRANSACT master.
+        when(transactionRepository.existsById("TRN0000000000001")).thenReturn(false);
+        Account account = account("5000.00", "0.00", "0.00", "0.00", FAR_FUTURE);
+        when(cardXrefRepository.findById(CARD_NUM)).thenReturn(Optional.of(xref(CARD_NUM, ACCT_ID)));
+        when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
+
+        PostingResult result = processor.process(dt);
+
+        // First-run behaviour is unchanged: the record posts (blind-ADD parity preserved).
+        assertThat(result).isNotNull();
+        assertThat(result.isPosted()).isTrue();
+        assertThat(result.postedTransaction()).isNotNull();
+        assertThat(result.postedTransaction().getTranId()).isEqualTo("TRN0000000000001");
+        // The account balance accumulates the amount, exactly as it did before the guard existed.
+        assertMoney(account.getAcctCurrBal(), "50.00");
+        assertMoney(account.getAcctCurrCycCredit(), "50.00");
     }
 }

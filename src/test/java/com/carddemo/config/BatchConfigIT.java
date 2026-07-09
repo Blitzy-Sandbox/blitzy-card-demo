@@ -37,6 +37,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import io.awspring.cloud.sqs.operations.SqsTemplate;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -174,11 +175,14 @@ class BatchConfigIT {
     private JobLauncher jobLauncher;
 
     /**
-     * Satisfies the single eager AWS collaborator in the context ({@code ReportService} requires a
-     * {@link SqsTemplate}); never exercised here since no report is enqueued.
+     * Satisfies the single eager AWS client dependency in the context. With
+     * {@code SqsAutoConfiguration} excluded, no {@link SqsAsyncClient} is auto-configured, yet
+     * {@code SqsTemplateConfig}'s {@code sqsTemplate} bean (injected into {@code ReportService})
+     * is built over one. A Mockito {@link SqsAsyncClient} lets that send-only template be assembled
+     * (construction performs no network I/O); it is never exercised here since no report is enqueued.
      */
     @MockitoBean
-    private SqsTemplate sqsTemplate;
+    private SqsAsyncClient sqsAsyncClient;
 
     /** Clears instrumentation between tests so ordering/failure assertions are independent. */
     @BeforeEach

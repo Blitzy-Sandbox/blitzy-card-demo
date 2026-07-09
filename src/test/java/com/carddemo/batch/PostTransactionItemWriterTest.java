@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -40,6 +41,8 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
@@ -371,7 +374,14 @@ class PostTransactionItemWriterTest {
     /**
      * Stubs {@link S3Template#upload(String, String, InputStream)} to copy the uploaded stream into a
      * buffer <em>during</em> the call (before the writer closes the stream and deletes the temp
-     * file), invokes {@link PostTransactionItemWriter#close()}, and returns the captured bytes.
+     * file), finalizes the step via {@link PostTransactionItemWriter#afterStep(StepExecution)}, and
+     * returns the captured bytes.
+     *
+     * <p>Per QA finding <strong>F4</strong> (decision {@code D-027}) the flush + S3 upload were moved
+     * out of {@code close()} (which {@code AbstractStep} runs after it has already persisted the step
+     * status, swallowing any exception) into {@code afterStep}, which runs before the status is
+     * persisted and can therefore fail the step. The step status is set to {@link BatchStatus#COMPLETED}
+     * first because {@code afterStep} only performs the terminal upload on the success path.</p>
      *
      * @return the exact bytes the writer streamed to S3
      */
@@ -382,7 +392,8 @@ class PostTransactionItemWriterTest {
             in.transferTo(captured);
             return null;
         }).when(s3Template).upload(anyString(), anyString(), any(InputStream.class));
-        writer.close();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        writer.afterStep(stepExecution);
         return captured.toByteArray();
     }
 
@@ -537,16 +548,36 @@ class PostTransactionItemWriterTest {
     // ==========================================================================================
 
     @Test
-    @DisplayName("S3 target: exactly one upload to carddemo-batch-output/dalyrejs.dat, only on close()")
+    @DisplayName("S3 target: exactly one upload to carddemo-batch-output/dalyrejs.dat, only on afterStep")
     void uploadsRejectFileToConfiguredBucketAndKeyOnClose() {
         writer.write(Chunk.of(PostingResult.rejected(dailyTran(1), RejectReason.OVERLIMIT)));
-        // No S3 interaction before the stream is flushed and uploaded in close().
+        // No S3 interaction before the stream is flushed and uploaded in afterStep (F4 / D-027).
         verifyNoInteractions(s3Template);
 
-        writer.close();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        writer.afterStep(stepExecution);
 
         verify(s3Template).upload(eq(REJECT_BUCKET), eq(REJECT_KEY), any(InputStream.class));
         verifyNoMoreInteractions(s3Template);
+    }
+
+    @Test
+    @DisplayName("F4: a reject-file S3 upload failure fails the step (FAILED + ExitStatus.FAILED), "
+            + "never a false success")
+    void uploadFailureFailsStep() {
+        // A reject is buffered, so afterStep will attempt the (now failure-injected) S3 upload.
+        writer.write(Chunk.of(PostingResult.rejected(dailyTran(1), RejectReason.OVERLIMIT)));
+        doThrow(new RuntimeException("simulated S3 outage"))
+                .when(s3Template).upload(anyString(), anyString(), any(InputStream.class));
+
+        // The chunk phase completed, so the step optimistically holds COMPLETED at afterStep entry.
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        final ExitStatus exit = writer.afterStep(stepExecution);
+
+        // The upload failure must flip the step to FAILED (D-027) rather than being swallowed.
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(stepExecution.getFailureExceptions()).isNotEmpty();
     }
 
     @Test

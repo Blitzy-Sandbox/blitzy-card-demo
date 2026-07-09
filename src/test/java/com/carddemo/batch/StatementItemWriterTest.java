@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -25,8 +26,12 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.test.MetaDataInstanceFactory;
 
 import io.awspring.cloud.s3.S3Template;
 
@@ -131,14 +136,34 @@ class StatementItemWriterTest {
     private StatementItemWriter writer;
 
     /**
+     * A fresh {@link StepExecution} passed to {@link StatementItemWriter#afterStep(StepExecution)},
+     * where the terminal serialize + dual S3 upload now lives (QA finding <strong>F4</strong>,
+     * decision {@code D-027}). Its status is set to {@link BatchStatus#COMPLETED} by {@link #finish()}
+     * before finalizing because {@code afterStep} only performs the upload on the success path.
+     */
+    private StepExecution stepExecution;
+
+    /**
      * Constructs a fresh writer with the canonical bucket/keys and opens it, mirroring the Spring
-     * Batch {@code ItemStream} lifecycle ({@code open} precedes {@code write}/{@code close}). A new
+     * Batch {@code ItemStream} lifecycle ({@code open} precedes {@code write}/{@code afterStep}). A new
      * instance per test guarantees independent, non-leaking buffers.
      */
     @BeforeEach
     void setUp() {
         writer = new StatementItemWriter(s3Template, BUCKET, TEXT_KEY, HTML_KEY);
         writer.open(new ExecutionContext());
+        stepExecution = MetaDataInstanceFactory.createStepExecution();
+    }
+
+    /**
+     * Finalizes the step the way Spring Batch does on the success path: marks the step
+     * {@link BatchStatus#COMPLETED} and invokes {@link StatementItemWriter#afterStep(StepExecution)},
+     * which serializes both buffers and performs the two S3 uploads (relocated out of {@code close()}
+     * per F4 / {@code D-027}).
+     */
+    private void finish() {
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        writer.afterStep(stepExecution);
     }
 
     // ------------------------------------------------------------------
@@ -175,14 +200,15 @@ class StatementItemWriterTest {
     }
 
     /**
-     * Writes the given documents to the writer as a single chunk and closes it, driving the full
-     * {@code write} &rarr; {@code close} (upload) path.
+     * Writes the given documents to the writer as a single chunk and finalizes the step, driving the
+     * full {@code write} &rarr; {@code afterStep} (upload) path (F4 / {@code D-027}: the upload moved
+     * out of {@code close()}).
      *
      * @param docs the statement documents to emit in order
      */
     private void writeAndClose(StatementDocument... docs) {
         writer.write(new Chunk<>(List.of(docs)));
-        writer.close();
+        finish();
     }
 
     /**
@@ -428,7 +454,7 @@ class StatementItemWriterTest {
         // into the two files regardless of read batching.
         writer.write(new Chunk<>(List.of(statementDoc(CARD_1, List.of("chunk1"), List.of("h1")))));
         writer.write(new Chunk<>(List.of(statementDoc(CARD_2, List.of("chunk2"), List.of("h2")))));
-        writer.close();
+        finish();
 
         CapturedUploads up = capture();
 
@@ -470,16 +496,35 @@ class StatementItemWriterTest {
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("close() is idempotent: a second close() does not re-upload")
+    @DisplayName("afterStep is idempotent: a second afterStep does not re-upload")
     void secondCloseDoesNotReupload() {
         writer.write(new Chunk<>(List.of(statementDoc(List.of("only"), List.of("only")))));
 
-        writer.close();
-        writer.close(); // must be a no-op
+        finish();
+        // A second finalize must be a no-op (the writer guards on its `closed` flag, F4 / D-027).
+        writer.afterStep(stepExecution);
 
-        // Still exactly two uploads in total across both close() calls.
+        // Still exactly two uploads in total across both afterStep calls.
         verify(s3Template, times(2)).upload(anyString(), anyString(), any(InputStream.class));
         verifyNoMoreInteractions(s3Template);
+    }
+
+    @Test
+    @DisplayName("F4: a statement S3 upload failure fails the step (FAILED + ExitStatus.FAILED), "
+            + "never a false success")
+    void uploadFailureFailsStep() {
+        writer.write(new Chunk<>(List.of(statementDoc(List.of("only"), List.of("only")))));
+        doThrow(new RuntimeException("simulated S3 outage"))
+                .when(s3Template).upload(anyString(), anyString(), any(InputStream.class));
+
+        // The chunk phase completed, so the step optimistically holds COMPLETED at afterStep entry.
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        final ExitStatus exit = writer.afterStep(stepExecution);
+
+        // The upload failure must flip the step to FAILED (D-027) rather than being swallowed.
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(stepExecution.getFailureExceptions()).isNotEmpty();
     }
 
     @Test
@@ -488,7 +533,7 @@ class StatementItemWriterTest {
         writer.write(new Chunk<StatementDocument>());   // empty chunk
         Chunk<StatementDocument> nullChunk = null;
         writer.write(nullChunk);                        // null chunk
-        writer.close();
+        finish();
 
         CapturedUploads up = capture();
 
@@ -505,7 +550,7 @@ class StatementItemWriterTest {
     @Test
     @DisplayName("a run with no documents still uploads both (empty) objects")
     void closeWithNoDocumentsStillWritesBothObjects() {
-        writer.close(); // no write() at all
+        finish(); // no write() at all
 
         CapturedUploads up = capture();
 
@@ -547,10 +592,10 @@ class StatementItemWriterTest {
     }
 
     @Test
-    @DisplayName("close() clears the buffers after uploading (no state leaks to a subsequent run)")
+    @DisplayName("afterStep clears the buffers after uploading (no state leaks to a subsequent run)")
     void closeClearsBuffers() {
         writer.write(new Chunk<>(List.of(statementDoc(List.of("t"), List.of("h")))));
-        writer.close();
+        finish();
 
         assertThat(writer.getTextBuffer()).isEmpty();
         assertThat(writer.getHtmlBuffer()).isEmpty();

@@ -18,7 +18,9 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.launch.JobLauncher;
@@ -109,6 +111,33 @@ class ReportJobLauncherTest {
         return captor.getValue();
     }
 
+    /**
+     * Builds a {@link JobExecution} in the given terminal {@link BatchStatus}. The auto-configured
+     * {@code JobLauncher} is synchronous, so {@code run(...)} returns the <em>finished</em> execution;
+     * a FAILED step does not throw — it returns {@code status=FAILED}. The launcher's F4 acknowledgement
+     * gate (D-027) inspects exactly this {@link JobExecution#getStatus()} to decide whether the
+     * {@code @SqsListener} may acknowledge the message, so these stubs must carry a realistic terminal
+     * status rather than the {@link MetaDataInstanceFactory} default of {@link BatchStatus#STARTING}.
+     *
+     * @param status the terminal batch status to stamp on the execution
+     * @return a {@link JobExecution} reporting {@code status}
+     */
+    private static JobExecution jobExecutionWithStatus(final BatchStatus status) {
+        final JobExecution execution = MetaDataInstanceFactory.createJobExecution();
+        execution.setStatus(status);
+        return execution;
+    }
+
+    /**
+     * A synchronously-finished {@link JobExecution} in {@link BatchStatus#COMPLETED} — the only status
+     * that lets the launcher return normally so the SQS message is acknowledged.
+     *
+     * @return a COMPLETED job execution stub
+     */
+    private static JobExecution completedJobExecution() {
+        return jobExecutionWithStatus(BatchStatus.COMPLETED);
+    }
+
     // =====================================================================
     // 1) Happy path — message → job parameters mapping + launch
     // =====================================================================
@@ -121,7 +150,7 @@ class ReportJobLauncherTest {
         @DisplayName("maps jobId, window and correlationId (under the constant key) onto the parameters")
         void mapsMessageOntoJobParameters() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest(validBody());
 
@@ -137,7 +166,7 @@ class ReportJobLauncherTest {
         @DisplayName("window + jobId are identifying; correlationId is non-identifying (dedup contract)")
         void identifyingFlagsSupportJobIdDeduplication() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest(validBody());
 
@@ -153,7 +182,7 @@ class ReportJobLauncherTest {
         @DisplayName("applies the legacy JCL date defaults when the window is absent")
         void appliesJclDateDefaultsWhenWindowAbsent() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest("""
                     {"jobId":"job-1","reportName":"Custom","correlationId":"c1"}
@@ -168,7 +197,7 @@ class ReportJobLauncherTest {
         @DisplayName("generates a UUID correlation id when the message carries none")
         void generatesCorrelationIdWhenAbsent() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest("""
                     {"jobId":"job-1","reportName":"Monthly","startDate":"2022-01-01","endDate":"2022-07-06"}
@@ -184,7 +213,7 @@ class ReportJobLauncherTest {
         @DisplayName("generates a UUID jobId when the message carries none")
         void generatesJobIdWhenAbsent() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest("""
                     {"reportName":"Monthly","startDate":"2022-01-01","endDate":"2022-07-06","correlationId":"c1"}
@@ -197,7 +226,7 @@ class ReportJobLauncherTest {
         @DisplayName("ignores unknown JSON fields so the contract can evolve additively (Gate 5)")
         void ignoresUnknownJsonFields() throws Exception {
             when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
-                    .thenReturn(MetaDataInstanceFactory.createJobExecution());
+                    .thenReturn(completedJobExecution());
 
             launcher.onReportRequest("""
                     {"jobId":"job-1","reportName":"Monthly","startDate":"2022-01-01","endDate":"2022-07-06",
@@ -262,7 +291,56 @@ class ReportJobLauncherTest {
     }
 
     // =====================================================================
-    // 3) Malformed messages — parse failures → FileProcessingException, no launch
+    // 3) Acknowledgement gate — a non-COMPLETED run() result → FileProcessingException (F4 / D-027)
+    // =====================================================================
+
+    @Nested
+    @DisplayName("acknowledgement gate — a non-COMPLETED job result → FileProcessingException (no ack)")
+    class AcknowledgementGate {
+
+        @Test
+        @DisplayName("a FAILED JobExecution (e.g. a writer's S3 upload failed in afterStep) → FileProcessingException")
+        void failedJobExecutionSurfacesAsFileProcessingException() throws Exception {
+            // The auto-configured JobLauncher is synchronous: a failed step does NOT throw from run(); it
+            // returns a finished execution with status=FAILED (see D-027 and the writer afterStep() fix). The
+            // launcher must then refuse to let the @SqsListener acknowledge the message so SQS redelivers it
+            // and, after maxReceiveCount, routes it to the report DLQ (carddemo-report-jobs-dlq.fifo) instead
+            // of silently losing the un-produced report. This is the positive proof of the F4 acknowledgement gate.
+            when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
+                    .thenReturn(jobExecutionWithStatus(BatchStatus.FAILED));
+
+            assertThatThrownBy(() -> launcher.onReportRequest(validBody()))
+                    .isInstanceOf(FileProcessingException.class)
+                    // The gate throws WITHOUT a wrapped cause (distinct from the launch-exception branch),
+                    // and the diagnostic names the non-terminal status so the DLQ payload is self-describing.
+                    .hasNoCause()
+                    .hasMessageContaining("did not complete")
+                    .hasMessageContaining("batchStatus=FAILED");
+
+            // The job genuinely ran (unlike a malformed message, which is rejected before any launch): the
+            // gate fires on the RESULT of run(), not before it.
+            verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+        }
+
+        @Test
+        @DisplayName("a STOPPED JobExecution is likewise non-terminal-success → FileProcessingException")
+        void stoppedJobExecutionSurfacesAsFileProcessingException() throws Exception {
+            // The gate is `status != COMPLETED`, so any non-COMPLETED terminal status (here STOPPED, e.g. an
+            // operator stop or a JobExecutionDecider halt) also withholds the ack and drives redelivery/DLQ.
+            when(jobLauncher.run(eq(transactionReportJob), any(JobParameters.class)))
+                    .thenReturn(jobExecutionWithStatus(BatchStatus.STOPPED));
+
+            assertThatThrownBy(() -> launcher.onReportRequest(validBody()))
+                    .isInstanceOf(FileProcessingException.class)
+                    .hasNoCause()
+                    .hasMessageContaining("batchStatus=STOPPED");
+
+            verify(jobLauncher).run(eq(transactionReportJob), any(JobParameters.class));
+        }
+    }
+
+    // =====================================================================
+    // 4) Malformed messages — parse failures → FileProcessingException, no launch
     // =====================================================================
 
     @Nested

@@ -12,6 +12,10 @@ import com.carddemo.exception.FileProcessingException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
@@ -95,7 +99,7 @@ import io.awspring.cloud.s3.S3Template;
  */
 @Component
 @StepScope
-public class StatementItemWriter implements ItemStreamWriter<StatementDocument> {
+public class StatementItemWriter implements ItemStreamWriter<StatementDocument>, StepExecutionListener {
 
     /**
      * Fixed record length of the plain-text statement file, in bytes/characters.
@@ -253,38 +257,71 @@ public class StatementItemWriter implements ItemStreamWriter<StatementDocument> 
     }
 
     /**
-     * Flushes both aggregate buffers to S3 and releases them, mirroring COBOL
-     * {@code CLOSE STMT-FILE HTML-FILE}.
+     * Serializes both aggregate buffers and <strong>uploads them to S3</strong>, mirroring COBOL
+     * {@code CLOSE STMT-FILE HTML-FILE}. Performed here — not in {@link #close()} — so that an upload
+     * failure fails the step (QA finding <strong>F4</strong>, decision {@code D-027}).
      *
-     * <p>The text buffer is uploaded to {@code s3://<bucket>/<textObjectKey>} and the HTML buffer to
-     * {@code s3://<bucket>/<htmlObjectKey>}. Both objects are always written — even when a buffer is
-     * empty (zero statements) — so the step deterministically (re)creates both datasets, exactly as
-     * {@code CBSTM03A} always produces both files. The operation is idempotent: the {@link #closed}
-     * guard makes a repeated {@code close()} a no-op so the objects are never overwritten with empty
-     * content. After a successful upload the buffers are cleared to release memory.</p>
+     * <p><strong>Why the upload lives here.</strong> {@code AbstractStep} persists the step and job
+     * batch/exit status <em>after</em> {@code afterStep()} returns but <em>before</em> {@code close()}
+     * runs, and it swallows any exception thrown from either callback. Uploading in {@code close()}
+     * therefore could not influence the recorded outcome: a failed statement upload was previously only
+     * logged as "Exception while closing step execution resources" while the step/job was already
+     * recorded {@code COMPLETED} — the statements were silently lost. Uploading here and marking the
+     * step {@code FAILED} on failure makes that failure durable.</p>
      *
-     * @throws FileProcessingException if either upload fails
+     * <p>On the normal path both objects are always written — even when a buffer is empty (zero
+     * statements) — so the step deterministically (re)creates both datasets, exactly as
+     * {@code CBSTM03A} always produces both files. If the step already failed during item processing
+     * (this callback also runs on the failure path), the upload is skipped and the {@code FAILED}
+     * status is preserved. The {@link #closed} guard keeps the finalization single-shot.</p>
+     *
+     * @param stepExecution the completed (or failing) step execution; never {@code null}
+     * @return {@code null} on success, or {@link ExitStatus#FAILED} when a statement upload fails
      */
     @Override
-    public void close() {
+    public ExitStatus afterStep(final StepExecution stepExecution) {
+        if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+            log.warn("Statement step status is {} at afterStep; skipping statement upload",
+                    stepExecution.getStatus());
+            return null;
+        }
         if (closed) {
-            log.debug("Statement writer already closed; skipping duplicate upload");
-            return;
+            return null;
         }
         int textRecords = textBuffer.size();
         int htmlRecords = htmlBuffer.size();
         byte[] textBytes = serialize(textBuffer);
         byte[] htmlBytes = serialize(htmlBuffer);
-        // Mark closed BEFORE the uploads so a retried close() after a partial failure cannot
-        // re-enter and duplicate an already-successful upload; a failure still surfaces as a fatal
-        // FileProcessingException that fails the step.
+        // Mark finalized BEFORE the uploads so this cannot re-enter and duplicate a successful upload.
         closed = true;
-        upload(textObjectKey, textBytes, "text");
-        upload(htmlObjectKey, htmlBytes, "html");
+        try {
+            upload(textObjectKey, textBytes, "text");
+            upload(htmlObjectKey, htmlBytes, "html");
+        } catch (final RuntimeException e) {
+            log.error("Statement upload failed; failing the step", e);
+            stepExecution.addFailureException(e);
+            stepExecution.setStatus(BatchStatus.FAILED);
+            return ExitStatus.FAILED;
+        }
         log.info("Uploaded statements to s3://{}: {} ({} records, {} bytes), {} ({} records, {} bytes)",
                 statementsBucket,
                 textObjectKey, textRecords, textBytes.length,
                 htmlObjectKey, htmlRecords, htmlBytes.length);
+        textBuffer.clear();
+        htmlBuffer.clear();
+        return null;
+    }
+
+    /**
+     * Releases the aggregate buffers. <strong>Cleanup only</strong> (QA finding <strong>F4</strong>,
+     * decision {@code D-027}): the serialize + S3 upload were moved to
+     * {@link #afterStep(StepExecution)} because {@code AbstractStep} swallows any exception thrown from
+     * {@code close()} and has already persisted the step/job status by the time {@code close()} runs, so
+     * an upload here could never fail the step. This method performs no upload; it simply frees the
+     * buffers (they are already empty on the success path, and this releases them on a failed step).
+     */
+    @Override
+    public void close() {
         textBuffer.clear();
         htmlBuffer.clear();
     }

@@ -5,6 +5,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.Job;
+import org.springframework.batch.core.BatchStatus;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobParameters;
 import org.springframework.batch.core.JobParametersBuilder;
@@ -221,6 +222,19 @@ public class ReportJobLauncher {
             final JobExecution execution = jobLauncher.run(transactionReportJob, jobParameters);
             log.info("Launched transactionReportJob [jobId={}] jobExecutionId={} status={} correlationId={}",
                     jobId, execution.getId(), execution.getStatus(), correlationId);
+            // F4 (D-027): the auto-configured JobLauncher is synchronous, so run() returns the finished
+            // JobExecution — and a FAILED step does NOT throw from run(); it returns status=FAILED. If the
+            // job did not COMPLETE (for example a writer failed its S3 upload in afterStep), the report was
+            // not produced, so we must NOT let the @SqsListener acknowledge the message. Throwing here keeps
+            // the message unacknowledged: SQS redelivers it and, after maxReceiveCount, routes it to the
+            // report DLQ (carddemo-report-jobs-dlq.fifo) for inspection instead of silently losing it.
+            if (execution.getStatus() != BatchStatus.COMPLETED) {
+                log.error("transactionReportJob did not complete [jobId={}] batchStatus={} correlationId={}; "
+                                + "message will be redelivered/DLQ'd", jobId, execution.getStatus(), correlationId);
+                throw new FileProcessingException(
+                        "Transaction report job did not complete for jobId=" + jobId
+                                + " (batchStatus=" + execution.getStatus() + ")");
+            }
         } catch (JobExecutionAlreadyRunningException | JobInstanceAlreadyCompleteException e) {
             // Idempotency / FIFO at-least-once: this exact request is already running or has already
             // completed, so the report is deliberately NOT produced again. Surface it so the broker's

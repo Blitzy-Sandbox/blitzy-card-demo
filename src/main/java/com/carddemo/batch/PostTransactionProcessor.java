@@ -11,6 +11,7 @@ import com.carddemo.exception.RejectReason;
 import com.carddemo.repository.AccountRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryBalanceRepository;
+import com.carddemo.repository.TransactionRepository;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
@@ -127,24 +128,33 @@ public final class PostTransactionProcessor
     /** TCATBAL file, {@code ACCESS I-O} ({@code CBTRN02C} {@code TCATBAL-FILE}); read/create/update. */
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
+    /**
+     * TRANSACT file ({@code CBTRN02C} {@code TRANSACT-FILE}); consulted only by the F2 idempotency
+     * guard to detect a daily transaction already posted in a prior run (D-028). See
+     * {@link #process(DailyTransaction)}.
+     */
+    private final TransactionRepository transactionRepository;
+
     /** Clock backing the processing-timestamp; overridable for deterministic tests. */
     private final Clock clock;
 
     /**
-     * Primary (framework) constructor using constructor injection for the three repository
+     * Primary (framework) constructor using constructor injection for the four repository
      * collaborators. The processing {@link Clock} defaults to {@link Clock#systemDefaultZone()}.
      *
      * @param cardXrefRepository                   the card cross-reference repository; must not be {@code null}
      * @param accountRepository                    the account repository; must not be {@code null}
      * @param transactionCategoryBalanceRepository the transaction-category-balance repository; must not be {@code null}
+     * @param transactionRepository                the transaction repository (F2 idempotency guard); must not be {@code null}
      */
     @Autowired
     public PostTransactionProcessor(
             CardXrefRepository cardXrefRepository,
             AccountRepository accountRepository,
-            TransactionCategoryBalanceRepository transactionCategoryBalanceRepository) {
+            TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+            TransactionRepository transactionRepository) {
         this(cardXrefRepository, accountRepository, transactionCategoryBalanceRepository,
-                Clock.systemDefaultZone());
+                transactionRepository, Clock.systemDefaultZone());
     }
 
     /**
@@ -154,12 +164,14 @@ public final class PostTransactionProcessor
      * @param cardXrefRepository                   the card cross-reference repository; must not be {@code null}
      * @param accountRepository                    the account repository; must not be {@code null}
      * @param transactionCategoryBalanceRepository the transaction-category-balance repository; must not be {@code null}
+     * @param transactionRepository                the transaction repository (F2 idempotency guard); must not be {@code null}
      * @param clock                                the clock backing the processing timestamp; must not be {@code null}
      */
     PostTransactionProcessor(
             CardXrefRepository cardXrefRepository,
             AccountRepository accountRepository,
             TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
+            TransactionRepository transactionRepository,
             Clock clock) {
         this.cardXrefRepository =
                 Objects.requireNonNull(cardXrefRepository, "cardXrefRepository must not be null");
@@ -168,13 +180,29 @@ public final class PostTransactionProcessor
         this.transactionCategoryBalanceRepository = Objects.requireNonNull(
                 transactionCategoryBalanceRepository,
                 "transactionCategoryBalanceRepository must not be null");
+        this.transactionRepository = Objects.requireNonNull(
+                transactionRepository, "transactionRepository must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
     /**
      * Posts a single daily transaction, reproducing the per-record body of {@code CBTRN02C}.
      *
-     * <p>Validates the transaction ({@code 1500-VALIDATE-TRAN}); on any business-rule failure a
+     * <p>Before any COBOL-equivalent work, an <strong>idempotency guard</strong> (F2, decision-log
+     * D-028) consults the TRANSACT master: if a posted {@link Transaction} already carries this
+     * daily row's id ({@code TRAN-ID = DALYTRAN-ID}) the record was posted by a prior run and
+     * {@code null} is returned so Spring Batch <em>filters</em> it — it is neither re-posted, nor
+     * written to the reject file, nor counted. This makes a POSTTRAN re-run idempotent, replacing
+     * the mainframe's job-level rerun protection (the {@code TRANBKP} backup/restore step and GDG
+     * generations, neither of which is reproduced in the Java target). Because
+     * {@code 2800-UPDATE-ACCOUNT-REC} only ever <em>adds</em> the signed amount to the cycle
+     * credit/debit accumulators, {@code (ACCT-CURR-CYC-CREDIT - ACCT-CURR-CYC-DEBIT)} is
+     * monotonically non-decreasing across posts; every record's overlimit classification is
+     * therefore stable, so on a re-run the previously rejected records re-reject identically and
+     * the reject file remains byte-for-byte equivalent.</p>
+     *
+     * <p>For a first-time (not-yet-posted) record the original COBOL semantics apply verbatim:
+     * validate the transaction ({@code 1500-VALIDATE-TRAN}); on any business-rule failure a
      * {@link PostingResult#rejected} outcome is returned with no side-effects. Otherwise the posted
      * {@link Transaction} is built ({@code 2000-POST-TRANSACTION}), the category balance is
      * created/updated ({@code 2700-UPDATE-TCATBAL}), the account balances are updated
@@ -182,13 +210,29 @@ public final class PostTransactionProcessor
      * the writer to persist ({@code 2900-WRITE-TRANSACTION-FILE}).</p>
      *
      * @param dt the daily-transaction staging row to post; must not be {@code null}
-     * @return a posted or rejected {@link PostingResult}; never {@code null}
+     * @return a posted or rejected {@link PostingResult}; or {@code null} to filter a daily
+     *         transaction already posted by a prior run (F2 idempotency guard, D-028)
      * @throws FileProcessingException if the origination timestamp cannot be parsed (ABEND-class
      *                                 data fault; COBOL {@code 9999-ABEND-PROGRAM})
      */
     @Override
     public PostingResult process(DailyTransaction dt) {
         Objects.requireNonNull(dt, "daily transaction must not be null");
+
+        // -------------------------------------------------------------------------------------
+        // F2 idempotency guard (D-028): skip a daily transaction already posted by a prior run.
+        // The posted Transaction's primary key is TRAN-ID = DALYTRAN-ID (see buildPostedTransaction),
+        // so existsById(DALYTRAN-ID) detects a re-run of an already-posted record. Returning null
+        // makes Spring Batch filter the item (not posted, not rejected, not counted), which prevents
+        // the double-posting of account balances that a full RunIdIncrementer re-execution would
+        // otherwise cause. This replaces the mainframe's TRANBKP backup/restore + GDG rerun
+        // protection, which is intentionally not reproduced in the Java target.
+        // -------------------------------------------------------------------------------------
+        if (transactionRepository.existsById(dt.getDalytranId())) {
+            LOG.debug("Daily transaction {} already posted in a prior run - filtering (F2 idempotency)",
+                    dt.getDalytranId());
+            return null;
+        }
 
         // The signed transaction amount, normalised to scale 2 (COBOL DALYTRAN-AMT PIC S9(09)V99).
         final BigDecimal amount = scale2(dt.getDalytranAmt());

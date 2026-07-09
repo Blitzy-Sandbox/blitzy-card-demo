@@ -1,13 +1,16 @@
 package com.carddemo.batch;
 
+import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.CompletionException;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.localstack.LocalStackContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
@@ -15,10 +18,12 @@ import org.testcontainers.utility.DockerImageName;
 
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
+import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.s3.model.DeleteMarkerEntry;
 import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
 import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.S3Exception;
-import software.amazon.awssdk.services.s3.model.S3Object;
 import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
 import software.amazon.awssdk.services.sqs.model.QueueDoesNotExistException;
@@ -251,29 +256,60 @@ public abstract class AbstractBatchIntegrationTest {
     // ===============================================================================================
 
     /**
-     * Creates an S3 bucket in LocalStack. Intended to be called from a subclass {@code @BeforeEach} /
-     * {@code @BeforeAll} for the specific bucket(s) that test exercises.
+     * Creates an S3 bucket in LocalStack <strong>with versioning enabled</strong>. Intended to be
+     * called from a subclass {@code @BeforeEach} / {@code @BeforeAll} for the specific bucket(s) that
+     * test exercises.
+     *
+     * <p>Enabling versioning here mirrors production exactly: the application's startup
+     * {@code AwsResourceProvisioner} enables versioning on every batch bucket
+     * ({@code @Profile("!test")}, decision-log&nbsp;D-026), but that provisioner is inert under the
+     * {@code test} profile, so integration tests must self-provision versioned buckets to exercise
+     * the GDG&nbsp;&rarr;&nbsp;versioned-object mapping (AAP&nbsp;D-003, &sect;0.7.7/&sect;0.8.5). Without
+     * this a re-run would silently overwrite prior objects (QA finding&nbsp;<strong>F1</strong>);
+     * with it each re-upload of a fixed key ({@code dalyrejs.dat}, {@code tranrept.dat},
+     * {@code statements.*}) yields a new, distinct S3 object version, preserving prior generations.</p>
      *
      * @param bucket the bucket name to create (for example {@link #BUCKET_INPUT}); must not be {@code null}
      */
     protected void createBucket(final String bucket) {
         s3Client.createBucket(request -> request.bucket(bucket));
+        // GDG generation -> versioned object (F1). Idempotent: re-enabling ENABLED is a no-op.
+        s3Client.putBucketVersioning(request -> request
+                .bucket(bucket)
+                .versioningConfiguration(configuration -> configuration
+                        .status(BucketVersioningStatus.ENABLED)));
     }
 
     /**
-     * Deletes an S3 bucket after first removing every object it contains (S3 forbids deleting a
-     * non-empty bucket). Safe to call from a subclass teardown even if the bucket was never created or
-     * is already empty: a {@link NoSuchBucketException} is treated as "already gone" and ignored, so
-     * cleanup never fails a test.
+     * Deletes an S3 bucket after first removing every object <em>version</em> and delete marker it
+     * contains (S3 forbids deleting a non-empty bucket). Safe to call from a subclass teardown even if
+     * the bucket was never created or is already empty: a {@link NoSuchBucketException} is treated as
+     * "already gone" and ignored, so cleanup never fails a test.
+     *
+     * <p><strong>Version-aware.</strong> Because {@link #createBucket(String)} now enables versioning
+     * (F1), a plain {@code deleteObject} without a version id would merely add a <em>delete marker</em>
+     * and leave the noncurrent versions in place, so {@code deleteBucket} would fail with
+     * {@code BucketNotEmpty}. This walks {@code listObjectVersions} — which enumerates both concrete
+     * versions and delete markers — and deletes each by its {@code (key, versionId)} so the bucket ends
+     * genuinely empty. It also works for an unversioned bucket (its objects report a {@code "null"}
+     * version id, which {@code deleteObject} accepts).</p>
      *
      * @param bucket the bucket name to delete recursively; must not be {@code null}
      */
     protected void deleteBucketRecursively(final String bucket) {
         try {
-            // The paginator transparently walks every page of keys; delete each object, then the bucket.
-            for (final S3Object object : s3Client.listObjectsV2Paginator(request -> request.bucket(bucket)).contents()) {
-                s3Client.deleteObject(request -> request.bucket(bucket).key(object.key()));
-            }
+            // The paginator transparently walks every page; delete each version and delete marker by
+            // (key, versionId), then delete the now-empty bucket.
+            s3Client.listObjectVersionsPaginator(request -> request.bucket(bucket)).forEach(page -> {
+                for (final ObjectVersion version : page.versions()) {
+                    s3Client.deleteObject(request -> request.bucket(bucket)
+                            .key(version.key()).versionId(version.versionId()));
+                }
+                for (final DeleteMarkerEntry marker : page.deleteMarkers()) {
+                    s3Client.deleteObject(request -> request.bucket(bucket)
+                            .key(marker.key()).versionId(marker.versionId()));
+                }
+            });
             s3Client.deleteBucket(request -> request.bucket(bucket));
         } catch (final NoSuchBucketException ignored) {
             // Idempotent teardown: the bucket does not exist, so there is nothing to clean up.
@@ -354,6 +390,88 @@ public abstract class AbstractBatchIntegrationTest {
     }
 
     /**
+     * Idempotently ensures the shared report-request FIFO queue ({@link #QUEUE_REPORT_FIFO}) exists on
+     * the shared LocalStack container with {@code ContentBasedDeduplication=true}, using the container's
+     * bundled {@code awslocal} CLI (no Spring-managed AWS client, so it is safe to call from a
+     * {@link DynamicPropertySource} hook that runs <em>before</em> the application context refreshes).
+     *
+     * <p>This is the single, robust creation path shared by every {@code *IT} that pre-creates the report
+     * queue ({@link ReportServiceRoundTripIT}, {@link ReportJobLauncherIT} and the provisioner IT). It
+     * exists because the batch integration suite shares one static {@code LOCALSTACK} singleton across all
+     * subclass tests in a single {@code mvn verify} run, while {@code application-test.yml} intentionally
+     * sets {@code spring.cloud.aws.sqs.queue-not-found-strategy=create}. Any full-context IT that boots the
+     * {@code ReportJobLauncher} {@code @SqsListener} therefore <em>auto-creates</em> the FIFO queue on that
+     * shared container the moment its context refreshes &mdash; but Spring Cloud AWS auto-creation sets only
+     * {@code FifoQueue=true} and leaves {@code ContentBasedDeduplication} at its {@code false} default. A
+     * later report IT that then issues {@code create-queue} with {@code ContentBasedDeduplication=true} is
+     * rejected by SQS with {@code QueueAlreadyExists} (&ldquo;a different value for attribute
+     * ContentBasedDeduplication&rdquo;), which used to fail that IT's context load.</p>
+     *
+     * <p>The report producer path (the application's own {@code SqsTemplate} and the raw-SDK
+     * {@code sendMessage} in {@link ReportJobLauncherIT}) supplies <em>no</em> {@code MessageDeduplicationId}
+     * and therefore requires {@code ContentBasedDeduplication=true}. This helper guarantees that end state
+     * regardless of who created the queue first: it attempts creation with the correct attributes and, if
+     * the queue already exists (auto-created by a sibling listener, or left behind with a {@code RedrivePolicy}
+     * by the provisioner IT), it <em>normalizes</em> the mutable {@code ContentBasedDeduplication} attribute
+     * to {@code true} via {@code set-queue-attributes} &mdash; which, unlike {@code create-queue}/{@code delete-queue},
+     * has no 60-second cooldown and can toggle CBD on a live FIFO queue. {@code FifoQueue} itself is immutable
+     * but is already {@code true} because the queue name ends in {@code .fifo}.</p>
+     */
+    protected static void ensureReportRequestFifoQueue() {
+        try {
+            // 1) Attempt to create the queue with the attributes the producer path requires.
+            final Container.ExecResult create = LOCALSTACK.execInContainer(
+                    "awslocal", "sqs", "create-queue",
+                    "--queue-name", QUEUE_REPORT_FIFO,
+                    "--attributes", "FifoQueue=true,ContentBasedDeduplication=true");
+            if (create.getExitCode() == 0) {
+                return; // Fresh queue created with ContentBasedDeduplication=true — nothing else to do.
+            }
+            final String createErr = create.getStderr() == null ? "" : create.getStderr();
+            if (!createErr.contains("QueueAlreadyExists")) {
+                // Any failure other than an already-existing queue is a genuine provisioning error.
+                throw new IllegalStateException(
+                        "Failed to create FIFO queue '" + QUEUE_REPORT_FIFO + "' in LocalStack (exit="
+                                + create.getExitCode() + "): " + createErr);
+            }
+
+            // 2) The queue already exists (commonly auto-created by a sibling @SqsListener without CBD).
+            //    Resolve its URL as a bare string (--output text) so we can normalize its attributes.
+            final Container.ExecResult url = LOCALSTACK.execInContainer(
+                    "awslocal", "sqs", "get-queue-url",
+                    "--queue-name", QUEUE_REPORT_FIFO,
+                    "--query", "QueueUrl", "--output", "text");
+            if (url.getExitCode() != 0) {
+                throw new IllegalStateException(
+                        "FIFO queue '" + QUEUE_REPORT_FIFO + "' reported as existing but its URL could not be "
+                                + "resolved (exit=" + url.getExitCode() + "): " + url.getStderr());
+            }
+            final String queueUrl = url.getStdout().trim();
+
+            // 3) Force ContentBasedDeduplication=true so the no-dedup-id producer path works. This is a
+            //    mutable attribute with no create/delete cooldown; FifoQueue is already true (name ends .fifo).
+            final Container.ExecResult setAttrs = LOCALSTACK.execInContainer(
+                    "awslocal", "sqs", "set-queue-attributes",
+                    "--queue-url", queueUrl,
+                    "--attributes", "ContentBasedDeduplication=true");
+            if (setAttrs.getExitCode() != 0) {
+                throw new IllegalStateException(
+                        "Failed to normalize ContentBasedDeduplication=true on existing FIFO queue '"
+                                + QUEUE_REPORT_FIFO + "' (exit=" + setAttrs.getExitCode() + "): "
+                                + setAttrs.getStderr());
+            }
+        } catch (final IOException e) {
+            throw new IllegalStateException(
+                    "I/O error while ensuring FIFO queue '" + QUEUE_REPORT_FIFO + "' in LocalStack", e);
+        } catch (final InterruptedException e) {
+            // Restore the interrupt status before surfacing the failure (never swallow the interrupt).
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(
+                    "Interrupted while ensuring FIFO queue '" + QUEUE_REPORT_FIFO + "' in LocalStack", e);
+        }
+    }
+
+    /**
      * Resolves the URL of an existing SQS queue by name.
      *
      * @param queueName the queue name to resolve; must not be {@code null}
@@ -399,5 +517,44 @@ public abstract class AbstractBatchIntegrationTest {
     protected void sendMessage(final String queueUrl, final String body, final String groupId) {
         sqsAsyncClient.sendMessage(request -> request.queueUrl(queueUrl).messageBody(body).messageGroupId(groupId))
                 .join();
+    }
+
+    // ===============================================================================================
+    // Shared batch pre-state helpers. The POSTGRES singleton is shared across every subclass IT in a
+    // single `mvn verify`, and @DirtiesContext resets only the Spring context, NOT the database. Any
+    // posting IT that mutates account balances therefore leaks that state to later posting ITs.
+    // ===============================================================================================
+
+    /**
+     * Resets the two <em>current-cycle</em> account accumulators
+     * ({@code acct_curr_cyc_credit}, {@code acct_curr_cyc_debit}) to their uniform V3 seed value of
+     * {@code 0.00} for every account, restoring the deterministic pre-state on which the POSTTRAN
+     * posted/rejected split depends.
+     *
+     * <p><strong>Why this is required.</strong> The batch integration suite shares one static
+     * PostgreSQL container across all subclass tests in a single {@code mvn verify} run, and
+     * {@code @DirtiesContext} resets only the Spring application context, never the database rows. The
+     * {@code postTransactionJob} mutates account balances (it {@code ADD}s each signed amount to the
+     * cycle credit/debit accumulators &mdash; {@code PostTransactionProcessor} L389&ndash;393, the
+     * {@code 2800-UPDATE-ACCOUNT-REC} translation), so once one posting IT has run, the accumulators are
+     * no longer {@code 0.00}. The overlimit reject decision reads exactly
+     * {@code (acct_curr_cyc_credit - acct_curr_cyc_debit + amount)} against {@code acct_credit_limit}
+     * (the same processor, L263&ndash;266) &mdash; it never reads {@code acct_curr_bal} &mdash; so a later
+     * posting IT that inherits non-zero accumulators produces a <em>different</em> reject count (the
+     * observed 38&nbsp;&rarr;&nbsp;113 drift) unless the accumulators are first reset. Both
+     * {@link PostTransactionJobIT} (Gate&nbsp;1 byte-parity) and {@link PostTransactionIdempotencyIT}
+     * (F2 idempotency) call this from their deterministic pre-state so they are independent of the order
+     * in which the failsafe plugin happens to run the suite.
+     *
+     * <p>Only the cycle accumulators are reset (both seed uniformly to {@code 0.00}). {@code acct_curr_bal}
+     * is intentionally left untouched: it participates in no reject decision and in no assertion
+     * (Gate&nbsp;1 compares the emitted {@code TRANSACTION} record bytes, and the idempotency test compares
+     * a self-relative run-1-vs-run-2 balance snapshot), and restoring its 50 distinct per-account seed
+     * values would couple this helper to the seed data with no behavioral benefit.
+     *
+     * @param jdbc the subclass's injected {@link JdbcTemplate} (the base class holds no datasource bean)
+     */
+    protected static void resetAccountCycleTotalsToSeed(final JdbcTemplate jdbc) {
+        jdbc.update("UPDATE account SET acct_curr_cyc_credit = 0.00, acct_curr_cyc_debit = 0.00");
     }
 }

@@ -12,6 +12,10 @@ import java.util.Objects;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
@@ -90,7 +94,7 @@ import io.awspring.cloud.s3.S3Template;
  */
 @Component
 @StepScope
-public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetailLine> {
+public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetailLine>, StepExecutionListener {
 
     private static final Logger LOG = LoggerFactory.getLogger(TransactionReportItemWriter.class);
 
@@ -309,21 +313,40 @@ public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetai
     }
 
     /**
-     * Flushes the trailing totals, uploads the assembled report to S3 and cleans up the temp file.
+     * Flushes the trailing totals and <strong>uploads the assembled report to S3</strong> — the Java
+     * equivalent of the COBOL end-of-file path. Performed here — not in {@link #close()} — so that an
+     * upload failure fails the step (QA finding <strong>F4</strong>, decision {@code D-027}).
      *
-     * <p>This is the Java equivalent of the COBOL end-of-file path. When at least one detail row was
-     * written it emits, in order, the final account total ({@code 1120-WRITE-ACCOUNT-TOTALS} for the
-     * last account), the final page total ({@code 1110-WRITE-PAGE-TOTALS}) and the grand total
-     * ({@code 1110-WRITE-GRAND-TOTALS}); an empty run produces no artifact. The method is idempotent:
-     * a second invocation returns immediately. The temp file is always deleted, even when the upload
-     * fails.</p>
+     * <p><strong>Why the upload lives here.</strong> {@code AbstractStep} persists the step and job
+     * batch/exit status <em>after</em> {@code afterStep()} returns but <em>before</em> {@code close()}
+     * runs, and it swallows any exception thrown from either callback. Uploading in {@code close()}
+     * therefore could not influence the recorded outcome: a failed report upload was previously only
+     * logged as "Exception while closing step execution resources" while the step/job was already
+     * recorded {@code COMPLETED} — the report was silently lost and (for the SQS-triggered report path)
+     * the trigger message was acked with nothing produced. Uploading here and marking the step
+     * {@code FAILED} on failure makes that failure durable.</p>
      *
-     * @throws ItemStreamException never thrown directly; I/O or S3 failures surface as {@link FileProcessingException}
+     * <p>When at least one detail row was written it emits, in order, the final account total
+     * ({@code 1120-WRITE-ACCOUNT-TOTALS} for the last account), the final page total
+     * ({@code 1110-WRITE-PAGE-TOTALS}) and the grand total ({@code 1110-WRITE-GRAND-TOTALS}); an empty
+     * run produces no artifact. If the step already failed during item processing (this callback also
+     * runs on the failure path), finalization is skipped and the {@code FAILED} status is preserved.
+     * The {@link #closed} guard keeps finalization single-shot; {@link #close()} always removes the temp
+     * file afterwards.</p>
+     *
+     * @param stepExecution the completed (or failing) step execution; never {@code null}
+     * @return {@code null} on success, or {@link ExitStatus#FAILED} when totals rendering or the S3
+     *         upload fails
      */
     @Override
-    public void close() throws ItemStreamException {
+    public ExitStatus afterStep(final StepExecution stepExecution) {
+        if (stepExecution.getStatus() != BatchStatus.COMPLETED) {
+            LOG.warn("Transaction-report step status is {} at afterStep; skipping report upload",
+                    stepExecution.getStatus());
+            return null;
+        }
         if (closed) {
-            return;
+            return null;
         }
         closed = true;
         try {
@@ -337,11 +360,29 @@ public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetai
             if (anyDetailWritten && tempFile != null) {
                 uploadReport();
             }
-        } finally {
-            // Guarantee the writer is closed and the temp file removed regardless of any failure above.
-            closeWriterQuietly();
-            deleteTempFileQuietly();
+        } catch (final RuntimeException e) {
+            LOG.error("Transaction-report finalization failed; failing the step", e);
+            stepExecution.addFailureException(e);
+            stepExecution.setStatus(BatchStatus.FAILED);
+            return ExitStatus.FAILED;
         }
+        return null;
+    }
+
+    /**
+     * Releases the report buffer and deletes the temp file. <strong>Cleanup only</strong> (QA finding
+     * <strong>F4</strong>, decision {@code D-027}): the totals rendering and S3 upload were moved to
+     * {@link #afterStep(StepExecution)} because {@code AbstractStep} swallows any exception thrown from
+     * {@code close()} and has already persisted the step/job status by the time {@code close()} runs, so
+     * an upload here could never fail the step. This method performs no upload; it guarantees the writer
+     * is closed and the temp file removed regardless of the step outcome. It is null-safe and idempotent.
+     *
+     * @throws ItemStreamException never thrown (cleanup failures are logged, not propagated)
+     */
+    @Override
+    public void close() throws ItemStreamException {
+        closeWriterQuietly();
+        deleteTempFileQuietly();
     }
 
     // ---------------------------------------------------------------------------------------------

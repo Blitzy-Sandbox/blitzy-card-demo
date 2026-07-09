@@ -381,6 +381,16 @@ class PostTransactionJobIT extends AbstractBatchIntegrationTest {
     private void establishDeterministicPreState() {
         jdbcTemplate.update(SQL_DELETE_TRANSACTION);
 
+        // Shared-PostgreSQL isolation guard: the Testcontainers POSTGRES singleton is reused across every
+        // subclass IT in one `mvn verify`, and @DirtiesContext resets only the Spring context, NOT the DB
+        // rows. Because postTransactionJob ADDs signed amounts to acct_curr_cyc_credit / acct_curr_cyc_debit
+        // (PostTransactionProcessor), any posting IT that ran earlier leaves the cycle accumulators non-zero,
+        // which would shift the deterministic 262/38 overlimit split (the reject decision reads ONLY
+        // cyc_credit - cyc_debit + amount vs credit_limit — never acct_curr_bal). Reset the two accumulators
+        // to their uniform V3 seed (0.00) so this Gate-1 test starts from the documented baseline regardless
+        // of test execution order.
+        resetAccountCycleTotalsToSeed(jdbcTemplate);
+
         final Integer dailyCount = jdbcTemplate.queryForObject(SQL_COUNT_DAILY, Integer.class);
         assertNotNull(dailyCount, "daily_transaction count query returned null");
         assertEquals(EXPECTED_DAILY_COUNT, dailyCount.intValue(),
@@ -645,7 +655,12 @@ class PostTransactionJobIT extends AbstractBatchIntegrationTest {
     @AfterAll
     void tearDown() {
         deleteBucketRecursively(BUCKET_OUTPUT);
-        log.info("Gate1 IT: torn down S3 bucket '{}'", BUCKET_OUTPUT);
+        // Honest baseline restore on the shared Testcontainers POSTGRES: this class launched the posting job
+        // once, which mutated the account cycle accumulators. Reset them to the uniform V3 seed (0.00) so the
+        // next posting IT in the same `mvn verify` reactor starts clean (mirrors this class's own pre-state
+        // guard and the idempotency IT's finally block).
+        resetAccountCycleTotalsToSeed(jdbcTemplate);
+        log.info("Gate1 IT: torn down S3 bucket '{}' and reset account cycle accumulators to seed", BUCKET_OUTPUT);
     }
 
     // ===============================================================================================

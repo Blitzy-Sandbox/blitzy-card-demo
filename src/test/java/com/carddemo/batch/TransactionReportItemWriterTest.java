@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -27,8 +28,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.batch.core.BatchStatus;
+import org.springframework.batch.core.ExitStatus;
+import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
+import org.springframework.batch.test.MetaDataInstanceFactory;
 import org.springframework.beans.factory.annotation.Value;
 
 import io.awspring.cloud.s3.ObjectMetadata;
@@ -243,7 +248,11 @@ class TransactionReportItemWriterTest {
                     new ArrayList<>(items.subList(i, Math.min(i + chunkSize, items.size())));
             writer.write(new Chunk<>(slice));
         }
-        writer.close();
+        // F4 / D-027: the totals rendering + S3 upload moved out of close() into afterStep (which runs
+        // before Spring Batch persists the step status), so finalize the successful step here.
+        final StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        writer.afterStep(stepExecution);
 
         return splitRecords(captured.toString(REPORT_CHARSET));
     }
@@ -600,12 +609,36 @@ class TransactionReportItemWriterTest {
     // ------------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("Phase 6 — exactly one upload to carddemo-batch-output/tranrept.dat on close()")
+    @DisplayName("Phase 6 — exactly one upload to carddemo-batch-output/tranrept.dat on afterStep")
     void uploadsOnceToConfiguredBucketAndKeyOnClose() {
         render(SMALL_PAGE_SIZE, 4, twoAccountsAcrossPages());
 
         verify(s3Template, times(1))
                 .upload(eq(OUTPUT_BUCKET), eq(OBJECT_KEY), any(InputStream.class), any(ObjectMetadata.class));
+    }
+
+    @Test
+    @DisplayName("F4: a report S3 upload failure fails the step (FAILED + ExitStatus.FAILED), "
+            + "never a false success")
+    void uploadFailureFailsStep() {
+        doThrow(new RuntimeException("simulated S3 outage"))
+                .when(s3Template)
+                .upload(anyString(), anyString(), any(InputStream.class), any(ObjectMetadata.class));
+
+        final TransactionReportItemWriter writer = newWriter(SMALL_PAGE_SIZE);
+        writer.open(new ExecutionContext());
+        // At least one detail row so the writer actually attempts the (failure-injected) upload.
+        writer.write(new Chunk<>(new ArrayList<>(twoAccountsAcrossPages())));
+
+        // The chunk phase completed, so the step optimistically holds COMPLETED at afterStep entry.
+        final StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        final ExitStatus exit = writer.afterStep(stepExecution);
+
+        // The upload failure must flip the step to FAILED (D-027) rather than being swallowed.
+        assertThat(exit).isEqualTo(ExitStatus.FAILED);
+        assertThat(stepExecution.getStatus()).isEqualTo(BatchStatus.FAILED);
+        assertThat(stepExecution.getFailureExceptions()).isNotEmpty();
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -618,7 +651,10 @@ class TransactionReportItemWriterTest {
         TransactionReportItemWriter writer = newWriter(SMALL_PAGE_SIZE);
         writer.open(new ExecutionContext());
         writer.write(new Chunk<ReportDetailLine>()); // an empty chunk must be tolerated
-        writer.close();
+        // Finalize via afterStep (F4 / D-027): with no detail rows, no report object is uploaded.
+        final StepExecution stepExecution = MetaDataInstanceFactory.createStepExecution();
+        stepExecution.setStatus(BatchStatus.COMPLETED);
+        writer.afterStep(stepExecution);
 
         verifyNoInteractions(s3Template);
     }
