@@ -146,13 +146,15 @@ deviations from a literal COBOL translation: BCrypt eliminates plaintext credent
 preserving the sign-on flow, and the stateless JWT allows horizontal scaling with no server
 affinity.
 
-!!! warning "Open risk — externalize the JWT signing secret"
-    The JWT signing secret is currently **hardcoded in configuration**, which is tracked as an
-    open **High-severity** risk (see [D-009](../decision-log.md) and the
-    [Project Guide](../project-guide.md) risk register). It **must be externalized** to an
-    environment variable or a secrets manager / vault (for example AWS Secrets Manager or
-    HashiCorp Vault) before any non-local deployment. No secret value is shown here or anywhere in
-    the documentation, consistent with the "no hardcoded credentials" rule.
+!!! note "Residual — provision the JWT signing secret at deploy time"
+    The JWT signing secret is **not hardcoded**: it is bound to the mandatory `JWT_SECRET`
+    environment variable with **no default**, so the application **fails fast at startup** if the
+    secret is missing or shorter than the required key length (see [D-009](../decision-log.md) and
+    the [Project Guide](../project-guide.md) risk register). The remaining operational work is to
+    **provision `JWT_SECRET` from a secrets manager / vault** (for example AWS Secrets Manager or
+    HashiCorp Vault) in each non-local environment and to validate its presence as part of the
+    deployment pipeline. No secret value is shown here or anywhere in the documentation, consistent
+    with the "no hardcoded credentials" rule.
 
 ## See also
 

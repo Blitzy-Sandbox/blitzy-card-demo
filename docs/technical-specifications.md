@@ -1,5 +1,17 @@
 # Technical Specification
 
+!!! note "Historical planning document — see the delivered-state docs for current status"
+    This page is the **pre-implementation technical blueprint** (the frozen Agent Action Plan) that drove the migration. It is retained **as-authored** to preserve the original plan and its rationale; the **planned** artifact names, file paths, and pinned versions below reflect that plan and, in places, **intentionally differ from what was ultimately delivered**. It is **not** a description of the current delivered state.
+
+    For the delivered state and any logged deviations, consult:
+
+    - [`project-guide.md`](project-guide.md) — delivery status, metrics (1,272 tests, 95.8% line coverage), and the operational runbook.
+    - [`decision-log.md`](decision-log.md) — decisions, alternatives, and logged deviations — notably **D-024**, the security-driven upgrade of **Spring Boot 3.5.11 → 3.5.16** (Gate 8 OWASP remediation); the delivered runtime is therefore **3.5.16**, not the 3.5.11 planned below.
+    - [`onboarding.md`](onboarding.md) — the clean-machine golden path.
+    - [`traceability-matrix.md`](traceability-matrix.md) — the 100% bidirectional COBOL ↔ Java mapping.
+
+    **Delivered artifact names** differ from several planned names on this page: the decision log is [`docs/decision-log.md`](decision-log.md) (not `DECISION_LOG.md`); the traceability matrix is [`docs/traceability-matrix.md`](traceability-matrix.md) (not `TRACEABILITY_MATRIX.md`); the executive deck is [`docs/executive-summary.html`](executive-summary.html) (not `executive-presentation.html`); the onboarding guide is [`docs/onboarding.md`](onboarding.md) (not `onboarding-guide.md`); and the Grafana dashboard is `grafana/dashboards/carddemo-dashboard.json` (not `docs/grafana-dashboard.json`). Gate evidence and API contracts were folded into the delivered docs above rather than shipped as standalone `validation-gates.md` / `api-contracts.md` files, and AWS resources are self-provisioned by the application and integration tests (no standalone `localstack-init/` scripts). The delivered Flyway migrations are `V1__schema.sql`, `V2__indexes.sql`, and `V3__seed_data.sql`.
+
 # 0. Agent Action Plan
 
 ## 0.1 Intent Clarification
@@ -942,7 +954,7 @@ Per the user-specified "Executive Presentation" rule, a `docs/executive-presenta
 - Slide 5: COBOL-to-Java mapping summary (table visual)
 - Slide 6: Batch pipeline before/after (side-by-side Mermaid)
 - Slide 7: Data migration strategy (flow diagram)
-- Slide 8: Observability dashboard (screenshot placeholder)
+- Slide 8: Observability dashboard (rendered from the delivered Grafana dashboard `grafana/dashboards/carddemo-dashboard.json`)
 - Slide 9: Risk assessment matrix (color-coded table)
 - Slide 10: Validation gates summary (checklist visual)
 - Slide 11: Team onboarding path (timeline graphic)

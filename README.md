@@ -69,7 +69,7 @@ fidelity, control-flow semantics, and external interface contracts are preserved
 | Area | Technology | Version |
 | :--- | :--------- | :------ |
 | Language / Runtime | Java (LTS) | 25 |
-| Framework | Spring Boot | 3.5.11 |
+| Framework | Spring Boot | 3.5.16 |
 | Build | Apache Maven | 3.9.9 |
 | Database | PostgreSQL | 16 |
 | Persistence | Spring Data JPA / Hibernate | (Boot-managed) |
@@ -93,17 +93,8 @@ plaintext passwords upgraded to BCrypt hashes (see decision **D-002**).
 
 ## Quick Start (Local Development)
 
-These steps take you from a clean machine toward a running application, following the intended
-clean-machine workflow. Every command is copy-paste runnable from the repository root.
-
-> **⚠️ Current checkpoint status (CP3).** The domain layer (11 JPA entities and repositories),
-> the service layer, the Spring Batch components, `SecurityConfig`, the observability filters, and
-> the `GlobalExceptionHandler` are in place, and **Step 1** (the local Docker stack) works today.
-> **Steps 2–4 describe the target end state and are not fully runnable yet:** the runnable web
-> application is delivered in a later checkpoint (**CP4/CP5**), which adds the REST controllers
-> (only `GlobalExceptionHandler` exists today), `src/main/resources/application*.yml`,
-> `logback-spring.xml`, and the Flyway `V3__seed_data.sql` seed. The steps below flag the parts
-> that are **pending CP4/CP5**.
+These steps take you from a clean machine to a running application. Every command is
+copy-paste runnable from the repository root.
 
 ### Prerequisites
 
@@ -143,12 +134,10 @@ This starts exactly five services (host ports match [`docker-compose.yml`](./doc
 mvn clean verify
 ```
 
-This compiles the project, runs the JUnit 5 unit tests, and enforces **JaCoCo line coverage
-≥ 80%** (Gate 8).
-
-> **Pending CP4/CP5.** The Testcontainers/LocalStack **integration tests** boot the Spring web
-> application and therefore require the `application*.yml` configuration delivered in CP4/CP5;
-> until then, run the unit tests with `mvn clean test`.
+This compiles the project, runs the full test suite — **1,243 unit tests** (Surefire) plus
+**29 Testcontainers/LocalStack integration tests** (Failsafe) — and enforces **JaCoCo line
+coverage ≥ 80%** (Gate 8). Docker must be running for the integration tests; to run only the
+unit tests, use `mvn clean test`.
 
 ### Step 3 — Run the app (local profile)
 
@@ -156,16 +145,12 @@ This compiles the project, runs the JUnit 5 unit tests, and enforces **JaCoCo li
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-On startup, **Flyway** applies the migrations automatically. `V1__schema.sql` (11 tables) and
-`V2__indexes.sql` are in place today; `V3__seed_data.sql` (which seeds the database from the ASCII
-fixtures under [`app/data/ASCII/`](./app/data/ASCII)) arrives in CP4/CP5. The app listens on
+On startup, **Flyway** applies the migrations automatically: `V1__schema.sql` (11 tables),
+`V2__indexes.sql`, and `V3__seed_data.sql` (which seeds the database from the ASCII fixtures under
+[`app/data/ASCII/`](./app/data/ASCII)) are all applied. The app listens on
 `http://localhost:8080` and connects to the PostgreSQL database `carddemo` on `5432` using the
 dev-only defaults defined in `docker-compose.yml` (production uses environment variables / a
 vault — never hardcoded).
-
-> **Pending CP4/CP5.** Running the app requires the `application-local.yml` profile,
-> `logback-spring.xml`, and the REST controllers, which land in CP4/CP5 (only
-> `GlobalExceptionHandler` exists today); the `V3__seed_data.sql` seed lands in the same checkpoint.
 
 ### Step 4 — Verify observability
 
@@ -178,10 +163,9 @@ curl -s http://localhost:8080/actuator/prometheus    # Prometheus-format metrics
 - **Prometheus:** <http://localhost:9090>
 - **Grafana:** <http://localhost:3000> (dev login `admin` / `admin`)
 
-> **Pending CP4/CP5.** The application's actuator HTTP endpoints (`/actuator/health`,
-> `/actuator/prometheus`) and its traces/metrics become reachable only once the app runs (Step 3),
-> i.e. after CP4/CP5 delivers the application configuration and controllers. The Jaeger, Prometheus,
-> and Grafana UIs themselves are up from Step 1.
+> The application's actuator HTTP endpoints (`/actuator/health`, `/actuator/prometheus`) and its
+> traces/metrics become reachable once the app is running (Step 3). The Jaeger, Prometheus, and
+> Grafana UIs themselves are up from Step 1.
 
 > **LocalStack endpoint:** point AWS clients at `http://localhost:4566` (never real AWS). The
 > authoritative local S3 reachability check (per the setup environment) is
@@ -398,14 +382,18 @@ preserved for byte-equivalent I/O:
 
 ## Suggested Next Tasks
 
-Discovered during the migration. Items 1–2 remain open follow-ups; items 3–4 were **delivered in
-this checkpoint** and only their deployment-time provisioning/validation remains:
+Discovered during the migration. Item 1 is a forward-looking upgrade; items 2–4 are **delivered
+or executed** and only their deployment-time provisioning, validation, and
+CI-runner execution remain:
 
 1. **Spring Boot 3.5 → 4.x upgrade.** The 3.5 line reached OSS end-of-life on **2026-06-30**
-   (final OSS patch **3.5.16**). The target intentionally stays on Spring Boot **3.x** per the
-   explicit migration mandate; the upgrade to 4.x (on Spring Framework 7) is a planned follow-up.
-2. **Run the OWASP dependency-check** (`org.owasp:dependency-check-maven` 12.1.0) and remediate
-   any critical/high CVEs (Gate 8, zero critical/high).
+   (final OSS patch **3.5.16**). The target now runs on **3.5.16** and intentionally stays on
+   Spring Boot **3.x** per the explicit migration mandate; the upgrade to 4.x (on Spring
+   Framework 7) is a planned follow-up.
+2. **OWASP dependency-check — executed; Gate 8 passing.** The `org.owasp:dependency-check-maven`
+   12.1.0 scan has been run with **zero critical/high CVEs** (remediated via dependency upgrades
+   plus documented suppressions; see decision log **D-024**). Residual work: run it as part of the
+   validated CI pipeline.
 3. **Production Spring profile — delivered.** `application-prod.yml` is present with externalized
    DB and AWS configuration (no hardcoded endpoints or credentials). Residual work: validate the
    profile end-to-end against the target deployment environment and its secret store.

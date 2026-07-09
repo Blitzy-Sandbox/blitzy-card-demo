@@ -132,20 +132,26 @@ spring:
         # AWS region — NO default. Must be supplied explicitly in prod.
         static: ${AWS_REGION}
       # Global endpoint override. IMPORTANT: this migration mandates ZERO live
-      # AWS — every S3/SQS/SNS interaction is exercised against LocalStack. Set
-      # AWS_ENDPOINT to the LocalStack (or gateway) endpoint; when it is unset
-      # the value resolves to empty, which the Spring binder treats as "no
-      # override" (the URI stays null). Pointing this at real AWS is out of
-      # scope / a future decision recorded in docs/decision-log.md — the profile
-      # must NOT default to a live-AWS endpoint.
-      endpoint: ${AWS_ENDPOINT:}
+      # AWS — every S3/SQS/SNS interaction is exercised against LocalStack (AAP
+      # G7). AWS_ENDPOINT therefore has NO default and MUST be supplied with the
+      # approved LocalStack (or gateway) endpoint; if it is unset the context
+      # FAILS FAST at startup ("Could not resolve placeholder 'AWS_ENDPOINT'")
+      # rather than silently resolving to empty and letting the SDK target real
+      # AWS. Pointing this at live AWS is out of scope / a future decision
+      # recorded in docs/decision-log.md — the profile must NEVER default to a
+      # live-AWS endpoint.
+      endpoint: ${AWS_ENDPOINT}
       credentials:
         # Credentials come ONLY from env/vault — never literals, and never dummy
-        # test/test values. Empty defaults mean "not configured here": when both
-        # are blank, Spring Cloud AWS falls back to the DefaultCredentialsProvider
-        # chain (container/instance role, native AWS_* env vars, profile, etc.).
-        access-key: ${AWS_ACCESS_KEY_ID:}
-        secret-key: ${AWS_SECRET_ACCESS_KEY:}
+        # test/test values. They have NO empty default ON PURPOSE: an empty
+        # default would leave both keys blank and let Spring Cloud AWS fall back
+        # to the DefaultCredentialsProvider chain (container/instance role,
+        # ambient AWS_* env vars, profile, etc.), which could discover live-AWS
+        # credentials and violate the zero-live-AWS requirement. With no default
+        # the context fails fast when either key is unset, so the LocalStack
+        # (dummy) credentials must be supplied explicitly for this scope.
+        access-key: ${AWS_ACCESS_KEY_ID}
+        secret-key: ${AWS_SECRET_ACCESS_KEY}
 
 # ---------------------------------------------------------------------------
 # Phase 4 — Actuator / metrics / tracing (Observability rule, prod-tuned)

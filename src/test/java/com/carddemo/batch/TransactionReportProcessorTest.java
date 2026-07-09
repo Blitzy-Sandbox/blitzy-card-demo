@@ -6,6 +6,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.carddemo.entity.CardXref;
 import com.carddemo.entity.Transaction;
 import com.carddemo.entity.TransactionCategoryType;
@@ -15,6 +19,7 @@ import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.TransactionCategoryTypeRepository;
 import com.carddemo.repository.TransactionTypeRepository;
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.slf4j.LoggerFactory;
 
 /**
  * Pure, fast unit tests for {@link TransactionReportProcessor} — the chunk-step {@code ItemProcessor}
@@ -420,6 +426,41 @@ class TransactionReportProcessorTest {
         assertThat(result).isNull();
         verify(cardXrefRepository).findById(CARD_NUMBER);
         verifyNoInteractions(transactionTypeRepository, transactionCategoryTypeRepository);
+    }
+
+    @Test
+    @DisplayName("Missing cross-reference WARN masks the PAN — a full 16-digit card number never appears in logs (CWE-532)")
+    void missingCrossReferenceWarnMasksTheCardNumber() {
+        // The masked rendering of CARD_NUMBER: every digit but the last four replaced by '*'.
+        final String maskedCardNumber = "************1111";
+        when(cardXrefRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+
+        // Attach an in-memory appender to the class-under-test logger to capture emitted events.
+        Logger logger = (Logger) LoggerFactory.getLogger(TransactionReportProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            ReportDetailLine result = processor.process(
+                    tx(ts("2022-06-10"), CARD_NUMBER, TYPE_CODE, "5", "10.00"));
+            assertThat(result).isNull();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        // The missing-XREF path logs exactly at WARN.
+        assertThat(appender.list).anyMatch(event -> event.getLevel() == Level.WARN);
+
+        List<String> messages = appender.list.stream()
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+
+        // Security (CWE-532): the full 16-digit PAN must never appear in any log line.
+        assertThat(messages).isNotEmpty();
+        assertThat(messages).noneMatch(message -> message.contains(CARD_NUMBER));
+        // Diagnosability is preserved: the masked form (last four visible) is present.
+        assertThat(messages).anyMatch(message -> message.contains(maskedCardNumber));
     }
 
     @Test

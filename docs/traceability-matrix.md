@@ -61,7 +61,7 @@ in the [architecture overview](./architecture/overview.md).
 | COBOL programs mapped | **28** (17 online CICS + 11 batch/utility) |
 | COBOL paragraphs mapped (forward) | **527** (100%) |
 | Record-layout copybooks &rarr; JPA entities | **11 &rarr; 11** |
-| Java classes traced back (reverse) | **126** (Part&nbsp;A 49 + Part&nbsp;B 77) |
+| Java classes traced back (reverse) | **127** (Part&nbsp;A 49 + Part&nbsp;B 78) |
 | Source reference | commit `27d6c6f` (`7756d895ffeb65f7ea72aaa609e356d9899afcec`) &mdash; not copied |
 
 > **Ground-truth note.** Program tiering and counts are derived by direct
@@ -1071,6 +1071,7 @@ Observability rule) are marked accordingly.
 | `CombineTransactionJob` | `combineTransactionJob()` | app/jcl COMBTRAN (SORT) | JCL DFSORT step (no COBOL program) → Job/Step bean |
 | `CombineTransactionProcessor` | `process()` | app/jcl COMBTRAN (SORT) | SORT record pass-through / key projection |
 | `InterestCalculationJob` | `interestCalculationJob()` | CBACT04C.cbl + app/jcl/INTCALC | JCL EXEC PGM → Job/Step bean |
+| `InterestCalculationProcessor` | `process()` | CBACT04C.cbl + app/jcl/INTCALC | Per-account control-break driving loop (PROCEDURE DIVISION `PERFORM UNTIL END-OF-FILE` mainline — not a named paragraph) → chunk `ItemProcessor`; delegates the interest arithmetic/persistence to `InterestCalculationService` (in-line PERFORM → injected bean); out-of-contract `null` account id raised as `FileProcessingException` (abend-class fault, cf. `9999-ABEND-PROGRAM`) |
 | `PostTransactionJob` | `postTransactionJob()` | CBTRN02C.cbl + app/jcl/POSTTRAN | JCL EXEC PGM + DD → Spring Batch Job/Step (BatchConfig) |
 | `PostingResult` | (record) | CBTRN02C.cbl | Posting outcome value object (posted / rejected + RejectReason) |
 | `ReportDetailLine` | (record) | CBTRN03C.cbl | Report detail / total line model (1111-WRITE-REPORT-REC, 1120-WRITE-DETAIL) |
@@ -1127,8 +1128,8 @@ Observability rule) are marked accordingly.
 **Assertion: 100% forward coverage.** Every paragraph of every one of the 28
 programs at commit `27d6c6f` appears exactly once in Section&nbsp;1
 (**527** paragraph rows total). **Assertion: full reverse coverage.**
-All **126** classes in the target inventory (`com.carddemo.**`) appear in the
-Section&nbsp;4 reverse index (Part&nbsp;A: 49; Part&nbsp;B: 77).
+All **127** classes in the target inventory (`com.carddemo.**`) appear in the
+Section&nbsp;4 reverse index (Part&nbsp;A: 49; Part&nbsp;B: 78).
 
 | # | COBOL Program | Tier | Txn / Job | Paragraphs | Status |
 |---|---|---|---|---|---|

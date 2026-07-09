@@ -29,7 +29,7 @@ than duplicating it.
 
 CardDemo is a **credit-card management workload** — accounts, cards, transactions, and bill
 payments — that was migrated from AWS's original COBOL / CICS / VSAM / JCL / BMS mainframe
-reference application into an idiomatic **Java 25 LTS + Spring Boot 3.5.11** system. The target is
+reference application into an idiomatic **Java 25 LTS + Spring Boot 3.5.16** system. The target is
 a **headless REST backend plus a Spring Batch pipeline**: there is **no browser UI and no design
 system** — the 17 legacy 3270 terminal screens are exposed as JSON APIs. The migration targets
 **100% behavioral parity** with the frozen COBOL source, preserving decimal fidelity, control-flow
@@ -44,7 +44,7 @@ target.)
 
 **Key pinned versions** (all managed in `pom.xml`; the root `README.md` technology-stack
 table and [`project-guide.md`](project-guide.md) hold the full matrix): **Java 25 LTS**,
-**Spring Boot 3.5.11**, **Maven 3.9.9**, **PostgreSQL 16**, **Flyway 11.x**, **Spring Cloud AWS
+**Spring Boot 3.5.16**, **Maven 3.9.9**, **PostgreSQL 16**, **Flyway 11.x**, **Spring Cloud AWS
 3.3.0**, and **Testcontainers 2.0.3**.
 
 For deeper detail beyond this guide:
@@ -168,16 +168,6 @@ Compose service; you run it on the host in Step 5. Wait until the containers rep
 docker compose ps
 ```
 
-> **⚠️ Pending CP4/CP5 — Steps 4–7 describe the target end state.** At the current checkpoint
-> (CP3) the domain, service, batch, security, and observability code is in place and **Steps 1–3**
-> (the local Docker stack) work today, but the runnable web application arrives in a later
-> checkpoint (**CP4/CP5**). Until then the following are **not yet present**, so Steps 5–7 cannot
-> complete end-to-end: the REST controllers (only `GlobalExceptionHandler` exists),
-> `src/main/resources/application*.yml`, `logback-spring.xml`, and the Flyway `V3__seed_data.sql`
-> seed. You can build and run the **unit tests** today with `mvn clean test`; the full
-> `mvn clean verify` (which adds the Testcontainers/LocalStack integration tests that boot the app)
-> completes once CP4/CP5 lands.
-
 ### Step 4 — Build and test
 
 ```bash
@@ -197,9 +187,9 @@ mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 (The equivalent `-Dspring.profiles.active=local` also works.) On startup, **Flyway** applies the
-database migrations automatically — `V1__schema.sql` (11 tables) and `V2__indexes.sql` are present
-today, and `V3__seed_data.sql` (seed data derived from the ASCII fixtures) arrives in CP4/CP5 —
-after which the app begins listening on `http://localhost:8080`.
+database migrations automatically — `V1__schema.sql` (11 tables), `V2__indexes.sql`, and
+`V3__seed_data.sql` (seed data derived from the ASCII fixtures) are all applied — after which the
+app begins listening on `http://localhost:8080`.
 
 ### Step 6 — Verify it is up
 
@@ -460,17 +450,22 @@ code comments** — and keep [`traceability-matrix.md`](traceability-matrix.md) 
 
 ## 9. Suggested Next Tasks
 
-These follow-ups were discovered during the migration. Two of the original High-severity risks in
-the [`project-guide.md`](project-guide.md) — the production profile and JWT externalization — were
-**delivered in this checkpoint** and appear below as delivered with only deployment-time residual
-work. The OWASP scan execution and running the CI/CD pipeline green remain open, alongside the
-Spring Boot 3.5 → 4.x currency item recorded in the [`decision-log.md`](decision-log.md).
+These follow-ups were discovered during the migration. Three of the original High-severity risks in
+the [`project-guide.md`](project-guide.md) — the production profile, JWT externalization, and the
+OWASP dependency-check execution — have been **delivered**, and appear below as delivered with only
+deployment-time residual work. Validating the CI/CD pipeline green on a hosted runner and the
+Spring Boot 3.5 → 4.x currency item (recorded in the [`decision-log.md`](decision-log.md)) remain
+open.
 
-- **Run the OWASP dependency-check to green and remediate.** The scan is defined in the Maven
+- **OWASP dependency-check — executed, Gate 8 passing.** The scan is defined in the Maven
   `owasp` profile (`org.owasp:dependency-check-maven` 12.1.0, `failBuildOnCVSS=7`) and wired into
-  CI, but it has not yet been executed end-to-end against the live NVD feed — run
-  `mvn -Powasp org.owasp:dependency-check-maven:check` (supplying an NVD API key) and fix any
-  critical/high CVEs (Gate 8: zero critical/high).
+  CI. It has been run end-to-end against the live NVD feed
+  (`mvn -Powasp org.owasp:dependency-check-maven:check`) and **passes with zero critical/high CVEs
+  (CVSS ≥ 7)** — Gate 8 is met. Remediation upgraded Spring Boot 3.5.11 → 3.5.16 and pinned selected
+  transitive dependencies, with four documented false-positive/residual findings suppressed in
+  `dependency-check-suppressions.xml`; see decision [`D-024`](decision-log.md). Residual work:
+  re-review the suppressions when upstream GA fixes ship, and supply an NVD API key on the CI runner
+  for faster feed downloads.
 - **Production Spring profile — delivered.** `application-prod.yml` now exists alongside `local`
   and `test`, deploying against real PostgreSQL/AWS with fully externalized configuration (no
   hardcoded endpoints or credentials). Residual work: validate the profile end-to-end against the
@@ -480,14 +475,14 @@ Spring Boot 3.5 → 4.x currency item recorded in the [`decision-log.md`](decisi
   `carddemo.security.jwt.secret` to `${JWT_SECRET}` with **no default**, so a production boot fails
   fast if it is unset. Residual work: provision `JWT_SECRET` from an environment variable / AWS
   Secrets Manager / Vault at deploy time.
-- **Verify and harden the CI/CD pipeline.** A GitHub Actions workflow
-  (`.github/workflows/ci.yml`) already builds, tests, enforces **JaCoCo ≥ 80%**, and defines the
-  OWASP scan; the remaining work is to run it green in your organization (provide the NVD API key)
-  and add deployment stages (Gate 8).
-- **Plan the Spring Boot 3.5 → 4.x upgrade.** The target intentionally stays on Spring Boot **3.x**
-  per the migration mandate, but the 3.5 line reached **OSS end-of-life on 2026-06-30** (final OSS
-  patch **3.5.16**), and Spring Boot 4.0/4.1 now exist on Spring Framework 7. Move to 3.5.16 first,
-  then plan the 4.x migration — see decision [`D-016`](decision-log.md).
+- **Validate and harden the CI/CD pipeline.** A GitHub Actions workflow
+  (`.github/workflows/ci.yml`) already builds, tests, enforces **JaCoCo ≥ 80%**, and runs the
+  OWASP scan (retaining the dependency-check report as a build artifact); the remaining work is to
+  validate it green on a hosted runner (provide the NVD API key) and add deployment stages (Gate 8).
+- **Plan the Spring Boot 3.5 → 4.x upgrade.** The target now runs Spring Boot **3.5.16** (the final
+  OSS patch of the 3.5 line), intentionally staying on Spring Boot **3.x** per the migration
+  mandate. The 3.5 line reached **OSS end-of-life on 2026-06-30**, and Spring Boot 4.0/4.1 now exist
+  on Spring Framework 7 — plan the 4.x migration next; see decision [`D-016`](decision-log.md).
 
 > **Deferred (Constraint C-001):** additional database types (Db2, IMS) and messaging/integration
 > expansion (MQ, FTP/SFTP) remain out of scope for this migration.

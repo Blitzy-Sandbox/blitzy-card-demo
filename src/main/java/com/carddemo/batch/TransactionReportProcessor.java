@@ -74,9 +74,11 @@ import org.springframework.stereotype.Component;
  * refines that behaviour to keep the report well-formed rather than terminate the batch:</p>
  * <ul>
  *   <li><strong>Missing card cross-reference</strong> — the transaction is <em>excluded</em>
- *       (returns {@code null}) and logged at {@code WARN}. Emitting a detail line with no account
- *       id would corrupt the report and the writer's per-account control break, so the row is
- *       dropped instead (the chosen parity refinement is recorded in {@code docs/decision-log.md}).</li>
+ *       (returns {@code null}) and logged at {@code WARN} with the card number <em>masked</em> to
+ *       its last four digits (CWE-532; see {@link #maskCardNumber(String)}). Emitting a detail line
+ *       with no account id would corrupt the report and the writer's per-account control break, so
+ *       the row is dropped instead (the chosen parity refinement is recorded in
+ *       {@code docs/decision-log.md}).</li>
  *   <li><strong>Missing transaction-type or category-type description</strong> — resolves to the
  *       empty string, matching the COBOL {@code INITIALIZE TRANSACTION-DETAIL-REPORT} blank
  *       default that precedes the {@code MOVE}s.</li>
@@ -122,6 +124,20 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Re
      * used whenever a type/category description lookup finds no matching reference row.
      */
     private static final String NO_DESCRIPTION = "";
+
+    /**
+     * Character substituted for each concealed Primary Account Number (PAN) position when a card
+     * number is written to a log line. Mirrors the PAN-masking convention of the response DTOs
+     * ({@code TransactionViewResponse}, {@code StatementTransactionDto}).
+     */
+    private static final String MASK_CHARACTER = "*";
+
+    /**
+     * Number of trailing PAN digits left visible when a card number is masked for logging; every
+     * earlier character is replaced with {@value #MASK_CHARACTER} (for example
+     * {@code "4111111111111111"} becomes {@code "************1111"}).
+     */
+    private static final int VISIBLE_CARD_DIGITS = 4;
 
     /** Card cross-reference lookup ({@code 1500-A-LOOKUP-XREF}) resolving {@code XREF-ACCT-ID}. */
     private final CardXrefRepository cardXrefRepository;
@@ -241,8 +257,11 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Re
         }
         Optional<CardXref> crossReference = cardXrefRepository.findById(cardNumber);
         if (crossReference.isEmpty()) {
+            // Security (CWE-532): the card number is a PAN — mask it to its last four digits before
+            // logging so a full 16-digit card number is never written to a log line, consistent with
+            // the PAN-masking convention applied across the response DTOs.
             log.warn("Excluding transaction {}: no card cross-reference for card number {}",
-                    tx.getTranId(), cardNumber);
+                    tx.getTranId(), maskCardNumber(cardNumber));
             return null;
         }
         Long accountId = crossReference.get().getXrefAcctId();
@@ -338,6 +357,36 @@ public class TransactionReportProcessor implements ItemProcessor<Transaction, Re
         return transactionCategoryTypeRepository.findById(key)
                 .map(TransactionCategoryType::getTranCatTypeDesc)
                 .orElse(NO_DESCRIPTION);
+    }
+
+    /**
+     * Masks a Primary Account Number (PAN) so that only the final {@value #VISIBLE_CARD_DIGITS}
+     * characters remain visible, replacing every earlier character with {@value #MASK_CHARACTER}
+     * (for example {@code "4111111111111111"} becomes {@code "************1111"}). This prevents a
+     * full card number — CWE-532 sensitive data — from ever being written to a log line, mirroring
+     * the PAN-masking convention already applied by the response DTOs ({@code TransactionViewResponse},
+     * {@code StatementTransactionDto}).
+     *
+     * <p>Surrounding whitespace from fixed-width space padding is stripped first; a {@code null}
+     * value, or one no longer than {@value #VISIBLE_CARD_DIGITS} characters, is returned unchanged
+     * because there are no additional leading characters to conceal.</p>
+     *
+     * <p>Declared {@code static} because it depends on no instance state.</p>
+     *
+     * @param pan the raw card number ({@code TRAN-CARD-NUM}); may be {@code null}
+     * @return the masked PAN, or the original value when there is nothing to mask
+     */
+    private static String maskCardNumber(String pan) {
+        if (pan == null) {
+            return null;
+        }
+        String normalized = pan.strip();
+        int length = normalized.length();
+        if (length <= VISIBLE_CARD_DIGITS) {
+            return normalized;
+        }
+        return MASK_CHARACTER.repeat(length - VISIBLE_CARD_DIGITS)
+                + normalized.substring(length - VISIBLE_CARD_DIGITS);
     }
 
     /**
