@@ -206,6 +206,12 @@ public class UserService {
      */
     @Transactional(rollbackFor = Exception.class)
     public UserResponse createUser(UserCreateRequest req) {
+        // Input-contract guard: a null request body is a broken contract, surfaced
+        // as the typed HTTP-400 first-mandatory-field edit (COBOL field order)
+        // rather than an unhandled NullPointerException / HTTP 500 below.
+        if (req == null) {
+            throw new ValidationException(MSG_FIRST_NAME_EMPTY);
+        }
         requireNonBlank(req.firstName(), MSG_FIRST_NAME_EMPTY);
         requireNonBlank(req.lastName(), MSG_LAST_NAME_EMPTY);
         requireNonBlank(req.userId(), MSG_USER_ID_EMPTY);
@@ -250,6 +256,13 @@ public class UserService {
      */
     @Transactional(rollbackFor = Exception.class)
     public UserResponse updateUser(String userId, UserUpdateRequest req) {
+        // Input-contract guard: reject a null request body up front with the typed
+        // HTTP-400 first-mandatory-field edit, before any field access (and before
+        // the existence read), rather than an unhandled NullPointerException / 500.
+        if (req == null) {
+            throw new ValidationException(MSG_FIRST_NAME_EMPTY);
+        }
+
         UserSecurity user = userSecurityRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException(MSG_NOT_FOUND));
 

@@ -138,6 +138,13 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
     /** Width of {@code L23-NAME}, the HTML name projection (COBOL {@code PIC X(50)}). */
     private static final int HTML_NAME_WIDTH = 50;
 
+    /**
+     * Number of trailing Primary Account Number (PAN) digits left visible when a card number is
+     * masked for a diagnostic log line. Aligns with the last-four convention used by the
+     * card-view / card-list projections so masking is consistent across the application.
+     */
+    private static final int PAN_VISIBLE_DIGITS = 4;
+
     /** The {@code ST-LINE7} label, built as {@code "Account ID"} padded to 19 plus a trailing colon. */
     private static final String LABEL_ACCOUNT_ID = fixed("Account ID", LABEL_WIDTH - 1) + ":";
 
@@ -209,7 +216,7 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
         // before the repository call, whose findById rejects a null identifier.
         if (accountId == null || customerId == null) {
             log.debug("Skipping statement for card {}: unresolved key (acctId={}, custId={})",
-                    cardNumber, accountId, customerId);
+                    maskPan(cardNumber), accountId, customerId);
             return null;
         }
 
@@ -218,7 +225,7 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
         final Customer customer = statementFileService.getCustomer(customerId).orElse(null);
         if (account == null || customer == null) {
             log.debug("Skipping statement for card {}: missing parent (accountPresent={}, "
-                            + "customerPresent={})", cardNumber, account != null, customer != null);
+                            + "customerPresent={})", maskPan(cardNumber), account != null, customer != null);
             return null;
         }
 
@@ -236,7 +243,7 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
         final List<String> htmlLines = renderHtmlStatement(account, customer, lines);
 
         log.debug("Assembled statement for card {} with {} transaction line(s)",
-                cardNumber, lines.size());
+                maskPan(cardNumber), lines.size());
         return new StatementDocument(xref, account, customer, card, lines, textLines, htmlLines);
     }
 
@@ -374,10 +381,14 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
 
         // 5200-WRITE-HTML-NMADBS — customer name and address block.
         html.add(bound("<p style=\"font-size:16px\">"
-                + truncate(buildCustomerName(customer), HTML_NAME_WIDTH) + "</p>", HTML_RECORD_LENGTH));
-        html.add(bound("<p>" + stripField(customer.getCustAddrLine1()) + "</p>", HTML_RECORD_LENGTH));
-        html.add(bound("<p>" + stripField(customer.getCustAddrLine2()) + "</p>", HTML_RECORD_LENGTH));
-        html.add(bound("<p>" + stripField(buildCityStateZip(customer)) + "</p>", HTML_RECORD_LENGTH));
+                + htmlEscape(truncate(buildCustomerName(customer), HTML_NAME_WIDTH))
+                + "</p>", HTML_RECORD_LENGTH));
+        html.add(bound("<p>" + htmlEscape(stripField(customer.getCustAddrLine1())) + "</p>",
+                HTML_RECORD_LENGTH));
+        html.add(bound("<p>" + htmlEscape(stripField(customer.getCustAddrLine2())) + "</p>",
+                HTML_RECORD_LENGTH));
+        html.add(bound("<p>" + htmlEscape(stripField(buildCityStateZip(customer))) + "</p>",
+                HTML_RECORD_LENGTH));
         html.add("</td>");
         html.add("</tr>");
 
@@ -428,12 +439,13 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
             html.add("<tr>");
             html.add("<td style=\"width:25%; padding:0px 5px; "
                     + "background-color:#f2f2f2; text-align:left;\">");
-            html.add(bound("<p>" + fixed(line.transactionId(), TRAN_ID_WIDTH) + "</p>",
+            html.add(bound("<p>" + htmlEscape(fixed(line.transactionId(), TRAN_ID_WIDTH)) + "</p>",
                     HTML_RECORD_LENGTH));
             html.add("</td>");
             html.add("<td style=\"width:55%; padding:0px 5px; "
                     + "background-color:#f2f2f2; text-align:left;\">");
-            html.add(bound("<p>" + stripField(truncate(line.description(), TRAN_DESC_WIDTH)) + "</p>",
+            html.add(bound("<p>"
+                    + htmlEscape(stripField(truncate(line.description(), TRAN_DESC_WIDTH))) + "</p>",
                     HTML_RECORD_LENGTH));
             html.add("</td>");
             html.add("<td style=\"width:20%; padding:0px 5px; "
@@ -585,6 +597,61 @@ public class StatementProcessor implements ItemProcessor<CardXref, StatementDocu
      */
     private static String stripField(String value) {
         return (value == null) ? "" : value.strip();
+    }
+
+    /**
+     * Escapes the five XML/HTML metacharacters ({@code &}, {@code <}, {@code >}, {@code "},
+     * {@code '}) in a value that is about to be embedded as text inside the generated HTML
+     * statement, preventing stored cross-site-scripting (XSS): a customer name, address line or
+     * transaction description that happens to contain markup can no longer break out of its
+     * {@code <p>}/{@code <td>} element and inject active content into the rendered statement.
+     *
+     * <p>The ampersand is replaced first so that the entity ampersands introduced for the other
+     * four characters are not themselves re-escaped. Escaping is applied <em>after</em> the COBOL
+     * fixed-width truncation of the visible text, so the number of source characters shown is
+     * unchanged and, for the ASCII fixture data (which carries no HTML metacharacters), the byte
+     * output is identical to the legacy {@code CBSTM03A} rendering &mdash; the escape only alters
+     * output for values that contain the reserved characters. A {@code null} value yields the empty
+     * string.</p>
+     *
+     * @param value the raw text about to be embedded in HTML (may be {@code null})
+     * @return the HTML-escaped text (never {@code null})
+     */
+    private static String htmlEscape(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&#39;");
+    }
+
+    /**
+     * Masks a card number (PAN) for diagnostic logging, leaving only the final
+     * {@value #PAN_VISIBLE_DIGITS} digits visible and replacing every earlier character with an
+     * asterisk. Any surrounding whitespace is stripped first; a {@code null} value yields
+     * {@code "null"} (so it remains distinguishable in a log line) and a value of
+     * {@value #PAN_VISIBLE_DIGITS} or fewer characters is fully masked. No full PAN is ever written
+     * to a log, satisfying the CardDemo data-protection rule (AAP &sect;0.3.2, no sensitive card
+     * data in logs).
+     *
+     * @param cardNumber the raw card number (may be {@code null})
+     * @return the masked card number safe for logging (never {@code null})
+     */
+    private static String maskPan(String cardNumber) {
+        if (cardNumber == null) {
+            return "null";
+        }
+        final String normalized = cardNumber.strip();
+        final int length = normalized.length();
+        if (length <= PAN_VISIBLE_DIGITS) {
+            return "*".repeat(length);
+        }
+        return "*".repeat(length - PAN_VISIBLE_DIGITS)
+                + normalized.substring(length - PAN_VISIBLE_DIGITS);
     }
 
     /**

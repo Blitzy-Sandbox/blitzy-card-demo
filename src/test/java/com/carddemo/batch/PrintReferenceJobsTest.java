@@ -27,6 +27,7 @@ import org.springframework.batch.item.data.RepositoryItemReader;
 import org.springframework.boot.autoconfigure.batch.JobLauncherApplicationRunner;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.transaction.PlatformTransactionManager;
+import org.slf4j.LoggerFactory;
 
 import com.carddemo.entity.Account;
 import com.carddemo.entity.Card;
@@ -39,6 +40,11 @@ import com.carddemo.repository.CardRepository;
 import com.carddemo.repository.CardXrefRepository;
 import com.carddemo.repository.CustomerRepository;
 import com.carddemo.repository.TransactionRepository;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 
 /**
  * Fast, database-free unit test for {@link PrintReferenceJobs}, the five print/reference batch jobs
@@ -230,6 +236,116 @@ class PrintReferenceJobsTest {
             assertThatThrownBy(() -> config.transactionPrintWriter().write(chunkOf(missingTransaction)))
                     .isInstanceOf(FileProcessingException.class);
         }
+    }
+
+    /**
+     * Verifies the CP3 data-protection fixes: no diagnostic log line emitted by any print writer may
+     * contain a full Primary Account Number (PAN) or a card verification value (CVV). Each test
+     * attaches a Logback {@link ListAppender} to the {@link PrintReferenceJobs} logger, drives a real
+     * writer, and asserts on the captured formatted messages that the PAN is masked to its last four
+     * digits and the CVV is absent entirely.
+     */
+    @Nested
+    @DisplayName("logging redaction (no full PAN / no CVV in logs)")
+    class LoggingRedaction {
+
+        /** The masked rendering the fix must produce: twelve asterisks then the last four digits. */
+        private static final String MASKED_CARD_NUMBER = "************1111";
+
+        private final AccountRepository accountRepository = mock(AccountRepository.class);
+        private final CardRepository cardRepository = mock(CardRepository.class);
+        private final CardXrefRepository cardXrefRepository = mock(CardXrefRepository.class);
+        private final CustomerRepository customerRepository = mock(CustomerRepository.class);
+        private final TransactionRepository transactionRepository = mock(TransactionRepository.class);
+
+        private final PrintReferenceJobs config = new PrintReferenceJobs(
+                mock(JobRepository.class),
+                mock(PlatformTransactionManager.class),
+                new BatchCorrelationIdListener(),
+                accountRepository, cardRepository, cardXrefRepository,
+                customerRepository, transactionRepository,
+                25);
+
+        @Test
+        @DisplayName("card print writer masks the PAN and never logs the CVV")
+        void cardPrintWriterMasksPanAndOmitsCvv() throws Exception {
+            final List<String> messages =
+                    captureLogsWhile(() -> config.cardPrintWriter().write(chunkOf(sampleCard())));
+
+            assertThat(messages).isNotEmpty();
+            assertThat(messages).noneMatch(message -> message.contains(SAMPLE_CARD_NUMBER));
+            assertThat(messages).anyMatch(message -> message.contains(MASKED_CARD_NUMBER));
+            // The CVV token was removed from the rendering entirely.
+            assertThat(messages).noneMatch(message -> message.contains("cvv="));
+        }
+
+        @Test
+        @DisplayName("card cross-reference print writer masks the PAN")
+        void cardXrefPrintWriterMasksPan() throws Exception {
+            final List<String> messages =
+                    captureLogsWhile(() -> config.cardXrefPrintWriter().write(chunkOf(sampleCardXref())));
+
+            assertThat(messages).isNotEmpty();
+            assertThat(messages).noneMatch(message -> message.contains(SAMPLE_CARD_NUMBER));
+            assertThat(messages).anyMatch(message -> message.contains(MASKED_CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("transaction print writer masks the PAN in both the record render and enrichment")
+        void transactionPrintWriterMasksPan() throws Exception {
+            when(cardXrefRepository.findById(SAMPLE_CARD_NUMBER)).thenReturn(Optional.of(sampleCardXref()));
+            when(accountRepository.findById(anyLong())).thenReturn(Optional.of(sampleAccount()));
+
+            final List<String> messages = captureLogsWhile(() ->
+                    config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))));
+
+            assertThat(messages).isNotEmpty();
+            assertThat(messages).noneMatch(message -> message.contains(SAMPLE_CARD_NUMBER));
+            assertThat(messages).anyMatch(message -> message.contains(MASKED_CARD_NUMBER));
+        }
+
+        @Test
+        @DisplayName("transaction enrichment warning masks the PAN when the cross-reference is missing")
+        void transactionEnrichmentWarningMasksPan() throws Exception {
+            when(cardXrefRepository.findById(anyString())).thenReturn(Optional.empty());
+
+            final List<String> messages = captureLogsWhile(() ->
+                    config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))));
+
+            assertThat(messages).isNotEmpty();
+            assertThat(messages).noneMatch(message -> message.contains(SAMPLE_CARD_NUMBER));
+            assertThat(messages).anyMatch(message -> message.contains(MASKED_CARD_NUMBER));
+        }
+
+        /**
+         * Runs {@code action} with a {@link ListAppender} attached to the {@link PrintReferenceJobs}
+         * logger at {@code DEBUG} level, then detaches it and returns the captured formatted
+         * messages. The logger level is restored afterwards so tests remain isolated.
+         *
+         * @param action the writer invocation to capture logs for
+         * @return the formatted log messages emitted during {@code action}
+         */
+        private List<String> captureLogsWhile(final ThrowingRunnable action) throws Exception {
+            final Logger logger = (Logger) LoggerFactory.getLogger(PrintReferenceJobs.class);
+            final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+            appender.start();
+            final Level previousLevel = logger.getLevel();
+            logger.setLevel(Level.DEBUG);
+            logger.addAppender(appender);
+            try {
+                action.run();
+            } finally {
+                logger.detachAppender(appender);
+                logger.setLevel(previousLevel);
+            }
+            return appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        }
+    }
+
+    /** A checked-exception-tolerant {@link Runnable} so log-capture blocks can call writer methods. */
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
     }
 
     // ------------------------------------------------------------------------------------------------

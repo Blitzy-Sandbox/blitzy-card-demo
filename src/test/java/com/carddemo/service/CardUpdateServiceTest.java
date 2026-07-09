@@ -19,6 +19,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 
 import com.carddemo.dto.CardUpdateRequest;
@@ -203,6 +204,21 @@ class CardUpdateServiceTest {
     // ------------------------------------------------------------------
     // 9000-READ-DATA — DFHRESP(NOTFND) -> 404
     // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("updateCard: a null request body -> ValidationException(400) before any read/write (M3)")
+    void updateCard_nullRequest_throwsValidationException() {
+        // M3 (review finding): a null request body must be a typed HTTP-400
+        // validation error, never an unhandled NullPointerException / HTTP 500 on
+        // the request.version() dereference in the optimistic-lock precheck.
+        assertThatThrownBy(() -> service.updateCard(CARD_NUMBER, null))
+                .isInstanceOfSatisfying(ValidationException.class,
+                        ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST))
+                .hasMessage(CardUpdateService.MSG_VALIDATION_SUMMARY);
+
+        verify(cardRepository, never()).findById(anyString());
+        verify(cardRepository, never()).saveAndFlush(any());
+    }
 
     @Test
     @DisplayName("updateCard: an unknown card number yields a 404 with the verbatim COCRDUPC not-found message and never writes")

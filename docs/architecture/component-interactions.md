@@ -89,7 +89,7 @@ the legacy COBOL sign-on beside its Spring Security replacement as a **before/af
 which performs `READ-USER-SEC-FILE` — an `EXEC CICS READ` against the `USRSEC` VSAM file — and then
 compares the entered password to the stored one **in plaintext** (`SEC-USR-PWD = WS-USER-PWD`);
 cross-screen state is carried in the CICS **COMMAREA** (pseudo-conversational). On the **after**
-side, a client `POST /api/auth/login` reaches the **`AuthController`**, which calls the
+side, a client `POST /api/auth/signin` reaches the **`AuthController`**, which calls the
 **`SignonService` / `AuthenticationService`** to load the **`UserSecurity`** entity through its
 repository and verify the password with **BCrypt** (`BCryptPasswordEncoder.matches`); on success it
 issues a **stateless JWT** whose claims carry the state that once lived in the COMMAREA, and every
@@ -114,7 +114,7 @@ graph LR
     end
     subgraph AFTER["After — Spring Security (stateless JWT, BCrypt)"]
         direction TB
-        A1["POST /api/auth/login"] --> A2["AuthController<br/>(Jakarta Validation)"]
+        A1["POST /api/auth/signin"] --> A2["AuthController<br/>(Jakarta Validation)"]
         A2 --> A3["SignonService /<br/>AuthenticationService"]
         A3 --> A4["UserSecurityRepository<br/>load UserSecurity"]
         A4 --> A5{"BCrypt matches?"}

@@ -43,7 +43,7 @@ read-only under `app/` for convenient reference, but they are never built or run
 target.)
 
 **Key pinned versions** (all managed in `pom.xml`; the root `README.md` technology-stack
-table and [`project-guide.md`](project-guide.md) hold the full matrix): **Java 25.0.2 LTS**,
+table and [`project-guide.md`](project-guide.md) hold the full matrix): **Java 25 LTS**,
 **Spring Boot 3.5.11**, **Maven 3.9.9**, **PostgreSQL 16**, **Flyway 11.x**, **Spring Cloud AWS
 3.3.0**, and **Testcontainers 2.0.3**.
 
@@ -64,7 +64,7 @@ confirm your machine is ready.
 
 | Tool | Required version | Verify with |
 | :--- | :--------------- | :---------- |
-| **Java (JDK)** | **25 LTS** (25.0.2) | `java -version` → reports `25` |
+| **Java (JDK)** | **25 LTS** | `java -version` → reports `25` |
 | **Apache Maven** | **3.9.9** (or the bundled `./mvnw` wrapper, if present) | `mvn -v` |
 | **Docker + Docker Compose** | Docker 28.x, Compose v2 plugin | `docker compose version` |
 | **AWS CLI** *(optional)* | v2 (or `awslocal`) | `aws --version` |
@@ -168,6 +168,16 @@ Compose service; you run it on the host in Step 5. Wait until the containers rep
 docker compose ps
 ```
 
+> **⚠️ Pending CP4/CP5 — Steps 4–7 describe the target end state.** At the current checkpoint
+> (CP3) the domain, service, batch, security, and observability code is in place and **Steps 1–3**
+> (the local Docker stack) work today, but the runnable web application arrives in a later
+> checkpoint (**CP4/CP5**). Until then the following are **not yet present**, so Steps 5–7 cannot
+> complete end-to-end: the REST controllers (only `GlobalExceptionHandler` exists),
+> `src/main/resources/application*.yml`, `logback-spring.xml`, and the Flyway `V3__seed_data.sql`
+> seed. You can build and run the **unit tests** today with `mvn clean test`; the full
+> `mvn clean verify` (which adds the Testcontainers/LocalStack integration tests that boot the app)
+> completes once CP4/CP5 lands.
+
 ### Step 4 — Build and test
 
 ```bash
@@ -187,9 +197,9 @@ mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
 (The equivalent `-Dspring.profiles.active=local` also works.) On startup, **Flyway** applies the
-database migrations automatically — `V1__schema.sql` (11 tables) → `V2__indexes.sql` →
-`V3__seed_data.sql` (seed data derived from the ASCII fixtures) — and the app begins listening on
-`http://localhost:8080`.
+database migrations automatically — `V1__schema.sql` (11 tables) and `V2__indexes.sql` are present
+today, and `V3__seed_data.sql` (seed data derived from the ASCII fixtures) arrives in CP4/CP5 —
+after which the app begins listening on `http://localhost:8080`.
 
 ### Step 6 — Verify it is up
 

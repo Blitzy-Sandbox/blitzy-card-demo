@@ -3,6 +3,7 @@ package com.carddemo.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -11,16 +12,25 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.MDC;
+import org.springframework.beans.TypeMismatchException;
 import org.springframework.core.MethodParameter;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.mock.http.MockHttpInputMessage;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.BindingResult;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.method.annotation.ExceptionHandlerMethodResolver;
+import org.springframework.web.servlet.NoHandlerFoundException;
 
 import com.carddemo.dto.ErrorResponse;
 import com.carddemo.exception.DateValidationException;
@@ -304,6 +314,112 @@ class GlobalExceptionHandlerTest {
         assertThat(resolver.hasExceptionMappings()).isTrue();
         assertThat(resolver.resolveMethodByThrowable(new ResourceNotFoundException("Account", "1"))).isNotNull();
         assertThat(resolver.resolveMethodByThrowable(new IllegalStateException("unexpected"))).isNotNull();
+    }
+
+    // --- Spring MVC framework exceptions: each must return the single ErrorResponse contract (M13) ---
+    // The inherited public handleException(...) dispatches each framework exception to its protected
+    // handler, all of which funnel through the overridden handleExceptionInternal, so these exercise the
+    // real Spring dispatch path rather than calling the protected methods directly.
+
+    @Test
+    @DisplayName("HttpMessageNotReadableException (unreadable JSON) -> 400 BAD_REQUEST as ErrorResponse (no payload leak)")
+    void frameworkUnreadableBody() throws Exception {
+        // The parse message deliberately embeds a PAN-like token to prove it never reaches the client.
+        HttpMessageNotReadableException ex = new HttpMessageNotReadableException(
+                "JSON parse error: unexpected token near 4111111111111111",
+                new MockHttpInputMessage(new byte[0]));
+
+        ErrorResponse body = driveFramework(ex, 400, "BAD_REQUEST", "Bad Request");
+        // Leak-free: the reason phrase only — never ex.getMessage() (which can echo the malformed payload).
+        assertThat(body.message()).isEqualTo("Bad Request");
+        assertThat(body.message()).doesNotContain("4111111111111111", "JSON parse error");
+    }
+
+    @Test
+    @DisplayName("HttpRequestMethodNotSupportedException -> 405 METHOD_NOT_ALLOWED as ErrorResponse")
+    void frameworkMethodNotSupported() throws Exception {
+        driveFramework(new HttpRequestMethodNotSupportedException("DELETE"),
+                405, "METHOD_NOT_ALLOWED", "Method Not Allowed");
+    }
+
+    @Test
+    @DisplayName("HttpMediaTypeNotSupportedException -> 415 UNSUPPORTED_MEDIA_TYPE as ErrorResponse")
+    void frameworkMediaTypeNotSupported() throws Exception {
+        HttpMediaTypeNotSupportedException ex = new HttpMediaTypeNotSupportedException(
+                MediaType.TEXT_PLAIN, List.of(MediaType.APPLICATION_JSON));
+
+        driveFramework(ex, 415, "UNSUPPORTED_MEDIA_TYPE", "Unsupported Media Type");
+    }
+
+    @Test
+    @DisplayName("MissingServletRequestParameterException -> 400 BAD_REQUEST as ErrorResponse")
+    void frameworkMissingParameter() throws Exception {
+        driveFramework(new MissingServletRequestParameterException("acctId", "String"),
+                400, "BAD_REQUEST", "Bad Request");
+    }
+
+    @Test
+    @DisplayName("TypeMismatchException (parameter type mismatch) -> 400 BAD_REQUEST as ErrorResponse")
+    void frameworkTypeMismatch() throws Exception {
+        driveFramework(new TypeMismatchException("not-a-number", Integer.class),
+                400, "BAD_REQUEST", "Bad Request");
+    }
+
+    @Test
+    @DisplayName("NoHandlerFoundException (no matching handler) -> 404 NOT_FOUND as ErrorResponse")
+    void frameworkNoHandler() throws Exception {
+        driveFramework(new NoHandlerFoundException("GET", "/api/unknown", new HttpHeaders()),
+                404, "NOT_FOUND", "Not Found");
+    }
+
+    @Test
+    @DisplayName("framework exception copies MDC correlationId and is never a ProblemDetail body")
+    void frameworkCorrelationIdAndContract() throws Exception {
+        MDC.put(CORRELATION_ID_MDC_KEY, "corr-framework-123");
+
+        ResponseEntity<Object> response = handler.handleException(
+                new HttpRequestMethodNotSupportedException("PUT"), new ServletWebRequest(request));
+
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+        // It must NOT be Spring's default RFC-7807 ProblemDetail (the whole point of the override).
+        assertThat(response.getBody()).isNotInstanceOf(org.springframework.http.ProblemDetail.class);
+        ErrorResponse body = (ErrorResponse) response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.correlationId()).isEqualTo("corr-framework-123");
+        assertThat(body.path()).isEqualTo(REQUEST_URI);
+    }
+
+    /**
+     * Drives a Spring MVC framework exception through the inherited public {@code handleException}
+     * dispatch entry point and asserts the standardized {@link ErrorResponse} contract: the framework
+     * status is preserved, the body is an {@link ErrorResponse} (never an RFC-7807 ProblemDetail), the
+     * domain {@code code} is the {@link org.springframework.http.HttpStatus} enum name, the reason
+     * phrase is the {@code error}, the {@code path} is stamped, a timestamp is present, and there are no
+     * field errors.
+     *
+     * @param ex             the framework exception to dispatch (never {@code null})
+     * @param expectedStatus the HTTP status the framework resolves for {@code ex}
+     * @param expectedCode   the expected machine-readable domain {@code code} (the status enum name)
+     * @param expectedError  the expected HTTP reason phrase
+     * @return the {@link ErrorResponse} body, for any additional assertions
+     * @throws Exception if the inherited dispatcher rethrows (never for the handled framework types)
+     */
+    private ErrorResponse driveFramework(final Exception ex, final int expectedStatus,
+                                         final String expectedCode, final String expectedError)
+            throws Exception {
+        ResponseEntity<Object> response = handler.handleException(ex, new ServletWebRequest(request));
+
+        assertThat(response.getStatusCode().value()).isEqualTo(expectedStatus);
+        assertThat(response.getBody()).isInstanceOf(ErrorResponse.class);
+        ErrorResponse body = (ErrorResponse) response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(expectedStatus);
+        assertThat(body.code()).isEqualTo(expectedCode);
+        assertThat(body.error()).isEqualTo(expectedError);
+        assertThat(body.path()).isEqualTo(REQUEST_URI);
+        assertThat(body.timestamp()).isNotNull();
+        assertThat(body.fieldErrors()).isEmpty();
+        return body;
     }
 
     /**

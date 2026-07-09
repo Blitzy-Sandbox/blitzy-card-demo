@@ -2,10 +2,9 @@ package com.carddemo.service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,8 +47,13 @@ import com.carddemo.repository.TransactionRepository;
  *       card number and rejects a non-numeric value, preserving the branch order
  *       (account first, then card, then the "must be entered" default).</li>
  *   <li><b>{@code VALIDATE-INPUT-DATA-FIELDS}</b> ({@code COTRN02C} L235&ndash;437)
- *       &mdash; the type-code, category-code, amount-format and merchant-id edits,
- *       each surfacing the verbatim legacy operator message.</li>
+ *       &mdash; the mandatory-presence edits for every data field (type code,
+ *       category code, source, description, amount, original date, processed date,
+ *       merchant id, merchant name, merchant city and merchant zip), the numeric
+ *       edits (type / category / merchant id), the {@code -99999999.99} amount mask,
+ *       the {@code YYYY-MM-DD} original/processed date-format edits and the
+ *       {@code CSUTLDTC} calendar-validity edits &mdash; each surfacing the verbatim
+ *       legacy operator message and accumulated in {@code COTRN02C} field order.</li>
  *   <li><b>{@code ADD-TRANSACTION}</b> ({@code COTRN02C} L442&ndash;466) &mdash;
  *       the 16-digit id allocation (delegated to {@link CrossReferenceService})
  *       and the field-by-field population of {@code TRAN-RECORD}.</li>
@@ -69,9 +73,12 @@ import com.carddemo.repository.TransactionRepository;
  *       {@value #AMOUNT_SCALE} with {@link java.math.RoundingMode#HALF_UP},
  *       matching the COBOL {@code TRAN-AMT PIC S9(09)V99}; no {@code float} or
  *       {@code double} is used for money.</li>
- *   <li>Timestamps are preserved as 26-character text
- *       ({@code yyyy-MM-dd HH:mm:ss.SSSSSS}) exactly as the legacy fixed-width
- *       {@code TRAN-ORIG-TS} / {@code TRAN-PROC-TS} ({@code PIC X(26)}).</li>
+ *   <li>The original and processed dates are supplied by the caller as
+ *       {@code YYYY-MM-DD} text (the legacy {@code TORIGDT} / {@code TPROCDT}
+ *       screen fields, {@code PIC X(10)}), validated for presence, format and
+ *       calendar validity, and stored verbatim in the {@code TRAN-ORIG-TS} /
+ *       {@code TRAN-PROC-TS} record fields ({@code PIC X(26)}); they are never
+ *       defaulted to the current time.</li>
  *   <li>The transaction id is <em>always</em> server-generated; a client-supplied
  *       id is never accepted.</li>
  *   <li>The whole operation runs in a single declarative transaction
@@ -122,12 +129,15 @@ public class TransactionAddService {
     private static final String SUCCESS_MESSAGE = "Transaction added successfully. ";
 
     /**
-     * Date-time format producing the 26-character legacy timestamp text
-     * ({@code yyyy-MM-dd HH:mm:ss.SSSSSS}) used to default {@code TRAN-ORIG-TS} /
-     * {@code TRAN-PROC-TS} when the caller supplies none.
+     * Compiled {@code YYYY-MM-DD} date-format pattern, reproducing the positional
+     * edit {@code COTRN02C} applies to the {@code TORIGDT} / {@code TPROCDT} screen
+     * fields ({@code (1:4)} numeric, {@code (5:1) = '-'}, {@code (6:2)} numeric,
+     * {@code (8:1) = '-'}, {@code (9:2)} numeric). A value must match this pattern
+     * in full &mdash; four year digits, a hyphen, two month digits, a hyphen and two
+     * day digits &mdash; before its calendar validity is checked through
+     * {@link DateValidationService}.
      */
-    private static final DateTimeFormatter TIMESTAMP_FORMATTER =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSSSS");
+    private static final Pattern DATE_FORMAT_YYYY_MM_DD = Pattern.compile("\\d{4}-\\d{2}-\\d{2}");
 
     /**
      * Transaction repository backing the {@code TRANSACT} KSDS; its inherited
@@ -144,19 +154,31 @@ public class TransactionAddService {
     private final CrossReferenceService crossReferenceService;
 
     /**
+     * Calendar-date validator, the Java replacement for the {@code CSUTLDTC}
+     * ({@code CEEDAYS}) date-validity call {@code COTRN02C} makes for the original
+     * and processed dates. Supplied so the service &mdash; not the DTO layer
+     * &mdash; owns the {@code YYYY-MM-DD} validity edit.
+     */
+    private final DateValidationService dateValidationService;
+
+    /**
      * Creates the service with its collaborating beans.
      *
-     * <p>Spring injects both dependencies through this single constructor, so no
-     * {@code @Autowired} annotation is needed; both are stored in {@code final}
-     * fields, making the service effectively immutable and thread-safe.</p>
+     * <p>Spring injects all dependencies through this single constructor, so no
+     * {@code @Autowired} annotation is needed; every field is {@code final},
+     * making the service effectively immutable and thread-safe.</p>
      *
      * @param transactionRepository the transaction repository; must not be {@code null}
      * @param crossReferenceService the cross-reference / id-generation service; must not be {@code null}
+     * @param dateValidationService the calendar-date validator ({@code CSUTLDTC}
+     *                              replacement); must not be {@code null}
      */
     public TransactionAddService(TransactionRepository transactionRepository,
-            CrossReferenceService crossReferenceService) {
+            CrossReferenceService crossReferenceService,
+            DateValidationService dateValidationService) {
         this.transactionRepository = transactionRepository;
         this.crossReferenceService = crossReferenceService;
+        this.dateValidationService = dateValidationService;
     }
 
     /**
@@ -184,9 +206,8 @@ public class TransactionAddService {
      *       {@link CrossReferenceService#generateNextTransactionId()}; a
      *       client-supplied id is never accepted.</li>
      *   <li><b>Build &amp; persist.</b> The {@link Transaction} record is populated
-     *       (amount normalised to scale {@value #AMOUNT_SCALE}; timestamps
-     *       defaulted to the current 26-character timestamp when absent) and
-     *       saved.</li>
+     *       (amount normalised to scale {@value #AMOUNT_SCALE}; the validated
+     *       original / processed dates stored verbatim) and saved.</li>
      *   <li><b>Confirmation.</b> A {@link TransactionAddResponse} is returned with
      *       the new id, the target account, the posted amount and the verbatim
      *       success message.</li>
@@ -206,6 +227,13 @@ public class TransactionAddService {
      */
     @Transactional(rollbackFor = Exception.class)
     public TransactionAddResponse addTransaction(TransactionAddRequest request) {
+        // Input-contract guard: a null request body is a broken contract, surfaced
+        // as a typed HTTP-400 validation failure rather than an unhandled
+        // NullPointerException / HTTP 500 on the request.confirm() dereference below.
+        if (request == null) {
+            throw new ValidationException("Transaction add validation failed");
+        }
+
         // Confirm gate first: an unconfirmed request is a no-op preview that
         // echoes the legacy "Confirm to add this transaction..." prompt.
         if (request.confirm() == null || !request.confirm()) {
@@ -241,21 +269,46 @@ public class TransactionAddService {
 
     /**
      * Validates the request fields in the exact {@code COTRN02C} branch order,
-     * accumulating every failure into an insertion-ordered
-     * field&rarr;message map. An empty result denotes a fully valid request.
+     * accumulating every failure into an insertion-ordered field&rarr;message map.
+     * An empty result denotes a fully valid request.
      *
-     * <p>Order and messages mirror the legacy {@code EVALUATE} statements:</p>
+     * <p>The legacy program {@code COTRN02C} reports one edit at a time (each
+     * failing {@code WHEN} performs {@code SEND-TRNADD-SCREEN}, which issues a CICS
+     * {@code RETURN}). The stateless REST translation instead accumulates every
+     * field failure so the caller receives them together in a single
+     * HTTP&nbsp;400, preserving the legacy <em>message literals</em> and
+     * <em>field order</em> while giving one edit per field (the first that applies,
+     * matching the legacy precedence for that field).</p>
+     *
+     * <p>Order and messages mirror {@code VALIDATE-INPUT-KEY-FIELDS}
+     * ({@code COTRN02C} L193&ndash;230) followed by {@code VALIDATE-INPUT-DATA-FIELDS}
+     * ({@code COTRN02C} L235&ndash;437):</p>
      * <ol>
-     *   <li>account/card key ({@code VALIDATE-INPUT-KEY-FIELDS}): an account id,
-     *       else a card number, else the "must be entered" default — a present
-     *       value that is non-numeric is rejected with the matching
-     *       "must be Numeric" message;</li>
-     *   <li>type code — "Type CD must be Numeric...";</li>
-     *   <li>category code — "Category CD must be Numeric...";</li>
-     *   <li>amount — "Amount can NOT be empty..." when absent, otherwise
-     *       "Amount should be in format -99999999.99" when it does not fit the
-     *       eight-integer / two-fraction edit mask;</li>
-     *   <li>merchant id — "Merchant ID must be Numeric...".</li>
+     *   <li><b>account/card key</b> &mdash; an account id, else a card number, else
+     *       the {@code "Account or Card Number must be entered..."} default; a
+     *       present value that is non-numeric is rejected with its
+     *       {@code "... must be Numeric..."} message;</li>
+     *   <li><b>type code</b> &mdash; {@code "Type CD can NOT be empty..."} when
+     *       absent, else {@code "Type CD must be Numeric..."};</li>
+     *   <li><b>category code</b> &mdash; {@code "Category CD can NOT be empty..."}
+     *       when absent, else {@code "Category CD must be Numeric..."};</li>
+     *   <li><b>source</b> &mdash; {@code "Source can NOT be empty..."};</li>
+     *   <li><b>description</b> &mdash; {@code "Description can NOT be empty..."};</li>
+     *   <li><b>amount</b> &mdash; {@code "Amount can NOT be empty..."} when absent,
+     *       else {@code "Amount should be in format -99999999.99"} when it does not
+     *       fit the eight-integer / two-fraction edit mask;</li>
+     *   <li><b>original date</b> &mdash; {@code "Orig Date can NOT be empty..."} when
+     *       absent, else {@code "Orig Date should be in format YYYY-MM-DD"} when it
+     *       fails the positional format edit, else
+     *       {@code "Orig Date - Not a valid date..."} when it is not a real calendar
+     *       date;</li>
+     *   <li><b>processed date</b> &mdash; the {@code "Proc Date ..."} equivalents of
+     *       the original-date edits;</li>
+     *   <li><b>merchant id</b> &mdash; {@code "Merchant ID can NOT be empty..."} when
+     *       absent, else {@code "Merchant ID must be Numeric..."};</li>
+     *   <li><b>merchant name</b> &mdash; {@code "Merchant Name can NOT be empty..."};</li>
+     *   <li><b>merchant city</b> &mdash; {@code "Merchant City can NOT be empty..."};</li>
+     *   <li><b>merchant zip</b> &mdash; {@code "Merchant Zip can NOT be empty..."}.</li>
      * </ol>
      *
      * @param request the request to validate; must not be {@code null}
@@ -278,29 +331,109 @@ public class TransactionAddService {
             errors.put("account", "Account or Card Number must be entered...");
         }
 
-        // (2) Type code must be present and numeric.
-        if (!isPresent(request.typeCode()) || !isNumeric(request.typeCode())) {
+        // (2) Type code: mandatory, then numeric.
+        if (!isPresent(request.typeCode())) {
+            errors.put("typeCode", "Type CD can NOT be empty...");
+        } else if (!isNumeric(request.typeCode())) {
             errors.put("typeCode", "Type CD must be Numeric...");
         }
 
-        // (3) Category code must be present and numeric.
-        if (!isPresent(request.categoryCode()) || !isNumeric(request.categoryCode())) {
+        // (3) Category code: mandatory, then numeric.
+        if (!isPresent(request.categoryCode())) {
+            errors.put("categoryCode", "Category CD can NOT be empty...");
+        } else if (!isNumeric(request.categoryCode())) {
             errors.put("categoryCode", "Category CD must be Numeric...");
         }
 
-        // (4) Amount must be present and fit the -99999999.99 edit mask.
+        // (4) Source: mandatory.
+        if (!isPresent(request.source())) {
+            errors.put("source", "Source can NOT be empty...");
+        }
+
+        // (5) Description: mandatory.
+        if (!isPresent(request.description())) {
+            errors.put("description", "Description can NOT be empty...");
+        }
+
+        // (6) Amount: mandatory, then must fit the -99999999.99 edit mask.
         if (request.amount() == null) {
             errors.put("amount", "Amount can NOT be empty...");
         } else if (!isValidAmountFormat(request.amount())) {
             errors.put("amount", "Amount should be in format -99999999.99");
         }
 
-        // (5) Merchant id must be present and numeric.
-        if (!isPresent(request.merchantId()) || !isNumeric(request.merchantId())) {
+        // (7) Original date: mandatory, then YYYY-MM-DD format, then calendar valid.
+        validateDateField(errors, "originalTimestamp", request.originalTimestamp(),
+                "Orig Date can NOT be empty...",
+                "Orig Date should be in format YYYY-MM-DD",
+                "Orig Date - Not a valid date...");
+
+        // (8) Processed date: mandatory, then YYYY-MM-DD format, then calendar valid.
+        validateDateField(errors, "processedTimestamp", request.processedTimestamp(),
+                "Proc Date can NOT be empty...",
+                "Proc Date should be in format YYYY-MM-DD",
+                "Proc Date - Not a valid date...");
+
+        // (9) Merchant id: mandatory, then numeric.
+        if (!isPresent(request.merchantId())) {
+            errors.put("merchantId", "Merchant ID can NOT be empty...");
+        } else if (!isNumeric(request.merchantId())) {
             errors.put("merchantId", "Merchant ID must be Numeric...");
         }
 
+        // (10) Merchant name: mandatory.
+        if (!isPresent(request.merchantName())) {
+            errors.put("merchantName", "Merchant Name can NOT be empty...");
+        }
+
+        // (11) Merchant city: mandatory.
+        if (!isPresent(request.merchantCity())) {
+            errors.put("merchantCity", "Merchant City can NOT be empty...");
+        }
+
+        // (12) Merchant zip: mandatory.
+        if (!isPresent(request.merchantZip())) {
+            errors.put("merchantZip", "Merchant Zip can NOT be empty...");
+        }
+
         return errors;
+    }
+
+    /**
+     * Applies the {@code COTRN02C} original/processed date edits to a single date
+     * field, in the legacy precedence order: mandatory presence, then the
+     * {@code YYYY-MM-DD} positional format edit, then the {@code CSUTLDTC}
+     * calendar-validity edit. At most one message is recorded for the field (the
+     * first that applies), matching the legacy per-field behaviour.
+     *
+     * <p>The {@code CSUTLDTC} validity call is reproduced by stripping the two
+     * hyphens from the {@code YYYY-MM-DD} value to obtain the canonical
+     * {@code CCYYMMDD} string {@link DateValidationService} expects, then invoking
+     * {@link DateValidationService#isValidDateCcyyMmDd(String)}.</p>
+     *
+     * @param errors      the accumulating field&rarr;message map
+     * @param field       the field key under which any failure is recorded
+     * @param value       the raw date text ({@code YYYY-MM-DD}); may be {@code null}
+     * @param emptyMsg    the verbatim "can NOT be empty" message
+     * @param formatMsg   the verbatim "should be in format YYYY-MM-DD" message
+     * @param invalidMsg  the verbatim "Not a valid date" message
+     */
+    private void validateDateField(Map<String, String> errors, String field, String value,
+            String emptyMsg, String formatMsg, String invalidMsg) {
+        if (!isPresent(value)) {
+            errors.put(field, emptyMsg);
+            return;
+        }
+        String trimmed = value.strip();
+        if (!DATE_FORMAT_YYYY_MM_DD.matcher(trimmed).matches()) {
+            errors.put(field, formatMsg);
+            return;
+        }
+        // CSUTLDTC validity: DateValidationService expects CCYYMMDD (no hyphens).
+        String ccyymmdd = trimmed.replace("-", "");
+        if (!dateValidationService.isValidDateCcyyMmDd(ccyymmdd)) {
+            errors.put(field, invalidMsg);
+        }
     }
 
     /**
@@ -332,9 +465,9 @@ public class TransactionAddService {
      *
      * <p>The amount is normalised to scale {@value #AMOUNT_SCALE} with
      * {@link java.math.RoundingMode#HALF_UP}; the numeric category and merchant
-     * codes are converted from their validated string forms; and the original /
-     * processed timestamps default to the current 26-character timestamp when the
-     * caller supplies none.</p>
+     * codes are converted from their validated string forms; and the validated
+     * original / processed dates ({@code YYYY-MM-DD}) are stored verbatim &mdash;
+     * they are mandatory and are never defaulted to the current time.</p>
      *
      * @param request the validated request; must not be {@code null}
      * @param tranId  the server-generated 16-digit transaction id
@@ -354,20 +487,11 @@ public class TransactionAddService {
         txn.setTranMerchantName(request.merchantName());
         txn.setTranMerchantCity(request.merchantCity());
         txn.setTranMerchantZip(request.merchantZip());
-        txn.setTranOrigTs(isPresent(request.originalTimestamp()) ? request.originalTimestamp() : nowTs26());
-        txn.setTranProcTs(isPresent(request.processedTimestamp()) ? request.processedTimestamp() : nowTs26());
+        // Orig/proc dates are validated (present, YYYY-MM-DD, calendar-valid)
+        // before this point, so they are stored verbatim and never defaulted.
+        txn.setTranOrigTs(request.originalTimestamp());
+        txn.setTranProcTs(request.processedTimestamp());
         return txn;
-    }
-
-    /**
-     * Returns the current timestamp as 26-character text
-     * ({@code yyyy-MM-dd HH:mm:ss.SSSSSS}), matching the fixed width of the legacy
-     * {@code TRAN-ORIG-TS} / {@code TRAN-PROC-TS} ({@code PIC X(26)}) fields.
-     *
-     * @return the current local date-time formatted to 26 characters
-     */
-    private String nowTs26() {
-        return LocalDateTime.now().format(TIMESTAMP_FORMATTER);
     }
 
     /**

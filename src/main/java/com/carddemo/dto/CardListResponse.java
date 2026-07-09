@@ -50,11 +50,15 @@ import jakarta.validation.constraints.Size;
  *       filter applied" for that field, replacing the CICS pseudo-conversational
  *       {@code COMMAREA} state that carried these values between screen
  *       interactions.</li>
- *   <li><strong>PAN masking (security).</strong> The card numbers reachable through
- *       {@link #page} are already masked by {@link CardListItem}; a full unmasked
- *       Primary Account Number is never present. The {@code cardNumberFilter} echo
- *       reflects only the caller-supplied search text and never originates a full
- *       PAN.</li>
+ *   <li><strong>PAN masking (security, D-023).</strong> The card numbers reachable
+ *       through {@link #page} are already masked by {@link CardListItem}; a full
+ *       unmasked Primary Account Number is never present. The
+ *       {@code cardNumberFilter} echo is likewise masked to its last four digits by
+ *       the canonical constructor, so even a caller who filters by a complete
+ *       sixteen-digit PAN never sees that PAN reflected back &mdash; the masking is
+ *       enforced structurally here rather than relying on any single producer, and
+ *       a partial filter of four or fewer characters passes through unchanged so
+ *       the search form can still be re-rendered.</li>
  *   <li><strong>Stateless &amp; immutable.</strong> As a Java {@code record} the
  *       type is a thread-safe, side-effect-free value holder carrying no business
  *       logic and retaining no server-side conversational session state.</li>
@@ -65,7 +69,11 @@ import jakarta.validation.constraints.Size;
  *                         {@code null} when no account-id filter was applied
  * @param cardNumberFilter the echoed card-number search filter ({@code CARDSID}
  *                         {@code PIC X(16)}); up to sixteen characters, or
- *                         {@code null} when no card-number filter was applied
+ *                         {@code null} when no card-number filter was applied.
+ *                         Masked to its last four digits by the canonical
+ *                         constructor (D-023) so a full PAN is never echoed back;
+ *                         a filter of four or fewer characters is preserved
+ *                         verbatim
  * @param page             the page of {@link CardListItem} rows with pagination
  *                         metadata; its {@link PageResponse#pageSize() pageSize} is
  *                         {@value #PAGE_SIZE} for the Card List screen
@@ -79,6 +87,51 @@ public record CardListResponse(
         String cardNumberFilter,
 
         PageResponse<CardListItem> page) {
+
+    /**
+     * Number of trailing card-number digits left visible when masking the echoed
+     * {@code cardNumberFilter} (D-023). Matches the {@code CardListItem} row
+     * masking so the whole response uses one consistent last-four convention.
+     */
+    private static final int FILTER_VISIBLE_DIGITS = 4;
+
+    /**
+     * Canonical constructor that enforces the documented PAN-masking security
+     * contract (D-023) on the echoed {@code cardNumberFilter}: any value longer
+     * than {@value #FILTER_VISIBLE_DIGITS} characters has every character except
+     * its last four replaced with {@code '*'}, so a full sixteen-digit Primary
+     * Account Number can never be externally observable through this response.
+     * Masking here (rather than in a single producer) makes the invariant
+     * structural: every construction path &mdash; including JSON deserialization,
+     * which Jackson performs through this constructor &mdash; is protected. The
+     * masking is null-safe, short-safe (a filter of four or fewer characters is
+     * returned unchanged), and idempotent (an already-masked value is unchanged).
+     */
+    public CardListResponse {
+        cardNumberFilter = maskCardNumberFilter(cardNumberFilter);
+    }
+
+    /**
+     * Masks the echoed card-number filter to its last {@value #FILTER_VISIBLE_DIGITS}
+     * digits, mirroring the {@code CardListItem} PAN-masking convention.
+     *
+     * @param filter the caller-supplied card-number filter; may be {@code null}
+     * @return {@code null} for a {@code null} input; the stripped value unchanged
+     *         when it has four or fewer characters; otherwise the value with every
+     *         character before the last four replaced by {@code '*'}
+     */
+    private static String maskCardNumberFilter(String filter) {
+        if (filter == null) {
+            return null;
+        }
+        final String normalized = filter.strip();
+        final int length = normalized.length();
+        if (length <= FILTER_VISIBLE_DIGITS) {
+            return normalized;
+        }
+        return "*".repeat(length - FILTER_VISIBLE_DIGITS)
+                + normalized.substring(length - FILTER_VISIBLE_DIGITS);
+    }
 
     /**
      * The fixed number of card rows rendered per page by the legacy {@code COCRDLI}

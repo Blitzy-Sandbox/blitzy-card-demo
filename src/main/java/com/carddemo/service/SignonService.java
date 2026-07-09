@@ -180,6 +180,13 @@ public class SignonService {
      *                                 {@code WHEN OTHER}); logged with {@link #MSG_UNABLE_VERIFY}
      */
     public SignonResponse authenticate(SignonRequest request) {
+        // M10-class input-contract guard: a null request body is a broken contract,
+        // surfaced as the typed HTTP-400 "enter User ID" edit rather than an
+        // unhandled NullPointerException / HTTP 500 on the field dereference below.
+        if (request == null) {
+            throw new ValidationException(MSG_ENTER_USERID);
+        }
+
         // COSGN00C PROCESS-ENTER-KEY: mandatory-field edits reproduce the BMS "must enter" checks.
         // A blank field is SPACES or LOW-VALUES in the legacy map; here null or whitespace-only.
         if (request.userId() == null || request.userId().isBlank()) {

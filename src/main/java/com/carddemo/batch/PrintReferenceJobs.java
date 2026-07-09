@@ -106,6 +106,14 @@ public class PrintReferenceJobs {
     /** SLF4J logger; its output carries the MDC {@code correlationId} seeded by the batch listener. */
     private static final Logger log = LoggerFactory.getLogger(PrintReferenceJobs.class);
 
+    /**
+     * Number of trailing Primary Account Number (PAN) digits left visible when a card number is
+     * masked for a diagnostic log line, matching the last-four convention used elsewhere in the
+     * application. No full PAN &mdash; and no card verification value (CVV) &mdash; is ever written
+     * to a log (AAP &sect;0.3.2, no sensitive card data in logs).
+     */
+    private static final int PAN_VISIBLE_DIGITS = 4;
+
     /** Shared job repository (Spring Boot auto-configured) used to build every job and step. */
     private final JobRepository jobRepository;
 
@@ -542,18 +550,18 @@ public class PrintReferenceJobs {
         final Optional<CardXref> crossReference = cardXrefRepository.findById(cardNumber);
         if (crossReference.isEmpty()) {
             log.warn("CARD NUMBER {} COULD NOT BE VERIFIED (no cross-reference); "
-                    + "skipping enrichment for transaction {}", cardNumber, transaction.getTranId());
+                    + "skipping enrichment for transaction {}", maskPan(cardNumber), transaction.getTranId());
             return;
         }
         final Long accountId = crossReference.get().getXrefAcctId();
         final Optional<Account> account = accountRepository.findById(accountId);
         if (account.isEmpty()) {
             log.warn("ACCOUNT {} NOT FOUND for transaction {} (referenced via card {})",
-                    accountId, transaction.getTranId(), cardNumber);
+                    accountId, transaction.getTranId(), maskPan(cardNumber));
             return;
         }
         log.info("TRANSACTION-ENRICHED :: tranId={} cardNum={} custId={} {}",
-                transaction.getTranId(), cardNumber, crossReference.get().getXrefCustId(),
+                transaction.getTranId(), maskPan(cardNumber), crossReference.get().getXrefCustId(),
                 describeAccount(account.get()));
     }
 
@@ -602,9 +610,12 @@ public class PrintReferenceJobs {
      * @return a single-line description of the card
      */
     private static String describeCard(final Card card) {
+        // The PAN is masked to its last four digits and the CVV is intentionally omitted entirely:
+        // neither the full card number nor the card verification value may appear in any log line
+        // (AAP 0.3.2, no sensitive card data in logs).
         return String.format(
-                "cardNum=%s acctId=%s cvv=%s embossedName=%s expirationDate=%s status=%s",
-                card.getCardNum(), card.getCardAcctId(), card.getCardCvvCd(),
+                "cardNum=%s acctId=%s embossedName=%s expirationDate=%s status=%s",
+                maskPan(card.getCardNum()), card.getCardAcctId(),
                 card.getCardEmbossedName(), card.getCardExpirationDate(), card.getCardActiveStatus());
     }
 
@@ -616,7 +627,7 @@ public class PrintReferenceJobs {
      */
     private static String describeCardXref(final CardXref xref) {
         return String.format("xrefCardNum=%s custId=%s acctId=%s",
-                xref.getXrefCardNum(), xref.getXrefCustId(), xref.getXrefAcctId());
+                maskPan(xref.getXrefCardNum()), xref.getXrefCustId(), xref.getXrefAcctId());
     }
 
     /**
@@ -647,7 +658,32 @@ public class PrintReferenceJobs {
                 transaction.getTranId(), transaction.getTranTypeCd(), transaction.getTranCatCd(),
                 transaction.getTranSource(), transaction.getTranDesc(), transaction.getTranAmt(),
                 transaction.getTranMerchantId(), transaction.getTranMerchantName(),
-                transaction.getTranCardNum(), transaction.getTranOrigTs(), transaction.getTranProcTs());
+                maskPan(transaction.getTranCardNum()), transaction.getTranOrigTs(),
+                transaction.getTranProcTs());
+    }
+
+    /**
+     * Masks a card number (PAN) for diagnostic logging, leaving only the final
+     * {@value #PAN_VISIBLE_DIGITS} digits visible and replacing every earlier character with an
+     * asterisk. Any surrounding whitespace is stripped first; a {@code null} value yields
+     * {@code "null"} (so it stays distinguishable in a log line) and a value of
+     * {@value #PAN_VISIBLE_DIGITS} or fewer characters is fully masked. No full PAN is ever written
+     * to a log, satisfying the CardDemo data-protection rule (AAP &sect;0.3.2).
+     *
+     * @param cardNumber the raw card number (may be {@code null})
+     * @return the masked card number safe for logging (never {@code null})
+     */
+    private static String maskPan(final String cardNumber) {
+        if (cardNumber == null) {
+            return "null";
+        }
+        final String normalized = cardNumber.strip();
+        final int length = normalized.length();
+        if (length <= PAN_VISIBLE_DIGITS) {
+            return "*".repeat(length);
+        }
+        return "*".repeat(length - PAN_VISIBLE_DIGITS)
+                + normalized.substring(length - PAN_VISIBLE_DIGITS);
     }
 }
 

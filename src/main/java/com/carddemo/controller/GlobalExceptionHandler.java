@@ -38,9 +38,12 @@ import jakarta.validation.ConstraintViolationException;
  * across the eighteen online programs (source referenced by commit SHA {@code 27d6c6f}).
  *
  * <p>The class extends {@link ResponseEntityExceptionHandler} so Spring MVC's own framework
- * exceptions (unreadable body, unsupported method, unknown path, and so on) keep their correct
- * status codes instead of being swallowed by the {@link #handleGeneric(Exception, HttpServletRequest)
- * 500 fallback}; the inherited, more specific handlers always win over the catch-all.
+ * exceptions (unreadable body, unsupported method/media type, missing parameter, type mismatch,
+ * unknown path, and so on) keep their correct status codes instead of being swallowed by the
+ * {@link #handleGeneric(Exception, HttpServletRequest) 500 fallback}; the inherited, more specific
+ * handlers always win over the catch-all. The {@link #handleExceptionInternal} override then
+ * normalizes every such framework exception to the same {@link ErrorResponse} JSON body used
+ * everywhere else, so a client never receives Spring's default RFC&nbsp;7807 {@code ProblemDetail}.
  *
  * <p><strong>Security:</strong> no client-facing {@code message} or {@code fieldErrors} ever carries
  * a stack trace, SQL, secret, password, JWT, or unmasked PAN; failed sign-on is reported with a
@@ -138,6 +141,55 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         final ErrorResponse body = buildError(HttpStatus.BAD_REQUEST, CODE_VALIDATION_ERROR,
                 MESSAGE_VALIDATION_FAILED, servletRequestOf(request), fieldErrors);
         return handleExceptionInternal(ex, body, headers, status, request);
+    }
+
+    /**
+     * Normalizes <em>every</em> Spring MVC framework exception to the single {@link ErrorResponse}
+     * JSON contract used across the whole API.
+     *
+     * <p>{@link ResponseEntityExceptionHandler} funnels all of its built-in handlers &mdash; unreadable
+     * request body ({@code HttpMessageNotReadableException}), unsupported method
+     * ({@code HttpRequestMethodNotSupportedException}), unsupported / unacceptable media type, missing
+     * request parameter or path variable, parameter type mismatch ({@code TypeMismatchException}), and
+     * no matching handler / static resource ({@code NoHandlerFoundException} /
+     * {@code NoResourceFoundException}) &mdash; through this one method. Without this override those
+     * exceptions would serialize as an RFC&nbsp;7807 {@link org.springframework.http.ProblemDetail}
+     * body (the Spring&nbsp;6 default), diverging from the {@link ErrorResponse} shape every other error
+     * uses and defeating the leak-free guarantees enforced elsewhere in this advice.
+     *
+     * <p>When a handler in this advice has already produced an {@link ErrorResponse} body (only
+     * {@link #handleMethodArgumentNotValid} does, delegating here), that body is passed through
+     * unchanged. Otherwise a fresh {@link ErrorResponse} is stamped with the framework-resolved status,
+     * the request {@code path}, and the MDC {@code correlationId}. The client-facing {@code message} is
+     * the generic HTTP reason phrase only: {@code ex.getMessage()} is deliberately never surfaced
+     * because for an unreadable body it can echo fragments of the malformed request payload.
+     *
+     * @param ex         the framework exception being handled (never {@code null})
+     * @param body       the body proposed by the framework: an {@link ErrorResponse} already built by
+     *                   this advice, or {@code null} for the built-in framework handlers
+     * @param headers    the response headers the framework prepared (for example {@code Allow} for a
+     *                   405 or {@code Accept} for a 415); preserved unchanged (never {@code null})
+     * @param statusCode the framework-resolved HTTP status (never {@code null})
+     * @param request    the current request, used for the {@code path} field (never {@code null})
+     * @return a {@link ResponseEntity} whose body is always the {@link ErrorResponse} contract
+     */
+    @Override
+    protected ResponseEntity<Object> handleExceptionInternal(final Exception ex,
+                                                             final Object body,
+                                                             final HttpHeaders headers,
+                                                             final HttpStatusCode statusCode,
+                                                             final WebRequest request) {
+        Object responseBody = body;
+        if (!(body instanceof ErrorResponse)) {
+            // A built-in framework handler proposed a null (soon-to-be RFC-7807 ProblemDetail) body:
+            // replace it with the single ErrorResponse contract. Leak-free: reason phrase only, never
+            // ex.getMessage() (an unreadable-body error can otherwise echo the malformed payload).
+            final HttpStatus status = resolveStatus(statusCode);
+            final String code = status.name();
+            logHandled(ex, status, code);
+            responseBody = buildError(status, code, status.getReasonPhrase(), servletRequestOf(request), null);
+        }
+        return super.handleExceptionInternal(ex, responseBody, headers, statusCode, request);
     }
 
     /**
@@ -291,5 +343,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      */
     private static HttpServletRequest servletRequestOf(final WebRequest request) {
         return (request instanceof ServletWebRequest servletWebRequest) ? servletWebRequest.getRequest() : null;
+    }
+
+    /**
+     * Resolves a {@link HttpStatusCode} to a concrete {@link HttpStatus}, defaulting to
+     * {@link HttpStatus#INTERNAL_SERVER_ERROR} for any non-standard code so the HTTP reason phrase and
+     * the machine-readable {@code code} are always well defined. All built-in framework handlers use
+     * standard status codes, so the fallback is defensive only.
+     *
+     * @param statusCode the framework-resolved status (never {@code null})
+     * @return the matching {@link HttpStatus}, or {@link HttpStatus#INTERNAL_SERVER_ERROR}
+     */
+    private static HttpStatus resolveStatus(final HttpStatusCode statusCode) {
+        final HttpStatus resolved = HttpStatus.resolve(statusCode.value());
+        return (resolved != null) ? resolved : HttpStatus.INTERNAL_SERVER_ERROR;
     }
 }

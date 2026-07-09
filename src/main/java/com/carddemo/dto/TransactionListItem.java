@@ -22,9 +22,11 @@ import jakarta.validation.constraints.Size;
  *   <li>{@code transactionId} preserves the fixed 16-character
  *       {@code TRAN-ID} / {@code TRNIDnn} width.</li>
  *   <li>{@code transactionDate} is intentionally kept as a {@link String} to
- *       preserve the exact 8-character screen date column (for example
- *       {@code yy/mm/dd}); it is a display value and is deliberately <em>not</em>
- *       parsed into a {@code java.time.LocalDate} here.</li>
+ *       preserve the exact 8-character screen date column (the {@code MM/DD/YY}
+ *       form produced by {@code COTRN00C}'s {@code POPULATE-TRAN-DATA} from
+ *       {@code TRAN-ORIG-TS}, for example {@code 06/15/24}); it is a display value
+ *       and is deliberately <em>not</em> parsed into a {@code java.time.LocalDate}
+ *       here.</li>
  *   <li>{@code description} carries the 26-character screen truncation of the
  *       100-character {@code TRAN-DESC} field shown on the list row.</li>
  *   <li>{@code amount} maps the packed-decimal {@code TRAN-AMT}
@@ -41,7 +43,8 @@ import jakarta.validation.constraints.Size;
  * @param transactionId   the 16-character transaction identifier
  *                        ({@code TRAN-ID} / {@code TRNIDnn}, {@code PIC X(16)})
  * @param transactionDate the 8-character display date column
- *                        ({@code TDATEnn}, {@code PIC X(8)}) preserved verbatim
+ *                        ({@code TDATEnn}, {@code PIC X(8)}) in {@code MM/DD/YY}
+ *                        form, derived from {@code TRAN-ORIG-TS}
  * @param description     the 26-character transaction description shown on the
  *                        list row ({@code TDESCnn}, a truncation of
  *                        {@code TRAN-DESC PIC X(100)})

@@ -60,7 +60,7 @@ import org.springframework.web.servlet.config.annotation.EnableWebMvc;
  *       {@code /api/menu/{type}} route.</li>
  *   <li><strong>Pre-existing administrator surfaces still enforced.</strong> {@code /api/users/**}
  *       is {@code 403} for {@code ROLE_USER} and {@code 200} for {@code ROLE_ADMIN}.</li>
- *   <li><strong>Public surfaces stay public.</strong> {@code POST /api/auth/login} and
+ *   <li><strong>Public surfaces stay public.</strong> {@code POST /api/auth/signin} and
  *       {@code GET /actuator/health} succeed with no token.</li>
  *   <li><strong>JSON denial shape.</strong> The {@code 401} and {@code 403} bodies carry the shared
  *       {@code ErrorResponse}-shaped payload ({@code status}, {@code error}, {@code code},
@@ -249,9 +249,9 @@ class SecurityConfigTest {
     class PublicSurfaces {
 
         @Test
-        @DisplayName("POST /api/auth/login is permitted without a token")
-        void loginIsPublic() throws Exception {
-            mockMvc.perform(post("/api/auth/login"))
+        @DisplayName("POST /api/auth/signin is permitted without a token")
+        void signinIsPublic() throws Exception {
+            mockMvc.perform(post("/api/auth/signin"))
                     .andExpect(status().isOk())
                     .andExpect(content().string("token-issued"));
         }
@@ -401,8 +401,8 @@ class SecurityConfigTest {
             return "UP";
         }
 
-        @PostMapping("/api/auth/login")
-        String login() {
+        @PostMapping("/api/auth/signin")
+        String signin() {
             return "token-issued";
         }
     }

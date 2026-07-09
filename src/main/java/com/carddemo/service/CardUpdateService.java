@@ -223,6 +223,13 @@ public class CardUpdateService {
     public CardUpdateResponse updateCard(final String cardNumber, final CardUpdateRequest request) {
         log.info("Processing card update request (transaction CCUP)");
 
+        // Input-contract guard: a null request body is a broken contract, surfaced
+        // as a typed HTTP-400 validation failure rather than an unhandled
+        // NullPointerException / HTTP 500 on the request.version() dereference below.
+        if (request == null) {
+            throw new ValidationException(MSG_VALIDATION_SUMMARY);
+        }
+
         // --- 1220-EDIT-CARD: search-key edit performed before the record read.
         // The card number must be exactly 16 digits (CARD-NUM PIC X(16), numeric).
         final String key = (cardNumber == null) ? null : cardNumber.strip();

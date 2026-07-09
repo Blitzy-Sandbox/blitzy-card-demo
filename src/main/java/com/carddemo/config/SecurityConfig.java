@@ -82,8 +82,12 @@ import org.springframework.web.filter.OncePerRequestFilter;
 @EnableMethodSecurity
 public class SecurityConfig {
 
-    /** Public signon endpoint that issues the JWT; must be reachable without a token. */
-    private static final String LOGIN_PATH = "/api/auth/login";
+    /**
+     * Public signon endpoint that issues the JWT; must be reachable without a token. The canonical
+     * route is {@code /api/auth/signin} (COBOL signon transaction CC00 / program COSGN00C), matching
+     * the AuthController mapping, the onboarding guide, and the technical specification.
+     */
+    private static final String SIGNON_PATH = "/api/auth/signin";
 
     /**
      * Actuator management endpoints that are safe to expose without authentication: the liveness /
@@ -219,7 +223,7 @@ public class SecurityConfig {
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable())
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers(HttpMethod.POST, LOGIN_PATH).permitAll()
+                .requestMatchers(HttpMethod.POST, SIGNON_PATH).permitAll()
                 .requestMatchers(PUBLIC_ACTUATOR_PATHS).permitAll()
                 .requestMatchers(ADMIN_PATHS).hasRole(ROLE_ADMIN)
                 .requestMatchers(HttpMethod.GET, ADMIN_MENU_PATHS).hasRole(ROLE_ADMIN)

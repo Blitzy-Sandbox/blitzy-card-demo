@@ -204,28 +204,45 @@ public class TransactionListService {
         }
         return new TransactionListItem(
                 t.getTranId(),
-                toDisplayDate(t.getTranProcTs()),
+                toDisplayDate(t.getTranOrigTs()),
                 t.getTranDesc(),
                 amount);
     }
 
     /**
-     * Extracts the {@code yyyy-MM-dd} date portion of a 26-character processing
-     * timestamp ({@code TRAN-PROC-TS}, format {@code yyyy-mm-dd-hh.mm.ss.ffffff}).
+     * Formats the {@code MM/DD/YY} screen date shown in the {@code TDATEnn} column
+     * of the {@code COTRN00} map, reproducing {@code COTRN00C}'s
+     * {@code POPULATE-TRAN-DATA} paragraph (COTRN00C L381&ndash;L388 together with
+     * the {@code CSDAT01Y} date work area).
+     *
+     * <p>The legacy program takes the <strong>original</strong> transaction
+     * timestamp ({@code TRAN-ORIG-TS}, a 26-character positional value in the form
+     * {@code yyyy-mm-dd-hh.mm.ss.ffffff}) and reformats its date portion into the
+     * eight-character {@code WS-CURDATE-MM-DD-YY} edit field
+     * ({@code MM '/' DD '/' YY}). The month, day and two-digit year are sliced from
+     * the fixed positions of the source text &mdash; month at offsets 5&ndash;6, day
+     * at offsets 8&ndash;9 and the two-digit year at offsets 2&ndash;3 &mdash; and
+     * joined with {@code '/'} separators. This yields, for example,
+     * {@code 2024-06-15-12.30.45.678901} &rarr; {@code 06/15/24}.</p>
      *
      * <p>The extraction is null- and short-safe: a {@code null} timestamp yields
-     * {@code null}, and a value shorter than ten characters is returned unchanged so
-     * that malformed or absent timestamps never raise an exception.</p>
+     * {@code null}, and a value shorter than ten characters (from which the date
+     * slices cannot be taken) is returned unchanged so that malformed or absent
+     * timestamps never raise an exception.</p>
      *
-     * @param timestamp the raw processing-timestamp text; may be {@code null}
-     * @return the leading {@code yyyy-MM-dd} date, or the original value when it is
-     *         {@code null} or shorter than ten characters
+     * @param timestamp the raw original-timestamp text ({@code TRAN-ORIG-TS}); may
+     *                  be {@code null}
+     * @return the eight-character {@code MM/DD/YY} screen date, or the original value
+     *         when it is {@code null} or shorter than ten characters
      */
     private static String toDisplayDate(String timestamp) {
         if (timestamp == null || timestamp.length() < 10) {
             return timestamp;
         }
-        return timestamp.substring(0, 10);
+        String mm = timestamp.substring(5, 7);
+        String dd = timestamp.substring(8, 10);
+        String yy = timestamp.substring(2, 4);
+        return mm + "/" + dd + "/" + yy;
     }
 
     /**

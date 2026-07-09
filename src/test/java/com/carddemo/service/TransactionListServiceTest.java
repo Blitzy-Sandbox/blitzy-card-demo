@@ -63,9 +63,10 @@ import com.carddemo.repository.TransactionRepository;
  *       PIC S9(09)V99}) are carried as {@link BigDecimal} normalised to scale&nbsp;2;
  *       every assertion uses {@code scale()} and {@code compareTo} and no
  *       {@code float}/{@code double} appears anywhere in this suite.</li>
- *   <li><b>Screen date preservation</b> &mdash; the transaction date column is a
- *       verbatim leading slice of the stored processing-timestamp text and is never
- *       reparsed or reformatted.</li>
+ *   <li><b>Screen date formatting</b> &mdash; the transaction date column is the
+ *       {@code MM/DD/YY} value {@code COTRN00C}'s {@code POPULATE-TRAN-DATA} slices
+ *       from {@code TRAN-ORIG-TS} (month at offsets 5&ndash;6, day at 8&ndash;9,
+ *       two-digit year at 2&ndash;3), never from {@code TRAN-PROC-TS}.</li>
  *   <li><b>One-based paging</b> &mdash; Spring's zero-based page index is surfaced as
  *       a one-based page number, mirroring the legacy {@code PAGENUM} display.</li>
  * </ul>
@@ -90,9 +91,9 @@ class TransactionListServiceTest {
     private static final int EXPECTED_PAGE_SIZE = 10;
 
     /**
-     * A realistic 26-character {@code TRAN-PROC-TS} processing-timestamp value
+     * A realistic 26-character {@code TRAN-ORIG-TS} original-timestamp value
      * ({@code yyyy-mm-dd-hh.mm.ss.ffffff}) reused by fixtures that do not exercise
-     * the date-preservation logic directly.
+     * the date-formatting logic directly.
      */
     private static final String SAMPLE_TIMESTAMP = "2024-06-15-12.30.45.678901";
 
@@ -110,20 +111,54 @@ class TransactionListServiceTest {
 
     /**
      * Builds a {@link Transaction} fixture carrying only the fields the service's
-     * row projection reads ({@code TRAN-ID}, {@code TRAN-PROC-TS},
+     * row projection reads ({@code TRAN-ID}, {@code TRAN-ORIG-TS},
      * {@code TRAN-DESC}, {@code TRAN-AMT}).
      *
+     * <p>The supplied timestamp is stored as the <strong>original</strong>
+     * timestamp ({@code TRAN-ORIG-TS}) because {@code COTRN00C}'s
+     * {@code POPULATE-TRAN-DATA} derives the {@code TDATEnn} screen column from
+     * {@code TRAN-ORIG-TS} (never {@code TRAN-PROC-TS}). Fixtures that must prove
+     * the original timestamp &mdash; not the processing timestamp &mdash; drives the
+     * column use {@link #txnWithTimestamps(String, String, String, String, BigDecimal)}.</p>
+     *
      * @param tranId    the transaction id ({@code TRAN-ID PIC X(16)})
-     * @param procTs    the processing-timestamp text ({@code TRAN-PROC-TS PIC X(26)});
+     * @param origTs    the original-timestamp text ({@code TRAN-ORIG-TS PIC X(26)});
      *                  may be {@code null}
      * @param desc      the transaction description ({@code TRAN-DESC})
      * @param amt       the transaction amount ({@code TRAN-AMT PIC S9(09)V99}); may be
      *                  {@code null}
      * @return a populated {@link Transaction}
      */
-    private static Transaction txn(String tranId, String procTs, String desc, BigDecimal amt) {
+    private static Transaction txn(String tranId, String origTs, String desc, BigDecimal amt) {
         Transaction t = new Transaction();
         t.setTranId(tranId);
+        t.setTranOrigTs(origTs);
+        t.setTranDesc(desc);
+        t.setTranAmt(amt);
+        return t;
+    }
+
+    /**
+     * Builds a {@link Transaction} fixture setting the original and processing
+     * timestamps to <em>distinct</em> values, so a test can prove the transaction
+     * date column is derived from {@code TRAN-ORIG-TS} and not from
+     * {@code TRAN-PROC-TS}.
+     *
+     * @param tranId the transaction id ({@code TRAN-ID PIC X(16)})
+     * @param origTs the original-timestamp text ({@code TRAN-ORIG-TS PIC X(26)});
+     *               may be {@code null}
+     * @param procTs the processing-timestamp text ({@code TRAN-PROC-TS PIC X(26)});
+     *               may be {@code null}
+     * @param desc   the transaction description ({@code TRAN-DESC})
+     * @param amt    the transaction amount ({@code TRAN-AMT PIC S9(09)V99}); may be
+     *               {@code null}
+     * @return a populated {@link Transaction}
+     */
+    private static Transaction txnWithTimestamps(String tranId, String origTs, String procTs,
+            String desc, BigDecimal amt) {
+        Transaction t = new Transaction();
+        t.setTranId(tranId);
+        t.setTranOrigTs(origTs);
         t.setTranProcTs(procTs);
         t.setTranDesc(desc);
         t.setTranAmt(amt);
@@ -314,14 +349,14 @@ class TransactionListServiceTest {
     }
 
     // ------------------------------------------------------------------
-    // Screen date preservation — verbatim leading slice, never reformatted
+    // Screen date formatting — MM/DD/YY sliced from TRAN-ORIG-TS (M4 parity)
     // ------------------------------------------------------------------
 
     @Test
-    @DisplayName("listTransactions preserves the transaction date as a verbatim screen string (never reparsed/reformatted)")
-    void listTransactions_preservesTransactionDateString() {
+    @DisplayName("listTransactions formats the transaction date as MM/DD/YY sliced from TRAN-ORIG-TS")
+    void listTransactions_formatsTransactionDateAsMmDdYy() {
         String fullTimestamp = "2024-06-15-12.30.45.678901";
-        String shortScreenDate = "24/06/15"; // an already-short screen date must pass through unchanged
+        String shortScreenDate = "06/15/24"; // shorter than 10 chars: passes through unchanged
         List<Transaction> content = List.of(
                 txn("0000000000000001", fullTimestamp, "Full timestamp", new BigDecimal("1.00")),
                 txn("0000000000000002", shortScreenDate, "Short screen date", new BigDecimal("2.00")),
@@ -331,16 +366,34 @@ class TransactionListServiceTest {
 
         List<TransactionListItem> rows = service.listTransactions(null, null, 0).page().content();
 
-        // A full 26-char timestamp yields its leading date, taken verbatim from the
-        // source text (a prefix of the original) rather than parsed and reformatted.
-        assertThat(rows.get(0).transactionDate()).isEqualTo("2024-06-15");
-        assertThat(fullTimestamp).startsWith(rows.get(0).transactionDate());
+        // A full 26-char TRAN-ORIG-TS is reformatted to the 8-char MM/DD/YY screen
+        // column: month (offsets 5-6), day (offsets 8-9), two-digit year (offsets 2-3).
+        assertThat(rows.get(0).transactionDate()).isEqualTo("06/15/24");
+        assertThat(rows.get(0).transactionDate()).hasSize(8);
 
-        // An already-short screen date is returned exactly as stored (no reformatting).
+        // A value shorter than ten characters cannot be sliced and is returned
+        // unchanged (short-safe), never raising an exception.
         assertThat(rows.get(1).transactionDate()).isEqualTo(shortScreenDate);
 
         // A null timestamp is preserved as null (null-safe, no substitution).
         assertThat(rows.get(2).transactionDate()).isNull();
+    }
+
+    @Test
+    @DisplayName("listTransactions derives the date from TRAN-ORIG-TS, not TRAN-PROC-TS (COTRN00C POPULATE-TRAN-DATA)")
+    void listTransactions_dateUsesOrigTimestampNotProc() {
+        // Distinct orig/proc timestamps: if the projection erroneously read the
+        // processing timestamp the column would render 12/31/99 instead of 06/15/24.
+        String origTs = "2024-06-15-12.30.45.678901";
+        String procTs = "1999-12-31-23.59.59.999999";
+        List<Transaction> content = List.of(
+                txnWithTimestamps("0000000000000001", origTs, procTs, "Orig vs proc", new BigDecimal("9.99")));
+        when(transactionRepository.findAll(any(Pageable.class)))
+                .thenReturn(pageOf(content, 0, EXPECTED_PAGE_SIZE, content.size()));
+
+        List<TransactionListItem> rows = service.listTransactions(null, null, 0).page().content();
+
+        assertThat(rows.get(0).transactionDate()).isEqualTo("06/15/24");
     }
 }
 

@@ -93,8 +93,17 @@ plaintext passwords upgraded to BCrypt hashes (see decision **D-002**).
 
 ## Quick Start (Local Development)
 
-These steps take you from a clean machine to a running application. Every command is
-copy-paste runnable from the repository root.
+These steps take you from a clean machine toward a running application, following the intended
+clean-machine workflow. Every command is copy-paste runnable from the repository root.
+
+> **⚠️ Current checkpoint status (CP3).** The domain layer (11 JPA entities and repositories),
+> the service layer, the Spring Batch components, `SecurityConfig`, the observability filters, and
+> the `GlobalExceptionHandler` are in place, and **Step 1** (the local Docker stack) works today.
+> **Steps 2–4 describe the target end state and are not fully runnable yet:** the runnable web
+> application is delivered in a later checkpoint (**CP4/CP5**), which adds the REST controllers
+> (only `GlobalExceptionHandler` exists today), `src/main/resources/application*.yml`,
+> `logback-spring.xml`, and the Flyway `V3__seed_data.sql` seed. The steps below flag the parts
+> that are **pending CP4/CP5**.
 
 ### Prerequisites
 
@@ -134,8 +143,12 @@ This starts exactly five services (host ports match [`docker-compose.yml`](./doc
 mvn clean verify
 ```
 
-This compiles the project, runs the JUnit 5 unit tests and the Testcontainers/LocalStack
-integration tests, and enforces **JaCoCo line coverage ≥ 80%** (Gate 8).
+This compiles the project, runs the JUnit 5 unit tests, and enforces **JaCoCo line coverage
+≥ 80%** (Gate 8).
+
+> **Pending CP4/CP5.** The Testcontainers/LocalStack **integration tests** boot the Spring web
+> application and therefore require the `application*.yml` configuration delivered in CP4/CP5;
+> until then, run the unit tests with `mvn clean test`.
 
 ### Step 3 — Run the app (local profile)
 
@@ -143,11 +156,16 @@ integration tests, and enforces **JaCoCo line coverage ≥ 80%** (Gate 8).
 mvn spring-boot:run -Dspring-boot.run.profiles=local
 ```
 
-On startup, **Flyway** applies the migrations automatically — `V1__schema.sql` (11 tables),
-`V2__indexes.sql`, and `V3__seed_data.sql` (which seeds the database from the ASCII fixtures
-under [`app/data/ASCII/`](./app/data/ASCII)). The app listens on `http://localhost:8080` and
-connects to the PostgreSQL database `carddemo` on `5432` using the dev-only defaults defined in
-`docker-compose.yml` (production uses environment variables / a vault — never hardcoded).
+On startup, **Flyway** applies the migrations automatically. `V1__schema.sql` (11 tables) and
+`V2__indexes.sql` are in place today; `V3__seed_data.sql` (which seeds the database from the ASCII
+fixtures under [`app/data/ASCII/`](./app/data/ASCII)) arrives in CP4/CP5. The app listens on
+`http://localhost:8080` and connects to the PostgreSQL database `carddemo` on `5432` using the
+dev-only defaults defined in `docker-compose.yml` (production uses environment variables / a
+vault — never hardcoded).
+
+> **Pending CP4/CP5.** Running the app requires the `application-local.yml` profile,
+> `logback-spring.xml`, and the REST controllers, which land in CP4/CP5 (only
+> `GlobalExceptionHandler` exists today); the `V3__seed_data.sql` seed lands in the same checkpoint.
 
 ### Step 4 — Verify observability
 
@@ -159,6 +177,11 @@ curl -s http://localhost:8080/actuator/prometheus    # Prometheus-format metrics
 - **Jaeger UI:** <http://localhost:16686> (traces across REST → service → repository → AWS)
 - **Prometheus:** <http://localhost:9090>
 - **Grafana:** <http://localhost:3000> (dev login `admin` / `admin`)
+
+> **Pending CP4/CP5.** The application's actuator HTTP endpoints (`/actuator/health`,
+> `/actuator/prometheus`) and its traces/metrics become reachable only once the app runs (Step 3),
+> i.e. after CP4/CP5 delivers the application configuration and controllers. The Jaeger, Prometheus,
+> and Grafana UIs themselves are up from Step 1.
 
 > **LocalStack endpoint:** point AWS clients at `http://localhost:4566` (never real AWS). The
 > authoritative local S3 reachability check (per the setup environment) is

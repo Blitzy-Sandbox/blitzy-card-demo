@@ -155,6 +155,19 @@ class SignonServiceTest {
     // ------------------------------------------------------------------
 
     @Test
+    @DisplayName("null request -> ValidationException(400) before any field access; no collaborator is touched")
+    void authenticate_nullRequest_throwsValidationException() {
+        // M1 (review finding): a null request body must be a typed HTTP-400
+        // validation error, never an unhandled NullPointerException / HTTP 500.
+        assertThatThrownBy(() -> service.authenticate(null))
+                .isInstanceOfSatisfying(ValidationException.class,
+                        ex -> assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST))
+                .hasMessage(SignonService.MSG_ENTER_USERID);
+
+        verifyNoInteractions(userSecurityRepository, passwordEncoder, jwtService);
+    }
+
+    @Test
     @DisplayName("blank user id -> ValidationException(400) 'Please enter User ID ...' and no collaborator is touched")
     void authenticate_blankUserId_throwsValidationException() {
         assertThatThrownBy(() -> service.authenticate(new SignonRequest("", "pw")))

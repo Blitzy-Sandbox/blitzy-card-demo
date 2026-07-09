@@ -206,7 +206,9 @@ public class CardListService {
                 pageResponse.content().size(), pageResponse.totalElements());
 
         // Echo the submitted filters (COCRDLI ACCTSID/CARDSID). The account filter is converted
-        // from Long to String to match the CardListResponse contract; card filter echoed as entered.
+        // from Long to String to match the CardListResponse contract. The card-number filter is
+        // passed as entered but masked to its last four digits by the CardListResponse canonical
+        // constructor (D-023), so a caller filtering by a full PAN never sees it echoed back.
         String echoedAccountFilter = (accountIdFilter == null) ? null : String.valueOf(accountIdFilter);
         return new CardListResponse(echoedAccountFilter, cardNumberFilter, pageResponse);
     }

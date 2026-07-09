@@ -195,7 +195,10 @@ class CardListServiceTest {
         CardListResponse response = service.listCards(null, VALID_CARD_FILTER, 0);
 
         verify(cardRepository).findById(VALID_CARD_FILTER);
-        assertThat(response.cardNumberFilter()).isEqualTo(VALID_CARD_FILTER);
+        // D-023 (review finding M2): the echoed card-number filter is masked to its
+        // last four digits so a full PAN is never externally observable, even when
+        // the caller filtered by a complete sixteen-digit PAN.
+        assertThat(response.cardNumberFilter()).isEqualTo("************3456");
         assertThat(response.page().content()).hasSize(1);
         assertThat(response.page().content().get(0).cardNumber()).isEqualTo("************3456");
     }

@@ -276,6 +276,18 @@ class UserServiceTest {
     }
 
     @Test
+    @DisplayName("createUser rejects a null request with the first mandatory-field edit before any field access (M5)")
+    void createUser_nullRequest_throwsValidation() {
+        // M5 (review finding): a null request body must be a typed HTTP-400
+        // validation error, never an unhandled NullPointerException / HTTP 500.
+        assertThatThrownBy(() -> service.createUser(null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_EMPTY);
+
+        verifyNoInteractions(userSecurityRepository, passwordEncoder);
+    }
+
+    @Test
     @DisplayName("createUser throws DuplicateResourceException (409) with the verbatim message on a pre-existing id")
     void createUser_duplicate_throwsDuplicate() {
         when(userSecurityRepository.existsById(USER_ID)).thenReturn(true);
@@ -375,6 +387,19 @@ class UserServiceTest {
 
         verify(userSecurityRepository, never()).save(any(UserSecurity.class));
         verifyNoInteractions(passwordEncoder);
+    }
+
+    @Test
+    @DisplayName("updateUser rejects a null request before the existence read, with the first mandatory-field edit (M5)")
+    void updateUser_nullRequest_throwsValidation() {
+        // M5 (review finding): a null request body is rejected as a typed HTTP-400
+        // before any field access and before the existence read, so neither the
+        // repository nor the encoder is touched.
+        assertThatThrownBy(() -> service.updateUser(USER_ID, null))
+                .isInstanceOf(ValidationException.class)
+                .hasMessage(MSG_FIRST_NAME_EMPTY);
+
+        verifyNoInteractions(userSecurityRepository, passwordEncoder);
     }
 
     @Test

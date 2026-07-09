@@ -61,7 +61,7 @@ in the [architecture overview](./architecture/overview.md).
 | COBOL programs mapped | **28** (17 online CICS + 11 batch/utility) |
 | COBOL paragraphs mapped (forward) | **527** (100%) |
 | Record-layout copybooks &rarr; JPA entities | **11 &rarr; 11** |
-| Java classes traced back (reverse) | **127** (Part&nbsp;A 50 + Part&nbsp;B 77) |
+| Java classes traced back (reverse) | **126** (Part&nbsp;A 49 + Part&nbsp;B 77) |
 | Source reference | commit `27d6c6f` (`7756d895ffeb65f7ea72aaa609e356d9899afcec`) &mdash; not copied |
 
 > **Ground-truth note.** Program tiering and counts are derived by direct
@@ -614,18 +614,18 @@ _Paragraph count: **22** — all mapped._
 | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` | `InterestAccountItemReader` | `read()` | READ NEXT (TransactionCategoryBalance) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
 | `CBACT04C.cbl` | `1050-UPDATE-ACCOUNT` | `AccountRepository` | `save()` | Persist updated account after interest posting |
 | `CBACT04C.cbl` | `1100-GET-ACCT-DATA` | `AccountRepository` | `findById()` | Random account read for the current category balance |
-| `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardXrefRepository` | `findByAccountId()` | Xref read to resolve card/customer for the account |
+| `CBACT04C.cbl` | `1110-GET-XREF-DATA` | `CardXrefRepository` | `findByXrefAcctId()` | Xref read to resolve card/customer for the account |
 | `CBACT04C.cbl` | `1200-GET-INTEREST-RATE` | `InterestCalculationService` | `resolveInterestRate()` | Disclosure-group interest-rate lookup (DisclosureGroupRepository) |
-| `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` | `InterestCalculationService` | `resolveDefaultRate()` | Default disclosure-group interest rate fallback |
-| `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` | `InterestCalculationService` | `computeInterest()` | Monthly interest = balance*rate/1200; BigDecimal setScale(2, HALF_UP) |
+| `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` | `InterestCalculationService` | `resolveInterestRate()` | Default disclosure-group interest-rate fallback (default-group branch within resolveInterestRate) |
+| `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` | `InterestCalculationService` | `calculateMonthlyInterest()` | Monthly interest = balance*rate/1200; BigDecimal setScale(2, HALF_UP) |
 | `CBACT04C.cbl` | `1300-B-WRITE-TX` | `PostTransactionItemWriter` | `write()` | Interest transaction → Transaction table |
-| `CBACT04C.cbl` | `1400-COMPUTE-FEES` | `InterestCalculationService` | `computeFees()` | Fee computation; BigDecimal scale 2 |
+| `CBACT04C.cbl` | `1400-COMPUTE-FEES` | `InterestCalculationService` | `applyInterestToAccount()` | Fee/interest application to the account; BigDecimal scale 2 |
 | `CBACT04C.cbl` | `9000-TCATBALF-CLOSE` | `InterestAccountItemReader` | `close()` | CLOSE (TransactionCategoryBalance) → ItemStream.close() |
 | `CBACT04C.cbl` | `9100-XREFFILE-CLOSE` | `InterestAccountItemReader` | `close()` | CLOSE (CardXref) → ItemStream.close() |
 | `CBACT04C.cbl` | `9200-DISCGRP-CLOSE` | `InterestAccountItemReader` | `close()` | CLOSE (DisclosureGroup) → ItemStream.close() |
 | `CBACT04C.cbl` | `9300-ACCTFILE-CLOSE` | `InterestAccountItemReader` | `close()` | CLOSE (Account) → ItemStream.close() |
 | `CBACT04C.cbl` | `9400-TRANFILE-CLOSE` | `InterestAccountItemReader` | `close()` | CLOSE (Transaction) → ItemStream.close() |
-| `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestCalculationProcessor` | (helper) | Supporting paragraph folded into InterestCalculationProcessor logic |
+| `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `InterestCalculationService` | (helper) | Supporting paragraph folded into InterestCalculationService logic |
 | `CBACT04C.cbl` | `9999-ABEND-PROGRAM` | `FileProcessingException` | (throw) | ABEND → throw FileProcessingException (runtime) + structured log; step fails |
 | `CBACT04C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusCode` | `from()` | Decode FILE STATUS and structured-log the I/O error |
 
@@ -668,30 +668,30 @@ _Paragraph count: **25** — all mapped._
 
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBSTM03A.CBL` | `0000-START` | `StatementProcessor` | `beforeStep()` | Statement driver start: open files (via StatementFileService) and prime first xref |
+| `CBSTM03A.CBL` | `0000-START` | `StatementCardXrefItemReader` | `open()` | Statement driver start: open the CardXref stream and prime the first xref — RepositoryItemReader.open() |
 | `CBSTM03A.CBL` | `1000-MAINLINE` | `StatementProcessor` | `process()` | Per-account statement mainline → chunk processor |
 | `CBSTM03A.CBL` | `9999-GOBACK` | `StatementJob` | (step complete) | GOBACK → step/job completion |
 | `CBSTM03A.CBL` | `1000-XREFFILE-GET-NEXT` | `StatementCardXrefItemReader` | `read()` | Sequential xref read → ItemReader.read() |
-| `CBSTM03A.CBL` | `2000-CUSTFILE-GET` | `StatementFileService` | `readCustomer()` | Random customer read via CBSTM03B CALL → StatementFileService |
-| `CBSTM03A.CBL` | `3000-ACCTFILE-GET` | `StatementFileService` | `readAccount()` | Random account read via CBSTM03B CALL → StatementFileService |
-| `CBSTM03A.CBL` | `4000-TRNXFILE-GET` | `StatementFileService` | `readTransactions()` | Keyed transaction read via CBSTM03B CALL → StatementFileService |
-| `CBSTM03A.CBL` | `5000-CREATE-STATEMENT` | `StatementProcessor` | `buildStatement()` | Assemble StatementDocument (header + transactions + totals) |
-| `CBSTM03A.CBL` | `5100-WRITE-HTML-HEADER` | `StatementItemWriter` | `writeHtmlHeader()` | Statement HTML header render |
+| `CBSTM03A.CBL` | `2000-CUSTFILE-GET` | `StatementFileService` | `getCustomer()` | Random customer read via CBSTM03B CALL → StatementFileService |
+| `CBSTM03A.CBL` | `3000-ACCTFILE-GET` | `StatementFileService` | `getAccount()` | Random account read via CBSTM03B CALL → StatementFileService |
+| `CBSTM03A.CBL` | `4000-TRNXFILE-GET` | `StatementFileService` | `getTransactionsForCard()` | Keyed transaction read via CBSTM03B CALL → StatementFileService |
+| `CBSTM03A.CBL` | `5000-CREATE-STATEMENT` | `StatementProcessor` | `process()` | Assemble StatementDocument (header + transactions + totals) |
+| `CBSTM03A.CBL` | `5100-WRITE-HTML-HEADER` | `StatementItemWriter` | `write()` | Statement HTML header render |
 | `CBSTM03A.CBL` | `5100-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 5100-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03A.CBL` | `5200-WRITE-HTML-NMADBS` | `StatementItemWriter` | `writeHtmlCustomerBlock()` | Customer name/address HTML block render |
+| `CBSTM03A.CBL` | `5200-WRITE-HTML-NMADBS` | `StatementItemWriter` | `write()` | Customer name/address HTML block render |
 | `CBSTM03A.CBL` | `5200-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 5200-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03A.CBL` | `6000-WRITE-TRANS` | `StatementItemWriter` | `writeTransactions()` | Transaction rows → statement (HTML + plaintext) |
-| `CBSTM03A.CBL` | `8100-FILE-OPEN` | `StatementFileService` | `openAll()` | Open all statement input files (dispatch) |
-| `CBSTM03A.CBL` | `8100-TRNXFILE-OPEN` | `StatementFileService` | `open()` | CALL CBSTM03B op=O (OPEN) → StatementFileService.open() |
-| `CBSTM03A.CBL` | `8200-XREFFILE-OPEN` | `StatementFileService` | `open()` | CALL CBSTM03B op=O (OPEN) → StatementFileService.open() |
-| `CBSTM03A.CBL` | `8300-CUSTFILE-OPEN` | `StatementFileService` | `open()` | CALL CBSTM03B op=O (OPEN) → StatementFileService.open() |
-| `CBSTM03A.CBL` | `8400-ACCTFILE-OPEN` | `StatementFileService` | `open()` | CALL CBSTM03B op=O (OPEN) → StatementFileService.open() |
-| `CBSTM03A.CBL` | `8500-READTRNX-READ` | `StatementFileService` | `readTransaction()` | Keyed transaction read (op=R/K) via CBSTM03B |
+| `CBSTM03A.CBL` | `6000-WRITE-TRANS` | `StatementItemWriter` | `write()` | Transaction rows → statement (HTML + plaintext) |
+| `CBSTM03A.CBL` | `8100-FILE-OPEN` | `StatementCardXrefItemReader` | `open()` | Open the driving CardXref stream; random account/customer/transaction reads need no explicit OPEN (JPA-managed) |
+| `CBSTM03A.CBL` | `8100-TRNXFILE-OPEN` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=O (OPEN); random read needs no explicit OPEN (Spring Data/JPA manages the connection) |
+| `CBSTM03A.CBL` | `8200-XREFFILE-OPEN` | `StatementCardXrefItemReader` | `open()` | CALL CBSTM03B op=O (OPEN) — RepositoryItemReader.open() (sequential xref stream) |
+| `CBSTM03A.CBL` | `8300-CUSTFILE-OPEN` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=O (OPEN); random read needs no explicit OPEN (Spring Data/JPA manages the connection) |
+| `CBSTM03A.CBL` | `8400-ACCTFILE-OPEN` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=O (OPEN); random read needs no explicit OPEN (Spring Data/JPA manages the connection) |
+| `CBSTM03A.CBL` | `8500-READTRNX-READ` | `StatementFileService` | `getTransactionsForCard()` | Keyed transaction read (op=R/K) via CBSTM03B |
 | `CBSTM03A.CBL` | `8599-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 8599-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03A.CBL` | `9100-TRNXFILE-CLOSE` | `StatementFileService` | `close()` | CALL CBSTM03B op=C (CLOSE) → StatementFileService.close() |
-| `CBSTM03A.CBL` | `9200-XREFFILE-CLOSE` | `StatementFileService` | `close()` | CALL CBSTM03B op=C (CLOSE) → StatementFileService.close() |
-| `CBSTM03A.CBL` | `9300-CUSTFILE-CLOSE` | `StatementFileService` | `close()` | CALL CBSTM03B op=C (CLOSE) → StatementFileService.close() |
-| `CBSTM03A.CBL` | `9400-ACCTFILE-CLOSE` | `StatementFileService` | `close()` | CALL CBSTM03B op=C (CLOSE) → StatementFileService.close() |
+| `CBSTM03A.CBL` | `9100-TRNXFILE-CLOSE` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=C (CLOSE); random read needs no explicit CLOSE (Spring Data/JPA manages the connection) |
+| `CBSTM03A.CBL` | `9200-XREFFILE-CLOSE` | `StatementCardXrefItemReader` | `close()` | CALL CBSTM03B op=C (CLOSE) — RepositoryItemReader.close() (sequential xref stream) |
+| `CBSTM03A.CBL` | `9300-CUSTFILE-CLOSE` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=C (CLOSE); random read needs no explicit CLOSE (Spring Data/JPA manages the connection) |
+| `CBSTM03A.CBL` | `9400-ACCTFILE-CLOSE` | `StatementFileService` | (n/a — JPA-managed) | CALL CBSTM03B op=C (CLOSE); random read needs no explicit CLOSE (Spring Data/JPA manages the connection) |
 | `CBSTM03A.CBL` | `9999-ABEND-PROGRAM` | `FileProcessingException` | (throw) | ABEND → throw FileProcessingException (runtime) + structured log; step fails |
 
 #### CBSTM03B.CBL — Statement File I/O subprogram (Job `CREASTMT`)
@@ -700,18 +700,18 @@ _Paragraph count: **14** — all mapped._
 
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBSTM03B.CBL` | `0000-START` | `StatementFileService` | `execute()` | Operation dispatch on WS-M03B-OPER (O/C/R/K/W/Z) → StatementFileService |
+| `CBSTM03B.CBL` | `0000-START` | `StatementFileService` | (operation dispatch) | Operation dispatch on WS-M03B-OPER (O/C/R/K/W/Z) — typed reads getAccount/getCustomer/getCard/getTransactionsForCard/getCardXrefsForAccount |
 | `CBSTM03B.CBL` | `9999-GOBACK` | `StatementFileService` | (return) | GOBACK → return WS-M03B-RC (file status) to caller |
-| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `StatementFileService` | `transactionFileOp()` | Transaction file open/close/read/read-key dispatch |
+| `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` | `StatementFileService` | `getTransactionsForCard()` | Transaction file read/read-key dispatch (open/close folded — JPA-managed) |
 | `CBSTM03B.CBL` | `1900-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 1900-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `CBSTM03B.CBL` | `1999-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 1999-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `StatementFileService` | `xrefFileOp()` | Xref file open/close/read dispatch |
+| `CBSTM03B.CBL` | `2000-XREFFILE-PROC` | `StatementFileService` | `getCardXrefsForAccount()` | Xref file read dispatch (open/close folded — JPA-managed) |
 | `CBSTM03B.CBL` | `2900-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 2900-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `CBSTM03B.CBL` | `2999-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 2999-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `StatementFileService` | `customerFileOp()` | Customer file open/close/read dispatch |
+| `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` | `StatementFileService` | `getCustomer()` | Customer file read dispatch (open/close folded — JPA-managed) |
 | `CBSTM03B.CBL` | `3900-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 3900-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `CBSTM03B.CBL` | `3999-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 3999-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
-| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `StatementFileService` | `accountFileOp()` | Account file open/close/read dispatch |
+| `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` | `StatementFileService` | `getAccount()` | Account file read dispatch (open/close folded — JPA-managed) |
 | `CBSTM03B.CBL` | `4900-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 4900-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `CBSTM03B.CBL` | `4999-EXIT` | `StatementProcessor` | (helper) | PERFORM ... THRU 4999-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 
@@ -925,10 +925,9 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `CrossReferenceService` | `resolvePrimaryCardNumber()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` |
 | `DateValidationService` | `validate()` | `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON`, `1250-EDIT-EXPIRY-MON-EXIT`, `1260-EDIT-EXPIRY-YEAR`, `1260-EDIT-EXPIRY-YEAR-EXIT` |
 | `DateValidationService` | `validateDate()` | `CSUTLDTC.cbl` | `A000-MAIN`, `A000-MAIN-EXIT` |
-| `InterestCalculationService` | `computeFees()` | `CBACT04C.cbl` | `1400-COMPUTE-FEES` |
-| `InterestCalculationService` | `computeInterest()` | `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` |
-| `InterestCalculationService` | `resolveDefaultRate()` | `CBACT04C.cbl` | `1200-A-GET-DEFAULT-INT-RATE` |
-| `InterestCalculationService` | `resolveInterestRate()` | `CBACT04C.cbl` | `1200-GET-INTEREST-RATE` |
+| `InterestCalculationService` | `applyInterestToAccount()` | `CBACT04C.cbl` | `1400-COMPUTE-FEES` |
+| `InterestCalculationService` | `calculateMonthlyInterest()` | `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` |
+| `InterestCalculationService` | `resolveInterestRate()` | `CBACT04C.cbl` | `1200-GET-INTEREST-RATE`, `1200-A-GET-DEFAULT-INT-RATE` |
 | `MenuService` | `buildHeader()` | `COADM01C.cbl`, `COMEN01C.cbl` | `POPULATE-HEADER-INFO` |
 | `MenuService` | `buildMenuOptions()` | `COADM01C.cbl`, `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` |
 | `MenuService` | `routeAdminMenuSelection()` | `COADM01C.cbl` | `PROCESS-ENTER-KEY` |
@@ -938,19 +937,13 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `ReportService` | `resetForm()` | `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` |
 | `SignonService` | `authenticate()` | `COSGN00C.cbl` | `PROCESS-ENTER-KEY` |
 | `SignonService` | `buildHeader()` | `COSGN00C.cbl` | `POPULATE-HEADER-INFO` |
+| `StatementFileService` | (n/a — JPA-managed) | `CBSTM03A.CBL` | `8100-TRNXFILE-OPEN`, `8300-CUSTFILE-OPEN`, `8400-ACCTFILE-OPEN`, `9100-TRNXFILE-CLOSE`, `9300-CUSTFILE-CLOSE`, `9400-ACCTFILE-CLOSE` |
+| `StatementFileService` | (operation dispatch) | `CBSTM03B.CBL` | `0000-START` |
 | `StatementFileService` | (return) | `CBSTM03B.CBL` | `9999-GOBACK` |
-| `StatementFileService` | `accountFileOp()` | `CBSTM03B.CBL` | `4000-ACCTFILE-PROC` |
-| `StatementFileService` | `close()` | `CBSTM03A.CBL` | `9100-TRNXFILE-CLOSE`, `9200-XREFFILE-CLOSE`, `9300-CUSTFILE-CLOSE`, `9400-ACCTFILE-CLOSE` |
-| `StatementFileService` | `customerFileOp()` | `CBSTM03B.CBL` | `3000-CUSTFILE-PROC` |
-| `StatementFileService` | `execute()` | `CBSTM03B.CBL` | `0000-START` |
-| `StatementFileService` | `open()` | `CBSTM03A.CBL` | `8100-TRNXFILE-OPEN`, `8200-XREFFILE-OPEN`, `8300-CUSTFILE-OPEN`, `8400-ACCTFILE-OPEN` |
-| `StatementFileService` | `openAll()` | `CBSTM03A.CBL` | `8100-FILE-OPEN` |
-| `StatementFileService` | `readAccount()` | `CBSTM03A.CBL` | `3000-ACCTFILE-GET` |
-| `StatementFileService` | `readCustomer()` | `CBSTM03A.CBL` | `2000-CUSTFILE-GET` |
-| `StatementFileService` | `readTransaction()` | `CBSTM03A.CBL` | `8500-READTRNX-READ` |
-| `StatementFileService` | `readTransactions()` | `CBSTM03A.CBL` | `4000-TRNXFILE-GET` |
-| `StatementFileService` | `transactionFileOp()` | `CBSTM03B.CBL` | `1000-TRNXFILE-PROC` |
-| `StatementFileService` | `xrefFileOp()` | `CBSTM03B.CBL` | `2000-XREFFILE-PROC` |
+| `StatementFileService` | `getAccount()` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `3000-ACCTFILE-GET`, `4000-ACCTFILE-PROC` |
+| `StatementFileService` | `getCardXrefsForAccount()` | `CBSTM03B.CBL` | `2000-XREFFILE-PROC` |
+| `StatementFileService` | `getCustomer()` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `2000-CUSTFILE-GET`, `3000-CUSTFILE-PROC` |
+| `StatementFileService` | `getTransactionsForCard()` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `4000-TRNXFILE-GET`, `8500-READTRNX-READ`, `1000-TRNXFILE-PROC` |
 | `TransactionAddService` | `addTransaction()` | `COTRN02C.cbl` | `PROCESS-ENTER-KEY`, `ADD-TRANSACTION` |
 | `TransactionAddService` | `buildHeader()` | `COTRN02C.cbl` | `POPULATE-HEADER-INFO` |
 | `TransactionAddService` | `prefillFromLast()` | `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` |
@@ -978,7 +971,7 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `AccountRepository` | `findById()` | `CBACT04C.cbl`, `CBTRN01C.cbl`, `COACTUPC.cbl`, `COACTVWC.cbl`, `COBIL00C.cbl` | `1100-GET-ACCT-DATA`, `3000-READ-ACCOUNT`, `9000-READ-ACCT`, `9000-READ-ACCT-EXIT`, `9300-GETACCTDATA-BYACCT`, `9300-GETACCTDATA-BYACCT-EXIT`, `READ-ACCTDAT-FILE` |
 | `AccountRepository` | `save()` | `CBACT04C.cbl`, `CBTRN02C.cbl`, `COACTUPC.cbl`, `COBIL00C.cbl`, `COCRDUPC.cbl` | `1050-UPDATE-ACCOUNT`, `2800-UPDATE-ACCOUNT-REC`, `9600-WRITE-PROCESSING`, `9600-WRITE-PROCESSING-EXIT`, `UPDATE-ACCTDAT-FILE`, `9200-WRITE-PROCESSING`, `9200-WRITE-PROCESSING-EXIT` |
 | `CardRepository` | `findById()` | `COCRDSLC.cbl`, `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD`, `9100-GETCARD-BYACCTCARD-EXIT`, `9150-GETCARD-BYACCT`, `9150-GETCARD-BYACCT-EXIT` |
-| `CardXrefRepository` | `findByAccountId()` | `CBACT04C.cbl` | `1110-GET-XREF-DATA` |
+| `CardXrefRepository` | `findByXrefAcctId()` | `CBACT04C.cbl` | `1110-GET-XREF-DATA` |
 | `CardXrefRepository` | `findById()` | `COACTUPC.cbl`, `COACTVWC.cbl`, `COBIL00C.cbl`, `COTRN02C.cbl` | `9200-GETCARDXREF-BYACCT`, `9200-GETCARDXREF-BYACCT-EXIT`, `READ-CXACAIX-FILE`, `READ-CCXREF-FILE` |
 | `CustomerRepository` | `findById()` | `COACTUPC.cbl`, `COACTVWC.cbl` | `9400-GETCUSTDATA-BYCUST`, `9400-GETCUSTDATA-BYCUST-EXIT` |
 | `TransactionCategoryBalanceRepository` | `save()` | `CBTRN02C.cbl` | `2700-A-CREATE-TCATBAL-REC`, `2700-B-UPDATE-TCATBAL-REC` |
@@ -1001,7 +994,7 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `InterestAccountItemReader` | `close()` | `CBACT04C.cbl` | `9000-TCATBALF-CLOSE`, `9100-XREFFILE-CLOSE`, `9200-DISCGRP-CLOSE`, `9300-ACCTFILE-CLOSE`, `9400-TRANFILE-CLOSE` |
 | `InterestAccountItemReader` | `open()` | `CBACT04C.cbl` | `0000-TCATBALF-OPEN`, `0100-XREFFILE-OPEN`, `0200-DISCGRP-OPEN`, `0300-ACCTFILE-OPEN`, `0400-TRANFILE-OPEN` |
 | `InterestAccountItemReader` | `read()` | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` |
-| `InterestCalculationProcessor` | (helper) | `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
+| `InterestCalculationService` | (helper) | `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
 | `PostTransactionItemWriter` | `write()` | `CBACT04C.cbl`, `CBTRN02C.cbl` | `1300-B-WRITE-TX`, `2900-WRITE-TRANSACTION-FILE` |
 | `PostTransactionItemWriter` | `writeReject()` | `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` |
 | `PostTransactionProcessor` | `formatTimestamp()` | `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
@@ -1016,15 +1009,13 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `PrintReferenceJobs` | `printDailyTransactions()` | `CBTRN01C.cbl` | `MAIN-PARA` |
 | `PrintReferenceJobs` | `read()` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` | `1000-ACCTFILE-GET-NEXT`, `1000-CARDFILE-GET-NEXT`, `1000-XREFFILE-GET-NEXT`, `1000-CUSTFILE-GET-NEXT`, `1000-DALYTRAN-GET-NEXT` |
 | `ReportJobLauncher` | `enqueueReportJob()` | `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR`, `WIRTE-JOBSUB-TDQ` |
+| `StatementCardXrefItemReader` | `close()` | `CBSTM03A.CBL` | `9200-XREFFILE-CLOSE` |
+| `StatementCardXrefItemReader` | `open()` | `CBSTM03A.CBL` | `0000-START`, `8100-FILE-OPEN`, `8200-XREFFILE-OPEN` |
 | `StatementCardXrefItemReader` | `read()` | `CBSTM03A.CBL` | `1000-XREFFILE-GET-NEXT` |
-| `StatementItemWriter` | `writeHtmlCustomerBlock()` | `CBSTM03A.CBL` | `5200-WRITE-HTML-NMADBS` |
-| `StatementItemWriter` | `writeHtmlHeader()` | `CBSTM03A.CBL` | `5100-WRITE-HTML-HEADER` |
-| `StatementItemWriter` | `writeTransactions()` | `CBSTM03A.CBL` | `6000-WRITE-TRANS` |
+| `StatementItemWriter` | `write()` | `CBSTM03A.CBL` | `5100-WRITE-HTML-HEADER`, `5200-WRITE-HTML-NMADBS`, `6000-WRITE-TRANS` |
 | `StatementJob` | (step complete) | `CBSTM03A.CBL` | `9999-GOBACK` |
 | `StatementProcessor` | (helper) | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `5100-EXIT`, `5200-EXIT`, `8599-EXIT`, `1900-EXIT`, `1999-EXIT`, `2900-EXIT`, `2999-EXIT`, `3900-EXIT`, `3999-EXIT`, `4900-EXIT`, `4999-EXIT` |
-| `StatementProcessor` | `beforeStep()` | `CBSTM03A.CBL` | `0000-START` |
-| `StatementProcessor` | `buildStatement()` | `CBSTM03A.CBL` | `5000-CREATE-STATEMENT` |
-| `StatementProcessor` | `process()` | `CBSTM03A.CBL` | `1000-MAINLINE` |
+| `StatementProcessor` | `process()` | `CBSTM03A.CBL` | `1000-MAINLINE`, `5000-CREATE-STATEMENT` |
 | `TransactionReportItemReader` | `close()` | `CBTRN03C.cbl` | `9000-TRANFILE-CLOSE`, `9100-REPTFILE-CLOSE`, `9200-CARDXREF-CLOSE`, `9300-TRANTYPE-CLOSE`, `9400-TRANCATG-CLOSE`, `9500-DATEPARM-CLOSE` |
 | `TransactionReportItemReader` | `open()` | `CBTRN03C.cbl` | `0000-TRANFILE-OPEN`, `0100-REPTFILE-OPEN`, `0200-CARDXREF-OPEN`, `0300-TRANTYPE-OPEN`, `0400-TRANCATG-OPEN`, `0500-DATEPARM-OPEN` |
 | `TransactionReportItemReader` | `read()` | `CBTRN03C.cbl` | `1000-TRANFILE-GET-NEXT` |
@@ -1136,8 +1127,8 @@ Observability rule) are marked accordingly.
 **Assertion: 100% forward coverage.** Every paragraph of every one of the 28
 programs at commit `27d6c6f` appears exactly once in Section&nbsp;1
 (**527** paragraph rows total). **Assertion: full reverse coverage.**
-All **127** classes in the target inventory (`com.carddemo.**`) appear in the
-Section&nbsp;4 reverse index (Part&nbsp;A: 50; Part&nbsp;B: 77).
+All **126** classes in the target inventory (`com.carddemo.**`) appear in the
+Section&nbsp;4 reverse index (Part&nbsp;A: 49; Part&nbsp;B: 77).
 
 | # | COBOL Program | Tier | Txn / Job | Paragraphs | Status |
 |---|---|---|---|---|---|
