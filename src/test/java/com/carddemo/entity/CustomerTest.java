@@ -21,10 +21,12 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li>every accessor round-trips its value across the wide record — what is set is
  *       exactly what the corresponding getter returns;</li>
- *   <li>the three numeric identifiers map to <em>wrapper</em> types — {@code custId}
- *       and {@code custSsn} to {@link Long}, {@code custFicoCreditScore} to
- *       {@link Integer} — never to primitives, so an unset value is representable as
- *       {@code null} rather than a misleading {@code 0}; and</li>
+ *   <li>the surrogate id {@code custId} and {@code custFicoCreditScore} map to
+ *       <em>wrapper</em> types ({@link Long} / {@link Integer}) &mdash; never to
+ *       primitives, so an unset value is representable as {@code null} rather than a
+ *       misleading {@code 0} &mdash; while {@code custSsn} ({@code CUST-SSN PIC 9(09)})
+ *       maps to a fixed-width nine-character {@link String} so leading zeros survive
+ *       the round-trip (F-SSN-BIGINT); and</li>
  *   <li>the date-of-birth field is a first-class {@link LocalDate}.</li>
  * </ul>
  *
@@ -37,25 +39,26 @@ import org.junit.jupiter.api.Test;
 class CustomerTest {
 
     /**
-     * The three numeric fields must round-trip as wrapper types: {@code CUST-ID} and
-     * {@code CUST-SSN} ({@code PIC 9(09)}) as {@link Long}, and
-     * {@code CUST-FICO-CREDIT-SCORE} ({@code PIC 9(03)}) as {@link Integer}. A
-     * nine-digit identifier fits comfortably within {@code long}/{@code int} range,
-     * but the entity models these as wrappers so that "no value" is representable as
-     * {@code null}; the assertions use {@link Long#valueOf(long)} /
-     * {@link Integer#valueOf(int)} to pin the boxed type explicitly.
+     * The surrogate {@code CUST-ID} and {@code CUST-FICO-CREDIT-SCORE}
+     * ({@code PIC 9(03)}) round-trip as wrapper types ({@link Long} / {@link Integer})
+     * so that "no value" is representable as {@code null}; the assertions use
+     * {@link Long#valueOf(long)} / {@link Integer#valueOf(int)} to pin the boxed type
+     * explicitly. The {@code CUST-SSN} ({@code PIC 9(09)}) is a fixed-width
+     * nine-character {@link String}: a leading-zero sample is used to prove the digits
+     * survive verbatim (the BIGINT storage the migration replaced dropped them &mdash;
+     * F-SSN-BIGINT).
      */
     @Test
-    @DisplayName("numeric ids custId/custSsn round-trip as Long and ficoScore as Integer")
+    @DisplayName("custId/ficoScore round-trip as Long/Integer; custSsn round-trips as a leading-zero String")
     void naturalKeyAndNumericIdsRoundTrip() {
         Customer customer = new Customer();
 
         customer.setCustId(123456789L);
-        customer.setCustSsn(987654321L);
+        customer.setCustSsn("007654321");
         customer.setCustFicoCreditScore(750);
 
         assertThat(customer.getCustId()).isEqualTo(Long.valueOf(123456789L));
-        assertThat(customer.getCustSsn()).isEqualTo(Long.valueOf(987654321L));
+        assertThat(customer.getCustSsn()).isEqualTo("007654321");
         assertThat(customer.getCustFicoCreditScore()).isEqualTo(Integer.valueOf(750));
     }
 

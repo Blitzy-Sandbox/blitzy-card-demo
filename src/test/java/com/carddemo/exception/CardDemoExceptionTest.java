@@ -146,6 +146,24 @@ class CardDemoExceptionTest {
                 .isInstanceOf(NullPointerException.class);
     }
 
+    @Test
+    @DisplayName("getErrorCode defaults to the FileStatusCode name when a file-status origin is present")
+    void errorCodeDefaultsToFileStatusCodeName() {
+        CardDemoException ex =
+                new TestException("nf", HttpStatus.NOT_FOUND, FileStatusCode.RECORD_NOT_FOUND);
+        assertThat(ex.getErrorCode()).isEqualTo("RECORD_NOT_FOUND");
+    }
+
+    @Test
+    @DisplayName("getErrorCode falls back to the simple class name (never null) when there is no file-status origin and no override")
+    void errorCodeFallsBackToSimpleClassNameWhenNoFileStatusCode() {
+        CardDemoException ex = new TestException("boom", HttpStatus.BAD_REQUEST);
+        // No file-status origin and no subclass override -> the base must still return a
+        // non-null code, preserving the pre-existing class-name fallback so an error
+        // response is never emitted without a code.
+        assertThat(ex.getErrorCode()).isEqualTo("TestException");
+    }
+
     // ---------------------------------------------------------------------
     // Phase 3 — Abstractness & serialization sanity (compile-level contract)
     // ---------------------------------------------------------------------

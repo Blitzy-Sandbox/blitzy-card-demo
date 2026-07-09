@@ -99,8 +99,13 @@ class CardUpdateServiceTest {
     /** The account id persisted on the card ({@code CARD-ACCT-ID PIC 9(11)}). */
     private static final Long ORIGINAL_ACCOUNT_ID = 100L;
 
-    /** The persisted account id rendered as an 11-digit zero-padded string (as the response projects it). */
-    private static final String FORMATTED_ORIGINAL_ACCOUNT_ID = "00000000100";
+    /**
+     * The persisted account id as the response projects it: rendered UNPADDED via
+     * {@code String.valueOf} to match the card-view GET path, so a card-update
+     * round-trip returns an account-id string identical to the subsequent
+     * {@code GET} (F-PADDED-ID).
+     */
+    private static final String EXPECTED_ORIGINAL_ACCOUNT_ID = "100";
 
     /**
      * The account id supplied on the request. It is deliberately different from
@@ -346,7 +351,7 @@ class CardUpdateServiceTest {
         assertThat(view.version()).isEqualTo(BASE_VERSION + 1L);
         assertThat(view.cardNumber()).isEqualTo(MASKED_CARD_NUMBER);
         assertThat(view.cardNumber()).doesNotContain(CARD_NUMBER);
-        assertThat(view.accountId()).isEqualTo(FORMATTED_ORIGINAL_ACCOUNT_ID);
+        assertThat(view.accountId()).isEqualTo(EXPECTED_ORIGINAL_ACCOUNT_ID);
         assertThat(view.embossedName()).isEqualTo(NEW_EMBOSSED_NAME);
         assertThat(view.activeStatus()).isEqualTo(VALID_STATUS);
         assertThat(view.expirationDate()).isEqualTo(NEW_EXPIRATION);

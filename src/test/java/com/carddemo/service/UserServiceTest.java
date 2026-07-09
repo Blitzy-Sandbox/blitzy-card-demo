@@ -305,7 +305,9 @@ class UserServiceTest {
     @DisplayName("createUser BCrypt-encodes the password, persists only the hash, and returns a password-free confirmation")
     void createUser_success_encodesPasswordAndReturnsNoPassword() {
         when(userSecurityRepository.existsById(USER_ID)).thenReturn(false);
-        when(passwordEncoder.encode(PLAINTEXT_PASSWORD)).thenReturn(ENCODED_PASSWORD);
+        // Enrollment hashes the UPPER-CASED plaintext so logon (which upper-cases before
+        // BCrypt.matches) succeeds — COBOL COSGN00C case-insensitive compare, Decision Log D-002.
+        when(passwordEncoder.encode(PLAINTEXT_PASSWORD.toUpperCase(Locale.ROOT))).thenReturn(ENCODED_PASSWORD);
         when(userSecurityRepository.save(any(UserSecurity.class))).thenAnswer(returnsFirstArg());
 
         UserResponse response = service.createUser(validCreateRequest());
@@ -317,7 +319,7 @@ class UserServiceTest {
         assertThat(persisted.getSecUsrPwd()).isEqualTo(ENCODED_PASSWORD);
         assertThat(persisted.getSecUsrPwd()).isNotEqualTo(PLAINTEXT_PASSWORD);
         assertThat(persisted.getSecUsrId()).isEqualTo(USER_ID);
-        verify(passwordEncoder).encode(PLAINTEXT_PASSWORD);
+        verify(passwordEncoder).encode(PLAINTEXT_PASSWORD.toUpperCase(Locale.ROOT));
 
         // The confirmation reproduces the COUSR01C STRING statement verbatim.
         assertThat(response.userId()).isEqualTo(USER_ID);
@@ -333,7 +335,7 @@ class UserServiceTest {
     void createUser_success_trimsUserIdInMessage() {
         String paddedId = "USER01  ";
         when(userSecurityRepository.existsById(paddedId)).thenReturn(false);
-        when(passwordEncoder.encode(PLAINTEXT_PASSWORD)).thenReturn(ENCODED_PASSWORD);
+        when(passwordEncoder.encode(PLAINTEXT_PASSWORD.toUpperCase(Locale.ROOT))).thenReturn(ENCODED_PASSWORD);
         when(userSecurityRepository.save(any(UserSecurity.class))).thenAnswer(returnsFirstArg());
 
         UserResponse response = service.createUser(
@@ -423,7 +425,7 @@ class UserServiceTest {
     void updateUser_success_encodesWhenPasswordProvided() {
         when(userSecurityRepository.findById(USER_ID))
                 .thenReturn(Optional.of(user(USER_ID, "Old", "Name", "$2a$old", "U")));
-        when(passwordEncoder.encode("newpass")).thenReturn("$2a$newhash");
+        when(passwordEncoder.encode("newpass".toUpperCase(Locale.ROOT))).thenReturn("$2a$newhash");
         when(userSecurityRepository.save(any(UserSecurity.class))).thenAnswer(returnsFirstArg());
 
         UserResponse response = service.updateUser(USER_ID, updateRequestWithPassword());
@@ -436,7 +438,7 @@ class UserServiceTest {
         assertThat(persisted.getSecUsrType()).isEqualTo("A");
         assertThat(persisted.getSecUsrPwd()).isEqualTo("$2a$newhash");
         assertThat(persisted.getSecUsrPwd()).isNotEqualTo("newpass");
-        verify(passwordEncoder).encode("newpass");
+        verify(passwordEncoder).encode("newpass".toUpperCase(Locale.ROOT));
 
         assertThat(response.userId()).isEqualTo(USER_ID);
         assertThat(response.message()).isEqualTo("User " + USER_ID + " has been updated ...");

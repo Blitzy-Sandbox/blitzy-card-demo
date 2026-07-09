@@ -109,4 +109,11 @@ class ValidationExceptionTest {
             assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
         }
     }
+
+    @Test
+    @DisplayName("getErrorCode returns the stable VALIDATION_ERROR code, never the class name (F-ERRCODE)")
+    void errorCodeIsStableValidationError() {
+        assertThat(new ValidationException("bad").getErrorCode()).isEqualTo("VALIDATION_ERROR");
+        assertThat(ValidationException.ERROR_CODE).isEqualTo("VALIDATION_ERROR");
+    }
 }

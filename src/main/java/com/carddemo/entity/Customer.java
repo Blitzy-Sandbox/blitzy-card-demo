@@ -83,9 +83,14 @@ public class Customer {
     @Column(name = "cust_phone_num_2", length = 15)
     private String custPhoneNum2;
 
-    /** {@code CUST-SSN PIC 9(09)} — stored as BIGINT for 9+ digit numeric fidelity. */
-    @Column(name = "cust_ssn")
-    private Long custSsn;
+    /**
+     * {@code CUST-SSN PIC 9(09)} — a fixed-width 9-position numeric-text field. Stored as a
+     * 9-character {@code VARCHAR(9)} String (not a numeric type) so leading zeros are preserved
+     * byte-for-byte on the round trip, matching the COBOL fixed-width picture
+     * (AAP G4 / Gate&nbsp;1 / Gate&nbsp;5 record-layout preservation).
+     */
+    @Column(name = "cust_ssn", length = 9)
+    private String custSsn;
 
     /** {@code CUST-GOVT-ISSUED-ID PIC X(20)}. */
     @Column(name = "cust_govt_issued_id", length = 20)
@@ -332,20 +337,22 @@ public class Customer {
     }
 
     /**
-     * Returns the social security number ({@code CUST-SSN}).
+     * Returns the social security number ({@code CUST-SSN PIC 9(09)}) as a fixed-width
+     * 9-character numeric string (leading zeros preserved).
      *
-     * @return the SSN
+     * @return the 9-character SSN string, or {@code null} if unset
      */
-    public Long getCustSsn() {
+    public String getCustSsn() {
         return custSsn;
     }
 
     /**
-     * Sets the social security number ({@code CUST-SSN}).
+     * Sets the social security number ({@code CUST-SSN PIC 9(09)}). The value is a fixed-width
+     * 9-character numeric string; leading zeros are significant and must be preserved.
      *
-     * @param custSsn the SSN
+     * @param custSsn the 9-character SSN string
      */
-    public void setCustSsn(Long custSsn) {
+    public void setCustSsn(String custSsn) {
         this.custSsn = custSsn;
     }
 

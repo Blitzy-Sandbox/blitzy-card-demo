@@ -82,4 +82,11 @@ class OptimisticLockConflictExceptionTest {
             assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.CONFLICT);
         }
     }
+
+    @Test
+    @DisplayName("getErrorCode returns the stable OPTIMISTIC_LOCK_CONFLICT code, never the class name (F-ERRCODE)")
+    void errorCodeIsStableOptimisticLockConflict() {
+        assertThat(new OptimisticLockConflictException().getErrorCode()).isEqualTo("OPTIMISTIC_LOCK_CONFLICT");
+        assertThat(OptimisticLockConflictException.ERROR_CODE).isEqualTo("OPTIMISTIC_LOCK_CONFLICT");
+    }
 }

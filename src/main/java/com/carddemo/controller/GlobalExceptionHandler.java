@@ -79,8 +79,10 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      * each subtype without inspecting concrete types: 404 (resource not found), 409 (duplicate /
      * optimistic-lock conflict), 400 (validation / date validation), and 500 (fatal file processing).
      * The machine-readable {@code code} surfaces the originating COBOL {@code FILE STATUS} semantics
-     * when present (for example {@code RECORD_NOT_FOUND}, {@code DUPLICATE_KEY}), otherwise the simple
-     * class name. A {@link ValidationException} additionally contributes its field&rarr;message map as
+     * when present (for example {@code RECORD_NOT_FOUND}, {@code DUPLICATE_KEY}), otherwise the stable
+     * {@code SCREAMING_SNAKE_CASE} code from {@link CardDemoException#getErrorCode()} (for example
+     * {@code VALIDATION_ERROR}, {@code OPTIMISTIC_LOCK_CONFLICT}) &mdash; never the raw class name. A
+     * {@link ValidationException} additionally contributes its field&rarr;message map as
      * {@code fieldErrors} (values only, never raw input).
      *
      * @param ex      the raised domain exception (never {@code null})
@@ -91,9 +93,12 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ErrorResponse> handleCardDemoException(final CardDemoException ex,
                                                                  final HttpServletRequest request) {
         final HttpStatus status = ex.getHttpStatus();
-        final String code = (ex.getFileStatusCode() != null)
-                ? ex.getFileStatusCode().name()
-                : ex.getClass().getSimpleName();
+        // Stable, machine-readable code from the exception itself: file-status-derived
+        // (RECORD_NOT_FOUND, DUPLICATE_KEY, PERMANENT_IO_ERROR) for I/O origins, or a
+        // documented SCREAMING_SNAKE code (VALIDATION_ERROR, DATE_VALIDATION_ERROR,
+        // OPTIMISTIC_LOCK_CONFLICT) for the domain subtypes that override getErrorCode().
+        // Never the raw Java class name (Gate 5 interface-contract stability).
+        final String code = ex.getErrorCode();
 
         List<ErrorResponse.FieldError> fieldErrors = null;
         if (ex instanceof ValidationException validationException

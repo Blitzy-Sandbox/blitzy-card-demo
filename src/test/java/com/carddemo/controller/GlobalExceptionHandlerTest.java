@@ -129,7 +129,7 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(409);
         ErrorResponse body = response.getBody();
         assertThat(body).isNotNull();
-        assertThat(body.code()).isEqualTo("OptimisticLockConflictException");
+        assertThat(body.code()).isEqualTo("OPTIMISTIC_LOCK_CONFLICT");
         assertThat(body.message()).isEqualTo("Record changed by some one else. Please review");
     }
 
@@ -187,7 +187,7 @@ class GlobalExceptionHandlerTest {
         assertThat(response.getStatusCode().value()).isEqualTo(400);
         ErrorResponse body = response.getBody();
         assertThat(body).isNotNull();
-        assertThat(body.code()).isEqualTo("DateValidationException");
+        assertThat(body.code()).isEqualTo("DATE_VALIDATION_ERROR");
         assertThat(body.error()).isEqualTo("Bad Request");
     }
 

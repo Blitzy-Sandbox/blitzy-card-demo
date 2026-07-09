@@ -56,4 +56,19 @@ public class OptimisticLockConflictException extends CardDemoException {
     public OptimisticLockConflictException(String message, Throwable cause) {
         super(message, HttpStatus.CONFLICT, cause);
     }
+
+    /** Stable machine-readable error code for optimistic-locking (version) conflicts. */
+    public static final String ERROR_CODE = "OPTIMISTIC_LOCK_CONFLICT";
+
+    /**
+     * Returns {@link #ERROR_CODE} ({@code OPTIMISTIC_LOCK_CONFLICT}) rather than the
+     * raw class name, giving the 409 "record changed" conflict a stable {@code code}
+     * on the wire (preserving the COBOL read-then-rewrite "record changed" behaviour).
+     *
+     * @return {@code "OPTIMISTIC_LOCK_CONFLICT"}; never {@code null}
+     */
+    @Override
+    public String getErrorCode() {
+        return ERROR_CODE;
+    }
 }

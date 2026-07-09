@@ -1,6 +1,7 @@
 package com.carddemo.service;
 
 import java.util.List;
+import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -226,7 +227,11 @@ public class UserService {
         user.setSecUsrId(req.userId());
         user.setSecUsrFname(req.firstName());
         user.setSecUsrLname(req.lastName());
-        user.setSecUsrPwd(passwordEncoder.encode(req.password()));
+        // Hash the UPPER-CASED plaintext so the stored BCrypt hash matches the password
+        // SignonService verifies at logon (it upper-cases the presented password before
+        // BCrypt.matches to preserve the COBOL COSGN00C FUNCTION UPPER-CASE case-insensitive
+        // compare; Decision Log D-002). Locale.ROOT avoids locale-sensitive case folding.
+        user.setSecUsrPwd(passwordEncoder.encode(req.password().toUpperCase(Locale.ROOT)));
         user.setSecUsrType(req.userType());
         UserSecurity saved = userSecurityRepository.save(user);
 
@@ -274,7 +279,8 @@ public class UserService {
         user.setSecUsrLname(req.lastName());
         user.setSecUsrType(req.userType());
         if (req.password() != null && !req.password().isBlank()) {
-            user.setSecUsrPwd(passwordEncoder.encode(req.password()));
+            // Upper-case before hashing for logon parity (see createUser / Decision Log D-002).
+            user.setSecUsrPwd(passwordEncoder.encode(req.password().toUpperCase(Locale.ROOT)));
         }
         UserSecurity saved = userSecurityRepository.save(user);
 

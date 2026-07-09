@@ -266,10 +266,12 @@ class BillPaymentServiceTest {
         assertEquals(MSG_CONFIRM, response.message());
         assertNull(response.confirmationNumber());
         assertEquals(ACCOUNT_ID_STR, response.accountId());
-        // Unconfirmed: the balance is echoed unchanged for all three money fields.
+        // Unconfirmed: current balance and payment amount are echoed; the new
+        // balance previews the PROJECTED post-payment balance (full payoff -> 0.00),
+        // shown for review without any persistence (F-BILLPAY-PREVIEW).
         assertMoney(POSITIVE_BALANCE, response.currentBalance());
         assertMoney(POSITIVE_BALANCE, response.paymentAmount());
-        assertMoney(POSITIVE_BALANCE, response.newBalance());
+        assertMoney(new BigDecimal("0.00"), response.newBalance());
         verify(transactionRepository, never()).save(any());
         verify(accountRepository, never()).save(any());
         verifyNoInteractions(crossReferenceService);
@@ -286,7 +288,8 @@ class BillPaymentServiceTest {
         assertEquals(MSG_CONFIRM, response.message());
         assertNull(response.confirmationNumber());
         assertMoney(POSITIVE_BALANCE, response.currentBalance());
-        assertMoney(POSITIVE_BALANCE, response.newBalance());
+        // New balance previews the PROJECTED post-payment balance (F-BILLPAY-PREVIEW).
+        assertMoney(new BigDecimal("0.00"), response.newBalance());
         verify(transactionRepository, never()).save(any());
         verify(accountRepository, never()).save(any());
         verifyNoInteractions(crossReferenceService);

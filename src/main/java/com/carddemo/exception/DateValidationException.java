@@ -99,4 +99,20 @@ public class DateValidationException extends CardDemoException {
     public String getExpectedFormat() {
         return expectedFormat;
     }
+
+    /** Stable machine-readable error code for date-validation failures. */
+    public static final String ERROR_CODE = "DATE_VALIDATION_ERROR";
+
+    /**
+     * Returns {@link #ERROR_CODE} ({@code DATE_VALIDATION_ERROR}) rather than the
+     * raw class name, giving date-validation failures a stable {@code code} on the
+     * wire (distinct from the generic {@code VALIDATION_ERROR} so clients can tell
+     * a malformed/out-of-range date from a field-edit failure).
+     *
+     * @return {@code "DATE_VALIDATION_ERROR"}; never {@code null}
+     */
+    @Override
+    public String getErrorCode() {
+        return ERROR_CODE;
+    }
 }

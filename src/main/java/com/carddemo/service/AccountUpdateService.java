@@ -328,12 +328,6 @@ public class AccountUpdateService {
     /** Number of leading digits that form a North-American phone area code. */
     private static final int AREA_CODE_LENGTH = 3;
 
-    /** Zero-padded rendering of {@code ACCT-ID PIC 9(11)}. */
-    private static final String ACCOUNT_ID_FORMAT = "%011d";
-
-    /** Zero-padded rendering of a nine-digit key ({@code CUST-ID PIC 9(09)} and {@code CUST-SSN PIC 9(09)}). */
-    private static final String NINE_DIGIT_FORMAT = "%09d";
-
     /** Regular expression matching a single non-digit character (used to isolate area-code digits). */
     private static final String NON_DIGIT_PATTERN = "\\D";
 
@@ -927,8 +921,9 @@ public class AccountUpdateService {
     /**
      * Applies the customer change-fields to the persisted {@link Customer}
      * ({@code 9600-WRITE-PROCESSING}, customer portion). The screen "City" maps to
-     * {@code CUST-ADDR-LINE-3}, and the nine-digit SSN string is converted to the
-     * numeric {@code CUST-SSN} (null/blank-safe).
+     * {@code CUST-ADDR-LINE-3}, and the nine-digit SSN string is stored verbatim as
+     * the fixed-width {@code CUST-SSN PIC 9(09)} (null/blank-safe, preserving any
+     * leading zeros).
      *
      * @param customer the customer to mutate; must not be {@code null}
      * @param request  the submitted changes; must not be {@code null}
@@ -945,7 +940,7 @@ public class AccountUpdateService {
         customer.setCustAddrZip(request.zipCode());
         customer.setCustPhoneNum1(request.phoneNumber1());
         customer.setCustPhoneNum2(request.phoneNumber2());
-        customer.setCustSsn(parseSsn(request.ssn()));
+        customer.setCustSsn(trimToNull(request.ssn()));
         customer.setCustGovtIssuedId(request.govtIssuedId());
         customer.setCustDobYyyyMmDd(request.dateOfBirth());
         customer.setCustEftAccountId(request.eftAccountId());
@@ -958,8 +953,12 @@ public class AccountUpdateService {
      * {@link AccountViewResponse} returned to the caller, matching the flattened
      * account-view shape (the screen "City" is {@code CUST-ADDR-LINE-3}).
      *
-     * <p>Identifiers are rendered fixed-width and zero-padded; the SSN is rendered
-     * as a nine-digit string and then masked to its last four digits by the
+     * <p>Numeric identifiers ({@code ACCT-ID}, {@code CUST-ID}) are rendered with
+     * {@link String#valueOf(Object)} &mdash; unpadded, matching the account-view
+     * read path ({@code AccountViewService}) so a create/update round-trip returns
+     * an identifier string identical to the subsequent {@code GET}. The SSN
+     * ({@code CUST-SSN PIC 9(09)}) is a fixed-width nine-character string forwarded
+     * as-is and then masked to its last four digits by the
      * {@link AccountViewResponse} canonical constructor, so no full SSN can be
      * emitted. The response constructor also re-normalises every monetary value to
      * scale&nbsp;2.</p>
@@ -970,7 +969,7 @@ public class AccountUpdateService {
      */
     private static AccountViewResponse toView(final Account account, final Customer customer) {
         return new AccountViewResponse(
-                formatFixedWidth(account.getAcctId(), ACCOUNT_ID_FORMAT),
+                String.valueOf(account.getAcctId()),
                 account.getAcctActiveStatus(),
                 account.getAcctCurrBal(),
                 account.getAcctCreditLimit(),
@@ -982,7 +981,7 @@ public class AccountUpdateService {
                 account.getAcctReissueDate(),
                 account.getAcctGroupId(),
                 account.getVersion(),
-                formatFixedWidth(customer.getCustId(), NINE_DIGIT_FORMAT),
+                String.valueOf(customer.getCustId()),
                 customer.getCustFirstName(),
                 customer.getCustMiddleName(),
                 customer.getCustLastName(),
@@ -994,7 +993,7 @@ public class AccountUpdateService {
                 customer.getCustAddrZip(),
                 customer.getCustPhoneNum1(),
                 customer.getCustPhoneNum2(),
-                formatFixedWidth(customer.getCustSsn(), NINE_DIGIT_FORMAT),
+                customer.getCustSsn(),
                 customer.getCustGovtIssuedId(),
                 customer.getCustDobYyyyMmDd(),
                 customer.getCustEftAccountId(),
@@ -1029,32 +1028,6 @@ public class AccountUpdateService {
      */
     private static BigDecimal scale2(final BigDecimal value) {
         return value == null ? null : value.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
-    }
-
-    /**
-     * Converts a nine-digit SSN string to the numeric {@code CUST-SSN} value. A
-     * {@code null} or blank input yields {@code null}; the request contract
-     * guarantees the value is otherwise nine digits.
-     *
-     * @param ssn the SSN string (may be {@code null} or blank)
-     * @return the numeric SSN, or {@code null} when no value was supplied
-     */
-    private static Long parseSsn(final String ssn) {
-        final String trimmed = trimToNull(ssn);
-        return trimmed == null ? null : Long.valueOf(trimmed);
-    }
-
-    /**
-     * Renders a numeric key as a fixed-width, zero-padded string using the given
-     * format, matching the legacy fixed-width presentation. A {@code null} key is
-     * returned unchanged.
-     *
-     * @param value  the numeric key (may be {@code null})
-     * @param format the zero-padding format string (for example {@code "%011d"})
-     * @return the zero-padded rendering, or {@code null} when {@code value} is {@code null}
-     */
-    private static String formatFixedWidth(final Long value, final String format) {
-        return value == null ? null : String.format(format, value);
     }
 
     /**

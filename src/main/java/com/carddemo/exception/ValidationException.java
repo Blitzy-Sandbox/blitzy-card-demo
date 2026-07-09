@@ -128,4 +128,24 @@ public class ValidationException extends CardDemoException {
     public Map<String, String> getFieldErrors() {
         return (fieldErrors == null) ? Map.of() : fieldErrors;
     }
+
+    /**
+     * Stable machine-readable error code for validation failures. Kept identical
+     * to the code the global handler surfaces for Jakarta bean-validation
+     * failures so a single code ({@code VALIDATION_ERROR}) represents "validation
+     * failed" across both the online field-edit and framework paths.
+     */
+    public static final String ERROR_CODE = "VALIDATION_ERROR";
+
+    /**
+     * Returns {@link #ERROR_CODE} ({@code VALIDATION_ERROR}) rather than the raw
+     * class name, so a domain {@link ValidationException} and a Jakarta
+     * bean-validation failure present the same stable {@code code} on the wire.
+     *
+     * @return {@code "VALIDATION_ERROR"}; never {@code null}
+     */
+    @Override
+    public String getErrorCode() {
+        return ERROR_CODE;
+    }
 }

@@ -104,4 +104,26 @@ public abstract class CardDemoException extends RuntimeException {
     public FileStatusCode getFileStatusCode() {
         return fileStatusCode;
     }
+
+    /**
+     * Returns the stable, machine-readable error code surfaced to API clients as
+     * the {@code code} field of the error response.
+     *
+     * <p>The base implementation derives the code from the originating
+     * {@link FileStatusCode} when present (for example {@code RECORD_NOT_FOUND},
+     * {@code DUPLICATE_KEY}, {@code PERMANENT_IO_ERROR}), preserving the legacy
+     * {@code FILE STATUS} semantics. Concrete subtypes that carry no file-status
+     * origin &mdash; where the raw class name would otherwise leak onto the wire
+     * &mdash; override this method to return a stable {@code SCREAMING_SNAKE_CASE}
+     * code from the documented taxonomy (for example {@code VALIDATION_ERROR}).
+     * The method never returns {@code null}: when neither a file-status code nor
+     * an override is available it falls back to the simple class name, matching
+     * the pre-existing default so no error response is ever emitted without a
+     * {@code code}.
+     *
+     * @return the stable machine-readable error code; never {@code null}
+     */
+    public String getErrorCode() {
+        return (fileStatusCode != null) ? fileStatusCode.name() : getClass().getSimpleName();
+    }
 }

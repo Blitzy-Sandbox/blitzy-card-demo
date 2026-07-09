@@ -74,4 +74,11 @@ class DateValidationExceptionTest {
             assertThat(ex.getHttpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
         }
     }
+
+    @Test
+    @DisplayName("getErrorCode returns the stable DATE_VALIDATION_ERROR code, never the class name (F-ERRCODE)")
+    void errorCodeIsStableDateValidationError() {
+        assertThat(new DateValidationException("bad date").getErrorCode()).isEqualTo("DATE_VALIDATION_ERROR");
+        assertThat(DateValidationException.ERROR_CODE).isEqualTo("DATE_VALIDATION_ERROR");
+    }
 }

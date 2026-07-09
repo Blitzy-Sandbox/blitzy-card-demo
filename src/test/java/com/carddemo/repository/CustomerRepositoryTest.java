@@ -23,11 +23,13 @@ import com.carddemo.entity.Customer;
  *
  * <h2>Why a real database (not H2, not a mock)</h2>
  * <p>{@code Customer} carries no {@code COMP-3}/money fields and no optimistic-lock
- * {@code @Version}, but it does exercise three PostgreSQL column types that an
- * embedded database maps inconsistently: {@code cust_ssn} as {@code BIGINT}
- * ({@code CUST-SSN PIC 9(09)} &rarr; {@link Long}), {@code cust_fico_credit_score}
- * as {@code INTEGER} ({@code CUST-FICO-CREDIT-SCORE PIC 9(03)} &rarr;
- * {@link Integer}), and {@code cust_dob_yyyy_mm_dd} as {@code DATE}
+ * {@code @Version}, but it does exercise three PostgreSQL column types whose fidelity
+ * an embedded database cannot be trusted to reproduce: {@code cust_ssn} as
+ * {@code VARCHAR(9)} ({@code CUST-SSN PIC 9(09)} &rarr; {@link String}), which must
+ * preserve leading zeros verbatim (the {@code BIGINT} storage the migration replaced
+ * silently dropped them &mdash; F-SSN-BIGINT); {@code cust_fico_credit_score} as
+ * {@code INTEGER} ({@code CUST-FICO-CREDIT-SCORE PIC 9(03)} &rarr; {@link Integer});
+ * and {@code cust_dob_yyyy_mm_dd} as {@code DATE}
  * ({@code CUST-DOB-YYYY-MM-DD} &rarr; {@link LocalDate}). Running against the same
  * engine used in production — with the real Flyway migrations
  * ({@code V1__schema.sql} &rarr; {@code V2__indexes.sql} &rarr; {@code V3__seed_data.sql})
@@ -37,8 +39,8 @@ import com.carddemo.entity.Customer;
  * <h2>Coverage</h2>
  * <ul>
  *   <li>{@link #saveAndFindById_roundTripsAllFields()} — a {@code save}/{@code findById}
- *       round-trip that asserts every mapped field, including the {@link Long},
- *       {@link Integer}, and {@link LocalDate} columns.</li>
+ *       round-trip that asserts every mapped field, including the leading-zero
+ *       {@link String} SSN, and the {@link Integer} and {@link LocalDate} columns.</li>
  *   <li>{@link #existsAndDeleteById_behaveCorrectly()} — {@code existsById} then
  *       {@code deleteById} lifecycle.</li>
  *   <li>{@link #findById_returnsSeededCustomer()} — a light smoke check that the
@@ -83,7 +85,7 @@ class CustomerRepositoryTest extends AbstractRepositoryTest {
     private static final String ZIP = "73301";
     private static final String PHONE_1 = "(512)555-0100";
     private static final String PHONE_2 = "(512)555-0199";
-    private static final Long SSN = 123_456_789L;
+    private static final String SSN = "023456789";
     private static final String GOVT_ID = "TX-DL-88990011";
     private static final LocalDate DOB = LocalDate.of(1985, 6, 15);
     private static final String EFT_ACCOUNT_ID = "0012345678";
@@ -104,13 +106,14 @@ class CustomerRepositoryTest extends AbstractRepositoryTest {
      * first-level-cache instance), so the assertions validate the PostgreSQL column
      * mappings and not merely the in-memory object.
      *
-     * <p>The three non-{@code String} columns are the point of the test:
-     * {@code custSsn} exercises {@code BIGINT} ({@link Long}),
-     * {@code custFicoCreditScore} exercises {@code INTEGER} ({@link Integer}), and
-     * {@code custDobYyyyMmDd} exercises {@code DATE} ({@link LocalDate}).</p>
+     * <p>The non-{@code varchar} columns and the leading-zero SSN are the point of the
+     * test: {@code custSsn} exercises {@code VARCHAR(9)} ({@link String}) and must keep
+     * its leading zero, {@code custFicoCreditScore} exercises {@code INTEGER}
+     * ({@link Integer}), and {@code custDobYyyyMmDd} exercises {@code DATE}
+     * ({@link LocalDate}).</p>
      */
     @Test
-    @DisplayName("save + findById round-trips every field (String, Long SSN, Integer FICO, LocalDate DOB)")
+    @DisplayName("save + findById round-trips every field (leading-zero String SSN, Integer FICO, LocalDate DOB)")
     void saveAndFindById_roundTripsAllFields() {
         Customer c = newCustomer(ROUND_TRIP_ID);
 
@@ -131,7 +134,9 @@ class CustomerRepositoryTest extends AbstractRepositoryTest {
         assertThat(found.getCustAddrZip()).isEqualTo(ZIP);
         assertThat(found.getCustPhoneNum1()).isEqualTo(PHONE_1);
         assertThat(found.getCustPhoneNum2()).isEqualTo(PHONE_2);
-        // BIGINT round-trip: a nine-digit SSN preserved as Long.
+        // VARCHAR(9) round-trip: the nine-digit SSN is preserved verbatim as a
+        // String, including its leading zero (the BIGINT storage the migration
+        // replaced silently dropped leading zeros -- F-SSN-BIGINT).
         assertThat(found.getCustSsn()).isEqualTo(SSN);
         assertThat(found.getCustGovtIssuedId()).isEqualTo(GOVT_ID);
         // DATE round-trip: date of birth preserved as LocalDate.

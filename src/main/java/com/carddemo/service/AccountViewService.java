@@ -134,13 +134,6 @@ public class AccountViewService {
     public static final String MSG_CUST_NOT_FOUND =
             "Did not find associated customer in master file";
 
-    /**
-     * Left-zero-padded, nine-digit format for the numeric {@code CUST-SSN
-     * PIC 9(09)} field, reproducing the fixed-width rendering the legacy screen
-     * used before any masking is applied downstream.
-     */
-    private static final String SSN_FORMAT = "%09d";
-
     /** SLF4J logger; emits only coarse, non-PII diagnostics (never the SSN or other PII). */
     private static final Logger log = LoggerFactory.getLogger(AccountViewService.class);
 
@@ -265,8 +258,9 @@ public class AccountViewService {
      *       (scale enforcement happens in the DTO's canonical constructor).</li>
      *   <li>The panel {@code city} is record address line&nbsp;3
      *       ({@link Customer#getCustAddrLine3()}).</li>
-     *   <li>The SSN is rendered full and nine-digit here (see
-     *       {@link #formatSsn(Long)}); masking is applied by the DTO, not here.</li>
+     *   <li>The SSN ({@code CUST-SSN PIC 9(09)}) is a fixed-width nine-character
+     *       string forwarded as-is; masking to the last four digits is applied by
+     *       the DTO, not here.</li>
      * </ul>
      *
      * @param account  the resolved account master record; must not be {@code null}
@@ -301,7 +295,7 @@ public class AccountViewService {
                 customer.getCustAddrZip(),
                 customer.getCustPhoneNum1(),
                 customer.getCustPhoneNum2(),
-                formatSsn(customer.getCustSsn()),
+                customer.getCustSsn(),
                 customer.getCustGovtIssuedId(),
                 customer.getCustDobYyyyMmDd(),
                 customer.getCustEftAccountId(),
@@ -309,22 +303,4 @@ public class AccountViewService {
                 customer.getCustFicoCreditScore());
     }
 
-    /**
-     * Renders the numeric {@code CUST-SSN PIC 9(09)} as a nine-digit,
-     * left-zero-padded {@link String} (for example {@code 42L} becomes
-     * {@code "000000042"}), reproducing the legacy fixed-width rendering.
-     *
-     * <p>The method is <strong>null-safe</strong>: a {@code null} SSN yields
-     * {@code null} rather than the literal {@code "null"} that
-     * {@link String#format(String, Object...)} would otherwise produce for a
-     * {@code null} argument. No masking is applied here &mdash; SSN masking is a
-     * DTO-boundary security concern (decision log D-023).</p>
-     *
-     * @param ssn the raw numeric SSN ({@code CUST-SSN}); may be {@code null}
-     * @return the nine-digit zero-padded SSN string, or {@code null} when
-     *         {@code ssn} is {@code null}
-     */
-    private static String formatSsn(Long ssn) {
-        return ssn == null ? null : String.format(SSN_FORMAT, ssn);
-    }
 }

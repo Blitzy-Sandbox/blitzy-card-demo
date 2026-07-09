@@ -25,7 +25,7 @@ CREATE TABLE customer (
     cust_addr_zip            VARCHAR(10),             -- CUST-ADDR-ZIP X(10)
     cust_phone_num_1         VARCHAR(15),             -- CUST-PHONE-NUM-1 X(15)
     cust_phone_num_2         VARCHAR(15),             -- CUST-PHONE-NUM-2 X(15)
-    cust_ssn                 BIGINT,                  -- CUST-SSN 9(09)
+    cust_ssn                 VARCHAR(9),              -- CUST-SSN 9(09) fixed-width; VARCHAR preserves leading zeros
     cust_govt_issued_id      VARCHAR(20),             -- CUST-GOVT-ISSUED-ID X(20)
     cust_dob_yyyy_mm_dd      DATE,                    -- CUST-DOB-YYYY-MM-DD X(10) -> DATE
     cust_eft_account_id      VARCHAR(10),             -- CUST-EFT-ACCOUNT-ID X(10)

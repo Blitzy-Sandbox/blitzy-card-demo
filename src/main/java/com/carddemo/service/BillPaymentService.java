@@ -296,13 +296,22 @@ public class BillPaymentService {
         // program prompts and writes nothing; the response echoes the balance and
         // omits a confirmation number.
         if (request.confirm() == null || !request.confirm()) {
+            // Preview: compute the projected post-payment balance using the same
+            // full-balance payoff math as the committed path (payAmt = full balance;
+            // newBalance = balance - payAmt -> 0.00 at scale 2) so the caller can
+            // review the outcome before confirming, but persist nothing — the COBOL
+            // program prompts and writes no records without confirmation (L208-L240).
+            final BigDecimal payAmt = currentBalance.setScale(MONEY_SCALE, RoundingMode.HALF_UP);
+            final BigDecimal projectedBalance =
+                    currentBalance.subtract(payAmt).setScale(MONEY_SCALE, RoundingMode.HALF_UP);
             log.debug("Bill payment for account {} requested without confirmation; "
-                    + "returning confirmation prompt with no persistence", accountId);
+                    + "returning confirmation prompt (projected balance {}) with no persistence",
+                    accountId, projectedBalance);
             return new BillPaymentResponse(
                     request.accountId(),
                     currentBalance,
-                    currentBalance,
-                    currentBalance,
+                    payAmt,
+                    projectedBalance,
                     null,
                     MSG_CONFIRM);
         }

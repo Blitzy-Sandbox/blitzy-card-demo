@@ -68,10 +68,11 @@ import com.carddemo.repository.CustomerRepository;
  *   <li><strong>City quirk:</strong> the screen city ({@code ACSCITY}) is record
  *       address line&nbsp;3, so {@link AccountViewResponse#city()} must equal the
  *       customer's {@code custAddrLine3}.</li>
- *   <li><strong>SSN quirk:</strong> the service renders {@code CUST-SSN PIC 9(09)}
- *       via {@code String.format("%09d", ...)}, then the {@link AccountViewResponse}
- *       canonical constructor masks all but the last four digits (decision log
- *       D-023). Both the nine-digit zero-padding and the masking are asserted.</li>
+ *   <li><strong>SSN quirk:</strong> the service forwards the fixed-width
+ *       {@code CUST-SSN PIC 9(09)} nine-character {@link String} as-is (leading zeros
+ *       intact), then the {@link AccountViewResponse} canonical constructor masks all
+ *       but the last four digits (decision log D-023). Both the nine-character width
+ *       and the masking are asserted.</li>
  * </ul>
  */
 @ExtendWith(MockitoExtension.class)
@@ -264,10 +265,11 @@ class AccountViewServiceTest {
         // ----- City quirk: screen ACSCITY = CUST-ADDR-LINE-3 -----
         assertThat(response.city()).isEqualTo("LONDON");
 
-        // ----- SSN quirk: assert BOTH the %09d rendering and the D-023 mask -----
-        // custSsn 1234 -> String.format("%09d", 1234) = "000001234" (nine-digit,
-        // zero-padded), then the DTO masks all but the last four digits. The five
-        // leading mask characters ("*****") prove the value was nine digits wide,
+        // ----- SSN quirk: assert BOTH the nine-char width and the D-023 mask -----
+        // custSsn "000001234" is the fixed-width CUST-SSN PIC 9(09) value stored
+        // verbatim (leading zeros intact); the service forwards it unchanged and the
+        // DTO masks all but the last four digits. The five leading mask characters
+        // ("*****") prove the value was nine characters wide,
         // and the trailing "1234" is the last four of the zero-padded rendering.
         assertThat(response.ssn()).isEqualTo("*****1234");
         assertThat(response.ssn()).hasSize(9);
@@ -279,7 +281,7 @@ class AccountViewServiceTest {
         Account account = newAccount();
         account.setAcctCurrBal(null); // a null money field must survive normalization as null
         Customer customer = newCustomer();
-        customer.setCustSsn(null); // formatSsn(null) -> null, then maskSsn(null) -> null
+        customer.setCustSsn(null); // a null SSN stays null, then maskSsn(null) -> null
 
         when(crossReferenceService.resolveCustomerId(ACCT_ID)).thenReturn(CUST_ID);
         when(accountRepository.findById(ACCT_ID)).thenReturn(Optional.of(account));
@@ -322,8 +324,9 @@ class AccountViewServiceTest {
 
     /**
      * Builds a fully-populated {@link Customer} fixture. {@code custAddrLine3} is
-     * the screen city, and {@code custSsn} is a small numeric value that forces
-     * the {@code %09d} zero-padding to be visible in the masked result.
+     * the screen city, and {@code custSsn} is a nine-character fixed-width string
+     * with leading zeros ({@code CUST-SSN PIC 9(09)}) so the nine-character width is
+     * visible in the masked result.
      *
      * @return a new, fully-populated customer fixture
      */
@@ -341,7 +344,7 @@ class AccountViewServiceTest {
         customer.setCustAddrZip("EC1A1BB");
         customer.setCustPhoneNum1("+44-20-0000");
         customer.setCustPhoneNum2("+44-20-9999");
-        customer.setCustSsn(1234L);
+        customer.setCustSsn("000001234");
         customer.setCustGovtIssuedId("UKID-1815");
         customer.setCustDobYyyyMmDd(LocalDate.of(1815, 12, 10));
         customer.setCustEftAccountId("EFT0000001");

@@ -821,12 +821,15 @@ class AccountUpdateServiceTest {
             assertThat(response.message()).isEqualTo(AccountUpdateService.MSG_SUCCESS);
             assertThat(response.version()).isEqualTo(BASE_VERSION + 1L);
 
-            // --- The nested view mirrors the refreshed record (zero-padded ids, new version, scale-2 money).
+            // --- The nested view mirrors the refreshed record. Identifiers are rendered
+            // UNPADDED (String.valueOf) to match the account-view GET path, so a
+            // create/update round-trip returns ids identical to the subsequent GET
+            // (F-PADDED-ID); the version is bumped and money is scale-2.
             final AccountViewResponse view = response.account();
             assertThat(view).isNotNull();
             assertThat(view.version()).isEqualTo(BASE_VERSION + 1L);
-            assertThat(view.accountId()).isEqualTo("00000000001");
-            assertThat(view.customerId()).isEqualTo("000000001");
+            assertThat(view.accountId()).isEqualTo("1");
+            assertThat(view.customerId()).isEqualTo("1");
             assertThat(view.creditLimit()).isEqualByComparingTo(new BigDecimal("5000.01"));
             assertThat(view.creditLimit().scale()).isEqualTo(2);
         }

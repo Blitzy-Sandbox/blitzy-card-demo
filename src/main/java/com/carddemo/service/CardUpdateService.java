@@ -174,9 +174,6 @@ public class CardUpdateService {
     /** Exact 16-digit card-number pattern ({@code CARD-NUM PIC X(16)}, numeric edit). */
     private static final String CARD_NUMBER_PATTERN = "\\d{16}";
 
-    /** Width of the zero-padded account-id rendering ({@code CARD-ACCT-ID PIC 9(11)}). */
-    private static final String ACCOUNT_ID_FORMAT = "%011d";
-
     /**
      * The card repository (migrated VSAM {@code CARDDATA} keyed access). Never
      * {@code null}; supplied by the container through constructor injection.
@@ -337,15 +334,17 @@ public class CardUpdateService {
      * <p>The full card number is handed to {@link CardViewResponse}, whose
      * canonical constructor masks it to the last four characters; the CVV is
      * never read, so it cannot appear in the projection. The account id
-     * ({@code CARD-ACCT-ID PIC 9(11)}) is rendered as an 11-digit zero-padded
-     * string to match its fixed-width legacy presentation.</p>
+     * ({@code CARD-ACCT-ID PIC 9(11)}) is rendered with
+     * {@link String#valueOf(Object)} &mdash; unpadded, matching the card-view read
+     * path ({@code CardViewService}) so a card-update round-trip returns an
+     * account-id string identical to the subsequent {@code GET}.</p>
      *
      * @param card the persisted card (post-rewrite); must not be {@code null}
      * @return a PAN-masked, CVV-free view of the card
      */
     private static CardViewResponse toView(final Card card) {
         return new CardViewResponse(
-                formatAccountId(card.getCardAcctId()),
+                String.valueOf(card.getCardAcctId()),
                 card.getCardNum(),
                 card.getCardEmbossedName(),
                 card.getCardActiveStatus(),
@@ -353,16 +352,4 @@ public class CardUpdateService {
                 card.getVersion());
     }
 
-    /**
-     * Renders an account id as an 11-digit, zero-padded string, matching the
-     * fixed-width {@code CARD-ACCT-ID PIC 9(11)} presentation. A {@code null}
-     * id is returned unchanged.
-     *
-     * @param accountId the numeric account id; may be {@code null}
-     * @return the zero-padded 11-digit rendering, or {@code null} when the id is
-     *         {@code null}
-     */
-    private static String formatAccountId(final Long accountId) {
-        return (accountId == null) ? null : String.format(ACCOUNT_ID_FORMAT, accountId);
-    }
 }

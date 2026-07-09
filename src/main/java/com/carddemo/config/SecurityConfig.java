@@ -302,7 +302,10 @@ public class SecurityConfig {
         body.put("message", message);
         body.put("path", request.getRequestURI());
         body.put("correlationId", MDC.get(CorrelationIdFilter.CORRELATION_ID_MDC_KEY));
-        body.put("fieldErrors", null);
+        // Emit an empty list (never null) so the filter-chain 401/403 body is byte-for-byte
+        // shape-identical to the ErrorResponse record produced by GlobalExceptionHandler,
+        // whose canonical constructor coerces a null fieldErrors to List.of() -> serialized [].
+        body.put("fieldErrors", List.of());
 
         objectMapper.writeValue(response.getOutputStream(), body);
     }
