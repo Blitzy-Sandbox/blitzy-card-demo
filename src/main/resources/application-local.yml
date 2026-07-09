@@ -42,8 +42,11 @@
 #   * ZERO live AWS — every AWS client targets LocalStack; dummy test/test
 #     credentials only; no real AWS endpoint, ARN, or credential anywhere.
 #   * NO production secrets — the JWT secret below is a clearly DEV-ONLY
-#     placeholder overridable via ${JWT_SECRET}; it MUST be externalized in
-#     prod (documented open risk; see docs/onboarding.md + decision-log.md).
+#     placeholder overridable via ${JWT_SECRET}. Production is ALREADY
+#     externalized: base application.yml and application-prod.yml both declare
+#     `secret: ${JWT_SECRET}` with NO default, so a prod boot fails fast when it
+#     is unset. The only residual work is deployment/vault provisioning of that
+#     env var (see docs/onboarding.md + decision-log.md).
 #   * Valid YAML: 2-space indentation, no tabs; every environment-variable
 #     value uses the ${ENV_VAR:default} form so CI / other machines override it.
 #
@@ -194,9 +197,11 @@ carddemo:
       # no extra setup. It is >= 32 bytes as HS256 requires.
       #
       #   !!! DEV ONLY — NEVER use this value in production. !!!
-      #   The JWT secret being hardcoded in configuration is a KNOWN open risk
-      #   (AAP 0.8.7); in prod it MUST be supplied via ${JWT_SECRET} from an
-      #   environment variable or a vault. Prefer exporting JWT_SECRET even
-      #   locally. Do NOT commit a real production secret anywhere.
+      #   Production secret externalization is DONE (AAP 0.8.7): base
+      #   application.yml and application-prod.yml both bind the secret to
+      #   ${JWT_SECRET} with NO default, so prod fails fast if it is unset. The
+      #   only residual work is provisioning that env var from a vault at deploy
+      #   time. Prefer exporting JWT_SECRET even locally. Do NOT commit a real
+      #   production secret anywhere.
       secret: ${JWT_SECRET:local-dev-only-change-me-not-for-production}
       # expiration-ms is INHERITED from base (${JWT_EXPIRATION_MS:3600000}).

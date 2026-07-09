@@ -151,10 +151,24 @@ public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetai
     /** Stable S3 object key for the report artifact (for example {@code tranrept.dat}). */
     private final String objectKey;
 
-    /** Report start date rendered in {@code REPT-START-DATE} of the name header; blank by default. */
+    /**
+     * Report start date rendered in {@code REPT-START-DATE} of the name header. Resolved per run from
+     * the {@code startDate} job parameter, else the {@code carddemo.batch.report.start-date} property,
+     * else the JCL default {@code 2022-01-01} &mdash; the same three-level chain used by
+     * {@link TransactionReportProcessor}, so the header's "Date Range" always matches the window the
+     * processor actually filtered on (the byte-parity of {@code MOVE WS-START-DATE TO REPT-START-DATE}
+     * in {@code CBTRN03C}).
+     */
     private final String reportStartDate;
 
-    /** Report end date rendered in {@code REPT-END-DATE} of the name header; blank by default. */
+    /**
+     * Report end date rendered in {@code REPT-END-DATE} of the name header. Resolved per run from the
+     * {@code endDate} job parameter, else the {@code carddemo.batch.report.end-date} property, else the
+     * JCL default {@code 2022-07-06} &mdash; the same three-level chain used by
+     * {@link TransactionReportProcessor}, so the header's "Date Range" always matches the window the
+     * processor actually filtered on (the byte-parity of {@code MOVE WS-END-DATE TO REPT-END-DATE} in
+     * {@code CBTRN03C}).
+     */
     private final String reportEndDate;
 
     // ---------------------------------------------------------------------------------------------
@@ -201,8 +215,14 @@ public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetai
      * @param pageSize        the page-break threshold ({@code WS-PAGE-SIZE}); must be positive
      * @param outputBucket    the target S3 bucket name; must not be {@code null} or blank
      * @param objectKey       the stable S3 object key for the report; must not be {@code null} or blank
-     * @param reportStartDate the report start date for the name header ({@code REPT-START-DATE}); may be blank
-     * @param reportEndDate   the report end date for the name header ({@code REPT-END-DATE}); may be blank
+     * @param reportStartDate the report start date for the name header ({@code REPT-START-DATE}),
+     *                        resolved from the {@code startDate} job parameter, else the
+     *                        {@code carddemo.batch.report.start-date} property, else the JCL default
+     *                        {@code 2022-01-01}
+     * @param reportEndDate   the report end date for the name header ({@code REPT-END-DATE}), resolved
+     *                        from the {@code endDate} job parameter, else the
+     *                        {@code carddemo.batch.report.end-date} property, else the JCL default
+     *                        {@code 2022-07-06}
      * @throws IllegalArgumentException if {@code pageSize} is not positive or a required name is blank
      */
     public TransactionReportItemWriter(
@@ -210,8 +230,10 @@ public class TransactionReportItemWriter implements ItemStreamWriter<ReportDetai
             @Value("${carddemo.batch.report.page-size:20}") int pageSize,
             @Value("${carddemo.aws.s3.output-bucket:carddemo-batch-output}") String outputBucket,
             @Value("${carddemo.batch.report.object-key:tranrept.dat}") String objectKey,
-            @Value("${carddemo.batch.report.start-date:}") String reportStartDate,
-            @Value("${carddemo.batch.report.end-date:}") String reportEndDate) {
+            @Value("#{jobParameters['startDate'] ?: '${carddemo.batch.report.start-date:2022-01-01}'}")
+            String reportStartDate,
+            @Value("#{jobParameters['endDate'] ?: '${carddemo.batch.report.end-date:2022-07-06}'}")
+            String reportEndDate) {
         this.s3Template = Objects.requireNonNull(s3Template, "s3Template must not be null");
         if (pageSize <= 0) {
             throw new IllegalArgumentException("carddemo.batch.report.page-size must be positive but was " + pageSize);

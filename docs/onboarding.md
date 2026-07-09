@@ -460,20 +460,26 @@ code comments** — and keep [`traceability-matrix.md`](traceability-matrix.md) 
 
 ## 9. Suggested Next Tasks
 
-These follow-ups were discovered during the migration and are tracked as open work. The first four
-correspond to the High-severity risks in the [`project-guide.md`](project-guide.md); the last is a
-currency item recorded in the [`decision-log.md`](decision-log.md).
+These follow-ups were discovered during the migration. Two of the original High-severity risks in
+the [`project-guide.md`](project-guide.md) — the production profile and JWT externalization — were
+**delivered in this checkpoint** and appear below as delivered with only deployment-time residual
+work. The OWASP scan execution and running the CI/CD pipeline green remain open, alongside the
+Spring Boot 3.5 → 4.x currency item recorded in the [`decision-log.md`](decision-log.md).
 
 - **Run the OWASP dependency-check to green and remediate.** The scan is defined in the Maven
   `owasp` profile (`org.owasp:dependency-check-maven` 12.1.0, `failBuildOnCVSS=7`) and wired into
   CI, but it has not yet been executed end-to-end against the live NVD feed — run
   `mvn -Powasp org.owasp:dependency-check-maven:check` (supplying an NVD API key) and fix any
   critical/high CVEs (Gate 8: zero critical/high).
-- **Add a production Spring profile (`application-prod.yml`).** Only `local` and `test` profiles
-  exist today; a production profile is needed to deploy against real PostgreSQL/AWS with
-  externalized configuration.
-- **Externalize the JWT secret.** The signing secret is currently held in configuration; move it to
-  an environment variable / AWS Secrets Manager / Vault so no secret is ever hardcoded.
+- **Production Spring profile — delivered.** `application-prod.yml` now exists alongside `local`
+  and `test`, deploying against real PostgreSQL/AWS with fully externalized configuration (no
+  hardcoded endpoints or credentials). Residual work: validate the profile end-to-end against the
+  target deployment environment and its secret store.
+- **JWT secret externalization — delivered.** The signing secret is no longer held in
+  configuration: base `application.yml` and `application-prod.yml` both bind
+  `carddemo.security.jwt.secret` to `${JWT_SECRET}` with **no default**, so a production boot fails
+  fast if it is unset. Residual work: provision `JWT_SECRET` from an environment variable / AWS
+  Secrets Manager / Vault at deploy time.
 - **Verify and harden the CI/CD pipeline.** A GitHub Actions workflow
   (`.github/workflows/ci.yml`) already builds, tests, enforces **JaCoCo ≥ 80%**, and defines the
   OWASP scan; the remaining work is to run it green in your organization (provide the NVD API key)

@@ -13,6 +13,8 @@ import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Parameter;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
@@ -27,6 +29,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ExecutionContext;
+import org.springframework.beans.factory.annotation.Value;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Template;
@@ -85,6 +88,20 @@ class TransactionReportItemWriterTest {
 
     /** Width of the edited amount field on a total line ({@code +ZZZ,ZZZ,ZZZ.ZZ}): sign + 14. */
     private static final int AMOUNT_FIELD_LENGTH = 15;
+
+    /**
+     * Column at which the {@code "Date Range: "} field begins in the {@code REPORT-NAME-HEADER}
+     * ({@code CVTRA07Y}): immediately after {@code pad("DALYREPT",38)} + {@code pad("Daily
+     * Transaction Report",41)} = 79 characters.
+     */
+    private static final int NAME_HEADER_DATE_RANGE_OFFSET = 79;
+
+    /**
+     * Width of the assembled {@code "Date Range: "} field: the 12-character label
+     * ({@code REPT-DATE-HEADER}) + {@code REPT-START-DATE PIC X(10)} + the 4-character {@code " to "}
+     * separator + {@code REPT-END-DATE PIC X(10)} = 36 characters.
+     */
+    private static final int DATE_RANGE_FIELD_LENGTH = 36;
 
     /** Target S3 bucket asserted by the sink-contract tests (legacy GDG generation → S3 object). */
     private static final String OUTPUT_BUCKET = "carddemo-batch-output";
@@ -146,7 +163,24 @@ class TransactionReportItemWriterTest {
      * @return a fully initialised writer ready for {@code open()}
      */
     private TransactionReportItemWriter newWriter(int pageSize) {
-        return new TransactionReportItemWriter(s3Template, pageSize, OUTPUT_BUCKET, OBJECT_KEY, "", "");
+        return newWriter(pageSize, "", "");
+    }
+
+    /**
+     * Constructs a writer wired to the mocked {@link S3Template} with the given page-break threshold,
+     * the canonical bucket/key, and an explicit report date window &mdash; the values a
+     * job-parameter-driven launch resolves for {@code REPT-START-DATE} / {@code REPT-END-DATE} via the
+     * step-scoped {@code #{jobParameters['startDate'] ?: ...}} binding. All configuration is supplied
+     * through the constructor, so no Spring context or reflection is required.
+     *
+     * @param pageSize  the page-break threshold ({@code WS-PAGE-SIZE})
+     * @param startDate the report start date rendered in the name header ({@code REPT-START-DATE})
+     * @param endDate   the report end date rendered in the name header ({@code REPT-END-DATE})
+     * @return a fully initialised writer ready for {@code open()}
+     */
+    private TransactionReportItemWriter newWriter(int pageSize, String startDate, String endDate) {
+        return new TransactionReportItemWriter(
+                s3Template, pageSize, OUTPUT_BUCKET, OBJECT_KEY, startDate, endDate);
     }
 
     /**
@@ -176,6 +210,25 @@ class TransactionReportItemWriterTest {
      * @return the emitted report records, each stripped of its trailing {@code '\n'}
      */
     private List<String> render(int pageSize, int chunkSize, List<ReportDetailLine> items) {
+        return render(pageSize, chunkSize, items, "", "");
+    }
+
+    /**
+     * Drives the full writer lifecycle for {@code items} using an explicit report date window (the
+     * values a job-parameter-driven launch resolves), partitioning them into chunks of
+     * {@code chunkSize} (to exercise cross-chunk statefulness), and returns the rendered report as a
+     * list of fixed-width lines. The report payload is captured during the mocked S3 upload because
+     * the production writer deletes its temp buffer immediately afterwards.
+     *
+     * @param pageSize  the page-break threshold for this run
+     * @param chunkSize the number of items fed per {@code write(Chunk)} call; must be positive
+     * @param items     the pre-sorted (by account id) detail rows to render
+     * @param startDate the report start date rendered in the name header ({@code REPT-START-DATE})
+     * @param endDate   the report end date rendered in the name header ({@code REPT-END-DATE})
+     * @return the emitted report records, each stripped of its trailing {@code '\n'}
+     */
+    private List<String> render(int pageSize, int chunkSize, List<ReportDetailLine> items,
+                                String startDate, String endDate) {
         final ByteArrayOutputStream captured = new ByteArrayOutputStream();
         doAnswer(invocation -> {
             InputStream uploaded = invocation.getArgument(2);
@@ -183,7 +236,7 @@ class TransactionReportItemWriterTest {
             return null;
         }).when(s3Template).upload(anyString(), anyString(), any(InputStream.class), any(ObjectMetadata.class));
 
-        TransactionReportItemWriter writer = newWriter(pageSize);
+        TransactionReportItemWriter writer = newWriter(pageSize, startDate, endDate);
         writer.open(new ExecutionContext());
         for (int i = 0; i < items.size(); i += chunkSize) {
             List<ReportDetailLine> slice =
@@ -386,6 +439,83 @@ class TransactionReportItemWriterTest {
         assertThat(pageTotalSum).as("Σ(page totals) reconciles to the grand total")
                 .isEqualByComparingTo(grandTotal);
         assertThat(grandTotal).as("grand total equals Σ(all details)").isEqualByComparingTo(sumOf(items));
+    }
+
+    // ------------------------------------------------------------------------------------------------
+    // Phase 3b — report name-header "Date Range" (REPT-START-DATE / REPT-END-DATE ← job parameters)
+    // ------------------------------------------------------------------------------------------------
+
+    /**
+     * The report name header renders the resolved reporting window in its {@code "Date Range: "} field
+     * ({@code REPT-START-DATE} / {@code REPT-END-DATE} of {@code CVTRA07Y}). The window a run is
+     * launched with — for the SQS report bridge, the {@code startDate} / {@code endDate} job
+     * parameters resolved by the writer's {@code #{jobParameters['startDate'] ?: ...}} binding — must
+     * appear verbatim in the header, byte-for-byte with the legacy
+     * {@code MOVE WS-START-DATE TO REPT-START-DATE} / {@code MOVE WS-END-DATE TO REPT-END-DATE}
+     * (CBTRN03C). This is the regression guard for the CP4 report-contract fix: the writer must render
+     * the launched window, never a static/blank default, so the header can never disagree with the
+     * window {@code TransactionReportProcessor} actually filtered on.
+     *
+     * <p>Two distinct windows are rendered to prove the dates are carried through rather than a
+     * constant: each header reflects its own supplied window, at the exact columns the copybook fixes
+     * (the {@code "Date Range: "} field begins at offset {@value #NAME_HEADER_DATE_RANGE_OFFSET}).</p>
+     */
+    @Test
+    @DisplayName("Phase 3b — the name header renders the launched date window verbatim (REPT-START/END-DATE)")
+    void nameHeaderRendersSuppliedDateWindow() {
+        List<ReportDetailLine> items = List.of(line("TXN0000000000001", 100000000001L, "10.00"));
+
+        List<String> firstRun = render(LARGE_PAGE_SIZE, 1, items, "2023-01-01", "2023-12-31");
+        String firstHeader = firstRun.get(0);
+        assertThat(isNameHeader(firstHeader)).as("record 0 is the report name header").isTrue();
+        assertThat(firstHeader).as("fixed record width (Gate 1/5)").hasSize(RECORD_LENGTH);
+        assertThat(firstHeader).as("the human-readable Date Range reflects the launched window")
+                .contains("Date Range: 2023-01-01 to 2023-12-31");
+        assertThat(firstHeader.substring(NAME_HEADER_DATE_RANGE_OFFSET,
+                        NAME_HEADER_DATE_RANGE_OFFSET + DATE_RANGE_FIELD_LENGTH))
+                .as("the Date Range field occupies its exact CVTRA07Y columns")
+                .isEqualTo("Date Range: 2023-01-01 to 2023-12-31");
+
+        // A second launch with a different window must produce a different header — proving the dates
+        // are carried through the (job-parameter) binding, not a static default or a blank field.
+        List<String> secondRun = render(LARGE_PAGE_SIZE, 1, items, "2021-02-03", "2021-04-05");
+        assertThat(secondRun.get(0))
+                .as("a second launch renders its own window, not the first run's dates or a constant")
+                .contains("Date Range: 2021-02-03 to 2021-04-05");
+    }
+
+    /**
+     * Root-cause guard for the CP4 report-contract fix. The rendering test above proves the header
+     * echoes whatever window the writer is constructed with; this test proves the writer is
+     * <em>constructed</em> from the per-run job parameters (the SQS-launched window) rather than a
+     * static property alone. It inspects the {@code @Value} binding on the two date constructor
+     * parameters and asserts each prefers {@code jobParameters['startDate']} / {@code ['endDate']}
+     * before falling back to the {@code carddemo.batch.report.*-date} property — the identical
+     * three-level chain used by {@link TransactionReportProcessor}. A regression to a
+     * static-property-only binding (the exact defect this checkpoint fixes) would drop the
+     * {@code jobParameters[...]} term and fail here, catching the mismatch without needing a full
+     * Spring Batch step context.
+     */
+    @Test
+    @DisplayName("Phase 3b — the date constructor params are @Value-bound to job parameters (property/JCL fallback)")
+    void constructorBindsReportWindowFromJobParameters() throws NoSuchMethodException {
+        Constructor<TransactionReportItemWriter> ctor = TransactionReportItemWriter.class.getConstructor(
+                S3Template.class, int.class, String.class, String.class, String.class, String.class);
+        Parameter[] params = ctor.getParameters();
+
+        Value startBinding = params[4].getAnnotation(Value.class);
+        Value endBinding = params[5].getAnnotation(Value.class);
+        assertThat(startBinding).as("reportStartDate must carry a @Value binding").isNotNull();
+        assertThat(endBinding).as("reportEndDate must carry a @Value binding").isNotNull();
+
+        assertThat(startBinding.value())
+                .as("start-date binding must prefer the job parameter, then the property fallback")
+                .contains("jobParameters['startDate']")
+                .contains("carddemo.batch.report.start-date");
+        assertThat(endBinding.value())
+                .as("end-date binding must prefer the job parameter, then the property fallback")
+                .contains("jobParameters['endDate']")
+                .contains("carddemo.batch.report.end-date");
     }
 
     // ------------------------------------------------------------------------------------------------

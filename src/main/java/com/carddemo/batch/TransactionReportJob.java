@@ -71,12 +71,19 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@code carddemo.batch.report.end-date} ({@code 2022-07-06}) &mdash; the migrated JCL
  * {@code PARM-START-DATE} / {@code PARM-END-DATE} symbols. The {@code ReportJobLauncher} (the
  * consumer of the {@code carddemo-report-jobs.fifo} SQS queue, the migrated {@code CORPT00C} CICS
- * TDQ&rarr;JES bridge) builds a {@code JobParameters} carrying those two dates, a
- * {@code correlationId} (consumed by {@link BatchCorrelationIdListener}) and a unique run id, then
- * calls {@code JobLauncher.run(transactionReportJob, params)}. Only the step-scoped
- * {@link TransactionReportProcessor} (and, for its report key, the writer) read these parameters;
- * this configuration merely names the job {@code "transactionReportJob"} so the launcher can inject
- * it by name.</p>
+ * TDQ&rarr;JES bridge) builds a {@code JobParameters} carrying those two dates plus an identifying
+ * {@code jobId} (the FIFO de-duplication key, which also gives each genuine request a distinct,
+ * restartable {@code JobInstance}) and a non-identifying {@code correlationId} (consumed by
+ * {@link BatchCorrelationIdListener}), then calls {@code JobLauncher.run(transactionReportJob, params)}.
+ * That direct-launch path does <strong>not</strong> auto-apply this job's {@link RunIdIncrementer}
+ * (the incrementer is consulted only on the operator {@code getNextJobParameters()} path), so the
+ * launcher deliberately supplies no {@code run.id}; instance identity comes from {@code jobId} plus the
+ * date window. Both step-scoped collaborators read the date-window parameters:
+ * {@link TransactionReportProcessor} to filter rows to the window, and
+ * {@link TransactionReportItemWriter} to render the matching "Date Range" in the report name header
+ * (byte-parity with {@code CBTRN03C}'s {@code MOVE WS-START-DATE TO REPT-START-DATE}). This
+ * configuration merely names the job {@code "transactionReportJob"} so the launcher can inject it by
+ * name.</p>
  *
  * <h2>Wiring notes</h2>
  * <ul>

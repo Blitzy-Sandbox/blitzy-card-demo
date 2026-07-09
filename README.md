@@ -398,17 +398,21 @@ preserved for byte-equivalent I/O:
 
 ## Suggested Next Tasks
 
-Discovered during the migration and tracked as open follow-ups (all High-severity per the
-project guide):
+Discovered during the migration. Items 1–2 remain open follow-ups; items 3–4 were **delivered in
+this checkpoint** and only their deployment-time provisioning/validation remains:
 
 1. **Spring Boot 3.5 → 4.x upgrade.** The 3.5 line reached OSS end-of-life on **2026-06-30**
    (final OSS patch **3.5.16**). The target intentionally stays on Spring Boot **3.x** per the
    explicit migration mandate; the upgrade to 4.x (on Spring Framework 7) is a planned follow-up.
 2. **Run the OWASP dependency-check** (`org.owasp:dependency-check-maven` 12.1.0) and remediate
    any critical/high CVEs (Gate 8, zero critical/high).
-3. **Add a production Spring profile** (`application-prod.yml`) with externalized DB and AWS
-   configuration.
-4. **Externalize the JWT secret** via an environment variable / vault — no hardcoded secrets.
+3. **Production Spring profile — delivered.** `application-prod.yml` is present with externalized
+   DB and AWS configuration (no hardcoded endpoints or credentials). Residual work: validate the
+   profile end-to-end against the target deployment environment and its secret store.
+4. **JWT secret externalization — delivered.** Both base `application.yml` and `application-prod.yml`
+   bind `carddemo.security.jwt.secret` to `${JWT_SECRET}` with **no default**, so a production boot
+   fails fast when it is unset (no hardcoded secret). Residual work: provision `JWT_SECRET` from an
+   environment variable / vault at deploy time.
 
 **Deferred (Constraint C-001):** additional database types (Db2 relational, IMS hierarchical) and
 messaging/integration expansion (FTP/SFTP, message-queue integration, distributed-application

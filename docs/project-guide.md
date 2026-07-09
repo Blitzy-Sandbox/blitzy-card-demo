@@ -48,8 +48,8 @@ pie title Project Completion Status
 |-------|--------|-------|-----|
 | No CI/CD pipeline | Automated build/test/deploy not available; manual verification required | DevOps Engineer | 1 week |
 | OWASP dependency scan not executed | Potential CVE vulnerabilities unverified in production dependencies | Security Engineer | 2 days |
-| No production Spring profile | Cannot deploy to real AWS/PostgreSQL without environment configuration | Backend Engineer | 3 days |
-| JWT secret hardcoded in config | Security risk if deployed without externalized secret management | Security Engineer | 1 day |
+| Production profile deployment validation (✅ profile delivered in CP4) | `application-prod.yml` exists with externalized DB/AWS/JWT (no hardcoded endpoints/credentials); remaining work is validating it end-to-end against the target deployment environment | Backend Engineer | — |
+| JWT secret vault provisioning (✅ externalized in CP4) | Base and prod bind `carddemo.security.jwt.secret` to `${JWT_SECRET}` with no default (fail-fast; no hardcoded secret); remaining work is provisioning `JWT_SECRET` from a vault at deploy time | Security Engineer | — |
 
 ### 1.5 Access Issues
 
@@ -63,7 +63,9 @@ pie title Project Completion Status
 
 1. **[High]** Set up CI/CD pipeline with GitHub Actions (build, test, OWASP check, deploy stages)
 2. **[High]** Run OWASP dependency-check and remediate any critical/high CVEs
-3. **[High]** Create `application-prod.yml` with production database/AWS configuration and externalized secrets
+3. **[Done — CP4]** `application-prod.yml` created with production database/AWS configuration and
+   externalized secrets (`${JWT_SECRET}` fail-fast); residual work is validating deployment/vault
+   integration and provisioning production credentials
 4. **[Medium]** Configure production deployment (Kubernetes manifests or ECS task definitions)
 5. **[Medium]** Conduct security hardening review: JWT rotation, TLS configuration, rate limiting
 
@@ -233,8 +235,8 @@ All tests were executed autonomously by Blitzy's validation pipeline. Final comm
 |------|----------|----------|------------|------------|--------|
 | OWASP dependency vulnerabilities unverified | Security | High | Medium | Run `mvn org.owasp:dependency-check-maven:check`; remediate findings | ⚠ Open |
 | No CI/CD pipeline for automated testing | Operational | High | High | Implement GitHub Actions with build/test/deploy stages | ⚠ Open |
-| JWT secret not externalized for production | Security | High | High | Use AWS Secrets Manager or HashiCorp Vault for JWT signing key | ⚠ Open |
-| No production Spring profile | Operational | High | High | Create `application-prod.yml` with real AWS/PostgreSQL config | ⚠ Open |
+| JWT secret vault provisioning for production | Security | Low | Low | Secret externalized to `${JWT_SECRET}` (fail-fast, no default) in base + prod; residual: provision from AWS Secrets Manager / HashiCorp Vault at deploy | ✅ Externalized (CP4); vault provisioning residual |
+| Production profile deployment validation | Operational | Low | Low | `application-prod.yml` delivered with real AWS/PostgreSQL config and externalized secrets; residual: validate end-to-end in the target deployment environment | ✅ Delivered (CP4); validation residual |
 | LocalStack-only AWS testing | Integration | Medium | Medium | Add integration tests against real AWS in staging environment | ⚠ Open |
 | Branch coverage at 64% | Technical | Medium | Low | Add tests for uncovered branches; focus on error paths | ⚠ Open |
 | No container registry configured | Operational | Medium | High | Configure ECR/Docker Hub for image publication | ⚠ Open |
