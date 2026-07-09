@@ -1,0 +1,204 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  logback-spring.xml — Structured logging configuration for CardDemo
+  ============================================================================
+  Net-new observability artifact for the COBOL -> Java 25 / Spring Boot 3.x
+  migration of the AWS CardDemo credit-card workload. The legacy mainframe
+  system shipped ZERO observability infrastructure, so structured logging is
+  authored here from scratch to satisfy the Observability rule (AAP sections
+  0.3.1, 0.4.1, 0.7.1, 0.8.6).
+
+  WHY logback-spring.xml (not logback.xml):
+    Spring Boot only enables the <springProfile> and <springProperty> Joran
+    extensions when the configuration file name is "logback-spring.xml" (it is
+    processed by org.springframework.boot.logging.logback.SpringBootJoranConfigurator).
+    Both extensions are used below, so the "-spring" suffix is mandatory.
+
+  ===========================================================================
+  CORRELATION-ID CONTRACT (do not change without updating collaborators)
+  ===========================================================================
+    The MDC key for the per-request / per-batch correlation identifier is
+    EXACTLY "correlationId". This is a hard contract shared with:
+      * com.carddemo.observability.CorrelationIdFilter  (REST boundary)
+          -> CorrelationIdFilter.CORRELATION_ID_MDC_KEY == "correlationId"
+      * the Spring Batch job listener (batch boundary)
+    This file reads the value two ways:
+      * human console pattern via  %X{correlationId:-}
+      * structured JSON via the full-MDC provider (<mdc/>), which also surfaces
+        Micrometer Tracing's traceId / spanId (they live in the MDC and survive
+        because CorrelationIdFilter uses MDC.remove(), never MDC.clear()).
+    NOTE: Spring Boot's imported defaults.xml registers a "correlationId"
+    *conversion word* (%correlationId) for its own tracing pattern. That is a
+    DIFFERENT mechanism and does NOT collide with %X{correlationId} (the MDC
+    accessor) used here.
+
+  ===========================================================================
+  SENSITIVE DATA — MASK AT THE CALL SITE (PCI / PII)
+  ===========================================================================
+    This configuration must never be used to emit secrets or regulated data.
+    Callers MUST mask/redact before logging: full card numbers (PAN),
+    CVV/CVC, passwords, BCrypt hashes, JWTs / bearer tokens, and raw financial
+    PII (balances tied to an identifiable customer, SSN, etc.). SQL parameter
+    binding is intentionally NOT enabled by default (see logger levels below)
+    so account/transaction values are not leaked through Hibernate logging.
+
+  ===========================================================================
+  CONTAINER-FRIENDLY: everything logs to STDOUT (both the human-readable and
+  the JSON appenders). There are deliberately NO file appenders writing to
+  arbitrary host paths; a log collector / container runtime captures STDOUT.
+  ============================================================================
+-->
+<configuration scan="false">
+
+    <!--
+      Spring Boot logging defaults: conversion rules (clr, correlationId, esb,
+      wEx, ...), sensible charset/pattern properties, and reduced framework
+      logger noise (Tomcat, Hibernate Validator, ...). Recommended for
+      consistency with the rest of the Spring Boot ecosystem. We deliberately
+      do NOT import base.xml/console-appender.xml because those attach their
+      own appenders and a file appender to the root logger.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!--
+      Application / service name, sourced from spring.application.name in
+      application.yml (value: "carddemo"). Exposed to the appenders below as a
+      context-scoped property ${appName} and emitted as the static JSON fields
+      "application" and "service" so every log line is attributable to this
+      service in an aggregated log store.
+    -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="carddemo"/>
+
+    <!-- ======================================================================
+         LOGGER LEVELS (profile-independent)
+         These are baseline defaults. Every level is overridable at runtime via
+         logging.level.* in application*.yml (Spring Boot applies those AFTER
+         this file is processed), e.g. logging.level.com.carddemo=DEBUG.
+         ====================================================================== -->
+
+    <!-- Application logging. Defaults to INFO; do NOT hardcode DEBUG here. -->
+    <logger name="com.carddemo" level="INFO"/>
+
+    <!--
+      Keep ORM / SQL logging quiet by default. These loggers are pinned at INFO
+      so that turning the root logger up to DEBUG does NOT start emitting SQL
+      statements or, worse, bound parameter values (which for this domain would
+      include account numbers, balances, and card data). Opt in explicitly and
+      deliberately via logging.level.* in a non-production profile when needed.
+    -->
+    <logger name="org.hibernate.SQL" level="INFO"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="INFO"/>
+    <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="INFO"/>
+
+    <!-- ======================================================================
+         PROFILE-BASED APPENDERS AND ROOT LOGGER
+         The two <springProfile> blocks are mutually exclusive AND exhaustive
+         (a profile set either contains "local" or it does not), so the root
+         logger is ALWAYS bound to exactly one appender — never none, never two.
+         Each block defines ONLY the appender(s) it references, which keeps the
+         Logback startup status clean (no "appender not referenced" warnings).
+         ====================================================================== -->
+
+    <!--
+      local -> CONSOLE (human-readable): developer ergonomics on a laptop.
+      The correlation id is rendered inside square brackets; the ":-" default
+      keeps columns aligned when no correlationId is present in the MDC (e.g.
+      startup logs before any request is served).
+    -->
+    <springProfile name="local">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
+                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{correlationId:-}] %logger{36} - %msg%n</pattern>
+                <charset>UTF-8</charset>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!--
+      !local -> JSON (structured): machine-parseable logs to STDOUT for test /
+      prod and the safe fallback for any other or absent profile, so logs are
+      always parseable and correlation-stitched. Uses logstash-logback-encoder
+      8.0's composite encoder with explicit providers so the emitted schema is
+      stable and self-documenting; one JSON object is written per line.
+
+      Emitted fields:
+        @timestamp   ISO-8601 in UTC (stable, timezone-independent)
+        level        log level (INFO/WARN/ERROR/...)
+        logger_name  fully-qualified logger name
+        thread_name  originating thread
+        message      the formatted log message
+        stack_trace  full throwable stack trace (present only on errors)
+        <all MDC>    correlationId (contract key) plus Micrometer traceId /
+                     spanId when distributed tracing is active — surfaced as
+                     top-level fields by the bare <mdc/> provider
+        application  static service identity (== spring.application.name)
+        service      static service identity (== spring.application.name)
+
+      The JSON appender is wrapped in an AsyncAppender for throughput:
+        queueSize           1024  — bounded queue (backpressure boundary)
+        discardingThreshold 0     — never silently drop events (a financial /
+                                    audit workload must not lose INFO/WARN/ERROR
+                                    lines when the queue is under pressure)
+        neverBlock          false — prefer brief producer backpressure over log
+                                    loss; if the queue fills, the logging thread
+                                    waits rather than discarding the event
+        includeCallerData   false — caller data (file/line) is expensive and not
+                                    needed for structured JSON logs
+      MDC (including correlationId) is captured on the producing thread when the
+      LoggingEvent is created, so it is preserved across the async hand-off.
+    -->
+    <springProfile name="!local">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+                <providers>
+                    <timestamp>
+                        <fieldName>@timestamp</fieldName>
+                        <timeZone>UTC</timeZone>
+                        <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
+                    </timestamp>
+                    <logLevel>
+                        <fieldName>level</fieldName>
+                    </logLevel>
+                    <loggerName>
+                        <fieldName>logger_name</fieldName>
+                    </loggerName>
+                    <threadName>
+                        <fieldName>thread_name</fieldName>
+                    </threadName>
+                    <message>
+                        <fieldName>message</fieldName>
+                    </message>
+                    <!-- Full MDC as top-level fields: correlationId + traceId/spanId. -->
+                    <mdc/>
+                    <!-- Stack trace only rendered when the event carries a throwable. -->
+                    <stackTrace>
+                        <fieldName>stack_trace</fieldName>
+                    </stackTrace>
+                    <!-- Static service identity. ${appName} is resolved at config
+                         time from the springProperty above. -->
+                    <pattern>
+                        <pattern>{"application":"${appName}","service":"${appName}"}</pattern>
+                    </pattern>
+                </providers>
+            </encoder>
+        </appender>
+
+        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+            <appender-ref ref="JSON"/>
+            <queueSize>1024</queueSize>
+            <discardingThreshold>0</discardingThreshold>
+            <neverBlock>false</neverBlock>
+            <includeCallerData>false</includeCallerData>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="ASYNC_JSON"/>
+        </root>
+    </springProfile>
+
+</configuration>

@@ -233,6 +233,18 @@ class CardControllerTest {
         }
 
         @Test
+        @WithMockUser(roles = "USER")
+        @DisplayName("page below the one-based minimum (0) violates @Min(1) -> 400, service never called")
+        void listPageBelowMinimumReturns400() throws Exception {
+            // The REST page index is one-based (first page = 1), so page=0 breaches the @Min(1) edit and
+            // is rejected before the controller delegates, mirroring the legacy PF7 scroll floor.
+            mockMvc.perform(get(CARDS_PATH).param("page", "0"))
+                    .andExpect(status().isBadRequest());
+
+            verifyNoInteractions(cardListService);
+        }
+
+        @Test
         @WithAnonymousUser
         @DisplayName("anonymous -> 401 with generic body carrying the correlationId; service never called")
         void listAnonymousReturns401() throws Exception {
@@ -346,6 +358,23 @@ class CardControllerTest {
 
             assertThat(body).doesNotContainPattern(FULL_PAN_PATTERN);
             assertThat(body.toLowerCase(Locale.ROOT)).doesNotContain("cvv");
+        }
+
+        @Test
+        @WithMockUser(roles = "USER")
+        @DisplayName("card not found -> 404 (service raises ResourceNotFoundException)")
+        void updateNotFoundReturns404() throws Exception {
+            // COCRDUPC rereads the card before rewrite; a missing record raises ResourceNotFoundException,
+            // which GlobalExceptionHandler maps to HTTP 404.
+            when(cardUpdateService.updateCard(eq(CARD_NUMBER), any(CardUpdateRequest.class)))
+                    .thenThrow(new ResourceNotFoundException("Did not find this account in cards database"));
+
+            mockMvc.perform(put(CARDS_PATH + "/{cardNumber}", CARD_NUMBER)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(validUpdateRequest())))
+                    .andExpect(status().isNotFound());
+
+            verify(cardUpdateService).updateCard(eq(CARD_NUMBER), any(CardUpdateRequest.class));
         }
 
         @Test

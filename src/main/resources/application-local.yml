@@ -1,0 +1,202 @@
+---
+# ===========================================================================
+# CardDemo — `local` Spring Profile (application-local.yml)
+# ===========================================================================
+# Migrated system: AWS CardDemo COBOL/CICS/VSAM/JCL mainframe monolith ->
+# Java 25 LTS + Spring Boot 3.5.11 modular service.
+#
+# PURPOSE (AAP 0.4.1, 0.7.1, 0.7.7):
+#   This profile wires the application to the self-contained Docker Compose
+#   local stack (root docker-compose.yml) so a developer can go from a clean
+#   machine to a running, verifiable app and exercise local validation
+#   Gates 1 (end-to-end), 3 (performance baseline) and 4 (named ASCII
+#   fixtures). It is activated by the documented workflow:
+#       docker compose up -d
+#       mvn spring-boot:run -Dspring-boot.run.profiles=local
+#
+# SCOPE — OVERRIDE ONLY WHAT DIFFERS FROM BASE:
+#   application.yml already carries every environment-INDEPENDENT setting
+#   (application name, JPA validate, Flyway, batch job.enabled=false,
+#   server port 8080, Actuator exposure, Prometheus export, metrics tags,
+#   logging levels, and the LOGICAL carddemo.aws.* / carddemo.batch.*
+#   names + JCL-derived PARMs). This file re-declares ONLY the values that
+#   are specific to the local Docker Compose environment:
+#     * Phase 1  spring.datasource.*            (PostgreSQL 16 @ localhost:5432)
+#     * Phase 2  spring.jpa.show-sql / batch.jdbc.initialize-schema (local dev)
+#     * Phase 3  spring.cloud.aws.*             (LocalStack @ localhost:4566)
+#     * Phase 4  management.otlp/tracing/health (Jaeger @ localhost:4317)
+#     * Phase 5  carddemo.security.jwt.secret   (DEV-ONLY placeholder)
+#   Everything else is INHERITED from application.yml and intentionally NOT
+#   repeated here.
+#
+# COORDINATION ANCHORS — MUST match root docker-compose.yml EXACTLY.
+# The Spring Boot app runs on the HOST (not inside the compose network), so
+# every service is reached on `localhost` at its host-published port:
+#   PostgreSQL ....... localhost:5432   (POSTGRES_DB/USER/PASSWORD = carddemo)
+#   LocalStack edge .. localhost:4566   (S3 / SQS / SNS gateway)
+#   Jaeger OTLP gRPC . localhost:4317   (OTLP HTTP 4318, UI 16686)
+#   Prometheus ....... localhost:9090   (scrapes host /actuator/prometheus)
+#   Grafana .......... localhost:3000
+#
+# HARD RULES (AAP 0.8.1, 0.8.6, 0.8.7 and the agent prompt):
+#   * ZERO live AWS — every AWS client targets LocalStack; dummy test/test
+#     credentials only; no real AWS endpoint, ARN, or credential anywhere.
+#   * NO production secrets — the JWT secret below is a clearly DEV-ONLY
+#     placeholder overridable via ${JWT_SECRET}; it MUST be externalized in
+#     prod (documented open risk; see docs/onboarding.md + decision-log.md).
+#   * Valid YAML: 2-space indentation, no tabs; every environment-variable
+#     value uses the ${ENV_VAR:default} form so CI / other machines override it.
+#
+# TRACEABILITY (Explainability rule, AAP 0.7.3): source COBOL/JCL is referenced
+# read-only at commit SHA 27d6c6f (full
+# 7756d895ffeb65f7ea72aaa609e356d9899afcec) and is NOT copied here. Longer-form
+# rationale lives in docs/decision-log.md.
+# ===========================================================================
+
+spring:
+
+  # -------------------------------------------------------------------------
+  # Phase 1 — DataSource: PostgreSQL 16 (docker-compose `postgres` service).
+  # Replaces the legacy VSAM KSDS / sequential files (Spring Data JPA is the
+  # keyed-access replacement). Host, port, database, user and password all
+  # default to the docker-compose dev values but stay ${ENV:default}-overridable
+  # so the same profile works on CI or an alternately-configured laptop.
+  # The DB name MUST equal docker-compose POSTGRES_DB (`carddemo`), and the
+  # credentials MUST equal POSTGRES_USER / POSTGRES_PASSWORD (`carddemo`/
+  # `carddemo`). These are DEV-ONLY, non-production values — NOT real secrets.
+  # -------------------------------------------------------------------------
+  datasource:
+    # Folded scalar (>-) is purely cosmetic — it yields the identical
+    # single-line JDBC URL while keeping every line within 80 columns.
+    url: >-
+      jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:carddemo}
+    username: ${DB_USERNAME:carddemo}
+    password: ${DB_PASSWORD:carddemo}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # Modest pool sized for a single developer laptop. Named so it is easy
+      # to spot in logs / metrics; the app is a low-concurrency local instance,
+      # so a small pool avoids exhausting the docker-compose Postgres.
+      pool-name: carddemo-local-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000   # 30s — fail fast if Postgres is not up yet
+      idle-timeout: 600000        # 10 min
+      max-lifetime: 1800000       # 30 min (below Postgres' default idle limits)
+
+  # -------------------------------------------------------------------------
+  # Phase 2 — JPA / Flyway / Batch (local overrides only).
+  #   * Flyway is INHERITED from base (enabled: true, locations:
+  #     classpath:db/migration, baseline/validate on migrate). On a clean
+  #     local database Flyway runs V1__schema.sql -> V2__indexes.sql ->
+  #     V3__seed_data.sql automatically at startup; V3 seeds the tables from
+  #     the app/data/ASCII fixtures (Gate 4 named validation artifacts).
+  #   * ddl-auto stays `validate` (INHERITED) — Flyway owns the schema; this
+  #     only asserts the com.carddemo.entity.* mappings match, preserving the
+  #     NUMERIC(p,2) COBOL decimal fidelity (AAP 0.8.2).
+  # -------------------------------------------------------------------------
+  jpa:
+    # Echo generated SQL to the console for local debugging only. `format_sql`
+    # is already true in base, so the printed SQL is pretty-printed. Never
+    # enabled outside local (base keeps show-sql: false).
+    show-sql: true
+
+  batch:
+    # Base sets `spring.batch.job.enabled: false` (INHERITED) — the 5-stage
+    # pipeline (POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT / TRANREPT) is
+    # launched on demand / via the SQS-FIFO report trigger, never at boot.
+    jdbc:
+      # Spring Batch BATCH_* metadata tables are NOT owned by Flyway
+      # (V1__schema.sql documents them as auto-provisioned separately).
+      # Base is `never`; local opts in to `always` so the metadata tables
+      # exist for on-demand job launches during local development/verification.
+      initialize-schema: always
+
+  # -------------------------------------------------------------------------
+  # Phase 3 — Spring Cloud AWS 3.3.0 -> LocalStack (compose `localstack`).
+  # ZERO live AWS (AAP 0.8.1). A single GLOBAL endpoint override points S3, SQS
+  # and SNS at the LocalStack edge gateway; region + credentials are the
+  # LocalStack conventions. The logical bucket/queue names themselves are
+  # INHERITED from base (carddemo.aws.s3.* / carddemo.aws.sqs.*):
+  #   S3  buckets ... carddemo-batch-input / -output / carddemo-statements
+  #                   (legacy GDG generations -> S3 objects, AAP 0.7.7)
+  #   SQS FIFO ...... carddemo-report-jobs.fifo
+  #                   (CORPT00C CICS TDQ -> JES bridge -> SQS FIFO launch)
+  # Buckets/queues are self-provisioned by integration tests (Testcontainers
+  # LocalStack) and by the developer/app for manual runs — this profile NEVER
+  # depends on pre-existing LocalStack state (AAP 0.7.7).
+  # -------------------------------------------------------------------------
+  cloud:
+    aws:
+      # Global endpoint override honored by Spring Cloud AWS 3.x for every
+      # generated client (S3/SQS/SNS). Points at the LocalStack edge port.
+      endpoint: ${AWS_ENDPOINT:http://localhost:4566}
+      region:
+        # Deterministic region matching docker-compose AWS_DEFAULT_REGION.
+        static: ${AWS_REGION:us-east-1}
+      credentials:
+        # LocalStack dummy credentials — the well-known `test`/`test`
+        # convention. These are NOT real AWS credentials and NOT a secret;
+        # LocalStack accepts any value. Overridable via the standard AWS env
+        # vars for parity with the SDK's own resolution.
+        access-key: ${AWS_ACCESS_KEY_ID:test}
+        secret-key: ${AWS_SECRET_ACCESS_KEY:test}
+      s3:
+        # REQUIRED for LocalStack S3: use path-style URLs
+        # (http://localhost:4566/<bucket>/<key>) instead of virtual-host style
+        # (http://<bucket>.localhost:4566/...), which does not resolve locally.
+        path-style-access-enabled: true
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Observability -> Jaeger + full local detail (Observability rule,
+# AAP 0.7.1). Metrics export (Prometheus) and endpoint exposure are INHERITED
+# from base; only the environment-specific tracing endpoint and the relaxed
+# local health detail are set here.
+# ---------------------------------------------------------------------------
+management:
+  otlp:
+    tracing:
+      # Micrometer Tracing bridged to OpenTelemetry exports spans across the
+      # REST -> service -> repository -> AWS boundaries to the docker-compose
+      # Jaeger collector.
+      endpoint: ${OTLP_ENDPOINT:http://localhost:4317}
+      # IMPORTANT: Spring Boot 3.5's OTLP exporter defaults to transport `http`
+      # (which would target 4318 with a /v1/traces path). The docker-compose
+      # Jaeger endpoint above is the OTLP *gRPC* port 4317, so the transport
+      # MUST be set to `grpc` for spans to actually arrive. The OkHttp OTLP
+      # sender on the classpath backs gRPC without any extra dependency.
+      transport: grpc
+  tracing:
+    sampling:
+      # Trace EVERY request locally (full-fidelity local observability). This
+      # is an explicit local guarantee independent of any ambient
+      # TRACING_SAMPLE_RATE; prod lowers sampling via that env var in base.
+      probability: 1.0
+  endpoint:
+    health:
+      # Base is `when-authorized`; local shows full component detail (DB, disk,
+      # custom HealthIndicators) unauthenticated at /actuator/health for
+      # convenient developer diagnostics. The liveness/readiness probe groups
+      # remain enabled (INHERITED from base).
+      show-details: always
+
+# ===========================================================================
+# Phase 5 — Application security (com.carddemo.security.jwt).
+# JWT replaces the CICS pseudo-conversational COMMAREA session state.
+# ===========================================================================
+carddemo:
+  security:
+    jwt:
+      # DEV-ONLY signing secret. Base declares `secret: ${JWT_SECRET}` with NO
+      # default (so prod fails fast if it is unset — the intended behavior).
+      # For a clean-machine local run we supply a clearly-labelled placeholder
+      # so `mvn spring-boot:run -Dspring-boot.run.profiles=local` starts with
+      # no extra setup. It is >= 32 bytes as HS256 requires.
+      #
+      #   !!! DEV ONLY — NEVER use this value in production. !!!
+      #   The JWT secret being hardcoded in configuration is a KNOWN open risk
+      #   (AAP 0.8.7); in prod it MUST be supplied via ${JWT_SECRET} from an
+      #   environment variable or a vault. Prefer exporting JWT_SECRET even
+      #   locally. Do NOT commit a real production secret anywhere.
+      secret: ${JWT_SECRET:local-dev-only-change-me-not-for-production}
+      # expiration-ms is INHERITED from base (${JWT_EXPIRATION_MS:3600000}).

@@ -27,6 +27,7 @@ import org.springframework.batch.core.repository.JobInstanceAlreadyCompleteExcep
 import org.springframework.batch.core.repository.JobRestartException;
 import org.springframework.batch.test.MetaDataInstanceFactory;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import com.carddemo.exception.FileProcessingException;
@@ -269,18 +270,24 @@ class ReportJobLauncherTest {
     class MalformedMessages {
 
         @Test
-        @DisplayName("a non-JSON body is rejected and no job is launched")
+        @DisplayName("a non-JSON body is wrapped (Jackson cause preserved) and no job is launched")
         void rejectsNonJsonBody() {
+            // Production catches JsonProcessingException and rethrows it as the cause of a
+            // FileProcessingException, so the malformed-body diagnostic is preserved for the DLQ.
             assertThatThrownBy(() -> launcher.onReportRequest("this is not json"))
-                    .isInstanceOf(FileProcessingException.class);
+                    .isInstanceOf(FileProcessingException.class)
+                    .hasCauseInstanceOf(JsonProcessingException.class);
             verifyNoInteractions(jobLauncher);
         }
 
         @Test
-        @DisplayName("a JSON null literal is rejected and no job is launched")
+        @DisplayName("a JSON null literal is rejected with no cause and no job is launched")
         void rejectsJsonNullLiteral() {
+            // A literal JSON null parses cleanly to a null value, so production throws a
+            // FileProcessingException with NO wrapped cause — distinct from the malformed-body branch.
             assertThatThrownBy(() -> launcher.onReportRequest("null"))
-                    .isInstanceOf(FileProcessingException.class);
+                    .isInstanceOf(FileProcessingException.class)
+                    .hasNoCause();
             verifyNoInteractions(jobLauncher);
         }
     }

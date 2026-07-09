@@ -38,6 +38,7 @@ import com.carddemo.exception.DuplicateResourceException;
 import com.carddemo.exception.FileProcessingException;
 import com.carddemo.exception.FileStatusCode;
 import com.carddemo.exception.OptimisticLockConflictException;
+import com.carddemo.exception.RejectReason;
 import com.carddemo.exception.ResourceNotFoundException;
 import com.carddemo.exception.ValidationException;
 
@@ -153,6 +154,28 @@ class GlobalExceptionHandlerTest {
                 .contains("Account ID must be Numeric", "Type CD can NOT be empty");
         // The field->message map carries no raw value, so the summary must be null.
         assertThat(body.fieldErrors()).allSatisfy(fe -> assertThat(fe.rejectedValueSummary()).isNull());
+    }
+
+    @Test
+    @DisplayName("ValidationException carrying a RejectReason (no field map) -> 400 with the safe message, empty fieldErrors, reject reason not leaked")
+    void validationExceptionWithRejectReasonNoLeak() {
+        // A ValidationException may carry a COBOL-style RejectReason (the CBTRN02C validation-code set) rather
+        // than a per-field map. The handler must still return a clean 400 with only the safe, caller-facing
+        // message and no field detail, and must never leak the internal reject-reason code or description.
+        ResponseEntity<ErrorResponse> response =
+                handler.handleCardDemoException(
+                        new ValidationException("Invalid card", RejectReason.INVALID_CARD_NUMBER), request);
+
+        assertThat(response.getStatusCode().value()).isEqualTo(400);
+        ErrorResponse body = response.getBody();
+        assertThat(body).isNotNull();
+        assertThat(body.status()).isEqualTo(400);
+        // Only the safe, caller-facing message is surfaced.
+        assertThat(body.message()).isEqualTo("Invalid card");
+        // No per-field detail is produced when the exception carries only a reject reason (no field map).
+        assertThat(body.fieldErrors()).isEmpty();
+        // SECURITY: the internal reject-reason description must never leak into the client-facing body.
+        assertThat(body.message()).doesNotContain(RejectReason.INVALID_CARD_NUMBER.getDescription());
     }
 
     @Test
