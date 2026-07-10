@@ -82,6 +82,16 @@ spring:
     properties:
       hibernate:
         format_sql: true
+      # Per-query execution deadline (milliseconds) applied to every JPA query via
+      # Statement.setQueryTimeout on PostgreSQL. Complements the Hikari
+      # connection-acquisition timeout (which bounds only checkout, not execution): a slow
+      # or lock-waiting query is aborted rather than pinning a pooled connection until the
+      # client disconnects or Hikari max-lifetime elapses, which — with a bounded pool —
+      # could otherwise exhaust connections. 5000 ms is far above the observed OLTP/paged-batch
+      # latencies (all such queries are indexed and bounded), so it only trips on a genuine
+      # stall. Inherited by every profile (local/prod/test); Flyway and non-JPA JdbcTemplate
+      # paths are unaffected. Value is per-query, not per-transaction.
+      jakarta.persistence.query.timeout: 5000
 
   # -------------------------------------------------------------------------
   # Phase 3 — Flyway migrations (PostgreSQL 16)

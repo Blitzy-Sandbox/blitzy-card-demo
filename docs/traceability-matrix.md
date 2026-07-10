@@ -134,21 +134,21 @@ _Paragraph count: **34** — all mapped._
 | `COACTVWC.cbl` | `1400-SEND-SCREEN` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COACTVWC.cbl` | `1400-SEND-SCREEN-EXIT` | `AccountController` | (response assembly) | PERFORM ... THRU 1400-SEND-SCREEN-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `2000-PROCESS-INPUTS` | `AccountViewService` | `viewAccount()` | Receive+edit+decide orchestration for the request |
-| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → structured boundary within `viewAccount()` (no separate Java code) |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP` | `AccountController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP-EXIT` | `AccountController` | (request binding) | PERFORM ... THRU 2100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS` | `AccountViewService` | `viewAccount()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → structured boundary within `viewAccount()` (no separate Java code) |
 | `COACTVWC.cbl` | `2210-EDIT-ACCOUNT` | `AccountViewService` | `viewAccount()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → structured boundary within `viewAccount()` (no separate Java code) |
 | `COACTVWC.cbl` | `9000-READ-ACCT` | `AccountRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTVWC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9000-READ-ACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9000-READ-ACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findById()` | PERFORM ... THRU 9200-GETCARDXREF-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findById()` | PERFORM ... THRU 9200-GETCARDXREF-BYACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTVWC.cbl` | `9300-GETACCTDATA-BYACCT` | `AccountRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTVWC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9300-GETACCTDATA-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9300-GETACCTDATA-BYACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTVWC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTVWC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | PERFORM ... THRU 9400-GETCUSTDATA-BYCUST-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | PERFORM ... THRU 9400-GETCUSTDATA-BYCUST-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTVWC.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
 | `COACTVWC.cbl` | `SEND-PLAIN-TEXT-EXIT` | `GlobalExceptionHandler` | (error response) | PERFORM ... THRU SEND-PLAIN-TEXT-EXIT range terminator → end of (error response) (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `SEND-LONG-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
@@ -165,47 +165,47 @@ _Paragraph count: **85** — all mapped._
 | `COACTUPC.cbl` | `COMMON-RETURN` | `AccountController` | (HTTP response) | EXEC CICS RETURN (COMMAREA/TRANSID) → HTTP response; conversational state externalised to JWT |
 | `COACTUPC.cbl` | `0000-MAIN-EXIT` | `AccountController` | (request dispatch) | PERFORM ... THRU 0000-MAIN-EXIT range terminator → end of (request dispatch) (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `1000-PROCESS-INPUTS` | `AccountUpdateService` | `updateAccount()` | Receive+edit+decide orchestration for the request |
-| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → structured boundary within `updateAccount()` (no separate Java code) |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP` | `AccountController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `AccountController` | (request binding) | PERFORM ... THRU 1100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW` | `AccountUpdateService` | `updateAccount()` | Compare screen values vs fetched record → change detection feeding the @Version optimistic-lock update |
-| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1205-COMPARE-OLD-NEW-EXIT range terminator → end of detectChanges() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1205-COMPARE-OLD-NEW-EXIT range terminator → structured boundary within `updateAccount()` (no separate Java code) |
 | `COACTUPC.cbl` | `1210-EDIT-ACCOUNT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1215-EDIT-MANDATORY` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1215-EDIT-MANDATORY-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1215-EDIT-MANDATORY-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1215-EDIT-MANDATORY-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1215-EDIT-MANDATORY-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1220-EDIT-YESNO` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1220-EDIT-YESNO-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1220-EDIT-YESNO-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1225-EDIT-ALPHA-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1225-EDIT-ALPHA-REQD-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1230-EDIT-ALPHANUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1230-EDIT-ALPHANUM-REQD-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1235-EDIT-ALPHA-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1235-EDIT-ALPHA-OPT-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1240-EDIT-ALPHANUM-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1240-EDIT-ALPHANUM-OPT-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1245-EDIT-NUM-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1245-EDIT-NUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1245-EDIT-NUM-REQD-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1250-EDIT-SIGNED-9V2-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1250-EDIT-SIGNED-9V2-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
 | `COACTUPC.cbl` | `EDIT-AREA-CODE` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
 | `COACTUPC.cbl` | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
 | `COACTUPC.cbl` | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU EDIT-US-PHONE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1260-EDIT-US-PHONE-NUM-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU EDIT-US-PHONE-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
+| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1260-EDIT-US-PHONE-NUM-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1265-EDIT-US-SSN-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1265-EDIT-US-SSN-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1270-EDIT-US-STATE-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1270-EDIT-US-STATE-CD-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1275-EDIT-FICO-SCORE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1275-EDIT-FICO-SCORE-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1280-EDIT-US-STATE-ZIP-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1280-EDIT-US-STATE-ZIP-CD-EXIT range terminator → structured boundary within `editFields()` (no separate Java code) |
 | `COACTUPC.cbl` | `2000-DECIDE-ACTION` | `AccountUpdateService` | `updateAccount()` | EVALUATE action dispatch (view/edit/confirm/update) → service branch; branch order preserved |
-| `COACTUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → end of updateAccount() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → structured boundary within `updateAccount()` (no separate Java code) |
 | `COACTUPC.cbl` | `3000-SEND-MAP` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COACTUPC.cbl` | `3000-SEND-MAP-EXIT` | `AccountController` | (response assembly) | PERFORM ... THRU 3000-SEND-MAP-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `3100-SCREEN-INIT` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
@@ -231,17 +231,17 @@ _Paragraph count: **85** — all mapped._
 | `COACTUPC.cbl` | `3400-SEND-SCREEN` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COACTUPC.cbl` | `3400-SEND-SCREEN-EXIT` | `AccountController` | (response assembly) | PERFORM ... THRU 3400-SEND-SCREEN-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `9000-READ-ACCT` | `AccountRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTUPC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9000-READ-ACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9000-READ-ACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findById()` | PERFORM ... THRU 9200-GETCARDXREF-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9200-GETCARDXREF-BYACCT-EXIT` | `CardXrefRepository` | `findById()` | PERFORM ... THRU 9200-GETCARDXREF-BYACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT` | `AccountRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9300-GETACCTDATA-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9300-GETACCTDATA-BYACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | PERFORM ... THRU 9400-GETCUSTDATA-BYCUST-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | PERFORM ... THRU 9400-GETCUSTDATA-BYCUST-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA` | `AccountUpdateService` | `toView()` | Move fetched account/customer/xref rows into the working/response model |
-| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `toView()` | PERFORM ... THRU 9500-STORE-FETCHED-DATA-EXIT range terminator → end of populateModel() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `toView()` | PERFORM ... THRU 9500-STORE-FETCHED-DATA-EXIT range terminator → structured boundary within `toView()` (no separate Java code) |
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING` | `AccountRepository` | `save()` | Read-verify-then-REWRITE → save() guarded by @Version optimistic lock |
-| `COACTUPC.cbl` | `9600-WRITE-PROCESSING-EXIT` | `AccountRepository` | `save()` | PERFORM ... THRU 9600-WRITE-PROCESSING-EXIT range terminator → end of save() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9600-WRITE-PROCESSING-EXIT` | `AccountRepository` | `save()` | PERFORM ... THRU 9600-WRITE-PROCESSING-EXIT range terminator → structured boundary within `save()` (no separate Java code) |
 | `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC` | `OptimisticLockConflictException` | (guard) | Re-read compare (record changed?) → @Version optimistic-lock check; 409 on conflict |
 | `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC-EXIT` | `OptimisticLockConflictException` | (guard) | PERFORM ... THRU 9700-CHECK-CHANGE-IN-REC-EXIT range terminator → end of (guard) (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | (exception mapping) | ABEND-ROUTINE → RuntimeException mapped to ErrorResponse + structured log (MDC correlationId) |
@@ -275,19 +275,19 @@ _Paragraph count: **39** — all mapped._
 | `COCRDLIC.cbl` | `2100-RECEIVE-SCREEN` | `CardController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COCRDLIC.cbl` | `2100-RECEIVE-SCREEN-EXIT` | `CardController` | (request binding) | PERFORM ... THRU 2100-RECEIVE-SCREEN-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
 | `COCRDLIC.cbl` | `2200-EDIT-INPUTS` | `CardListService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDLIC.cbl` | `2200-EDIT-INPUTS-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2200-EDIT-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `2200-EDIT-INPUTS-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2200-EDIT-INPUTS-EXIT range terminator → structured boundary within `validate()` (no separate Java code) |
 | `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT` | `CardListService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → structured boundary within `validate()` (no separate Java code) |
 | `COCRDLIC.cbl` | `2220-EDIT-CARD` | `CardListService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDLIC.cbl` | `2220-EDIT-CARD-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `2220-EDIT-CARD-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → structured boundary within `validate()` (no separate Java code) |
 | `COCRDLIC.cbl` | `2250-EDIT-ARRAY` | `CardListService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDLIC.cbl` | `2250-EDIT-ARRAY-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2250-EDIT-ARRAY-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `2250-EDIT-ARRAY-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2250-EDIT-ARRAY-EXIT range terminator → structured boundary within `validate()` (no separate Java code) |
 | `COCRDLIC.cbl` | `9000-READ-FORWARD` | `TransactionRepository` | `findAll()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
-| `COCRDLIC.cbl` | `9000-READ-FORWARD-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9000-READ-FORWARD-EXIT range terminator → end of findNextPage() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `9000-READ-FORWARD-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9000-READ-FORWARD-EXIT range terminator → structured boundary within `findAll()` (no separate Java code) |
 | `COCRDLIC.cbl` | `9100-READ-BACKWARDS` | `TransactionRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
-| `COCRDLIC.cbl` | `9100-READ-BACKWARDS-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9100-READ-BACKWARDS-EXIT range terminator → end of findPreviousPage() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `9100-READ-BACKWARDS-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9100-READ-BACKWARDS-EXIT range terminator → structured boundary within `findAll()` (no separate Java code) |
 | `COCRDLIC.cbl` | `9500-FILTER-RECORDS` | `CardListService` | `applyFilters()` | Client-side record filtering → repository predicate/derived query |
-| `COCRDLIC.cbl` | `9500-FILTER-RECORDS-EXIT` | `CardListService` | `applyFilters()` | PERFORM ... THRU 9500-FILTER-RECORDS-EXIT range terminator → end of applyFilters() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `9500-FILTER-RECORDS-EXIT` | `CardListService` | `applyFilters()` | PERFORM ... THRU 9500-FILTER-RECORDS-EXIT range terminator → structured boundary within `applyFilters()` (no separate Java code) |
 | `COCRDLIC.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
 | `COCRDLIC.cbl` | `SEND-PLAIN-TEXT-EXIT` | `GlobalExceptionHandler` | (error response) | PERFORM ... THRU SEND-PLAIN-TEXT-EXIT range terminator → end of (error response) (structured method boundary; no separate Java code) |
 | `COCRDLIC.cbl` | `SEND-LONG-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
@@ -313,21 +313,21 @@ _Paragraph count: **34** — all mapped._
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN` | `CardController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN-EXIT` | `CardController` | (response assembly) | PERFORM ... THRU 1400-SEND-SCREEN-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `2000-PROCESS-INPUTS` | `CardViewService` | `viewCard()` | Receive+edit+decide orchestration for the request |
-| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → structured boundary within `viewCard()` (no separate Java code) |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP` | `CardController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP-EXIT` | `CardController` | (request binding) | PERFORM ... THRU 2100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → structured boundary within `viewCard()` (no separate Java code) |
 | `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → structured boundary within `viewCard()` (no separate Java code) |
 | `COCRDSLC.cbl` | `2220-EDIT-CARD` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → structured boundary within `viewCard()` (no separate Java code) |
 | `COCRDSLC.cbl` | `9000-READ-DATA` | `CardViewService` | (helper) | Supporting paragraph folded into CardViewService business logic |
 | `COCRDSLC.cbl` | `9000-READ-DATA-EXIT` | `CardViewService` | (helper) | PERFORM ... THRU 9000-READ-DATA-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9100-GETCARD-BYACCTCARD-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9100-GETCARD-BYACCTCARD-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COCRDSLC.cbl` | `9150-GETCARD-BYACCT` | `CardRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COCRDSLC.cbl` | `9150-GETCARD-BYACCT-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9150-GETCARD-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `9150-GETCARD-BYACCT-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9150-GETCARD-BYACCT-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COCRDSLC.cbl` | `SEND-LONG-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
 | `COCRDSLC.cbl` | `SEND-LONG-TEXT-EXIT` | `GlobalExceptionHandler` | (error response) | PERFORM ... THRU SEND-LONG-TEXT-EXIT range terminator → end of (error response) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
@@ -344,25 +344,25 @@ _Paragraph count: **45** — all mapped._
 | `COCRDUPC.cbl` | `COMMON-RETURN` | `CardController` | (HTTP response) | EXEC CICS RETURN (COMMAREA/TRANSID) → HTTP response; conversational state externalised to JWT |
 | `COCRDUPC.cbl` | `0000-MAIN-EXIT` | `CardController` | (request dispatch) | PERFORM ... THRU 0000-MAIN-EXIT range terminator → end of (request dispatch) (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `1000-PROCESS-INPUTS` | `CardUpdateService` | `updateCard()` | Receive+edit+decide orchestration for the request |
-| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP` | `CardController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `CardController` | (request binding) | PERFORM ... THRU 1100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1220-EDIT-CARD` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1220-EDIT-CARD-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1230-EDIT-NAME` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1230-EDIT-NAME-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1230-EDIT-NAME-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1240-EDIT-CARDSTATUS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1240-EDIT-CARDSTATUS-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON` | `DateValidationService` | `validateDateCcyyMmDd()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
-| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1250-EDIT-EXPIRY-MON-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1250-EDIT-EXPIRY-MON-EXIT range terminator → structured boundary within `validateDateCcyyMmDd()` (no separate Java code) |
 | `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR` | `DateValidationService` | `validateDateCcyyMmDd()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
-| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1260-EDIT-EXPIRY-YEAR-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1260-EDIT-EXPIRY-YEAR-EXIT range terminator → structured boundary within `validateDateCcyyMmDd()` (no separate Java code) |
 | `COCRDUPC.cbl` | `2000-DECIDE-ACTION` | `CardUpdateService` | `updateCard()` | EVALUATE action dispatch (view/edit/confirm/update) → service branch; branch order preserved |
-| `COCRDUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → end of updateCard() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → structured boundary within `updateCard()` (no separate Java code) |
 | `COCRDUPC.cbl` | `3000-SEND-MAP` | `CardController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COCRDUPC.cbl` | `3000-SEND-MAP-EXIT` | `CardController` | (response assembly) | PERFORM ... THRU 3000-SEND-MAP-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `3100-SCREEN-INIT` | `CardController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
@@ -378,9 +378,9 @@ _Paragraph count: **45** — all mapped._
 | `COCRDUPC.cbl` | `9000-READ-DATA` | `CardUpdateService` | (helper) | Supporting paragraph folded into CardUpdateService business logic |
 | `COCRDUPC.cbl` | `9000-READ-DATA-EXIT` | `CardUpdateService` | (helper) | PERFORM ... THRU 9000-READ-DATA-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
-| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9100-GETCARD-BYACCTCARD-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `9100-GETCARD-BYACCTCARD-EXIT` | `CardRepository` | `findById()` | PERFORM ... THRU 9100-GETCARD-BYACCTCARD-EXIT range terminator → structured boundary within `findById()` (no separate Java code) |
 | `COCRDUPC.cbl` | `9200-WRITE-PROCESSING` | `AccountRepository` | `save()` | Read-verify-then-REWRITE → save() guarded by @Version optimistic lock |
-| `COCRDUPC.cbl` | `9200-WRITE-PROCESSING-EXIT` | `AccountRepository` | `save()` | PERFORM ... THRU 9200-WRITE-PROCESSING-EXIT range terminator → end of save() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `9200-WRITE-PROCESSING-EXIT` | `AccountRepository` | `save()` | PERFORM ... THRU 9200-WRITE-PROCESSING-EXIT range terminator → structured boundary within `save()` (no separate Java code) |
 | `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC` | `OptimisticLockConflictException` | (guard) | Re-read compare (record changed?) → @Version optimistic-lock check; 409 on conflict |
 | `COCRDUPC.cbl` | `9300-CHECK-CHANGE-IN-REC-EXIT` | `OptimisticLockConflictException` | (guard) | PERFORM ... THRU 9300-CHECK-CHANGE-IN-REC-EXIT range terminator → end of (guard) (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `ABEND-ROUTINE` | `GlobalExceptionHandler` | (exception mapping) | ABEND-ROUTINE → RuntimeException mapped to ErrorResponse + structured log (MDC correlationId) |
@@ -796,7 +796,7 @@ _Paragraph count: **2** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDateCcyyMmDd()` | CEEDAYS validation → LocalDate parse + FeedbackCode→message mapping (DateValidationException on invalid) |
-| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU A000-MAIN-EXIT range terminator → end of validateDate() (structured method boundary; no separate Java code) |
+| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU A000-MAIN-EXIT range terminator → structured boundary within `validateDateCcyyMmDd()` (no separate Java code) |
 
 ## 2. Construct Mappings (non-paragraph)
 
