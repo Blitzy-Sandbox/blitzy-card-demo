@@ -361,7 +361,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(carddemo_batch_records_processed_total[5m])) by (job)",
+          "expr": "sum(rate(carddemo_transactions_posted_total[5m])) by (job)",
           "legendFormat": "{{job}}",
           "refId": "A"
         }
@@ -370,7 +370,7 @@
     {
       "id": 7,
       "type": "timeseries",
-      "title": "Batch Rejects (records/s) by Reason",
+      "title": "Batch Rejects (records/s) by Job",
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -412,8 +412,8 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "sum(rate(carddemo_batch_records_rejected_total[5m])) by (reason)",
-          "legendFormat": "{{reason}}",
+          "expr": "sum(rate(carddemo_transactions_rejected_total[5m])) by (job)",
+          "legendFormat": "{{job}}",
           "refId": "A"
         }
       ]
@@ -731,7 +731,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(carddemo_transaction_amount_total_count[5m])",
+          "expr": "rate(carddemo_transaction_amount_count[5m])",
           "legendFormat": "txn count/s",
           "refId": "A"
         },
@@ -741,7 +741,7 @@
             "uid": "${DS_PROMETHEUS}"
           },
           "editorMode": "code",
-          "expr": "rate(carddemo_transaction_amount_total_sum[5m])",
+          "expr": "rate(carddemo_transaction_amount_sum[5m])",
           "legendFormat": "amount sum/s",
           "refId": "B"
         }

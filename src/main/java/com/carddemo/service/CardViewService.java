@@ -1,6 +1,7 @@
 package com.carddemo.service;
 
 import java.util.regex.Pattern;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -162,6 +163,7 @@ public class CardViewService {
      * @throws ResourceNotFoundException if no card exists for {@code cardNumber}
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "card-view")
     public CardViewResponse viewCard(String cardNumber) {
         // 2220-EDIT-CARD: "Not supplied" branch (CC-CARD-NUM blank / spaces / zeros).
         if (cardNumber == null || cardNumber.isBlank()) {

@@ -16,6 +16,7 @@ import org.springframework.stereotype.Service;
 
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
+import io.micrometer.observation.annotation.Observed;
 
 import com.carddemo.dto.ReportRequest;
 import com.carddemo.dto.ReportResponse;
@@ -284,6 +285,7 @@ public class ReportService {
      *                                 AWS cause is logged server-side but never
      *                                 leaked to the caller
      */
+    @Observed(name = "carddemo.service", contextualName = "report-generate")
     public ReportResponse generateReport(ReportRequest request) {
         // M10 — guard the input contract before any dereference. A null body is a
         // broken contract (HTTP 400), never an unhandled NPE / HTTP 500.

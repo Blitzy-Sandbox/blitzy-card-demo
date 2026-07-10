@@ -1,5 +1,7 @@
 package com.carddemo.service;
 
+import io.micrometer.observation.annotation.Observed;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -215,6 +217,7 @@ public class AccountViewService {
      *                                   master row (each with its verbatim message)
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "account-view")
     public AccountViewResponse viewAccount(Long accountId) {
         // 2210-EDIT-ACCOUNT: "Not supplied" and "Not numeric / zeros" branches.
         // The id is already a Long (guaranteed numeric), so the surviving edit is

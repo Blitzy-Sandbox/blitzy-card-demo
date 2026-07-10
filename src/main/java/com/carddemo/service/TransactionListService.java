@@ -2,6 +2,7 @@ package com.carddemo.service;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -142,6 +143,7 @@ public class TransactionListService {
      *                             numeric (HTTP&nbsp;400)
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "transaction-list")
     public TransactionListResponse listTransactions(String transactionIdFilter,
                                                     String cardNumberFilter,
                                                     int page) {

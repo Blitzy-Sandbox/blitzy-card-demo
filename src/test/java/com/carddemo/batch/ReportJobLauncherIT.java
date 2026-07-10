@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.UUID;
 
 import io.awspring.cloud.sqs.listener.MessageListenerContainerRegistry;
+import io.awspring.cloud.sqs.operations.SqsTemplate;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -24,6 +25,7 @@ import org.springframework.test.context.DynamicPropertySource;
 import com.carddemo.entity.Transaction;
 import com.carddemo.observability.CorrelationIdFilter;
 import com.carddemo.repository.TransactionRepository;
+import com.carddemo.service.ReportService;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -198,6 +200,19 @@ class ReportJobLauncherIT extends AbstractBatchIntegrationTest {
     @Autowired
     private TransactionRepository transactionRepository;
 
+    /**
+     * The application's own {@link SqsTemplate} producer bean &mdash; the <em>same</em> customized
+     * bean {@code service.ReportService} uses to enqueue report requests (declared in
+     * {@code config.AwsConfig} with the payload-type header disabled). Sending through this bean, with
+     * a strongly-typed {@link ReportService.ReportJobMessage} payload, exercises the real producer
+     * serialization path end-to-end rather than a hand-rolled JSON string, so this IT reproduces and
+     * guards the F-1 message-contract defect: with the auto-configured template the producer would
+     * stamp a {@code JavaType} payload-type header that the {@code String}-parameter listener cannot
+     * parse; with the customized template it emits raw JSON that the listener consumes successfully.
+     */
+    @Autowired
+    private SqsTemplate sqsTemplate;
+
     /** Read-only view of the Spring Batch meta-data, used to assert the launched execution. */
     @Autowired
     private JobExplorer jobExplorer;
@@ -276,30 +291,41 @@ class ReportJobLauncherIT extends AbstractBatchIntegrationTest {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Sends one report-request message to the FIFO queue and asserts the full bridge contract: the
-     * listener launches {@code transactionReportJob}, which writes the fixed-width {@code tranrept.dat}
-     * report to S3 with a grand total matching the seeded amounts, and the job runs exactly once with
-     * the message's correlation id.
+     * Sends one report-request message through the application's real {@link SqsTemplate} producer and
+     * asserts the full bridge contract: the listener launches {@code transactionReportJob}, which writes
+     * the fixed-width {@code tranrept.dat} report to S3 with a grand total matching the seeded amounts,
+     * and the job runs exactly once with the message's correlation id.
+     *
+     * <p><strong>F-1 regression guard.</strong> The message is published with a strongly-typed
+     * {@link ReportService.ReportJobMessage} payload through the injected {@link #sqsTemplate} &mdash;
+     * the very bean {@code ReportService} uses in production &mdash; rather than as a hand-rolled JSON
+     * string sent directly through the SDK. This exercises the real producer serialization path, so the
+     * test fails if the producer ever again stamps a {@code JavaType} payload-type header that the
+     * {@code String}-parameter listener cannot parse (the F-1 defect). With the customized template
+     * (payload-type header disabled) the producer emits raw JSON and the listener consumes it
+     * successfully; the schema fields ({@code jobId}, {@code reportName}, {@code startDate},
+     * {@code endDate}, {@code correlationId}) are serialized by the producer exactly as the listener
+     * expects.</p>
      */
     @Test
-    @DisplayName("A report-request message is consumed and produces the 133-char tranrept.dat report in S3")
+    @DisplayName("A producer-sent typed report message is consumed and produces the 133-char tranrept.dat report in S3")
     void reportRequestMessageProducesReportInS3() {
         // A unique jobId gives every run a fresh, restartable JobInstance (jobId is the identifying
         // dedup key), so the job always launches rather than being rejected as an already-complete
         // duplicate; the correlationId is fixed so it can be asserted on the launched execution.
         final String jobId = UUID.randomUUID().toString();
-        final String messageBody = """
-                {
-                  "jobId": "%s",
-                  "reportName": "DAILY",
-                  "startDate": "%s",
-                  "endDate": "%s",
-                  "correlationId": "%s"
-                }""".formatted(jobId, WINDOW_START_DATE, WINDOW_END_DATE, IT_CORRELATION_ID);
 
-        // Send on the pre-created FIFO queue (content-based dedup is on, so only a group id is needed).
-        final String reportQueueUrl = queueUrl(QUEUE_REPORT_FIFO);
-        sendMessage(reportQueueUrl, messageBody, MESSAGE_GROUP_ID);
+        // Publish through the application's own customized SqsTemplate producer bean with a typed
+        // payload — the real production serialization path. An explicit deduplication id (the jobId)
+        // is supplied to match ReportService's send options exactly (the FIFO queue also has
+        // content-based deduplication enabled, so either mechanism yields a unique message per run).
+        final ReportService.ReportJobMessage message = new ReportService.ReportJobMessage(
+                jobId, "DAILY", WINDOW_START_DATE, WINDOW_END_DATE, IT_CORRELATION_ID);
+        sqsTemplate.send(to -> to
+                .queue(QUEUE_REPORT_FIFO)
+                .payload(message)
+                .messageGroupId(MESSAGE_GROUP_ID)
+                .messageDeduplicationId(jobId));
 
         // Listener consumption + job execution + S3 upload are asynchronous: poll (no Thread.sleep)
         // under a bounded timeout until the report object materialises.
@@ -338,15 +364,25 @@ class ReportJobLauncherIT extends AbstractBatchIntegrationTest {
                 .as("grand total must equal the sum of the seeded amounts")
                 .isEqualByComparingTo(EXPECTED_GRAND_TOTAL);
 
-        // (5) transactionReportJob ran exactly once with the message's correlationId and COMPLETED.
-        final List<JobExecution> matchingExecutions = executionsWithCorrelationId(IT_CORRELATION_ID);
+        // (5) transactionReportJob ran exactly once for THIS run and COMPLETED, and the message's
+        // correlationId was propagated onto the launched execution. The lookup filters by the unique,
+        // identifying jobId (not the fixed correlationId) so the assertion is isolated from sibling
+        // integration tests that share the singleton PostgreSQL batch-metadata tables (for example the
+        // tracing-enabled variant), which would otherwise contribute a second execution for the same
+        // correlationId.
+        final List<JobExecution> matchingExecutions = executionsWithJobId(jobId);
         assertThat(matchingExecutions)
-                .as("transactionReportJob must run exactly once for correlationId %s", IT_CORRELATION_ID)
+                .as("transactionReportJob must run exactly once for jobId %s", jobId)
                 .hasSize(1);
         final JobExecution execution = matchingExecutions.get(0);
         assertThat(execution.getStatus())
                 .as("the launched report job must complete successfully")
                 .isEqualTo(BatchStatus.COMPLETED);
+        // The message's correlationId was propagated verbatim onto the launched execution (the COBOL
+        // COMMAREA -> distributed-trace stitch), preserving the original F-1 propagation assertion.
+        assertThat(execution.getJobParameters().getString(CorrelationIdFilter.CORRELATION_ID_MDC_KEY))
+                .as("the launched report job must carry the propagated correlationId %s", IT_CORRELATION_ID)
+                .isEqualTo(IT_CORRELATION_ID);
         // The requested window was propagated verbatim as identifying job parameters.
         assertThat(execution.getJobParameters().getString("startDate")).isEqualTo(WINDOW_START_DATE);
         assertThat(execution.getJobParameters().getString("endDate")).isEqualTo(WINDOW_END_DATE);
@@ -438,13 +474,11 @@ class ReportJobLauncherIT extends AbstractBatchIntegrationTest {
      * @param correlationId the correlation id to match; must not be {@code null}
      * @return the matching executions (empty if none)
      */
-    private List<JobExecution> executionsWithCorrelationId(final String correlationId) {
+    private List<JobExecution> executionsWithJobId(final String jobId) {
         final List<JobExecution> matches = new ArrayList<>();
         for (final JobInstance instance : jobExplorer.getJobInstances(REPORT_JOB_NAME, 0, 100)) {
             for (final JobExecution execution : jobExplorer.getJobExecutions(instance)) {
-                final String executionCorrelationId =
-                        execution.getJobParameters().getString(CorrelationIdFilter.CORRELATION_ID_MDC_KEY);
-                if (correlationId.equals(executionCorrelationId)) {
+                if (jobId.equals(execution.getJobParameters().getString("jobId"))) {
                     matches.add(execution);
                 }
             }

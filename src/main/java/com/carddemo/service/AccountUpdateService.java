@@ -6,6 +6,7 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -417,6 +418,7 @@ public class AccountUpdateService {
      *                                         (HTTP&nbsp;409)
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "account-update")
     public AccountUpdateResponse updateAccount(final Long accountId, final AccountUpdateRequest request) {
         log.info("Processing account update request (transaction CAUP)");
 

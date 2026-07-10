@@ -149,6 +149,13 @@ management:
       # Conservative default; profiles (e.g. local) may relax to `always`.
       show-details: when-authorized
   metrics:
+    distribution:
+      # Publish native Prometheus histogram buckets for the HTTP server request
+      # timer so the latency panel (Grafana dashboard Panel 4) can query
+      # http_server_requests_seconds_bucket. Without this only the _count/_sum/_max
+      # series are exported and the bucket-based panel shows "No data".
+      percentiles-histogram:
+        http.server.requests: true
     tags:
       # Common tag applied to every meter; MetricsConfig reads this
       # property. Keep aligned with spring.application.name for consistent

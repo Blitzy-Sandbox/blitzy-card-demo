@@ -10,13 +10,15 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.math.BigDecimal;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -36,8 +38,8 @@ import com.carddemo.repository.TransactionRepository;
  *
  * <p>The three collaborators ({@link TransactionRepository},
  * {@link CrossReferenceService} and {@link DateValidationService}) are Mockito
- * mocks and the service is assembled through {@link InjectMocks constructor
- * injection}, so no Spring context, database, Testcontainers, Docker, or live
+ * mocks and the service is assembled through explicit constructor injection in a
+ * {@code @BeforeEach} setup, so no Spring context, database, Testcontainers, Docker, or live
  * AWS is loaded &mdash; the suite is a fast, isolated unit test that feeds the
  * JaCoCo line-coverage gate (Gate&nbsp;8).</p>
  *
@@ -135,8 +137,29 @@ class TransactionAddServiceTest {
     @Mock
     private DateValidationService dateValidationService;
 
-    @InjectMocks
+    /**
+     * Real (in-memory) Micrometer registry so the {@code carddemo.transaction.amount} distribution
+     * summary the service registers and records into is observable by the metric-parity test below.
+     * A mock registry cannot be used: {@code DistributionSummary.builder(...).register(registry)}
+     * drives the registry's real meter-creation machinery. A fresh registry per test keeps the
+     * summary reads isolated (each scenario starts at 0).
+     */
+    private SimpleMeterRegistry meterRegistry;
+
+    /** Service under test, constructed fresh per scenario with the mocks + the real registry. */
     private TransactionAddService service;
+
+    /**
+     * Constructs the service under test before each scenario. Construction is explicit (rather than
+     * {@code @InjectMocks}) so a real {@link SimpleMeterRegistry} can be supplied for the
+     * transaction-amount summary while the three collaborators remain Mockito mocks.
+     */
+    @BeforeEach
+    void setUp() {
+        meterRegistry = new SimpleMeterRegistry();
+        service = new TransactionAddService(
+                transactionRepository, crossReferenceService, dateValidationService, meterRegistry);
+    }
 
     // ---------------------------------------------------------------------
     // Fixtures
@@ -500,6 +523,34 @@ class TransactionAddServiceTest {
         // Card supplied directly, so the account→card cross-reference is never consulted.
         verify(crossReferenceService).generateNextTransactionId();
         verify(crossReferenceService, never()).resolvePrimaryCardNumber(anyLong());
+    }
+
+    @Test
+    @DisplayName("carddemo.transaction.amount: records the magnitude of each successful add (abs value; negatives included)")
+    void addTransaction_recordsTransactionAmountSummary() {
+        acceptDates();
+        when(crossReferenceService.generateNextTransactionId())
+                .thenReturn("0000000000000042", "0000000000000043");
+
+        // A positive add of 1234.50 ...
+        service.addTransaction(build(ACCT, CARD, "01", "0005", new BigDecimal("1234.50"),
+                ORIG, PROC, "000000123", Boolean.TRUE));
+        // ... and a negative add of -50.00 (a credit/refund): the magnitude (50.00) is recorded,
+        // because a Micrometer DistributionSummary silently drops negative samples — so the count
+        // must still be 2 and the sum must be of the magnitudes.
+        service.addTransaction(build(ACCT, CARD, "01", "0005", new BigDecimal("-50.00"),
+                ORIG, PROC, "000000123", Boolean.TRUE));
+
+        var summary = meterRegistry.get("carddemo.transaction.amount").summary();
+        assertThat(summary.count())
+                .as("every successful add is counted regardless of sign")
+                .isEqualTo(2L);
+        assertThat(summary.totalAmount())
+                .as("sum is of magnitudes: |1234.50| + |-50.00|")
+                .isEqualTo(1284.5);
+        assertThat(summary.max())
+                .as("largest magnitude observed")
+                .isEqualTo(1234.5);
     }
 
     @Test

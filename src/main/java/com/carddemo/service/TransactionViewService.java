@@ -1,6 +1,7 @@
 package com.carddemo.service;
 
 import java.util.Locale;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,6 +152,7 @@ public class TransactionViewService {
      * @throws ResourceNotFoundException if no transaction exists for the given id
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "transaction-view")
     public TransactionViewResponse viewTransaction(String transactionId) {
         if (transactionId == null || transactionId.isBlank()) {
             throw new ValidationException(MSG_TRANID_EMPTY);

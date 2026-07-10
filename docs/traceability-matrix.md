@@ -83,7 +83,7 @@ _Paragraph count: **6** — all mapped._
 | `COSGN00C.cbl` | `PROCESS-ENTER-KEY` | `SignonService` | `authenticate()` | ENTER key handler → primary use-case method: Validate credentials; BCrypt verify replaces plaintext compare (D-002); JWT issued via JwtService |
 | `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COSGN00C.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
-| `COSGN00C.cbl` | `POPULATE-HEADER-INFO` | `SignonService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COSGN00C.cbl` | `POPULATE-HEADER-INFO` | `SignonService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COSGN00C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 
 #### COMEN01C.cbl — Main Menu (Txn `CM00`)
@@ -93,12 +93,12 @@ _Paragraph count: **7** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COMEN01C.cbl` | `MAIN-PARA` | `MenuController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
-| `COMEN01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `routeMainMenuSelection()` | ENTER key handler → primary use-case method: Menu option selection → stateless route; XCTL to target program → client-driven navigation |
+| `COMEN01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `resolveOption()` | ENTER key handler → primary use-case method: Menu option selection → stateless route; XCTL to target program → client-driven navigation |
 | `COMEN01C.cbl` | `RETURN-TO-SIGNON-SCREEN` | `AuthController` | (401 / redirect) | XCTL to COSGN00C → client redirected to signon (session invalid) |
 | `COMEN01C.cbl` | `SEND-MENU-SCREEN` | `MenuController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COMEN01C.cbl` | `RECEIVE-MENU-SCREEN` | `MenuController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COMEN01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
-| `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `buildMenuOptions()` | Menu-option array build → List&lt;MenuOption&gt; (role-filtered) |
+| `COMEN01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `getMenuForRole()` | Menu-option array build → List&lt;MenuOption&gt; (role-filtered) |
 
 #### COADM01C.cbl — Admin Menu (Txn `CA00`)
 
@@ -107,12 +107,12 @@ _Paragraph count: **7** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COADM01C.cbl` | `MAIN-PARA` | `MenuController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
-| `COADM01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `routeAdminMenuSelection()` | ENTER key handler → primary use-case method: Admin menu option selection → stateless route (admin-only options) |
+| `COADM01C.cbl` | `PROCESS-ENTER-KEY` | `MenuService` | `resolveOption()` | ENTER key handler → primary use-case method: Admin menu option selection → stateless route (admin-only options) |
 | `COADM01C.cbl` | `RETURN-TO-SIGNON-SCREEN` | `AuthController` | (401 / redirect) | XCTL to COSGN00C → client redirected to signon (session invalid) |
 | `COADM01C.cbl` | `SEND-MENU-SCREEN` | `MenuController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COADM01C.cbl` | `RECEIVE-MENU-SCREEN` | `MenuController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COADM01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
-| `COADM01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `buildMenuOptions()` | Menu-option array build → List&lt;MenuOption&gt; (role-filtered) |
+| `COADM01C.cbl` | `POPULATE-HEADER-INFO` | `MenuService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COADM01C.cbl` | `BUILD-MENU-OPTIONS` | `MenuService` | `getMenuForRole()` | Menu-option array build → List&lt;MenuOption&gt; (role-filtered) |
 
 #### COACTVWC.cbl — Account View (Txn `CAVW`)
 
@@ -133,14 +133,14 @@ _Paragraph count: **34** — all mapped._
 | `COACTVWC.cbl` | `1300-SETUP-SCREEN-ATTRS-EXIT` | `AccountController` | (response assembly) | PERFORM ... THRU 1300-SETUP-SCREEN-ATTRS-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `1400-SEND-SCREEN` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COACTVWC.cbl` | `1400-SEND-SCREEN-EXIT` | `AccountController` | (response assembly) | PERFORM ... THRU 1400-SEND-SCREEN-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
-| `COACTVWC.cbl` | `2000-PROCESS-INPUTS` | `AccountViewService` | `processInputs()` | Receive+edit+decide orchestration for the request |
-| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `processInputs()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2000-PROCESS-INPUTS` | `AccountViewService` | `viewAccount()` | Receive+edit+decide orchestration for the request |
+| `COACTVWC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP` | `AccountController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COACTVWC.cbl` | `2100-RECEIVE-MAP-EXIT` | `AccountController` | (request binding) | PERFORM ... THRU 2100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
-| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS` | `AccountViewService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `validate()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT` | `AccountViewService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `validate()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS` | `AccountViewService` | `viewAccount()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT` | `AccountViewService` | `viewAccount()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTVWC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `AccountViewService` | `viewAccount()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `9000-READ-ACCT` | `AccountRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
 | `COACTVWC.cbl` | `9000-READ-ACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9000-READ-ACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
 | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` | `CardXrefRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
@@ -164,46 +164,46 @@ _Paragraph count: **85** — all mapped._
 | `COACTUPC.cbl` | `0000-MAIN` | `AccountController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
 | `COACTUPC.cbl` | `COMMON-RETURN` | `AccountController` | (HTTP response) | EXEC CICS RETURN (COMMAREA/TRANSID) → HTTP response; conversational state externalised to JWT |
 | `COACTUPC.cbl` | `0000-MAIN-EXIT` | `AccountController` | (request dispatch) | PERFORM ... THRU 0000-MAIN-EXIT range terminator → end of (request dispatch) (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1000-PROCESS-INPUTS` | `AccountUpdateService` | `processInputs()` | Receive+edit+decide orchestration for the request |
-| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `processInputs()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1000-PROCESS-INPUTS` | `AccountUpdateService` | `updateAccount()` | Receive+edit+decide orchestration for the request |
+| `COACTUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP` | `AccountController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COACTUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `AccountController` | (request binding) | PERFORM ... THRU 1100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW` | `AccountUpdateService` | `detectChanges()` | Compare screen values vs fetched record → change detection feeding the @Version optimistic-lock update |
-| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `detectChanges()` | PERFORM ... THRU 1205-COMPARE-OLD-NEW-EXIT range terminator → end of detectChanges() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1215-EDIT-MANDATORY` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1215-EDIT-MANDATORY-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1215-EDIT-MANDATORY-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1220-EDIT-YESNO` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1220-EDIT-YESNO-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1225-EDIT-ALPHA-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1230-EDIT-ALPHANUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1235-EDIT-ALPHA-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1240-EDIT-ALPHANUM-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1245-EDIT-NUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1250-EDIT-SIGNED-9V2-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `EDIT-AREA-CODE` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU EDIT-US-PHONE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1260-EDIT-US-PHONE-NUM-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1265-EDIT-US-SSN-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1270-EDIT-US-STATE-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1275-EDIT-FICO-SCORE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `validate()` | PERFORM ... THRU 1280-EDIT-US-STATE-ZIP-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW` | `AccountUpdateService` | `updateAccount()` | Compare screen values vs fetched record → change detection feeding the @Version optimistic-lock update |
+| `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 1205-COMPARE-OLD-NEW-EXIT range terminator → end of detectChanges() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1215-EDIT-MANDATORY` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1215-EDIT-MANDATORY-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1215-EDIT-MANDATORY-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1220-EDIT-YESNO` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1220-EDIT-YESNO-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1220-EDIT-YESNO-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1225-EDIT-ALPHA-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1225-EDIT-ALPHA-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1230-EDIT-ALPHANUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1230-EDIT-ALPHANUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1235-EDIT-ALPHA-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1235-EDIT-ALPHA-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1240-EDIT-ALPHANUM-OPT-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1240-EDIT-ALPHANUM-OPT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1245-EDIT-NUM-REQD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1245-EDIT-NUM-REQD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1250-EDIT-SIGNED-9V2-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1250-EDIT-SIGNED-9V2-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `EDIT-AREA-CODE` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-PREFIX` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-LINENUM` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `EDIT-US-PHONE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU EDIT-US-PHONE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1260-EDIT-US-PHONE-NUM-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1260-EDIT-US-PHONE-NUM-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1265-EDIT-US-SSN` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1265-EDIT-US-SSN-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1265-EDIT-US-SSN-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1270-EDIT-US-STATE-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1270-EDIT-US-STATE-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1275-EDIT-FICO-SCORE-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1275-EDIT-FICO-SCORE-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD` | `AccountUpdateService` | `editFields()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COACTUPC.cbl` | `1280-EDIT-US-STATE-ZIP-CD-EXIT` | `AccountUpdateService` | `editFields()` | PERFORM ... THRU 1280-EDIT-US-STATE-ZIP-CD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `2000-DECIDE-ACTION` | `AccountUpdateService` | `updateAccount()` | EVALUATE action dispatch (view/edit/confirm/update) → service branch; branch order preserved |
 | `COACTUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `AccountUpdateService` | `updateAccount()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → end of updateAccount() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `3000-SEND-MAP` | `AccountController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
@@ -238,8 +238,8 @@ _Paragraph count: **85** — all mapped._
 | `COACTUPC.cbl` | `9300-GETACCTDATA-BYACCT-EXIT` | `AccountRepository` | `findById()` | PERFORM ... THRU 9300-GETACCTDATA-BYACCT-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST` | `CustomerRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
 | `COACTUPC.cbl` | `9400-GETCUSTDATA-BYCUST-EXIT` | `CustomerRepository` | `findById()` | PERFORM ... THRU 9400-GETCUSTDATA-BYCUST-EXIT range terminator → end of findById() (structured method boundary; no separate Java code) |
-| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA` | `AccountUpdateService` | `populateModel()` | Move fetched account/customer/xref rows into the working/response model |
-| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `populateModel()` | PERFORM ... THRU 9500-STORE-FETCHED-DATA-EXIT range terminator → end of populateModel() (structured method boundary; no separate Java code) |
+| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA` | `AccountUpdateService` | `toView()` | Move fetched account/customer/xref rows into the working/response model |
+| `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA-EXIT` | `AccountUpdateService` | `toView()` | PERFORM ... THRU 9500-STORE-FETCHED-DATA-EXIT range terminator → end of populateModel() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING` | `AccountRepository` | `save()` | Read-verify-then-REWRITE → save() guarded by @Version optimistic lock |
 | `COACTUPC.cbl` | `9600-WRITE-PROCESSING-EXIT` | `AccountRepository` | `save()` | PERFORM ... THRU 9600-WRITE-PROCESSING-EXIT range terminator → end of save() (structured method boundary; no separate Java code) |
 | `COACTUPC.cbl` | `9700-CHECK-CHANGE-IN-REC` | `OptimisticLockConflictException` | (guard) | Re-read compare (record changed?) → @Version optimistic-lock check; 409 on conflict |
@@ -282,10 +282,10 @@ _Paragraph count: **39** — all mapped._
 | `COCRDLIC.cbl` | `2220-EDIT-CARD-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
 | `COCRDLIC.cbl` | `2250-EDIT-ARRAY` | `CardListService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
 | `COCRDLIC.cbl` | `2250-EDIT-ARRAY-EXIT` | `CardListService` | `validate()` | PERFORM ... THRU 2250-EDIT-ARRAY-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDLIC.cbl` | `9000-READ-FORWARD` | `TransactionRepository` | `findNextPage()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
-| `COCRDLIC.cbl` | `9000-READ-FORWARD-EXIT` | `TransactionRepository` | `findNextPage()` | PERFORM ... THRU 9000-READ-FORWARD-EXIT range terminator → end of findNextPage() (structured method boundary; no separate Java code) |
-| `COCRDLIC.cbl` | `9100-READ-BACKWARDS` | `TransactionRepository` | `findPreviousPage()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
-| `COCRDLIC.cbl` | `9100-READ-BACKWARDS-EXIT` | `TransactionRepository` | `findPreviousPage()` | PERFORM ... THRU 9100-READ-BACKWARDS-EXIT range terminator → end of findPreviousPage() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `9000-READ-FORWARD` | `TransactionRepository` | `findAll()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
+| `COCRDLIC.cbl` | `9000-READ-FORWARD-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9000-READ-FORWARD-EXIT range terminator → end of findNextPage() (structured method boundary; no separate Java code) |
+| `COCRDLIC.cbl` | `9100-READ-BACKWARDS` | `TransactionRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
+| `COCRDLIC.cbl` | `9100-READ-BACKWARDS-EXIT` | `TransactionRepository` | `findAll()` | PERFORM ... THRU 9100-READ-BACKWARDS-EXIT range terminator → end of findPreviousPage() (structured method boundary; no separate Java code) |
 | `COCRDLIC.cbl` | `9500-FILTER-RECORDS` | `CardListService` | `applyFilters()` | Client-side record filtering → repository predicate/derived query |
 | `COCRDLIC.cbl` | `9500-FILTER-RECORDS-EXIT` | `CardListService` | `applyFilters()` | PERFORM ... THRU 9500-FILTER-RECORDS-EXIT range terminator → end of applyFilters() (structured method boundary; no separate Java code) |
 | `COCRDLIC.cbl` | `SEND-PLAIN-TEXT` | `GlobalExceptionHandler` | (error response) | CICS SEND TEXT (abend/error page) → structured error JSON (ErrorResponse) |
@@ -312,16 +312,16 @@ _Paragraph count: **34** — all mapped._
 | `COCRDSLC.cbl` | `1300-SETUP-SCREEN-ATTRS-EXIT` | `CardController` | (response assembly) | PERFORM ... THRU 1300-SETUP-SCREEN-ATTRS-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN` | `CardController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COCRDSLC.cbl` | `1400-SEND-SCREEN-EXIT` | `CardController` | (response assembly) | PERFORM ... THRU 1400-SEND-SCREEN-EXIT range terminator → end of (response assembly) (structured method boundary; no separate Java code) |
-| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS` | `CardViewService` | `processInputs()` | Receive+edit+decide orchestration for the request |
-| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardViewService` | `processInputs()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS` | `CardViewService` | `viewCard()` | Receive+edit+decide orchestration for the request |
+| `COCRDSLC.cbl` | `2000-PROCESS-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP` | `CardController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COCRDSLC.cbl` | `2100-RECEIVE-MAP-EXIT` | `CardController` | (request binding) | PERFORM ... THRU 2100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
-| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS` | `CardViewService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardViewService` | `validate()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT` | `CardViewService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardViewService` | `validate()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDSLC.cbl` | `2220-EDIT-CARD` | `CardViewService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardViewService` | `validate()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDSLC.cbl` | `2210-EDIT-ACCOUNT-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDSLC.cbl` | `2220-EDIT-CARD` | `CardViewService` | `viewCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDSLC.cbl` | `2220-EDIT-CARD-EXIT` | `CardViewService` | `viewCard()` | PERFORM ... THRU 2220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `9000-READ-DATA` | `CardViewService` | (helper) | Supporting paragraph folded into CardViewService business logic |
 | `COCRDSLC.cbl` | `9000-READ-DATA-EXIT` | `CardViewService` | (helper) | PERFORM ... THRU 9000-READ-DATA-EXIT range terminator → end of (helper) (structured method boundary; no separate Java code) |
 | `COCRDSLC.cbl` | `9100-GETCARD-BYACCTCARD` | `CardRepository` | `findById()` | VSAM READ / GET → JpaRepository query (find by key/alternate index) |
@@ -343,24 +343,24 @@ _Paragraph count: **45** — all mapped._
 | `COCRDUPC.cbl` | `0000-MAIN` | `CardController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
 | `COCRDUPC.cbl` | `COMMON-RETURN` | `CardController` | (HTTP response) | EXEC CICS RETURN (COMMAREA/TRANSID) → HTTP response; conversational state externalised to JWT |
 | `COCRDUPC.cbl` | `0000-MAIN-EXIT` | `CardController` | (request dispatch) | PERFORM ... THRU 0000-MAIN-EXIT range terminator → end of (request dispatch) (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS` | `CardUpdateService` | `processInputs()` | Receive+edit+decide orchestration for the request |
-| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `processInputs()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS` | `CardUpdateService` | `updateCard()` | Receive+edit+decide orchestration for the request |
+| `COCRDUPC.cbl` | `1000-PROCESS-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1000-PROCESS-INPUTS-EXIT range terminator → end of processInputs() (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP` | `CardController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
 | `COCRDUPC.cbl` | `1100-RECEIVE-MAP-EXIT` | `CardController` | (request binding) | PERFORM ... THRU 1100-RECEIVE-MAP-EXIT range terminator → end of (request binding) (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `CardUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `validate()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT` | `CardUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `validate()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1220-EDIT-CARD` | `CardUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `validate()` | PERFORM ... THRU 1220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1230-EDIT-NAME` | `CardUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `validate()` | PERFORM ... THRU 1230-EDIT-NAME-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS` | `CardUpdateService` | `validate()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
-| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `validate()` | PERFORM ... THRU 1240-EDIT-CARDSTATUS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON` | `DateValidationService` | `validate()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
-| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `DateValidationService` | `validate()` | PERFORM ... THRU 1250-EDIT-EXPIRY-MON-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
-| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR` | `DateValidationService` | `validate()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
-| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `DateValidationService` | `validate()` | PERFORM ... THRU 1260-EDIT-EXPIRY-YEAR-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1200-EDIT-MAP-INPUTS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDUPC.cbl` | `1210-EDIT-ACCOUNT-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1210-EDIT-ACCOUNT-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1220-EDIT-CARD` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDUPC.cbl` | `1220-EDIT-CARD-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1220-EDIT-CARD-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1230-EDIT-NAME` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDUPC.cbl` | `1230-EDIT-NAME-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1230-EDIT-NAME-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS` | `CardUpdateService` | `updateCard()` | Field edit rule (mandatory/format/range) → Jakarta Bean Validation + service validation; branch order preserved |
+| `COCRDUPC.cbl` | `1240-EDIT-CARDSTATUS-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 1240-EDIT-CARDSTATUS-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON` | `DateValidationService` | `validateDateCcyyMmDd()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
+| `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1250-EDIT-EXPIRY-MON-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
+| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR` | `DateValidationService` | `validateDateCcyyMmDd()` | Date/expiry field edit → LocalDate validation (CSUTLDTC equivalent) |
+| `COCRDUPC.cbl` | `1260-EDIT-EXPIRY-YEAR-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU 1260-EDIT-EXPIRY-YEAR-EXIT range terminator → end of validate() (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `2000-DECIDE-ACTION` | `CardUpdateService` | `updateCard()` | EVALUATE action dispatch (view/edit/confirm/update) → service branch; branch order preserved |
 | `COCRDUPC.cbl` | `2000-DECIDE-ACTION-EXIT` | `CardUpdateService` | `updateCard()` | PERFORM ... THRU 2000-DECIDE-ACTION-EXIT range terminator → end of updateCard() (structured method boundary; no separate Java code) |
 | `COCRDUPC.cbl` | `3000-SEND-MAP` | `CardController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
@@ -394,19 +394,19 @@ _Paragraph count: **16** — all mapped._
 |---|---|---|---|---|
 | `COTRN00C.cbl` | `MAIN-PARA` | `TransactionController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
 | `COTRN00C.cbl` | `PROCESS-ENTER-KEY` | `TransactionListService` | `listTransactions()` | ENTER key handler → primary use-case method: Paginated transaction list (forward/backward browse) |
-| `COTRN00C.cbl` | `PROCESS-PF7-KEY` | `TransactionListService` | `previousPage()` | PF7 (page up) → previous page request |
-| `COTRN00C.cbl` | `PROCESS-PF8-KEY` | `TransactionListService` | `nextPage()` | PF8 (page down) → next page request |
-| `COTRN00C.cbl` | `PROCESS-PAGE-FORWARD` | `TransactionListService` | `nextPage()` | PF8 (page down) → next page request |
-| `COTRN00C.cbl` | `PROCESS-PAGE-BACKWARD` | `TransactionListService` | `previousPage()` | PF7 (page up) → previous page request |
-| `COTRN00C.cbl` | `POPULATE-TRAN-DATA` | `TransactionListService` | `toListItem()` | Screen-array row population → DTO list item mapping |
-| `COTRN00C.cbl` | `INITIALIZE-TRAN-DATA` | `TransactionListService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COTRN00C.cbl` | `PROCESS-PF7-KEY` | `TransactionListService` | `listTransactions()` | PF7 (page up) → previous page request |
+| `COTRN00C.cbl` | `PROCESS-PF8-KEY` | `TransactionListService` | `listTransactions()` | PF8 (page down) → next page request |
+| `COTRN00C.cbl` | `PROCESS-PAGE-FORWARD` | `TransactionListService` | `listTransactions()` | PF8 (page down) → next page request |
+| `COTRN00C.cbl` | `PROCESS-PAGE-BACKWARD` | `TransactionListService` | `listTransactions()` | PF7 (page up) → previous page request |
+| `COTRN00C.cbl` | `POPULATE-TRAN-DATA` | `TransactionListService` | `toItem()` | Screen-array row population → DTO list item mapping |
+| `COTRN00C.cbl` | `INITIALIZE-TRAN-DATA` | `TransactionListService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 | `COTRN00C.cbl` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COTRN00C.cbl` | `SEND-TRNLST-SCREEN` | `TransactionController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COTRN00C.cbl` | `RECEIVE-TRNLST-SCREEN` | `TransactionController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COTRN00C.cbl` | `POPULATE-HEADER-INFO` | `TransactionListService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COTRN00C.cbl` | `POPULATE-HEADER-INFO` | `TransactionListService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COTRN00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | (browse start) | VSAM STARTBR → begin keyset/Pageable scan |
-| `COTRN00C.cbl` | `READNEXT-TRANSACT-FILE` | `TransactionRepository` | `findNextPage()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
-| `COTRN00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findPreviousPage()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
+| `COTRN00C.cbl` | `READNEXT-TRANSACT-FILE` | `TransactionRepository` | `findAll()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
+| `COTRN00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
 | `COTRN00C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | (browse end) | VSAM ENDBR → cursor/scan close (no-op in JPA paging) |
 
 #### COTRN01C.cbl — Transaction View (Txn `CT01`)
@@ -416,14 +416,14 @@ _Paragraph count: **9** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COTRN01C.cbl` | `MAIN-PARA` | `TransactionController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
-| `COTRN01C.cbl` | `PROCESS-ENTER-KEY` | `TransactionViewService` | `getTransaction()` | ENTER key handler → primary use-case method: Transaction detail view by transaction id |
+| `COTRN01C.cbl` | `PROCESS-ENTER-KEY` | `TransactionViewService` | `viewTransaction()` | ENTER key handler → primary use-case method: Transaction detail view by transaction id |
 | `COTRN01C.cbl` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COTRN01C.cbl` | `SEND-TRNVIEW-SCREEN` | `TransactionController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COTRN01C.cbl` | `RECEIVE-TRNVIEW-SCREEN` | `TransactionController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COTRN01C.cbl` | `POPULATE-HEADER-INFO` | `TransactionViewService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COTRN01C.cbl` | `POPULATE-HEADER-INFO` | `TransactionViewService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COTRN01C.cbl` | `READ-TRANSACT-FILE` | `TransactionRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
-| `COTRN01C.cbl` | `CLEAR-CURRENT-SCREEN` | `TransactionViewService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COTRN01C.cbl` | `INITIALIZE-ALL-FIELDS` | `TransactionViewService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COTRN01C.cbl` | `CLEAR-CURRENT-SCREEN` | `TransactionViewService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COTRN01C.cbl` | `INITIALIZE-ALL-FIELDS` | `TransactionViewService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### COTRN02C.cbl — Transaction Add (Txn `CT02`)
 
@@ -433,22 +433,22 @@ _Paragraph count: **18** — all mapped._
 |---|---|---|---|---|
 | `COTRN02C.cbl` | `MAIN-PARA` | `TransactionController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
 | `COTRN02C.cbl` | `PROCESS-ENTER-KEY` | `TransactionAddService` | `addTransaction()` | ENTER key handler → primary use-case method: Add transaction; auto-generated id + confirmation flow |
-| `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validateKeyFields()` | Key-field (acct/card) validation |
-| `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validateDataFields()` | Amount/date/type validation (BigDecimal, LocalDate) |
+| `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` | `TransactionAddService` | `validate()` | Key-field (acct/card) validation |
+| `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` | `TransactionAddService` | `validate()` | Amount/date/type validation (BigDecimal, LocalDate) |
 | `COTRN02C.cbl` | `ADD-TRANSACTION` | `TransactionAddService` | `addTransaction()` | Persist new transaction (auto id) |
-| `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` | `TransactionAddService` | `prefillFromLast()` | Copy previous transaction values into the add form |
+| `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` | `TransactionAddService` | (prefill from last) | Copy previous transaction values into the add form |
 | `COTRN02C.cbl` | `RETURN-TO-PREV-SCREEN` | `TransactionController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COTRN02C.cbl` | `SEND-TRNADD-SCREEN` | `TransactionController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COTRN02C.cbl` | `RECEIVE-TRNADD-SCREEN` | `TransactionController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COTRN02C.cbl` | `POPULATE-HEADER-INFO` | `TransactionAddService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COTRN02C.cbl` | `POPULATE-HEADER-INFO` | `TransactionAddService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COTRN02C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COTRN02C.cbl` | `READ-CCXREF-FILE` | `CardXrefRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COTRN02C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | (browse start) | VSAM STARTBR → begin keyset/Pageable scan |
-| `COTRN02C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findPreviousPage()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
+| `COTRN02C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
 | `COTRN02C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | (browse end) | VSAM ENDBR → cursor/scan close (no-op in JPA paging) |
 | `COTRN02C.cbl` | `WRITE-TRANSACT-FILE` | `TransactionRepository` | `save()` | VSAM WRITE (insert) → JpaRepository.save() |
-| `COTRN02C.cbl` | `CLEAR-CURRENT-SCREEN` | `TransactionAddService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COTRN02C.cbl` | `INITIALIZE-ALL-FIELDS` | `TransactionAddService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COTRN02C.cbl` | `CLEAR-CURRENT-SCREEN` | `TransactionAddService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COTRN02C.cbl` | `INITIALIZE-ALL-FIELDS` | `TransactionAddService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### CORPT00C.cbl — Transaction Reports (Txn `CR00`)
 
@@ -457,15 +457,15 @@ _Paragraph count: **10** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CORPT00C.cbl` | `MAIN-PARA` | `ReportController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
-| `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportService` | `requestReport()` | ENTER key handler → primary use-case method: Report request; TDQ→JES bridge becomes SQS FIFO-triggered Spring Batch launch (D-004) |
-| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportJobLauncher` | `enqueueReportJob()` | INTRDR job submit + TDQ WRITEQ → SQS FIFO message → Spring Batch launch (D-004) |
-| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportJobLauncher` | `enqueueReportJob()` | INTRDR job submit + TDQ WRITEQ → SQS FIFO message → Spring Batch launch (D-004) |
+| `CORPT00C.cbl` | `PROCESS-ENTER-KEY` | `ReportService` | `generateReport()` | ENTER key handler → primary use-case method: Report request; TDQ→JES bridge becomes SQS FIFO-triggered Spring Batch launch (D-004) |
+| `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR` | `ReportJobLauncher` | `onReportRequest()` | INTRDR job submit + TDQ WRITEQ → SQS FIFO message → Spring Batch launch (D-004) |
+| `CORPT00C.cbl` | `WIRTE-JOBSUB-TDQ` | `ReportJobLauncher` | `onReportRequest()` | INTRDR job submit + TDQ WRITEQ → SQS FIFO message → Spring Batch launch (D-004) |
 | `CORPT00C.cbl` | `RETURN-TO-PREV-SCREEN` | `ReportController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `CORPT00C.cbl` | `SEND-TRNRPT-SCREEN` | `ReportController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `CORPT00C.cbl` | `RETURN-TO-CICS` | `ReportController` | (HTTP response) | EXEC CICS RETURN → controller returns ResponseEntity |
 | `CORPT00C.cbl` | `RECEIVE-TRNRPT-SCREEN` | `ReportController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
-| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `CORPT00C.cbl` | `POPULATE-HEADER-INFO` | `ReportService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` | `ReportService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### COBIL00C.cbl — Bill Payment (Txn `CB00`)
 
@@ -474,21 +474,21 @@ _Paragraph count: **16** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COBIL00C.cbl` | `MAIN-PARA` | `BillPaymentController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
-| `COBIL00C.cbl` | `PROCESS-ENTER-KEY` | `BillPaymentService` | `processBillPayment()` | ENTER key handler → primary use-case method: Bill payment: balance update + payment transaction under @Transactional |
-| `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` | `BillPaymentService` | `currentTimestamp()` | EIBTIME/FUNCTION CURRENT-DATE → java.time.LocalDateTime |
+| `COBIL00C.cbl` | `PROCESS-ENTER-KEY` | `BillPaymentService` | `payBill()` | ENTER key handler → primary use-case method: Bill payment: balance update + payment transaction under @Transactional |
+| `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` | `BillPaymentService` | `nowTs26()` | EIBTIME/FUNCTION CURRENT-DATE → java.time.LocalDateTime |
 | `COBIL00C.cbl` | `RETURN-TO-PREV-SCREEN` | `BillPaymentController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COBIL00C.cbl` | `SEND-BILLPAY-SCREEN` | `BillPaymentController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COBIL00C.cbl` | `RECEIVE-BILLPAY-SCREEN` | `BillPaymentController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COBIL00C.cbl` | `POPULATE-HEADER-INFO` | `BillPaymentService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COBIL00C.cbl` | `POPULATE-HEADER-INFO` | `BillPaymentService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COBIL00C.cbl` | `READ-ACCTDAT-FILE` | `AccountRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COBIL00C.cbl` | `UPDATE-ACCTDAT-FILE` | `AccountRepository` | `save()` | VSAM REWRITE (update) → JpaRepository.save() (dirty entity) |
 | `COBIL00C.cbl` | `READ-CXACAIX-FILE` | `CardXrefRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COBIL00C.cbl` | `STARTBR-TRANSACT-FILE` | `TransactionRepository` | (browse start) | VSAM STARTBR → begin keyset/Pageable scan |
-| `COBIL00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findPreviousPage()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
+| `COBIL00C.cbl` | `READPREV-TRANSACT-FILE` | `TransactionRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
 | `COBIL00C.cbl` | `ENDBR-TRANSACT-FILE` | `TransactionRepository` | (browse end) | VSAM ENDBR → cursor/scan close (no-op in JPA paging) |
 | `COBIL00C.cbl` | `WRITE-TRANSACT-FILE` | `TransactionRepository` | `save()` | VSAM WRITE (insert) → JpaRepository.save() |
-| `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN` | `BillPaymentService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COBIL00C.cbl` | `INITIALIZE-ALL-FIELDS` | `BillPaymentService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN` | `BillPaymentService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COBIL00C.cbl` | `INITIALIZE-ALL-FIELDS` | `BillPaymentService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### COUSR00C.cbl — List Users (Txn `CU00`)
 
@@ -498,19 +498,19 @@ _Paragraph count: **16** — all mapped._
 |---|---|---|---|---|
 | `COUSR00C.cbl` | `MAIN-PARA` | `UserController` | (request dispatch) | CICS pseudo-conversational entry (EIBCALEN/EIBAID handling) → stateless controller dispatch backed by JWT session state |
 | `COUSR00C.cbl` | `PROCESS-ENTER-KEY` | `UserService` | `listUsers()` | ENTER key handler → primary use-case method: Paginated user list (USRSEC browse) |
-| `COUSR00C.cbl` | `PROCESS-PF7-KEY` | `UserService` | `previousPage()` | PF7 (page up) → previous page request |
-| `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserService` | `nextPage()` | PF8 (page down) → next page request |
-| `COUSR00C.cbl` | `PROCESS-PAGE-FORWARD` | `UserService` | `nextPage()` | PF8 (page down) → next page request |
-| `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserService` | `previousPage()` | PF7 (page up) → previous page request |
+| `COUSR00C.cbl` | `PROCESS-PF7-KEY` | `UserService` | `listUsers()` | PF7 (page up) → previous page request |
+| `COUSR00C.cbl` | `PROCESS-PF8-KEY` | `UserService` | `listUsers()` | PF8 (page down) → next page request |
+| `COUSR00C.cbl` | `PROCESS-PAGE-FORWARD` | `UserService` | `listUsers()` | PF8 (page down) → next page request |
+| `COUSR00C.cbl` | `PROCESS-PAGE-BACKWARD` | `UserService` | `listUsers()` | PF7 (page up) → previous page request |
 | `COUSR00C.cbl` | `POPULATE-USER-DATA` | `UserService` | `toListItem()` | Screen-array row population → DTO list item mapping |
-| `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COUSR00C.cbl` | `INITIALIZE-USER-DATA` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 | `COUSR00C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COUSR00C.cbl` | `SEND-USRLST-SCREEN` | `UserController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COUSR00C.cbl` | `RECEIVE-USRLST-SCREEN` | `UserController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COUSR00C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` | `UserSecurityRepository` | (browse start) | VSAM STARTBR → begin keyset/Pageable scan |
-| `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserSecurityRepository` | `findNextPage()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
-| `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` | `UserSecurityRepository` | `findPreviousPage()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
+| `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` | `UserSecurityRepository` | `findAll()` | STARTBR+READNEXT keyset browse → ascending Pageable/keyset query |
+| `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` | `UserSecurityRepository` | `findAll()` | STARTBR+READPREV keyset browse → descending Pageable/keyset query |
 | `COUSR00C.cbl` | `ENDBR-USER-SEC-FILE` | `UserSecurityRepository` | (browse end) | VSAM ENDBR → cursor/scan close (no-op in JPA paging) |
 
 #### COUSR01C.cbl — Add User (Txn `CU01`)
@@ -524,10 +524,10 @@ _Paragraph count: **9** — all mapped._
 | `COUSR01C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COUSR01C.cbl` | `SEND-USRADD-SCREEN` | `UserController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COUSR01C.cbl` | `RECEIVE-USRADD-SCREEN` | `UserController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COUSR01C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COUSR01C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COUSR01C.cbl` | `WRITE-USER-SEC-FILE` | `UserSecurityRepository` | `save()` | VSAM WRITE (insert) → JpaRepository.save() |
-| `COUSR01C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COUSR01C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COUSR01C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COUSR01C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### COUSR02C.cbl — Update User (Txn `CU02`)
 
@@ -541,11 +541,11 @@ _Paragraph count: **11** — all mapped._
 | `COUSR02C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COUSR02C.cbl` | `SEND-USRUPD-SCREEN` | `UserController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COUSR02C.cbl` | `RECEIVE-USRUPD-SCREEN` | `UserController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COUSR02C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COUSR02C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COUSR02C.cbl` | `UPDATE-USER-SEC-FILE` | `UserSecurityRepository` | `save()` | VSAM REWRITE (update) → JpaRepository.save() (dirty entity) |
-| `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COUSR02C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COUSR02C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 #### COUSR03C.cbl — Delete User (Txn `CU03`)
 
@@ -559,11 +559,11 @@ _Paragraph count: **11** — all mapped._
 | `COUSR03C.cbl` | `RETURN-TO-PREV-SCREEN` | `UserController` | (navigation) | CICS XCTL/RETURN to previous program → client-driven navigation (stateless) |
 | `COUSR03C.cbl` | `SEND-USRDEL-SCREEN` | `UserController` | (response assembly) | BMS SEND MAP / screen build &amp; 3270 attributes → JSON response DTO fields (no terminal attributes retained) |
 | `COUSR03C.cbl` | `RECEIVE-USRDEL-SCREEN` | `UserController` | (request binding) | BMS RECEIVE MAP → @RequestBody/@RequestParam bound to request DTO (Jakarta Validation) |
-| `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | `buildHeader()` | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
+| `COUSR03C.cbl` | `POPULATE-HEADER-INFO` | `UserService` | (response header) | Common header (title/tran-id/program/date/time) → response header fields; date/time via shared util |
 | `COUSR03C.cbl` | `READ-USER-SEC-FILE` | `UserSecurityRepository` | `findById()` | VSAM READ (keyed) → JpaRepository.findById() |
 | `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` | `UserSecurityRepository` | `deleteById()` | VSAM DELETE → JpaRepository.deleteById() |
-| `COUSR03C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
-| `COUSR03C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | `resetForm()` | Clear/initialise screen fields → reset request/response model |
+| `COUSR03C.cbl` | `CLEAR-CURRENT-SCREEN` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
+| `COUSR03C.cbl` | `INITIALIZE-ALL-FIELDS` | `UserService` | (form reset) | Clear/initialise screen fields → reset request/response model |
 
 ### 1.2 Batch / utility programs &mdash; 11
 
@@ -580,12 +580,12 @@ _Paragraph count: **26** — all mapped._
 | `CBTRN02C.cbl` | `0400-ACCTFILE-OPEN` | `DailyTransactionItemReader` | `open()` | OPEN INPUT/OUTPUT (Account) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBTRN02C.cbl` | `0500-TCATBALF-OPEN` | `DailyTransactionItemReader` | `open()` | OPEN INPUT/OUTPUT (TransactionCategoryBalance) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBTRN02C.cbl` | `1000-DALYTRAN-GET-NEXT` | `DailyTransactionItemReader` | `read()` | READ NEXT (DailyTransaction) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
-| `CBTRN02C.cbl` | `1500-VALIDATE-TRAN` | `PostTransactionProcessor` | `validate()` | 4-stage validation cascade; reject codes preserved via RejectReason enum |
-| `CBTRN02C.cbl` | `1500-A-LOOKUP-XREF` | `PostTransactionProcessor` | `lookupXref()` | Card→account xref lookup (CardXrefRepository); reject reason on miss |
-| `CBTRN02C.cbl` | `1500-B-LOOKUP-ACCT` | `PostTransactionProcessor` | `lookupAccount()` | Account lookup (AccountRepository); reject reason on miss |
+| `CBTRN02C.cbl` | `1500-VALIDATE-TRAN` | `PostTransactionProcessor` | `process()` | 4-stage validation cascade; reject codes preserved via RejectReason enum |
+| `CBTRN02C.cbl` | `1500-A-LOOKUP-XREF` | `PostTransactionProcessor` | `process()` | Card→account xref lookup (CardXrefRepository); reject reason on miss |
+| `CBTRN02C.cbl` | `1500-B-LOOKUP-ACCT` | `PostTransactionProcessor` | `process()` | Account lookup (AccountRepository); reject reason on miss |
 | `CBTRN02C.cbl` | `2000-POST-TRANSACTION` | `PostTransactionProcessor` | `process()` | Post a valid daily transaction (orchestrates category-balance + account-balance updates) |
-| `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` | `PostTransactionItemWriter` | `writeReject()` | Rejected record → reject output; RejectReason + FileStatusCode |
-| `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `PostTransactionProcessor` | `upsertCategoryBalance()` | Upsert transaction-category balance (create or update) |
+| `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` | `PostTransactionItemWriter` | `appendRejectRecord()` | Rejected record → reject output; RejectReason + FileStatusCode |
+| `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` | `PostTransactionProcessor` | `updateCategoryBalance()` | Upsert transaction-category balance (create or update) |
 | `CBTRN02C.cbl` | `2700-A-CREATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Create category-balance row (insert) |
 | `CBTRN02C.cbl` | `2700-B-UPDATE-TCATBAL-REC` | `TransactionCategoryBalanceRepository` | `save()` | Update category-balance row (BigDecimal add) |
 | `CBTRN02C.cbl` | `2800-UPDATE-ACCOUNT-REC` | `AccountRepository` | `save()` | Update account balances (BigDecimal, scale 2) |
@@ -596,7 +596,7 @@ _Paragraph count: **26** — all mapped._
 | `CBTRN02C.cbl` | `9300-DALYREJS-CLOSE` | `DailyTransactionItemReader` | `close()` | CLOSE (DailyTransaction) → ItemStream.close() |
 | `CBTRN02C.cbl` | `9400-ACCTFILE-CLOSE` | `DailyTransactionItemReader` | `close()` | CLOSE (Account) → ItemStream.close() |
 | `CBTRN02C.cbl` | `9500-TCATBALF-CLOSE` | `DailyTransactionItemReader` | `close()` | CLOSE (TransactionCategoryBalance) → ItemStream.close() |
-| `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `PostTransactionProcessor` | `formatTimestamp()` | DB2-format timestamp build → LocalDateTime formatting |
+| `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` | `PostTransactionProcessor` | `buildPostedTransaction()` | DB2-format timestamp build → LocalDateTime formatting |
 | `CBTRN02C.cbl` | `9999-ABEND-PROGRAM` | `FileProcessingException` | (throw) | ABEND → throw FileProcessingException (runtime) + structured log; step fails |
 | `CBTRN02C.cbl` | `9910-DISPLAY-IO-STATUS` | `FileStatusCode` | `from()` | Decode FILE STATUS and structured-log the I/O error |
 
@@ -635,13 +635,13 @@ _Paragraph count: **26** — all mapped._
 
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBTRN03C.cbl` | `0550-DATEPARM-READ` | `TransactionReportItemReader` | `readDateParams()` | Read date-range parameter record → job parameters / reader bounds |
+| `CBTRN03C.cbl` | `0550-DATEPARM-READ` | `TransactionReportProcessor` | `parseWindowBound()` | Read date-range parameter record → job parameters / reader bounds |
 | `CBTRN03C.cbl` | `1000-TRANFILE-GET-NEXT` | `TransactionReportItemReader` | `read()` | READ NEXT (Transaction) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
 | `CBTRN03C.cbl` | `1100-WRITE-TRANSACTION-REPORT` | `TransactionReportItemWriter` | `write()` | Emit report detail lines for a transaction |
-| `CBTRN03C.cbl` | `1110-WRITE-PAGE-TOTALS` | `TransactionReportProcessor` | `accumulatePageTotals()` | Page subtotal accumulation (BigDecimal) |
-| `CBTRN03C.cbl` | `1120-WRITE-ACCOUNT-TOTALS` | `TransactionReportProcessor` | `accumulateAccountTotals()` | Per-account total accumulation (control break) |
+| `CBTRN03C.cbl` | `1110-WRITE-PAGE-TOTALS` | `TransactionReportItemWriter` | `writePageTotals()` | Page subtotal accumulation (BigDecimal) |
+| `CBTRN03C.cbl` | `1120-WRITE-ACCOUNT-TOTALS` | `TransactionReportItemWriter` | `writeAccountTotals()` | Per-account total accumulation (control break) |
 | `CBTRN03C.cbl` | `1110-WRITE-GRAND-TOTALS` | `TransactionReportItemWriter` | `writeGrandTotals()` | Grand-total trailer line |
-| `CBTRN03C.cbl` | `1120-WRITE-HEADERS` | `TransactionReportItemWriter` | `writeHeader()` | Report header/banner line |
+| `CBTRN03C.cbl` | `1120-WRITE-HEADERS` | `TransactionReportItemWriter` | `writeHeaders()` | Report header/banner line |
 | `CBTRN03C.cbl` | `1111-WRITE-REPORT-REC` | `TransactionReportItemWriter` | `writeLine()` | Write a formatted report record (ReportDetailLine) |
 | `CBTRN03C.cbl` | `1120-WRITE-DETAIL` | `TransactionReportItemWriter` | `writeDetail()` | Write transaction detail line (ReportDetailLine) |
 | `CBTRN03C.cbl` | `0000-TRANFILE-OPEN` | `TransactionReportItemReader` | `open()` | OPEN INPUT/OUTPUT (Transaction) → ItemStreamReader/Writer.open(ExecutionContext) |
@@ -650,9 +650,9 @@ _Paragraph count: **26** — all mapped._
 | `CBTRN03C.cbl` | `0300-TRANTYPE-OPEN` | `TransactionReportItemReader` | `open()` | OPEN INPUT/OUTPUT (TransactionType) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBTRN03C.cbl` | `0400-TRANCATG-OPEN` | `TransactionReportItemReader` | `open()` | OPEN INPUT/OUTPUT (TransactionCategoryType) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBTRN03C.cbl` | `0500-DATEPARM-OPEN` | `TransactionReportItemReader` | `open()` | OPEN INPUT/OUTPUT (file) → ItemStreamReader/Writer.open(ExecutionContext) |
-| `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` | `TransactionReportProcessor` | `lookupXref()` | Xref lookup for report line (CardXrefRepository) |
-| `CBTRN03C.cbl` | `1500-B-LOOKUP-TRANTYPE` | `TransactionReportProcessor` | `lookupTransactionType()` | Transaction-type description lookup (TransactionTypeRepository) |
-| `CBTRN03C.cbl` | `1500-C-LOOKUP-TRANCATG` | `TransactionReportProcessor` | `lookupTransactionCategory()` | Transaction-category lookup (TransactionCategoryTypeRepository) |
+| `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` | `TransactionReportProcessor` | `process()` | Xref lookup for report line (CardXrefRepository) |
+| `CBTRN03C.cbl` | `1500-B-LOOKUP-TRANTYPE` | `TransactionReportProcessor` | `resolveTypeDescription()` | Transaction-type description lookup (TransactionTypeRepository) |
+| `CBTRN03C.cbl` | `1500-C-LOOKUP-TRANCATG` | `TransactionReportProcessor` | `resolveCategoryDescription()` | Transaction-category lookup (TransactionCategoryTypeRepository) |
 | `CBTRN03C.cbl` | `9000-TRANFILE-CLOSE` | `TransactionReportItemReader` | `close()` | CLOSE (Transaction) → ItemStream.close() |
 | `CBTRN03C.cbl` | `9100-REPTFILE-CLOSE` | `TransactionReportItemReader` | `close()` | CLOSE (Transaction) → ItemStream.close() |
 | `CBTRN03C.cbl` | `9200-CARDXREF-CLOSE` | `TransactionReportItemReader` | `close()` | CLOSE (CardXref) → ItemStream.close() |
@@ -722,7 +722,7 @@ _Paragraph count: **6** — all mapped._
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `CBACT01C.cbl` | `1000-ACCTFILE-GET-NEXT` | `PrintReferenceJobs` | `read()` | READ NEXT (Account) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
-| `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` | `PrintReferenceJobs` | `printAccount()` | Format+print one account master record |
+| `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` | `PrintReferenceJobs` | `describeAccount()` | Format+print one account master record |
 | `CBACT01C.cbl` | `0000-ACCTFILE-OPEN` | `PrintReferenceJobs` | `open()` | OPEN INPUT/OUTPUT (Account) → ItemStreamReader/Writer.open(ExecutionContext) |
 | `CBACT01C.cbl` | `9000-ACCTFILE-CLOSE` | `PrintReferenceJobs` | `close()` | CLOSE (Account) → ItemStream.close() |
 | `CBACT01C.cbl` | `9999-ABEND-PROGRAM` | `FileProcessingException` | (throw) | ABEND → throw FileProcessingException (runtime) + structured log; step fails |
@@ -770,7 +770,7 @@ _Paragraph count: **18** — all mapped._
 
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CBTRN01C.cbl` | `MAIN-PARA` | `PrintReferenceJobs` | `printDailyTransactions()` | Daily-transaction validation-print mainline (reader→lookup→print) |
+| `CBTRN01C.cbl` | `MAIN-PARA` | `PrintReferenceJobs` | `enrichAndLogTransaction()` | Daily-transaction validation-print mainline (reader→lookup→print) |
 | `CBTRN01C.cbl` | `1000-DALYTRAN-GET-NEXT` | `PrintReferenceJobs` | `read()` | READ NEXT (DailyTransaction) → ItemReader.read(); EOF ('10') returns null (normal step termination) |
 | `CBTRN01C.cbl` | `2000-LOOKUP-XREF` | `CardXrefRepository` | `findById()` | Card→xref lookup by card number (VSAM READ KEY IS FD-XREF-CARD-NUM → JpaRepository.findById); account-keyed xref navigation lives in `CrossReferenceService` |
 | `CBTRN01C.cbl` | `3000-READ-ACCOUNT` | `AccountRepository` | `findById()` | Account read for the daily transaction |
@@ -795,8 +795,8 @@ _Paragraph count: **2** — all mapped._
 
 | COBOL Program | COBOL Paragraph / Construct | Java Class | Java Method | Notes |
 |---|---|---|---|---|
-| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDate()` | CEEDAYS validation → LocalDate parse + FeedbackCode→message mapping (DateValidationException on invalid) |
-| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateDate()` | PERFORM ... THRU A000-MAIN-EXIT range terminator → end of validateDate() (structured method boundary; no separate Java code) |
+| `CSUTLDTC.cbl` | `A000-MAIN` | `DateValidationService` | `validateDateCcyyMmDd()` | CEEDAYS validation → LocalDate parse + FeedbackCode→message mapping (DateValidationException on invalid) |
+| `CSUTLDTC.cbl` | `A000-MAIN-EXIT` | `DateValidationService` | `validateDateCcyyMmDd()` | PERFORM ... THRU A000-MAIN-EXIT range terminator → end of validateDate() (structured method boundary; no separate Java code) |
 
 ## 2. Construct Mappings (non-paragraph)
 
@@ -899,44 +899,44 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `UserController` | (request binding) | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `RECEIVE-USRLST-SCREEN`, `RECEIVE-USRADD-SCREEN`, `RECEIVE-USRUPD-SCREEN`, `RECEIVE-USRDEL-SCREEN` |
 | `UserController` | (request dispatch) | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `MAIN-PARA` |
 | `UserController` | (response assembly) | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `SEND-USRLST-SCREEN`, `SEND-USRADD-SCREEN`, `SEND-USRUPD-SCREEN`, `SEND-USRDEL-SCREEN` |
-| `AccountUpdateService` | `detectChanges()` | `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW`, `1205-COMPARE-OLD-NEW-EXIT` |
-| `AccountUpdateService` | `populateModel()` | `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA`, `9500-STORE-FETCHED-DATA-EXIT` |
-| `AccountUpdateService` | `processInputs()` | `COACTUPC.cbl` | `1000-PROCESS-INPUTS`, `1000-PROCESS-INPUTS-EXIT` |
+| `AccountUpdateService` | `updateAccount()` | `COACTUPC.cbl` | `1205-COMPARE-OLD-NEW`, `1205-COMPARE-OLD-NEW-EXIT` |
+| `AccountUpdateService` | `toView()` | `COACTUPC.cbl` | `9500-STORE-FETCHED-DATA`, `9500-STORE-FETCHED-DATA-EXIT` |
+| `AccountUpdateService` | `updateAccount()` | `COACTUPC.cbl` | `1000-PROCESS-INPUTS`, `1000-PROCESS-INPUTS-EXIT` |
 | `AccountUpdateService` | `updateAccount()` | `COACTUPC.cbl` | `2000-DECIDE-ACTION`, `2000-DECIDE-ACTION-EXIT` |
-| `AccountUpdateService` | `validate()` | `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS`, `1200-EDIT-MAP-INPUTS-EXIT`, `1210-EDIT-ACCOUNT`, `1210-EDIT-ACCOUNT-EXIT`, `1215-EDIT-MANDATORY`, `1215-EDIT-MANDATORY-EXIT`, `1220-EDIT-YESNO`, `1220-EDIT-YESNO-EXIT`, `1225-EDIT-ALPHA-REQD`, `1225-EDIT-ALPHA-REQD-EXIT`, `1230-EDIT-ALPHANUM-REQD`, `1230-EDIT-ALPHANUM-REQD-EXIT`, `1235-EDIT-ALPHA-OPT`, `1235-EDIT-ALPHA-OPT-EXIT`, `1240-EDIT-ALPHANUM-OPT`, `1240-EDIT-ALPHANUM-OPT-EXIT`, `1245-EDIT-NUM-REQD`, `1245-EDIT-NUM-REQD-EXIT`, `1250-EDIT-SIGNED-9V2`, `1250-EDIT-SIGNED-9V2-EXIT`, `1260-EDIT-US-PHONE-NUM`, `EDIT-AREA-CODE`, `EDIT-US-PHONE-PREFIX`, `EDIT-US-PHONE-LINENUM`, `EDIT-US-PHONE-EXIT`, `1260-EDIT-US-PHONE-NUM-EXIT`, `1265-EDIT-US-SSN`, `1265-EDIT-US-SSN-EXIT`, `1270-EDIT-US-STATE-CD`, `1270-EDIT-US-STATE-CD-EXIT`, `1275-EDIT-FICO-SCORE`, `1275-EDIT-FICO-SCORE-EXIT`, `1280-EDIT-US-STATE-ZIP-CD`, `1280-EDIT-US-STATE-ZIP-CD-EXIT` |
-| `AccountViewService` | `processInputs()` | `COACTVWC.cbl` | `2000-PROCESS-INPUTS`, `2000-PROCESS-INPUTS-EXIT` |
-| `AccountViewService` | `validate()` | `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS`, `2200-EDIT-MAP-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT` |
-| `BillPaymentService` | `buildHeader()` | `COBIL00C.cbl` | `POPULATE-HEADER-INFO` |
-| `BillPaymentService` | `currentTimestamp()` | `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` |
-| `BillPaymentService` | `processBillPayment()` | `COBIL00C.cbl` | `PROCESS-ENTER-KEY` |
-| `BillPaymentService` | `resetForm()` | `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
+| `AccountUpdateService` | `editFields()` | `COACTUPC.cbl` | `1200-EDIT-MAP-INPUTS`, `1200-EDIT-MAP-INPUTS-EXIT`, `1210-EDIT-ACCOUNT`, `1210-EDIT-ACCOUNT-EXIT`, `1215-EDIT-MANDATORY`, `1215-EDIT-MANDATORY-EXIT`, `1220-EDIT-YESNO`, `1220-EDIT-YESNO-EXIT`, `1225-EDIT-ALPHA-REQD`, `1225-EDIT-ALPHA-REQD-EXIT`, `1230-EDIT-ALPHANUM-REQD`, `1230-EDIT-ALPHANUM-REQD-EXIT`, `1235-EDIT-ALPHA-OPT`, `1235-EDIT-ALPHA-OPT-EXIT`, `1240-EDIT-ALPHANUM-OPT`, `1240-EDIT-ALPHANUM-OPT-EXIT`, `1245-EDIT-NUM-REQD`, `1245-EDIT-NUM-REQD-EXIT`, `1250-EDIT-SIGNED-9V2`, `1250-EDIT-SIGNED-9V2-EXIT`, `1260-EDIT-US-PHONE-NUM`, `EDIT-AREA-CODE`, `EDIT-US-PHONE-PREFIX`, `EDIT-US-PHONE-LINENUM`, `EDIT-US-PHONE-EXIT`, `1260-EDIT-US-PHONE-NUM-EXIT`, `1265-EDIT-US-SSN`, `1265-EDIT-US-SSN-EXIT`, `1270-EDIT-US-STATE-CD`, `1270-EDIT-US-STATE-CD-EXIT`, `1275-EDIT-FICO-SCORE`, `1275-EDIT-FICO-SCORE-EXIT`, `1280-EDIT-US-STATE-ZIP-CD`, `1280-EDIT-US-STATE-ZIP-CD-EXIT` |
+| `AccountViewService` | `viewAccount()` | `COACTVWC.cbl` | `2000-PROCESS-INPUTS`, `2000-PROCESS-INPUTS-EXIT` |
+| `AccountViewService` | `viewAccount()` | `COACTVWC.cbl` | `2200-EDIT-MAP-INPUTS`, `2200-EDIT-MAP-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT` |
+| `BillPaymentService` | (response header) | `COBIL00C.cbl` | `POPULATE-HEADER-INFO` |
+| `BillPaymentService` | `nowTs26()` | `COBIL00C.cbl` | `GET-CURRENT-TIMESTAMP` |
+| `BillPaymentService` | `payBill()` | `COBIL00C.cbl` | `PROCESS-ENTER-KEY` |
+| `BillPaymentService` | (form reset) | `COBIL00C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
 | `CardListService` | `applyFilters()` | `COCRDLIC.cbl` | `9500-FILTER-RECORDS`, `9500-FILTER-RECORDS-EXIT` |
 | `CardListService` | `validate()` | `COCRDLIC.cbl` | `2200-EDIT-INPUTS`, `2200-EDIT-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT`, `2220-EDIT-CARD`, `2220-EDIT-CARD-EXIT`, `2250-EDIT-ARRAY`, `2250-EDIT-ARRAY-EXIT` |
 | `CardUpdateService` | (helper) | `COCRDUPC.cbl` | `9000-READ-DATA`, `9000-READ-DATA-EXIT` |
-| `CardUpdateService` | `processInputs()` | `COCRDUPC.cbl` | `1000-PROCESS-INPUTS`, `1000-PROCESS-INPUTS-EXIT` |
+| `CardUpdateService` | `updateCard()` | `COCRDUPC.cbl` | `1000-PROCESS-INPUTS`, `1000-PROCESS-INPUTS-EXIT` |
 | `CardUpdateService` | `updateCard()` | `COCRDUPC.cbl` | `2000-DECIDE-ACTION`, `2000-DECIDE-ACTION-EXIT` |
-| `CardUpdateService` | `validate()` | `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS`, `1200-EDIT-MAP-INPUTS-EXIT`, `1210-EDIT-ACCOUNT`, `1210-EDIT-ACCOUNT-EXIT`, `1220-EDIT-CARD`, `1220-EDIT-CARD-EXIT`, `1230-EDIT-NAME`, `1230-EDIT-NAME-EXIT`, `1240-EDIT-CARDSTATUS`, `1240-EDIT-CARDSTATUS-EXIT` |
+| `CardUpdateService` | `updateCard()` | `COCRDUPC.cbl` | `1200-EDIT-MAP-INPUTS`, `1200-EDIT-MAP-INPUTS-EXIT`, `1210-EDIT-ACCOUNT`, `1210-EDIT-ACCOUNT-EXIT`, `1220-EDIT-CARD`, `1220-EDIT-CARD-EXIT`, `1230-EDIT-NAME`, `1230-EDIT-NAME-EXIT`, `1240-EDIT-CARDSTATUS`, `1240-EDIT-CARDSTATUS-EXIT` |
 | `CardViewService` | (helper) | `COCRDSLC.cbl` | `9000-READ-DATA`, `9000-READ-DATA-EXIT` |
-| `CardViewService` | `processInputs()` | `COCRDSLC.cbl` | `2000-PROCESS-INPUTS`, `2000-PROCESS-INPUTS-EXIT` |
-| `CardViewService` | `validate()` | `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS`, `2200-EDIT-MAP-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT`, `2220-EDIT-CARD`, `2220-EDIT-CARD-EXIT` |
+| `CardViewService` | `viewCard()` | `COCRDSLC.cbl` | `2000-PROCESS-INPUTS`, `2000-PROCESS-INPUTS-EXIT` |
+| `CardViewService` | `viewCard()` | `COCRDSLC.cbl` | `2200-EDIT-MAP-INPUTS`, `2200-EDIT-MAP-INPUTS-EXIT`, `2210-EDIT-ACCOUNT`, `2210-EDIT-ACCOUNT-EXIT`, `2220-EDIT-CARD`, `2220-EDIT-CARD-EXIT` |
 | `CrossReferenceService` | `findByAccount()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT`, `9200-GETCARDXREF-BYACCT-EXIT` |
 | `CrossReferenceService` | `generateNextTransactionId()` | `COTRN02C.cbl`, `COBIL00C.cbl` | `ADD-TRANSACTION` |
 | `CrossReferenceService` | `resolveCustomerId()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` |
 | `CrossReferenceService` | `resolvePrimaryCardNumber()` | `COACTVWC.cbl` | `9200-GETCARDXREF-BYACCT` |
-| `DateValidationService` | `validate()` | `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON`, `1250-EDIT-EXPIRY-MON-EXIT`, `1260-EDIT-EXPIRY-YEAR`, `1260-EDIT-EXPIRY-YEAR-EXIT` |
-| `DateValidationService` | `validateDate()` | `CSUTLDTC.cbl` | `A000-MAIN`, `A000-MAIN-EXIT` |
+| `DateValidationService` | `validateDateCcyyMmDd()` | `COCRDUPC.cbl` | `1250-EDIT-EXPIRY-MON`, `1250-EDIT-EXPIRY-MON-EXIT`, `1260-EDIT-EXPIRY-YEAR`, `1260-EDIT-EXPIRY-YEAR-EXIT` |
+| `DateValidationService` | `validateDateCcyyMmDd()` | `CSUTLDTC.cbl` | `A000-MAIN`, `A000-MAIN-EXIT` |
 | `InterestCalculationService` | `applyInterestToAccount()` | `CBACT04C.cbl` | `1400-COMPUTE-FEES` |
 | `InterestCalculationService` | `calculateMonthlyInterest()` | `CBACT04C.cbl` | `1300-COMPUTE-INTEREST` |
 | `InterestCalculationService` | `resolveInterestRate()` | `CBACT04C.cbl` | `1200-GET-INTEREST-RATE`, `1200-A-GET-DEFAULT-INT-RATE` |
-| `MenuService` | `buildHeader()` | `COADM01C.cbl`, `COMEN01C.cbl` | `POPULATE-HEADER-INFO` |
-| `MenuService` | `buildMenuOptions()` | `COADM01C.cbl`, `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` |
-| `MenuService` | `routeAdminMenuSelection()` | `COADM01C.cbl` | `PROCESS-ENTER-KEY` |
-| `MenuService` | `routeMainMenuSelection()` | `COMEN01C.cbl` | `PROCESS-ENTER-KEY` |
-| `ReportService` | `buildHeader()` | `CORPT00C.cbl` | `POPULATE-HEADER-INFO` |
-| `ReportService` | `requestReport()` | `CORPT00C.cbl` | `PROCESS-ENTER-KEY` |
-| `ReportService` | `resetForm()` | `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` |
+| `MenuService` | (response header) | `COADM01C.cbl`, `COMEN01C.cbl` | `POPULATE-HEADER-INFO` |
+| `MenuService` | `getMenuForRole()` | `COADM01C.cbl`, `COMEN01C.cbl` | `BUILD-MENU-OPTIONS` |
+| `MenuService` | `resolveOption()` | `COADM01C.cbl` | `PROCESS-ENTER-KEY` |
+| `MenuService` | `resolveOption()` | `COMEN01C.cbl` | `PROCESS-ENTER-KEY` |
+| `ReportService` | (response header) | `CORPT00C.cbl` | `POPULATE-HEADER-INFO` |
+| `ReportService` | `generateReport()` | `CORPT00C.cbl` | `PROCESS-ENTER-KEY` |
+| `ReportService` | (form reset) | `CORPT00C.cbl` | `INITIALIZE-ALL-FIELDS` |
 | `SignonService` | `authenticate()` | `COSGN00C.cbl` | `PROCESS-ENTER-KEY` |
-| `SignonService` | `buildHeader()` | `COSGN00C.cbl` | `POPULATE-HEADER-INFO` |
+| `SignonService` | (response header) | `COSGN00C.cbl` | `POPULATE-HEADER-INFO` |
 | `StatementFileService` | (n/a — JPA-managed) | `CBSTM03A.CBL` | `8100-TRNXFILE-OPEN`, `8300-CUSTFILE-OPEN`, `8400-ACCTFILE-OPEN`, `9100-TRNXFILE-CLOSE`, `9300-CUSTFILE-CLOSE`, `9400-ACCTFILE-CLOSE` |
 | `StatementFileService` | (operation dispatch) | `CBSTM03B.CBL` | `0000-START` |
 | `StatementFileService` | (return) | `CBSTM03B.CBL` | `9999-GOBACK` |
@@ -945,27 +945,27 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `StatementFileService` | `getCustomer()` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `2000-CUSTFILE-GET`, `3000-CUSTFILE-PROC` |
 | `StatementFileService` | `getTransactionsForCard()` | `CBSTM03A.CBL`, `CBSTM03B.CBL` | `4000-TRNXFILE-GET`, `8500-READTRNX-READ`, `1000-TRNXFILE-PROC` |
 | `TransactionAddService` | `addTransaction()` | `COTRN02C.cbl` | `PROCESS-ENTER-KEY`, `ADD-TRANSACTION` |
-| `TransactionAddService` | `buildHeader()` | `COTRN02C.cbl` | `POPULATE-HEADER-INFO` |
-| `TransactionAddService` | `prefillFromLast()` | `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` |
-| `TransactionAddService` | `resetForm()` | `COTRN02C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
-| `TransactionAddService` | `validateDataFields()` | `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` |
-| `TransactionAddService` | `validateKeyFields()` | `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` |
-| `TransactionListService` | `buildHeader()` | `COTRN00C.cbl` | `POPULATE-HEADER-INFO` |
+| `TransactionAddService` | (response header) | `COTRN02C.cbl` | `POPULATE-HEADER-INFO` |
+| `TransactionAddService` | (prefill from last) | `COTRN02C.cbl` | `COPY-LAST-TRAN-DATA` |
+| `TransactionAddService` | (form reset) | `COTRN02C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
+| `TransactionAddService` | `validate()` | `COTRN02C.cbl` | `VALIDATE-INPUT-DATA-FIELDS` |
+| `TransactionAddService` | `validate()` | `COTRN02C.cbl` | `VALIDATE-INPUT-KEY-FIELDS` |
+| `TransactionListService` | (response header) | `COTRN00C.cbl` | `POPULATE-HEADER-INFO` |
 | `TransactionListService` | `listTransactions()` | `COTRN00C.cbl` | `PROCESS-ENTER-KEY` |
-| `TransactionListService` | `nextPage()` | `COTRN00C.cbl` | `PROCESS-PF8-KEY`, `PROCESS-PAGE-FORWARD` |
-| `TransactionListService` | `previousPage()` | `COTRN00C.cbl` | `PROCESS-PF7-KEY`, `PROCESS-PAGE-BACKWARD` |
-| `TransactionListService` | `resetForm()` | `COTRN00C.cbl` | `INITIALIZE-TRAN-DATA` |
-| `TransactionListService` | `toListItem()` | `COTRN00C.cbl` | `POPULATE-TRAN-DATA` |
-| `TransactionViewService` | `buildHeader()` | `COTRN01C.cbl` | `POPULATE-HEADER-INFO` |
-| `TransactionViewService` | `getTransaction()` | `COTRN01C.cbl` | `PROCESS-ENTER-KEY` |
-| `TransactionViewService` | `resetForm()` | `COTRN01C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
-| `UserService` | `buildHeader()` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `POPULATE-HEADER-INFO` |
+| `TransactionListService` | `listTransactions()` | `COTRN00C.cbl` | `PROCESS-PF8-KEY`, `PROCESS-PAGE-FORWARD` |
+| `TransactionListService` | `listTransactions()` | `COTRN00C.cbl` | `PROCESS-PF7-KEY`, `PROCESS-PAGE-BACKWARD` |
+| `TransactionListService` | (form reset) | `COTRN00C.cbl` | `INITIALIZE-TRAN-DATA` |
+| `TransactionListService` | `toItem()` | `COTRN00C.cbl` | `POPULATE-TRAN-DATA` |
+| `TransactionViewService` | (response header) | `COTRN01C.cbl` | `POPULATE-HEADER-INFO` |
+| `TransactionViewService` | `viewTransaction()` | `COTRN01C.cbl` | `PROCESS-ENTER-KEY` |
+| `TransactionViewService` | (form reset) | `COTRN01C.cbl` | `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
+| `UserService` | (response header) | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `POPULATE-HEADER-INFO` |
 | `UserService` | `createUser()` | `COUSR01C.cbl` | `PROCESS-ENTER-KEY` |
 | `UserService` | `deleteUser()` | `COUSR03C.cbl` | `PROCESS-ENTER-KEY`, `DELETE-USER-INFO` |
 | `UserService` | `listUsers()` | `COUSR00C.cbl` | `PROCESS-ENTER-KEY` |
-| `UserService` | `nextPage()` | `COUSR00C.cbl` | `PROCESS-PF8-KEY`, `PROCESS-PAGE-FORWARD` |
-| `UserService` | `previousPage()` | `COUSR00C.cbl` | `PROCESS-PF7-KEY`, `PROCESS-PAGE-BACKWARD` |
-| `UserService` | `resetForm()` | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `INITIALIZE-USER-DATA`, `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
+| `UserService` | `listUsers()` | `COUSR00C.cbl` | `PROCESS-PF8-KEY`, `PROCESS-PAGE-FORWARD` |
+| `UserService` | `listUsers()` | `COUSR00C.cbl` | `PROCESS-PF7-KEY`, `PROCESS-PAGE-BACKWARD` |
+| `UserService` | (form reset) | `COUSR00C.cbl`, `COUSR01C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `INITIALIZE-USER-DATA`, `CLEAR-CURRENT-SCREEN`, `INITIALIZE-ALL-FIELDS` |
 | `UserService` | `toListItem()` | `COUSR00C.cbl` | `POPULATE-USER-DATA` |
 | `UserService` | `updateUser()` | `COUSR02C.cbl` | `PROCESS-ENTER-KEY`, `UPDATE-USER-INFO` |
 | `AccountRepository` | `findById()` | `CBACT04C.cbl`, `CBTRN01C.cbl`, `COACTUPC.cbl`, `COACTVWC.cbl`, `COBIL00C.cbl` | `1100-GET-ACCT-DATA`, `3000-READ-ACCOUNT`, `9000-READ-ACCT`, `9000-READ-ACCT-EXIT`, `9300-GETACCTDATA-BYACCT`, `9300-GETACCTDATA-BYACCT-EXIT`, `READ-ACCTDAT-FILE` |
@@ -978,15 +978,15 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `TransactionRepository` | (browse end) | `COBIL00C.cbl`, `COTRN00C.cbl`, `COTRN02C.cbl` | `ENDBR-TRANSACT-FILE` |
 | `TransactionRepository` | (browse start) | `COBIL00C.cbl`, `COTRN00C.cbl`, `COTRN02C.cbl` | `STARTBR-TRANSACT-FILE` |
 | `TransactionRepository` | `findById()` | `COTRN01C.cbl` | `READ-TRANSACT-FILE` |
-| `TransactionRepository` | `findNextPage()` | `COCRDLIC.cbl`, `COTRN00C.cbl` | `9000-READ-FORWARD`, `9000-READ-FORWARD-EXIT`, `READNEXT-TRANSACT-FILE` |
-| `TransactionRepository` | `findPreviousPage()` | `COBIL00C.cbl`, `COCRDLIC.cbl`, `COTRN00C.cbl`, `COTRN02C.cbl` | `READPREV-TRANSACT-FILE`, `9100-READ-BACKWARDS`, `9100-READ-BACKWARDS-EXIT` |
+| `TransactionRepository` | `findAll()` | `COCRDLIC.cbl`, `COTRN00C.cbl` | `9000-READ-FORWARD`, `9000-READ-FORWARD-EXIT`, `READNEXT-TRANSACT-FILE` |
+| `TransactionRepository` | `findAll()` | `COBIL00C.cbl`, `COCRDLIC.cbl`, `COTRN00C.cbl`, `COTRN02C.cbl` | `READPREV-TRANSACT-FILE`, `9100-READ-BACKWARDS`, `9100-READ-BACKWARDS-EXIT` |
 | `TransactionRepository` | `save()` | `COBIL00C.cbl`, `COTRN02C.cbl` | `WRITE-TRANSACT-FILE` |
 | `UserSecurityRepository` | (browse end) | `COUSR00C.cbl` | `ENDBR-USER-SEC-FILE` |
 | `UserSecurityRepository` | (browse start) | `COUSR00C.cbl` | `STARTBR-USER-SEC-FILE` |
 | `UserSecurityRepository` | `deleteById()` | `COUSR03C.cbl` | `DELETE-USER-SEC-FILE` |
 | `UserSecurityRepository` | `findById()` | `COSGN00C.cbl`, `COUSR02C.cbl`, `COUSR03C.cbl` | `READ-USER-SEC-FILE` |
-| `UserSecurityRepository` | `findNextPage()` | `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` |
-| `UserSecurityRepository` | `findPreviousPage()` | `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` |
+| `UserSecurityRepository` | `findAll()` | `COUSR00C.cbl` | `READNEXT-USER-SEC-FILE` |
+| `UserSecurityRepository` | `findAll()` | `COUSR00C.cbl` | `READPREV-USER-SEC-FILE` |
 | `UserSecurityRepository` | `save()` | `COUSR01C.cbl`, `COUSR02C.cbl` | `WRITE-USER-SEC-FILE`, `UPDATE-USER-SEC-FILE` |
 | `DailyTransactionItemReader` | `close()` | `CBTRN02C.cbl` | `9000-DALYTRAN-CLOSE`, `9100-TRANFILE-CLOSE`, `9200-XREFFILE-CLOSE`, `9300-DALYREJS-CLOSE`, `9400-ACCTFILE-CLOSE`, `9500-TCATBALF-CLOSE` |
 | `DailyTransactionItemReader` | `open()` | `CBTRN02C.cbl` | `0000-DALYTRAN-OPEN`, `0100-TRANFILE-OPEN`, `0200-XREFFILE-OPEN`, `0300-DALYREJS-OPEN`, `0400-ACCTFILE-OPEN`, `0500-TCATBALF-OPEN` |
@@ -996,19 +996,19 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `InterestAccountItemReader` | `read()` | `CBACT04C.cbl` | `1000-TCATBALF-GET-NEXT` |
 | `InterestCalculationService` | (helper) | `CBACT04C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
 | `PostTransactionItemWriter` | `write()` | `CBACT04C.cbl`, `CBTRN02C.cbl` | `1300-B-WRITE-TX`, `2900-WRITE-TRANSACTION-FILE` |
-| `PostTransactionItemWriter` | `writeReject()` | `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` |
-| `PostTransactionProcessor` | `formatTimestamp()` | `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
-| `PostTransactionProcessor` | `lookupAccount()` | `CBTRN02C.cbl` | `1500-B-LOOKUP-ACCT` |
-| `PostTransactionProcessor` | `lookupXref()` | `CBTRN02C.cbl` | `1500-A-LOOKUP-XREF` |
+| `PostTransactionItemWriter` | `appendRejectRecord()` | `CBTRN02C.cbl` | `2500-WRITE-REJECT-REC` |
+| `PostTransactionProcessor` | `buildPostedTransaction()` | `CBTRN02C.cbl` | `Z-GET-DB2-FORMAT-TIMESTAMP` |
+| `PostTransactionProcessor` | `process()` | `CBTRN02C.cbl` | `1500-B-LOOKUP-ACCT` |
+| `PostTransactionProcessor` | `process()` | `CBTRN02C.cbl` | `1500-A-LOOKUP-XREF` |
 | `PostTransactionProcessor` | `process()` | `CBTRN02C.cbl` | `2000-POST-TRANSACTION` |
-| `PostTransactionProcessor` | `upsertCategoryBalance()` | `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` |
-| `PostTransactionProcessor` | `validate()` | `CBTRN02C.cbl` | `1500-VALIDATE-TRAN` |
+| `PostTransactionProcessor` | `updateCategoryBalance()` | `CBTRN02C.cbl` | `2700-UPDATE-TCATBAL` |
+| `PostTransactionProcessor` | `process()` | `CBTRN02C.cbl` | `1500-VALIDATE-TRAN` |
 | `PrintReferenceJobs` | `close()` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` | `9000-ACCTFILE-CLOSE`, `9000-CARDFILE-CLOSE`, `9000-XREFFILE-CLOSE`, `9000-CUSTFILE-CLOSE`, `9000-DALYTRAN-CLOSE`, `9100-CUSTFILE-CLOSE`, `9200-XREFFILE-CLOSE`, `9300-CARDFILE-CLOSE`, `9400-ACCTFILE-CLOSE`, `9500-TRANFILE-CLOSE` |
 | `PrintReferenceJobs` | `open()` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` | `0000-ACCTFILE-OPEN`, `0000-CARDFILE-OPEN`, `0000-XREFFILE-OPEN`, `0000-CUSTFILE-OPEN`, `0000-DALYTRAN-OPEN`, `0100-CUSTFILE-OPEN`, `0200-XREFFILE-OPEN`, `0300-CARDFILE-OPEN`, `0400-ACCTFILE-OPEN`, `0500-TRANFILE-OPEN` |
-| `PrintReferenceJobs` | `printAccount()` | `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` |
-| `PrintReferenceJobs` | `printDailyTransactions()` | `CBTRN01C.cbl` | `MAIN-PARA` |
+| `PrintReferenceJobs` | `describeAccount()` | `CBACT01C.cbl` | `1100-DISPLAY-ACCT-RECORD` |
+| `PrintReferenceJobs` | `enrichAndLogTransaction()` | `CBTRN01C.cbl` | `MAIN-PARA` |
 | `PrintReferenceJobs` | `read()` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl` | `1000-ACCTFILE-GET-NEXT`, `1000-CARDFILE-GET-NEXT`, `1000-XREFFILE-GET-NEXT`, `1000-CUSTFILE-GET-NEXT`, `1000-DALYTRAN-GET-NEXT` |
-| `ReportJobLauncher` | `enqueueReportJob()` | `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR`, `WIRTE-JOBSUB-TDQ` |
+| `ReportJobLauncher` | `onReportRequest()` | `CORPT00C.cbl` | `SUBMIT-JOB-TO-INTRDR`, `WIRTE-JOBSUB-TDQ` |
 | `StatementCardXrefItemReader` | `close()` | `CBSTM03A.CBL` | `9200-XREFFILE-CLOSE` |
 | `StatementCardXrefItemReader` | `open()` | `CBSTM03A.CBL` | `0000-START`, `8100-FILE-OPEN`, `8200-XREFFILE-OPEN` |
 | `StatementCardXrefItemReader` | `read()` | `CBSTM03A.CBL` | `1000-XREFFILE-GET-NEXT` |
@@ -1019,17 +1019,17 @@ construct, JCL job, copybook, or a net-new cross-cutting concern.
 | `TransactionReportItemReader` | `close()` | `CBTRN03C.cbl` | `9000-TRANFILE-CLOSE`, `9100-REPTFILE-CLOSE`, `9200-CARDXREF-CLOSE`, `9300-TRANTYPE-CLOSE`, `9400-TRANCATG-CLOSE`, `9500-DATEPARM-CLOSE` |
 | `TransactionReportItemReader` | `open()` | `CBTRN03C.cbl` | `0000-TRANFILE-OPEN`, `0100-REPTFILE-OPEN`, `0200-CARDXREF-OPEN`, `0300-TRANTYPE-OPEN`, `0400-TRANCATG-OPEN`, `0500-DATEPARM-OPEN` |
 | `TransactionReportItemReader` | `read()` | `CBTRN03C.cbl` | `1000-TRANFILE-GET-NEXT` |
-| `TransactionReportItemReader` | `readDateParams()` | `CBTRN03C.cbl` | `0550-DATEPARM-READ` |
 | `TransactionReportItemWriter` | `write()` | `CBTRN03C.cbl` | `1100-WRITE-TRANSACTION-REPORT` |
+| `TransactionReportItemWriter` | `writeAccountTotals()` | `CBTRN03C.cbl` | `1120-WRITE-ACCOUNT-TOTALS` |
 | `TransactionReportItemWriter` | `writeDetail()` | `CBTRN03C.cbl` | `1120-WRITE-DETAIL` |
 | `TransactionReportItemWriter` | `writeGrandTotals()` | `CBTRN03C.cbl` | `1110-WRITE-GRAND-TOTALS` |
-| `TransactionReportItemWriter` | `writeHeader()` | `CBTRN03C.cbl` | `1120-WRITE-HEADERS` |
+| `TransactionReportItemWriter` | `writeHeaders()` | `CBTRN03C.cbl` | `1120-WRITE-HEADERS` |
 | `TransactionReportItemWriter` | `writeLine()` | `CBTRN03C.cbl` | `1111-WRITE-REPORT-REC` |
-| `TransactionReportProcessor` | `accumulateAccountTotals()` | `CBTRN03C.cbl` | `1120-WRITE-ACCOUNT-TOTALS` |
-| `TransactionReportProcessor` | `accumulatePageTotals()` | `CBTRN03C.cbl` | `1110-WRITE-PAGE-TOTALS` |
-| `TransactionReportProcessor` | `lookupTransactionCategory()` | `CBTRN03C.cbl` | `1500-C-LOOKUP-TRANCATG` |
-| `TransactionReportProcessor` | `lookupTransactionType()` | `CBTRN03C.cbl` | `1500-B-LOOKUP-TRANTYPE` |
-| `TransactionReportProcessor` | `lookupXref()` | `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` |
+| `TransactionReportItemWriter` | `writePageTotals()` | `CBTRN03C.cbl` | `1110-WRITE-PAGE-TOTALS` |
+| `TransactionReportProcessor` | `parseWindowBound()` | `CBTRN03C.cbl` | `0550-DATEPARM-READ` |
+| `TransactionReportProcessor` | `process()` | `CBTRN03C.cbl` | `1500-A-LOOKUP-XREF` |
+| `TransactionReportProcessor` | `resolveCategoryDescription()` | `CBTRN03C.cbl` | `1500-C-LOOKUP-TRANCATG` |
+| `TransactionReportProcessor` | `resolveTypeDescription()` | `CBTRN03C.cbl` | `1500-B-LOOKUP-TRANTYPE` |
 | `FileProcessingException` | (throw) | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBACT04C.cbl`, `CBCUS01C.cbl`, `CBSTM03A.CBL`, `CBTRN01C.cbl`, `CBTRN02C.cbl`, `CBTRN03C.cbl` | `9999-ABEND-PROGRAM`, `Z-ABEND-PROGRAM` |
 | `FileStatusCode` | `from()` | `CBACT01C.cbl`, `CBACT02C.cbl`, `CBACT03C.cbl`, `CBACT04C.cbl`, `CBCUS01C.cbl`, `CBTRN01C.cbl`, `CBTRN02C.cbl`, `CBTRN03C.cbl` | `9910-DISPLAY-IO-STATUS`, `Z-DISPLAY-IO-STATUS` |
 | `OptimisticLockConflictException` | (guard) | `COACTUPC.cbl`, `COCRDUPC.cbl` | `9700-CHECK-CHANGE-IN-REC`, `9700-CHECK-CHANGE-IN-REC-EXIT`, `9300-CHECK-CHANGE-IN-REC`, `9300-CHECK-CHANGE-IN-REC-EXIT` |
@@ -1045,9 +1045,9 @@ Observability rule) are marked accordingly.
 | Java Class | Java Method / Kind | COBOL Program / Construct | COBOL Origin (paragraph / construct / copybook) |
 |---|---|---|---|
 | `CardDemoApplication` | `main()` | app/jcl/*.jcl + CARDDEMO.CSD | CICS region + JCL runtime → @SpringBootApplication bootstrap |
-| `JwtService` | `issueToken() / validateToken()` | COSGN00C.cbl | DFHCOMMAREA pseudo-conversational state (COCOM01Y) → stateless JWT session |
-| `LookupService` | `lookup()` | app/cpy/CSLKPCDY, CSUTLDPY | Lookup-table / date copybooks → reference-data lookups |
-| `MessageService` | `resolve()` | app/cpy/CSMSG01Y, CSMSG02Y | Message-text copybooks → centralised message catalogue |
+| `JwtService` | `generateToken() / validateToken()` | COSGN00C.cbl | DFHCOMMAREA pseudo-conversational state (COCOM01Y) → stateless JWT session |
+| `LookupService` | `isValidStateCode()` / `isValidPhoneAreaCode()` / `isValidStateZipCombo()` | app/cpy/CSLKPCDY, CSUTLDPY | Lookup-table / date copybooks → reference-data lookups |
+| `MessageService` | `getInvalidKeyMessage()` / `getThankYouMessage()` | app/cpy/CSMSG01Y, CSMSG02Y | Message-text copybooks → centralised message catalogue |
 | `DailyTransactionRepository` | `saveAll() / findAll()` | CBTRN02C.cbl, CBTRN01C.cbl | DALYTRAN sequential file (CVTRA06Y) → staging JPA repository |
 | `DisclosureGroupRepository` | `findById()` | CBACT04C.cbl | DISCGRP KSDS (CVTRA02Y) → interest-rate lookup repository |
 | `TransactionCategoryTypeRepository` | `findById()` | CBTRN03C.cbl | TRANCATG KSDS (CVTRA04Y) → reference repository |
@@ -1071,7 +1071,7 @@ Observability rule) are marked accordingly.
 | `CombineTransactionJob` | `combineTransactionJob()` | app/jcl COMBTRAN (SORT) | JCL DFSORT step (no COBOL program) → Job/Step bean |
 | `CombineTransactionProcessor` | `process()` | app/jcl COMBTRAN (SORT) | SORT record pass-through / key projection |
 | `InterestCalculationJob` | `interestCalculationJob()` | CBACT04C.cbl + app/jcl/INTCALC | JCL EXEC PGM → Job/Step bean |
-| `InterestCalculationProcessor` | `process()` | CBACT04C.cbl + app/jcl/INTCALC | Per-account control-break driving loop (PROCEDURE DIVISION `PERFORM UNTIL END-OF-FILE` mainline — not a named paragraph) → chunk `ItemProcessor`; delegates the interest arithmetic/persistence to `InterestCalculationService` (in-line PERFORM → injected bean); out-of-contract `null` account id raised as `FileProcessingException` (abend-class fault, cf. `9999-ABEND-PROGRAM`) |
+| `InterestCalculationProcessor` | `process()` | CBACT04C.cbl + app/jcl/INTCALC | Chunk-step ItemProcessor (stage 2 of 5); thin orchestrator delegating per-account interest to InterestCalculationService.applyInterestToAccount() |
 | `PostTransactionJob` | `postTransactionJob()` | CBTRN02C.cbl + app/jcl/POSTTRAN | JCL EXEC PGM + DD → Spring Batch Job/Step (BatchConfig) |
 | `PostingResult` | (record) | CBTRN02C.cbl | Posting outcome value object (posted / rejected + RejectReason) |
 | `ReportDetailLine` | (record) | CBTRN03C.cbl | Report detail / total line model (1111-WRITE-REPORT-REC, 1120-WRITE-DETAIL) |
@@ -1092,7 +1092,7 @@ Observability rule) are marked accordingly.
 | `SecurityConfig` | (beans) | COSGN00C.cbl + USRSEC | RACF-less USRSEC auth → Spring Security (BCrypt encoder, JWT filter) |
 | `WebConfig` | (beans) | CICS SEND/RECEIVE MAP | REST/MVC config (JSON converters, CORS, pagination) |
 | `CorrelationIdFilter` | `doFilterInternal()` | — (net-new: Observability) | MDC correlationId per REST request (trace stitching) |
-| `HealthIndicators` | `health()` | — (net-new: Observability) | Readiness/liveness (DB, S3, SQS) at /actuator/health |
+| `HealthIndicators` | `databaseHealthIndicator()` / `s3HealthIndicator()` / `sqsHealthIndicator()` | — (net-new: Observability) | Readiness/liveness (DB, S3, SQS) at /actuator/health |
 | `AccountUpdateRequest` | (request DTO) | COACTUPC.cbl | BMS symbolic-map copybook (app/cpy-bms) + record fields → request DTO |
 | `AccountUpdateResponse` | (response DTO) | COACTUPC.cbl | BMS symbolic-map copybook (app/cpy-bms) + record fields → response DTO |
 | `AccountViewResponse` | (response DTO) | COACTVWC.cbl | BMS symbolic-map copybook (app/cpy-bms) + record fields → response DTO |

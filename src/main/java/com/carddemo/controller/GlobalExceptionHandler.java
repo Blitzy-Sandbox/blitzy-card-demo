@@ -18,7 +18,11 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.filter.ServerHttpObservationFilter;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
+
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.handler.TracingObservationHandler;
 
 import com.carddemo.dto.ErrorResponse;
 import com.carddemo.exception.CardDemoException;
@@ -111,6 +115,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         }
 
         logHandled(ex, status, code);
+        if (status.is5xxServerError()) {
+            markServerErrorSpan(request, ex);
+        }
         return ResponseEntity.status(status).body(buildError(status, code, ex.getMessage(), request, fieldErrors));
     }
 
@@ -184,12 +191,17 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                                                              final HttpHeaders headers,
                                                              final HttpStatusCode statusCode,
                                                              final WebRequest request) {
+        final HttpStatus status = resolveStatus(statusCode);
+        // A-2: mark the server-request observation errored for any 5xx surfaced by a framework handler,
+        // so the exported span carries otel.status_code=ERROR and a recorded exception event.
+        if (status.is5xxServerError()) {
+            markServerErrorSpan(servletRequestOf(request), ex);
+        }
         Object responseBody = body;
         if (!(body instanceof ErrorResponse)) {
             // A built-in framework handler proposed a null (soon-to-be RFC-7807 ProblemDetail) body:
             // replace it with the single ErrorResponse contract. Leak-free: reason phrase only, never
             // ex.getMessage() (an unreadable-body error can otherwise echo the malformed payload).
-            final HttpStatus status = resolveStatus(statusCode);
             final String code = status.name();
             logHandled(ex, status, code);
             responseBody = buildError(status, code, status.getReasonPhrase(), servletRequestOf(request), null);
@@ -289,6 +301,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         final HttpStatus status = HttpStatus.INTERNAL_SERVER_ERROR;
         final String code = "INTERNAL_ERROR";
         log.error("Unhandled exception -> {} [{}]", status.value(), code, ex);
+        markServerErrorSpan(request, ex);
         return ResponseEntity.status(status)
                 .body(buildError(status, code, "An unexpected error occurred", request, null));
     }
@@ -337,6 +350,59 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             log.warn("Handled {} -> {} [{}]: {}",
                     ex.getClass().getSimpleName(), status.value(), code, ex.getMessage());
         }
+    }
+
+    /**
+     * Marks the in-flight server request as <em>errored</em> so the exported OpenTelemetry span carries
+     * {@code otel.status_code=ERROR} and a recorded exception event (QA finding A-2).
+     *
+     * <p>When an exception is caught by this {@code @RestControllerAdvice} it never propagates back out
+     * through {@link ServerHttpObservationFilter}; the filter therefore observes an ordinary completion
+     * (HTTP 500 status, {@code SERVER_ERROR} outcome) with no associated error. This method restores the
+     * full error signal in two complementary steps:</p>
+     * <ol>
+     *   <li><strong>Observation tags</strong> &mdash; retrieving the same
+     *       {@link org.springframework.http.server.observation.ServerRequestObservationContext} the
+     *       filter created (stored as a request attribute) and calling {@code setError(...)} adds the
+     *       {@code exception}/{@code outcome=SERVER_ERROR} tags to the {@code http.server.requests}
+     *       observation (metric and span).</li>
+     *   <li><strong>Span status and event</strong> &mdash; the Micrometer observation error tags the
+     *       span but does <em>not</em> flip the OpenTelemetry status or add an exception event in this
+     *       Micrometer version. The tracing span is therefore marked directly: it is read from the
+     *       observation's {@link TracingObservationHandler.TracingContext} (which
+     *       {@code DefaultTracingObservationHandler} populated at {@code onStart}) rather than via
+     *       {@code Tracer.currentSpan()}, because the observation <em>scope</em> is not open on this
+     *       {@code @ExceptionHandler} thread. {@link Span#error(Throwable)} both records the exception as
+     *       an {@code "exception"} event and sets {@code otel.status_code=ERROR}.</li>
+     * </ol>
+     *
+     * <p>Null-safe and best-effort: a {@code null} request (or the absence of an observation context)
+     * skips both steps; the absence of a tracing context (tracing disabled) or a {@code null} span skips
+     * only the span-marking step. Error handling itself never fails.</p>
+     *
+     * @param request the current servlet request whose observation context is marked (may be {@code null})
+     * @param ex      the exception to record on the span (never {@code null})
+     */
+    private static void markServerErrorSpan(final HttpServletRequest request, final Throwable ex) {
+        if (request == null) {
+            return;
+        }
+        ServerHttpObservationFilter.findObservationContext(request).ifPresent(context -> {
+            // Step 1: attach the error to the server-request observation for the exception/outcome tags.
+            context.setError(ex);
+            // Step 2: mark the tracing span itself (ERROR status + recorded exception event). The span is
+            // obtained from the observation's TracingContext because the observation scope is not open on
+            // this thread (so Tracer.currentSpan() would be null here), and because Micrometer does not
+            // propagate the observation error onto the span in this version.
+            final TracingObservationHandler.TracingContext tracingContext =
+                    context.get(TracingObservationHandler.TracingContext.class);
+            if (tracingContext != null) {
+                final Span span = tracingContext.getSpan();
+                if (span != null) {
+                    span.error(ex);
+                }
+            }
+        });
     }
 
     /**

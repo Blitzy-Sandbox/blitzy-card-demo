@@ -5,6 +5,9 @@ import com.carddemo.dto.SignonResponse;
 import com.carddemo.entity.UserSecurity;
 import com.carddemo.exception.ValidationException;
 import com.carddemo.repository.UserSecurityRepository;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.annotation.Observed;
 import java.util.Locale;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -129,6 +132,29 @@ public class SignonService {
      */
     static final String MSG_UNABLE_VERIFY = "Unable to verify the User ...";
 
+    /**
+     * Micrometer (dot-delimited) name for the sign-on attempts counter. Prometheus renders this,
+     * with the mandatory counter suffix, as {@code carddemo_auth_attempts_total}; the
+     * {@link #TAG_RESULT} tag splits it into the {@code success} and {@code failure} series that
+     * the operations dashboard graphs.
+     */
+    private static final String METRIC_AUTH_ATTEMPTS = "carddemo.auth.attempts";
+
+    /** Tag key distinguishing the authentication outcome ({@code success} vs {@code failure}). */
+    private static final String TAG_RESULT = "result";
+
+    /** {@link #TAG_RESULT} value for a sign-on that authenticated successfully. */
+    private static final String RESULT_SUCCESS = "success";
+
+    /**
+     * {@link #TAG_RESULT} value for a sign-on rejected as a credential failure &mdash; either the
+     * user id is unknown (COBOL {@code WHEN 13}) or the password did not match. Missing-field edits
+     * (HTTP&nbsp;{@code 400}) and unexpected {@code USRSEC} I/O errors (HTTP&nbsp;{@code 500}) are
+     * <em>not</em> counted here: they are not credential outcomes, so folding them in would blur the
+     * security signal this counter exists to provide.
+     */
+    private static final String RESULT_FAILURE = "failure";
+
     /** Repository over the migrated {@code USRSEC} store (replaces keyed VSAM access). */
     private final UserSecurityRepository userSecurityRepository;
 
@@ -137,6 +163,21 @@ public class SignonService {
 
     /** Issues the stateless JWT that replaces the CICS {@code COMMAREA} session. */
     private final JwtService jwtService;
+
+    /**
+     * Counts successful sign-ons &mdash; Prometheus series
+     * {@code carddemo_auth_attempts_total{result="success"}}. Pre-registered at construction so the
+     * series exists (at&nbsp;0) from startup, exactly as the POSTTRAN counters in {@code MetricsConfig}
+     * are pre-registered; the operations dashboard therefore never shows a spurious "No data".
+     */
+    private final Counter authSuccessCounter;
+
+    /**
+     * Counts failed sign-ons (unknown user or wrong password) &mdash; Prometheus series
+     * {@code carddemo_auth_attempts_total{result="failure"}}. Pre-registered at construction for the
+     * same reason as {@link #authSuccessCounter}.
+     */
+    private final Counter authFailureCounter;
 
     /**
      * Creates the sign-on service with its collaborators.
@@ -149,13 +190,30 @@ public class SignonService {
      * @param passwordEncoder        the BCrypt password encoder bean from {@code SecurityConfig}
      *                               (never {@code null})
      * @param jwtService             the stateless JWT session service (never {@code null})
+     * @param meterRegistry          the auto-configured Micrometer registry used to register the
+     *                               sign-on attempts counter (never {@code null})
      */
     public SignonService(UserSecurityRepository userSecurityRepository,
                          PasswordEncoder passwordEncoder,
-                         JwtService jwtService) {
+                         JwtService jwtService,
+                         MeterRegistry meterRegistry) {
         this.userSecurityRepository = userSecurityRepository;
         this.passwordEncoder = passwordEncoder;
         this.jwtService = jwtService;
+        // Pre-register both outcome series so carddemo_auth_attempts_total is present (at 0) from
+        // startup, mirroring the pre-registered POSTTRAN counters in MetricsConfig. No Micrometer
+        // base unit is set so the scraped series name is exactly carddemo_auth_attempts_total (the
+        // Prometheus naming convention would otherwise append a base unit as a suffix — see
+        // MetricsConfig for the full rationale).
+        this.authSuccessCounter = Counter.builder(METRIC_AUTH_ATTEMPTS)
+                .tag(TAG_RESULT, RESULT_SUCCESS)
+                .description("Sign-on attempts that authenticated successfully (COSGN00C success path)")
+                .register(meterRegistry);
+        this.authFailureCounter = Counter.builder(METRIC_AUTH_ATTEMPTS)
+                .tag(TAG_RESULT, RESULT_FAILURE)
+                .description("Sign-on attempts rejected as unknown user or wrong password "
+                        + "(COSGN00C WHEN 13 / password-mismatch paths)")
+                .register(meterRegistry);
     }
 
     /**
@@ -179,6 +237,7 @@ public class SignonService {
      * @throws DataAccessException     if the {@code USRSEC} read fails unexpectedly (COBOL
      *                                 {@code WHEN OTHER}); logged with {@link #MSG_UNABLE_VERIFY}
      */
+    @Observed(name = "carddemo.service", contextualName = "auth-signon")
     public SignonResponse authenticate(SignonRequest request) {
         // M10-class input-contract guard: a null request body is a broken contract,
         // surfaced as the typed HTTP-400 "enter User ID" edit rather than an
@@ -210,6 +269,7 @@ public class SignonService {
         // WHEN 0: IF SEC-USR-PWD = WS-USER-PWD. The plaintext equality becomes a BCrypt verification
         // of the (upper-cased) presented password against the stored hash.
         if (!passwordEncoder.matches(password, user.getSecUsrPwd())) {
+            authFailureCounter.increment();
             throw new BadCredentialsException(MSG_WRONG_PASSWORD);
         }
 
@@ -221,6 +281,9 @@ public class SignonService {
 
         // COMMAREA replacement: the session context travels entirely inside the signed token.
         final String token = jwtService.generateToken(userId, role);
+
+        // Successful authentication: tally carddemo_auth_attempts_total{result="success"}.
+        authSuccessCounter.increment();
 
         // Audit only non-sensitive identifiers; never the password, hash, or token.
         log.info("Signon successful for userId={}, role={}", userId, role);
@@ -263,7 +326,12 @@ public class SignonService {
             log.error("{} (userId={}): {}", MSG_UNABLE_VERIFY, userId, ex.getClass().getSimpleName());
             throw ex;
         }
-        // COBOL WHEN 13: no record for this key.
-        return found.orElseThrow(() -> new BadCredentialsException(MSG_USER_NOT_FOUND));
+        // COBOL WHEN 13: no record for this key. Tally the credential failure before surfacing the
+        // uniform 401 (carddemo_auth_attempts_total{result="failure"}).
+        if (found.isEmpty()) {
+            authFailureCounter.increment();
+            throw new BadCredentialsException(MSG_USER_NOT_FOUND);
+        }
+        return found.get();
     }
 }

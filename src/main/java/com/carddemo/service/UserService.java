@@ -2,6 +2,7 @@ package com.carddemo.service;
 
 import java.util.List;
 import java.util.Locale;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -151,6 +152,7 @@ public class UserService {
      *         {@link PageResponse} of {@link UserListItem} rows (page size 10)
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "user-list")
     public UserListResponse listUsers(String userIdFilter, int page) {
         Page<UserSecurity> resultPage = userSecurityRepository.findAll(PageRequest.of(page, PAGE_SIZE));
         List<UserListItem> items = resultPage.getContent().stream()
@@ -181,6 +183,7 @@ public class UserService {
      * @throws ResourceNotFoundException (HTTP&nbsp;404) if no user has that id
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "user-get")
     public UserResponse getUser(String userId) {
         UserSecurity user = userSecurityRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException(MSG_NOT_FOUND));
@@ -206,6 +209,7 @@ public class UserService {
      * @throws DuplicateResourceException (HTTP&nbsp;409) if the user id already exists
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "user-create")
     public UserResponse createUser(UserCreateRequest req) {
         // Input-contract guard: a null request body is a broken contract, surfaced
         // as the typed HTTP-400 first-mandatory-field edit (COBOL field order)
@@ -260,6 +264,7 @@ public class UserService {
      * @throws ValidationException       (HTTP&nbsp;400) on the first blank mandatory field
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "user-update")
     public UserResponse updateUser(String userId, UserUpdateRequest req) {
         // Input-contract guard: reject a null request body up front with the typed
         // HTTP-400 first-mandatory-field edit, before any field access (and before
@@ -304,6 +309,7 @@ public class UserService {
      * @throws ResourceNotFoundException (HTTP&nbsp;404) if the user id does not exist
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "user-delete")
     public UserResponse deleteUser(String userId) {
         UserSecurity user = userSecurityRepository.findById(userId)
                 .orElseThrow(() -> new ResourceNotFoundException(MSG_NOT_FOUND));

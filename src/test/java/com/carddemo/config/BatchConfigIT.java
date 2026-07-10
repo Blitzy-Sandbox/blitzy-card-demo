@@ -177,7 +177,7 @@ class BatchConfigIT {
     /**
      * Satisfies the single eager AWS client dependency in the context. With
      * {@code SqsAutoConfiguration} excluded, no {@link SqsAsyncClient} is auto-configured, yet
-     * {@code SqsTemplateConfig}'s {@code sqsTemplate} bean (injected into {@code ReportService})
+     * {@code AwsConfig}'s {@code sqsTemplate} bean (injected into {@code ReportService})
      * is built over one. A Mockito {@link SqsAsyncClient} lets that send-only template be assembled
      * (construction performs no network I/O); it is never exercised here since no report is enqueued.
      */

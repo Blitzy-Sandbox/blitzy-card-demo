@@ -55,7 +55,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@link String}, so on receipt the converter tries to instantiate that producer-side class for a
  * {@code String} target and raises a {@code MessageConversionException} &mdash; the job never launches
  * and the message is redelivered until it is dropped. The fix is a dedicated
- * {@code SqsTemplateConfig.sqsTemplate} bean built with
+ * {@code AwsConfig.sqsTemplate} bean built with
  * {@code configureDefaultConverter(c -> c.doNotSendPayloadTypeHeader())}, so the header is omitted and
  * the {@code String} consumer converts cleanly.</p>
  *
@@ -88,7 +88,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @see ReportService
  * @see ReportJobLauncher
- * @see SqsTemplateConfig
+ * @see AwsConfig
  * @see ReportJobLauncherIT
  * @see AbstractBatchIntegrationTest
  */

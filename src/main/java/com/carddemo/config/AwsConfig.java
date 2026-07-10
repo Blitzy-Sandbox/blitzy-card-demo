@@ -1,8 +1,13 @@
 package com.carddemo.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.awspring.cloud.sqs.operations.SqsTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import software.amazon.awssdk.services.sqs.SqsAsyncClient;
 
 /**
  * AWS assembly configuration for the CardDemo migration.
@@ -47,20 +52,73 @@ import org.springframework.context.annotation.Configuration;
 public class AwsConfig {
 
     /*
-     * Intentionally no @Bean methods are declared in this class.
-     *
-     * S3Client, S3Template, SqsAsyncClient, SqsTemplate, SnsClient, and SnsTemplate are all
-     * auto-configured by Spring Cloud AWS 3.3.0 from the spring.cloud.aws.* properties and are
-     * injected directly by their consumers:
-     *   - service.ReportService          -> SqsTemplate (report-queue launch)
+     * Exactly ONE @Bean is declared here: a customized SqsTemplate (see below). Every other AWS
+     * client/template is left to Spring Cloud AWS 3.3.0 auto-configuration and injected directly
+     * by its consumer:
      *   - batch.* writers                -> S3Template  (bucket staging; injected directly to
      *                                       avoid a batch -> config dependency cycle)
      *   - observability.HealthIndicators -> ObjectProvider<S3Client> / ObjectProvider<SqsAsyncClient>
      *
-     * Re-declaring any of those beans here would create duplicate/conflicting definitions and
-     * break LocalStack endpoint resolution, so they are deliberately omitted. Endpoint, region,
-     * and credentials are YAML-driven (LocalStack) and never appear in code.
+     * S3Client, S3Template, SqsAsyncClient, SnsClient, and SnsTemplate are NOT re-declared here:
+     * doing so would create duplicate/conflicting definitions and break LocalStack endpoint
+     * resolution. Endpoint, region, and credentials remain YAML-driven (LocalStack) and never
+     * appear in code. The SqsAsyncClient injected into the SqsTemplate bean below is itself the
+     * auto-configured, LocalStack-pointed client — this class only re-wraps it in a template whose
+     * default converter is adjusted.
      */
+
+    /**
+     * Customized {@link SqsTemplate} for the online report-launch producer
+     * ({@code service.ReportService} &rarr; {@code batch.ReportJobLauncher} over the FIFO queue
+     * {@code carddemo-report-jobs.fifo}).
+     *
+     * <p><strong>Why this bean exists (message-contract fix).</strong> The Spring Cloud AWS
+     * auto-configured {@code SqsTemplate} stamps a payload-<em>type</em> header
+     * ({@code JavaType=...ReportService$ReportJobMessage}, alongside
+     * {@code contentType=application/json}) on every outbound message. The batch consumer
+     * {@code ReportJobLauncher} deliberately receives the message as a raw JSON {@code String} and
+     * parses it itself (so it can apply {@code @JsonIgnoreProperties} tolerance and typed
+     * error handling). With the type header present, the consumer's default
+     * {@code SqsMessagingMessageConverter} first materializes the body into the typed record and
+     * then, to satisfy the {@code String} parameter, renders it via {@code toString()} &mdash;
+     * yielding {@code "ReportJobMessage[jobId=...]"}, which is <em>not</em> JSON and fails the
+     * manual parse on every delivery, so the report job never launches and the correlation id
+     * never reaches the batch logs.</p>
+     *
+     * <p>This template disables that header via
+     * {@link io.awspring.cloud.sqs.support.converter.AbstractMessagingMessageConverter#doNotSendPayloadTypeHeader()},
+     * so the producer sends the record as raw JSON with no type header. The consumer then receives
+     * the exact JSON string it expects and parses it into its tolerant request record. Only the
+     * outbound serialization is affected; the auto-configured {@link SqsAsyncClient} (and its
+     * LocalStack endpoint/region/credentials) is reused unchanged. Because the auto-configured
+     * {@code SqsTemplate} is {@code @ConditionalOnMissingBean}, declaring this bean makes Spring
+     * Cloud AWS back off and use this one. Full rationale and the considered alternatives (typed
+     * listener parameter; unified shared DTO) are recorded in {@code docs/decision-log.md}, not
+     * inline, per the Explainability rule.</p>
+     *
+     * @param sqsAsyncClient       the auto-configured, LocalStack-pointed async SQS client
+     *                             (never {@code null})
+     * @param objectMapperProvider provider for the application {@link ObjectMapper}; when present it
+     *                             is applied to the converter so date/JSON serialization matches the
+     *                             rest of the application exactly (mirrors the auto-configuration)
+     * @return a {@link SqsTemplate} whose default converter does not emit the payload-type header
+     */
+    @Bean
+    SqsTemplate sqsTemplate(final SqsAsyncClient sqsAsyncClient,
+                            final ObjectProvider<ObjectMapper> objectMapperProvider) {
+        return SqsTemplate.builder()
+                .sqsAsyncClient(sqsAsyncClient)
+                .configureDefaultConverter(converter -> {
+                    // Reuse the application ObjectMapper (e.g. JavaTimeModule) when available so
+                    // outbound JSON is byte-identical to what the auto-configuration would produce,
+                    // except for the omitted payload-type header.
+                    objectMapperProvider.ifAvailable(converter::setObjectMapper);
+                    // F-1 fix: never stamp the JavaType payload-type header, so the consumer's
+                    // String parameter receives raw JSON rather than a toString()-rendered record.
+                    converter.doNotSendPayloadTypeHeader();
+                })
+                .build();
+    }
 
     /**
      * Type-safe binding of the logical AWS resource names under the {@code carddemo.aws}

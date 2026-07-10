@@ -1,7 +1,9 @@
 package com.carddemo.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
+import io.awspring.cloud.sqs.operations.SqsTemplate;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -25,8 +27,11 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClient;
  *       {@code carddemo-statements} and the SQS FIFO queue {@code carddemo-report-jobs.fifo}.
  *       These fixed logical names are the single source of truth for the migrated batch/report
  *       plumbing, so the test asserts the exact values and fails loudly on any drift.</li>
- *   <li><strong>No hand-rolled AWS client beans.</strong> {@link AwsConfig} deliberately declares
- *       no {@code S3Client}, {@code SqsAsyncClient}, or {@code SnsClient} bean &mdash; those are
+ *   <li><strong>A customized {@code SqsTemplate}, but no hand-rolled AWS client beans.</strong>
+ *       {@link AwsConfig} contributes exactly one producer bean &mdash; a {@link SqsTemplate} whose
+ *       default converter has the payload-type header disabled (the F-1 message-contract fix) &mdash;
+ *       built on the injected, auto-configured async client. It still hand-defines <em>no</em>
+ *       {@code S3Client}, {@code SqsAsyncClient}, or {@code SnsClient} bean: those SDK clients are
  *       supplied by Spring Cloud AWS 3.3.0 auto-configuration from the {@code spring.cloud.aws.*}
  *       properties, not by this class (AAP &sect;0.5.1 / &sect;0.7.7).</li>
  * </ol>
@@ -46,12 +51,14 @@ import software.amazon.awssdk.services.sqs.SqsAsyncClient;
  *
  * <h2>Why {@link ApplicationContextRunner}</h2>
  * <p>The runner (from {@code spring-boot-test}) builds a minimal application context containing
- * only what is explicitly registered &mdash; here just {@link AwsConfig} and the
- * {@code @EnableConfigurationProperties} bean it enables. It intentionally does <em>not</em> load
- * the Spring Cloud AWS auto-configurations, which is precisely what makes the client-bean-absence
- * assertion meaningful and keeps the suite fast and offline. The design rationale for the
- * &quot;bind logical names here, let the framework build the clients&quot; decision lives in
- * {@code docs/decision-log.md}, not in these comments.</p>
+ * only what is explicitly registered &mdash; here {@link AwsConfig}, the
+ * {@code @EnableConfigurationProperties} bean it enables, and a stub {@link SqsAsyncClient} the
+ * customized {@link SqsTemplate} is built on. It intentionally does <em>not</em> load the Spring
+ * Cloud AWS auto-configurations, which is precisely what makes the client-bean-absence assertion
+ * meaningful (the only {@code SqsAsyncClient} present is the test-supplied stub, so any S3/SNS client
+ * or a second SQS client would have to come from {@code AwsConfig} itself) and keeps the suite fast
+ * and offline. The design rationale for the &quot;bind logical names here, let the framework build
+ * the clients&quot; decision lives in {@code docs/decision-log.md}, not in these comments.</p>
  */
 @DisplayName("AwsConfig — logical AWS resource-name binding and absence of hand-rolled client beans")
 class AwsConfigTest {
@@ -69,11 +76,24 @@ class AwsConfigTest {
     };
 
     /**
-     * A minimal context runner that registers <strong>only</strong> {@link AwsConfig}. No
-     * auto-configuration, database, or network is involved, so every run is fast and hermetic.
+     * A stub {@link SqsAsyncClient} the customized {@link SqsTemplate} bean is built on. It is a
+     * Mockito mock (never touched at build time and never invoked by these tests), so no network,
+     * LocalStack, or live AWS is involved. A stable reference lets the client-absence test assert that
+     * the only {@code SqsAsyncClient} in the context is exactly this stub &mdash; i.e. {@link AwsConfig}
+     * defines none of its own.
+     */
+    private static final SqsAsyncClient STUB_SQS_ASYNC_CLIENT = mock(SqsAsyncClient.class);
+
+    /**
+     * A minimal context runner that registers <strong>only</strong> {@link AwsConfig} (plus its
+     * {@code @EnableConfigurationProperties} bean) and the {@link #STUB_SQS_ASYNC_CLIENT} the
+     * customized {@link SqsTemplate} depends on. No auto-configuration, database, or network is
+     * involved, so every run is fast and hermetic.
      */
     private final ApplicationContextRunner runner =
-            new ApplicationContextRunner().withUserConfiguration(AwsConfig.class);
+            new ApplicationContextRunner()
+                    .withUserConfiguration(AwsConfig.class)
+                    .withBean(SqsAsyncClient.class, () -> STUB_SQS_ASYNC_CLIENT);
 
     @Test
     @DisplayName("CardDemoAwsProperties binds all logical resource names non-null with the fixed values")
@@ -98,18 +118,23 @@ class AwsConfigTest {
     }
 
     @Test
-    @DisplayName("AwsConfig declares no S3Client, SqsAsyncClient, or SnsClient bean of its own")
-    void declaresNoAwsClientBeans() {
-        // Bind the same valid properties so context startup succeeds, then assert the negative.
+    @DisplayName("AwsConfig declares the customized SqsTemplate and hand-rolls no S3Client/SqsAsyncClient/SnsClient")
+    void declaresCustomizedSqsTemplateAndNoHandRolledClientBeans() {
+        // Bind the same valid properties so context startup succeeds, then assert the contract.
         runner.withPropertyValues(LOGICAL_RESOURCE_PROPERTIES).run(context -> {
-            // The runner registers ONLY AwsConfig (plus its @EnableConfigurationProperties bean)
-            // and deliberately omits the Spring Cloud AWS auto-configurations. Therefore the
-            // absence of these SDK v2 clients proves AwsConfig itself hand-defines none of them:
-            // the running application obtains S3/SQS/SNS clients purely from Spring Cloud AWS 3.3.0
-            // auto-configuration driven by spring.cloud.aws.* (AAP §0.5.1 / §0.7.7).
+            // F-1 message-contract fix: AwsConfig contributes exactly one customized SqsTemplate
+            // producer bean (built on the injected async client, payload-type header disabled).
+            assertThat(context).hasSingleBean(SqsTemplate.class);
+
+            // AwsConfig itself hand-defines NONE of the AWS SDK v2 clients. The runner omits the
+            // Spring Cloud AWS auto-configurations, so no S3Client / SnsClient is present at all, and
+            // the ONLY SqsAsyncClient in the context is the test-supplied stub the SqsTemplate is
+            // built on — proving AwsConfig defines no client of its own. In the running application
+            // every client comes from Spring Cloud AWS 3.3.0 auto-configuration driven by
+            // spring.cloud.aws.* (AAP §0.5.1 / §0.7.7).
             assertThat(context).doesNotHaveBean(S3Client.class);
-            assertThat(context).doesNotHaveBean(SqsAsyncClient.class);
             assertThat(context).doesNotHaveBean(SnsClient.class);
+            assertThat(context).getBean(SqsAsyncClient.class).isSameAs(STUB_SQS_ASYNC_CLIENT);
         });
     }
 }

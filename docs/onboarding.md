@@ -119,7 +119,7 @@ supplied via **environment variables or a vault — never hardcoded**.
 | :------- | :-------- | :------ | :------ |
 | `JAVA_HOME` | **Yes** | system default | Path to the JDK 25 installation used by Maven and the app. |
 | `LOCALSTACK_AUTH_TOKEN` | No¹ | *(empty)* | LocalStack **Pro** auth token. Not needed for the bundled community image. |
-| `SPRING_PROFILES_ACTIVE` | No | `default` | Active Spring profile; set to `local` for the golden path. |
+| `SPRING_PROFILES_ACTIVE` | No | `local` | Active Spring profile; defaults to `local` (the golden path). Override to `prod` for production or `test` for integration tests. |
 | `SERVER_PORT` | No | `8080` | Port the Spring Boot application listens on. |
 | `POSTGRES_DB` | No | `carddemo` | PostgreSQL database name. |
 | `POSTGRES_USER` | No | `carddemo` | PostgreSQL username. |
@@ -212,7 +212,7 @@ security upgrade over the legacy plaintext `USRSEC` model — see decision
 | **Regular User** | `USER0001` | `PASSWORD` |
 
 ```bash
-curl -s -X POST http://localhost:8080/api/auth/signin \
+curl -s -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"userId": "USER0001", "password": "PASSWORD"}'
 # Expected: 200 OK with a JWT token in the response body

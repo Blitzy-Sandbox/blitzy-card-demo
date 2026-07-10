@@ -6,6 +6,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
+import io.micrometer.core.instrument.DistributionSummary;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.observation.annotation.Observed;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -115,6 +118,13 @@ public class TransactionAddService {
     private static final BigDecimal AMOUNT_LIMIT = new BigDecimal("99999999.99");
 
     /**
+     * Micrometer (dot-delimited) name for the transaction-amount distribution summary. Prometheus
+     * renders it as the {@code carddemo_transaction_amount_count} / {@code _sum} / {@code _max}
+     * series that the operations dashboard graphs (average ticket size = {@code _sum} / {@code _count}).
+     */
+    private static final String METRIC_TRANSACTION_AMOUNT = "carddemo.transaction.amount";
+
+    /**
      * Verbatim {@code COTRN02C} prompt emitted when the transaction has not been
      * confirmed ({@code EVALUATE CONFIRMI}, L178). Returned unchanged so the
      * external contract stays byte-identical to the legacy system.
@@ -162,6 +172,15 @@ public class TransactionAddService {
     private final DateValidationService dateValidationService;
 
     /**
+     * Records the magnitude of every successfully added transaction &mdash; Prometheus series
+     * {@code carddemo_transaction_amount_count} / {@code _sum} / {@code _max}. Pre-registered at
+     * construction so the series exist (at&nbsp;0) from startup, mirroring the pre-registered
+     * POSTTRAN counters in {@code MetricsConfig}; the dashboard therefore never shows a spurious
+     * "No data" before the first {@code CT02} add.
+     */
+    private final DistributionSummary transactionAmountSummary;
+
+    /**
      * Creates the service with its collaborating beans.
      *
      * <p>Spring injects all dependencies through this single constructor, so no
@@ -172,13 +191,24 @@ public class TransactionAddService {
      * @param crossReferenceService the cross-reference / id-generation service; must not be {@code null}
      * @param dateValidationService the calendar-date validator ({@code CSUTLDTC}
      *                              replacement); must not be {@code null}
+     * @param meterRegistry         the auto-configured Micrometer registry used to register the
+     *                              transaction-amount distribution summary; must not be {@code null}
      */
     public TransactionAddService(TransactionRepository transactionRepository,
             CrossReferenceService crossReferenceService,
-            DateValidationService dateValidationService) {
+            DateValidationService dateValidationService,
+            MeterRegistry meterRegistry) {
         this.transactionRepository = transactionRepository;
         this.crossReferenceService = crossReferenceService;
         this.dateValidationService = dateValidationService;
+        // Pre-register the summary so carddemo_transaction_amount_{count,sum,max} exist (at 0) from
+        // startup, mirroring the pre-registered POSTTRAN counters in MetricsConfig. No Micrometer
+        // base unit is set so the scraped series names are exactly carddemo_transaction_amount_count
+        // / _sum / _max (a base unit would be appended as a suffix — see MetricsConfig for rationale).
+        this.transactionAmountSummary = DistributionSummary.builder(METRIC_TRANSACTION_AMOUNT)
+                .description("Magnitude of transactions added online via CT02 (COTRN02C "
+                        + "WRITE-TRANSACT-FILE); sum/count is the average ticket size")
+                .register(meterRegistry);
     }
 
     /**
@@ -226,6 +256,7 @@ public class TransactionAddService {
      *         id is supplied and it has no card cross-reference (HTTP&nbsp;404)
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "transaction-add")
     public TransactionAddResponse addTransaction(TransactionAddRequest request) {
         // Input-contract guard: a null request body is a broken contract, surfaced
         // as a typed HTTP-400 validation failure rather than an unhandled
@@ -258,6 +289,13 @@ public class TransactionAddService {
         // Build and persist the transaction record.
         Transaction txn = buildTransaction(request, tranId, cardNum);
         transactionRepository.save(txn);
+
+        // Record the posted amount's magnitude into carddemo_transaction_amount_{count,sum,max}.
+        // The absolute value is used because a Micrometer DistributionSummary silently ignores
+        // negative samples, and the COTRN02C amount edit mask (-99999999.99) admits negatives
+        // (credits/refunds); recording the magnitude keeps _count equal to the number of successful
+        // adds and makes _sum/_count a meaningful average ticket size.
+        transactionAmountSummary.record(txn.getTranAmt().abs().doubleValue());
 
         // PAN is deliberately excluded from this log line.
         log.info("Transaction added successfully (CT02): tranId={}, accountId={}",

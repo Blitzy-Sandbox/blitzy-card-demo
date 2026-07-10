@@ -1,6 +1,7 @@
 package com.carddemo.service;
 
 import java.util.List;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -178,6 +179,7 @@ public class CardListService {
      *                             HTTP {@code 400 Bad Request}
      */
     @Transactional(readOnly = true)
+    @Observed(name = "carddemo.service", contextualName = "card-list")
     public CardListResponse listCards(Long accountIdFilter, String cardNumberFilter, int page) {
         // Never log the raw card-number filter (it may be a full PAN); record only
         // whether a filter was supplied, alongside the non-sensitive account id and page.

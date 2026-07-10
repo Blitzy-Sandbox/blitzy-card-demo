@@ -3,6 +3,7 @@ package com.carddemo.service;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -217,6 +218,7 @@ public class CardUpdateService {
      *                                        (HTTP&nbsp;409)
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "card-update")
     public CardUpdateResponse updateCard(final String cardNumber, final CardUpdateRequest request) {
         log.info("Processing card update request (transaction CCUP)");
 

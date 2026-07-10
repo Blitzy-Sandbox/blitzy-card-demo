@@ -127,6 +127,20 @@
         -->
         <awaitility.version>4.2.2</awaitility.version>
 
+        <!--
+          Observability instrumentation NOT governed by the Spring Boot BOM (pinned explicitly),
+          added to close QA finding F-2 (cross-boundary tracing). Both align with the OpenTelemetry
+          API/SDK 1.49.0 already managed by the Boot 3.5.11 BOM (via micrometer-tracing-bridge-otel
+          1.5.9), so neither shifts the core OTel API version:
+            * datasource-micrometer-spring-boot 1.4.1 — auto-configures DataSource/JDBC observations,
+              producing the db.* JPA/JDBC spans (REST -> service -> repository boundary).
+            * opentelemetry-instrumentation-bom-alpha 2.15.0-alpha — the instrumentation release train
+              matching OTel 1.49.0; imported below to govern opentelemetry-aws-sdk-2.2 (AWS SQS/S3
+              client spans, the service -> AWS boundary).
+        -->
+        <datasource-micrometer.version>1.4.1</datasource-micrometer.version>
+        <opentelemetry-instrumentation.version>2.15.0-alpha</opentelemetry-instrumentation.version>
+
         <!-- ================= Pinned build-plugin versions ================= -->
         <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
@@ -187,6 +201,24 @@
                 <groupId>io.opentelemetry.semconv</groupId>
                 <artifactId>opentelemetry-semconv</artifactId>
                 <version>1.43.0</version>
+            </dependency>
+
+            <!--
+              OpenTelemetry Instrumentation BOM (alpha) — governs the AWS SDK v2 instrumentation
+              artifact (opentelemetry-aws-sdk-2.2) added for QA finding F-2 (service -> AWS spans).
+              Pinned to 2.15.0-alpha, the instrumentation release aligned with the OpenTelemetry
+              API/SDK 1.49.0 that the Spring Boot 3.5.11 BOM already manages (via
+              micrometer-tracing-bridge-otel 1.5.9); it therefore aligns the instrumentation
+              artifacts without shifting the core OTel API version. The "-alpha" classifier is
+              intrinsic to OpenTelemetry's instrumentation coordinates and does not imply the AWS SDK
+              instrumentation itself is unstable.
+            -->
+            <dependency>
+                <groupId>io.opentelemetry.instrumentation</groupId>
+                <artifactId>opentelemetry-instrumentation-bom-alpha</artifactId>
+                <version>${opentelemetry-instrumentation.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -294,6 +326,32 @@
         <dependency>
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!--
+          DataSource observation (F-2) — produces JDBC/Hibernate spans (db.system/db.statement/
+          db.operation tags) so a request trace crosses the service -> repository(JPA) boundary.
+          Spring Boot auto-configuration wraps the DataSource with a Micrometer ObservationRegistry-
+          backed proxy; no application code change is required beyond this dependency. Version pinned
+          explicitly (not BOM-managed); test profile leaves tracing disabled so it is a no-op there.
+        -->
+        <dependency>
+            <groupId>net.ttddyy.observation</groupId>
+            <artifactId>datasource-micrometer-spring-boot</artifactId>
+            <version>${datasource-micrometer.version}</version>
+        </dependency>
+
+        <!--
+          OpenTelemetry AWS SDK v2 instrumentation (F-2) — an ExecutionInterceptor that produces
+          client spans (rpc.system=aws-api, messaging.* for SQS, S3 operations) so a trace crosses
+          the service -> AWS boundary. Version governed by the opentelemetry-instrumentation-bom-alpha
+          import above. The interceptor is attached to the auto-configured AWS SDK clients via the
+          Spring Cloud AWS client customizers in AwsTracingConfig (guarded so it is inert when no
+          OpenTelemetry bean exists, e.g. the test profile with tracing disabled).
+        -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-aws-sdk-2.2</artifactId>
         </dependency>
 
         <!-- Prometheus registry — exposes /actuator/prometheus. -->

@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import io.micrometer.observation.annotation.Observed;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -276,6 +277,7 @@ public class BillPaymentService {
      *                                   cannot be found (HTTP&nbsp;404)
      */
     @Transactional(rollbackFor = Exception.class)
+    @Observed(name = "carddemo.service", contextualName = "bill-payment")
     public BillPaymentResponse payBill(BillPaymentRequest request) {
         // Step 1 — validate the account id (COBOL empty/format guard, L159-L164).
         final long accountId = parseAndValidateAccountId(request);

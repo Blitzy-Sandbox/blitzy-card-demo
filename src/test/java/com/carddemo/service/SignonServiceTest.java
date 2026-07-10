@@ -9,15 +9,17 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Optional;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
@@ -114,8 +116,28 @@ class SignonServiceTest {
     @Mock
     private JwtService jwtService;
 
-    @InjectMocks
+    /**
+     * Real (in-memory) Micrometer registry so the {@code carddemo.auth.attempts} counter that the
+     * service registers and increments is observable by the metric-parity test below. A mock
+     * registry cannot be used here: {@code Counter.builder(...).register(registry)} drives the
+     * registry's real meter-creation machinery. A fresh registry per test keeps counter reads
+     * isolated (each scenario starts at 0).
+     */
+    private SimpleMeterRegistry meterRegistry;
+
+    /** Service under test, constructed fresh per scenario with the mocks + the real registry. */
     private SignonService service;
+
+    /**
+     * Constructs the service under test before each scenario. Construction is explicit (rather than
+     * {@code @InjectMocks}) so a real {@link SimpleMeterRegistry} can be supplied for the sign-on
+     * attempts counter while the three collaborators remain Mockito mocks.
+     */
+    @BeforeEach
+    void setUp() {
+        meterRegistry = new SimpleMeterRegistry();
+        service = new SignonService(userSecurityRepository, passwordEncoder, jwtService, meterRegistry);
+    }
 
     /**
      * Builds a {@link UserSecurity} fixture mirroring a single {@code SEC-USER-DATA} record
@@ -313,5 +335,37 @@ class SignonServiceTest {
         assertThat(response.toString())
                 .doesNotContain(STORED_HASH)
                 .doesNotContain("SECRET");
+    }
+
+    // ------------------------------------------------------------------
+    // F-3: carddemo_auth_attempts_total{result=...} metric parity
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("carddemo.auth.attempts: success -> result=success; wrong password and unknown user -> result=failure")
+    void authenticate_recordsAuthAttemptsCounterByResult() {
+        // (1) A successful sign-on increments result=success.
+        when(userSecurityRepository.findById(USER_ID))
+                .thenReturn(Optional.of(user(USER_ID, STORED_HASH, TYPE_USER)));
+        when(passwordEncoder.matches("PASSWORD", STORED_HASH)).thenReturn(true);
+        when(jwtService.generateToken(anyString(), anyString())).thenReturn(ISSUED_TOKEN);
+        service.authenticate(new SignonRequest(USER_ID, "PASSWORD"));
+
+        // (2) A wrong-password sign-on (WHEN 0, mismatch) increments result=failure.
+        when(passwordEncoder.matches("WRONGPW", STORED_HASH)).thenReturn(false);
+        assertThatThrownBy(() -> service.authenticate(new SignonRequest(USER_ID, "WRONGPW")))
+                .isInstanceOf(BadCredentialsException.class);
+
+        // (3) An unknown-user sign-on (WHEN 13) also increments result=failure.
+        when(userSecurityRepository.findById("NOSUCHUSR")).thenReturn(Optional.empty());
+        assertThatThrownBy(() -> service.authenticate(new SignonRequest("NOSUCHUSR", "PASSWORD")))
+                .isInstanceOf(BadCredentialsException.class);
+
+        assertThat(meterRegistry.get("carddemo.auth.attempts").tag("result", "success").counter().count())
+                .as("exactly one successful sign-on is tallied under result=success")
+                .isEqualTo(1.0);
+        assertThat(meterRegistry.get("carddemo.auth.attempts").tag("result", "failure").counter().count())
+                .as("both credential failures (wrong password + unknown user) are tallied under result=failure")
+                .isEqualTo(2.0);
     }
 }
