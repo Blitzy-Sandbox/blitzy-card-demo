@@ -116,4 +116,35 @@
         <cve>CVE-2025-7962</cve>
     </suppress>
 
+    <!--
+      FALSE POSITIVE (over-broad NVD CPE cross-match). org.hibernate.validator:hibernate-validator
+      is the Jakarta Bean Validation reference implementation (annotation-driven constraint
+      validation), pulled transitively by spring-boot-starter-validation. dependency-check assigns
+      the jar three candidate CPEs — cpe:2.3:a:hibernate:hibernate-validator (correct),
+      cpe:2.3:a:redhat:hibernate_validator (correct alias), and cpe:2.3:a:validator:validator
+      (OVER-BROAD — it rides on the literal word "validator" in the Maven groupId/artifactId).
+      CVE-2025-15104 is filed against that validator:validator CPE, but its actual subject is
+      "The Nu Html Checker" (validator.nu / vnu) — an entirely unrelated HTML-validation tool
+      whose flaw is a DNS-rebinding SSRF restriction bypass. Its affected range is DATE-based
+      (versionEndExcluding=2026-01-11, i.e. the vnu commit/date versioning), which has nothing to
+      do with hibernate-validator's 8.0.x semantic versions and which NO hibernate-validator
+      release can ever clear (every 8.x version sorts below that date bound) — confirming this is a
+      pure CPE cross-match, not a version-remediable finding. Exploitability is nil regardless: the
+      application interpolates no user-supplied input into constraint-violation messages (no dynamic
+      EL) and ships no validator.nu / HTML-checker component on the classpath. Scoped to the single
+      artifact by Package URL and to the single CVE.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: hibernate-validator (Jakarta Bean Validation) cross-matched to the
+            over-broad cpe:2.3:a:validator:validator identifier. CVE-2025-15104 affects "The Nu Html
+            Checker" (validator.nu / vnu) — a different product with a date-based version scheme
+            (versionEndExcluding 2026-01-11) and no relationship to hibernate-validator. No
+            hibernate-validator release can clear this match, and the app interpolates no user input
+            into constraint messages. Pure CPE cross-match, not a version-remediable finding.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
+        <cve>CVE-2025-15104</cve>
+    </suppress>
+
 </suppressions>

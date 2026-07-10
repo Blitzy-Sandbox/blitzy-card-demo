@@ -151,7 +151,7 @@ All tests were executed autonomously by Blitzy's validation pipeline via `mvn cl
 
 ### REST API Verification
 
-- ✅ **Authentication** (`POST /api/auth/signin`): 200 OK with JWT token for valid credentials
+- ✅ **Authentication** (`POST /api/auth/login`): 200 OK with JWT token for valid credentials
 - ✅ **Account View** (`GET /api/accounts/00000000001`): 200 OK with full account data including BigDecimal balances
 - ✅ **Menu** (`GET /api/menu/main`): 200 OK with 10 menu options matching COMEN02Y.cpy
 - ✅ **Card List** (`GET /api/cards`): Paginated response matching COCRDLIC browse semantics
@@ -405,7 +405,7 @@ curl -s http://localhost:8080/actuator/health | python3 -m json.tool
 
 **Authentication:**
 ```bash
-curl -s -X POST http://localhost:8080/api/auth/signin \
+curl -s -X POST http://localhost:8080/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"userId": "USER0001", "password": "PASSWORD"}' | python3 -m json.tool
 # Expected: 200 OK with JWT token

@@ -25,6 +25,7 @@ import com.carddemo.dto.UserUpdateRequest;
 import com.carddemo.service.UserService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -137,14 +138,21 @@ public class UserController {
      *
      * @param userId optional user-id search filter (legacy {@code USRIDIN}); {@code null}/absent for
      *               the unfiltered list; at most eight characters
-     * @param page   the one-based page number to retrieve; defaults to {@code 1}, minimum {@code 1}
+     * @param page   the one-based page number to retrieve; defaults to {@code 1} and must be between
+     *               {@code 1} and {@code 1000000} inclusive. The upper bound is an input-robustness
+     *               guard: without it, the zero-based offset computed downstream
+     *               ({@code (page - 1) * pageSize}) can exceed {@link Integer#MAX_VALUE} for absurdly
+     *               large pages, which Spring Data rejects with an
+     *               {@code InvalidDataAccessApiUsageException}. Bounding the parameter turns that into
+     *               a clean {@code 400 VALIDATION_ERROR} instead of a {@code 500}, while one million
+     *               pages addresses far more rows than any CardDemo data set holds.
      * @return HTTP&nbsp;200 with a {@link UserListResponse} wrapping the echoed filter and a page of
      *         at most ten rows (no password is ever included)
      */
     @GetMapping
     public ResponseEntity<UserListResponse> listUsers(
             @RequestParam(required = false) @Size(max = USER_ID_MAX_LENGTH) final String userId,
-            @RequestParam(defaultValue = "1") @Min(1) final int page) {
+            @RequestParam(defaultValue = "1") @Min(1) @Max(1_000_000) final int page) {
         log.info("Listing users: page={}, filtered={}", page, userId != null);
         // Bridge the one-based REST page number to the service's zero-based Spring page index.
         final UserListResponse response = userService.listUsers(userId, page - 1);

@@ -7,6 +7,7 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -237,6 +238,41 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
                 ex.getClass().getSimpleName(), status.value(), CODE_VALIDATION_ERROR, fieldErrors.size());
         return ResponseEntity.status(status)
                 .body(buildError(status, CODE_VALIDATION_ERROR, MESSAGE_VALIDATION_FAILED, request, fieldErrors));
+    }
+
+    /**
+     * Maps a misused data-access API call driven by request input to HTTP 400 rather than 500.
+     *
+     * <p>Spring Data raises {@link InvalidDataAccessApiUsageException} when the persistence API is
+     * invoked with arguments it cannot honor. In this application every repository call is a
+     * Spring Data <em>derived</em> query (no native SQL, no user-supplied {@code Sort}), so the only
+     * client-reachable trigger is a pagination request whose computed zero-based offset
+     * ({@code (page - 1) * pageSize}) exceeds {@link Integer#MAX_VALUE} &mdash; an absurdly large
+     * {@code page}. That is bad <em>input</em>, not a server fault, so it belongs in the 4xx family
+     * alongside the other validation failures rather than falling through to the
+     * {@link #handleGeneric(Exception, HttpServletRequest) 500 handler}.</p>
+     *
+     * <p>The controllers additionally bound {@code page} with {@code @Max}, so this handler is a
+     * defense-in-depth safety net: it guarantees a clean, leak-free {@code 400 VALIDATION_ERROR}
+     * (never a {@code 500} with a stack trace) for any pagination value that would otherwise
+     * overflow, even on a code path that predates or bypasses the parameter bound. The framework
+     * message is logged at {@code WARN} for diagnostics but never returned to the caller.</p>
+     *
+     * @param ex      the data-access misuse exception (never {@code null})
+     * @param request the current request (never {@code null})
+     * @return a {@link ResponseEntity} (HTTP 400) with a generic {@link ErrorResponse} body
+     */
+    @ExceptionHandler(InvalidDataAccessApiUsageException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidDataAccessApiUsage(
+            final InvalidDataAccessApiUsageException ex, final HttpServletRequest request) {
+        final HttpStatus status = HttpStatus.BAD_REQUEST;
+        // The framework message (e.g. "Page offset exceeds Integer.MAX_VALUE") is safe to log but is
+        // never surfaced to the client; the caller receives only the generic, leak-free message below.
+        log.warn("Handled {} -> {} [{}]: {}",
+                ex.getClass().getSimpleName(), status.value(), CODE_VALIDATION_ERROR, ex.getMessage());
+        return ResponseEntity.status(status)
+                .body(buildError(status, CODE_VALIDATION_ERROR,
+                        "One or more request parameters are outside the supported range", request, null));
     }
 
     /**

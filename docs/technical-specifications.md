@@ -427,7 +427,7 @@ Target: carddemo-java/
 │   │   │   │       ├── ValidationLookupService.java  (← CSLKPCDY.cpy NANPA/state/ZIP)
 │   │   │   │       └── FileStatusMapper.java         (← FILE STATUS → exception mapping)
 │   │   │   ├── controller/
-│   │   │   │   ├── AuthController.java               (POST /api/auth/signin)
+│   │   │   │   ├── AuthController.java               (POST /api/auth/login)
 │   │   │   │   ├── AccountController.java            (GET/PUT /api/accounts/*)
 │   │   │   │   ├── CardController.java               (GET/PUT /api/cards/*)
 │   │   │   │   ├── TransactionController.java        (GET/POST /api/transactions/*)
@@ -655,7 +655,7 @@ The entire refactor executes in ONE phase. Every target file is mapped to its so
 
 | Target File | Transformation | Source File(s) | Key Changes |
 |---|---|---|---|
-| `src/main/java/**/controller/AuthController.java` | CREATE | `app/bms/COSGN00.bms`, `app/cpy-bms/COSGN00.CPY` | POST `/api/auth/signin` |
+| `src/main/java/**/controller/AuthController.java` | CREATE | `app/bms/COSGN00.bms`, `app/cpy-bms/COSGN00.CPY` | POST `/api/auth/login` |
 | `src/main/java/**/controller/AccountController.java` | CREATE | `app/bms/COACTVW.bms`, `app/bms/COACTUP.bms` | GET/PUT `/api/accounts/{id}` |
 | `src/main/java/**/controller/CardController.java` | CREATE | `app/bms/COCRDLI.bms`, `app/bms/COCRDSL.bms`, `app/bms/COCRDUP.bms` | GET/PUT `/api/cards/*` |
 | `src/main/java/**/controller/TransactionController.java` | CREATE | `app/bms/COTRN00.bms`, `app/bms/COTRN01.bms`, `app/bms/COTRN02.bms` | GET/POST `/api/transactions/*` |
@@ -935,7 +935,7 @@ The matrix provides bidirectional mapping with 100% coverage of all COBOL paragr
 | COBOL Program | COBOL Paragraph | Java Class | Java Method | Notes |
 |---|---|---|---|---|
 | `COSGN00C.cbl` | `PROCESS-ENTER-KEY` | `AuthenticationService` | `authenticate()` | BCrypt verification replaces plaintext compare |
-| `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `POST /api/auth/signin` response | BMS screen → JSON response |
+| `COSGN00C.cbl` | `SEND-SIGNON-SCREEN` | `AuthController` | `POST /api/auth/login` response | BMS screen → JSON response |
 | `COACTUPC.cbl` | `9100-GETACCT-REQUEST` | `AccountUpdateService` | `getAccount()` | VSAM READ → JPA `findById` |
 | `COACTUPC.cbl` | `PROCESS-UPDATE-ACCT` | `AccountUpdateService` | `updateAccount()` | `@Transactional` with `@Version` for SYNCPOINT semantics |
 | `CBTRN02C.cbl` | `2000-VALIDATE-TXN` | `TransactionPostingProcessor` | `validate()` | 4-stage cascade preserved, reject codes 100-109 |

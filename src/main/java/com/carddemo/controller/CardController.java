@@ -21,6 +21,7 @@ import com.carddemo.service.CardUpdateService;
 import com.carddemo.service.CardViewService;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
@@ -147,7 +148,14 @@ public class CardController {
      * @param cardNumber optional card-number filter ({@code CARD-NUM} / screen {@code CARDSID});
      *                   {@code null} or blank means "no card filter"; at most sixteen characters
      * @param page       the one-based page index to retrieve; defaults to {@code 1} and must be
-     *                   at least {@code 1}
+     *                   between {@code 1} and {@code 1000000} inclusive. The upper bound is an
+     *                   input-robustness guard: without it, the zero-based offset computed
+     *                   downstream ({@code (page - 1) * }{@link CardListResponse#PAGE_SIZE}) can
+     *                   exceed {@link Integer#MAX_VALUE} for absurdly large pages, which Spring
+     *                   Data rejects with an {@code InvalidDataAccessApiUsageException}. Bounding
+     *                   the parameter turns that into a clean {@code 400 VALIDATION_ERROR} instead
+     *                   of a {@code 500}. One million pages addresses seven million rows, far
+     *                   beyond any CardDemo data set.
      * @return {@code 200 OK} with a {@link CardListResponse} echoing the applied filters and
      *         carrying the requested page of masked card rows with pagination metadata
      */
@@ -155,7 +163,7 @@ public class CardController {
     public ResponseEntity<CardListResponse> listCards(
             @RequestParam(required = false) final Long accountId,
             @RequestParam(required = false) @Size(max = 16) final String cardNumber,
-            @RequestParam(defaultValue = "1") @Min(1) final int page) {
+            @RequestParam(defaultValue = "1") @Min(1) @Max(1_000_000) final int page) {
 
         // Never log the raw card-number filter (it may be a full PAN): record only whether a
         // filter was supplied, alongside the non-sensitive account id and one-based page index.

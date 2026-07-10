@@ -112,6 +112,22 @@
         -->
         <log4j2.version>2.25.5</log4j2.version>
 
+        <!--
+          SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). The Spring Boot 3.5.16 BOM
+          manages the Jackson stack via jackson-bom 2.21.4, whose jackson-databind carries
+          CVE-2026-54515 (CVSS 5.3): in BeanDeserializerBase.createContextual() the per-property
+          case-insensitivity block (@JsonFormat ACCEPT_CASE_INSENSITIVE_PROPERTIES) rebuilds from
+          the original, unfiltered bean-property map and overwrites the @JsonIgnoreProperties-
+          filtered map, restoring properties that name-based inclusion had just removed. NVD's
+          affected range for the 2.21.x line is [2.19.0, 2.21.5); the fix landed in 2.21.5.
+          `jackson-bom.version` is the Spring Boot BOM property governing every
+          com.fasterxml.jackson artifact, so pinning it to the next 2.21.x patch (2.21.5) updates
+          jackson-databind and the whole Jackson family in lockstep and clears the finding while
+          staying inside the BOM-validated 2.21.x line. This is a deliberate, security-driven
+          override of the BOM-managed value (mirrors the pgJDBC / Tomcat / Netty / Log4j pins above).
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+
         <!-- BOM coordinates imported in dependencyManagement below. -->
         <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
         <testcontainers.version>2.0.3</testcontainers.version>
