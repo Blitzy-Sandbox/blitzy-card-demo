@@ -1,7 +1,9 @@
 package com.carddemo.batch;
 
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
@@ -12,6 +14,7 @@ import org.springframework.batch.core.job.builder.JobBuilder;
 import org.springframework.batch.core.launch.support.RunIdIncrementer;
 import org.springframework.batch.core.repository.JobRepository;
 import org.springframework.batch.core.step.builder.StepBuilder;
+import org.springframework.batch.item.Chunk;
 import org.springframework.batch.item.ItemReader;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.batch.item.data.RepositoryItemReader;
@@ -333,18 +336,37 @@ public class PrintReferenceJobs {
      * <p>CBTRN01C, for each transaction, performs {@code 2000-LOOKUP-XREF} (by card number) followed by
      * {@code 3000-READ-ACCOUNT} (by account id), emitting {@code "CARD NUMBER ... COULD NOT BE VERIFIED"}
      * or {@code "ACCOUNT ... NOT FOUND"} when a parent is absent but never aborting on it. This writer
-     * reproduces that behavior via {@link #enrichAndLogTransaction(Transaction)}: enrichment is
+     * reproduces that behavior via {@link #enrichAndLogTransaction(Transaction, Map, Map)}: enrichment is
      * best-effort and a missing parent is a {@code WARN}, not a step failure.</p>
+     *
+     * <p><strong>Bounded query cost (no N+1).</strong> Rather than issuing the two lookups
+     * per-transaction (which would cost {@code 2 &times; N} queries for a chunk of {@code N} rows and
+     * scale poorly on larger migrated data), this writer <em>batch-preloads</em> the required
+     * cross-references and accounts for the whole chunk up front &mdash; one
+     * {@link CardXrefRepository#findAllById(Iterable) findAllById} for the distinct card numbers and one
+     * {@link AccountRepository#findAllById(Iterable) findAllById} for the distinct account ids &mdash;
+     * then resolves each transaction against the in-memory maps. The externally observable behavior
+     * (the exact per-transaction {@code TRANSACTION}/{@code TRANSACTION-ENRICHED} lines and the
+     * {@code COULD NOT BE VERIFIED}/{@code NOT FOUND} warnings, in chunk order) is unchanged; only the
+     * number of round-trips is reduced from {@code O(N)} to a small constant per chunk.</p>
      *
      * @return an {@link ItemWriter} that logs each {@link Transaction} and its enriched context
      */
     @Bean
     ItemWriter<Transaction> transactionPrintWriter() {
         return chunk -> {
+            // Preload the cross-references and accounts for the entire chunk before the display loop so
+            // enrichment costs a small, bounded number of queries per chunk instead of two per row (the
+            // legacy per-row 2000-LOOKUP-XREF + 3000-READ-ACCOUNT pattern; QA Issue 8 N+1 risk). A null
+            // record is intentionally NOT dereferenced during preload — it is caught authoritatively by
+            // requirePresentRecord in the loop below (the 9999-ABEND-PROGRAM path), preserving both the
+            // exception type and the point in chunk order at which the job aborts.
+            final Map<String, CardXref> crossReferencesByCardNumber = preloadCrossReferences(chunk);
+            final Map<Long, Account> accountsById = preloadAccounts(crossReferencesByCardNumber);
             for (final Transaction transaction : chunk) {
                 requirePresentRecord(transaction, "TRANSACTION");
                 log.info("TRANSACTION :: {}", describeTransaction(transaction));
-                enrichAndLogTransaction(transaction);
+                enrichAndLogTransaction(transaction, crossReferencesByCardNumber, accountsById);
             }
         };
     }
@@ -536,33 +558,110 @@ public class PrintReferenceJobs {
 
     /**
      * Best-effort enrichment for the transaction print job (CBTRN01C): resolves the transaction's card
-     * cross-reference and then its owning account, logging the enriched view. A missing cross-reference
-     * or account is logged as a {@code WARN} and does not fail the step, exactly mirroring the source
-     * program's {@code "... COULD NOT BE VERIFIED"} / {@code "... NOT FOUND"} messages.
+     * cross-reference and then its owning account from the chunk's <em>preloaded</em> lookup maps,
+     * logging the enriched view. A missing cross-reference or account is logged as a {@code WARN} and
+     * does not fail the step, exactly mirroring the source program's {@code "... COULD NOT BE VERIFIED"}
+     * / {@code "... NOT FOUND"} messages.
      *
-     * @param transaction the transaction to enrich and log (never {@code null})
+     * <p>The maps are populated once per chunk by {@link #preloadCrossReferences(Chunk)} and
+     * {@link #preloadAccounts(Map)}; a {@code get} that returns {@code null} is the exact semantic
+     * equivalent of the former per-row {@code findById(...)} returning {@link java.util.Optional#empty()}
+     * &mdash; the cross-reference key is a {@code VARCHAR} natural key (no fixed-width padding), so a map
+     * hit/miss and the emitted log line are byte-identical to the per-row implementation.</p>
+     *
+     * @param transaction                 the transaction to enrich and log (never {@code null})
+     * @param crossReferencesByCardNumber  the chunk's card-number &rarr; {@link CardXref} map (preloaded)
+     * @param accountsById                 the chunk's account-id &rarr; {@link Account} map (preloaded)
      */
-    private void enrichAndLogTransaction(final Transaction transaction) {
+    private void enrichAndLogTransaction(final Transaction transaction,
+                                         final Map<String, CardXref> crossReferencesByCardNumber,
+                                         final Map<Long, Account> accountsById) {
         final String cardNumber = transaction.getTranCardNum();
         if (cardNumber == null || cardNumber.isBlank()) {
             return;
         }
-        final Optional<CardXref> crossReference = cardXrefRepository.findById(cardNumber);
-        if (crossReference.isEmpty()) {
+        final CardXref crossReference = crossReferencesByCardNumber.get(cardNumber);
+        if (crossReference == null) {
             log.warn("CARD NUMBER {} COULD NOT BE VERIFIED (no cross-reference); "
                     + "skipping enrichment for transaction {}", maskPan(cardNumber), transaction.getTranId());
             return;
         }
-        final Long accountId = crossReference.get().getXrefAcctId();
-        final Optional<Account> account = accountRepository.findById(accountId);
-        if (account.isEmpty()) {
+        final Long accountId = crossReference.getXrefAcctId();
+        final Account account = accountId == null ? null : accountsById.get(accountId);
+        if (account == null) {
             log.warn("ACCOUNT {} NOT FOUND for transaction {} (referenced via card {})",
                     accountId, transaction.getTranId(), maskPan(cardNumber));
             return;
         }
         log.info("TRANSACTION-ENRICHED :: tranId={} cardNum={} custId={} {}",
-                transaction.getTranId(), maskPan(cardNumber), crossReference.get().getXrefCustId(),
-                describeAccount(account.get()));
+                transaction.getTranId(), maskPan(cardNumber), crossReference.getXrefCustId(),
+                describeAccount(account));
+    }
+
+    /**
+     * Builds the card-number &rarr; {@link CardXref} map for one chunk with a single
+     * {@link CardXrefRepository#findAllById(Iterable) findAllById}, replacing the legacy per-row
+     * {@code 2000-LOOKUP-XREF}. The distinct, non-blank card numbers of the chunk are collected in
+     * encounter order (a {@link LinkedHashSet}); if none are present no query is issued (mirroring the
+     * former "no lookup when the card number is blank" behavior). {@code null} records are skipped here
+     * and handled authoritatively by {@link #requirePresentRecord(Object, String)} in the writer loop.
+     *
+     * <p>The map is keyed by {@link CardXref#getXrefCardNum()}, which is the entity's {@code VARCHAR}
+     * primary key and therefore identical to the {@link Transaction#getTranCardNum()} value used to
+     * look it up &mdash; there is no fixed-width padding to reconcile.</p>
+     *
+     * @param chunk the chunk of transactions being written
+     * @return an immutable-in-effect map from card number to its cross-reference (empty if none resolve)
+     */
+    private Map<String, CardXref> preloadCrossReferences(final Chunk<? extends Transaction> chunk) {
+        final Set<String> cardNumbers = new LinkedHashSet<>();
+        for (final Transaction transaction : chunk) {
+            if (transaction == null) {
+                continue;
+            }
+            final String cardNumber = transaction.getTranCardNum();
+            if (cardNumber != null && !cardNumber.isBlank()) {
+                cardNumbers.add(cardNumber);
+            }
+        }
+        if (cardNumbers.isEmpty()) {
+            return Map.of();
+        }
+        final Map<String, CardXref> byCardNumber = new HashMap<>();
+        for (final CardXref crossReference : cardXrefRepository.findAllById(cardNumbers)) {
+            byCardNumber.put(crossReference.getXrefCardNum(), crossReference);
+        }
+        return byCardNumber;
+    }
+
+    /**
+     * Builds the account-id &rarr; {@link Account} map for one chunk with a single
+     * {@link AccountRepository#findAllById(Iterable) findAllById}, replacing the legacy per-row
+     * {@code 3000-READ-ACCOUNT}. Only the account ids referenced by the chunk's resolved
+     * cross-references are fetched (in encounter order); when no cross-reference resolved, or none
+     * carries an account id, no query is issued &mdash; preserving the former "no account read unless a
+     * cross-reference was found" behavior.
+     *
+     * @param crossReferencesByCardNumber the chunk's resolved cross-references (from
+     *                                    {@link #preloadCrossReferences(Chunk)})
+     * @return an immutable-in-effect map from account id to account (empty if none resolve)
+     */
+    private Map<Long, Account> preloadAccounts(final Map<String, CardXref> crossReferencesByCardNumber) {
+        final Set<Long> accountIds = new LinkedHashSet<>();
+        for (final CardXref crossReference : crossReferencesByCardNumber.values()) {
+            final Long accountId = crossReference.getXrefAcctId();
+            if (accountId != null) {
+                accountIds.add(accountId);
+            }
+        }
+        if (accountIds.isEmpty()) {
+            return Map.of();
+        }
+        final Map<Long, Account> byAccountId = new HashMap<>();
+        for (final Account account : accountRepository.findAllById(accountIds)) {
+            byAccountId.put(account.getAcctId(), account);
+        }
+        return byAccountId;
     }
 
     /**

@@ -2,6 +2,7 @@ package com.carddemo;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.autoconfigure.security.servlet.UserDetailsServiceAutoConfiguration;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 
 /**
@@ -31,8 +32,20 @@ import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
  * Explainability rule &mdash; not in verbose source comments. The frozen COBOL source under
  * {@code app/} is referenced read-only by commit SHA {@code 27d6c6f} and is never copied into this
  * target.</p>
+ *
+ * <p><strong>Security auto-configuration exclusion.</strong>
+ * {@link UserDetailsServiceAutoConfiguration} is explicitly excluded. Authentication is fully
+ * custom: {@code SecurityConfig} defines a stateless JWT {@code SecurityFilterChain} backed by the
+ * file-based {@code USRSEC} user store (migrated to {@code UserSecurity} + BCrypt), so Spring Boot's
+ * default in-memory {@code UserDetailsService} is never used. Left enabled, that auto-configuration
+ * generates a random password on every boot and prints it to the logs
+ * (&ldquo;Using generated security password: &hellip;&rdquo;). That line is misleading (the credential
+ * is inert &mdash; no filter chain consults it) and, more importantly, writing a security credential
+ * to stdout violates the &ldquo;no credentials in logs&rdquo; posture of this workload. Excluding the
+ * auto-configuration removes the unused bean and suppresses the log line at its source rather than
+ * masking it after the fact.</p>
  */
-@SpringBootApplication
+@SpringBootApplication(exclude = { UserDetailsServiceAutoConfiguration.class })
 @ConfigurationPropertiesScan
 public class CardDemoApplication {
 

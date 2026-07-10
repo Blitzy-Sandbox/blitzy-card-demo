@@ -190,18 +190,23 @@ management:
 carddemo:
   security:
     jwt:
-      # DEV-ONLY signing secret. Base declares `secret: ${JWT_SECRET}` with NO
-      # default (so prod fails fast if it is unset — the intended behavior).
-      # For a clean-machine local run we supply a clearly-labelled placeholder
-      # so `mvn spring-boot:run -Dspring-boot.run.profiles=local` starts with
-      # no extra setup. It is >= 32 bytes as HS256 requires.
+      # JWT signing secret — REQUIRED, with NO hardcoded fallback in ANY profile
+      # (AAP 0.8.1 "no hardcoded credentials"; 0.8.7 fail-fast). This inherits the
+      # base declaration `secret: ${JWT_SECRET}` (no default), so the `local`
+      # acceptance profile FAILS FAST at startup when JWT_SECRET is unset —
+      # matching prod, so a missing secret can never be masked by a committed dev
+      # fallback on any runnable profile. The failure is produced UP FRONT by
+      # RequiredConfigurationEnvironmentPostProcessor (before any bean is created)
+      # as a clean "APPLICATION FAILED TO START" report naming JWT_SECRET, rather
+      # than a late, cryptic bean-creation / placeholder-resolution stack trace.
       #
-      #   !!! DEV ONLY — NEVER use this value in production. !!!
-      #   Production secret externalization is DONE (AAP 0.8.7): base
-      #   application.yml and application-prod.yml both bind the secret to
-      #   ${JWT_SECRET} with NO default, so prod fails fast if it is unset. The
-      #   only residual work is provisioning that env var from a vault at deploy
-      #   time. Prefer exporting JWT_SECRET even locally. Do NOT commit a real
-      #   production secret anywhere.
-      secret: ${JWT_SECRET:local-dev-only-change-me-not-for-production}
+      # Clean-machine local run: export a dev-only secret first (>= 32 bytes as
+      # HS256 requires), e.g. copy .env.example and source it, or:
+      #   export JWT_SECRET="local-dev-only-change-me-not-for-production"
+      #   mvn spring-boot:run -Dspring-boot.run.profiles=local
+      # See .env.example and docs/onboarding.md. NEVER commit a real secret.
+      #
+      # Declared explicitly (no default) so inspecting THIS file shows the
+      # requirement plainly; the value is identical to the base binding.
+      secret: ${JWT_SECRET}
       # expiration-ms is INHERITED from base (${JWT_EXPIRATION_MS:3600000}).

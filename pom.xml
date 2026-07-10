@@ -529,6 +529,17 @@
                 <version>${maven-surefire-plugin.version}</version>
                 <configuration>
                     <argLine>@{surefireArgLine} -XX:+EnableDynamicAgentLoading</argLine>
+                    <!--
+                      TEST-ONLY JWT signing secret injected as the JWT_SECRET environment variable
+                      for the full-context unit tests. The checked-in application-test.yml binds
+                      carddemo.security.jwt.secret to a bare ${JWT_SECRET} with NO default (AAP 0.8.1
+                      no-hardcoded-credentials), so the deterministic test key lives here in the build
+                      rather than in a runtime config file. It is >= 32 bytes as HS256 requires and is
+                      NOT a real secret. Keep this identical to the Failsafe plugin's value below.
+                    -->
+                    <environmentVariables>
+                        <JWT_SECRET>test-only-jwt-secret-not-used-in-production</JWT_SECRET>
+                    </environmentVariables>
                 </configuration>
             </plugin>
 
@@ -543,6 +554,15 @@
                 <version>${maven-failsafe-plugin.version}</version>
                 <configuration>
                     <argLine>@{failsafeArgLine} -XX:+EnableDynamicAgentLoading</argLine>
+                    <!--
+                      TEST-ONLY JWT signing secret injected as the JWT_SECRET environment variable for
+                      the full-context integration tests (*IT). See the Surefire plugin above for the
+                      rationale; this MUST stay identical to that value so unit and integration tests
+                      share one deterministic, non-production key.
+                    -->
+                    <environmentVariables>
+                        <JWT_SECRET>test-only-jwt-secret-not-used-in-production</JWT_SECRET>
+                    </environmentVariables>
                 </configuration>
             </plugin>
 

@@ -134,8 +134,8 @@ This starts exactly five services (host ports match [`docker-compose.yml`](./doc
 mvn clean verify
 ```
 
-This compiles the project, runs the full test suite — **1,243 unit tests** (Surefire) plus
-**29 Testcontainers/LocalStack integration tests** (Failsafe) — and enforces **JaCoCo line
+This compiles the project, runs the full test suite — **1,286 unit tests** (Surefire) plus
+**50 Testcontainers/LocalStack integration tests** (Failsafe) — and enforces **JaCoCo line
 coverage ≥ 80%** (Gate 8). Docker must be running for the integration tests; to run only the
 unit tests, use `mvn clean test`.
 

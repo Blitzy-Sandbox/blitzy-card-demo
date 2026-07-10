@@ -3,6 +3,7 @@ package com.carddemo.config;
 import com.carddemo.observability.CorrelationIdFilter;
 import com.carddemo.service.JwtService;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -190,7 +191,10 @@ public class SecurityConfig {
      * ({@link SessionCreationPolicy#STATELESS}, the {@code COMMAREA} replacement), and disables CSRF
      * because there are no browser-managed cookies to protect. Authorization mirrors the verified
      * controller map: the signon endpoint and the safe actuator probes are public, the administrator
-     * surfaces require {@code ROLE_ADMIN}, and every other request must be authenticated.</p>
+     * surfaces require {@code ROLE_ADMIN}, and every other request must be authenticated. The internal
+     * {@code ERROR} dispatch is additionally permitted so a container error forwarded to {@code /error}
+     * is rendered by {@code controller.JsonErrorController} with its true status rather than being
+     * masked as a 401; a direct client request to {@code /error} still requires authentication.</p>
      *
      * <p>Two filters are inserted at deliberately distinct, stable reference positions so their
      * relative order is unambiguous: the {@link CorrelationIdFilter} runs before
@@ -216,6 +220,11 @@ public class SecurityConfig {
             .httpBasic(httpBasic -> httpBasic.disable())
             .formLogin(formLogin -> formLogin.disable())
             .authorizeHttpRequests(auth -> auth
+                // Permit the internal ERROR dispatch so a container error forwarded to /error is
+                // rendered by JsonErrorController with its true status (e.g. 404) instead of being
+                // re-evaluated as a protected resource and masked as a 401. Only the ERROR dispatcher
+                // type is permitted; a direct client REQUEST to /error still requires authentication.
+                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                 .requestMatchers(HttpMethod.POST, LOGIN_PATH).permitAll()
                 .requestMatchers(HttpMethod.POST, SIGNON_PATH).permitAll()
                 .requestMatchers(PUBLIC_ACTUATOR_PATHS).permitAll()

@@ -31,8 +31,8 @@ pie title Project Completion Status
 - ✅ All 11 VSAM datasets mapped to PostgreSQL tables with Flyway migrations (V1 schema, V2 indexes, V3 seed data)
 - ✅ Complete 5-stage Spring Batch pipeline (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT)
 - ✅ 8 REST controllers replacing 17 BMS terminal screens with full API endpoint coverage
-- ✅ 1,272/1,272 tests passing (1,243 unit + 29 integration) with zero failures
-- ✅ 95.8% line coverage (JaCoCo) exceeding the 80% threshold
+- ✅ 1,336/1,336 tests passing (1,286 unit + 50 integration) with zero failures
+- ✅ 95.06% line coverage (JaCoCo) exceeding the 80% threshold
 - ✅ Zero-warning build with `-Xlint:all` compiler flag
 - ✅ BigDecimal precision for all financial fields — zero float/double substitution
 - ✅ BCrypt password hashing (security upgrade from COBOL plaintext)
@@ -92,8 +92,8 @@ pie title Project Completion Status
 | Observability | 10 | CorrelationIdFilter, MetricsConfig (custom business metrics), HealthIndicators (PostgreSQL/S3/SQS), structured logging, distributed tracing |
 | Exception Hierarchy | 4 | 7 custom exception classes mapping COBOL FILE STATUS codes to Java exceptions |
 | Application Entry Point | 2 | CardDemoApplication.java with @SpringBootApplication |
-| Unit Tests | 40 | 1,243 unit tests (Surefire) across 30+ test classes covering all services, batch processors, models, DTOs, enums, and validation |
-| Integration & E2E Tests | 42 | 29 integration tests (Failsafe, Testcontainers/LocalStack): repository, batch-pipeline, AWS (S3/SQS/SNS), online-transaction, and Gate-verification flows against PostgreSQL + LocalStack |
+| Unit Tests | 40 | 1,286 unit tests (Surefire) across 240+ test classes covering all services, batch processors, models, DTOs, enums, and validation |
+| Integration & E2E Tests | 42 | 50 integration tests (Failsafe, Testcontainers/LocalStack): repository, batch-pipeline, AWS (S3/SQS/SNS), online-transaction, and Gate-verification flows against PostgreSQL + LocalStack |
 | Documentation | 24 | README.md (complete rewrite), docs/decision-log.md (24 decisions), docs/traceability-matrix.md (100% paragraph coverage), docs/executive-summary.html (reveal.js), docs/architecture/{overview,component-interactions,data-flow}.md, docs/onboarding.md, docs/technical-specifications.md, grafana/dashboards/carddemo-dashboard.json, prometheus/prometheus.yml |
 | QA Fixes & Debugging | 16 | 12 fix commits: integration test alignment, security hardening, batch pipeline corrections, observability wiring, documentation QA, performance testing fixes |
 | **Total** | **391** | |
@@ -128,12 +128,12 @@ All tests were executed autonomously by Blitzy's validation pipeline via `mvn cl
 
 | Test Suite | Runner | Total Tests | Passed | Failed | Notes |
 |------------|--------|-------------|--------|--------|-------|
-| Unit (services, batch processors, models, DTOs, enums, validation) | JUnit 5 + Mockito (Surefire) | 1,243 | 1,243 | 0 | All service, batch, model, DTO, enum, and validation logic |
+| Unit (services, batch processors, models, DTOs, enums, validation) | JUnit 5 + Mockito (Surefire) | 1,286 | 1,286 | 0 | All service, batch, model, DTO, enum, and validation logic |
 | Integration & E2E (repositories, batch pipeline, AWS S3/SQS/SNS, online REST APIs, gate verification) | JUnit 5 + Testcontainers / LocalStack (Failsafe) | 29 | 29 | 0 | PostgreSQL + LocalStack containers; full pipeline and REST flows |
-| **Total** | | **1,272** | **1,272** | **0** | **100% pass rate** |
+| **Total** | | **1,336** | **1,336** | **0** | **100% pass rate** |
 
 **Coverage Breakdown (JaCoCo merged — `mvn clean verify`):**
-- Line Coverage: **95.8%** (3,259 / 3,401 lines) — ✅ exceeds the 80% threshold
+- Line Coverage: **95.06%** (3,672 / 3,863 lines) — ✅ exceeds the 80% threshold
 - Branch Coverage: **82.2%** (883 / 1,074 branches) — ✅ exceeds 80%
 - Method Coverage: **99.0%** (772 / 780 methods)
 - Instruction Coverage: **96.1%** (17,599 / 18,314 instructions)
@@ -197,7 +197,7 @@ All tests were executed autonomously by Blitzy's validation pipeline via `mvn cl
 | Distributed tracing (Micrometer/OTEL) | ✅ Pass | ObservabilityConfig, micrometer-tracing-bridge-otel dependency |
 | Metrics endpoint (/actuator/prometheus) | ✅ Pass | Custom business metrics: auth attempts, batch records, transactions |
 | Health/readiness checks | ✅ Pass | HealthIndicators for PostgreSQL, S3, SQS composite health |
-| ≥80% line coverage (JaCoCo) | ✅ Pass | 95.8% line coverage — "All coverage checks have been met" |
+| ≥80% line coverage (JaCoCo) | ✅ Pass | 95.06% line coverage — "All coverage checks have been met" |
 | Zero-warning build (-Xlint:all) | ✅ Pass | `mvn clean compile` BUILD SUCCESS with zero warnings |
 | 11 VSAM datasets → PostgreSQL tables | ✅ Pass | Flyway V1 creates all 11 tables from VSAM cluster specs |
 | 5-stage batch pipeline preservation | ✅ Pass | POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT |
@@ -285,7 +285,7 @@ The CardDemo COBOL-to-Java migration has reached **90.1% completion** (391 of 43
 - **All 11 VSAM datasets** have been mapped to PostgreSQL tables with Flyway-managed schema migrations
 - **The complete 5-stage batch pipeline** (POSTTRAN → INTCALC → COMBTRAN → CREASTMT/TRANREPT) is operational with Spring Batch
 - **All 8 REST controllers** replace the 17 BMS terminal screens with full API coverage
-- **1,272 tests pass** (1,243 unit + 29 integration) with **95.8% line coverage**
+- **1,336 tests pass** (1,286 unit + 50 integration) with **95.06% line coverage**
 - **Zero-warning build** confirmed with `-Xlint:all` compiler flag
 - **Full observability** is operational: structured logging, distributed tracing, Prometheus metrics, and health checks
 - **BigDecimal precision** is enforced across all financial fields with zero float/double substitution
@@ -317,8 +317,8 @@ The application is **development-complete and validation-ready**. For production
 | Metric | Target | Actual | Status |
 |--------|--------|--------|--------|
 | COBOL programs migrated | 28 | 28 | ✅ |
-| Test pass rate | 100% | 100% (1,272/1,272) | ✅ |
-| Line coverage | ≥80% | 95.8% | ✅ |
+| Test pass rate | 100% | 100% (1,336/1,336) | ✅ |
+| Line coverage | ≥80% | 95.06% | ✅ |
 | Build warnings | 0 | 0 | ✅ |
 | Float/double in financial fields | 0 | 0 | ✅ |
 | Decision log entries | ≥15 | 24 | ✅ |
@@ -378,20 +378,20 @@ curl -s http://localhost:4566/_localstack/health | python3 -m json.tool
 
 ```bash
 # Compile the project (zero-warning build)
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw clean compile -B
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn clean compile -B
 
-# Run unit tests (1,243 unit tests)
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test -B
+# Run unit tests (1,286 unit tests)
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn test -B
 
 # Run full verification (unit + integration + E2E + coverage)
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw verify -B
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn verify -B
 ```
 
 ### Application Startup
 
 ```bash
 # Run with local profile (connects to Docker Compose services)
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw spring-boot:run \
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn spring-boot:run \
   -Dspring-boot.run.profiles=local -B
 ```
 
@@ -453,11 +453,11 @@ curl -s http://localhost:8080/api/menu/main | python3 -m json.tool
 
 | Command | Purpose |
 |---------|---------|
-| `./mvnw clean compile -B` | Compile all source files |
-| `./mvnw test -B` | Run unit tests (1,243 unit tests) |
-| `./mvnw verify -B` | Run all tests including integration (1,272 tests) |
-| `./mvnw spring-boot:run -Dspring-boot.run.profiles=local -B` | Start application with local profile |
-| `./mvnw dependency:tree -B` | Display dependency tree |
+| `mvn clean compile -B` | Compile all source files |
+| `mvn test -B` | Run unit tests (1,286 unit tests) |
+| `mvn verify -B` | Run all tests including integration (1,336 tests) |
+| `mvn spring-boot:run -Dspring-boot.run.profiles=local -B` | Start application with local profile |
+| `mvn dependency:tree -B` | Display dependency tree |
 | `docker compose up -d` | Start all infrastructure services |
 | `docker compose down -v` | Stop services and remove volumes |
 | `docker compose logs -f postgres` | Tail PostgreSQL logs |
@@ -533,19 +533,19 @@ curl -s http://localhost:8080/api/menu/main | python3 -m json.tool
 
 **Running a specific test class:**
 ```bash
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw test \
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn test \
   -Dtest=AccountUpdateServiceTest -B
 ```
 
 **Running integration tests only:**
 ```bash
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw verify \
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn verify \
   -DskipUnitTests=true -B
 ```
 
 **Generating coverage report:**
 ```bash
-JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 ./mvnw verify -B
+JAVA_HOME=/usr/lib/jvm/java-25-openjdk-amd64 mvn verify -B
 # Report at: target/site/jacoco/index.html
 ```
 

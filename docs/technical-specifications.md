@@ -5,12 +5,12 @@
 
     For the delivered state and any logged deviations, consult:
 
-    - [`project-guide.md`](project-guide.md) — delivery status, metrics (1,272 tests, 95.8% line coverage), and the operational runbook.
+    - [`project-guide.md`](project-guide.md) — delivery status, metrics (1,336 tests, 95.06% line coverage), and the operational runbook.
     - [`decision-log.md`](decision-log.md) — decisions, alternatives, and logged deviations — notably **D-024**, the security-driven upgrade of **Spring Boot 3.5.11 → 3.5.16** (Gate 8 OWASP remediation); the delivered runtime is therefore **3.5.16**, not the 3.5.11 planned below.
     - [`onboarding.md`](onboarding.md) — the clean-machine golden path.
     - [`traceability-matrix.md`](traceability-matrix.md) — the 100% bidirectional COBOL ↔ Java mapping.
 
-    **Delivered artifact names** differ from several planned names on this page: the decision log is [`docs/decision-log.md`](decision-log.md) (not `DECISION_LOG.md`); the traceability matrix is [`docs/traceability-matrix.md`](traceability-matrix.md) (not `TRACEABILITY_MATRIX.md`); the executive deck is [`docs/executive-summary.html`](executive-summary.html) (not `executive-presentation.html`); the onboarding guide is [`docs/onboarding.md`](onboarding.md) (not `onboarding-guide.md`); and the Grafana dashboard is `grafana/dashboards/carddemo-dashboard.json` (not `docs/grafana-dashboard.json`). Gate evidence and API contracts were folded into the delivered docs above rather than shipped as standalone `validation-gates.md` / `api-contracts.md` files, and AWS resources are self-provisioned by the application and integration tests (no standalone `localstack-init/` scripts). The delivered Flyway migrations are `V1__schema.sql`, `V2__indexes.sql`, and `V3__seed_data.sql`.
+    **Delivered artifact names** differ from several planned names on this page: the decision log is [`docs/decision-log.md`](decision-log.md) (not `DECISION_LOG.md`); the traceability matrix is [`docs/traceability-matrix.md`](traceability-matrix.md) (not `TRACEABILITY_MATRIX.md`); the executive deck is [`docs/executive-summary.html`](executive-summary.html) (not `executive-presentation.html`); the onboarding guide is [`docs/onboarding.md`](onboarding.md) (not `onboarding-guide.md`); and the Grafana dashboard is `grafana/dashboards/carddemo-dashboard.json` (not `docs/grafana-dashboard.json`). Gate 1–8 evidence **is** delivered as the standalone [`docs/validation-gates.md`](validation-gates.md); API contracts were folded into the delivered docs above rather than shipped as a standalone `api-contracts.md` file, and AWS resources are self-provisioned by the application and integration tests (no standalone `localstack-init/` scripts). The delivered Flyway migrations are `V1__schema.sql`, `V2__indexes.sql`, and `V3__seed_data.sql`.
 
 # 0. Agent Action Plan
 

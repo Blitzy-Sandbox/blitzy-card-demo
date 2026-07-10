@@ -399,6 +399,34 @@ Flyway applies migrations in version order: **`V1__schema.sql` → `V2__indexes.
 validates a checksum and will refuse to start if an applied migration changed. To change the schema
 or seed data, **add a new versioned file** (e.g. `V4__...sql`) instead.
 
+### 7.6 Known benign build warnings (not Gate 2 compiler warnings)
+
+A clean `mvn clean verify` prints a few JVM/tooling warnings on Java 25. **None of these are
+compiler warnings** — Gate 2 (`javac -Xlint:all`) reports **zero warnings from CardDemo code** —
+and none are actionable in this project. They are documented here so you can recognise and ignore
+them:
+
+- **`WARNING: sun.misc.Unsafe::objectFieldOffset has been called by
+  com.google.common.util.concurrent.AbstractFuture$UnsafeAtomicHelper
+  (file:.../apache-maven-*/lib/guava-*.jar)`** — emitted by the JDK because **Maven's own
+  launcher** (its bundled Guava under `.../apache-maven/lib`) uses `sun.misc.Unsafe`. It is a
+  property of the build tool, not of CardDemo's source or its dependencies, so there is nothing to
+  fix in this repository. It disappears when Maven itself stops using `Unsafe`.
+- **jansi native-access warning** — silenced by exporting
+  `MAVEN_OPTS=--enable-native-access=ALL-UNNAMED` (see [§3](#3-environment-variables)); harmless
+  either way.
+- **Surefire fork "self-kill"/shutdown line** — a benign message printed when a test JVM fork exits
+  during teardown; it does not indicate a failed or crashed test.
+
+**Dependency advisories (Gate 8).** `mvn verify -Powasp` runs OWASP dependency-check and reports
+**zero critical/high CVEs**. Two **medium** advisories are reported and formally **suppressed with
+documented, code-verified justifications** in `dependency-check-suppressions.xml` — both are false
+positives: `kotlin-stdlib` **CVE-2020-29582** (fixed in Kotlin 1.4.21; this project ships 1.9.25,
+matched only by a wildcard NVD CPE) and `opentelemetry-semconv` **CVE-2026-41178** (a DoS in the
+*Go* implementation's baggage parser; our dependency is the *Java* constants artifact with no
+parser and no executable code). See the suppression file and
+[docs/validation-gates.md](validation-gates.md) Gate 2 / Gate 8 for the full rationale.
+
 ---
 
 ## 8. How to Extend the Project

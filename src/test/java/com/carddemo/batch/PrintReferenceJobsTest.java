@@ -3,6 +3,7 @@ package com.carddemo.batch;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.anyIterable;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
@@ -13,7 +14,6 @@ import static org.mockito.Mockito.when;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
-import java.util.Optional;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -176,41 +176,53 @@ class PrintReferenceJobsTest {
         }
 
         @Test
-        @DisplayName("transaction writer enriches with cross-reference and account when both are present")
+        @DisplayName("transaction writer enriches via a single batched preload (no per-row findById)")
         void transactionWriterEnrichesWhenParentsPresent() throws Exception {
-            when(cardXrefRepository.findById(SAMPLE_CARD_NUMBER)).thenReturn(Optional.of(sampleCardXref()));
-            when(accountRepository.findById(anyLong())).thenReturn(Optional.of(sampleAccount()));
+            when(cardXrefRepository.findAllById(anyIterable())).thenReturn(List.of(sampleCardXref()));
+            when(accountRepository.findAllById(anyIterable())).thenReturn(List.of(sampleAccount()));
 
             config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER)));
 
-            verify(cardXrefRepository).findById(SAMPLE_CARD_NUMBER);
-            verify(accountRepository).findById(9990001111L);
+            // The enrichment resolves the parents from the chunk-level preload — exactly one bulk read
+            // per repository — and never falls back to the legacy per-row findById lookups (QA Issue 8).
+            verify(cardXrefRepository).findAllById(anyIterable());
+            verify(accountRepository).findAllById(anyIterable());
+            verify(cardXrefRepository, never()).findById(anyString());
+            verify(accountRepository, never()).findById(anyLong());
         }
 
         @Test
         @DisplayName("transaction writer warns (does not fail, does not read account) when the xref is missing")
         void transactionWriterWarnsWhenXrefMissing() throws Exception {
-            when(cardXrefRepository.findById(anyString())).thenReturn(Optional.empty());
+            when(cardXrefRepository.findAllById(anyIterable())).thenReturn(List.of());
 
             assertThatCode(() ->
                     config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))))
                     .doesNotThrowAnyException();
 
-            verify(cardXrefRepository).findById(SAMPLE_CARD_NUMBER);
+            // The cross-reference preload ran but resolved nothing, so the account preload is skipped
+            // entirely (no account ids to fetch) — the batched analogue of "no account read when the
+            // xref is absent". No per-row findById is ever issued.
+            verify(cardXrefRepository).findAllById(anyIterable());
+            verify(accountRepository, never()).findAllById(anyIterable());
+            verify(cardXrefRepository, never()).findById(anyString());
             verify(accountRepository, never()).findById(anyLong());
         }
 
         @Test
         @DisplayName("transaction writer warns (does not fail) when the referenced account is missing")
         void transactionWriterWarnsWhenAccountMissing() throws Exception {
-            when(cardXrefRepository.findById(SAMPLE_CARD_NUMBER)).thenReturn(Optional.of(sampleCardXref()));
-            when(accountRepository.findById(anyLong())).thenReturn(Optional.empty());
+            when(cardXrefRepository.findAllById(anyIterable())).thenReturn(List.of(sampleCardXref()));
+            when(accountRepository.findAllById(anyIterable())).thenReturn(List.of());
 
             assertThatCode(() ->
                     config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))))
                     .doesNotThrowAnyException();
 
-            verify(accountRepository).findById(9990001111L);
+            // The account is fetched via the batched preload (never the legacy per-row findById), and its
+            // absence produces the "ACCOUNT ... NOT FOUND" warning rather than a step failure.
+            verify(accountRepository).findAllById(anyIterable());
+            verify(accountRepository, never()).findById(anyLong());
         }
 
         @Test
@@ -220,6 +232,10 @@ class PrintReferenceJobsTest {
                     config.transactionPrintWriter().write(chunkOf(sampleTransaction("   "))))
                     .doesNotThrowAnyException();
 
+            // A blank card number contributes no key to the preload, so neither the batched bulk read
+            // nor any per-row lookup is issued.
+            verify(cardXrefRepository, never()).findAllById(anyIterable());
+            verify(accountRepository, never()).findAllById(anyIterable());
             verify(cardXrefRepository, never()).findById(anyString());
             verify(accountRepository, never()).findById(anyLong());
         }
@@ -293,8 +309,8 @@ class PrintReferenceJobsTest {
         @Test
         @DisplayName("transaction print writer masks the PAN in both the record render and enrichment")
         void transactionPrintWriterMasksPan() throws Exception {
-            when(cardXrefRepository.findById(SAMPLE_CARD_NUMBER)).thenReturn(Optional.of(sampleCardXref()));
-            when(accountRepository.findById(anyLong())).thenReturn(Optional.of(sampleAccount()));
+            when(cardXrefRepository.findAllById(anyIterable())).thenReturn(List.of(sampleCardXref()));
+            when(accountRepository.findAllById(anyIterable())).thenReturn(List.of(sampleAccount()));
 
             final List<String> messages = captureLogsWhile(() ->
                     config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))));
@@ -307,7 +323,7 @@ class PrintReferenceJobsTest {
         @Test
         @DisplayName("transaction enrichment warning masks the PAN when the cross-reference is missing")
         void transactionEnrichmentWarningMasksPan() throws Exception {
-            when(cardXrefRepository.findById(anyString())).thenReturn(Optional.empty());
+            when(cardXrefRepository.findAllById(anyIterable())).thenReturn(List.of());
 
             final List<String> messages = captureLogsWhile(() ->
                     config.transactionPrintWriter().write(chunkOf(sampleTransaction(SAMPLE_CARD_NUMBER))));

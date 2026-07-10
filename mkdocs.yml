@@ -6,6 +6,7 @@ nav:
   - Onboarding: onboarding.md
   - Decision Log: decision-log.md
   - Traceability Matrix: traceability-matrix.md
+  - Validation Gates: validation-gates.md
   - Architecture:
       - Overview: architecture/overview.md
       - Component Interactions: architecture/component-interactions.md

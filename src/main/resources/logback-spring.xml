@@ -23,11 +23,12 @@
       * com.carddemo.observability.CorrelationIdFilter  (REST boundary)
           -> CorrelationIdFilter.CORRELATION_ID_MDC_KEY == "correlationId"
       * the Spring Batch job listener (batch boundary)
-    This file reads the value two ways:
-      * human console pattern via  %X{correlationId:-}
-      * structured JSON via the full-MDC provider (<mdc/>), which also surfaces
-        Micrometer Tracing's traceId / spanId (they live in the MDC and survive
-        because CorrelationIdFilter uses MDC.remove(), never MDC.clear()).
+    This file surfaces the value through the structured-JSON full-MDC provider
+    (<mdc/>), which also surfaces Micrometer Tracing's traceId / spanId (they
+    live in the MDC and survive because CorrelationIdFilter uses MDC.remove(),
+    never MDC.clear()). The correlationId conversion word (%correlationId) and
+    the %X{correlationId} MDC accessor remain registered for any operator who
+    reinstates a human-readable console appender at runtime.
     NOTE: Spring Boot's imported defaults.xml registers a "correlationId"
     *conversion word* (%correlationId) for its own tracing pattern. That is a
     DIFFERENT mechanism and does NOT collide with %X{correlationId} (the MDC
@@ -44,9 +45,9 @@
     so account/transaction values are not leaked through Hibernate logging.
 
   ===========================================================================
-  CONTAINER-FRIENDLY: everything logs to STDOUT (both the human-readable and
-  the JSON appenders). There are deliberately NO file appenders writing to
-  arbitrary host paths; a log collector / container runtime captures STDOUT.
+  CONTAINER-FRIENDLY: everything logs as structured JSON to STDOUT in every
+  profile. There are deliberately NO file appenders writing to arbitrary host
+  paths; a log collector / container runtime captures STDOUT.
   ============================================================================
 -->
 <configuration scan="false">
@@ -118,113 +119,99 @@
     <logger name="org.springframework.security" level="INFO"/>
 
     <!-- ======================================================================
-         PROFILE-BASED APPENDERS AND ROOT LOGGER
-         The two <springProfile> blocks are mutually exclusive AND exhaustive
-         (a profile set either contains "local" or it does not), so the root
-         logger is ALWAYS bound to exactly one appender — never none, never two.
-         Each block defines ONLY the appender(s) it references, which keeps the
-         Logback startup status clean (no "appender not referenced" warnings).
+         APPENDERS AND ROOT LOGGER  (profile-independent, structured JSON)
+         ======================================================================
+         Structured JSON logging is emitted in EVERY profile — INCLUDING "local"
+         — so the Observability rule's structured-logging capability is exercisable
+         in the local acceptance runtime, not only under test/prod.
+
+         Rationale (QA finding "local runtime logs are not JSON", AAP 0.7.1):
+         the guiding bar is "If a capability cannot be exercised locally, it is
+         NOT considered delivered." A prior profile split emitted a human-readable
+         PatternLayout locally and JSON only for !local, which meant the delivered
+         structured-logging capability could not be verified on a clean-machine
+         `mvn spring-boot:run -Dspring-boot.run.profiles=local` acceptance run.
+         Binding the single JSON appender to the root logger unconditionally makes
+         all runtime logs machine-parseable and correlation-stitched regardless of
+         the active profile. Developers who want a human-readable console can still
+         opt in at runtime (e.g. logging.pattern.console / a custom logback include)
+         without changing the delivered default.
+
+         A single appender + single root binding also keeps the Logback startup
+         status clean (no "appender not referenced" / "root bound twice" warnings).
+         ======================================================================
+         JSON schema (logstash-logback-encoder 8.0 composite encoder; one JSON
+         object per line, written to STDOUT for a container log collector):
+           @timestamp   ISO-8601 in UTC (stable, timezone-independent)
+           level        log level (INFO/WARN/ERROR/...)
+           logger_name  fully-qualified logger name
+           thread_name  originating thread
+           message      the formatted log message
+           stack_trace  full throwable stack trace (present only on errors)
+           <all MDC>    correlationId (contract key) plus Micrometer traceId /
+                        spanId when distributed tracing is active — surfaced as
+                        top-level fields by the bare <mdc/> provider
+           application  static service identity (== spring.application.name)
+           service      static service identity (== spring.application.name)
+
+         The JSON appender is wrapped in an AsyncAppender for throughput:
+           queueSize           1024  — bounded queue (backpressure boundary)
+           discardingThreshold 0     — never silently drop events (a financial /
+                                       audit workload must not lose INFO/WARN/ERROR
+                                       lines when the queue is under pressure)
+           neverBlock          false — prefer brief producer backpressure over log
+                                       loss; if the queue fills, the logging thread
+                                       waits rather than discarding the event
+           includeCallerData   false — caller data (file/line) is expensive and not
+                                       needed for structured JSON logs
+         MDC (including correlationId) is captured on the producing thread when the
+         LoggingEvent is created, so it is preserved across the async hand-off.
          ====================================================================== -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>@timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                    <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
+                </timestamp>
+                <logLevel>
+                    <fieldName>level</fieldName>
+                </logLevel>
+                <loggerName>
+                    <fieldName>logger_name</fieldName>
+                </loggerName>
+                <threadName>
+                    <fieldName>thread_name</fieldName>
+                </threadName>
+                <message>
+                    <fieldName>message</fieldName>
+                </message>
+                <!-- Full MDC as top-level fields: correlationId + traceId/spanId. -->
+                <mdc/>
+                <!-- Stack trace only rendered when the event carries a throwable. -->
+                <stackTrace>
+                    <fieldName>stack_trace</fieldName>
+                </stackTrace>
+                <!-- Static service identity. ${appName} is resolved at config
+                     time from the springProperty above. -->
+                <pattern>
+                    <pattern>{"application":"${appName}","service":"${appName}"}</pattern>
+                </pattern>
+            </providers>
+        </encoder>
+    </appender>
 
-    <!--
-      local -> CONSOLE (human-readable): developer ergonomics on a laptop.
-      The correlation id is rendered inside square brackets; the ":-" default
-      keeps columns aligned when no correlationId is present in the MDC (e.g.
-      startup logs before any request is served).
-    -->
-    <springProfile name="local">
-        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
-                <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{correlationId:-}] %logger{36} - %msg%n</pattern>
-                <charset>UTF-8</charset>
-            </encoder>
-        </appender>
+    <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="JSON"/>
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>false</neverBlock>
+        <includeCallerData>false</includeCallerData>
+    </appender>
 
-        <root level="INFO">
-            <appender-ref ref="CONSOLE"/>
-        </root>
-    </springProfile>
-
-    <!--
-      !local -> JSON (structured): machine-parseable logs to STDOUT for test /
-      prod and the safe fallback for any other or absent profile, so logs are
-      always parseable and correlation-stitched. Uses logstash-logback-encoder
-      8.0's composite encoder with explicit providers so the emitted schema is
-      stable and self-documenting; one JSON object is written per line.
-
-      Emitted fields:
-        @timestamp   ISO-8601 in UTC (stable, timezone-independent)
-        level        log level (INFO/WARN/ERROR/...)
-        logger_name  fully-qualified logger name
-        thread_name  originating thread
-        message      the formatted log message
-        stack_trace  full throwable stack trace (present only on errors)
-        <all MDC>    correlationId (contract key) plus Micrometer traceId /
-                     spanId when distributed tracing is active — surfaced as
-                     top-level fields by the bare <mdc/> provider
-        application  static service identity (== spring.application.name)
-        service      static service identity (== spring.application.name)
-
-      The JSON appender is wrapped in an AsyncAppender for throughput:
-        queueSize           1024  — bounded queue (backpressure boundary)
-        discardingThreshold 0     — never silently drop events (a financial /
-                                    audit workload must not lose INFO/WARN/ERROR
-                                    lines when the queue is under pressure)
-        neverBlock          false — prefer brief producer backpressure over log
-                                    loss; if the queue fills, the logging thread
-                                    waits rather than discarding the event
-        includeCallerData   false — caller data (file/line) is expensive and not
-                                    needed for structured JSON logs
-      MDC (including correlationId) is captured on the producing thread when the
-      LoggingEvent is created, so it is preserved across the async hand-off.
-    -->
-    <springProfile name="!local">
-        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
-            <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
-                <providers>
-                    <timestamp>
-                        <fieldName>@timestamp</fieldName>
-                        <timeZone>UTC</timeZone>
-                        <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
-                    </timestamp>
-                    <logLevel>
-                        <fieldName>level</fieldName>
-                    </logLevel>
-                    <loggerName>
-                        <fieldName>logger_name</fieldName>
-                    </loggerName>
-                    <threadName>
-                        <fieldName>thread_name</fieldName>
-                    </threadName>
-                    <message>
-                        <fieldName>message</fieldName>
-                    </message>
-                    <!-- Full MDC as top-level fields: correlationId + traceId/spanId. -->
-                    <mdc/>
-                    <!-- Stack trace only rendered when the event carries a throwable. -->
-                    <stackTrace>
-                        <fieldName>stack_trace</fieldName>
-                    </stackTrace>
-                    <!-- Static service identity. ${appName} is resolved at config
-                         time from the springProperty above. -->
-                    <pattern>
-                        <pattern>{"application":"${appName}","service":"${appName}"}</pattern>
-                    </pattern>
-                </providers>
-            </encoder>
-        </appender>
-
-        <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
-            <appender-ref ref="JSON"/>
-            <queueSize>1024</queueSize>
-            <discardingThreshold>0</discardingThreshold>
-            <neverBlock>false</neverBlock>
-            <includeCallerData>false</includeCallerData>
-        </appender>
-
-        <root level="INFO">
-            <appender-ref ref="ASYNC_JSON"/>
-        </root>
-    </springProfile>
+    <root level="INFO">
+        <appender-ref ref="ASYNC_JSON"/>
+    </root>
 
 </configuration>

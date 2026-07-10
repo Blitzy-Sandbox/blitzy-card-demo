@@ -95,11 +95,18 @@ services:
     image: postgres:16
     container_name: carddemo-postgres
     environment:
-      # Dev-only defaults (NOT production secrets). The app's `local` profile
-      # connects with these to jdbc:postgresql://localhost:5432/carddemo.
-      POSTGRES_DB: carddemo
-      POSTGRES_USER: carddemo
-      POSTGRES_PASSWORD: carddemo
+      # Externalized dev-only credentials (NOT production secrets). Each value is
+      # sourced from the environment / an (untracked) .env file, with a dev
+      # fallback so `docker compose up` still works with zero setup on a clean
+      # machine. Override them by copying .env.example -> .env and editing it, or
+      # by exporting the variables. These default from the SAME DB_* variables the
+      # Spring Boot `local` profile reads (spring.datasource.* -> DB_NAME /
+      # DB_USERNAME / DB_PASSWORD), so setting them once in .env keeps the database
+      # container and the application in lock-step. See .env.example and
+      # docs/onboarding.md.
+      POSTGRES_DB: ${DB_NAME:-carddemo}
+      POSTGRES_USER: ${DB_USERNAME:-carddemo}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-carddemo}
       # Deterministic, locale-independent initialization.
       POSTGRES_INITDB_ARGS: "--encoding=UTF8"
     ports:
@@ -110,7 +117,9 @@ services:
       - carddemo-net
     healthcheck:
       # pg_isready ships in the postgres image; gate dependents on real readiness.
-      test: ["CMD-SHELL", "pg_isready -U carddemo -d carddemo"]
+      # Reference the container's own POSTGRES_USER/POSTGRES_DB (escaped $$ so the
+      # container shell expands them) so the probe follows any credential override.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -215,9 +224,12 @@ services:
     image: grafana/grafana:11.2.0
     container_name: carddemo-grafana
     environment:
-      # Dev-only admin credentials (NOT production secrets).
-      GF_SECURITY_ADMIN_USER: "admin"
-      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      # Externalized dev-only admin credentials (NOT production secrets).
+      # Sourced from the environment / an (untracked) .env file with a dev
+      # fallback so the dashboard is reachable with zero setup. Override via
+      # .env.example -> .env or exported variables. See .env.example.
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD:-admin}
       # Lock down a local dev instance sensibly.
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"

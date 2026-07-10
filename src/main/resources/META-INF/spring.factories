@@ -1,0 +1,18 @@
+# ============================================================================
+# CardDemo — Spring Boot factories registration
+# ----------------------------------------------------------------------------
+# EnvironmentPostProcessor: fail-fast validation of required per-profile configuration
+# (Issues 4 and 6). Runs before the application context is created and aborts startup
+# with a single, human-readable report listing ALL missing required environment
+# variables — the full externalized set for the 'prod' profile, and JWT_SECRET for the
+# 'local' profile. It is a no-op for the test/default profiles.
+#
+# FailureAnalyzer: renders the resulting MissingRequiredConfigurationException as a
+# clean "APPLICATION FAILED TO START" report (Description + Action) rather than a
+# raw stack trace.
+# ============================================================================
+org.springframework.boot.env.EnvironmentPostProcessor=\
+  com.carddemo.config.RequiredConfigurationEnvironmentPostProcessor
+
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+  com.carddemo.config.MissingRequiredConfigurationFailureAnalyzer

@@ -16,7 +16,10 @@
 package com.carddemo.observability;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
 import org.springframework.boot.actuate.autoconfigure.metrics.MeterRegistryCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -105,6 +108,20 @@ public class MetricsConfig {
     private static final String METRIC_TRANSACTIONS_REJECTED = "carddemo.transactions.rejected";
 
     /**
+     * Spring Batch's active-job meter name. Spring Batch instruments a running job with a
+     * {@code LongTaskTimer} named {@code spring.batch.job.active} (Prometheus:
+     * {@code spring_batch_job_active_seconds}). See {@link #suppressDuplicateBatchJobActiveMeter()}.
+     */
+    private static final String METRIC_BATCH_JOB_ACTIVE = "spring.batch.job.active";
+
+    /**
+     * The {@code spring.batch.job.status} tag key that uniquely identifies the Micrometer
+     * <em>Observation-API</em> variant of the {@code spring.batch.job.active} meter (the legacy
+     * variant carries {@code spring.batch.job.active.name} instead and has no status tag).
+     */
+    private static final String TAG_BATCH_JOB_STATUS = "spring.batch.job.status";
+
+    /**
      * Customises the auto-configured {@link MeterRegistry} by attaching the single static
      * common tag {@code application=carddemo} to every meter.
      *
@@ -119,6 +136,63 @@ public class MetricsConfig {
     @Bean
     MeterRegistryCustomizer<MeterRegistry> carddemoCommonTags() {
         return registry -> registry.config().commonTags(COMMON_TAG_KEY, COMMON_TAG_VALUE);
+    }
+
+    /**
+     * Suppresses the <em>duplicate</em>, Prometheus-incompatible {@code spring.batch.job.active}
+     * meter so the batch runtime no longer logs a tag-key-mismatch {@code WARN} on every job launch.
+     *
+     * <h2>Why the warning occurs (root cause)</h2>
+     * <p>Spring Batch&nbsp;5 double-instruments an active job under the <em>same</em> meter name
+     * {@code spring.batch.job.active} (Prometheus {@code spring_batch_job_active_seconds}) via two
+     * mechanisms with <strong>different tag-key sets</strong>:</p>
+     * <ul>
+     *   <li>the <strong>legacy</strong> {@code LongTaskTimer} &mdash; tag key
+     *       {@code spring.batch.job.active.name}. This one registers first and is the series actually
+     *       exported at {@code /actuator/prometheus}.</li>
+     *   <li>the <strong>Observation-API</strong> {@code LongTaskTimer} (the {@code .active} companion
+     *       of the {@code spring.batch.job} timer) &mdash; tag keys {@code spring.batch.job.name} and
+     *       {@code spring.batch.job.status} (value {@code UNKNOWN} at job start).</li>
+     * </ul>
+     * <p>Prometheus requires every series of a given name to share one tag-key set, so the second
+     * registration is rejected by {@code PrometheusMeterRegistry} with:
+     * <em>"Prometheus requires that all meters with the same name have the same set of tag keys&hellip;"</em>
+     * (logged {@code WARN} once, then {@code DEBUG}). The rejected duplicate contributes no exported
+     * series &mdash; it only produces log noise on every launch.</p>
+     *
+     * <h2>The fix (and why it is safe / lossless)</h2>
+     * <p>This {@link MeterFilter} denies the Observation-API variant <em>at the filter stage</em>,
+     * identified unambiguously by the presence of the {@code spring.batch.job.status} tag key on a
+     * meter named {@code spring.batch.job.active}. Denying before registration means
+     * {@code PrometheusMeterRegistry} never attempts &mdash; and never fails &mdash; the conflicting
+     * registration, so the {@code WARN} disappears at its source rather than being masked after it is
+     * logged.</p>
+     * <p>No exported data is lost: the active-job signal remains available through the legacy
+     * {@code spring_batch_job_active_seconds{spring_batch_job_active_name="&lt;job&gt;"}} series (which
+     * this filter leaves untouched &mdash; it carries no {@code spring.batch.job.status} key), and
+     * per-job timing and terminal status remain available through the companion
+     * {@code spring_batch_job_seconds{spring_batch_job_name,spring_batch_job_status,error}} timer
+     * (name {@code spring.batch.job}, not {@code .active}, so it is never matched here). The exposed
+     * scrape output is therefore unchanged apart from the removed duplicate-registration attempt.</p>
+     *
+     * <p>Boot applies {@code MeterFilter} beans to every auto-configured registry, so this takes
+     * effect on the Prometheus registry without any explicit wiring. Rationale is recorded in
+     * {@code docs/decision-log.md}.</p>
+     *
+     * @return a filter that denies the duplicate Observation-API {@code spring.batch.job.active} meter
+     */
+    @Bean
+    MeterFilter suppressDuplicateBatchJobActiveMeter() {
+        return new MeterFilter() {
+            @Override
+            public MeterFilterReply accept(final Meter.Id id) {
+                if (METRIC_BATCH_JOB_ACTIVE.equals(id.getName())
+                        && id.getTag(TAG_BATCH_JOB_STATUS) != null) {
+                    return MeterFilterReply.DENY;
+                }
+                return MeterFilterReply.NEUTRAL;
+            }
+        };
     }
 
     /**

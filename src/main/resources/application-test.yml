@@ -213,15 +213,18 @@ logging:
 carddemo:
   security:
     jwt:
-      # TEST-ONLY signing secret — this is NOT a real secret and must never be
-      # used outside tests. The base profile intentionally has no default for
-      # carddemo.security.jwt.secret (prod fails fast without JWT_SECRET); the
-      # `test` profile supplies a fixed, clearly labelled fallback so a
-      # full-context test boots deterministically with no environment setup.
-      # It is env-overridable (CI may inject JWT_SECRET). The literal is 43
-      # bytes, comfortably >= the 32 bytes HS256 requires (JwtService uses
+      # JWT signing secret — REQUIRED, with NO hardcoded fallback in the checked-in
+      # config (AAP 0.8.1 "no hardcoded credentials"). Like base/local/prod this is
+      # a bare ${JWT_SECRET} with no default. The deterministic TEST-ONLY value is
+      # supplied by the build itself, injected as the JWT_SECRET environment
+      # variable by the Maven Surefire AND Failsafe plugins (see pom.xml
+      # <environmentVariables>), so `mvn test` / `mvn verify` boot the full context
+      # with no ambient setup and no secret literal living in a runtime config file.
+      # The injected value is >= 32 bytes as HS256 requires (JwtService uses
       # Keys.hmacShaKeyFor and would raise WeakKeyException on a shorter key).
-      secret: ${JWT_SECRET:test-only-jwt-secret-not-used-in-production}
+      # Tests that need their own key still override it via @TestPropertySource /
+      # @DynamicPropertySource (e.g. SecurityConfigTest, JwtServiceTest).
+      secret: ${JWT_SECRET}
       # Fixed 60-minute lifetime (milliseconds) so token expiry behaviour is
       # deterministic across runs. The key is `expiration-ms` (milliseconds)
       # to match JwtService, which reads carddemo.security.jwt.expiration-ms —

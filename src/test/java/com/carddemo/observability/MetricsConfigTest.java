@@ -3,7 +3,11 @@ package com.carddemo.observability;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Meter;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tags;
+import io.micrometer.core.instrument.config.MeterFilter;
+import io.micrometer.core.instrument.config.MeterFilterReply;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -147,5 +151,52 @@ class MetricsConfigTest {
         // inherits the common application tag, proving the business signals carry it too.
         Counter posted = config.transactionsPostedCounter(registry);
         assertThat(posted.getId().getTag("application")).isEqualTo("carddemo");
+    }
+
+    // ------------------------------------------------------------------
+    // Batch metric hygiene — the MeterFilter suppresses ONLY the duplicate,
+    // Prometheus-incompatible Observation-API `spring.batch.job.active` meter
+    // (identified by its `spring.batch.job.status` tag key), leaving the legacy
+    // active-job series and the companion `spring.batch.job` timer untouched.
+    // Guards the fix for the QA "spring.batch.job.active tag-key mismatch" WARN.
+    // ------------------------------------------------------------------
+
+    @Test
+    @DisplayName("suppressDuplicateBatchJobActiveMeter: DENY only the Observation-API spring.batch.job.active duplicate; NEUTRAL for the legacy series, the job timer, and unrelated meters")
+    void suppressDuplicateBatchJobActiveMeter_deniesOnlyObservationVariant() {
+        MeterFilter filter = config.suppressDuplicateBatchJobActiveMeter();
+        assertThat(filter).isNotNull();
+
+        // (1) Observation-API variant: name spring.batch.job.active WITH a spring.batch.job.status tag.
+        // This is the Prometheus-incompatible duplicate that must be DENIED at the filter stage so the
+        // registry never attempts (and never fails) the conflicting registration -> no WARN.
+        Meter.Id observationActive = new Meter.Id(
+                "spring.batch.job.active",
+                Tags.of("spring.batch.job.name", "transactionReportJob",
+                        "spring.batch.job.status", "UNKNOWN"),
+                null, null, Meter.Type.LONG_TASK_TIMER);
+        assertThat(filter.accept(observationActive)).isEqualTo(MeterFilterReply.DENY);
+
+        // (2) Legacy variant: same name, but tag key spring.batch.job.active.name and NO status tag.
+        // This is the series actually exported at /actuator/prometheus and MUST be kept (NEUTRAL).
+        Meter.Id legacyActive = new Meter.Id(
+                "spring.batch.job.active",
+                Tags.of("spring.batch.job.active.name", "transactionReportJob"),
+                null, null, Meter.Type.LONG_TASK_TIMER);
+        assertThat(filter.accept(legacyActive)).isEqualTo(MeterFilterReply.NEUTRAL);
+
+        // (3) Companion completed-job timer: name spring.batch.job (NOT .active) with a status tag.
+        // The .active-scoped filter must never match it, so the per-job timing/status series survives.
+        Meter.Id jobTimer = new Meter.Id(
+                "spring.batch.job",
+                Tags.of("spring.batch.job.name", "transactionReportJob",
+                        "spring.batch.job.status", "COMPLETED"),
+                null, null, Meter.Type.TIMER);
+        assertThat(filter.accept(jobTimer)).isEqualTo(MeterFilterReply.NEUTRAL);
+
+        // (4) Unrelated application meters (e.g. the domain counters) are untouched.
+        Meter.Id domainCounter = new Meter.Id(
+                "carddemo.transactions.posted", Tags.empty(), null, null, Meter.Type.COUNTER);
+        assertThat(filter.accept(domainCounter)).isEqualTo(MeterFilterReply.NEUTRAL);
     }
 }
