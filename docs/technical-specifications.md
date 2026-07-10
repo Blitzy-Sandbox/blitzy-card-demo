@@ -431,9 +431,9 @@ Target: carddemo-java/
 │   │   │   │   ├── AccountController.java            (GET/PUT /api/accounts/*)
 │   │   │   │   ├── CardController.java               (GET/PUT /api/cards/*)
 │   │   │   │   ├── TransactionController.java        (GET/POST /api/transactions/*)
-│   │   │   │   ├── BillingController.java            (POST /api/billing/pay)
-│   │   │   │   ├── ReportController.java             (POST /api/reports/submit)
-│   │   │   │   ├── UserAdminController.java          (CRUD /api/admin/users/*)
+│   │   │   │   ├── BillPaymentController.java        (POST /api/accounts/{id}/bill-payment)
+│   │   │   │   ├── ReportController.java             (POST /api/reports)
+│   │   │   │   ├── UserController.java               (CRUD /api/users/*)
 │   │   │   │   └── MenuController.java               (GET /api/menu/*)
 │   │   │   ├── batch/
 │   │   │   │   ├── jobs/
@@ -659,9 +659,9 @@ The entire refactor executes in ONE phase. Every target file is mapped to its so
 | `src/main/java/**/controller/AccountController.java` | CREATE | `app/bms/COACTVW.bms`, `app/bms/COACTUP.bms` | GET/PUT `/api/accounts/{id}` |
 | `src/main/java/**/controller/CardController.java` | CREATE | `app/bms/COCRDLI.bms`, `app/bms/COCRDSL.bms`, `app/bms/COCRDUP.bms` | GET/PUT `/api/cards/*` |
 | `src/main/java/**/controller/TransactionController.java` | CREATE | `app/bms/COTRN00.bms`, `app/bms/COTRN01.bms`, `app/bms/COTRN02.bms` | GET/POST `/api/transactions/*` |
-| `src/main/java/**/controller/BillingController.java` | CREATE | `app/bms/COBIL00.bms` | POST `/api/billing/pay` |
-| `src/main/java/**/controller/ReportController.java` | CREATE | `app/bms/CORPT00.bms` | POST `/api/reports/submit` |
-| `src/main/java/**/controller/UserAdminController.java` | CREATE | `app/bms/COUSR00.bms` through `app/bms/COUSR03.bms` | CRUD `/api/admin/users/*` |
+| `src/main/java/**/controller/BillPaymentController.java` | CREATE | `app/bms/COBIL00.bms` | POST `/api/accounts/{id}/bill-payment` |
+| `src/main/java/**/controller/ReportController.java` | CREATE | `app/bms/CORPT00.bms` | POST `/api/reports` |
+| `src/main/java/**/controller/UserController.java` | CREATE | `app/bms/COUSR00.bms` through `app/bms/COUSR03.bms` | CRUD `/api/users/*` |
 | `src/main/java/**/controller/MenuController.java` | CREATE | `app/bms/COMEN01.bms`, `app/bms/COADM01.bms` | GET `/api/menu/{type}` |
 
 #### Batch Job Classes (from JCL + COBOL)

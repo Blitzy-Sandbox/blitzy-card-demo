@@ -153,7 +153,7 @@ All tests were executed autonomously by Blitzy's validation pipeline via `mvn cl
 
 - ✅ **Authentication** (`POST /api/auth/login`): 200 OK with JWT token for valid credentials
 - ✅ **Account View** (`GET /api/accounts/00000000001`): 200 OK with full account data including BigDecimal balances
-- ✅ **Menu** (`GET /api/menu/main`): 200 OK with 10 menu options matching COMEN02Y.cpy
+- ✅ **Menu** (`GET /api/menu`): 200 OK with role-appropriate menu options matching COMEN02Y.cpy
 - ✅ **Card List** (`GET /api/cards`): Paginated response matching COCRDLIC browse semantics
 - ✅ **Transaction Operations**: List, detail, and add endpoints operational
 - ✅ **User Admin CRUD**: Full create, read, update, delete cycle verified
@@ -420,8 +420,8 @@ curl -s http://localhost:8080/api/accounts/00000000001 \
 
 **Menu Options:**
 ```bash
-curl -s http://localhost:8080/api/menu/main | python3 -m json.tool
-# Expected: 200 OK with 10 menu options
+curl -s http://localhost:8080/api/menu | python3 -m json.tool
+# Expected: 200 OK with role-appropriate menu options
 ```
 
 ### Observability Access
