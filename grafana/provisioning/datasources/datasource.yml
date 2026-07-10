@@ -1,0 +1,50 @@
+# =============================================================================
+# Grafana datasource provisioning — CardDemo local observability stack
+# =============================================================================
+# Net-new observability infrastructure for the COBOL -> Java 25 / Spring Boot
+# 3.x migration (the legacy mainframe system had no observability). This file
+# auto-provisions the Prometheus datasource so the bundled CardDemo dashboard
+# (grafana/dashboards/carddemo-dashboard.json) renders "out of the box" with no
+# manual clicking, satisfying AAP §0.7.1 ("a Grafana dashboard ... provisioned
+# against Prometheus").
+#
+# Consumed (read-only) by the `grafana` service in the root docker-compose.yml,
+# which mounts the parent directory at:
+#     ./grafana/provisioning:/etc/grafana/provisioning:ro
+# Grafana scans /etc/grafana/provisioning/datasources on startup.
+#
+# WIRING NOTE: `url` uses the Docker Compose service DNS name `prometheus`
+# (NOT localhost) because Grafana and Prometheus are separate containers on the
+# shared `carddemo-net` bridge network. The `uid: prometheus` is stable so the
+# dashboard's `${DS_PROMETHEUS}` datasource template variable resolves to this
+# datasource deterministically; `isDefault: true` makes it the auto-selected
+# default. This file contains NO credentials — the local Prometheus endpoint is
+# unauthenticated.
+# =============================================================================
+
+apiVersion: 1
+
+# Ensure a clean, idempotent provisioning run: drop any previously provisioned
+# datasource with the same name before (re)creating it.
+deleteDatasources:
+  - name: Prometheus
+    orgId: 1
+
+datasources:
+  - name: Prometheus
+    # Stable UID referenced by the bundled dashboard's ${DS_PROMETHEUS} variable.
+    uid: prometheus
+    type: prometheus
+    # "proxy" = Grafana backend queries Prometheus (server-side); required so the
+    # in-container service DNS name below is resolvable.
+    access: proxy
+    orgId: 1
+    # Reach Prometheus by its compose service name over the shared network.
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      httpMethod: POST
+      # Align the default step with prometheus.yml's 15s scrape_interval so the
+      # dashboard panels line up with the actual sample cadence.
+      timeInterval: 15s

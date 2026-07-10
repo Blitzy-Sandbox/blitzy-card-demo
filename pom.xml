@@ -1,0 +1,705 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      ==================================================================================
+      CardDemo :: Java 25 LTS + Spring Boot 3.5.16 migration target
+      ==================================================================================
+      Single Maven build manifest for the net-new CardDemo application, migrated from the
+      AWS CardDemo mainframe workload (COBOL / CICS / VSAM / JCL / BMS) into an idiomatic,
+      layered Spring Boot service. The COBOL source is referenced (not copied) at commit
+      SHA 27d6c6f. This POM is the foundation of the entire src/main and src/test tree:
+      every entity, repository, service, controller, batch job, and test relies on the
+      coordinates and dependency management declared here.
+
+      Dependency inventory is authoritative per AAP 0.6.1; the pinned technology stack is
+      per AAP 1.3.1.4. ALL versions are pinned (no "latest", no version ranges) per the
+      Build/Quality rules (AAP 0.8.7). The project stays on Spring Boot 3.x per the explicit
+      user mandate (Spring Boot 4.x is intentionally out of scope).
+      ==================================================================================
+    -->
+
+    <!--
+      Parent: Spring Boot 3.5.16 provides the managed dependency BOM (spring-boot-dependencies)
+      and the spring-boot-maven-plugin used for the executable-jar repackage/run goals.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <!-- Project coordinates -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo</name>
+    <description>
+        AWS CardDemo credit-card management workload migrated from the mainframe
+        (COBOL/CICS/VSAM/JCL/BMS) to Java 25 LTS and Spring Boot 3.5.16 — headless REST
+        controllers, a Spring Batch pipeline, Spring Data JPA over PostgreSQL 16, AWS
+        S3/SQS/SNS via LocalStack, and first-class observability. Targets 100% behavioral
+        parity with the frozen COBOL source (referenced at commit SHA 27d6c6f).
+    </description>
+
+    <properties>
+        <!-- ============================ Toolchain ============================ -->
+        <!-- Java 25 LTS: the compiler release and the Spring Boot java.version anchor. -->
+        <java.version>25</java.version>
+        <maven.compiler.release>25</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- Main class produced by a downstream module (AAP 0.4.1); drives repackage/manifest. -->
+        <start-class>com.carddemo.CardDemoApplication</start-class>
+
+        <!--
+          ================= Pinned dependency versions =================
+          postgresql and flyway are also managed by the Spring Boot 3.5.16 BOM; these
+          properties override the managed values with explicit, self-documenting pins
+          that remain conflict-free with the BOM.
+
+          SECURITY OVERRIDE (CVE-2026-54291): the BOM-managed pgJDBC level (42.7.10)
+          falls in the affected range >=42.7.4,<42.7.12. The driver is therefore pinned
+          up to 42.7.13 (the latest 42.7.x patch, >=42.7.12) which carries the fix; this
+          is a deliberate, security-driven override of the BOM-managed value. flyway
+          remains at the Boot 3.5.16-validated 11.7.2.
+        -->
+        <postgresql.version>42.7.13</postgresql.version>
+        <flyway.version>11.7.2</flyway.version>
+
+        <!--
+          SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). The Spring Boot 3.5.16 BOM
+          manages the embedded Tomcat at 10.1.55, which still carries three High CVEs
+          (CVE-2026-53434 and CVE-2026-55276, both CVSS 9.1; CVE-2026-53404, CVSS 7.3),
+          all first fixed in Tomcat 10.1.56. `tomcat.version` is the Spring Boot BOM
+          property that governs every tomcat-embed-* artifact, so pinning it to the next
+          10.1.x patch (10.1.56) clears those findings while staying inside the
+          BOM-validated 10.1.x line. This is a deliberate, security-driven override of the
+          BOM-managed value (mirrors the pgJDBC pin above).
+        -->
+        <tomcat.version>10.1.56</tomcat.version>
+
+        <!--
+          SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). Netty is pulled transitively
+          by the AWS SDK v2 netty-nio-client (async S3/SQS via spring-cloud-aws). The Spring
+          Boot 3.5.16 BOM manages Netty at 4.1.135.Final, which clears 23 of 24 Netty findings;
+          the last, CVE-2026-42582 (CVSS 7.5), is fixed only in the 4.2.x line (>=4.2.13).
+          `netty.version` is the Spring Boot BOM property governing every io.netty:* artifact,
+          so pinning it to the latest 4.2.x patch (4.2.16.Final) clears the finding in lockstep
+          across all Netty modules. Netty 4.2 preserves the 4.1 public API; the async S3/SQS
+          paths that actually exercise Netty are validated end-to-end against LocalStack by the
+          integration test suite (ReportJobLauncherIT and the S3/SQS ITs).
+        -->
+        <netty.version>4.2.16.Final</netty.version>
+
+        <!--
+          SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). The application logs through
+          Logback; Log4j is present only as the Log4j-API -> SLF4J bridge (log4j-api +
+          log4j-to-slf4j, pulled by spring-boot-starter-logging) — log4j-core is NOT on the
+          classpath. The Spring Boot 3.5.16 BOM manages Log4j at 2.24.3, whose log4j-api carries
+          CVE-2026-34478 / CVE-2026-34479 / CVE-2026-34480 / CVE-2026-34481 (each CVSS 7.5,
+          first fixed in 2.25.4). `log4j2.version` is the Spring Boot BOM property governing the
+          whole Log4j 2 stack, so pinning it to the latest 2.25.x patch (2.25.5) updates
+          log4j-api and log4j-to-slf4j together and clears the findings. Safe: only the API/
+          bridge is on the classpath, and SLF4J/Logback remain the logging backend.
+        -->
+        <log4j2.version>2.25.5</log4j2.version>
+
+        <!--
+          SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). The Spring Boot 3.5.16 BOM
+          manages the Jackson stack via jackson-bom 2.21.4, whose jackson-databind carries
+          CVE-2026-54515 (CVSS 5.3): in BeanDeserializerBase.createContextual() the per-property
+          case-insensitivity block (@JsonFormat ACCEPT_CASE_INSENSITIVE_PROPERTIES) rebuilds from
+          the original, unfiltered bean-property map and overwrites the @JsonIgnoreProperties-
+          filtered map, restoring properties that name-based inclusion had just removed. NVD's
+          affected range for the 2.21.x line is [2.19.0, 2.21.5); the fix landed in 2.21.5.
+          `jackson-bom.version` is the Spring Boot BOM property governing every
+          com.fasterxml.jackson artifact, so pinning it to the next 2.21.x patch (2.21.5) updates
+          jackson-databind and the whole Jackson family in lockstep and clears the finding while
+          staying inside the BOM-validated 2.21.x line. This is a deliberate, security-driven
+          override of the BOM-managed value (mirrors the pgJDBC / Tomcat / Netty / Log4j pins above).
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+
+        <!-- BOM coordinates imported in dependencyManagement below. -->
+        <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
+        <testcontainers.version>2.0.3</testcontainers.version>
+
+        <!-- Libraries not governed by any imported BOM (pinned explicitly). -->
+        <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
+        <jjwt.version>0.12.6</jjwt.version>
+        <!--
+          Awaitility — bounded, no-Thread.sleep polling for asynchronous integration tests
+          (e.g. the SQS FIFO -> @SqsListener -> Spring Batch -> S3 report bridge in
+          ReportJobLauncherIT). Test scope only; not governed by the Spring Boot BOM, so pinned
+          explicitly to the 4.2.x line (4.2.2).
+        -->
+        <awaitility.version>4.2.2</awaitility.version>
+
+        <!--
+          Observability instrumentation NOT governed by the Spring Boot BOM (pinned explicitly),
+          added to close QA finding F-2 (cross-boundary tracing). Both align with the OpenTelemetry
+          API/SDK 1.49.0 already managed by the Boot 3.5.11 BOM (via micrometer-tracing-bridge-otel
+          1.5.9), so neither shifts the core OTel API version:
+            * datasource-micrometer-spring-boot 1.4.1 — auto-configures DataSource/JDBC observations,
+              producing the db.* JPA/JDBC spans (REST -> service -> repository boundary).
+            * opentelemetry-instrumentation-bom-alpha 2.15.0-alpha — the instrumentation release train
+              matching OTel 1.49.0; imported below to govern opentelemetry-aws-sdk-2.2 (AWS SQS/S3
+              client spans, the service -> AWS boundary).
+        -->
+        <datasource-micrometer.version>1.4.1</datasource-micrometer.version>
+        <opentelemetry-instrumentation.version>2.15.0-alpha</opentelemetry-instrumentation.version>
+
+        <!-- ================= Pinned build-plugin versions ================= -->
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.2</maven-failsafe-plugin.version>
+        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+        <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+
+        <!-- Gate 8: minimum JaCoCo line coverage (unit + integration combined). -->
+        <jacoco.line.coverage.minimum>0.80</jacoco.line.coverage.minimum>
+
+        <!--
+          Late-bound JaCoCo agent argLine fallbacks. Kept empty here so that Surefire /
+          Failsafe always receive a resolvable @{...} value even when the JaCoCo agent is
+          skipped; the prepare-agent goals overwrite these at runtime with the real agent
+          arguments.
+        -->
+        <surefireArgLine></surefireArgLine>
+        <failsafeArgLine></failsafeArgLine>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              Spring Cloud AWS 3.3.0 BOM — S3/SQS/SNS auto-configuration on AWS SDK v2 with
+              first-class LocalStack support. Aligns the -starter-s3/-sqs/-sns versions.
+            -->
+            <dependency>
+                <groupId>io.awspring.cloud</groupId>
+                <artifactId>spring-cloud-aws-dependencies</artifactId>
+                <version>${spring-cloud-aws.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+              Testcontainers 2.0.3 BOM — governs the integration-test container modules.
+              NOTE: with the 2.x BOM the module coordinates are testcontainers-junit-jupiter,
+              testcontainers-postgresql and testcontainers-localstack (the legacy 1.x names
+              junit-jupiter / postgresql / localstack are not published for 2.x).
+            -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!--
+              SECURITY OVERRIDE (Gate 8 / OWASP dependency-check). The OpenTelemetry
+              semantic-conventions artifact is versioned on its own cadence (independent of
+              the 1.49.0 OTel SDK/API pulled transitively by micrometer-tracing-bridge-otel).
+              The transitively-selected 1.32.0 carries CVE-2026-24051 (CVSS 7.0, fixed in
+              1.40.0) and CVE-2026-39883 (CVSS 7.3, fixed in 1.43.0). Pinning it to 1.43.0
+              clears both while remaining a drop-in constants artifact (no executable API
+              surface shared with the SDK), so it does not perturb the OTLP export path.
+            -->
+            <dependency>
+                <groupId>io.opentelemetry.semconv</groupId>
+                <artifactId>opentelemetry-semconv</artifactId>
+                <version>1.43.0</version>
+            </dependency>
+
+            <!--
+              OpenTelemetry Instrumentation BOM (alpha) — governs the AWS SDK v2 instrumentation
+              artifact (opentelemetry-aws-sdk-2.2) added for QA finding F-2 (service -> AWS spans).
+              Pinned to 2.15.0-alpha, the instrumentation release aligned with the OpenTelemetry
+              API/SDK 1.49.0 that the Spring Boot 3.5.11 BOM already manages (via
+              micrometer-tracing-bridge-otel 1.5.9); it therefore aligns the instrumentation
+              artifacts without shifting the core OTel API version. The "-alpha" classifier is
+              intrinsic to OpenTelemetry's instrumentation coordinates and does not imply the AWS SDK
+              instrumentation itself is unstable.
+            -->
+            <dependency>
+                <groupId>io.opentelemetry.instrumentation</groupId>
+                <artifactId>opentelemetry-instrumentation-bom-alpha</artifactId>
+                <version>${opentelemetry-instrumentation.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <!-- ============================================================== -->
+        <!-- Spring Boot starters (versions managed by the parent BOM)      -->
+        <!-- ============================================================== -->
+
+        <!-- REST controllers + embedded Tomcat (replaces CICS SEND/RECEIVE MAP). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JPA / Hibernate (replaces VSAM keyed access). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- Spring Batch 5.x (replaces the JCL job-step pipeline). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-batch</artifactId>
+        </dependency>
+
+        <!-- Authentication / authorization (replaces file-based USRSEC / RACF concepts). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- Jakarta Bean Validation (field / record validation). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Actuator — health / readiness / metrics endpoints (Observability). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- ============================================================== -->
+        <!-- Persistence and schema migrations                              -->
+        <!-- ============================================================== -->
+
+        <!-- PostgreSQL 16 JDBC driver (pinned to the Boot-validated patch). -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <version>${postgresql.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- Flyway core — V1 schema / V2 indexes / V3 seed-data migrations. -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+
+        <!-- Flyway PostgreSQL module (required by Flyway 11.x for PostgreSQL support). -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
+        </dependency>
+
+        <!-- ============================================================== -->
+        <!-- AWS — Spring Cloud AWS on SDK v2 (LocalStack-verified)         -->
+        <!-- ============================================================== -->
+
+        <!-- S3 — GDG generation staging (batch input/output/statements). -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-s3</artifactId>
+        </dependency>
+
+        <!-- SQS — CICS Transient Data Queue report-bridge replacement (FIFO). -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sqs</artifactId>
+        </dependency>
+
+        <!-- SNS — notification / alert publishing. -->
+        <dependency>
+            <groupId>io.awspring.cloud</groupId>
+            <artifactId>spring-cloud-aws-starter-sns</artifactId>
+        </dependency>
+
+        <!-- ============================================================== -->
+        <!-- Observability (structured logs, tracing, metrics)              -->
+        <!-- ============================================================== -->
+
+        <!-- Micrometer Tracing bridged to OpenTelemetry (REST -> service -> repo -> AWS). -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-otel</artifactId>
+        </dependency>
+
+        <!-- OTLP exporter — ships spans to Jaeger. -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!--
+          DataSource observation (F-2) — produces JDBC/Hibernate spans (db.system/db.statement/
+          db.operation tags) so a request trace crosses the service -> repository(JPA) boundary.
+          Spring Boot auto-configuration wraps the DataSource with a Micrometer ObservationRegistry-
+          backed proxy; no application code change is required beyond this dependency. Version pinned
+          explicitly (not BOM-managed); test profile leaves tracing disabled so it is a no-op there.
+        -->
+        <dependency>
+            <groupId>net.ttddyy.observation</groupId>
+            <artifactId>datasource-micrometer-spring-boot</artifactId>
+            <version>${datasource-micrometer.version}</version>
+        </dependency>
+
+        <!--
+          OpenTelemetry AWS SDK v2 instrumentation (F-2) — an ExecutionInterceptor that produces
+          client spans (rpc.system=aws-api, messaging.* for SQS, S3 operations) so a trace crosses
+          the service -> AWS boundary. Version governed by the opentelemetry-instrumentation-bom-alpha
+          import above. The interceptor is attached to the auto-configured AWS SDK clients via the
+          Spring Cloud AWS client customizers in AwsTracingConfig (guarded so it is inert when no
+          OpenTelemetry bean exists, e.g. the test profile with tracing disabled).
+        -->
+        <dependency>
+            <groupId>io.opentelemetry.instrumentation</groupId>
+            <artifactId>opentelemetry-aws-sdk-2.2</artifactId>
+        </dependency>
+
+        <!-- Prometheus registry — exposes /actuator/prometheus. -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- Structured JSON logging with MDC correlation IDs (pinned; not BOM-managed). -->
+        <dependency>
+            <groupId>net.logstash.logback</groupId>
+            <artifactId>logstash-logback-encoder</artifactId>
+            <version>${logstash-logback-encoder.version}</version>
+        </dependency>
+
+        <!-- ============================================================== -->
+        <!-- Security — BCrypt hashing + stateless JWT session state        -->
+        <!-- ============================================================== -->
+
+        <!-- BCrypt password hashing (Constraint C-003 / Decision Log D-002). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+        <!-- JJWT — stateless JWT tokens replace CICS pseudo-conversational COMMAREA state. -->
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-api</artifactId>
+            <version>${jjwt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-impl</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>io.jsonwebtoken</groupId>
+            <artifactId>jjwt-jackson</artifactId>
+            <version>${jjwt.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!-- ============================================================== -->
+        <!-- Test scope                                                     -->
+        <!-- ============================================================== -->
+
+        <!-- JUnit 5 + Mockito + AssertJ + Spring test bundle. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Batch job/step testing utilities. -->
+        <dependency>
+            <groupId>org.springframework.batch</groupId>
+            <artifactId>spring-batch-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Spring Security test support (@WithMockUser, security-context helpers). -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Explicit JUnit 5 engine (also transitively provided by starter-test). -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Explicit Mockito core (also transitively provided by starter-test). -->
+        <dependency>
+            <groupId>org.mockito</groupId>
+            <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Testcontainers JUnit 5 lifecycle integration (2.x coordinates). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- PostgreSQL Testcontainer (repository / migration integration tests). -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- LocalStack Testcontainer — S3/SQS/SNS verified with zero live AWS. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers-localstack</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          Awaitility — bounded polling for asynchronous integration tests. Used by
+          ReportJobLauncherIT to await the SQS FIFO -> @SqsListener -> transactionReportJob -> S3
+          report artifact without any Thread.sleep. Pinned explicitly (not BOM-managed).
+        -->
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>${awaitility.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <finalName>carddemo</finalName>
+        <plugins>
+            <!--
+              Spring Boot Maven plugin — repackages the module into an executable fat-jar
+              and provides the `spring-boot:run` goal. Version and repackage execution are
+              inherited from the parent.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              Compiler — Java 25 release, parameter-name retention (preserved from parent),
+              and -Xlint:all so every javac lint category is surfaced (Gate 2, zero-warning
+              build). A blanket -Werror is intentionally NOT set so framework-generated code
+              cannot break the build; project sources are expected to compile warning-free.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- Literal 25 (not ${java.version}) to stay immune to the JVM
+                         java.version system-property shadowing during interpolation. -->
+                    <release>25</release>
+                    <parameters>true</parameters>
+                    <compilerArgs>
+                        <arg>-Xlint:all</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <!--
+              Surefire — unit tests (*Test / *Tests / Test*). @{surefireArgLine} is the
+              late-bound JaCoCo agent argument set by jacoco:prepare-agent; -XX:+EnableDynamicAgentLoading
+              silences the Mockito/ByteBuddy self-attach warning on JDK 21+.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>${maven-surefire-plugin.version}</version>
+                <configuration>
+                    <argLine>@{surefireArgLine} -XX:+EnableDynamicAgentLoading</argLine>
+                    <!--
+                      TEST-ONLY JWT signing secret injected as the JWT_SECRET environment variable
+                      for the full-context unit tests. The checked-in application-test.yml binds
+                      carddemo.security.jwt.secret to a bare ${JWT_SECRET} with NO default (AAP 0.8.1
+                      no-hardcoded-credentials), so the deterministic test key lives here in the build
+                      rather than in a runtime config file. It is >= 32 bytes as HS256 requires and is
+                      NOT a real secret. Keep this identical to the Failsafe plugin's value below.
+                    -->
+                    <environmentVariables>
+                        <JWT_SECRET>test-only-jwt-secret-not-used-in-production</JWT_SECRET>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+
+            <!--
+              Failsafe — integration tests (*IT / IT* / *ITCase). The integration-test and
+              verify goal bindings plus classesDirectory are inherited from the parent
+              pluginManagement; here we pin the version and wire the JaCoCo IT agent argLine.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>${maven-failsafe-plugin.version}</version>
+                <configuration>
+                    <argLine>@{failsafeArgLine} -XX:+EnableDynamicAgentLoading</argLine>
+                    <!--
+                      TEST-ONLY JWT signing secret injected as the JWT_SECRET environment variable for
+                      the full-context integration tests (*IT). See the Surefire plugin above for the
+                      rationale; this MUST stay identical to that value so unit and integration tests
+                      share one deterministic, non-production key.
+                    -->
+                    <environmentVariables>
+                        <JWT_SECRET>test-only-jwt-secret-not-used-in-production</JWT_SECRET>
+                    </environmentVariables>
+                </configuration>
+            </plugin>
+
+            <!--
+              JaCoCo — code coverage. Two agents append to a single exec file so unit and
+              integration coverage are combined; a single report + check then enforce the
+              Gate 8 threshold (>= 80% line coverage) over the combined data set.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>${jacoco-maven-plugin.version}</version>
+                <executions>
+                    <!-- Unit-test agent -> exposes surefireArgLine, writes target/jacoco.exec. -->
+                    <execution>
+                        <id>jacoco-prepare-agent-unit</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco.exec</destFile>
+                            <propertyName>surefireArgLine</propertyName>
+                            <append>true</append>
+                        </configuration>
+                    </execution>
+                    <!-- Integration-test agent -> exposes failsafeArgLine, appends to the same exec. -->
+                    <execution>
+                        <id>jacoco-prepare-agent-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco.exec</destFile>
+                            <propertyName>failsafeArgLine</propertyName>
+                            <append>true</append>
+                        </configuration>
+                    </execution>
+                    <!-- Combined HTML/XML report generated after integration tests complete. -->
+                    <execution>
+                        <id>jacoco-report</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                        <configuration>
+                            <dataFile>${project.build.directory}/jacoco.exec</dataFile>
+                            <outputDirectory>${project.reporting.outputDirectory}/jacoco</outputDirectory>
+                        </configuration>
+                    </execution>
+                    <!-- Coverage gate: fail the build below the minimum combined line coverage. -->
+                    <execution>
+                        <id>jacoco-check</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <dataFile>${project.build.directory}/jacoco.exec</dataFile>
+                            <rules>
+                                <rule>
+                                    <element>BUNDLE</element>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>${jacoco.line.coverage.minimum}</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+    <profiles>
+        <!--
+          OWASP dependency-check (Gate 8). Kept in a dedicated profile so the default
+          `mvn clean verify` stays fast and offline (the NVD download is not triggered),
+          while CI runs `mvn verify -Powasp` to execute the CVE scan. The build fails on
+          any dependency with CVSS >= 7.0 (High or Critical), enforcing "zero critical/high".
+          No NVD API key is embedded — CI supplies it via -Dnvd.api.key=$NVD_API_KEY.
+        -->
+        <profile>
+            <id>owasp</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.owasp</groupId>
+                        <artifactId>dependency-check-maven</artifactId>
+                        <version>${dependency-check-maven.version}</version>
+                        <configuration>
+                            <failBuildOnCVSS>7</failBuildOnCVSS>
+                            <failOnError>true</failOnError>
+                            <!--
+                              CVE source: the NVD database is the authoritative OWASP
+                              dependency-check data source and drives the failBuildOnCVSS gate.
+                              The supplementary Sonatype OSS Index analyzer is DISABLED because
+                              ossindex.sonatype.org now requires an authenticated account token
+                              and returns HTTP 401 for anonymous requests; with failOnError=true
+                              that would nondeterministically fail the build irrespective of
+                              actual CVE status, and it is incompatible with the credential-free,
+                              reproducible local+CI gate mandated by the AAP (no live
+                              credentials). Disabling only this one online analyzer keeps
+                              failOnError=true in force for every other analyzer and leaves the
+                              NVD-based CVE detection fully intact.
+                            -->
+                            <ossindexAnalyzerEnabled>false</ossindexAnalyzerEnabled>
+                            <formats>
+                                <format>HTML</format>
+                                <format>JSON</format>
+                            </formats>
+                            <!--
+                              Gate 8 suppression policy: documented false positives (shared/
+                              over-broad NVD CPEs) and no-GA-fix residuals only. Every CVE with
+                              a released fix is remediated by a real version upgrade above, not
+                              suppressed. See dependency-check-suppressions.xml for per-entry
+                              justification. Applied identically to the local and CI scans.
+                            -->
+                            <suppressionFiles>
+                                <suppressionFile>${project.basedir}/dependency-check-suppressions.xml</suppressionFile>
+                            </suppressionFiles>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>owasp-dependency-check</id>
+                                <phase>verify</phase>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+</project>

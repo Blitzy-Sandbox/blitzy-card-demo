@@ -1,0 +1,209 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo :: OWASP dependency-check suppression file (Gate 8)
+  ============================================================================
+  This file is consumed by the `owasp` Maven profile (see pom.xml) via
+  <suppressionFiles>. It is applied both to the reproducible local scan
+  (`mvn verify -Powasp`) and to the CI scan (.github/workflows/ci.yml), so the
+  "zero critical/high CVE" gate is evaluated identically in every environment.
+
+  POLICY: every entry below is either (a) a documented false positive caused by
+  a shared/over-broad NVD CPE that cross-matches an unrelated product or a
+  different artifact line, or (b) a genuine finding for which NO general-
+  availability fix yet exists (a pre-release only). Every genuine CVE that has a
+  released fix is remediated by a real version upgrade in pom.xml — NOT by
+  suppression. Each suppression is scoped to a single artifact (by Package URL)
+  and to the specific CVE(s) involved, so no unrelated finding can be hidden.
+
+  Remediated by real upgrades (for the record, NOT suppressed here):
+    - spring-boot / spring-boot-starter-web ... 3.5.11 -> 3.5.16 (parent bump)
+    - spring-core / spring-web ................ 6.2.16 -> 6.2.19 (via 3.5.16 BOM)
+    - spring-security-core / -web ............. 6.5.8  -> 6.5.11 (via 3.5.16 BOM)
+    - jackson-databind ........................ 2.19.4 -> 2.21.4 (via 3.5.16 BOM)
+    - netty-transport ......................... 4.1.131 -> 4.1.135 (via 3.5.16 BOM)
+    - tomcat-embed-core ....................... 10.1.55 -> 10.1.56 (tomcat.version pin)
+    - opentelemetry-semconv ................... 1.32.0 -> 1.43.0 (dependencyManagement pin)
+  ============================================================================
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+      FALSE POSITIVE. dependency-check assigns micrometer-registry-prometheus (a Java
+      client library that exposes /actuator/prometheus) the CPE
+      cpe:2.3:a:prometheus:prometheus, which identifies the Prometheus *server* (the Go
+      monitoring daemon). CVE-2026-42154's fixed versions (3.5.3 / 3.11.3) are Prometheus
+      server releases and have no relationship to the Micrometer 1.15.x client artifact.
+      This is a product-mismatch false positive, not a vulnerability in our dependency.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: micrometer-registry-prometheus (Java client) cross-matched to the
+            Prometheus server product (cpe:/a:prometheus:prometheus). CVE-2026-42154 and its
+            fixes (server v3.5.3/v3.11.3) apply to the Go server, not this client library.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.micrometer/micrometer-registry-prometheus@.*$</packageUrl>
+        <cve>CVE-2026-42154</cve>
+    </suppress>
+
+    <!--
+      FALSE POSITIVE (artifact-line cross-match). org.apache.httpcomponents:httpcore 4.4.16
+      is the final release of the Apache HttpComponents Core *4.x* line, pulled transitively
+      by software.amazon.awssdk:apache-client. CVE-2026-54399 and CVE-2026-54428 are fixed in
+      "5.4.2" — a version of the entirely separate 5.x artifact
+      (org.apache.httpcomponents.core5:httpcore5), which has different coordinates and code.
+      Both lines share the NVD CPE cpe:2.3:a:apache:httpcomponents_core, so dependency-check
+      reports the 5.x advisories against the 4.x jar. The 4.4.x line is not the affected
+      component; there is no 4.x fixed version because the vulnerability does not exist there.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: httpcore 4.4.16 (HttpComponents Core 4.x, via AWS SDK apache-client)
+            cross-matched to httpcore5 5.x advisories through the shared
+            cpe:/a:apache:httpcomponents_core. CVE-2026-54399/54428 are fixed in the 5.x
+            artifact (org.apache.httpcomponents.core5:httpcore5), not the 4.x line.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.apache\.httpcomponents/httpcore@.*$</packageUrl>
+        <cve>CVE-2026-54399</cve>
+        <cve>CVE-2026-54428</cve>
+    </suppress>
+
+    <!--
+      DOCUMENTED RESIDUAL (no GA fix + CPE over-match). kotlin-stdlib 1.9.25 is a deep,
+      runtime-only transitive dependency of OkHttp 4.12.0, which is itself only pulled by the
+      OpenTelemetry OTLP exporter's okhttp HTTP sender (opentelemetry-exporter-sender-okhttp).
+      CVE-2026-53914 is reported via cpe:2.3:a:jetbrains:kotlin, a CPE that spans the whole
+      Kotlin toolchain (compiler/daemon/Gradle plugin) rather than the runtime standard
+      library specifically. Its only listed fix is 2.4.20, which at scan time exists solely as
+      a pre-release (2.4.20-Beta1; no GA on Maven Central). Pinning a Beta of a new major
+      Kotlin line into a production build — for a constants/collections runtime reached only
+      through the tracing exporter — is a materially greater risk than the tracked residual,
+      and would also destabilise the locally-verified OTLP-to-Jaeger export path. Tracked as an
+      operational residual to be cleared when Kotlin 2.4.20 reaches general availability (see
+      docs/onboarding.md "Suggested next tasks" and docs/decision-log.md).
+    -->
+    <suppress>
+        <notes><![CDATA[
+            Documented residual: kotlin-stdlib 1.9.25 (transitive via OkHttp -> OTLP okhttp
+            sender). CVE-2026-53914's only fix (2.4.20) is pre-release only (2.4.20-Beta1, no
+            GA); the jetbrains:kotlin CPE over-matches the toolchain vs. the runtime stdlib.
+            To be cleared when Kotlin 2.4.20 GA ships. Tracked in decision-log/onboarding.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(-(common|jdk7|jdk8))?@.*$</packageUrl>
+        <cve>CVE-2026-53914</cve>
+    </suppress>
+
+    <!--
+      FALSE POSITIVE (fixed long before our version + wildcard NVD CPE). CVE-2020-29582 is the
+      Kotlin insecure-temp-file flaw: per NVD, "In JetBrains Kotlin before 1.4.21, a vulnerable
+      Java API was used for temporary file and folder creation" (createTempFile/createTempDir
+      produced world-readable temp files on Unix, allowing an attacker to read their contents).
+      It was fixed in Kotlin 1.4.21. This project ships kotlin-stdlib 1.9.25 — many minor releases
+      past the fix — so the vulnerable code is simply not present. dependency-check matches it
+      anyway because the NVD entry carries the wildcard CPE cpe:2.3:a:jetbrains:kotlin:*:*:*:*:*
+      with NO versionEndExcluding upper bound, so every Kotlin version (1.9.25 included) rides the
+      advisory. This is a stale / over-broad CPE match against an ALREADY-remediated flaw, not a
+      live finding and not a version-remediable one. (Distinct from CVE-2026-53914 above, which is
+      a genuine no-GA-fix residual on the same artifact; kept as a separate entry so each rationale
+      stays auditable per the file policy.)
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: CVE-2020-29582 (insecure temp-file permissions) was fixed in Kotlin
+            1.4.21; this project ships kotlin-stdlib 1.9.25, well past the fix, so the vulnerable
+            code is absent. The NVD entry uses a wildcard cpe:2.3:a:jetbrains:kotlin:* with no
+            upper version bound, which over-matches all Kotlin versions. Stale CPE match against an
+            already-remediated flaw, not a version-remediable finding.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(-(common|jdk7|jdk8))?@.*$</packageUrl>
+        <cve>CVE-2020-29582</cve>
+    </suppress>
+
+    <!--
+      FALSE POSITIVE (wrong language/product + non-executable constants artifact). CVE-2026-41178
+      affects OpenTelemetry-*Go* (the Go SDK). Per NVD: "OpenTelemetry-Go is the Go implementation
+      of OpenTelemetry. Versions 1.41.0 and 1.43.0 removed raw-length rejection and it causes
+      `Parse` to process arbitrarily large/invalid baggage headers and log errors, enabling DoS via
+      oversized inputs. Versions 1.42.0 and 1.44.0 fix the issue." Its NVD vulnerableSoftware CPEs
+      are cpe:2.3:a:opentelemetry:opentelemetry:*:*:*:*:*:go:* and
+      cpe:2.3:a:opentelemetry:opentelemetry:1.43.0:*:*:*:*:go:* — note the ":go:" target-software
+      edition. Our dependency is the *Java* artifact io.opentelemetry.semconv:opentelemetry-semconv
+      1.43.0: a generated semantic-conventions constants library (String / AttributeKey fields only)
+      with no baggage parser, no `Parse` method, and no executable API surface whatsoever.
+      dependency-check cross-matches it purely because the version literal "1.43.0" and the
+      over-broad vendor/product token "opentelemetry" coincide between the Go advisory and the Java
+      jar. The listed Go fix versions (1.42.0 / 1.44.0) are Go-module versions and have no bearing
+      on this Java artifact's release line, so there is no applicable upgrade. This is a
+      language/product-mismatch false positive, not a live finding. (The earlier 1.32.0 -> 1.43.0
+      pin recorded in the header remains a real upgrade that cleared two genuine HIGHs,
+      CVE-2026-24051 and CVE-2026-39883.)
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: CVE-2026-41178 is a DoS in OpenTelemetry-Go's baggage Parse (NVD CPE
+            target-software edition ":go:"). Our dependency is the Java constants artifact
+            io.opentelemetry.semconv:opentelemetry-semconv 1.43.0 — generated String/AttributeKey
+            constants with no parser and no executable code. Matched only because the "1.43.0"
+            version literal and the "opentelemetry" product token coincide. The Go fixes
+            (1.42.0/1.44.0) do not apply to this Java artifact. Language/product-mismatch, not a
+            version-remediable finding.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+        <cve>CVE-2026-41178</cve>
+    </suppress>
+
+    <!--
+      FALSE POSITIVE (product mismatch + artifact not present). org.eclipse.angus:angus-activation
+      is the Jakarta Activation implementation, pulled transitively by JAXB (Hibernate ->
+      jaxb-runtime -> jaxb-core -> angus-activation). dependency-check assigns it the CPE
+      cpe:2.3:a:eclipse:angus_mail, which identifies Angus *Mail* (the Jakarta Mail
+      implementation) — a different artifact (org.eclipse.angus:angus-mail) that is NOT on this
+      project's classpath (the application performs no Jakarta Mail / SMTP operations). The listed
+      fixes for CVE-2025-7962 (angus-mail 1.6.8 / 2.0.2 / 2.0.4) are Angus *Mail* releases;
+      angus-activation has no 2.0.4 (its latest release is 2.0.3) precisely because it is not the
+      affected component. This is a product-mismatch false positive against an artifact whose
+      vulnerable sibling is not even deployed.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: angus-activation (Jakarta Activation, via JAXB) cross-matched to the
+            Angus Mail product CPE (cpe:/a:eclipse:angus_mail). CVE-2025-7962 affects Angus Mail
+            (org.eclipse.angus:angus-mail), which is not on the classpath. The 1.6.8/2.0.2/2.0.4
+            fixes are angus-mail versions; angus-activation is not the affected artifact.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.eclipse\.angus/angus-activation@.*$</packageUrl>
+        <cve>CVE-2025-7962</cve>
+    </suppress>
+
+    <!--
+      FALSE POSITIVE (over-broad NVD CPE cross-match). org.hibernate.validator:hibernate-validator
+      is the Jakarta Bean Validation reference implementation (annotation-driven constraint
+      validation), pulled transitively by spring-boot-starter-validation. dependency-check assigns
+      the jar three candidate CPEs — cpe:2.3:a:hibernate:hibernate-validator (correct),
+      cpe:2.3:a:redhat:hibernate_validator (correct alias), and cpe:2.3:a:validator:validator
+      (OVER-BROAD — it rides on the literal word "validator" in the Maven groupId/artifactId).
+      CVE-2025-15104 is filed against that validator:validator CPE, but its actual subject is
+      "The Nu Html Checker" (validator.nu / vnu) — an entirely unrelated HTML-validation tool
+      whose flaw is a DNS-rebinding SSRF restriction bypass. Its affected range is DATE-based
+      (versionEndExcluding=2026-01-11, i.e. the vnu commit/date versioning), which has nothing to
+      do with hibernate-validator's 8.0.x semantic versions and which NO hibernate-validator
+      release can ever clear (every 8.x version sorts below that date bound) — confirming this is a
+      pure CPE cross-match, not a version-remediable finding. Exploitability is nil regardless: the
+      application interpolates no user-supplied input into constraint-violation messages (no dynamic
+      EL) and ships no validator.nu / HTML-checker component on the classpath. Scoped to the single
+      artifact by Package URL and to the single CVE.
+    -->
+    <suppress>
+        <notes><![CDATA[
+            False positive: hibernate-validator (Jakarta Bean Validation) cross-matched to the
+            over-broad cpe:2.3:a:validator:validator identifier. CVE-2025-15104 affects "The Nu Html
+            Checker" (validator.nu / vnu) — a different product with a date-based version scheme
+            (versionEndExcluding 2026-01-11) and no relationship to hibernate-validator. No
+            hibernate-validator release can clear this match, and the app interpolates no user input
+            into constraint messages. Pure CPE cross-match, not a version-remediable finding.
+        ]]></notes>
+        <packageUrl regex="true">^pkg:maven/org\.hibernate\.validator/hibernate-validator@.*$</packageUrl>
+        <cve>CVE-2025-15104</cve>
+    </suppress>
+
+</suppressions>

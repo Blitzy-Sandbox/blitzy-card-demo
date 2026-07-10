@@ -1,0 +1,40 @@
+# =============================================================================
+# Grafana dashboard provider provisioning — CardDemo local observability stack
+# =============================================================================
+# Net-new observability infrastructure for the COBOL -> Java 25 / Spring Boot
+# 3.x migration. This file registers a file-based dashboard provider so Grafana
+# auto-loads every dashboard JSON found under the mounted dashboards directory,
+# satisfying AAP §0.7.1 ("a dashboard template with the initial implementation")
+# and §0.7.6 (observability exercisable locally with zero manual setup).
+#
+# Consumed (read-only) by the `grafana` service in the root docker-compose.yml:
+#     ./grafana/provisioning:/etc/grafana/provisioning:ro   (this provider file)
+#     ./grafana/dashboards:/var/lib/grafana/dashboards:ro    (the dashboard JSON)
+# Grafana scans /etc/grafana/provisioning/dashboards on startup and then loads
+# every *.json under the `options.path` below.
+#
+# The single provisioned dashboard is grafana/dashboards/carddemo-dashboard.json
+# (uid: carddemo-observability). It queries the Prometheus datasource provisioned
+# by ../datasources/datasource.yml via its ${DS_PROMETHEUS} template variable.
+# =============================================================================
+
+apiVersion: 1
+
+providers:
+  - name: CardDemo
+    orgId: 1
+    # Surface the dashboard inside a "CardDemo" folder in the Grafana UI.
+    folder: CardDemo
+    folderUid: carddemo
+    type: file
+    # Local dev stack: allow edits/deletions in the UI for exploration; the JSON
+    # on disk remains the source of truth and is re-read on the interval below.
+    disableDeletion: false
+    allowUiUpdates: true
+    updateIntervalSeconds: 30
+    options:
+      # Directory the docker-compose `grafana` service mounts the JSON into.
+      path: /var/lib/grafana/dashboards
+      # All dashboards live directly in the CardDemo folder (flat), not derived
+      # from any sub-directory structure.
+      foldersFromFilesStructure: false

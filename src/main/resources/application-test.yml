@@ -1,0 +1,232 @@
+---
+# ===========================================================================
+# CardDemo — `test` Spring Profile (application-test.yml)
+# ===========================================================================
+# Activated by JUnit 5 unit tests and @Testcontainers integration tests via
+# @ActiveProfiles("test"). This profile layers a small set of TEST-ONLY
+# overrides on top of the environment-independent base (application.yml) so a
+# `mvn verify` run is fast, isolated, hermetic, and requires ZERO live AWS and
+# NO running docker-compose stack.
+#
+# Governing requirements: AAP 0.4.1 (profile layout), 0.7.2 (eight validation
+# gates — Gate 1/4 use the REAL Flyway migrations, not mocked I/O), 0.7.7
+# (LocalStack Verification — every AWS interaction is exercised locally with no
+# live AWS credentials), and 0.8.7 (Gate 8 — JaCoCo line coverage >= 80%).
+#
+# --------------------------------------------------------------------------
+# KEY PRINCIPLE — Testcontainers owns every host/port/endpoint
+# --------------------------------------------------------------------------
+# Integration tests spin up their OWN throwaway containers via the
+# Testcontainers 2.0.3 modules (`postgresql`, `localstack`, `junit-jupiter`)
+# and inject the volatile connection details at runtime with
+# @DynamicPropertySource in the Java test classes (under src/test — out of
+# scope for this file). Testcontainers binds RANDOM host ports, so this YAML
+# deliberately sets only STATIC, environment-agnostic defaults and NEVER hard
+# codes a datasource URL/host/port or an AWS endpoint. Hardcoding, say,
+# http://localhost:4566 would break the moment the container maps a different
+# port. The dynamic keys each test supplies are, at minimum:
+#     spring.datasource.url / username / password  <- PostgreSQLContainer
+#     spring.cloud.aws.endpoint                     <- localstack.getEndpoint()
+#
+# Tests SELF-PROVISION and TEAR DOWN their own S3 buckets and SQS queues; they
+# never depend on pre-existing LocalStack state (AAP 0.7.7).
+#
+# --------------------------------------------------------------------------
+# HARD RULES honored here
+# --------------------------------------------------------------------------
+#   * Zero live AWS; zero dependency on docker-compose — hermetic via
+#     Testcontainers.
+#   * Do NOT hardcode any container host/port/endpoint that Testcontainers
+#     assigns dynamically; leave them to @DynamicPropertySource (src/test).
+#   * Real Flyway migrations + real containers (no mocked I/O) so the Gate 1/4
+#     parity checks are meaningful.
+#   * Valid YAML: 2-space indentation, no tabs. Only override what differs from
+#     the base application.yml; everything not restated here is inherited.
+#
+# Source COBOL/JCL is referenced read-only at commit SHA 27d6c6f (full
+# 7756d895ffeb65f7ea72aaa609e356d9899afcec); it is not copied here. Longer-form
+# design rationale lives in docs/decision-log.md, not in these comments
+# (Explainability rule, AAP 0.7.3).
+# ===========================================================================
+
+spring:
+
+  # -------------------------------------------------------------------------
+  # Phase 1 — DataSource / JPA / Flyway (Testcontainers-driven)
+  # -------------------------------------------------------------------------
+  datasource:
+    # The JDBC URL, username, and password are supplied dynamically by the
+    # Testcontainers PostgreSQL (postgres:16) module through
+    # @DynamicPropertySource and are therefore intentionally ABSENT here.
+    # Only the driver is pinned statically — it is identical across every
+    # test regardless of the container's mapped port.
+    #
+    # Documented alternative (NOT enabled — @DynamicPropertySource is
+    # preferred): the Testcontainers JDBC URL scheme can drive the container
+    # directly from configuration, e.g.
+    #     spring.datasource.url: jdbc:tc:postgresql:16:///carddemo
+    # which requires org.testcontainers.jdbc.ContainerDatabaseDriver as the
+    # driver. We keep the standard PostgreSQL driver here and let each test
+    # own the container lifecycle explicitly.
+    driver-class-name: org.postgresql.Driver
+
+  # jpa.hibernate.ddl-auto=validate is INHERITED from application.yml — Flyway
+  # builds the schema inside the throwaway container (V1 schema -> V2 indexes
+  # -> V3 seed) and Hibernate only validates that the com.carddemo.entity.*
+  # mappings match it. Never switch to create/update here: that would bypass
+  # the migrations and risk rewriting the NUMERIC(p,2) money columns, breaking
+  # COBOL decimal fidelity (AAP 0.8.2). Left unset so the base value stands.
+  #
+  # flyway.enabled=true and flyway.locations=classpath:db/migration are also
+  # INHERITED so every integration test runs the SAME real migrations that
+  # production runs (Gate 1/4 parity). A fresh container has nothing to
+  # conflict with, so the base validate-on-migrate/baseline-on-migrate values
+  # are left in place — no relaxation is required.
+
+  # -------------------------------------------------------------------------
+  # Phase 1 (cont.) — Spring Batch
+  # -------------------------------------------------------------------------
+  batch:
+    jdbc:
+      # Override the base value (never): create the Spring Batch BATCH_*
+      # metadata tables on context start. Those tables are NOT owned by Flyway
+      # (see the header note in V1__schema.sql: "auto-provisioned separately"),
+      # so the `test` profile opts in with `always` — matching the base
+      # comment — so JobLauncherTestUtils can launch the 5-stage pipeline
+      # (POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT / TRANREPT) inside the
+      # throwaway PostgreSQL container.
+      initialize-schema: always
+    job:
+      # Re-affirms the base value as a hard test invariant: jobs are NEVER
+      # auto-launched at context startup. Integration tests trigger each job
+      # explicitly and deterministically via JobLauncherTestUtils, so no batch
+      # step runs (and touches the DB / S3) merely because the context booted.
+      enabled: false
+
+  # -------------------------------------------------------------------------
+  # Phase 2 — Spring Cloud AWS -> Testcontainers LocalStack (zero live AWS)
+  # -------------------------------------------------------------------------
+  # The AWS endpoint override is INTENTIONALLY ABSENT: the LocalStack
+  # (localstack/localstack:4) container endpoint is injected dynamically by
+  # each test via @DynamicPropertySource, e.g.
+  #     registry.add("spring.cloud.aws.endpoint",
+  #                   () -> localstack.getEndpoint());
+  # Hardcoding http://localhost:4566 would break because Testcontainers maps
+  # LocalStack's 4566 to a random host port.
+  #
+  # S3/SQS/SNS auto-configuration is deliberately LEFT ENABLED. The wired
+  # application requires the framework templates as MANDATORY constructor
+  # dependencies (service.ReportService -> SqsTemplate; the batch item writers
+  # PostTransactionItemWriter / StatementItemWriter /
+  # TransactionReportItemWriter
+  # -> S3Template), so globally disabling any of them would break context
+  # wiring for every full-context integration test. Static region + dummy
+  # credentials below let the SDK v2 clients construct without contacting a
+  # real credential chain; the clients only connect lazily when used.
+  cloud:
+    aws:
+      region:
+        # LocalStack accepts any region; us-east-1 is the conventional default
+        # and is the single source of truth for the region (the base file
+        # deliberately does NOT duplicate it under carddemo.aws).
+        static: us-east-1
+      credentials:
+        # Non-secret LocalStack dummy credentials (the well-known test/test
+        # pair). These are NOT real AWS keys — they exist so the SDK uses a
+        # static provider instead of the ambient credential chain, guaranteeing
+        # no path can reach live AWS even if ambient credentials are present.
+        access-key: test
+        secret-key: test
+      s3:
+        # LocalStack S3 requires PATH-style access (http://endpoint/bucket/key)
+        # rather than virtual-host style (http://bucket.endpoint/key), which
+        # does not resolve against the container.
+        path-style-access-enabled: true
+      sqs:
+        # batch.ReportJobLauncher declares an @SqsListener on the report queue
+        # (carddemo-report-jobs.fifo). The listener container resolves that
+        # queue when the context finishes refreshing; with CREATE it will
+        # auto-create the FIFO queue in LocalStack if a test has not already
+        # provisioned it, so integration tests need no strict "provision the
+        # queue before the context starts" ordering. Tests still self-provision
+        # and tear down their queues/buckets per AAP 0.7.7; this simply removes
+        # a startup ordering foot-gun. (QueueNotFoundStrategy: CREATE|FAIL.)
+        queue-not-found-strategy: create
+        # NOTE on AWS-free context/slice tests (documented per-test strategy;
+        # "prefer per-test enabling"): Spring Cloud AWS 3.3.0 has NO
+        # `sqs.listener.auto-startup` flag, so a test that boots the context
+        # WITHOUT a LocalStack endpoint (and therefore does not want the
+        # @SqsListener to poll) should exclude the relevant auto-configurations
+        # in that test only, e.g.
+        #   @SpringBootTest(properties =
+        #     "spring.autoconfigure.exclude="
+        #       + "io.awspring.cloud.autoconfigure.sqs.SqsAutoConfiguration,"
+        #       + "io.awspring.cloud.autoconfigure.s3.S3AutoConfiguration,"
+        #       + "io.awspring.cloud.autoconfigure.sns.SnsAutoConfiguration")
+        # (or use a narrower test slice). Tests that DO exercise AWS start
+        # LocalStack and inject the endpoint as shown above.
+
+# ===========================================================================
+# Phase 3 — Observability (quiet, and no external exporters during tests)
+# ===========================================================================
+# Metrics stay available (Micrometer + the Prometheus registry is a PULL model
+# — Prometheus scrapes us, so it never dials out and needs no external server),
+# but span export is switched off so tests never attempt to reach a Jaeger /
+# OTLP collector. The base OTLP endpoint is profile-scoped and is simply not
+# present in this profile.
+management:
+  tracing:
+    # Disable tracing entirely for tests: no Tracer / OTLP exporter is created,
+    # so there are zero outbound span-export attempts. This does NOT affect the
+    # MDC `correlationId` — that is produced by
+    # observability.CorrelationIdFilter
+    # via SLF4J MDC on the request path, independent of the tracer — so tests
+    # asserting on the correlation id continue to work.
+    enabled: false
+  otlp:
+    tracing:
+      export:
+        # Belt-and-suspenders: even if tracing were re-enabled by a specific
+        # test, OTLP export stays off so no connection to the Jaeger collector
+        # is attempted.
+        enabled: false
+
+# ===========================================================================
+# Phase 3 (cont.) — Logging levels (reduce test noise)
+# ===========================================================================
+# JSON encoders/appenders and the MDC `correlationId` field live in
+# logback-spring.xml (auto-detected by Spring Boot); this only tunes levels.
+logging:
+  level:
+    # Quiet third-party INFO chatter (Hibernate, Flyway, Spring) during tests.
+    root: WARN
+    # Keep the application's own logs at INFO so test diagnostics remain useful.
+    com.carddemo: INFO
+    # Surface Testcontainers container-startup progress (image pull, port
+    # mapping, wait strategies) at INFO for debuggable CI logs.
+    org.testcontainers: INFO
+
+# ===========================================================================
+# Phase 4 — Security / JWT (deterministic, test-scoped)
+# ===========================================================================
+# JWT replaces the CICS pseudo-conversational COMMAREA session state.
+carddemo:
+  security:
+    jwt:
+      # JWT signing secret — REQUIRED, with NO hardcoded fallback in the checked-in
+      # config (AAP 0.8.1 "no hardcoded credentials"). Like base/local/prod this is
+      # a bare ${JWT_SECRET} with no default. The deterministic TEST-ONLY value is
+      # supplied by the build itself, injected as the JWT_SECRET environment
+      # variable by the Maven Surefire AND Failsafe plugins (see pom.xml
+      # <environmentVariables>), so `mvn test` / `mvn verify` boot the full context
+      # with no ambient setup and no secret literal living in a runtime config file.
+      # The injected value is >= 32 bytes as HS256 requires (JwtService uses
+      # Keys.hmacShaKeyFor and would raise WeakKeyException on a shorter key).
+      # Tests that need their own key still override it via @TestPropertySource /
+      # @DynamicPropertySource (e.g. SecurityConfigTest, JwtServiceTest).
+      secret: ${JWT_SECRET}
+      # Fixed 60-minute lifetime (milliseconds) so token expiry behaviour is
+      # deterministic across runs. The key is `expiration-ms` (milliseconds)
+      # to match JwtService, which reads carddemo.security.jwt.expiration-ms —
+      # it is NOT a minutes-based key.
+      expiration-ms: 3600000

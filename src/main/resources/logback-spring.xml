@@ -1,0 +1,217 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  logback-spring.xml — Structured logging configuration for CardDemo
+  ============================================================================
+  Net-new observability artifact for the COBOL -> Java 25 / Spring Boot 3.x
+  migration of the AWS CardDemo credit-card workload. The legacy mainframe
+  system shipped ZERO observability infrastructure, so structured logging is
+  authored here from scratch to satisfy the Observability rule (AAP sections
+  0.3.1, 0.4.1, 0.7.1, 0.8.6).
+
+  WHY logback-spring.xml (not logback.xml):
+    Spring Boot only enables the <springProfile> and <springProperty> Joran
+    extensions when the configuration file name is "logback-spring.xml" (it is
+    processed by org.springframework.boot.logging.logback.SpringBootJoranConfigurator).
+    Both extensions are used below, so the "-spring" suffix is mandatory.
+
+  ===========================================================================
+  CORRELATION-ID CONTRACT (do not change without updating collaborators)
+  ===========================================================================
+    The MDC key for the per-request / per-batch correlation identifier is
+    EXACTLY "correlationId". This is a hard contract shared with:
+      * com.carddemo.observability.CorrelationIdFilter  (REST boundary)
+          -> CorrelationIdFilter.CORRELATION_ID_MDC_KEY == "correlationId"
+      * the Spring Batch job listener (batch boundary)
+    This file surfaces the value through the structured-JSON full-MDC provider
+    (<mdc/>), which also surfaces Micrometer Tracing's traceId / spanId (they
+    live in the MDC and survive because CorrelationIdFilter uses MDC.remove(),
+    never MDC.clear()). The correlationId conversion word (%correlationId) and
+    the %X{correlationId} MDC accessor remain registered for any operator who
+    reinstates a human-readable console appender at runtime.
+    NOTE: Spring Boot's imported defaults.xml registers a "correlationId"
+    *conversion word* (%correlationId) for its own tracing pattern. That is a
+    DIFFERENT mechanism and does NOT collide with %X{correlationId} (the MDC
+    accessor) used here.
+
+  ===========================================================================
+  SENSITIVE DATA — MASK AT THE CALL SITE (PCI / PII)
+  ===========================================================================
+    This configuration must never be used to emit secrets or regulated data.
+    Callers MUST mask/redact before logging: full card numbers (PAN),
+    CVV/CVC, passwords, BCrypt hashes, JWTs / bearer tokens, and raw financial
+    PII (balances tied to an identifiable customer, SSN, etc.). SQL parameter
+    binding is intentionally NOT enabled by default (see logger levels below)
+    so account/transaction values are not leaked through Hibernate logging.
+
+  ===========================================================================
+  CONTAINER-FRIENDLY: everything logs as structured JSON to STDOUT in every
+  profile. There are deliberately NO file appenders writing to arbitrary host
+  paths; a log collector / container runtime captures STDOUT.
+  ============================================================================
+-->
+<configuration scan="false">
+
+    <!--
+      Spring Boot logging defaults: conversion rules (clr, correlationId, esb,
+      wEx, ...), sensible charset/pattern properties, and reduced framework
+      logger noise (Tomcat, Hibernate Validator, ...). Recommended for
+      consistency with the rest of the Spring Boot ecosystem. We deliberately
+      do NOT import base.xml/console-appender.xml because those attach their
+      own appenders and a file appender to the root logger.
+    -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!--
+      Application / service name, sourced from spring.application.name in
+      application.yml (value: "carddemo"). Exposed to the appenders below as a
+      context-scoped property ${appName} and emitted as the static JSON fields
+      "application" and "service" so every log line is attributable to this
+      service in an aggregated log store.
+    -->
+    <springProperty scope="context" name="appName" source="spring.application.name" defaultValue="carddemo"/>
+
+    <!-- ======================================================================
+         LOGGER LEVELS (profile-independent)
+         These are baseline defaults. Every level is overridable at runtime via
+         logging.level.* in application*.yml (Spring Boot applies those AFTER
+         this file is processed), e.g. logging.level.com.carddemo=DEBUG.
+         ====================================================================== -->
+
+    <!-- Application logging. Defaults to INFO; do NOT hardcode DEBUG here. -->
+    <logger name="com.carddemo" level="INFO"/>
+
+    <!--
+      Keep ORM / SQL logging quiet by default. These loggers are pinned at INFO
+      so that turning the root logger up to DEBUG does NOT start emitting SQL
+      statements or, worse, bound parameter values (which for this domain would
+      include account numbers, balances, and card data). Opt in explicitly and
+      deliberately via logging.level.* in a non-production profile when needed.
+    -->
+    <logger name="org.hibernate.SQL" level="INFO"/>
+    <logger name="org.hibernate.orm.jdbc.bind" level="INFO"/>
+    <logger name="org.hibernate.type.descriptor.sql.BasicBinder" level="INFO"/>
+
+    <!--
+      Sensitive-data defense-in-depth (PCI): pin Spring Security at INFO.
+      Spring Security's filter chain (notably FilterChainProxy and the
+      authorization/authentication filters) logs the full request line —
+      including the request URI — at DEBUG/TRACE. For this domain the card
+      view/update endpoints expose the card number (PAN) as the
+      "/api/cards/{cardNumber}" PATH VARIABLE, so an unpinned security logger
+      would let raising the application or root logger to DEBUG (e.g.
+      logging.level.com.carddemo=DEBUG, or logging.level.root=DEBUG) INCIDENTALLY
+      surface a full PAN in the URI through framework request-line logging —
+      even though every application call site already masks the PAN via
+      CardController#maskPan. Pinning here (mirroring the Hibernate SQL pins
+      above) contains that incidental surfacing regardless of how high the app
+      raises its own logging; opt in explicitly and deliberately via
+      logging.level.org.springframework.security in a non-production profile
+      when security-filter debugging is genuinely required.
+
+      NOTE (interface-contract preservation): the PAN-in-path-variable itself is
+      the external REST interface contract migrated from the COBOL CCDL/CCUP
+      screens (CARD-NUM). Per AAP sections 0.3.2 and 0.8.1, external interface
+      contract CHANGES (e.g. swapping the path variable for an opaque token or
+      last-4) are out of scope and are NOT applied here; the safe pin below is
+      the in-scope defense-in-depth remedy.
+    -->
+    <logger name="org.springframework.security" level="INFO"/>
+
+    <!-- ======================================================================
+         APPENDERS AND ROOT LOGGER  (profile-independent, structured JSON)
+         ======================================================================
+         Structured JSON logging is emitted in EVERY profile — INCLUDING "local"
+         — so the Observability rule's structured-logging capability is exercisable
+         in the local acceptance runtime, not only under test/prod.
+
+         Rationale (QA finding "local runtime logs are not JSON", AAP 0.7.1):
+         the guiding bar is "If a capability cannot be exercised locally, it is
+         NOT considered delivered." A prior profile split emitted a human-readable
+         PatternLayout locally and JSON only for !local, which meant the delivered
+         structured-logging capability could not be verified on a clean-machine
+         `mvn spring-boot:run -Dspring-boot.run.profiles=local` acceptance run.
+         Binding the single JSON appender to the root logger unconditionally makes
+         all runtime logs machine-parseable and correlation-stitched regardless of
+         the active profile. Developers who want a human-readable console can still
+         opt in at runtime (e.g. logging.pattern.console / a custom logback include)
+         without changing the delivered default.
+
+         A single appender + single root binding also keeps the Logback startup
+         status clean (no "appender not referenced" / "root bound twice" warnings).
+         ======================================================================
+         JSON schema (logstash-logback-encoder 8.0 composite encoder; one JSON
+         object per line, written to STDOUT for a container log collector):
+           @timestamp   ISO-8601 in UTC (stable, timezone-independent)
+           level        log level (INFO/WARN/ERROR/...)
+           logger_name  fully-qualified logger name
+           thread_name  originating thread
+           message      the formatted log message
+           stack_trace  full throwable stack trace (present only on errors)
+           <all MDC>    correlationId (contract key) plus Micrometer traceId /
+                        spanId when distributed tracing is active — surfaced as
+                        top-level fields by the bare <mdc/> provider
+           application  static service identity (== spring.application.name)
+           service      static service identity (== spring.application.name)
+
+         The JSON appender is wrapped in an AsyncAppender for throughput:
+           queueSize           1024  — bounded queue (backpressure boundary)
+           discardingThreshold 0     — never silently drop events (a financial /
+                                       audit workload must not lose INFO/WARN/ERROR
+                                       lines when the queue is under pressure)
+           neverBlock          false — prefer brief producer backpressure over log
+                                       loss; if the queue fills, the logging thread
+                                       waits rather than discarding the event
+           includeCallerData   false — caller data (file/line) is expensive and not
+                                       needed for structured JSON logs
+         MDC (including correlationId) is captured on the producing thread when the
+         LoggingEvent is created, so it is preserved across the async hand-off.
+         ====================================================================== -->
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder">
+            <providers>
+                <timestamp>
+                    <fieldName>@timestamp</fieldName>
+                    <timeZone>UTC</timeZone>
+                    <pattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</pattern>
+                </timestamp>
+                <logLevel>
+                    <fieldName>level</fieldName>
+                </logLevel>
+                <loggerName>
+                    <fieldName>logger_name</fieldName>
+                </loggerName>
+                <threadName>
+                    <fieldName>thread_name</fieldName>
+                </threadName>
+                <message>
+                    <fieldName>message</fieldName>
+                </message>
+                <!-- Full MDC as top-level fields: correlationId + traceId/spanId. -->
+                <mdc/>
+                <!-- Stack trace only rendered when the event carries a throwable. -->
+                <stackTrace>
+                    <fieldName>stack_trace</fieldName>
+                </stackTrace>
+                <!-- Static service identity. ${appName} is resolved at config
+                     time from the springProperty above. -->
+                <pattern>
+                    <pattern>{"application":"${appName}","service":"${appName}"}</pattern>
+                </pattern>
+            </providers>
+        </encoder>
+    </appender>
+
+    <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="JSON"/>
+        <queueSize>1024</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>false</neverBlock>
+        <includeCallerData>false</includeCallerData>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="ASYNC_JSON"/>
+    </root>
+
+</configuration>

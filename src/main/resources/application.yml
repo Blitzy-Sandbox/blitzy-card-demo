@@ -1,0 +1,292 @@
+---
+# ===========================================================================
+# CardDemo — Base / Common Spring Boot Configuration (application.yml)
+# ===========================================================================
+# Migrated system: AWS CardDemo COBOL/CICS/VSAM/JCL mainframe monolith ->
+# Java 25 LTS + Spring Boot 3.5.11 modular service.
+#
+# SCOPE OF THIS FILE (base = environment-INDEPENDENT ONLY):
+#   This file holds ONLY settings that are identical across every runtime
+#   environment. Anything that varies per environment — the datasource URL,
+#   username/password, the AWS/LocalStack endpoint override, AWS credentials,
+#   the OTLP (Jaeger) tracing endpoint, and every literal secret — lives in
+#   the profile-scoped resources instead:
+#       application-local.yml   developer laptop + Docker Compose stack
+#       application-test.yml    Testcontainers / LocalStack integration tests
+#       application-prod.yml     production; secrets from env vars / a vault
+#
+# HARD RULES (AAP 0.8.1, 0.8.7 and the agent prompt):
+#   * NEVER put DB URLs, AWS endpoints, credentials, or secrets here.
+#   * Zero live AWS anywhere — LocalStack only; base carries LOGICAL names.
+#   * Pinned/config values only (no "latest"); every value that can vary uses
+#     the ${ENV_VAR:default} placeholder form so env/CI/prod can override it.
+#   * Valid YAML: 2-space indentation, no tabs.
+#
+# TRACEABILITY (Explainability rule, AAP 0.7.3): properties that externalize
+# legacy JCL PARM/SYSIN inputs carry an inline comment naming their JCL
+# origin. Source COBOL/JCL is referenced read-only at commit SHA 27d6c6f
+# (full 7756d895ffeb65f7ea72aaa609e356d9899afcec); it is not copied here.
+# Longer-form design rationale lives in docs/decision-log.md, not here.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Phase 1 — Core application settings
+# ---------------------------------------------------------------------------
+spring:
+  application:
+    # Used as the tracing/OTLP service name, the Micrometer common-tag
+    # source, and the JSON log app field. Downstream code (observability,
+    # metrics, tracing) assumes exactly this value — do NOT drift.
+    name: carddemo
+
+  # Default active profile. NOT hard-coded: a plain `mvn spring-boot:run`
+  # (README: `-Dspring-boot.run.profiles=local`) defaults to `local`, while
+  # CI/prod override via the SPRING_PROFILES_ACTIVE environment variable
+  # (e.g. SPRING_PROFILES_ACTIVE=prod). Integration tests activate `test`
+  # explicitly (@ActiveProfiles / test properties), so this default never
+  # hijacks a test context.
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
+  # Bound the graceful-shutdown window so in-flight REST requests and running
+  # Spring Batch chunks can drain cleanly on SIGTERM (see server.shutdown).
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  # -------------------------------------------------------------------------
+  # Phase 2 — JPA / Hibernate (the schema is owned by Flyway, not Hibernate)
+  # -------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      # Flyway owns all DDL (V1 schema / V2 indexes / V3 seed). Hibernate
+      # only VALIDATES that the com.carddemo.entity.* mappings match the
+      # Flyway-created schema. NEVER use create/update/create-drop: that
+      # would bypass the migrations and risk rewriting the NUMERIC(p,2)
+      # money/rate columns, breaking COBOL decimal fidelity (AAP 0.8.2).
+      # A mapping mismatch here fails fast at boot — the intended behavior.
+      ddl-auto: validate
+      # Physical naming strategy is deliberately NOT overridden. The
+      # entities use explicit @Table(name=...)/@Column(name=...) snake_case
+      # names (e.g. account.acct_curr_bal) that match V1__schema.sql
+      # exactly, and the Spring Boot default
+      # (CamelCaseToUnderscoresNamingStrategy) is stable on already
+      # snake_case identifiers. Overriding to a different strategy could
+      # silently break the ddl-auto=validate mapping, so it is left alone.
+    # Headless REST service: keep no open EntityManager in the view layer to
+    # avoid accidental lazy-loading outside a transaction.
+    open-in-view: false
+    # SQL is observed via logging levels / tracing (Observability rule), not
+    # by dumping to stdout. Keep show-sql off; format the SQL only when a
+    # logger (e.g. org.hibernate.SQL) is raised in a profile.
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+      # Per-query execution deadline (milliseconds) applied to every JPA query via
+      # Statement.setQueryTimeout on PostgreSQL. Complements the Hikari
+      # connection-acquisition timeout (which bounds only checkout, not execution): a slow
+      # or lock-waiting query is aborted rather than pinning a pooled connection until the
+      # client disconnects or Hikari max-lifetime elapses, which — with a bounded pool —
+      # could otherwise exhaust connections. 5000 ms is far above the observed OLTP/paged-batch
+      # latencies (all such queries are indexed and bounded), so it only trips on a genuine
+      # stall. Inherited by every profile (local/prod/test); Flyway and non-JPA JdbcTemplate
+      # paths are unaffected. Value is per-query, not per-transaction.
+      jakarta.persistence.query.timeout: 5000
+
+  # -------------------------------------------------------------------------
+  # Phase 3 — Flyway migrations (PostgreSQL 16)
+  # -------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # Matches the db/migration folder created by this migration. Flyway
+    # applies the immutable, versioned scripts in order: V1__schema.sql
+    # (11 tables) -> V2__indexes.sql -> V3__seed_data.sql (seed from the
+    # app/data/ASCII fixtures).
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    # Checksum-validate applied migrations against the classpath scripts.
+    # Only the `test` profile may relax/disable this where Testcontainers
+    # manages the schema lifecycle itself.
+    validate-on-migrate: true
+
+  # -------------------------------------------------------------------------
+  # Phase 4 — Spring Batch (replaces the JCL job pipeline)
+  # -------------------------------------------------------------------------
+  batch:
+    job:
+      # Do NOT auto-launch jobs at startup. The 5-stage pipeline
+      # (POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT / TRANREPT) is launched
+      # on demand and via the SQS-FIFO report trigger — never at boot.
+      # Downstream code (CardDemoApplication, PostTransactionJob) documents
+      # that this flag is declared here.
+      enabled: false
+    jdbc:
+      # Spring Batch BATCH_* metadata tables are NOT owned by Flyway (see
+      # the header note in V1__schema.sql: "auto-provisioned separately").
+      # Base keeps this at `never` (safe default — prod runs the DDL
+      # deliberately); the `local` and `test` profiles opt in with `always`
+      # so batch metadata is created for on-demand launches. Documented choice.
+      initialize-schema: never
+
+# ---------------------------------------------------------------------------
+# Phase 1 (cont.) — Servlet container
+# ---------------------------------------------------------------------------
+server:
+  # Fixed app port. Prometheus scrapes the host-bound app at
+  # host.docker.internal:8080 (see prometheus/prometheus.yml) — do NOT drift.
+  port: 8080
+  # Drain in-flight requests on shutdown instead of killing them abruptly
+  # (paired with spring.lifecycle.timeout-per-shutdown-phase above).
+  shutdown: graceful
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Actuator, metrics, tracing (Observability rule, AAP 0.7.1)
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Exactly the endpoints the migration requires: /actuator/health,
+        # /actuator/info, /actuator/prometheus. No broad "*" exposure.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # Expose liveness/readiness probe groups for the custom
+      # HealthIndicators in com.carddemo.observability (Kubernetes-style
+      # /actuator/health/{liveness,readiness}).
+      probes:
+        enabled: true
+      # Conservative default; profiles (e.g. local) may relax to `always`.
+      show-details: when-authorized
+  metrics:
+    distribution:
+      # Publish native Prometheus histogram buckets for the HTTP server request
+      # timer so the latency panel (Grafana dashboard Panel 4) can query
+      # http_server_requests_seconds_bucket. Without this only the _count/_sum/_max
+      # series are exported and the bucket-based panel shows "No data".
+      percentiles-histogram:
+        http.server.requests: true
+    tags:
+      # Common tag applied to every meter; MetricsConfig reads this
+      # property. Keep aligned with spring.application.name for consistent
+      # series labels.
+      application: carddemo
+  prometheus:
+    metrics:
+      export:
+        # Enable the Prometheus scrape endpoint (/actuator/prometheus).
+        enabled: true
+  tracing:
+    sampling:
+      # Sample all traces by default for full local observability; prod
+      # lowers this via TRACING_SAMPLE_RATE. Micrometer Tracing bridges
+      # to OpenTelemetry and exports over OTLP. The OTLP endpoint itself
+      # (Jaeger) is env-specific and is set ONLY in the profile files —
+      # never here.
+      probability: ${TRACING_SAMPLE_RATE:1.0}
+
+# ---------------------------------------------------------------------------
+# Phase 7 — Logging levels
+# (JSON encoders/appenders + MDC `correlationId` live in logback-spring.xml,
+#  which Spring Boot auto-detects. Do NOT duplicate appender config here.)
+# ---------------------------------------------------------------------------
+logging:
+  level:
+    root: INFO
+    com.carddemo: ${APP_LOG_LEVEL:INFO}
+
+# ===========================================================================
+# Application-specific configuration (com.carddemo.*)
+# Environment-INDEPENDENT values only. Anything env-specific (AWS endpoints,
+# credentials, region, DB, OTLP endpoint, real secrets) lives in the profiles.
+# ===========================================================================
+carddemo:
+
+  # -------------------------------------------------------------------------
+  # Phase 5 — AWS LOGICAL resource names (identical across every environment;
+  # endpoints/region/credentials are profile-scoped — see note below)
+  # -------------------------------------------------------------------------
+  # NOTE ON REGION: the AWS region is owned by the framework property
+  # spring.cloud.aws.region.static and is set in the profile files
+  # (application-local/-test/-prod.yml). It is intentionally NOT
+  # duplicated under carddemo.aws here (see AwsConfig). The AWS endpoint
+  # override and credentials are likewise profile-only (LocalStack
+  # locally; zero live AWS anywhere).
+  aws:
+    s3:
+      # Legacy GDG generations -> versioned S3 objects (AAP 0.7.7).
+      # input-bucket: batch input datasets (e.g. the daily-transaction
+      # file consumed by POSTTRAN / CBTRN02C).
+      input-bucket: carddemo-batch-input
+      # output-bucket: batch output/reject datasets (POSTTRAN DALYREJS,
+      # reports).
+      output-bucket: carddemo-batch-output
+      # statements-bucket: generated statements (CREASTMT / CBSTM03A:
+      # STATEMNT.HTML / .PS).
+      statements-bucket: carddemo-statements
+    sqs:
+      # CORPT00C CICS TDQ -> JES report bridge -> SQS FIFO-triggered
+      # Spring Batch launch (AAP 0.7.7). Keep the ".fifo" suffix.
+      report-queue: carddemo-report-jobs.fifo
+      # Env-independent send timeout (ms) for enqueuing a report-launch
+      # message.
+      report-send-timeout-ms: 5000
+
+  # -------------------------------------------------------------------------
+  # Phase 4 (cont.) — Batch parameters externalized from legacy JCL PARM/SYSIN.
+  # Each value is overridable per job launch, per profile, or via env var.
+  # -------------------------------------------------------------------------
+  batch:
+    # Chunk size for all chunk-oriented steps (COBOL PERFORM UNTIL EOF ->
+    # Spring Batch reader/processor/writer chunks). Env-independent tuning.
+    chunk-size: 100
+
+    interest:
+      # INTCALC.jcl STEP15: EXEC PGM=CBACT04C,PARM='2022071800'.
+      # Interest/fee processing date, format YYYYMMDDHH (CBACT04C).
+      processing-date: ${CARDDEMO_INTEREST_DATE:2022071800}
+
+    reject:
+      # POSTTRAN.jcl DALYREJS DD: DSN=AWS.M2.CARDDEMO.DALYREJS(+1),
+      # LRECL=430. Rejected daily-transaction generation -> versioned
+      # object in the output bucket.
+      bucket: carddemo-batch-output
+      object-key: dalyrejs.dat
+
+    report:
+      # TRANREPT.jcl SYMNAMES: PARM-START-DATE=C'2022-01-01',
+      # PARM-END-DATE=C'2022-07-06'. CBTRN03C filters TRAN-PROC-DT
+      # BETWEEN start AND end and sorts by TRAN-CARD-NUM ascending
+      # (SORT FIELDS=(TRAN-CARD-NUM,A)).
+      start-date: ${CARDDEMO_REPORT_START:2022-01-01}
+      end-date: ${CARDDEMO_REPORT_END:2022-07-06}
+      # TRANREPT.jcl TRANREPT DD: DSN=AWS.M2.CARDDEMO.TRANREPT(+1),
+      # LRECL=133.
+      object-key: tranrept.dat
+      # Detail lines per report page (CBTRN03C page break).
+      page-size: 20
+
+    statement:
+      # CREASTMT / CBSTM03A statement outputs
+      # (AWS.M2.CARDDEMO.STATEMNT.HTML / .PS) -> versioned objects in the
+      # statements bucket.
+      html-object-key: statements.html
+      text-object-key: statements.ps
+
+  # -------------------------------------------------------------------------
+  # Phase 7 (cont.) — Security / JWT property STRUCTURE (no literal secrets).
+  # JWT replaces CICS pseudo-conversational COMMAREA session state.
+  # -------------------------------------------------------------------------
+  security:
+    jwt:
+      # HMAC signing secret. NO default on purpose (AAP 0.8.1: no
+      # hardcoded secrets). It MUST be supplied via the JWT_SECRET env
+      # var (or a profile that reads a vault). If absent in prod, startup
+      # fails fast with a clear "could not resolve placeholder" error —
+      # the intended behavior. For HS256 the secret must be >= 32 bytes.
+      secret: ${JWT_SECRET}
+      # Token lifetime in milliseconds (default 3,600,000 ms = 60 min).
+      # NOTE: the key is `expiration-ms` (milliseconds) to match
+      # JwtService, which reads carddemo.security.jwt.expiration-ms —
+      # not a minutes-based key.
+      expiration-ms: ${JWT_EXPIRATION_MS:3600000}

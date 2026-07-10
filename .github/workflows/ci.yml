@@ -1,0 +1,124 @@
+# CardDemo CI — continuously builds, tests, and quality-gates the CardDemo system
+# migrated to Java 25 LTS + Spring Boot 3.5.11. It is the modern analogue of the
+# legacy z/OS build-orchestration JCL (samples/jcl/BATCMP|BMSCMP|CICCMP.jcl, commit
+# 27d6c6f): the three cataloged-proc compile jobs collapse into ONE Maven build of
+# the unified src/ tree, and COND-code step sequencing becomes CI fail-fast gating.
+# Rationale/decisions live in docs/decision-log.md, not in this file.
+name: CardDemo CI
+
+# Run on every push and every pull request (AAP-authoritative; no branch restriction).
+on: [push, pull_request]
+
+# Least privilege: this workflow only builds, tests, and scans — it never writes to
+# the repository, pushes, or deploys. No write scopes are granted.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref to conserve runner minutes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build, test & quality gates
+    # GitHub-hosted Ubuntu ships a working Docker daemon, which is REQUIRED by the
+    # integration tests: they use Testcontainers (PostgreSQL module + the LocalStack
+    # module for S3/SQS/SNS), which self-provision and tear down their own resources.
+    # Do not switch to a runner without Docker.
+    runs-on: ubuntu-latest
+    # Cap the run so a hung Testcontainers or OWASP/NVD download cannot run forever.
+    timeout-minutes: 45
+
+    steps:
+      # 1) Source checkout (pinned to a stable major tag).
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2) JDK 25 LTS — the mandated runtime. '25' is quoted so YAML keeps it a string
+      #    (not the number 25). cache: maven keys ~/.m2 on pom.xml hashes for speed.
+      - name: Set up JDK 25 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      # 3) Pin Apache Maven 3.9.9 (AAP 0.6.1 / 0.8.7). This repository ships no Maven
+      #    Wrapper and the runner's preinstalled Maven is unpinned, so download the
+      #    exact release from the canonical Apache archive, verify its SHA-512 against
+      #    Apache's published checksum, and prepend it to PATH for later steps.
+      - name: Set up Apache Maven 3.9.9
+        run: |
+          set -euo pipefail
+          MAVEN_VERSION=3.9.9
+          BASE_URL="https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries"
+          ARCHIVE="apache-maven-${MAVEN_VERSION}-bin.tar.gz"
+          curl -fsSL "${BASE_URL}/${ARCHIVE}" -o "${RUNNER_TEMP}/${ARCHIVE}"
+          curl -fsSL "${BASE_URL}/${ARCHIVE}.sha512" -o "${RUNNER_TEMP}/${ARCHIVE}.sha512"
+          EXPECTED="$(awk '{print $1}' "${RUNNER_TEMP}/${ARCHIVE}.sha512")"
+          echo "${EXPECTED}  ${RUNNER_TEMP}/${ARCHIVE}" | sha512sum -c -
+          tar -xzf "${RUNNER_TEMP}/${ARCHIVE}" -C "${RUNNER_TEMP}"
+          echo "${RUNNER_TEMP}/apache-maven-${MAVEN_VERSION}/bin" >> "${GITHUB_PATH}"
+
+      # 4) Confirm the pinned toolchain: Maven 3.9.9 running on Java 25. Fail fast if
+      #    an unexpected Maven or JDK is resolved on PATH.
+      - name: Verify toolchain (Maven 3.9.9 + Java 25)
+        run: |
+          set -euo pipefail
+          MVN_OUT="$(mvn -version)"
+          echo "${MVN_OUT}"
+          echo "${MVN_OUT}" | grep -q "Apache Maven 3.9.9" \
+            || { echo "::error::Expected Apache Maven 3.9.9 on PATH"; exit 1; }
+          echo "${MVN_OUT}" | grep -Eq "Java version: 25(\.|,| )" \
+            || { echo "::error::Expected the build to run on Java 25"; exit 1; }
+
+      # 5) Unified build — the mvn-delegation analogue of the legacy EXEC BUILD* procs.
+      #    `clean verify` (not `test`/`package`) is required so Failsafe *IT integration
+      #    tests and the JaCoCo check both run. Via the root pom.xml this single command:
+      #      - compiles all sources under -Xlint:all (Gate 2, zero-warning build);
+      #      - runs unit tests (Surefire *Test) and integration tests (Failsafe *IT,
+      #        self-provisioning Testcontainers PostgreSQL + LocalStack S3/SQS/SNS);
+      #      - enforces JaCoCo >= 80% combined line coverage (Gate 8) via the pom's
+      #        verify-bound `check` rule — the build fails below threshold.
+      #    Any non-zero Maven exit fails the job (fail-fast; the COND=(4,LT) analogue).
+      - name: Build, test & coverage (mvn clean verify)
+        run: mvn --batch-mode --no-transfer-progress clean verify
+
+      # 6) OWASP dependency-check (Gate 8 — zero critical/high CVEs). The root pom.xml
+      #    owns the pinned dependency-check-maven 12.1.0 plugin inside the dedicated
+      #    `owasp` profile (failBuildOnCVSS=7, failOnError=true), bound to verify only
+      #    when that profile is active — so the default build above does NOT scan.
+      #    Activate it explicitly here. The build fails on any dependency with CVSS >= 7
+      #    (High/Critical); the CVSS threshold is owned by the pom and is not restated.
+      #    An NVD API key is used only if the optional secret exists; the scan still
+      #    runs (rate-limited, slower) without it, so forks/PRs need no secret.
+      - name: OWASP dependency-check (Gate 8 — CVE scan)
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -n "${NVD_API_KEY:-}" ]; then
+            echo "NVD API key present — using authenticated NVD access."
+            mvn --batch-mode --no-transfer-progress -Powasp \
+              org.owasp:dependency-check-maven:check -Dnvd.api.key="${NVD_API_KEY}"
+          else
+            echo "No NVD API key — using unauthenticated (rate-limited) NVD access."
+            mvn --batch-mode --no-transfer-progress -Powasp \
+              org.owasp:dependency-check-maven:check
+          fi
+
+      # 7) Retain build & scan reports even when a prior step failed (if: always()).
+      #    Best-effort artifact capture — never a gate; missing paths are ignored.
+      - name: Upload build & scan reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carddemo-reports
+          path: |
+            target/site/jacoco/
+            target/dependency-check-report.*
+            target/surefire-reports/
+            target/failsafe-reports/
+          if-no-files-found: ignore
+          retention-days: 14

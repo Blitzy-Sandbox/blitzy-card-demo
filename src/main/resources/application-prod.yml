@@ -1,0 +1,252 @@
+---
+# ===========================================================================
+# CardDemo — PRODUCTION Spring profile (application-prod.yml)
+# ===========================================================================
+# Activated with SPRING_PROFILES_ACTIVE=prod (or --spring.profiles.active=prod).
+# This file layers on top of the environment-INDEPENDENT base application.yml
+# and overrides ONLY what is environment-specific for production, plus the
+# safety/security-critical settings that must be EXPLICIT for a hardened prod
+# posture (restated even when equal to base — defense in depth).
+#
+# WHY THIS FILE EXISTS (open-risk remediation — AAP 0.7.6, 0.8.7):
+#   The project guide records four High-severity open risks. This profile
+#   directly remediates TWO of them:
+#     (1) "the lack of a production Spring profile"  -> this file IS that
+#         profile (a hardened, secret-free production configuration).
+#     (2) "a JWT secret currently hardcoded in configuration" -> the JWT signing
+#         secret (and every other credential) is sourced ONLY from an
+#         environment variable / secrets vault with NO fallback default, so a
+#         real secret can never be read from, or committed to, source control.
+#
+# HARDENING CONTRACT (AAP 0.8.1 no hardcoded credentials; 0.8.7 build/quality):
+#   * EVERY sensitive value (DB url/username/password, JWT secret, AWS
+#     region/credentials, OTLP collector endpoint) is a BARE ${ENV_VAR}
+#     placeholder with NO default. If a required variable is absent the
+#     application context FAILS FAST at startup with a clear
+#     "Could not resolve placeholder ..." error — an insecure fallback is never
+#     substituted. This fail-fast behavior is intentional and is the entire
+#     point of the profile.
+#   * Only NON-sensitive operational knobs (pool sizes, timeouts, trace sample
+#     rate, log levels, logical resource names) may carry a value default via
+#     the ${ENV_VAR:default} form.
+#   * ZERO live AWS: this migration mandates LocalStack-only. Prod EXTERNALIZES
+#     the AWS endpoint/region/credentials but does NOT point at real AWS by
+#     default; any real-AWS wiring is explicitly out of scope / a future
+#     decision recorded in docs/decision-log.md.
+#   * ddl-auto=validate, Flyway clean disabled, batch schema never auto-created,
+#     actuator surface minimized, health details hidden — production hardening.
+#   * Valid YAML, 2-space indentation, no tabs. Longer-form rationale lives in
+#     docs/decision-log.md, not in code comments (Explainability rule). Source
+#     COBOL/JCL is referenced read-only at commit SHA 27d6c6f.
+# ===========================================================================
+
+spring:
+
+  # -------------------------------------------------------------------------
+  # Phase 1 — DataSource (FULLY externalized; credentials fail-fast)
+  # -------------------------------------------------------------------------
+  # The base application.yml deliberately declares NO datasource because the
+  # connection coordinates are environment-specific. Production targets the
+  # managed PostgreSQL 16 instance supplied entirely at runtime via env/vault.
+  datasource:
+    # JDBC URL, e.g. jdbc:postgresql://db-host:5432/carddemo. NO default: a
+    # missing DB_URL MUST abort startup rather than silently target a wrong DB.
+    url: ${DB_URL}
+    # Database principal — NO default (a credential).
+    username: ${DB_USERNAME}
+    # Database password — NO default (a secret). Absence => fail-fast at boot.
+    password: ${DB_PASSWORD}
+    # PostgreSQL JDBC driver (pinned via pom.xml postgresql 42.7.13).
+    driver-class-name: org.postgresql.Driver
+    # HikariCP pool tuning. These are NON-sensitive operational knobs, so they
+    # may carry numeric defaults and be overridden per environment via env vars.
+    hikari:
+      pool-name: carddemo-prod-pool
+      # Peak pool size (default 10). Size to the DB's max_connections budget.
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+      # Warm idle connections kept ready (default 5).
+      minimum-idle: ${DB_MIN_IDLE:5}
+      # Max wait (ms) for a connection from the pool before failing (30s).
+      connection-timeout: ${DB_CONNECTION_TIMEOUT_MS:30000}
+      # Idle connection retirement (ms, 10 min).
+      idle-timeout: ${DB_IDLE_TIMEOUT_MS:600000}
+      # Hard max connection lifetime (ms, 30 min). Keep a little under any DB
+      # or infra-level idle/connection cutoff to avoid using a stale socket.
+      max-lifetime: ${DB_MAX_LIFETIME_MS:1800000}
+
+  # -------------------------------------------------------------------------
+  # Phase 2 — JPA / Hibernate (prod-safe; Flyway owns the schema)
+  # -------------------------------------------------------------------------
+  # Restated from base for defense-in-depth: Hibernate must only VALIDATE the
+  # entity<->table mapping against the Flyway-managed schema, never mutate it.
+  jpa:
+    hibernate:
+      # NEVER create/update/create-drop in prod — that would bypass the Flyway
+      # migrations and risk rewriting the NUMERIC(p,2) money/rate columns,
+      # breaking COBOL decimal fidelity (AAP 0.8.2). A mapping mismatch here
+      # fails fast at boot, which is the intended behavior.
+      ddl-auto: validate
+    # No SQL echoed to stdout in prod (SQL is observed via metrics/tracing and
+    # log levels instead). open-in-view (false) and hibernate.format_sql (true)
+    # are inherited unchanged from base and are intentionally not restated.
+    show-sql: false
+
+  # -------------------------------------------------------------------------
+  # Phase 2 (cont.) — Flyway migrations (PostgreSQL 16)
+  # -------------------------------------------------------------------------
+  flyway:
+    enabled: true
+    # V1__schema.sql (11 tables) -> V2__indexes.sql -> V3__seed_data.sql.
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+    # Checksum-validate every applied migration against the classpath scripts.
+    validate-on-migrate: true
+    # Prod safety: make `flyway clean` a hard error so an accidental or
+    # malicious clean can never drop the production schema.
+    clean-disabled: true
+
+  # -------------------------------------------------------------------------
+  # Phase 2 (cont.) — Spring Batch (replaces the JCL job pipeline)
+  # -------------------------------------------------------------------------
+  batch:
+    job:
+      # Never auto-launch the 5-stage pipeline
+      # (POSTTRAN -> INTCALC -> COMBTRAN -> CREASTMT / TRANREPT) at boot; it is
+      # launched on demand and via the SQS-FIFO report trigger.
+      enabled: false
+    jdbc:
+      # BATCH_* metadata tables are provisioned by a managed migration in prod,
+      # NOT auto-created at runtime. Restated from base for an explicit prod
+      # guarantee (base already defaults to `never`).
+      initialize-schema: never
+
+  # -------------------------------------------------------------------------
+  # Phase 3 — Spring Cloud AWS (externalized; LocalStack-only in this scope)
+  # -------------------------------------------------------------------------
+  # Base carries only the LOGICAL resource names (carddemo.aws.*). The
+  # framework region/endpoint/credentials are environment-specific and live
+  # here. Property keys verified against spring-cloud-aws 3.3.0 metadata.
+  cloud:
+    aws:
+      region:
+        # AWS region — NO default. Must be supplied explicitly in prod.
+        static: ${AWS_REGION}
+      # Global endpoint override. IMPORTANT: this migration mandates ZERO live
+      # AWS — every S3/SQS/SNS interaction is exercised against LocalStack (AAP
+      # G7). AWS_ENDPOINT therefore has NO default and MUST be supplied with the
+      # approved LocalStack (or gateway) endpoint; if it is unset the context
+      # FAILS FAST at startup ("Could not resolve placeholder 'AWS_ENDPOINT'")
+      # rather than silently resolving to empty and letting the SDK target real
+      # AWS. Pointing this at live AWS is out of scope / a future decision
+      # recorded in docs/decision-log.md — the profile must NEVER default to a
+      # live-AWS endpoint.
+      endpoint: ${AWS_ENDPOINT}
+      credentials:
+        # Credentials come ONLY from env/vault — never literals, and never dummy
+        # test/test values. They have NO empty default ON PURPOSE: an empty
+        # default would leave both keys blank and let Spring Cloud AWS fall back
+        # to the DefaultCredentialsProvider chain (container/instance role,
+        # ambient AWS_* env vars, profile, etc.), which could discover live-AWS
+        # credentials and violate the zero-live-AWS requirement. With no default
+        # the context fails fast when either key is unset, so the LocalStack
+        # (dummy) credentials must be supplied explicitly for this scope.
+        access-key: ${AWS_ACCESS_KEY_ID}
+        secret-key: ${AWS_SECRET_ACCESS_KEY}
+
+# ---------------------------------------------------------------------------
+# Phase 4 — Actuator / metrics / tracing (Observability rule, prod-tuned)
+# ---------------------------------------------------------------------------
+management:
+  endpoints:
+    web:
+      exposure:
+        # Restated from base: expose ONLY health, info, prometheus in prod.
+        # NEVER broaden to "*" — no env/beans/heapdump/loggers endpoints in
+        # production (they would leak configuration and internals).
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # Do NOT leak internal component details (DB/S3/SQS specifics, versions)
+      # to probes in prod. This OVERRIDES the base value (when-authorized).
+      show-details: never
+      # Keep Kubernetes-style liveness/readiness probe groups enabled
+      # (/actuator/health/liveness and /actuator/health/readiness).
+      probes:
+        enabled: true
+  prometheus:
+    metrics:
+      export:
+        # Keep the /actuator/prometheus scrape endpoint enabled in prod so the
+        # metrics registry remains scrapeable.
+        enabled: true
+  otlp:
+    tracing:
+      # OTLP collector (Jaeger / OpenTelemetry) endpoint — NO default. Supplied
+      # by the production collector; its absence fails fast so prod is never
+      # silently shipped without a trace destination.
+      endpoint: ${OTLP_ENDPOINT}
+  tracing:
+    sampling:
+      # Sample a FRACTION of traces in prod for cost/performance (the base
+      # samples 1.0 for full local visibility). Non-sensitive tuning knob, so a
+      # numeric default (0.1 = 10%) is acceptable; override via TRACING_SAMPLE_RATE.
+      probability: ${TRACING_SAMPLE_RATE:0.1}
+
+# ---------------------------------------------------------------------------
+# Phase 6 — Logging levels (prod)
+# ---------------------------------------------------------------------------
+# Structured JSON output and the MDC `correlationId` are selected by the
+# prod / !local branch of logback-spring.xml (Spring Boot auto-detects it);
+# appenders and encoders are NOT redefined here.
+logging:
+  level:
+    # Quieter root in prod to reduce noise (base is INFO); override via ROOT_LOG_LEVEL.
+    root: ${ROOT_LOG_LEVEL:WARN}
+    # Keep application logs at INFO (same key/placeholder as base); override via
+    # APP_LOG_LEVEL.
+    com.carddemo: ${APP_LOG_LEVEL:INFO}
+
+# ===========================================================================
+# Application-specific configuration (com.carddemo.*) — prod overrides
+# ===========================================================================
+carddemo:
+
+  # -------------------------------------------------------------------------
+  # Phase 3 (cont.) — AWS LOGICAL resource names (env-overridable in prod)
+  # -------------------------------------------------------------------------
+  # Base sets these logical names as literals. Prod keeps the SAME logical
+  # defaults but lets operators point at differently-named production
+  # buckets/queues via env vars. These are logical resource NAMES, not secrets,
+  # so a (logical) default is appropriate. Bound by AwsConfig.CardDemoAwsProperties.
+  # (Legacy GDG generations -> versioned S3 objects; CICS TDQ report bridge ->
+  # SQS FIFO queue; AAP 0.7.7.)
+  aws:
+    s3:
+      input-bucket: ${S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
+      output-bucket: ${S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
+      statements-bucket: ${S3_STATEMENTS_BUCKET:carddemo-statements}
+    sqs:
+      # Keep the ".fifo" suffix (ordered, exactly-once report-launch bridge).
+      report-queue: ${SQS_REPORT_QUEUE:carddemo-report-jobs.fifo}
+
+  # -------------------------------------------------------------------------
+  # Phase 5 — Security / JWT (THE headline secret-externalization fix)
+  # -------------------------------------------------------------------------
+  # JWT is the stateless replacement for CICS pseudo-conversational COMMAREA
+  # session state. The signing secret is sourced ONLY from env/vault.
+  security:
+    jwt:
+      # HMAC signing secret — NO default (AAP 0.8.1). MUST be supplied via the
+      # JWT_SECRET env var / vault; if absent, startup fails fast with a clear
+      # "Could not resolve placeholder 'JWT_SECRET'" error. For HS256 the secret
+      # must be >= 32 bytes (JwtService raises WeakKeyException otherwise). This
+      # is the explicit remediation of the "JWT secret hardcoded in
+      # configuration" open risk.
+      secret: ${JWT_SECRET}
+      # Token lifetime in MILLISECONDS. KEY-NAME NOTE: the consumer JwtService
+      # reads `carddemo.security.jwt.expiration-ms` (see JwtService @Value), so
+      # the key is `expiration-ms` (a milliseconds value), NOT a minutes-based
+      # key — using any other name would leave a dead, unread property. Default
+      # 3600000 ms = 60 minutes (matches the base default and the intended
+      # 60-minute TTL); override via JWT_EXPIRATION_MS.
+      expiration-ms: ${JWT_EXPIRATION_MS:3600000}

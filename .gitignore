@@ -1,0 +1,57 @@
+# ============================================================================
+# CardDemo (Java 25 / Spring Boot 3.x migration) — VCS ignore rules
+# ----------------------------------------------------------------------------
+# Keeps build output, IDE metadata, OS cruft, and — most importantly — local
+# secret files out of version control. The externalized-credentials workflow
+# (see .env.example, docker-compose.yml, application-local.yml) asks developers
+# to create a local `.env`; that file MUST NEVER be committed (AAP §0.8.1 — no
+# hardcoded credentials; secrets come from the environment or a vault).
+# ============================================================================
+
+# --- Local environment / secret files (Issue 5 externalization) -------------
+# Ignore every dotenv variant EXCEPT the tracked, secret-free template.
+.env
+.env.*
+!.env.example
+
+# --- Maven build output -----------------------------------------------------
+target/
+!.mvn/wrapper/maven-wrapper.jar
+release.properties
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+buildNumber.properties
+dependency-reduced-pom.xml
+
+# --- OWASP dependency-check local data/report cache -------------------------
+.dependency-check/
+dependency-check-report.*
+
+# --- IDE / editor metadata --------------------------------------------------
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+*.swp
+*~
+
+# --- OS cruft ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# --- Logs / runtime scratch -------------------------------------------------
+*.log
+logs/
+
+# --- Blitzy tooling scratch (screenshots / screen recordings) ---------------
+# The `blitzy/` directory is used by the Blitzy platform for QA/agent artifacts
+# (screenshots, screen recordings). It is not part of the delivered application
+# and must never be committed.
+blitzy/

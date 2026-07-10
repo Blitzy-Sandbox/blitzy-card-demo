@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="description" content="CardDemo COBOL to Java 25 / Spring Boot 3.x migration — executive summary deck for leadership." />
+  <meta name="author" content="Blitzy" />
+  <title>CardDemo Migration — Executive Summary</title>
+
+  <!-- Inline SVG favicon (data URI) — keeps the deck a single self-contained file
+       with zero external local assets and avoids a favicon 404 in the console. -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Crect%20width='32'%20height='32'%20rx='7'%20fill='%230B0E14'/%3E%3Ccircle%20cx='16'%20cy='16'%20r='7'%20fill='%234F7CFF'/%3E%3C/svg%3E" />
+
+  <!-- Google Fonts: Space Grotesk (headings), Inter (body), Fira Code (mono) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap"
+    rel="stylesheet"
+  />
+
+  <!-- reveal.js 5.1.0 core CSS (reset + reveal ONLY; Blitzy theme is inline below, no prebuilt theme) -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css" />
+
+  <!-- ============================================================
+       Blitzy brand theme — embedded inline.
+       Canonical blitzy-deck/references/blitzy-reveal-theme.css is an
+       external framework reference (not in this repo); its CSS custom
+       properties are embedded here per the Executive Presentation rule.
+       ============================================================ -->
+  <style>
+    :root {
+      --blitzy-bg: #0B0E14;          /* deck background (deep near-black navy) */
+      --blitzy-surface: #151A23;     /* cards / panels */
+      --blitzy-surface-alt: #1E2530; /* elevated panels, table header */
+      --blitzy-border: #2A3342;      /* hairlines */
+      --blitzy-primary: #4F7CFF;     /* electric blue — headings, accents, links */
+      --blitzy-secondary: #8B5CF6;   /* violet — gradient partner */
+      --blitzy-accent: #22D3EE;      /* cyan — highlights, KPI numbers */
+      --blitzy-text: #E6EAF2;        /* body text (near-white) */
+      --blitzy-text-muted: #9AA4B2;  /* secondary text */
+      --blitzy-success: #34D399;     /* green (low risk / done) */
+      --blitzy-warning: #FBBF24;     /* amber (medium risk) */
+      --blitzy-danger: #F87171;      /* red (high risk) */
+      --blitzy-font-head: 'Space Grotesk', system-ui, sans-serif;
+      --blitzy-font-body: 'Inter', system-ui, sans-serif;
+      --blitzy-font-mono: 'Fira Code', ui-monospace, monospace;
+    }
+
+    html, body { background: var(--blitzy-bg); }
+
+    /* ---- Base deck ---- */
+    .reveal {
+      background: var(--blitzy-bg);
+      font-family: var(--blitzy-font-body);
+      color: var(--blitzy-text);
+      font-size: 32px;
+      font-weight: 400;
+    }
+    .reveal .slides { text-align: left; }
+    .reveal .slides > section,
+    .reveal .slides > section > section {
+      padding: 48px 72px;
+      box-sizing: border-box;
+      height: 100%;
+    }
+
+    /* ---- Headings ---- */
+    .reveal h1, .reveal h2, .reveal h3, .reveal h4 {
+      font-family: var(--blitzy-font-head);
+      color: var(--blitzy-text);
+      font-weight: 600;
+      line-height: 1.1;
+      margin: 0 0 0.4em 0;
+      text-transform: none;
+      letter-spacing: -0.01em;
+    }
+    .reveal h1 { font-size: 1.9em; }
+    .reveal h2 { font-size: 1.5em; }
+    .reveal h3 { font-size: 1.1em; color: var(--blitzy-primary); }
+    .reveal p { line-height: 1.4; margin: 0 0 0.6em 0; }
+    .reveal a { color: var(--blitzy-primary); text-decoration: none; }
+    .reveal strong { color: var(--blitzy-text); font-weight: 600; }
+    .reveal em { color: var(--blitzy-accent); font-style: normal; font-weight: 600; }
+    .reveal code, .reveal pre code, .mono {
+      font-family: var(--blitzy-font-mono);
+      color: var(--blitzy-accent);
+      font-size: 0.92em;
+    }
+
+    /* Eyebrow label above content headings */
+    .eyebrow {
+      font-family: var(--blitzy-font-head);
+      text-transform: uppercase;
+      letter-spacing: 0.18em;
+      font-size: 0.5em;
+      font-weight: 600;
+      color: var(--blitzy-primary);
+      margin: 0 0 0.5em 0;
+      display: block;
+    }
+
+    /* Gradient headline treatment (Title / Divider / Closing) */
+    .gradient-text,
+    .slide-title h1,
+    .slide-divider h2,
+    .slide-closing h1 {
+      background: linear-gradient(90deg, var(--blitzy-primary), var(--blitzy-secondary));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+      color: transparent;
+    }
+
+    /* ---- Bullet lists ---- */
+    .reveal ul { list-style: none; margin: 0.3em 0 0 0; padding: 0; }
+    .reveal ul li {
+      position: relative;
+      padding: 0.28em 0 0.28em 1.5em;
+      line-height: 1.35;
+    }
+    .reveal ul li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.72em;
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      background: linear-gradient(135deg, var(--blitzy-primary), var(--blitzy-accent));
+    }
+    .reveal ul li strong { color: var(--blitzy-text); }
+
+    /* ---- Slide type: Title ---- */
+    .reveal .slide-title,
+    .reveal .slide-closing {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .slide-title h1, .slide-closing h1 { font-size: 2.4em; margin-bottom: 0.15em; }
+    .slide-title .subtitle, .slide-closing .subtitle {
+      color: var(--blitzy-text-muted);
+      font-size: 1.05em;
+      font-weight: 400;
+      max-width: 24em;
+      margin: 0 auto 0.8em auto;
+    }
+
+    /* Blitzy wordmark */
+    .wordmark {
+      font-family: var(--blitzy-font-head);
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      font-size: 0.7em;
+      color: var(--blitzy-text-muted);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4em;
+    }
+    .wordmark .dot {
+      width: 0.6em; height: 0.6em; border-radius: 50%;
+      background: linear-gradient(135deg, var(--blitzy-primary), var(--blitzy-secondary));
+      display: inline-block;
+    }
+    .wordmark b { color: var(--blitzy-text); font-weight: 700; }
+
+    /* ---- Slide type: Section Divider ---- */
+    .reveal .slide-divider {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+    .slide-divider h2 { font-size: 2.2em; margin: 0.3em 0 0.25em 0; }
+    .slide-divider .accent-rule {
+      width: 160px; height: 5px; border: 0; border-radius: 3px;
+      background: linear-gradient(90deg, var(--blitzy-primary), var(--blitzy-accent));
+      margin: 0.4em auto 0 auto;
+    }
+    .slide-divider .divider-sub {
+      color: var(--blitzy-text-muted);
+      font-size: 0.95em;
+      margin-top: 0.6em;
+      max-width: 22em;
+    }
+
+    /* ---- KPI cards / strip ---- */
+    .kpi-strip {
+      display: flex;
+      gap: 28px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 0.6em;
+    }
+    .kpi-card {
+      background: var(--blitzy-surface);
+      border: 1px solid var(--blitzy-border);
+      border-radius: 16px;
+      padding: 26px 34px;
+      min-width: 210px;
+      text-align: center;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.35);
+    }
+    .kpi-card .kpi-value {
+      font-family: var(--blitzy-font-head);
+      font-weight: 700;
+      font-size: 2.1em;
+      line-height: 1;
+      color: var(--blitzy-accent);
+      display: block;
+    }
+    .kpi-card .kpi-label {
+      color: var(--blitzy-text-muted);
+      font-size: 0.62em;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-top: 0.6em;
+      display: block;
+    }
+    .kpi-card.kpi-primary .kpi-value { color: var(--blitzy-primary); }
+    .kpi-card.kpi-success .kpi-value { color: var(--blitzy-success); }
+
+    /* ---- Icon rows / badges (Lucide) ---- */
+    .icon-row {
+      display: flex;
+      gap: 30px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 0.5em;
+    }
+    .icon-badge {
+      background: var(--blitzy-surface);
+      border: 1px solid var(--blitzy-border);
+      border-radius: 16px;
+      padding: 24px 26px;
+      width: 260px;
+      text-align: center;
+    }
+    .icon-badge .icon-title {
+      font-family: var(--blitzy-font-head);
+      font-weight: 600;
+      color: var(--blitzy-text);
+      font-size: 0.8em;
+      margin-top: 0.5em;
+      display: block;
+    }
+    .icon-badge .icon-desc {
+      color: var(--blitzy-text-muted);
+      font-size: 0.6em;
+      margin-top: 0.35em;
+      line-height: 1.3;
+    }
+    .reveal .slides svg.lucide { stroke: currentColor; }
+    .icon-badge svg.lucide { width: 56px; height: 56px; color: var(--blitzy-accent); stroke-width: 1.75; }
+    .divider-icon svg.lucide { width: 108px; height: 108px; color: var(--blitzy-primary); stroke-width: 1.4; }
+    .inline-icon svg.lucide { width: 26px; height: 26px; color: var(--blitzy-primary); vertical-align: middle; margin-right: 0.35em; }
+
+    /* ---- Styled tables ---- */
+    .blitzy-table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 0.72em;
+      margin-top: 0.4em;
+      background: var(--blitzy-surface);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .blitzy-table thead th {
+      background: var(--blitzy-surface-alt);
+      color: var(--blitzy-primary);
+      font-family: var(--blitzy-font-head);
+      font-weight: 600;
+      text-align: left;
+      padding: 14px 18px;
+      border-bottom: 2px solid var(--blitzy-border);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      font-size: 0.9em;
+    }
+    .blitzy-table td {
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--blitzy-border);
+      color: var(--blitzy-text);
+      vertical-align: middle;
+    }
+    .blitzy-table tbody tr:last-child td { border-bottom: 0; }
+    .blitzy-table td .mono { color: var(--blitzy-accent); }
+    .blitzy-table .col-num { color: var(--blitzy-accent); font-family: var(--blitzy-font-mono); font-weight: 500; }
+
+    /* Risk severity color-coding */
+    .badge {
+      display: inline-block;
+      padding: 3px 12px;
+      border-radius: 999px;
+      font-size: 0.85em;
+      font-weight: 600;
+      font-family: var(--blitzy-font-head);
+      letter-spacing: 0.03em;
+    }
+    .badge-high { background: rgba(248,113,113,0.16); color: var(--blitzy-danger); border: 1px solid rgba(248,113,113,0.4); }
+    .badge-med  { background: rgba(251,191,36,0.14); color: var(--blitzy-warning); border: 1px solid rgba(251,191,36,0.4); }
+    .badge-low  { background: rgba(52,211,153,0.14); color: var(--blitzy-success); border: 1px solid rgba(52,211,153,0.4); }
+    .risk-high td:first-child { border-left: 4px solid var(--blitzy-danger); }
+    .risk-med td:first-child  { border-left: 4px solid var(--blitzy-warning); }
+
+    /* ---- Mermaid containers ---- */
+    .diagram-title {
+      font-family: var(--blitzy-font-head);
+      font-weight: 600;
+      color: var(--blitzy-primary);
+      font-size: 0.82em;
+      margin: 0.1em 0 0.35em 0;
+      text-align: center;
+    }
+    .reveal pre.mermaid {
+      background: transparent;
+      box-shadow: none;
+      max-width: 100%;
+      width: 100%;
+      margin: 0 auto;
+      text-align: center;
+      font-size: 0.5em;
+      line-height: 1;
+      padding: 0;
+    }
+    .reveal pre.mermaid svg { max-width: 100%; height: auto; margin: 0 auto; display: block; }
+    .legend {
+      margin: 0.5em auto 0 auto;
+      background: var(--blitzy-surface);
+      border: 1px solid var(--blitzy-border);
+      border-radius: 10px;
+      padding: 10px 18px;
+      font-size: 0.52em;
+      color: var(--blitzy-text-muted);
+      max-width: 92%;
+      text-align: center;
+      line-height: 1.4;
+    }
+    .legend b { color: var(--blitzy-text); font-weight: 600; }
+    .legend .swatch {
+      display: inline-block; width: 0.85em; height: 0.85em;
+      border-radius: 3px; vertical-align: middle; margin: 0 0.25em 0 0.6em;
+    }
+
+    /* ---- Layout helpers ---- */
+    .center { text-align: center; }
+    .muted { color: var(--blitzy-text-muted); }
+    .prose-ref { color: var(--blitzy-text-muted); font-size: 0.72em; margin-top: 0.5em; text-align: center; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; align-items: start; }
+    .panel {
+      background: var(--blitzy-surface);
+      border: 1px solid var(--blitzy-border);
+      border-radius: 14px;
+      padding: 22px 26px;
+    }
+    .panel h3 { margin-top: 0; }
+    .stack-note { color: var(--blitzy-text-muted); font-size: 0.7em; margin-top: 0.8em; text-align: center; }
+
+    /* reveal chrome tinting */
+    .reveal .progress { color: var(--blitzy-primary); height: 5px; }
+    .reveal .controls { color: var(--blitzy-primary); }
+    .reveal .slide-number { background: transparent; color: var(--blitzy-text-muted); font-family: var(--blitzy-font-mono); }
+  </style>
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- ============ SLIDE 1 — TITLE ============ -->
+      <section class="slide-title" data-transition="slide">
+        <div class="wordmark"><span class="dot"></span> BLITZY&nbsp;<b>CardDemo Migration</b></div>
+        <h1>CardDemo: Mainframe COBOL&nbsp;&rarr;<br />Java&nbsp;25 / Spring&nbsp;Boot&nbsp;3.x</h1>
+        <p class="subtitle">A complete tech-stack migration of the AWS CardDemo credit-card workload &mdash; 100% behavioral parity, modernized delivery, observable from day one.</p>
+        <div class="kpi-strip">
+          <div class="kpi-card kpi-primary">
+            <span class="kpi-value">1,336</span>
+            <span class="kpi-label">Tests Passing</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-value">28</span>
+            <span class="kpi-label">COBOL Programs Mapped</span>
+          </div>
+          <div class="kpi-card kpi-success">
+            <span class="kpi-value">11</span>
+            <span class="kpi-label">Entities + Repositories</span>
+          </div>
+          <div class="kpi-card">
+            <span class="kpi-value">0</span>
+            <span class="kpi-label">Build Warnings</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 2 — DIVIDER: Why We Migrated ============ -->
+      <section class="slide-divider" data-transition="slide">
+        <div class="divider-icon"><i data-lucide="server-off"></i></div>
+        <span class="eyebrow">Section 01</span>
+        <h2>Why We Migrated</h2>
+        <hr class="accent-rule" />
+        <p class="divider-sub">Retiring mainframe cost and risk while unlocking cloud-native scale.</p>
+      </section>
+
+      <!-- ============ SLIDE 3 — CONTENT: Business Value ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Business Value</span>
+        <h2>Why This Matters</h2>
+        <div class="icon-row">
+          <div class="icon-badge">
+            <i data-lucide="trending-down"></i>
+            <span class="icon-title">Lower Cost &amp; Risk</span>
+            <p class="icon-desc">Exit MIPS licensing and aging COBOL/RACF operational risk.</p>
+          </div>
+          <div class="icon-badge">
+            <i data-lucide="cloud"></i>
+            <span class="icon-title">Cloud-Native Scale</span>
+            <p class="icon-desc">Elastic Spring Boot service on PostgreSQL and AWS.</p>
+          </div>
+          <div class="icon-badge">
+            <i data-lucide="users"></i>
+            <span class="icon-title">Modern Talent Pool</span>
+            <p class="icon-desc">Idiomatic Java 25 that any Spring team can maintain.</p>
+          </div>
+          <div class="icon-badge">
+            <i data-lucide="rocket"></i>
+            <span class="icon-title">Faster Delivery</span>
+            <p class="icon-desc">Automated tests and containers replace batch windows.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 4 — CONTENT: What Was Done (Scope) ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Scope &amp; Target</span>
+        <h2>Migration Scope &amp; Target</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>Legacy (COBOL / z/OS)</th><th>Target (Java / Spring)</th><th>Status</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>28 COBOL programs <span class="mono">(19,254 LOC)</span></td><td>Idiomatic Java 25 / Spring Boot 3.x</td><td class="col-num">&#10003; Delivered</td></tr>
+            <tr><td>17 BMS 3270 screens</td><td>8 REST controllers</td><td class="col-num">&#10003; Delivered</td></tr>
+            <tr><td>Business paragraphs</td><td>20 service classes</td><td class="col-num">&#10003; Delivered</td></tr>
+            <tr><td>11 VSAM datasets</td><td>11 entities + 11 repositories</td><td class="col-num">&#10003; Delivered</td></tr>
+            <tr><td>29 JCL jobs</td><td>5-stage Spring Batch pipeline</td><td class="col-num">&#10003; Delivered</td></tr>
+          </tbody>
+        </table>
+        <p class="prose-ref">Columns show the legacy source, its Java/Spring counterpart, and delivery status &mdash; every layer is delivered and verified end-to-end. Paragraph-level mapping is tracked in the Traceability Matrix.</p>
+      </section>
+
+      <!-- ============ SLIDE 5 — DIVIDER: Architecture Transformation ============ -->
+      <section class="slide-divider" data-transition="slide">
+        <div class="divider-icon"><i data-lucide="layers"></i></div>
+        <span class="eyebrow">Section 02</span>
+        <h2>Architecture Transformation</h2>
+        <hr class="accent-rule" />
+        <p class="divider-sub">From a batch-plus-online mainframe monolith to a modular Spring service.</p>
+      </section>
+
+      <!-- ============ SLIDE 6 — CONTENT: Before (z/OS) ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Before</span>
+        <div class="diagram-title">Before &mdash; z/OS Mainframe Architecture</div>
+        <pre class="mermaid">
+graph LR
+  subgraph ONLINE["CICS Online"]
+    T["3270 Terminal / BMS Maps (17)"]
+    CO["CICS COBOL Programs (17)"]
+  end
+  subgraph BATCHZ["JES Batch"]
+    JCL["JCL Jobs (29)"]
+    CB["Batch COBOL Programs (10)"]
+  end
+  subgraph DATAZ["Data and Messaging"]
+    VSAM["VSAM KSDS (10 plus AIX)"]
+    TDQ["CICS TDQ (report bridge)"]
+  end
+  T --> CO
+  CO --> VSAM
+  JCL --> CB
+  CB --> VSAM
+  CO -.-> TDQ
+        </pre>
+        <div class="legend">
+          <b>Legend:</b> boxes = mainframe tiers; solid arrows = runtime data/control flow; dotted arrow = the sole online-to-batch report bridge (CICS TDQ &rarr; JES). Diagram: <b>Before &mdash; z/OS Mainframe Architecture</b>.
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 7 — CONTENT: After (Java / AWS) ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">After</span>
+        <div class="diagram-title">After (Target) &mdash; Java / Spring Boot / AWS Architecture</div>
+        <pre class="mermaid">
+graph LR
+  subgraph PRES["Presentation"]
+    REST["8 REST Controllers"]
+  end
+  subgraph LOGIC["Business Logic"]
+    SVC["20 Service Classes"]
+    BAT["5-Stage Spring Batch"]
+  end
+  subgraph PERSIST["Persistence and Cloud"]
+    REPO["11 JPA Repositories"]
+    PG["PostgreSQL 16 (11 tables)"]
+    AWS["AWS S3 / SQS / SNS"]
+  end
+  REST --> SVC
+  SVC --> REPO
+  BAT --> REPO
+  REPO --> PG
+  SVC --> AWS
+  BAT --> AWS
+        </pre>
+        <div class="legend">
+          <b>Legend:</b> boxes = Spring layers of the <b>target</b> architecture; solid arrows = runtime calls; AWS accessed via Spring Cloud AWS (LocalStack-verified). Diagram: <b>After (Target) &mdash; Java / Spring Boot / AWS Architecture</b>.
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 8 — CONTENT: Batch Pipeline ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Batch Pipeline</span>
+        <div class="diagram-title">Batch Pipeline &mdash; JCL &rarr; Spring Batch</div>
+        <pre class="mermaid">
+graph LR
+  POST["POSTTRAN (CBTRN02C)"] --> INT["INTCALC (CBACT04C)"]
+  INT --> COMB["COMBTRAN (SORT)"]
+  COMB --> STMT["CREASTMT (CBSTM03A / CBSTM03B)"]
+  COMB --> REPT["TRANREPT (CBTRN03C)"]
+        </pre>
+        <div class="legend">
+          <b>Legend:</b> nodes = pipeline stages (JCL step &rarr; Spring Batch job); arrows = execution order preserved from the JCL flow; COMBTRAN fans out to statement generation and reporting. Diagram: <b>Batch Pipeline &mdash; JCL &rarr; Spring Batch</b>.
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 9 — CONTENT: Data & Precision ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Data &amp; Precision</span>
+        <h2>Exact Decimal Fidelity</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>VSAM Record</th><th>Bytes</th><th>PostgreSQL Table</th><th>COBOL &rarr; Java Precision</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Account <span class="mono">CVACT01Y</span></td><td class="col-num">300</td><td class="mono">account</td><td><span class="mono">PIC S9(10)V99</span> &rarr; <em>BigDecimal(2)</em></td></tr>
+            <tr><td>Transaction <span class="mono">CVTRA05Y</span></td><td class="col-num">350</td><td class="mono">transaction</td><td><span class="mono">PIC S9(09)V99</span> &rarr; <em>BigDecimal(2)</em></td></tr>
+            <tr><td>Customer <span class="mono">CVCUS01Y</span></td><td class="col-num">500</td><td class="mono">customer</td><td>Fixed-width layout preserved</td></tr>
+            <tr><td>+ 8 more datasets</td><td class="col-num">50&ndash;150</td><td class="mono">9 tables</td><td>Signed <span class="mono">COMP-3</span> &rarr; <span class="mono">NUMERIC(p,s)</span></td></tr>
+          </tbody>
+        </table>
+        <div class="kpi-strip">
+          <div class="kpi-card kpi-primary"><span class="kpi-value">11</span><span class="kpi-label">Tables via Flyway</span></div>
+          <div class="kpi-card"><span class="kpi-value">BigDecimal</span><span class="kpi-label">All Money Fields</span></div>
+          <div class="kpi-card kpi-success"><span class="kpi-value">0</span><span class="kpi-label">float / double</span></div>
+        </div>
+      </section>
+
+      <!-- ============ SLIDE 10 — DIVIDER: Quality & Delivery ============ -->
+      <section class="slide-divider" data-transition="slide">
+        <div class="divider-icon"><i data-lucide="shield-check"></i></div>
+        <span class="eyebrow">Section 03</span>
+        <h2>Quality &amp; Delivery</h2>
+        <hr class="accent-rule" />
+        <p class="divider-sub">Tested, observable, and verified entirely on a local stack.</p>
+      </section>
+
+      <!-- ============ SLIDE 11 — CONTENT: Testing & Build ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Testing &amp; Build</span>
+        <h2>Quality &amp; Delivery Evidence</h2>
+        <div class="kpi-strip">
+          <div class="kpi-card kpi-success"><span class="kpi-value">0</span><span class="kpi-label">Build Warnings (-Xlint:all)</span></div>
+          <div class="kpi-card"><span class="kpi-value">1,336</span><span class="kpi-label">Tests Passing</span></div>
+          <div class="kpi-card kpi-primary"><span class="kpi-value">95.06%</span><span class="kpi-label">Line Coverage (Gate 8)</span></div>
+          <div class="kpi-card"><span class="kpi-value">8</span><span class="kpi-label">Validation Gates</span></div>
+        </div>
+        <p class="prose-ref">The zero-warning build (Gate 2) is met; the JUnit&nbsp;5 + Testcontainers suite runs 1,336 tests green, with JaCoCo line coverage at 95.06% &mdash; comfortably above the &ge;80% Gate&nbsp;8 threshold. Every AWS interaction is exercised against LocalStack via Testcontainers (zero live AWS), and the OWASP dependency-check passes with zero critical/high CVEs.</p>
+      </section>
+
+      <!-- ============ SLIDE 12 — CONTENT: Observability ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Observability</span>
+        <h2>Observable From Day One</h2>
+        <div class="icon-row">
+          <div class="icon-badge"><i data-lucide="file-json"></i><span class="icon-title">Structured Logs</span></div>
+          <div class="icon-badge"><i data-lucide="waypoints"></i><span class="icon-title">Distributed Tracing</span></div>
+          <div class="icon-badge"><i data-lucide="gauge"></i><span class="icon-title">Metrics</span></div>
+          <div class="icon-badge"><i data-lucide="heart-pulse"></i><span class="icon-title">Health / Readiness</span></div>
+        </div>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>Capability</th><th>Implementation</th><th>Local Endpoint / Tool</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Structured logging</td><td>JSON + MDC <span class="mono">correlationId</span></td><td>Docker Compose stack</td></tr>
+            <tr><td>Distributed tracing</td><td>Micrometer &rarr; OpenTelemetry</td><td class="mono">Jaeger :16686</td></tr>
+            <tr><td>Metrics</td><td>Prometheus registry</td><td class="mono">/actuator/prometheus</td></tr>
+            <tr><td>Health / readiness</td><td>Composite (DB / S3 / SQS)</td><td class="mono">/actuator/health</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <!-- ============ SLIDE 13 — CONTENT: Risks & Mitigations ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Risks &amp; Mitigations</span>
+        <h2>Residual Path-to-Production Items</h2>
+        <table class="blitzy-table">
+          <thead>
+            <tr><th>Item</th><th>Severity</th><th>Status</th><th>Mitigation</th></tr>
+          </thead>
+          <tbody>
+            <tr class="risk-med"><td>CI/CD pipeline not yet validated on a runner</td><td><span class="badge badge-med">Med</span></td><td><span class="badge badge-med">Open</span></td><td>Run the committed <span class="mono">.github/workflows/ci.yml</span> on a GitHub runner</td></tr>
+            <tr class="risk-med"><td>Secret provisioning for non-local environments</td><td><span class="badge badge-med">Med</span></td><td><span class="badge badge-med">Open</span></td><td>Provision <span class="mono">JWT_SECRET</span> / AWS credentials from a secrets manager / vault</td></tr>
+            <tr class="risk-med"><td>Deployment hardening not yet validated</td><td><span class="badge badge-med">Med</span></td><td><span class="badge badge-med">Open</span></td><td>Validate TLS, rate limiting, and a performance baseline in a prod-like environment</td></tr>
+            <tr class="risk-med"><td>Spring Boot 3.5.x on the OSS EOL line</td><td><span class="badge badge-med">Med</span></td><td><span class="badge badge-low">Planned</span></td><td>Plan the <span class="mono">3.5.16 &rarr; 4.x</span> upgrade <span class="muted">(3.5 OSS EOL 2026-06-30)</span></td></tr>
+          </tbody>
+        </table>
+        <p class="prose-ref">Security scanning is complete: the OWASP dependency-check scan has been <strong>executed</strong> and <strong>Gate&nbsp;8 passes</strong> with zero critical/high CVEs. The delivered system already ships a production Spring profile (<span class="mono">application-prod.yml</span>) and an externalized, fail-fast JWT signing secret. The items above are path-to-production hardening &mdash; none block the migration&rsquo;s behavioral parity.</p>
+      </section>
+
+      <!-- ============ SLIDE 14 — DIVIDER: What's Next ============ -->
+      <section class="slide-divider" data-transition="slide">
+        <div class="divider-icon"><i data-lucide="rocket"></i></div>
+        <span class="eyebrow">Section 04</span>
+        <h2>What&rsquo;s Next</h2>
+        <hr class="accent-rule" />
+        <p class="divider-sub">A short, well-scoped path from development-complete to production.</p>
+      </section>
+
+      <!-- ============ SLIDE 15 — CONTENT: Onboarding & Next Steps ============ -->
+      <section data-transition="slide">
+        <span class="eyebrow">Onboarding &amp; Next Steps</span>
+        <h2>From Clean Machine to Running App</h2>
+        <div class="icon-row">
+          <div class="icon-badge"><i data-lucide="git-branch"></i><span class="icon-title">Validate CI/CD</span></div>
+          <div class="icon-badge"><i data-lucide="key-round"></i><span class="icon-title">Provision Secrets</span></div>
+          <div class="icon-badge"><i data-lucide="shield-check"></i><span class="icon-title">Deploy Hardening</span></div>
+          <div class="icon-badge"><i data-lucide="arrow-up-circle"></i><span class="icon-title">Boot 3.5 &rarr; 4.x</span></div>
+        </div>
+        <ul>
+          <li>Clean machine to running app: <span class="mono">docker compose up -d</span>, then <span class="mono">mvn verify</span></li>
+          <li>Validate the committed CI/CD pipeline (GitHub Actions) on a runner</li>
+          <li>Provision <span class="mono">JWT_SECRET</span> / AWS credentials from a secrets manager / vault; validate deployment hardening</li>
+          <li>Plan Spring Boot 3.5 &rarr; 4.x <span class="muted">(3.5 OSS EOL 2026-06-30)</span></li>
+        </ul>
+      </section>
+
+      <!-- ============ SLIDE 16 — CLOSING ============ -->
+      <section class="slide-closing" data-transition="slide">
+        <div class="divider-icon"><i data-lucide="check-circle-2"></i></div>
+        <h1>CardDemo Migration: Delivered &amp; Verified</h1>
+        <p class="subtitle">The full COBOL workload &mdash; online, batch, and data &mdash; migrated with 100% behavioral parity, observable from day one and verified by 1,336 passing tests. Questions?</p>
+        <div class="kpi-strip">
+          <div class="kpi-card kpi-primary"><span class="kpi-value">1,336</span><span class="kpi-label">Tests Passing</span></div>
+          <div class="kpi-card kpi-success"><span class="kpi-value">95.06%</span><span class="kpi-label">Line Coverage</span></div>
+          <div class="kpi-card"><span class="kpi-value">0</span><span class="kpi-label">Build Warnings</span></div>
+        </div>
+        <div class="wordmark" style="margin-top:1.2em;"><span class="dot"></span> Delivered by <b>Blitzy</b></div>
+      </section>
+
+    </div><!-- /.slides -->
+  </div><!-- /.reveal -->
+
+  <!-- ============================================================
+       Libraries via pinned CDNs (no local JS assets):
+         reveal.js 5.1.0, Mermaid 11.4.0, Lucide 0.460.0
+       Loaded in order at end of <body> so globals exist for init.
+       ============================================================ -->
+  <script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.0/dist/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+
+  <script>
+    // 2) Initialize Mermaid — deferred rendering (startOnLoad:false) because
+    //    reveal.js hides/scales inactive slides. Blitzy dark palette applied.
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'base',
+      // Force SVG <text> node labels instead of HTML foreignObject labels.
+      // WHY: reveal.js applies a CSS transform: scale() to every slide. Mermaid
+      // measures foreignObject label widths with getBoundingClientRect(), which
+      // returns values shrunk by that scale (~7%), so node boxes come out too
+      // narrow and clip the text (e.g. "Programs" -> "Progran"). SVG <text> is
+      // measured with getComputedTextLength() in intrinsic user units, immune to
+      // the ancestor transform, so boxes size correctly. Mermaid 11.x requires
+      // htmlLabels:false BOTH at the top level AND under flowchart; the default
+      // securityLevel ('strict') is kept ('loose' would force foreignObject on).
+      htmlLabels: false,
+      flowchart: {
+        htmlLabels: false,
+        useMaxWidth: true,
+        padding: 14,
+        nodeSpacing: 55,
+        rankSpacing: 70
+      },
+      themeVariables: {
+        background: '#0B0E14',
+        primaryColor: '#151A23',
+        primaryBorderColor: '#4F7CFF',
+        primaryTextColor: '#E6EAF2',
+        secondaryColor: '#1E2530',
+        secondaryBorderColor: '#8B5CF6',
+        secondaryTextColor: '#E6EAF2',
+        tertiaryColor: '#1E2530',
+        tertiaryBorderColor: '#22D3EE',
+        tertiaryTextColor: '#E6EAF2',
+        lineColor: '#9AA4B2',
+        textColor: '#E6EAF2',
+        mainBkg: '#151A23',
+        nodeBorder: '#4F7CFF',
+        clusterBkg: '#151A23',
+        clusterBorder: '#2A3342',
+        edgeLabelBackground: '#0B0E14',
+        titleColor: '#4F7CFF',
+        fontFamily: 'Inter, system-ui, sans-serif',
+        fontSize: '18px'
+      }
+    });
+
+    // 3) Render Lucide icons present at initial DOM load.
+    lucide.createIcons();
+
+    // 4) Initialize the reveal.js deck with the mandated configuration.
+    Reveal.initialize({
+      hash: true,
+      transition: 'slide',
+      width: 1920,
+      height: 1080,
+      controls: true,
+      progress: true,
+      center: false,
+      slideNumber: 'c/t',
+      margin: 0.06
+    });
+
+    // Deferred Mermaid rendering, scoped to the CURRENTLY VISIBLE slide.
+    //
+    // reveal.js sets display:none on every non-current slide. Mermaid measures
+    // node/label geometry from the live DOM, so a diagram rendered inside a
+    // hidden slide collapses to a zero-size viewBox. A single global
+    // mermaid.run() on 'ready' would therefore render slides 6-8 (hidden at
+    // that moment) as empty boxes and mark them data-processed, causing the
+    // later slidechanged run to skip them. To avoid that, we run mermaid.run()
+    // with an explicit node list limited to the diagrams on the slide that is
+    // actually on screen. Passing pre.mermaid:not([data-processed]) also acts as
+    // the guard so already-rendered diagrams are never re-processed.
+    function renderVisibleDiagrams() {
+      var slide = Reveal.getCurrentSlide();
+      if (!slide) { return; }
+      var nodes = Array.prototype.slice.call(
+        slide.querySelectorAll('pre.mermaid:not([data-processed])')
+      );
+      if (!nodes.length) { return; }
+      // Ensure web fonts are applied before Mermaid measures label geometry;
+      // measuring against fallback-font metrics would size node boxes wrong.
+      var ready = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+      ready.then(function () { mermaid.run({ nodes: nodes }); });
+    }
+
+    // 5) On 'ready', render the visible slide's Mermaid diagram(s) and hydrate icons.
+    Reveal.on('ready', function () {
+      renderVisibleDiagrams();
+      lucide.createIcons();
+    });
+
+    // 6) On each slide change, render the newly visible slide's diagram(s) via
+    //    mermaid.run() (deferred-render pattern) — measurable only when on screen.
+    Reveal.on('slidechanged', function () {
+      renderVisibleDiagrams();
+    });
+  </script>
+</body>
+</html>
+

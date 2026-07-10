@@ -1,0 +1,83 @@
+# =============================================================================
+# Prometheus scrape configuration - CardDemo local observability stack
+# =============================================================================
+# Net-new observability infrastructure for the COBOL -> Java 25 / Spring Boot 3.x
+# migration (the legacy mainframe system had no observability). This file tells
+# Prometheus which targets to scrape so that the Micrometer metrics exposed by
+# the CardDemo Spring Boot Actuator endpoint are collected and made queryable.
+#
+# Consumed (read-only) by the `prometheus` service in the root docker-compose.yml,
+# which uses image `prom/prometheus` and mounts this file at:
+#     ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+# Prometheus is published on host port 9090 and serves as the data source for the
+# Grafana dashboard under ./grafana/.
+#
+#   Prometheus UI / API .... http://localhost:9090
+#   Targets health ......... http://localhost:9090/targets
+#   Expression browser ..... http://localhost:9090/graph
+#
+# This config is intentionally minimal: no alerting rules, no Alertmanager, no
+# recording rules, and no remote_write/remote_read - none are part of the local
+# stack. It contains no credentials; the scraped endpoint is unauthenticated
+# locally.
+# =============================================================================
+
+global:
+  # How frequently to scrape every target (unless overridden per job). A steady
+  # 15s cadence is assumed by the Grafana dashboard panels.
+  scrape_interval: 15s
+  # How frequently to evaluate rules. Harmless with no rule files defined; kept
+  # for a canonical, complete configuration.
+  evaluation_interval: 15s
+  # Per-scrape timeout. Must be <= scrape_interval.
+  scrape_timeout: 10s
+  # Labels attached to time series this Prometheus server emits (e.g. when
+  # federated or remote-writing). Tags this instance as the local CardDemo
+  # monitor.
+  external_labels:
+    monitor: 'carddemo-local'
+
+scrape_configs:
+  # ---------------------------------------------------------------------------
+  # PRIMARY JOB - scrape the CardDemo Spring Boot Actuator Prometheus endpoint.
+  # Micrometer (micrometer-registry-prometheus) publishes standard JVM/HTTP
+  # metrics plus the custom CardDemo business metrics (carddemo.*) at
+  # /actuator/prometheus on port 8080.
+  #
+  # TARGET RESOLUTION (important):
+  #   The CardDemo application is NOT a docker-compose service. The documented
+  #   local workflow starts only the infrastructure with `docker compose up -d`
+  #   and runs the app on the HOST via:
+  #       ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
+  #   Prometheus runs inside a container, so it reaches the host-bound app via
+  #   the special DNS name `host.docker.internal`. This resolves natively on
+  #   Docker Desktop (macOS/Windows); on Linux the `prometheus` service in
+  #   docker-compose.yml maps it with:
+  #       extra_hosts: ["host.docker.internal:host-gateway"]
+  #   (that mapping is owned by docker-compose.yml, not this file).
+  #
+  #   CONTAINERIZED ALTERNATIVE: if the app is ever run as a compose service
+  #   named "app" on the shared network, replace the target below with
+  #   'app:8080' (Docker Compose service-name DNS). Do NOT list both targets at
+  #   once - a second, unreachable target would leave this job perpetually
+  #   partially DOWN and fail local verification.
+  # ---------------------------------------------------------------------------
+  - job_name: 'carddemo'
+    metrics_path: '/actuator/prometheus'
+    scheme: http
+    static_configs:
+      - targets: ['host.docker.internal:8080']
+        # Alternative (compose-service) target - use ONLY if the app runs inside
+        # docker-compose, and remove the host.docker.internal target above:
+        #   targets: ['app:8080']
+        labels:
+          application: 'carddemo'
+
+  # ---------------------------------------------------------------------------
+  # SECONDARY JOB - Prometheus self-monitoring (stock, harmless). Scrapes
+  # Prometheus's own /metrics endpoint (default metrics_path); useful for
+  # debugging the observability stack itself.
+  # ---------------------------------------------------------------------------
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
