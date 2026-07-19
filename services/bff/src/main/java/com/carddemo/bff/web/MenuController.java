@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -71,7 +69,7 @@ public class MenuController implements MenuApi {
      *         the {@link MenuAggregator}
      */
     @Override
-    public ResponseEntity<MenuResponse> getMenu(UUID xCorrelationID) {
+    public ResponseEntity<MenuResponse> getMenu(String xCorrelationID) {
         return ResponseEntity.ok(menuAggregator.getMenu());
     }
 }

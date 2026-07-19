@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -124,13 +122,15 @@ public class CardDetailController implements CardDetailApi {
      *
      * @param cardNumber     the natural 16-digit card number (path variable; already constrained
      *                       by the generated interface's {@code @Pattern}/{@code @Size})
-     * @param xCorrelationID the optional {@code X-Correlation-ID} header (owned by the filter and
-     *                       the RestClient interceptor; declared-and-ignored here)
+     * @param xCorrelationID the optional {@code X-Correlation-ID} header, bound as a free-form
+     *                       {@code String} (not a strict {@code UUID}) so a non-canonical value is
+     *                       not rejected before the filter runs; owned by the filter and the
+     *                       RestClient interceptor and declared-and-ignored here
      * @return {@code 200 OK} carrying the found {@link CardDetail}; otherwise {@code 400}/{@code 404}
      *         are signalled via thrown exceptions and {@code 5xx} via propagated exceptions
      */
     @Override
-    public ResponseEntity<CardDetail> getCardDetail(String cardNumber, UUID xCorrelationID) {
+    public ResponseEntity<CardDetail> getCardDetail(String cardNumber, String xCorrelationID) {
         if (cardNumber == null || !cardNumber.matches("^[0-9]{16}$")) {
             throw new BadRequestException("Card number if supplied must be a 16 digit number");
         }

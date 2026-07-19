@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -103,7 +101,7 @@ public class AccountsController implements AccountsApi {
      * @return {@code 200 OK} wrapping a typed placeholder {@link AccountView}
      */
     @Override
-    public ResponseEntity<AccountView> getAccount(String accountId, UUID xCorrelationID) {
+    public ResponseEntity<AccountView> getAccount(String accountId, String xCorrelationID) {
         return ResponseEntity.ok(accountsAggregator.getAccount(accountId));
     }
 }

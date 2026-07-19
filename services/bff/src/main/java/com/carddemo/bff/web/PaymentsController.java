@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -91,7 +89,7 @@ public class PaymentsController implements PaymentsApi {
      * @return {@code 200 OK} with the typed placeholder {@link BillPaymentResponse}
      */
     @Override
-    public ResponseEntity<BillPaymentResponse> payBill(BillPaymentRequest billPaymentRequest, UUID xCorrelationID) {
+    public ResponseEntity<BillPaymentResponse> payBill(BillPaymentRequest billPaymentRequest, String xCorrelationID) {
         return ResponseEntity.ok(paymentsAggregator.payBill(billPaymentRequest));
     }
 }

@@ -4,7 +4,10 @@ import java.util.Optional;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.client.RestClientResponseException;
 
 import com.carddemo.bff.model.CardDetail;
 
@@ -48,6 +51,10 @@ import com.carddemo.bff.model.CardDetail;
  *   <li>card-svc {@code 400} / {@code 5xx} / connection failure (legacy
  *       {@code WHEN OTHER} file-error path) &rarr; the exception is <em>propagated</em>
  *       untouched to the web layer &rarr; UI <em>error</em> state.</li>
+ *   <li>card-svc {@code 2xx} with a body that cannot be extracted into {@link CardDetail}
+ *       (truncated/invalid JSON or an out-of-range enum) &rarr; translated to a
+ *       {@link DownstreamResponseException} (mapped to {@code 502 Bad Gateway} by the web layer,
+ *       with the correlation id) &rarr; UI <em>error</em> state.</li>
  * </ul>
  *
  * <p>Provenance: {@code [SRC: COCRDSLC | CARDDAT]} &mdash; the legacy Credit Card View
@@ -104,13 +111,16 @@ public class CardDetailAggregator {
      * @param cardNumber the 16-digit natural key of the card to fetch
      * @return the card wrapped in an {@link Optional} when card-svc returns {@code 200};
      *         {@link Optional#empty()} when card-svc returns {@code 404} (driving the UI
-     *         empty state). Any other failure ({@code 400}, {@code 5xx}, or a connection
-     *         error such as {@code ResourceAccessException}) is propagated unchanged so
-     *         the web layer surfaces the UI error state.
+     *         empty state). Any other failure ({@code 400}, {@code 5xx}, a connection error
+     *         such as {@code ResourceAccessException}, or a {@code 2xx} whose body cannot be
+     *         extracted into the contract DTO) is propagated so the web layer surfaces the UI
+     *         error state.
      * @throws HttpClientErrorException for non-404 {@code 4xx} responses (e.g. {@code 400})
      * @throws org.springframework.web.client.HttpServerErrorException for {@code 5xx} responses
      * @throws org.springframework.web.client.ResourceAccessException when card-svc is
      *         unreachable or the request times out
+     * @throws DownstreamResponseException when card-svc returns a {@code 2xx} whose body cannot be
+     *         extracted/deserialized into {@link CardDetail} (mapped to {@code 502} by the web layer)
      */
     public Optional<CardDetail> getCardDetail(String cardNumber) {
         try {
@@ -121,8 +131,55 @@ public class CardDetailAggregator {
             return Optional.ofNullable(card);
         } catch (HttpClientErrorException.NotFound ex) {
             // Legacy COCRDSLC NOTFND -> "Did not find this card" -> UI empty state.
-            // Only 404 is mapped to empty; every other failure propagates untouched.
+            // Only 404 is mapped to empty; every other failure propagates (see below).
             return Optional.empty();
+        } catch (RestClientResponseException | ResourceAccessException ex) {
+            // Downstream returned an HTTP error STATUS (a non-404 4xx / 5xx, i.e.
+            // RestClientResponseException) OR card-svc was unreachable / the request timed out
+            // (ResourceAccessException). Both already have a deliberate mapping in the web layer:
+            // RestClientResponseException -> 502 Bad Gateway (handleDownstreamError), and
+            // ResourceAccessException -> 500 (handleUnexpected). They are re-thrown UNCHANGED so
+            // those mappings are preserved. This catch MUST precede the broad RestClientException
+            // catch below: both are RestClientException subtypes, so the broad catch would
+            // otherwise swallow them and collapse every downstream failure onto a single status.
+            throw ex;
+        } catch (RestClientException ex) {
+            // card-svc replied with a 2xx whose body could NOT be extracted into the contract DTO
+            // (truncated / syntactically invalid JSON, or an out-of-range enum value) - a plain
+            // RestClientException raised by response-body extraction, carrying no HTTP status.
+            // Left uncaught it escapes the @RestControllerAdvice and reaches the servlet container,
+            // yielding a bare 500 application/json with no correlation id. A card-svc response the
+            // BFF cannot consume is a downstream-dependency contract violation (502 Bad Gateway),
+            // not a BFF server fault, so it is translated here - while the correlation id is still
+            // in the MDC - into a DownstreamResponseException that the web layer maps to 502
+            // application/problem+json with the correlation id. The original cause is preserved for
+            // logging only; it is never echoed to the client.
+            throw new DownstreamResponseException(
+                    "Error retrieving card detail from the card service", ex);
+        }
+    }
+
+    /**
+     * Signals that card-svc returned a response the BFF could not consume &mdash; a {@code 2xx}
+     * whose body failed extraction/deserialization into the generated {@link CardDetail} contract
+     * DTO (truncated or invalid JSON, or an out-of-range enum). Semantically this is a
+     * <em>downstream-dependency</em> failure, so the sibling {@code GlobalExceptionHandler} maps it
+     * to <strong>502 Bad Gateway</strong> ({@code application/problem+json}) with the correlation
+     * id, rather than letting the raw {@link RestClientException} escape the advice as an
+     * uncorrelated {@code 500 application/json}. The triggering cause is retained for server-side
+     * logging only and is never surfaced in the client-facing problem body.
+     */
+    public static final class DownstreamResponseException extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        /**
+         * @param message a sanitized, client-safe summary (used as the {@code 502} problem detail)
+         * @param cause   the underlying {@link RestClientException} from response-body extraction,
+         *                retained for logging and never echoed to the client
+         */
+        public DownstreamResponseException(String message, Throwable cause) {
+            super(message, cause);
         }
     }
 }

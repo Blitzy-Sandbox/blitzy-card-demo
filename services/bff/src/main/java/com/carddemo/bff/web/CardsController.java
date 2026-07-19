@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -91,7 +89,7 @@ public class CardsController implements CardsApi {
      * @return {@code 200 OK} carrying an empty, well-formed {@link CardListResponse}
      */
     @Override
-    public ResponseEntity<CardListResponse> listCards(String accountId, Integer page, Integer size, UUID xCorrelationID) {
+    public ResponseEntity<CardListResponse> listCards(String accountId, Integer page, Integer size, String xCorrelationID) {
         return ResponseEntity.ok(cardsAggregator.listCards(accountId, page, size));
     }
 }

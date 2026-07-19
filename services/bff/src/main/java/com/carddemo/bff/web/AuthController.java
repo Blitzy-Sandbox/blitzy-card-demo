@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -89,7 +87,7 @@ public class AuthController implements AuthApi {
      * @return HTTP 200 with a {@link LoginResponse} carrying a real opaque bearer token
      */
     @Override
-    public ResponseEntity<LoginResponse> login(LoginRequest loginRequest, UUID xCorrelationID) {
+    public ResponseEntity<LoginResponse> login(LoginRequest loginRequest, String xCorrelationID) {
         return ResponseEntity.ok(authAggregator.login(loginRequest));
     }
 }

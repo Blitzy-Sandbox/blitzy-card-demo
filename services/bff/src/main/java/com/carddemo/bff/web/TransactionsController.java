@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -112,7 +110,7 @@ public class TransactionsController implements TransactionsApi {
      *         {@link TransactionListResponse} produced by the aggregator
      */
     @Override
-    public ResponseEntity<TransactionListResponse> listTransactions(String cardNumber, Integer page, Integer size, UUID xCorrelationID) {
+    public ResponseEntity<TransactionListResponse> listTransactions(String cardNumber, Integer page, Integer size, String xCorrelationID) {
         return ResponseEntity.ok(transactionsAggregator.listTransactions(cardNumber, page, size));
     }
 }

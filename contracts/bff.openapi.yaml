@@ -153,8 +153,16 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "406":
+          $ref: "#/components/responses/NotAcceptable"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
         "500":
           $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
   /api/cards:
     get:
       tags:
@@ -408,11 +416,19 @@ components:
       in: header
       required: false
       description: >-
-        Correlation ID; the UI Axios interceptor sets it, BFF propagates it to
-        card-svc, and it is logged via MDC. If absent, BFF generates one.
+        Correlation ID; the UI Axios interceptor sets it on each request, the
+        BFF propagates it downstream to card-svc, and it is logged via SLF4J
+        MDC. Optional on inbound requests; when absent the BFF generates one.
+        Typed as a plain string (NOT format: uuid): the BFF's
+        CorrelationIdFilter is the sole owner of correlation-ID validation and
+        minting - it trusts an inbound value only when it is a canonical UUID
+        and otherwise mints a fresh one, tolerating any non-canonical header
+        value. Binding this header as a strict uuid would make the framework
+        reject a non-canonical value with a 400 before the request reaches the
+        filter and the aggregation layer, defeating that deliberate tolerance,
+        so the header is a free-form string on the wire.
       schema:
         type: string
-        format: uuid
   securitySchemes:
     bearerAuth:
       type: http
@@ -452,6 +468,43 @@ components:
       description: >-
         Unexpected server or upstream error. For the Card Detail tracer this
         drives the UI ERROR state. Served as RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    MethodNotAllowed:
+      description: >-
+        The HTTP method is not supported for this resource (for example a POST,
+        PUT, DELETE, or PATCH against the GET-only Card Detail tracer). The Allow
+        response header lists the supported methods. Served as RFC 7807
+        application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotAcceptable:
+      description: >-
+        No representation acceptable to the request's Accept header is available
+        (the resource produces application/json). Served as RFC 7807
+        application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnsupportedMediaType:
+      description: >-
+        The request Content-Type is not supported by this resource. Served as
+        RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    BadGateway:
+      description: >-
+        The BFF reached card-svc but the downstream response was an error status
+        or a body the BFF could not consume; surfaced to the SPA as a
+        downstream-dependency failure driving the UI ERROR state. Served as RFC
+        7807 application/problem+json.
       content:
         application/problem+json:
           schema:

@@ -1,7 +1,5 @@
 package com.carddemo.bff.web;
 
-import java.util.UUID;
-
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -100,7 +98,7 @@ public class UsersController implements UsersApi {
      * @return {@code 200 OK} wrapping the typed placeholder {@link UserListResponse}
      */
     @Override
-    public ResponseEntity<UserListResponse> listUsers(Integer page, Integer size, UUID xCorrelationID) {
+    public ResponseEntity<UserListResponse> listUsers(Integer page, Integer size, String xCorrelationID) {
         // [DEFERRED] typed stub — delegate to the aggregator; no USRSEC read (see COUSR00C).
         return ResponseEntity.ok(usersAggregator.listUsers(page, size));
     }

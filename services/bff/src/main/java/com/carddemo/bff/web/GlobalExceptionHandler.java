@@ -6,6 +6,8 @@ import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -23,6 +25,8 @@ import org.springframework.web.method.annotation.HandlerMethodValidationExceptio
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+
+import com.carddemo.bff.aggregation.CardDetailAggregator;
 
 /**
  * Centralized RFC&nbsp;7807 error mapping for the {@code bff} aggregation service &mdash; the
@@ -106,9 +110,21 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * <p>This advice deliberately does <strong>not</strong> extend
  * {@code ResponseEntityExceptionHandler}: each body is built explicitly here to guarantee the
  * {@code application/problem+json} media type, a populated {@link ProblemDetail}, and the
- * {@code correlationId} extension on every mapped status. These explicit {@code @ExceptionHandler}
- * methods are resolved by {@code ExceptionHandlerExceptionResolver} ahead of the framework, so
- * they take precedence over Spring MVC's own {@code spring.mvc.problemdetails} rendering (whose
+ * {@code correlationId} extension on every mapped status. To guarantee these explicit
+ * {@code @ExceptionHandler} methods are resolved by {@code ExceptionHandlerExceptionResolver}
+ * ahead of the framework, this advice is annotated {@link Order @Order}
+ * ({@link Ordered#HIGHEST_PRECEDENCE}) so it is consulted <em>before</em> Spring Boot's
+ * autoconfigured {@code ProblemDetailsExceptionHandler}. The ordering is not cosmetic:
+ * {@code @ExceptionHandler} resolution also matches an exception's first-level <em>causes</em>, so
+ * an exception this advice maps by its own type &mdash; for example
+ * {@link CardDetailAggregator.DownstreamResponseException}, whose cause chain from a failed
+ * card-svc body extraction contains an {@link HttpMessageNotReadableException} &mdash; would
+ * otherwise be claimed by {@code ProblemDetailsExceptionHandler} via that cause. That framework
+ * handler then rethrows it (its {@code handleException} only handles such a type at the top level,
+ * not as a wrapped cause), letting the original exception escape uncaught to the servlet container
+ * as a bare, uncorrelated {@code 500 application/json} &mdash; the exact defect this ordering
+ * prevents. Highest precedence makes this advice win first on the exception's <em>own</em> type,
+ * so it takes precedence over Spring MVC's {@code spring.mvc.problemdetails} rendering (whose
  * defaults would otherwise emit body-less or non-{@code problem+json} responses for the standard
  * client-error exceptions) and the two services stay byte-compatible on the wire. Each explicit
  * handler routes through the shared {@link #buildProblem(HttpStatus, String, String)} helper so
@@ -121,6 +137,7 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
  * {@code 2220-EDIT-CARD} (non-16-digit card number) &rarr; 400. The code itself is idiomatic
  * Spring Web infrastructure, not a port of COBOL content.</p>
  */
+@Order(Ordered.HIGHEST_PRECEDENCE)
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
@@ -334,6 +351,31 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ProblemDetail> handleDownstreamError(RestClientResponseException ex) {
         log.warn("Downstream card-svc returned {} for aggregation request; mapping to 502 Bad Gateway",
                 ex.getStatusCode());
+        return problem(HttpStatus.BAD_GATEWAY, "Bad Gateway",
+                "Error retrieving card detail from the card service");
+    }
+
+    /**
+     * Maps a card-svc response the BFF could not consume &mdash; a {@code 2xx} whose body failed
+     * extraction/deserialization into the generated {@code CardDetail} contract DTO (truncated or
+     * invalid JSON, or an out-of-range enum) &mdash; to <strong>502 Bad Gateway</strong>
+     * ({@code application/problem+json}). The {@code CardDetailAggregator} raises
+     * {@link CardDetailAggregator.DownstreamResponseException} for this case so it is handled here
+     * &mdash; with the {@code correlationId} attached and while the MDC is still populated &mdash;
+     * instead of the raw {@link org.springframework.web.client.RestClientException} escaping the
+     * advice to the servlet container as an uncorrelated {@code 500 application/json}. A body the
+     * BFF cannot parse is a downstream-dependency contract violation, so &mdash; like
+     * {@link #handleDownstreamError} &mdash; it surfaces as a 502 rather than a misleading 500.
+     * Unlike the {@code WARN}-level downstream-status handler, this logs at {@code ERROR} with the
+     * underlying cause, because an unparseable card-svc body is a genuine integration fault worth a
+     * full stack trace for diagnosis; the cause is logged only and never returned in the body.
+     *
+     * @param ex the translated downstream-response exception (its cause is logged, never returned)
+     * @return a 502 {@link ProblemDetail} response enriched with the correlation id
+     */
+    @ExceptionHandler(CardDetailAggregator.DownstreamResponseException.class)
+    public ResponseEntity<ProblemDetail> handleDownstreamResponse(CardDetailAggregator.DownstreamResponseException ex) {
+        log.error("Downstream card-svc returned an unusable response body; mapping to 502 Bad Gateway", ex);
         return problem(HttpStatus.BAD_GATEWAY, "Bad Gateway",
                 "Error retrieving card detail from the card service");
     }
