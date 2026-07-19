@@ -1,0 +1,219 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo Walking Skeleton - useradmin-svc Maven build (module descriptor)
+  ============================================================================
+  Bounded context : User Administration + Admin Menu
+  Provenance      : [SRC: COUSR00C-03C, COADM01C | USRSEC]
+                      CU00 -> COUSR00C (User List)    CU01 -> COUSR01C (User Add)
+                      CU02 -> COUSR02C (User Update)  CU03 -> COUSR03C (User Delete)
+                      CA00 -> COADM01C (Admin Menu)
+                    (registered in app/csd/CARDDEMO.CSD over the USRSEC VSAM KSDS)
+  Status          : request-serving, health-gated, TYPED-STUB ([DEFERRED]).
+                    No user-admin business logic is implemented in this run
+                    (AAP 0.7.2). This module builds a Spring Boot 3.5.x fat JAR
+                    on Java 21 and GENERATES its Java server API interfaces and
+                    DTO models at build time from the frozen OpenAPI 3.1 contract
+                    contracts/useradmin-svc.openapi.yaml (contract-first single
+                    source of truth; generated code is NEVER hand-edited - AAP 0.8).
+
+  Parent note     : the repo-root /pom.xml is a PURE reactor aggregator that only
+                    lists <module>services/useradmin-svc</module>; it is NOT this
+                    module's parent. A Maven POM has exactly one parent, which
+                    MUST be spring-boot-starter-parent. <relativePath/> is left
+                    empty so the parent resolves from the repository, never from
+                    the aggregator.
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    Spring Boot BOM + plugin management parent, pinned to the latest Spring Boot
+    3.5.x patch (3.5.16 - the final 3.x line per AAP 0.2.2). No version ranges.
+    <relativePath/> empty => resolve from the local/remote repository, NOT from
+    the repo-root reactor aggregator.
+  -->
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.16</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.carddemo</groupId>
+  <artifactId>useradmin-svc</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>CardDemo User Admin Service</name>
+  <description>User Administration + Admin Menu bounded context for the CardDemo walking skeleton. Request-serving, health-gated, typed-stub ([DEFERRED]) Spring Boot 3 / Java 21 service. Provenance [SRC: COUSR00C-03C, COADM01C | USRSEC].</description>
+
+  <properties>
+    <!-- Spring Boot parent maps java.version onto the compiler release. -->
+    <java.version>21</java.version>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- OpenAPI Generator (OpenAPI 3.1 support); AAP-pinned. -->
+    <openapi-generator.version>7.23.0</openapi-generator.version>
+    <!-- Oracle Database 23ai JDBC driver; JDK 21 compatible (AAP 0.3). -->
+    <ojdbc.version>23.26.2.0.0</ojdbc.version>
+  </properties>
+
+  <dependencies>
+    <!-- 1. REST endpoints + embedded Tomcat; also required by the generated
+            Spring MVC API interfaces the hand-written controllers implement. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- 2. JPA / Hibernate on the classpath for stack parity and datasource
+            wiring (Oracle 23ai -> OracleDialect). This service declares NO
+            @Entity and owns NO schema (pure typed stub); application.yml sets
+            spring.jpa.hibernate.ddl-auto=none. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <!-- 3. Actuator -> /actuator/health backs the docker-compose
+            `depends_on: condition: service_healthy` gate. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- 4. Jakarta Bean Validation, used by the generated DTOs and @Valid
+            parameters (openapi-generator useBeanValidation defaults to true). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- 5. Oracle Database 23ai JDBC driver (runtime scope only). -->
+    <dependency>
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <version>${ojdbc.version}</version>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- 6. Flyway core - version MANAGED by the Spring Boot 3.5 BOM (no explicit
+            version). Present for stack parity only; in-service Flyway is DISABLED
+            at runtime (spring.flyway.enabled=false) because the dedicated /db
+            docker-compose migration step owns the schema and seed data. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+
+    <!-- 7. Flyway Oracle dialect support - BOM-managed (no explicit version).
+            Parity with the migration toolchain. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-oracle</artifactId>
+    </dependency>
+
+    <!-- 8. Test: JUnit 5 + Spring test for the context-load / health smoke
+            test (test scope). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <!--
+        Spring Boot repackage: produces the runnable fat JAR the multi-stage
+        Dockerfile copies. mainClass is the (hand-written, src-owned) entrypoint
+        com.carddemo.useradmin.UserAdminApplication, matching the sibling
+        convention com.carddemo.<svc>.<Svc>Application.
+      -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.carddemo.useradmin.UserAdminApplication</mainClass>
+        </configuration>
+      </plugin>
+
+      <!--
+        Contract-first code generation. Emits ONLY the Java server API interfaces
+        (with useTags=true: UsersApi, AdminApi, HealthApi) and the DTO models
+        (User, UserCreateRequest, UserUpdateRequest, UserListResponse, MenuOption,
+        AdminMenuResponse, ...) from the frozen OpenAPI 3.1 SSoT. Hand-written
+        controllers under src/main/java `implements` these interfaces; the
+        generated HealthApi is intentionally left UNIMPLEMENTED - Spring Boot
+        Actuator serves /actuator/health (an unimplemented interface registers no
+        request mapping, so there is no conflict with Actuator).
+
+        ANNOTATION MODE - annotation-free generation:
+          documentationProvider=none + annotationLibrary=none => the generated
+          sources carry NO io.swagger.v3.oas.annotations.* imports, so they
+          compile with ONLY spring-boot-starter-web + spring-boot-starter-validation
+          on the classpath, and springdoc-openapi is deliberately NOT a dependency.
+          This matches the skeleton-wide convention (see the sibling card-svc and
+          reporting-svc OpenApiConfig classes) and the frozen dependency inventory
+          (AAP 0.3 lists no springdoc), keeping the module consistent and green.
+
+        ALTERNATIVE (deliberately NOT used): leaving documentationProvider /
+          annotationLibrary at their defaults (springdoc / swagger2) makes the
+          generated code depend on a Swagger annotations provider, which would
+          require adding org.springdoc:springdoc-openapi-starter-webmvc-ui
+          (a swagger-annotations provider). We do not take that path here so as to
+          stay aligned with the frozen dependency inventory and the sibling services.
+
+        inputSpec is a REPO-RELATIVE path (../../contracts/...) that the Dockerfile
+        replicates inside the build image - do NOT change it to an absolute or
+        vendored path. The plugin auto-registers <output>/src/main/java as a
+        compile source root for the `spring` generator.
+      -->
+      <plugin>
+        <groupId>org.openapitools</groupId>
+        <artifactId>openapi-generator-maven-plugin</artifactId>
+        <version>${openapi-generator.version}</version>
+        <executions>
+          <execution>
+            <id>generate-useradmin-api</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+            <configuration>
+              <inputSpec>${project.basedir}/../../contracts/useradmin-svc.openapi.yaml</inputSpec>
+              <generatorName>spring</generatorName>
+              <apiPackage>com.carddemo.useradmin.api</apiPackage>
+              <modelPackage>com.carddemo.useradmin.model</modelPackage>
+              <invokerPackage>com.carddemo.useradmin.invoker</invokerPackage>
+              <output>${project.build.directory}/generated-sources/openapi</output>
+              <generateApiTests>false</generateApiTests>
+              <generateModelTests>false</generateModelTests>
+              <generateApiDocumentation>false</generateApiDocumentation>
+              <generateModelDocumentation>false</generateModelDocumentation>
+              <configOptions>
+                <!-- Generate ONLY API interfaces + models (no controllers /
+                     no stub server); controllers are hand-written in src. -->
+                <interfaceOnly>true</interfaceOnly>
+                <!-- Jakarta EE (jakarta.*) imports for Spring Boot 3. -->
+                <useSpringBoot3>true</useSpringBoot3>
+                <!-- One interface per tag => UsersApi, AdminApi, HealthApi. -->
+                <useTags>true</useTags>
+                <!-- Avoid the extra org.openapitools:jackson-databind-nullable dep. -->
+                <openApiNullable>false</openApiNullable>
+                <!-- Annotation-free generated code (see the plugin comment above):
+                     no springdoc / swagger dependency required. -->
+                <documentationProvider>none</documentationProvider>
+                <annotationLibrary>none</annotationLibrary>
+              </configOptions>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+
+</project>

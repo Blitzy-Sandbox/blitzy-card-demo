@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <!--
+    ===========================================================================
+    CardDemo Walking Skeleton — Transaction Service (transaction-svc)
+    ===========================================================================
+    Bounded context: Transaction List / View / Add.
+    Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
+      - Legacy CICS programs COTRN00C (CT00, list), COTRN01C (CT01, view) and
+        COTRN02C (CT02, add) over the TRANSACT VSAM KSDS, registered in
+        app/csd/CARDDEMO.CSD.
+
+    Role in the skeleton: a REQUEST-SERVING, HEALTH-GATED, TYPED-STUB service.
+    Every endpoint returns a typed placeholder ([DEFERRED] — no business logic),
+    but the service MUST build green and start green as a long-running container
+    exposing Spring Boot Actuator /actuator/health for docker-compose gating.
+
+    Central job of this POM: CONTRACT-FIRST CODE GENERATION. The
+    openapi-generator-maven-plugin runs against the FROZEN single-source-of-truth
+    contract contracts/transaction-svc.openapi.yaml to emit the Spring API
+    interfaces (TransactionsApi, HealthApi) and models (Transaction,
+    TransactionCreateRequest, TransactionListResponse, Error, HealthStatus).
+    Generated code is NEVER hand-edited — regenerate from the contract instead.
+
+    NOTE ON PARENT: the repository root /pom.xml is a pure reactor AGGREGATOR
+    (com.carddemo:carddemo-skeleton-aggregator), NOT a Spring Boot parent. The
+    empty <relativePath/> below forces Maven to resolve spring-boot-starter-parent
+    from the Maven repository rather than from ../pom.xml (the aggregator), which
+    would otherwise fail with a "Non-resolvable parent POM" error.
+    ===========================================================================
+  -->
+
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.5.16</version>
+    <relativePath/>
+  </parent>
+
+  <groupId>com.carddemo</groupId>
+  <artifactId>transaction-svc</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <name>CardDemo Transaction Service</name>
+  <description>Transaction bounded-context typed-stub service [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]. All endpoints are [DEFERRED] typed placeholders in the walking skeleton; the service is request-serving and health-gated (Spring Boot Actuator /actuator/health) and builds green as a long-running container. API interfaces and models are generated contract-first from the frozen contracts/transaction-svc.openapi.yaml.</description>
+
+  <properties>
+    <!-- Java 21 (LTS). The Boot parent uses java.version to drive the compiler
+         release; maven.compiler.release is set explicitly for clarity. -->
+    <java.version>21</java.version>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <!-- Override the Spring Boot dependencies BOM property used for the
+         com.oracle.database.* groups so ojdbc11 resolves to the pinned Oracle
+         23ai driver (JDK 21 compatible) without an explicit dependency version. -->
+    <oracle-database.version>23.26.2.0.0</oracle-database.version>
+    <!-- OpenAPI Generator version (OpenAPI 3.1 support), referenced by the
+         codegen plugin in the build section below. -->
+    <openapi-generator.version>7.23.0</openapi-generator.version>
+  </properties>
+
+  <dependencies>
+    <!-- REST endpoints + embedded Tomcat. Provides the spring-web annotations
+         (@GetMapping/@PostMapping/ResponseEntity/NativeWebRequest) used by the
+         generated API interfaces. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
+    <!-- JPA / Hibernate. Mandated for stack uniformity: the runtime datasource
+         and the Actuator "db" health indicator use it. This service defines NO
+         JPA entities (pure typed stub). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-data-jpa</artifactId>
+    </dependency>
+
+    <!-- Actuator serves /actuator/health for docker-compose service_healthy
+         gating. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-actuator</artifactId>
+    </dependency>
+
+    <!-- jakarta.validation used by the generated model constraints
+         (@NotNull/@Size/@Pattern) and @Valid on the generated interfaces. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-validation</artifactId>
+    </dependency>
+
+    <!-- Oracle 23ai JDBC driver. Runtime scope; version inherited from the
+         overridden ${oracle-database.version} BOM property (23.26.2.0.0). -->
+    <dependency>
+      <groupId>com.oracle.database.jdbc</groupId>
+      <artifactId>ojdbc11</artifactId>
+      <scope>runtime</scope>
+    </dependency>
+
+    <!-- Flyway core + Oracle dialect support. Present for stack uniformity;
+         in-service Flyway is DISABLED at runtime (spring.flyway.enabled=false)
+         because the dedicated docker-compose "flyway" step owns the migrations
+         under /db/migration. Versions are managed by the Boot 3.5.16 BOM. -->
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.flywaydb</groupId>
+      <artifactId>flyway-database-oracle</artifactId>
+    </dependency>
+
+    <!-- Test-scoped: context-load / health smoke test. -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <!-- Deterministic artifact name so the repackaged executable jar is always
+         target/transaction-svc.jar (copied verbatim by the service Dockerfile). -->
+    <finalName>transaction-svc</finalName>
+    <plugins>
+      <!-- Contract-first code generation. Emits the Spring API interfaces
+           (TransactionsApi, HealthApi) and models into
+           target/generated-sources/openapi/src/main/java, which the plugin adds
+           to the compile source roots. Lean config (documentationProvider=none,
+           annotationLibrary=none, openApiNullable=false) keeps generated imports
+           to spring-web + jakarta.validation only — no swagger/springdoc/
+           jackson-databind-nullable required — guaranteeing a green compile. -->
+      <plugin>
+        <groupId>org.openapitools</groupId>
+        <artifactId>openapi-generator-maven-plugin</artifactId>
+        <version>${openapi-generator.version}</version>
+        <executions>
+          <execution>
+            <id>generate-transaction-api</id>
+            <phase>generate-sources</phase>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+            <configuration>
+              <!-- ../../ from services/transaction-svc/ is the repo root;
+                   ${project.basedir} resolves per-module in a reactor build. -->
+              <inputSpec>${project.basedir}/../../contracts/transaction-svc.openapi.yaml</inputSpec>
+              <generatorName>spring</generatorName>
+              <apiPackage>com.carddemo.transaction.api</apiPackage>
+              <modelPackage>com.carddemo.transaction.model</modelPackage>
+              <invokerPackage>com.carddemo.transaction</invokerPackage>
+              <generateApiTests>false</generateApiTests>
+              <generateApiDocumentation>false</generateApiDocumentation>
+              <generateModelTests>false</generateModelTests>
+              <generateModelDocumentation>false</generateModelDocumentation>
+              <configOptions>
+                <!-- Generate API interfaces only (controllers implement them). -->
+                <interfaceOnly>true</interfaceOnly>
+                <useSpringBoot3>true</useSpringBoot3>
+                <!-- Group operations by OpenAPI tag: TransactionsApi + HealthApi. -->
+                <useTags>true</useTags>
+                <useJakartaEe>true</useJakartaEe>
+                <!-- Keep generated imports to spring-web + jakarta.validation. -->
+                <documentationProvider>none</documentationProvider>
+                <annotationLibrary>none</annotationLibrary>
+                <!-- Avoid the jackson-databind-nullable dependency. -->
+                <openApiNullable>false</openApiNullable>
+              </configOptions>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <!-- Repackage into the executable Spring Boot fat jar
+           (target/transaction-svc.jar); config inherited from the parent. -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+      </plugin>
+    </plugins>
+  </build>
+</project>

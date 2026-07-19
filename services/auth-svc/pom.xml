@@ -1,0 +1,222 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      ================================================================================
+      CardDemo Auth Service (auth-svc) — Maven build.
+
+      Walking-skeleton authentication service. Permissive sign-on STUB: it issues a
+      REAL bearer token and participates in the REAL correlation-ID hop, but performs
+      NO real credential validation, hashing, RBAC, or session management.
+
+      Provenance: [SRC: COSGN00C | COSGN00.bms] — legacy CICS Sign-On transaction
+      CC00 -> COSGN00C reading the USRSEC VSAM KSDS.
+
+      Parent = Spring Boot starter-parent, resolved from Maven Central. The EMPTY
+      <relativePath/> is essential: without it Maven would walk up to services/pom.xml
+      (which does not exist) and fail to resolve. The repository root /pom.xml is a
+      PURE reactor aggregator (packaging=pom, <modules> only), NOT a Maven parent.
+      ================================================================================
+    -->
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>com.carddemo</groupId>
+    <artifactId>auth-svc</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>CardDemo Auth Service</name>
+    <description>Permissive sign-on stub for the CardDemo walking skeleton; issues a real bearer token and participates in the real correlation-ID hop with no real credential validation. [SRC: COSGN00C | COSGN00.bms]</description>
+
+    <properties>
+        <!-- Spring Boot parent reads java.version to set the compiler release. -->
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- OpenAPI generator (contract-first codegen). -->
+        <openapi-generator.version>7.23.0</openapi-generator.version>
+        <!-- Oracle 23ai JDBC driver, JDK 21 compatible. -->
+        <ojdbc.version>23.26.2.0.0</ojdbc.version>
+    </properties>
+
+    <dependencies>
+        <!--
+          REST endpoints + embedded Tomcat. Also supplies the Spring MVC + Jackson +
+          jakarta.annotation classes referenced by the OpenAPI-generated API interfaces.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+          Included for stack uniformity across services. auth-svc declares NO @Entity;
+          Spring still auto-configures a DataSource / EntityManagerFactory over an empty
+          entity model (an explicit Hibernate dialect is set in application.yml so the
+          EMF builds at boot without a live DB connection). Do not add entities here.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!--
+          Exposes /actuator/health used by the docker-compose healthcheck and the
+          `depends_on: condition: service_healthy` startup gate.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!--
+          Supplies jakarta.validation (@Valid, @Size, @NotNull) required by the generated
+          models, which carry bean-validation annotations (useBeanValidation=true).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!--
+          Oracle 23ai JDBC driver. runtime scope: present on the runtime classpath so the
+          service can connect to Oracle FREEPDB1, but not compiled against (no direct code
+          references). Version pinned via property.
+        -->
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+          Flyway on the classpath for stack uniformity. This service does NOT migrate:
+          SPRING_FLYWAY_ENABLED=false (the dedicated /db docker-compose step owns
+          V1__baseline.sql + V2__seed_tracer.sql). Versions are managed by the Spring
+          Boot 3.5 BOM — no explicit <version>.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-oracle</artifactId>
+        </dependency>
+
+        <!--
+          Context-load / health smoke test (AuthApplicationTests). test scope only.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              ============================================================================
+              Contract-first code generation.
+
+              The Java server API interfaces + DTO models are GENERATED at build time from
+              the frozen single-source-of-truth OpenAPI 3.1 contract and are NEVER
+              hand-edited. Generated sources live under target/ (transient; never committed).
+              The plugin auto-registers <output>/src/main/java as a compile source root, so
+              build-helper-maven-plugin is NOT needed.
+
+              useTags=true -> one interface per tag: tag `Auth` -> AuthApi (login,
+              validateToken); tag `Health` -> HealthApi (healthCheck). The hand-written
+              AuthController implements AuthApi ONLY; HealthApi is never implemented because
+              Spring Boot Actuator serves /actuator/health.
+
+              The lean configOptions (annotationLibrary=none, openApiNullable=false,
+              documentationProvider=none) are chosen so the generated code compiles against
+              ONLY the declared starters — no swagger-annotations, jackson-databind-nullable,
+              or springdoc dependency is required.
+              ============================================================================
+            -->
+            <plugin>
+                <groupId>org.openapitools</groupId>
+                <artifactId>openapi-generator-maven-plugin</artifactId>
+                <version>${openapi-generator.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-auth-api</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Frozen SSoT contract, referenced relative to this module. -->
+                            <inputSpec>${project.basedir}/../../contracts/auth-svc.openapi.yaml</inputSpec>
+                            <generatorName>spring</generatorName>
+                            <apiPackage>com.carddemo.auth.api</apiPackage>
+                            <modelPackage>com.carddemo.auth.model</modelPackage>
+                            <output>${project.build.directory}/generated-sources/openapi</output>
+                            <!-- Keep the output lean: interfaces + models only. -->
+                            <generateApiTests>false</generateApiTests>
+                            <generateModelTests>false</generateModelTests>
+                            <generateApiDocumentation>false</generateApiDocumentation>
+                            <generateModelDocumentation>false</generateModelDocumentation>
+                            <!--
+                              The `spring` generator emits default interface methods that attach
+                              the contract's response EXAMPLES through a tiny `ApiUtil` helper.
+                              That helper is a "supporting file", so it MUST be generated for the
+                              generated interfaces to compile. Generate ONLY `ApiUtil.java` (via
+                              the supportingFilesToGenerate whitelist) so the output stays lean:
+                              interfaces + models + the single required helper. No application /
+                              config / build supporting files are emitted, and NO extra runtime
+                              dependency is introduced — ApiUtil references only Spring MVC types
+                              (NativeWebRequest, etc.) already provided by spring-boot-starter-web.
+                            -->
+                            <generateSupportingFiles>true</generateSupportingFiles>
+                            <supportingFilesToGenerate>ApiUtil.java</supportingFilesToGenerate>
+                            <configOptions>
+                                <!-- API interfaces + models, no controller stubs. -->
+                                <interfaceOnly>true</interfaceOnly>
+                                <!-- jakarta.* imports (Spring Boot 3 / Jakarta EE 10). -->
+                                <useSpringBoot3>true</useSpringBoot3>
+                                <!-- One interface per OpenAPI tag (AuthApi, HealthApi). -->
+                                <useTags>true</useTags>
+                                <!-- No springdoc/springfox annotations or dependency. -->
+                                <documentationProvider>none</documentationProvider>
+                                <!-- No io.swagger.core.v3 annotations => no swagger-annotations dep. -->
+                                <annotationLibrary>none</annotationLibrary>
+                                <!-- No JsonNullable wrappers => no jackson-databind-nullable dep. -->
+                                <openApiNullable>false</openApiNullable>
+                                <!-- jakarta.validation annotations on models (starter-validation). -->
+                                <useBeanValidation>true</useBeanValidation>
+                                <!-- Interface methods return ResponseEntity<T>. -->
+                                <useResponseEntity>true</useResponseEntity>
+                                <!-- Keep the default getRequest() method on the interface. -->
+                                <skipDefaultInterface>false</skipDefaultInterface>
+                            </configOptions>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+              Repackage into an executable, LAYERED Spring Boot jar
+              (target/auth-svc-0.1.0-SNAPSHOT.jar) consumed by the sibling Dockerfile.
+              Boot 3.x enables layers by default. Version is inherited from the parent;
+              no custom <finalName> (the Dockerfile copies target/*.jar).
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
