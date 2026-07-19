@@ -1,0 +1,35 @@
+{
+  "name": "carddemo-ui",
+  "private": true,
+  "version": "0.1.0",
+  "description": "CardDemo walking-skeleton UI: a React 19 + TypeScript + Vite single-page application styled with MUI (Material UI) v9 core + Emotion that binds only to the BFF. The typed API client is generated from ../contracts/bff.openapi.yaml via the generate:api script and is never hand-edited.",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "generate:api": "openapi-generator-cli generate"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "~7.15.0",
+    "@mui/material": "9.0.1",
+    "@mui/icons-material": "9.0.1",
+    "@emotion/react": "^11.13.0",
+    "@emotion/styled": "^11.13.0",
+    "axios": "^1.7.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.0",
+    "vite": "^8.1.0",
+    "@vitejs/plugin-react": "^6.0.0",
+    "@openapitools/openapi-generator-cli": "^2.25.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/node": "^22.0.0"
+  }
+}
