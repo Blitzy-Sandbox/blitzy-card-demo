@@ -1,0 +1,38 @@
+# useradmin-svc — CardDemo walking skeleton — TEST-scoped Spring Boot configuration.
+# Provenance: [SRC: COUSR00C-03C, COADM01C | USRSEC]
+#   (legacy user list/add/update/delete CU00-CU03 -> COUSR00C-03C and admin menu CA00 -> COADM01C,
+#    reading the USRSEC VSAM KSDS; topology per app/csd/CARDDEMO.CSD).
+#
+# PURPOSE
+#   Guarantee the sibling UserAdminApplicationTests (@SpringBootTest, @ActiveProfiles("test"))
+#   context-load / health smoke test loads GREEN OFFLINE — with NO live Oracle database present
+#   (the Docker image build and the offline CI compile phase have no database).
+#
+# MECHANISM — autoconfiguration EXCLUSION (this service's prescribed approach)
+#   The sibling pom.xml puts spring-boot-starter-data-jpa + ojdbc11 + Flyway on the classpath, so
+#   without intervention Spring would auto-configure a DataSource and fail at boot ("Failed to
+#   configure a DataSource: 'url' attribute is not specified..."). Excluding the four autoconfigs
+#   below removes that failure path entirely: no DataSource bean is created (so no datasource URL or
+#   credentials are required here), no EntityManagerFactory, no transaction manager, and Flyway
+#   never runs. The context loads with no database, no connection attempt, and no migration.
+#
+#   Offline-green is achieved purely via these exclusions; no in-memory or alternate database and no
+#   external test infrastructure are introduced, so the test stays faithful to the real Oracle stack
+#   at runtime. No secrets. 2-space indentation, no tabs.
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.orm.jpa.HibernateJpaAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+      - org.springframework.boot.autoconfigure.flyway.FlywayAutoConfiguration
+  flyway:
+    # Belt-and-suspenders: /db owns schema + migrations (V1__baseline.sql / V2__seed_tracer.sql);
+    # Flyway must never run in tests (also covered by the FlywayAutoConfiguration exclusion above).
+    enabled: false
+management:
+  endpoints:
+    web:
+      exposure:
+        # Keep management/health simple; no probes/details needed for the smoke test.
+        include: health

@@ -1,0 +1,50 @@
+# auth-svc — CardDemo walking skeleton — TEST-scoped Spring Boot configuration.
+# Provenance: [SRC: COSGN00C | COSGN00.bms] (legacy sign-on CC00 -> COSGN00C reading USRSEC).
+#
+# PURPOSE
+#   Guarantee the sibling AuthApplicationTests (@SpringBootTest) context-load / health smoke
+#   test loads GREEN OFFLINE — with NO live Oracle database present (the Docker image build and
+#   the offline CI compile have no DB). Test-classpath resources take precedence over
+#   src/main/resources, so during tests Spring loads THIS file (it shadows the production
+#   application.yml); it must therefore be self-sufficient for the context to build without ever
+#   opening a database connection.
+#
+# MECHANISM (all required relaxations)
+#   - datasource.hikari.initialization-fail-timeout: -1  -> Hikari starts the pool WITHOUT an
+#       eager connection attempt at boot (no DB needed to start).
+#   - jpa.database-platform: OracleDialect               -> explicit Hibernate dialect, so no live
+#       DB is probed to auto-detect it.
+#   - jpa.hibernate.ddl-auto: none                       -> never create/migrate/validate schema.
+#   - hibernate.temp.use_jdbc_metadata_defaults: false   -> skip the JDBC metadata probe that would
+#       otherwise require a live connection.
+#   - flyway.enabled: false                              -> the dedicated /db docker-compose Flyway
+#       step owns V1__baseline.sql + V2__seed_tracer.sql; never migrate during tests.
+#   auth-svc declares NO @Entity and owns no schema, so with the above Hibernate builds an empty
+#   EntityManagerFactory without touching a DB. NO H2/embedded DB is introduced — the test stays
+#   faithful to the real Oracle dialect.
+spring:
+  datasource:
+    # URL/credentials mirror the production Oracle shape purely so the DataSource bean can be
+    # constructed. No connection is attempted at startup because initialization-fail-timeout: -1.
+    # Env-parameterized (same keys as the root docker-compose.yml / .env.example); password
+    # defaults to EMPTY so no secret is committed.
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    hikari:
+      # Do NOT fail startup if no DB connection can be established (no eager connect at boot).
+      initialization-fail-timeout: -1
+  jpa:
+    # Explicit dialect so Hibernate does NOT probe a live DB to auto-detect it.
+    database-platform: org.hibernate.dialect.OracleDialect
+    hibernate:
+      # Never create/migrate/validate schema (auth-svc owns no schema).
+      ddl-auto: none
+    properties:
+      hibernate:
+        temp:
+          # Skip the JDBC metadata probe that would otherwise require a live connection.
+          use_jdbc_metadata_defaults: false
+  flyway:
+    # /db compose step owns schema + seed; never migrate during tests.
+    enabled: false
