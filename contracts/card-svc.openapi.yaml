@@ -220,10 +220,16 @@ components:
       description: >-
         Correlation ID propagated UI -> BFF -> card-svc and logged via SLF4J
         MDC. Optional on inbound requests; when absent the service generates
-        one.
+        one. Typed as a plain string (NOT format: uuid): the service's
+        CorrelationIdFilter is the sole owner of correlation-ID validation and
+        minting - it trusts an inbound value only when it is a canonical UUID
+        and otherwise mints a fresh one, tolerating any non-canonical header
+        value. Binding this header as a strict uuid would make the framework
+        reject a non-canonical value before the request reaches the filter,
+        defeating that deliberate tolerance, so the header is a free-form
+        string on the wire.
       schema:
         type: string
-        format: uuid
   securitySchemes:
     bearerAuth:
       type: http
@@ -320,13 +326,16 @@ components:
             10-character value.
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"
           description: >-
             Card active flag Y/N (CARD-ACTIVE-STATUS X(01); screen field
-            CRDSTCD).
+            CRDSTCD). The enum fully constrains the value to a single
+            character; a redundant maxLength is intentionally omitted so the
+            OpenAPI generator does not emit a @Size constraint on the generated
+            enum-typed property (jakarta bean validation cannot validate @Size
+            on an enum).
       example:
         cardNumber: "4000000000000001"
         accountId: "00000000001"
@@ -356,7 +365,6 @@ components:
           description: Owning account id (CARD-ACCT-ID 9(11)).
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"
@@ -414,7 +422,6 @@ components:
           description: Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10)).
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"

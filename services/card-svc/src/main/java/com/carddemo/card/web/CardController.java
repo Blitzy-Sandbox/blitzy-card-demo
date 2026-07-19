@@ -9,7 +9,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Collections;
-import java.util.UUID;
 
 /**
  * HTTP entrypoint for the card bounded context (CardDemo walking skeleton,
@@ -29,15 +28,15 @@ import java.util.UUID;
  *
  * <p><strong>Operations.</strong></p>
  * <ul>
- *   <li>{@link #getCardByNumber(String, UUID)} &mdash; <strong>THE ONE LIVE TRACER</strong>
+ *   <li>{@link #getCardByNumber(String, String)} &mdash; <strong>THE ONE LIVE TRACER</strong>
  *       ({@code GET /cards/{cardNumber}}): a REAL Oracle read of the single Flyway-seeded
  *       row, keyed on the natural 16-digit card number. Yields {@code 200} (found),
  *       {@code 404} (empty state), {@code 400} (malformed input), or {@code 500}
  *       (read error).</li>
- *   <li>{@link #listCards(String, Integer, Integer, UUID)} &mdash; a typed
+ *   <li>{@link #listCards(String, Integer, Integer, String)} &mdash; a typed
  *       {@code [DEFERRED]} placeholder ({@code GET /cards}) returning an empty page.
  *       Provenance: [SRC: COCRDLIC | CARDDAT] (transaction {@code CCLI}).</li>
- *   <li>{@link #updateCard(String, CardUpdateRequest, UUID)} &mdash; a typed
+ *   <li>{@link #updateCard(String, CardUpdateRequest, String)} &mdash; a typed
  *       {@code [DEFERRED]} placeholder ({@code PUT /cards/{cardNumber}}) returning a
  *       placeholder card. Provenance: [SRC: COCRDUPC | CARDDAT] (transaction
  *       {@code CCUP}).</li>
@@ -45,7 +44,7 @@ import java.util.UUID;
  *
  * <p><strong>Runtime chain (tracer).</strong> React Card Detail UI &rarr; BFF
  * {@code GET /api/cards/{cardNumber}} &rarr; card-svc {@code GET /cards/{cardNumber}}
- * &rarr; {@link #getCardByNumber(String, UUID)} &rarr; {@link CardService#getCard(String)}
+ * &rarr; {@link #getCardByNumber(String, String)} &rarr; {@link CardService#getCard(String)}
  * &rarr; {@code CardRepository.findById(cardNumber)} &rarr;
  * {@code SELECT ... FROM CARD WHERE CARD_NUM = ?} against PDB {@code FREEPDB1} &rarr;
  * seeded row &rarr; typed {@link Card} payload &rarr; rendered with real loading / empty /
@@ -120,7 +119,7 @@ public class CardController implements CardsApi {
      *         are signalled via thrown/propagated exceptions
      */
     @Override
-    public ResponseEntity<Card> getCardByNumber(String cardNumber, UUID xCorrelationID) {
+    public ResponseEntity<Card> getCardByNumber(String cardNumber, String xCorrelationID) {
         if (cardNumber == null || !cardNumber.matches("^[0-9]{16}$")) {
             throw new BadRequestException("Card number if supplied must be a 16 digit number");
         }
@@ -146,7 +145,7 @@ public class CardController implements CardsApi {
      * @return {@code 200} with an empty {@link CardListResponse}
      */
     @Override
-    public ResponseEntity<CardListResponse> listCards(String accountId, Integer page, Integer size, UUID xCorrelationID) {
+    public ResponseEntity<CardListResponse> listCards(String accountId, Integer page, Integer size, String xCorrelationID) {
         CardListResponse body = new CardListResponse()
                 .items(Collections.emptyList())
                 .page(0)
@@ -173,7 +172,7 @@ public class CardController implements CardsApi {
      * @return {@code 200} with a placeholder {@link Card}
      */
     @Override
-    public ResponseEntity<Card> updateCard(String cardNumber, CardUpdateRequest cardUpdateRequest, UUID xCorrelationID) {
+    public ResponseEntity<Card> updateCard(String cardNumber, CardUpdateRequest cardUpdateRequest, String xCorrelationID) {
         Card placeholder = new Card()
                 .cardNumber(cardNumber)
                 .accountId("0")
