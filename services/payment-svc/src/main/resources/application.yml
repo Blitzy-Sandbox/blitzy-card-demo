@@ -1,0 +1,52 @@
+# payment-svc — CardDemo walking skeleton
+# Bill Payment bounded-context typed-stub service (endpoints are [DEFERRED] typed placeholders).
+# Request-serving + health-gated + long-running (part of the docker-compose service_healthy chain).
+# Provenance: [SRC: COBIL00C | ACCTDAT]
+#   Legacy CICS transaction CB00 -> program COBIL00C (Bill Payment) over the ACCTDAT VSAM KSDS
+#   (DEFINE FILE(ACCTDAT) ... in app/csd/CARDDEMO.CSD). Schema itself is owned by /db, not this service.
+# All values are sane defaults that environment variables (injected by docker-compose) override.
+spring:
+  application:
+    name: payment-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # Placeholder default ONLY — never a real secret. docker-compose injects
+    # SPRING_DATASOURCE_PASSWORD from .env (APP_USER_PASSWORD).
+    password: ${SPRING_DATASOURCE_PASSWORD:change_me_app_password}
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    # Set explicitly so the EntityManagerFactory does NOT need a live DB connection to auto-detect
+    # the dialect at startup (spring-boot-starter-data-jpa is on the classpath but this stub has
+    # zero @Entity classes). Oracle 23ai -> OracleDialect.
+    database-platform: org.hibernate.dialect.OracleDialect
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate — /db owns DDL.
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    # DISABLED here: schema + seed are owned by /db and applied by the dedicated compose Flyway step
+    # (services depend_on flyway -> service_completed_successfully). In-service Flyway MUST stay OFF to
+    # avoid double-migration / schema-history conflicts. The flyway artifacts still exist on the classpath.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+
+server:
+  # Container-internal port; docker-compose maps host ${PAYMENT_SVC_PORT:-8085} -> container 8080.
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      # /actuator/health backs the docker-compose healthcheck; this service IS in the service_healthy chain.
+      probes:
+        enabled: true
+
+# Correlation-ID header name consumed by the sibling config/CorrelationIdFilter
+# (OncePerRequestFilter + SLF4J MDC), read via @Value("${correlation.header:X-Correlation-ID}").
+# Top-level 'correlation.header' key; compose env CORRELATION_HEADER binds here via relaxed binding.
+correlation:
+  header: ${CORRELATION_HEADER:X-Correlation-ID}

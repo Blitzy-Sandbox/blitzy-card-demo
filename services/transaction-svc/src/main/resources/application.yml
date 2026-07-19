@@ -1,0 +1,58 @@
+# transaction-svc — CardDemo walking skeleton
+# Transaction bounded-context typed-stub service (List/View/Add endpoints are [DEFERRED]).
+# Request-serving + health-gated + long-running (NOT reporting-exempt).
+# Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
+#   CT00 -> COTRN00C (List), CT01 -> COTRN01C (View), CT02 -> COTRN02C (Add)
+#   over the TRANSACT VSAM KSDS (app/csd/CARDDEMO.CSD).
+# All values are env-parameterized to match the root docker-compose.yml / .env.example;
+# benign local defaults let the service also run standalone.
+spring:
+  application:
+    name: transaction-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # Benign local-only default; the real password is env-injected by docker-compose (.env). Never a real secret.
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+  jpa:
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.
+      ddl-auto: none
+    # Set explicitly so the EntityManagerFactory does NOT require a live DB connection to
+    # auto-detect the dialect at startup (starter-data-jpa is present but there are zero entities).
+    database-platform: org.hibernate.dialect.OracleDialect
+    open-in-view: false
+  flyway:
+    # The dedicated /db docker-compose Flyway step owns schema + seed. This service never migrates.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # /actuator/health backs the docker-compose healthcheck and the service_healthy gate.
+      # 'never' keeps the committed config conservative; the dev override may set 'always'.
+      show-details: never
+
+# Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
+# NOTE: top-level 'correlation.header' key (intentionally distinct from auth-svc's 'carddemo.correlation.header').
+# The filter reads it via @Value("${correlation.header:X-Correlation-ID}").
+correlation:
+  header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+---
+# 'docker' profile (docker-compose sets SPRING_PROFILES_ACTIVE=docker). This document
+# carries NO meaningful deltas: every runtime value is supplied by environment variables
+# injected by docker-compose (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME,
+# SPRING_DATASOURCE_PASSWORD, SPRING_FLYWAY_ENABLED, CORRELATION_HEADER, SERVER_PORT).
+# It exists only to document intent and to avoid any "profile not found" confusion.
+spring:
+  config:
+    activate:
+      on-profile: docker
