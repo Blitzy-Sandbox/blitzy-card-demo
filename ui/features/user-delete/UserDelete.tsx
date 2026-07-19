@@ -1,5 +1,5 @@
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Delete User screen — [DEFERRED] placeholder.
@@ -18,7 +18,7 @@ import { Empty } from '../../components/Empty';
 export default function UserDelete() {
   return (
     <PageContainer title="Delete User">
-      <Empty message="Delete User is not yet implemented (deferred)." />
+      <DeferredNotice feature="Delete User" />
     </PageContainer>
   );
 }

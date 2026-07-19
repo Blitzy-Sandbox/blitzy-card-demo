@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * AccountUpdate — Account Update feature screen (`[DEFERRED]` placeholder).
@@ -13,8 +13,8 @@ import { Empty } from '../../components/Empty';
  * for a deferred screen; inventing functionality would be a failure.
  *
  * It renders the standard shared page frame ({@link PageContainer}) wrapping a
- * shared empty state ({@link Empty}) that announces the feature is not yet
- * implemented. The route param `accountId` (from the route
+ * shared deferred notice ({@link DeferredNotice}) that renders the canonical
+ * `[DEFERRED]` marker. The route param `accountId` (from the route
  * `/accounts/:accountId/edit`) is read purely for display context and is
  * surfaced as the page subtitle — it triggers no fetch or side effect.
  *
@@ -43,7 +43,7 @@ export default function AccountUpdate() {
       title="Account Update"
       subtitle={accountId ? `Account ${accountId}` : undefined}
     >
-      <Empty message="Account Update is not yet implemented (deferred)." />
+      <DeferredNotice feature="Account Update" />
     </PageContainer>
   );
 }

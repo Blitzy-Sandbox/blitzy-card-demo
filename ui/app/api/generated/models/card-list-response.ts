@@ -12,14 +12,34 @@
  * Do not edit the class manually.
  */
 
+
 // May contain unused imports in some cases
 // @ts-ignore
 import type { CardSummary } from './card-summary';
 
+/**
+ * [DEFERRED] A single page of card summaries. Typed placeholder shape for the card list aggregation.
+ */
 export interface CardListResponse {
-    'items'?: Array<CardSummary>;
-    'page'?: number;
-    'size'?: number;
-    'totalItems'?: number;
-    'totalPages'?: number;
+    /**
+     * The card summaries on this page.
+     */
+    'items': Array<CardSummary>;
+    /**
+     * Zero-based page index.
+     */
+    'page': number;
+    /**
+     * Page size (number of rows per page).
+     */
+    'size': number;
+    /**
+     * Total number of cards matching the query.
+     */
+    'totalItems': number;
+    /**
+     * Total number of pages available.
+     */
+    'totalPages': number;
 }
+

@@ -14,11 +14,29 @@
 
 
 
+/**
+ * Card Detail view-model rendered by the React Card Detail tracer screen. This shape is IDENTICAL to the card-svc `Card` DTO (five fields) so the tracer payload flows through the BFF unchanged [SRC: COCRDSLC | CARDDAT]. Fields mirror CARD-RECORD [CVACT02Y.cpy] and the Card Detail BMS map [COCRDSL.bms]. The CVV is intentionally EXCLUDED. 
+ */
 export interface CardDetail {
+    /**
+     * 16-digit card number - the natural key (CARD-NUM X(16); screen field CARDSID).
+     */
     'cardNumber': string;
+    /**
+     * Owning account id (CARD-ACCT-ID 9(11); screen field ACCTSID). Represented as a numeric string to preserve zero-padding.
+     */
     'accountId': string;
+    /**
+     * Name embossed on the card (CARD-EMBOSSED-NAME X(50); screen field CRDNAME).
+     */
     'embossedName': string;
+    /**
+     * Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10); screen fields EXPMON/EXPYEAR).
+     */
     'expiryDate': string;
+    /**
+     * Card active flag Y/N (CARD-ACTIVE-STATUS X(01); screen field CRDSTCD).
+     */
     'activeStatus': CardDetailActiveStatusEnum;
 }
 
@@ -28,3 +46,5 @@ export const CardDetailActiveStatusEnum = {
 } as const;
 
 export type CardDetailActiveStatusEnum = typeof CardDetailActiveStatusEnum[keyof typeof CardDetailActiveStatusEnum];
+
+

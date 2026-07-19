@@ -31,6 +31,7 @@
  */
 import { PageContainer } from '../../components/PageContainer';
 import { DataTable, type DataTableColumn } from '../../components/DataTable';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Shape of a single Credit Card List row.
@@ -81,6 +82,8 @@ export default function CardList() {
 
   return (
     <PageContainer title="Credit Card List">
+      {/* Canonical [DEFERRED] marker; the table below shows the list SHAPE only. */}
+      <DeferredNotice feature="Credit Card List" sx={{ mb: 3 }} />
       <DataTable<CardListRow>
         columns={columns}
         rows={rows}

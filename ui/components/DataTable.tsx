@@ -20,7 +20,7 @@
  * legacy Card List screen `app/bms/COCRDLI.bms` (REFERENCE only). Generalized
  * here into a reusable, typed table.
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Box,
@@ -79,6 +79,12 @@ export interface DataTableProps<T> {
   emptyMessage?: string;
   /** aria-label for the table (accessibility). */
   ariaLabel?: string;
+  /**
+   * Optional row-click handler. When provided, rows become interactive: they
+   * gain the MUI `hover` affordance and a pointer cursor. When omitted, rows are
+   * static and DO NOT show a misleading hover highlight (finding m38).
+   */
+  onRowClick?: (row: T, index: number) => void;
   /** sx passthrough for the outer container (theme tokens only). */
   sx?: SxProps<Theme>;
 }
@@ -101,15 +107,35 @@ export function DataTable<T>({
   dense = false,
   emptyMessage = 'No records to display.',
   ariaLabel = 'data table',
+  onRowClick,
   sx,
 }: DataTableProps<T>) {
   const [page, setPage] = useState(0);
   const [rowsPerPage, setRowsPerPage] = useState(initialRowsPerPage);
 
+  // Clamp the current page when the row count shrinks (e.g. rows are filtered
+  // away or the page size grows) so pagination can never strand the view on an
+  // out-of-range page that renders empty (finding m38). `safePage` is derived
+  // synchronously for the current render; the effect reconciles stored state so
+  // TablePagination never receives an out-of-range `page`.
+  const maxPage = pagination
+    ? Math.max(0, Math.ceil(rows.length / rowsPerPage) - 1)
+    : 0;
+  const safePage = Math.min(page, maxPage);
+
+  useEffect(() => {
+    if (page > maxPage) {
+      setPage(maxPage);
+    }
+  }, [page, maxPage]);
+
+  // Rows are interactive only when a click handler is supplied (finding m38).
+  const isRowInteractive = Boolean(onRowClick);
+
   // Client-side slice for the current page; when pagination is disabled every
   // row is shown. `count` reported to TablePagination is always the full length.
   const visibleRows = pagination
-    ? rows.slice(page * rowsPerPage, page * rowsPerPage + rowsPerPage)
+    ? rows.slice(safePage * rowsPerPage, safePage * rowsPerPage + rowsPerPage)
     : rows;
 
   // Resolve a single cell: a custom `render` wins; otherwise fall back to the
@@ -141,14 +167,23 @@ export function DataTable<T>({
             {visibleRows.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={columns.length} align="center">
-                  <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                  {/* `text.secondary` via `sx`, not the `color` prop: MUI v9 no
+                      longer resolves dotted palette paths through `color` (m36). */}
+                  <Typography variant="body2" sx={{ color: 'text.secondary', py: 2 }}>
                     {emptyMessage}
                   </Typography>
                 </TableCell>
               </TableRow>
             ) : (
               visibleRows.map((row, index) => (
-                <TableRow key={getRowKey(row, index)} hover>
+                <TableRow
+                  key={getRowKey(row, index)}
+                  // Hover highlight and pointer cursor only when the row is
+                  // actually actionable (finding m38); static rows stay flat.
+                  hover={isRowInteractive}
+                  onClick={onRowClick ? () => onRowClick(row, index) : undefined}
+                  sx={isRowInteractive ? { cursor: 'pointer' } : undefined}
+                >
                   {columns.map((col) => (
                     <TableCell key={col.id} align={col.align ?? 'left'}>
                       {renderCell(col, row)}
@@ -164,7 +199,7 @@ export function DataTable<T>({
         <TablePagination
           component="div"
           count={rows.length}
-          page={page}
+          page={safePage}
           onPageChange={(_event, newPage) => setPage(newPage)}
           rowsPerPage={rowsPerPage}
           onRowsPerPageChange={(event) => {

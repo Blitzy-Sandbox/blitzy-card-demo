@@ -14,11 +14,29 @@
 
 
 
+/**
+ * Result of a successful sign-on. Carries the real (permissive) bearer token the UI attaches to every subsequent request, plus the resolved user identity. 
+ */
 export interface LoginResponse {
+    /**
+     * The bearer token to send in the Authorization header.
+     */
     'token': string;
+    /**
+     * The authenticated user id (SEC-USR-ID X(08)).
+     */
     'userId': string;
+    /**
+     * User type flag (SEC-USR-TYPE X(01)): A = administrator, U = regular user.
+     */
     'userType': LoginResponseUserTypeEnum;
+    /**
+     * Token time-to-live in seconds.
+     */
     'expiresIn'?: number;
+    /**
+     * The token scheme; always \"Bearer\" in the skeleton.
+     */
     'tokenType'?: string;
 }
 
@@ -28,3 +46,5 @@ export const LoginResponseUserTypeEnum = {
 } as const;
 
 export type LoginResponseUserTypeEnum = typeof LoginResponseUserTypeEnum[keyof typeof LoginResponseUserTypeEnum];
+
+

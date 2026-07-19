@@ -14,11 +14,33 @@
 
 
 
+/**
+ * RFC 7807 problem detail, aligned with the Spring Boot 3 `ProblemDetail` representation and served as `application/problem+json`. Generated as `ModelError` in the TypeScript client (the name `Error` is reserved). 
+ */
 export interface ModelError {
+    /**
+     * A URI reference that identifies the problem type.
+     */
     'type'?: string;
-    'title'?: string;
-    'status'?: number;
+    /**
+     * A short, human-readable summary of the problem type.
+     */
+    'title': string;
+    /**
+     * The HTTP status code generated for this occurrence.
+     */
+    'status': number;
+    /**
+     * A human-readable explanation specific to this occurrence.
+     */
     'detail'?: string;
+    /**
+     * A URI reference that identifies the specific occurrence.
+     */
     'instance'?: string;
+    /**
+     * The X-Correlation-ID associated with the request, echoed back for log / trace correlation via MDC.
+     */
     'correlationId'?: string;
 }
+

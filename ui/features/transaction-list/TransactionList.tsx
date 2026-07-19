@@ -1,5 +1,6 @@
 import { PageContainer } from '../../components/PageContainer';
 import { DataTable, type DataTableColumn } from '../../components/DataTable';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Transaction List — [DEFERRED] placeholder (zero business logic).
@@ -58,6 +59,8 @@ const columns: DataTableColumn<TransactionListRow>[] = [
 export default function TransactionList() {
   return (
     <PageContainer title="Transaction List">
+      {/* Canonical [DEFERRED] marker; the table below shows the list SHAPE only. */}
+      <DeferredNotice feature="Transaction List" sx={{ mb: 3 }} />
       <DataTable<TransactionListRow>
         columns={columns}
         rows={[]}

@@ -44,7 +44,7 @@ paths:
       operationId: getBalance
       summary: Retrieve the current balance for an account
       description: >-
-        [SRC: COBIL00C] [DEFERRED] Returns the current outstanding balance for the given
+        [SRC: COBIL00C | ACCTDAT] [DEFERRED] Returns the current outstanding balance for the given
         account, mirroring the Bill Payment screen step that displays `CURBAL`
         (app/bms/COBIL00.bms). Typed stub — returns a placeholder BalanceResponse; no real
         account lookup is performed.
@@ -70,6 +70,8 @@ paths:
                 $ref: '#/components/schemas/BalanceResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -81,7 +83,7 @@ paths:
       operationId: payBill
       summary: Pay the outstanding balance for an account
       description: >-
-        [SRC: COBIL00C] [DEFERRED] Executes an online bill payment for the account,
+        [SRC: COBIL00C | ACCTDAT] [DEFERRED] Executes an online bill payment for the account,
         mirroring legacy `COBIL00C`: on confirmation the full current balance is paid and a
         payment transaction is recorded. Omit `amount` to pay the full current balance
         (legacy default behaviour). Typed stub — returns a placeholder BillPaymentResponse;
@@ -106,6 +108,8 @@ paths:
                 $ref: '#/components/schemas/BillPaymentResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -114,7 +118,7 @@ paths:
     get:
       tags:
         - Health
-      operationId: getHealth
+      operationId: healthCheck
       summary: Service health probe
       description: >-
         Liveness/readiness probe used for docker-compose `service_healthy` gating.
@@ -149,7 +153,7 @@ components:
         into the SLF4J MDC for trace logging. Generated upstream when absent.
       schema:
         type: string
-        maxLength: 64
+        format: uuid
       example: "b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04"
   responses:
     BadRequest:
@@ -158,6 +162,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /payments/balance/00000000011
+            correlationId: b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04
     NotFound:
       description: The requested account could not be found.
       content:
@@ -186,17 +203,30 @@ components:
           example: "00000000011"
         amount:
           type: string
-          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          pattern: '^(?=.*[1-9])\d{1,10}(\.\d{1,2})?$'
           description: >-
-            Optional payment amount as a decimal string (S9(10)V99). Omit to pay the full
-            current balance (legacy default).
+            Optional positive payment amount as a decimal string (S9(10)V99), strictly
+            greater than zero. Omit to pay the full current balance (legacy default).
           example: "1250.00"
         confirm:
           type: boolean
-          default: false
-          description: Confirmation flag mirroring screen CONFIRM; must be true to execute.
+          # A boolean `const: true` is the natural way to express "must be true",
+          # but openapi-generator 7.23.0's `spring` generator renders a boolean
+          # single-value enum as an un-compilable class (a String literal passed to
+          # a Boolean-typed enum constructor). To keep the contract-first build green
+          # while still REJECTING an absent or false confirmation, the constraint is
+          # expressed as: (a) `required` below (rejects absent) and (b) a Jakarta
+          # Bean Validation @AssertTrue injected onto the generated DTO field via the
+          # generator's x-field-extra-annotation vendor extension (rejects a non-true
+          # value at request-validation time). The field stays a plain boolean, so the
+          # TypeScript client and every other OpenAPI consumer see a normal boolean.
+          x-field-extra-annotation: "@jakarta.validation.constraints.AssertTrue"
+          description: >-
+            Confirmation flag mirroring screen CONFIRM. Must be true to execute the
+            payment; a request with confirm absent or not true is rejected.
       required:
         - accountId
+        - confirm
     BillPaymentResponse:
       type: object
       description: Result of a bill payment (typed stub).
@@ -286,6 +316,7 @@ components:
           example: "/payments/balance/00000000011"
         correlationId:
           type: string
+          format: uuid
           description: Correlation identifier echoed from the X-Correlation-ID request header.
           example: "b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04"
       required:

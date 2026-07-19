@@ -14,8 +14,17 @@
 
 
 
+/**
+ * Spring Boot Actuator health representation. Documentation only - the generated interface is left unimplemented and Actuator serves this at runtime.
+ */
 export interface HealthStatus {
-    'status'?: HealthStatusStatusEnum;
+    /**
+     * Aggregate health status reported by Actuator.
+     */
+    'status': HealthStatusStatusEnum;
+    /**
+     * Optional per-component health details (data source, disk space, and so on).
+     */
     'components'?: { [key: string]: any; };
 }
 
@@ -27,3 +36,5 @@ export const HealthStatusStatusEnum = {
 } as const;
 
 export type HealthStatusStatusEnum = typeof HealthStatusStatusEnum[keyof typeof HealthStatusStatusEnum];
+
+

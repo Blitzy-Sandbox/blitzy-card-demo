@@ -12,14 +12,34 @@
  * Do not edit the class manually.
  */
 
+
 // May contain unused imports in some cases
 // @ts-ignore
 import type { UserSummary } from './user-summary';
 
+/**
+ * [DEFERRED] A single page of user summaries. Typed placeholder shape for the user-admin list aggregation.
+ */
 export interface UserListResponse {
-    'items'?: Array<UserSummary>;
-    'page'?: number;
-    'size'?: number;
-    'totalItems'?: number;
-    'totalPages'?: number;
+    /**
+     * The user summaries on this page.
+     */
+    'items': Array<UserSummary>;
+    /**
+     * Zero-based page index.
+     */
+    'page': number;
+    /**
+     * Page size (number of rows per page).
+     */
+    'size': number;
+    /**
+     * Total number of users matching the query.
+     */
+    'totalItems': number;
+    /**
+     * Total number of pages available.
+     */
+    'totalPages': number;
 }
+

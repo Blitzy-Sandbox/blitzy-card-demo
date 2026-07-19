@@ -12,10 +12,18 @@
  * Do not edit the class manually.
  */
 
+
 // May contain unused imports in some cases
 // @ts-ignore
 import type { MenuOption } from './menu-option';
 
+/**
+ * The full set of main-menu navigation options that drive the MUI navigation Drawer [SRC: COMEN01C | COMEN02Y].
+ */
 export interface MenuResponse {
-    'options'?: Array<MenuOption>;
+    /**
+     * The ordered main-menu options.
+     */
+    'options': Array<MenuOption>;
 }
+

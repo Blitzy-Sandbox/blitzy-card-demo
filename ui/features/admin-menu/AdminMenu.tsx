@@ -16,7 +16,7 @@
  * Design-system compliance (AAP §0.5 — `@mui/material` core only): the screen
  * is composed exclusively from MUI core primitives (`List`, `ListItemButton`,
  * `ListItemText`, `ListSubheader`, `Stack`) plus the shared `PageContainer` and
- * `Empty` components (themselves MUI-core based). No `@mui/x-*` is used. All
+ * `DeferredNotice` components (themselves MUI-core based). No `@mui/x-*` is used. All
  * spacing resolves to theme spacing tokens (`Stack spacing`); there are no
  * hardcoded colors, no hardcoded px values, and no raw DOM layout/heading/list/
  * anchor elements. Navigation uses `RouterLink` through MUI's polymorphic
@@ -40,7 +40,7 @@
 import { List, ListItemButton, ListItemText, ListSubheader, Stack } from '@mui/material';
 import { Link as RouterLink } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * AdminMenu renders the deferred Admin Menu placeholder inside the standard
@@ -55,9 +55,9 @@ export default function AdminMenu() {
       {/* Token-based vertical rhythm between the deferred notice and the nav
           list — `spacing={3}` maps to theme.spacing(3); no hardcoded margins. */}
       <Stack spacing={3}>
-        {/* Required [DEFERRED] placeholder — declares the screen carries no
-            implemented business logic yet. */}
-        <Empty message="Admin Menu is not yet implemented (deferred)." />
+        {/* Required canonical [DEFERRED] placeholder — declares the screen
+            carries no implemented business logic yet. */}
+        <DeferredNotice feature="Admin Menu" />
 
         {/* Navigation only — pure client-side routing, no data fetching, no BFF
             call. [SRC: COADM01C | COADM01.bms] */}

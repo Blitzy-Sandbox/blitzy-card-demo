@@ -12,7 +12,7 @@
 // placeholder renders none of those fields and holds no business logic.
 import { useParams } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * UserUpdate — deferred placeholder for the Update User screen.
@@ -36,7 +36,7 @@ export default function UserUpdate() {
       title="Update User"
       subtitle={userId ? `User ID: ${userId}` : undefined}
     >
-      <Empty message="Update User is not yet implemented (deferred)." />
+      <DeferredNotice feature="Update User" />
     </PageContainer>
   );
 }

@@ -37,15 +37,19 @@ export interface StatusChipProps {
   /**
    * Legacy `Y`/`N` active flag (`CRDSTCD` / `CARD-ACTIVE-STATUS`).
    *
-   * Accepts `'Y'`/`'N'` (case-insensitive, whitespace-tolerant), a `boolean`, or
-   * a nullish value. Anything that is not truthy-`'Y'`/`true` is treated as
-   * inactive.
+   * Accepts `'Y'`/`'N'` (case-insensitive, whitespace-tolerant) or a `boolean`.
+   * Only an explicit `'Y'`/`true` resolves to ACTIVE and an explicit
+   * `'N'`/`false` resolves to INACTIVE; a nullish value or any unrecognized
+   * string resolves to UNKNOWN — it is NOT silently coerced to inactive (finding
+   * m39), so absent/dirty data reads as "Unknown" rather than a false "Inactive".
    */
   status?: string | boolean | null;
   /** Label shown when the status resolves to active. Defaults to `'Active'`. */
   activeLabel?: string;
   /** Label shown when the status resolves to inactive. Defaults to `'Inactive'`. */
   inactiveLabel?: string;
+  /** Label shown when the status is unknown/absent. Defaults to `'Unknown'`. */
+  unknownLabel?: string;
   /** `Chip` size passthrough. Defaults to `'small'`. */
   size?: ChipProps['size'];
   /** `Chip` variant passthrough. Defaults to `'filled'`. */
@@ -59,53 +63,76 @@ export interface StatusChipProps {
   sx?: ChipProps['sx'];
 }
 
+/** The three resolved states of the active flag. */
+type ResolvedStatus = 'active' | 'inactive' | 'unknown';
+
 /**
- * Normalize the legacy active flag into a strict boolean.
+ * Normalize the legacy active flag into a tri-state value.
  *
  * Legacy `CRDSTCD` holds `'Y'` (active) or `'N'`/blank (inactive); a wired
  * feature hook may instead pass a real `boolean`. Trimming and upper-casing makes
  * the string comparison whitespace- and case-tolerant.
  *
+ * Only an explicit `'Y'`/`true` → `'active'` and an explicit `'N'`/`false` →
+ * `'inactive'`. Everything else (null, undefined, blank, or an unrecognized
+ * string) → `'unknown'` so absent/invalid data is NOT misrepresented as a
+ * definitive "Inactive" (finding m39).
+ *
  * @param status - The raw status flag from props.
- * @returns `true` when the card is active, otherwise `false`.
+ * @returns `'active'`, `'inactive'`, or `'unknown'`.
  */
-function isActive(status: StatusChipProps['status']): boolean {
+function resolveStatus(status: StatusChipProps['status']): ResolvedStatus {
   if (typeof status === 'boolean') {
-    return status;
+    return status ? 'active' : 'inactive';
   }
   if (typeof status === 'string') {
-    return status.trim().toUpperCase() === 'Y';
+    const normalized = status.trim().toUpperCase();
+    if (normalized === 'Y') return 'active';
+    if (normalized === 'N') return 'inactive';
+    return 'unknown';
   }
-  // null / undefined / anything else → inactive.
-  return false;
+  // null / undefined / anything else → unknown (never silently "inactive").
+  return 'unknown';
 }
 
 /**
  * Render a card's active status as a token-colored MUI `Chip`.
  *
- * Active → `color="success"` (green success token); inactive →
- * `color="default"` (neutral token). The mapping matches AAP §0.5.2 exactly.
+ * Active → `color="success"` (green success token); inactive and unknown →
+ * `color="default"` (neutral token), differentiated by label. The active/default
+ * color mapping matches AAP §0.5.2 exactly, while the distinct "Unknown" label
+ * avoids reporting absent data as a definitive "Inactive" (finding m39).
  *
  * @example
  * ```tsx
  * <StatusChip status="Y" />            // green "Active" chip
  * <StatusChip status="N" />            // grey "Inactive" chip
  * <StatusChip status={card.active} />  // boolean from a feature hook
+ * <StatusChip status={null} />         // grey "Unknown" chip (not "Inactive")
  * ```
  */
 export function StatusChip({
   status,
   activeLabel = 'Active',
   inactiveLabel = 'Inactive',
+  unknownLabel = 'Unknown',
   size = 'small',
   variant = 'filled',
   sx,
 }: StatusChipProps) {
-  const active = isActive(status);
+  const resolved = resolveStatus(status);
+  // Only 'active' uses the success token; 'inactive' and 'unknown' both use the
+  // neutral default token (AAP §0.5.2), and are distinguished by their label.
+  const label =
+    resolved === 'active'
+      ? activeLabel
+      : resolved === 'inactive'
+        ? inactiveLabel
+        : unknownLabel;
   return (
     <Chip
-      label={active ? activeLabel : inactiveLabel}
-      color={active ? 'success' : 'default'}
+      label={label}
+      color={resolved === 'active' ? 'success' : 'default'}
       size={size}
       variant={variant}
       sx={sx}

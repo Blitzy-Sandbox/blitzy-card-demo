@@ -62,7 +62,7 @@ paths:
       operationId: listUsers
       summary: List users
       description: |
-        List users with pagination. `[SRC: COUSR00C]` `[DEFERRED]` - typed stub;
+        List users with pagination. `[SRC: COUSR00C | USRSEC]` `[DEFERRED]` - typed stub;
         returns a typed placeholder `UserListResponse` and performs no `USRSEC`
         read in the walking skeleton.
       tags:
@@ -95,13 +95,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
       operationId: createUser
       summary: Create a user
       description: |
-        Add a new user. `[SRC: COUSR01C]` `[DEFERRED]` - typed stub; returns a
+        Add a new user. `[SRC: COUSR01C | USRSEC]` `[DEFERRED]` - typed stub; returns a
         typed placeholder `User`. The `password` is accepted on input only and
         is never returned.
       tags:
@@ -123,6 +125,8 @@ paths:
                 $ref: '#/components/schemas/User'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '409':
           $ref: '#/components/responses/Conflict'
         '500':
@@ -146,6 +150,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -154,7 +160,7 @@ paths:
       operationId: updateUser
       summary: Update a user
       description: |
-        Update an existing user identified by `userId`. `[SRC: COUSR02C]`
+        Update an existing user identified by `userId`. `[SRC: COUSR02C | USRSEC]`
         `[DEFERRED]` - typed stub; returns a typed placeholder `User`. The
         `password` is optional (supply only when changing) and is never returned.
       tags:
@@ -177,6 +183,8 @@ paths:
                 $ref: '#/components/schemas/User'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -185,7 +193,7 @@ paths:
       operationId: deleteUser
       summary: Delete a user
       description: |
-        Delete the user identified by `userId`. `[SRC: COUSR03C]` `[DEFERRED]` -
+        Delete the user identified by `userId`. `[SRC: COUSR03C | USRSEC]` `[DEFERRED]` -
         typed stub; performs no deletion in the walking skeleton.
       tags:
         - Users
@@ -195,6 +203,8 @@ paths:
       responses:
         '204':
           description: The user was deleted (no content).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -218,11 +228,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AdminMenuResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
   /actuator/health:
     get:
-      operationId: getHealth
+      operationId: healthCheck
       summary: Service health
       description: |
         Liveness/readiness probe used by docker-compose `service_healthy`
@@ -264,7 +276,7 @@ components:
         omitted, the service generates one.
       schema:
         type: string
-        maxLength: 64
+        format: uuid
         examples:
           - 6f9619ff-8b86-d011-b42d-00cf4fc964ff
     UserIdPath:
@@ -285,6 +297,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /users
+            correlationId: 6f9619ff-8b86-d011-b42d-00cf4fc964ff
     NotFound:
       description: The requested user was not found.
       content:
@@ -346,7 +371,7 @@ components:
     UserCreateRequest:
       type: object
       description: |
-        Payload to create a new user (User Add, `[SRC: COUSR01C]`). The
+        Payload to create a new user (User Add, `[SRC: COUSR01C | USRSEC]`). The
         `password` is accepted on input only and is never echoed in responses.
       required:
         - userId
@@ -377,6 +402,7 @@ components:
         password:
           type: string
           format: password
+          writeOnly: true
           minLength: 1
           maxLength: 8
           description: |
@@ -396,7 +422,7 @@ components:
     UserUpdateRequest:
       type: object
       description: |
-        Payload to update an existing user (User Update, `[SRC: COUSR02C]`). The
+        Payload to update an existing user (User Update, `[SRC: COUSR02C | USRSEC]`). The
         `userId` is supplied via the path and is not part of the body. The
         `password` is optional - supply it only when changing it - and is never
         returned in any response.
@@ -420,6 +446,7 @@ components:
         password:
           type: string
           format: password
+          writeOnly: true
           minLength: 1
           maxLength: 8
           description: |
@@ -556,6 +583,7 @@ components:
             - /users
         correlationId:
           type: string
+          format: uuid
           description: The X-Correlation-ID echoed for cross-service traceability.
           examples:
             - 6f9619ff-8b86-d011-b42d-00cf4fc964ff

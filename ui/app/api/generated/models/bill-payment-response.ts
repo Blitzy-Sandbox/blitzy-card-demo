@@ -14,10 +14,25 @@
 
 
 
+/**
+ * [DEFERRED] Result of a bill payment. Typed placeholder shape for the bill-payment aggregation.
+ */
 export interface BillPaymentResponse {
+    /**
+     * Account the payment applied to (ACCT-ID 9(11)).
+     */
     'accountId': string;
+    /**
+     * Resulting balance after payment; decimal string, 2 dp.
+     */
     'newBalance'?: string;
+    /**
+     * The identifier of the posted payment transaction (TRAN-ID X(16)).
+     */
     'transactionId'?: string;
+    /**
+     * The outcome of the payment.
+     */
     'status': BillPaymentResponseStatusEnum;
 }
 
@@ -28,3 +43,5 @@ export const BillPaymentResponseStatusEnum = {
 } as const;
 
 export type BillPaymentResponseStatusEnum = typeof BillPaymentResponseStatusEnum[keyof typeof BillPaymentResponseStatusEnum];
+
+

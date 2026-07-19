@@ -84,6 +84,8 @@ paths:
                 $ref: "#/components/schemas/Card"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
         "500":
@@ -127,8 +129,12 @@ paths:
                 $ref: "#/components/schemas/Card"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /cards:
     get:
       tags:
@@ -179,6 +185,8 @@ paths:
                 $ref: "#/components/schemas/CardListResponse"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
   /actuator/health:
@@ -235,6 +243,21 @@ components:
         application/problem+json:
           schema:
             $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >-
+        Authentication is required, or the supplied bearer token is missing or
+        invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /cards/4111111111111111
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
     NotFound:
       description: >-
         The requested card does not exist. Drives the UI EMPTY state
@@ -290,6 +313,7 @@ components:
         expiryDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: >-
             Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10); screen
             fields EXPMON/EXPYEAR). Kept as a plain string to match the legacy
@@ -386,6 +410,7 @@ components:
         expiryDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10)).
         activeStatus:
           type: string
@@ -399,6 +424,9 @@ components:
       description: |
         RFC 7807 problem detail, aligned with the Spring Boot 3 `ProblemDetail`
         representation and served as `application/problem+json`.
+      required:
+        - status
+        - title
       properties:
         type:
           type: string

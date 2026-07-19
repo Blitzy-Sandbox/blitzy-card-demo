@@ -180,6 +180,7 @@ components:
         password:
           type: string
           format: password
+          writeOnly: true
           minLength: 1
           maxLength: 8
           description: "Password, SEC-USR-PWD X(8); form PASSWD."
@@ -258,6 +259,9 @@ components:
       description: |-
         RFC 7807 problem detail describing an error, extended with a correlationId
         for cross-service trace correlation.
+      required:
+        - status
+        - title
       properties:
         type:
           type: string

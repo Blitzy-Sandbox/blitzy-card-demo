@@ -13,9 +13,22 @@
  */
 
 
+
+/**
+ * [DEFERRED] Lightweight card list row (a subset of CardDetail) backing the placeholder Credit Card List screen [SRC: COCRDLIC | CARDDAT].
+ */
 export interface CardSummary {
+    /**
+     * 16-digit card number - the natural key (CARD-NUM X(16)).
+     */
     'cardNumber'?: string;
+    /**
+     * Owning account id (CARD-ACCT-ID 9(11)).
+     */
     'accountId'?: string;
+    /**
+     * Card active flag Y/N (CARD-ACTIVE-STATUS X(01)).
+     */
     'activeStatus'?: CardSummaryActiveStatusEnum;
 }
 
@@ -25,3 +38,5 @@ export const CardSummaryActiveStatusEnum = {
 } as const;
 
 export type CardSummaryActiveStatusEnum = typeof CardSummaryActiveStatusEnum[keyof typeof CardSummaryActiveStatusEnum];
+
+

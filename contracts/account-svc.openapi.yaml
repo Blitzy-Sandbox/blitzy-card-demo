@@ -50,7 +50,7 @@ paths:
       summary: Retrieve an account by id.
       description: |
         Return the account identified by accountId.
-        [SRC: COACTVWC] [DEFERRED] - typed stub; returns a typed placeholder
+        [SRC: COACTVWC | ACCTDAT] [DEFERRED] - typed stub; returns a typed placeholder
         Account. No live account read is wired in this skeleton.
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
@@ -65,6 +65,8 @@ paths:
                 $ref: '#/components/schemas/Account'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -77,7 +79,7 @@ paths:
       description: |
         Update the mutable fields of the account identified by accountId
         (accountId itself is the key and is not writable).
-        [SRC: COACTUPC] [DEFERRED] - typed stub; returns a typed placeholder
+        [SRC: COACTUPC | ACCTDAT] [DEFERRED] - typed stub; returns a typed placeholder
         Account. No live account update is wired in this skeleton.
       parameters:
         - $ref: '#/components/parameters/CorrelationId'
@@ -98,6 +100,8 @@ paths:
                 $ref: '#/components/schemas/Account'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -106,7 +110,7 @@ paths:
     get:
       tags:
         - Health
-      operationId: getHealth
+      operationId: healthCheck
       summary: Service health probe.
       description: |
         Liveness/readiness probe used for docker-compose service_healthy
@@ -205,16 +209,19 @@ components:
         openDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Account open date, YYYY-MM-DD (ACCT-OPEN-DATE, PIC X(10)).
           example: '2020-01-01'
         expiryDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Account expiry date, YYYY-MM-DD (ACCT-EXPIRAION-DATE, PIC X(10)).
           example: '2025-01-01'
         reissueDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Account reissue date, YYYY-MM-DD (ACCT-REISSUE-DATE, PIC X(10)).
           example: '2023-01-01'
         addressZip:
@@ -260,11 +267,13 @@ components:
         expiryDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Account expiry date, YYYY-MM-DD (ACCT-EXPIRAION-DATE, PIC X(10)).
           example: '2025-01-01'
         reissueDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: Account reissue date, YYYY-MM-DD (ACCT-REISSUE-DATE, PIC X(10)).
           example: '2023-01-01'
         addressZip:
@@ -282,6 +291,9 @@ components:
       description: |
         RFC 7807 problem-details error payload, served as
         application/problem+json.
+      required:
+        - status
+        - title
       properties:
         type:
           type: string
@@ -336,6 +348,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /accounts/00000000011
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
     NotFound:
       description: The requested account does not exist.
       content:

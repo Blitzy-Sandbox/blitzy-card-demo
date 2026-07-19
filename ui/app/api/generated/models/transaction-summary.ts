@@ -14,9 +14,25 @@
 
 
 
+/**
+ * [DEFERRED] Lightweight transaction list row backing the placeholder Transaction List screen [SRC: COTRN00C | TRANSACT]. The amount is a decimal string (2 dp) to avoid binary floating-point drift.
+ */
 export interface TransactionSummary {
+    /**
+     * Transaction identifier (TRAN-ID X(16)).
+     */
     'transactionId'?: string;
+    /**
+     * Card number the transaction posted to (CARD-NUM X(16)).
+     */
     'cardNumber'?: string;
+    /**
+     * Transaction amount; decimal string, 2 dp (TRAN-AMT S9(10)V99).
+     */
     'amount'?: string;
+    /**
+     * Transaction description (TRAN-DESC X(100)).
+     */
     'description'?: string;
 }
+

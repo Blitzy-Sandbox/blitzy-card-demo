@@ -55,7 +55,7 @@ paths:
       summary: List transactions
       description: >-
         List transactions with optional filtering by card number or account id,
-        paginated. `[SRC: COTRN00C]` (legacy Transaction List `CT00`).
+        paginated. `[SRC: COTRN00C | TRANSACT]` (legacy Transaction List `CT00`).
         `[DEFERRED]` — typed stub; returns a typed placeholder page in the
         walking skeleton.
       security:
@@ -107,6 +107,8 @@ paths:
                 $ref: '#/components/schemas/TransactionListResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
     post:
@@ -116,7 +118,7 @@ paths:
       summary: Add a transaction
       description: >-
         Add a new transaction. The transaction identifier is server-assigned.
-        `[SRC: COTRN02C]` (legacy Transaction Add `CT02`). `[DEFERRED]` — typed
+        `[SRC: COTRN02C | TRANSACT]` (legacy Transaction Add `CT02`). `[DEFERRED]` — typed
         stub; returns a typed placeholder in the walking skeleton.
       security:
         - bearerAuth: []
@@ -146,6 +148,8 @@ paths:
                 $ref: '#/components/schemas/Transaction'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
   /transactions/{transactionId}:
@@ -155,7 +159,7 @@ paths:
       operationId: getTransaction
       summary: View a transaction
       description: >-
-        Retrieve a single transaction by its identifier. `[SRC: COTRN01C]`
+        Retrieve a single transaction by its identifier. `[SRC: COTRN01C | TRANSACT]`
         (legacy Transaction View `CT01`). `[DEFERRED]` — typed stub; returns a
         typed placeholder in the walking skeleton.
       security:
@@ -179,6 +183,8 @@ paths:
                 $ref: '#/components/schemas/Transaction'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -231,7 +237,7 @@ components:
         absent.
       schema:
         type: string
-        maxLength: 64
+        format: uuid
       example: 7b1f2c3d-4e5a-6789-abcd-ef0123456789
   responses:
     BadRequest:
@@ -240,6 +246,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /transactions
+            correlationId: 7b1f2c3d-4e5a-6789-abcd-ef0123456789
     NotFound:
       description: The requested resource was not found.
       content:
@@ -319,10 +338,12 @@ components:
         originTimestamp:
           type: string
           maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{6}$'
           description: Origination timestamp (TRAN-ORIG-TS, PIC X(26)).
         processTimestamp:
           type: string
           maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{6}$'
           description: Processing timestamp (TRAN-PROC-TS, PIC X(26)).
       required:
         - transactionId
@@ -384,10 +405,12 @@ components:
         originTimestamp:
           type: string
           maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{6}$'
           description: Origination timestamp (TRAN-ORIG-TS, PIC X(26)).
         processTimestamp:
           type: string
           maxLength: 26
+          pattern: '^\d{4}-\d{2}-\d{2}-\d{2}\.\d{2}\.\d{2}\.\d{6}$'
           description: Processing timestamp (TRAN-PROC-TS, PIC X(26)).
       required:
         - cardNumber
@@ -452,6 +475,7 @@ components:
           description: A URI reference that identifies the specific occurrence.
         correlationId:
           type: string
+          format: uuid
           description: Correlation identifier (X-Correlation-ID) for this occurrence.
       required:
         - title

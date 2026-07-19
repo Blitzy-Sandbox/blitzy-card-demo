@@ -25,6 +25,13 @@
 import { createTheme } from '@mui/material/styles';
 
 export const theme = createTheme({
+  // Emit theme values as CSS variables (MUI v9 CSS-theme-variables mode). This is
+  // the recommended v9 configuration: it renders tokens as `var(--mui-...)`
+  // custom properties on the document, improving SSR/hydration correctness and
+  // making the design tokens inspectable and overridable at the CSS layer. It is
+  // fully compatible with <ThemeProvider theme={theme}> + <CssBaseline/> (m32).
+  cssVariables: true,
+
   // 8px spacing base: theme.spacing(n) === 8 * n (MUI default, pinned explicitly).
   spacing: 8,
 

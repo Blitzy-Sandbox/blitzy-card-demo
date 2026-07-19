@@ -10,16 +10,18 @@ info:
     name: Apache-2.0
     url: https://www.apache.org/licenses/LICENSE-2.0
 servers:
-  - url: http://localhost:8080
-    description: >-
-      Local backend-for-frontend endpoint (host port BFF_PORT=8080). This is the
-      ONLY backend origin the React UI talks to; the UI never calls a domain
-      service directly.
   - url: /
     description: >-
-      Relative base path. Used when the UI and BFF are served behind the same
-      origin (for example the nginx-served SPA proxying /api and /actuator to the
-      bff container).
+      Same-origin base path. The React UI is served behind the SAME origin as
+      the BFF: the nginx-served SPA reverse-proxies /api and /actuator to the
+      bff container in the compose/production path, and the Vite dev server
+      proxies the same paths during local development. The UI binds ONLY to the
+      BFF and never calls a domain service directly. The absolute development
+      origin (http://localhost:8080) lives SOLELY in the Vite dev-proxy
+      configuration (ui/vite.config.ts) and is intentionally NOT declared here,
+      so the generated browser client defaults to a same-origin relative base
+      path and can never send credentials or tokens to an end-user-local
+      process.
 tags:
   - name: CardDetail
     description: >-
@@ -29,11 +31,11 @@ tags:
   - name: Auth
     description: >-
       Sign-on aggregation. The UI posts credentials here; the BFF forwards to
-      auth-svc and returns a real (permissive) bearer token [SRC: COSGN00].
+      auth-svc and returns a real (permissive) bearer token [SRC: COSGN00C | COSGN00.bms].
   - name: Menu
     description: >-
       Main-menu navigation aggregation derived from the legacy 10-option
-      CardDemo main menu; drives the MUI navigation Drawer [SRC: COMEN02Y].
+      CardDemo main menu; drives the MUI navigation Drawer [SRC: COMEN01C | COMEN02Y].
   - name: Accounts
     description: Account aggregation ([DEFERRED] typed stub).
   - name: Cards
@@ -59,7 +61,7 @@ paths:
       summary: Sign on and obtain a bearer token (permissive stub)
       description: |
         The UI Sign-On screen posts the User ID and Password here
-        [SRC: COSGN00]. The BFF forwards the request to auth-svc, which issues a
+        [SRC: COSGN00C | COSGN00.bms]. The BFF forwards the request to auth-svc, which issues a
         REAL bearer token that the UI carries on every subsequent request. This
         operation is UNAUTHENTICATED (it is the entry point that mints the
         token). Credential validation is permissive in the walking skeleton, but
@@ -85,6 +87,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /api/menu:
     get:
       tags:
@@ -93,7 +97,7 @@ paths:
       summary: Retrieve the main-menu navigation options
       description: |
         Return the CardDemo main-menu options that drive the MUI navigation
-        Drawer [SRC: COMEN02Y]. The "Credit Card View" option routes to the live
+        Drawer [SRC: COMEN01C | COMEN02Y]. The "Credit Card View" option routes to the live
         Card Detail tracer screen. The BFF assembles this list; the UI binds to
         it only through the BFF.
       security:
@@ -379,7 +383,7 @@ paths:
     get:
       tags:
         - Health
-      operationId: getHealth
+      operationId: healthCheck
       summary: Container health / readiness probe
       description: |
         This documents the Spring Boot Actuator health endpoint used by
@@ -513,7 +517,7 @@ components:
     LoginRequest:
       type: object
       description: |
-        Sign-on credentials posted by the UI Sign-On screen [SRC: COSGN00].
+        Sign-on credentials posted by the UI Sign-On screen [SRC: COSGN00C | COSGN00.bms].
         Both fields are up to 8 characters, mirroring the legacy USERID and
         PASSWD fields on the COSGN00 map.
       required:
@@ -529,6 +533,7 @@ components:
         password:
           type: string
           format: password
+          writeOnly: true
           minLength: 1
           maxLength: 8
           description: Password (SEC-USR-PWD X(08); COSGN00 field PASSWD).
@@ -555,6 +560,7 @@ components:
           example: "USER0001"
         userType:
           type: string
+          maxLength: 1
           enum:
             - A
             - U
@@ -576,7 +582,7 @@ components:
       type: object
       description: |
         A single main-menu navigation entry derived from the legacy CardDemo
-        main menu [SRC: COMEN02Y]. The `route` is the UI route path the option
+        main menu [SRC: COMEN01C | COMEN02Y]. The `route` is the UI route path the option
         navigates to; option 4 (Credit Card View) routes to the live Card Detail
         tracer screen.
       properties:
@@ -610,7 +616,7 @@ components:
       type: object
       description: >-
         The full set of main-menu navigation options that drive the MUI
-        navigation Drawer [SRC: COMEN02Y].
+        navigation Drawer [SRC: COMEN01C | COMEN02Y].
       required:
         - options
       properties:
@@ -830,6 +836,7 @@ components:
         (2 dp).
       required:
         - accountId
+        - confirm
       properties:
         accountId:
           type: string
@@ -839,12 +846,31 @@ components:
           example: "00000000050"
         amount:
           type: string
-          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
-          description: Payment amount; decimal string, 2 dp.
+          pattern: "^(?=.*[1-9])\\d{1,10}(\\.\\d{1,2})?$"
+          description: >-
+            Optional payment amount as a positive decimal string (up to 2 dp).
+            Omit to pay the full current balance (legacy default). When present
+            it must be strictly positive; zero and negative amounts are invalid.
           example: "100.00"
         confirm:
           type: boolean
-          description: Whether the user confirmed the payment.
+          # A boolean `const: true` is the natural way to express "must be true",
+          # but openapi-generator 7.23.0's `spring` generator renders a boolean
+          # single-value enum as an un-compilable class (a String literal passed to
+          # a Boolean-typed enum constructor). To keep the contract-first build green
+          # while still REJECTING an absent or false confirmation, the constraint is
+          # expressed as: (a) `required` on this property (rejects absent) and (b) a
+          # Jakarta Bean Validation @AssertTrue injected onto the generated DTO field
+          # via the generator's x-field-extra-annotation vendor extension (rejects a
+          # non-true value at request-validation time). The field stays a plain
+          # boolean, so the TypeScript client and every other OpenAPI consumer see a
+          # normal boolean. Kept identical to contracts/payment-svc.openapi.yaml
+          # (finding M10: align BFF/domain schemas).
+          x-field-extra-annotation: "@jakarta.validation.constraints.AssertTrue"
+          description: >-
+            Explicit payment confirmation. Required and must be `true` to submit
+            a payment; an absent or `false` value is rejected (mirrors the legacy
+            COBIL00 CONFIRM field).
           example: true
     BillPaymentResponse:
       type: object
@@ -902,6 +928,7 @@ components:
           example: "PUBLIC"
         userType:
           type: string
+          maxLength: 1
           enum:
             - A
             - U
@@ -952,6 +979,9 @@ components:
         RFC 7807 problem detail, aligned with the Spring Boot 3 `ProblemDetail`
         representation and served as `application/problem+json`. Generated as
         `ModelError` in the TypeScript client (the name `Error` is reserved).
+      required:
+        - status
+        - title
       properties:
         type:
           type: string
@@ -983,6 +1013,8 @@ components:
         Spring Boot Actuator health representation. Documentation only - the
         generated interface is left unimplemented and Actuator serves this at
         runtime.
+      required:
+        - status
       properties:
         status:
           type: string

@@ -58,7 +58,7 @@ public class Card {
      * {@code String} ({@code JpaRepository<Card, String>}).
      */
     @Id
-    @Column(name = "CARD_NUM")
+    @Column(name = "CARD_NUM", length = 16, nullable = false)
     private String cardNumber;
 
     /**

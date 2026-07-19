@@ -23,20 +23,27 @@
 #     .dockerignore in the /ui scope, so an explicit list deterministically
 #     avoids copying a host node_modules/dist into the image and keeps the build
 #     reproducible.
-#   * No lockfile is committed (greenfield), so `npm install` is used rather
-#     than `npm ci` (which requires a committed package-lock.json).
-#   * nginx serves on container port 80; docker-compose maps ${UI_PORT}:80.
+#   * A package-lock.json IS committed and `npm ci` is used (finding M13) so the
+#     dependency graph is installed exactly as locked; npm itself is pinned to
+#     the version in package.json "packageManager".
+#   * Base images are pinned by immutable digest (finding m31) so rebuilds are
+#     byte-for-byte reproducible and cannot drift when a tag is re-published.
+#   * nginx runs UNPRIVILEGED (USER nginx) and still serves on container port 80
+#     to match the documented docker-compose ${UI_PORT}:80 mapping (m31).
 # =============================================================================
 
 # ---------- Stage 1: build the SPA ----------
-FROM node:22-alpine AS build
+# node:22-alpine pinned by digest (finding m31).
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS build
 WORKDIR /app
 
-# Install dependencies first for better layer caching. Copying only the
-# manifest means this layer is reused whenever dependencies are unchanged.
-# No lockfile is committed, so use `npm install` (not `npm ci`).
-COPY package.json ./
-RUN npm install
+# Install dependencies first for better layer caching. Copying the manifest AND
+# the committed lockfile means this layer is reused whenever they are unchanged.
+# Pin npm to the "packageManager" version, then use `npm ci` (finding M13): it
+# installs strictly from package-lock.json and fails if the lock and manifest
+# have drifted, guaranteeing a reproducible dependency graph.
+COPY package.json package-lock.json ./
+RUN npm install -g npm@11.18.0 && npm ci
 
 # Copy the build inputs explicitly (avoids copying a host node_modules/dist; no
 # .dockerignore is in scope). These are the only sources the build needs:
@@ -57,7 +64,20 @@ COPY features ./features
 RUN npm run build
 
 # ---------- Stage 2: serve static files ----------
-FROM nginx:alpine AS serve
+# nginx:alpine pinned by digest (finding m31).
+FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS serve
+
+# Harden the runtime to run UNPRIVILEGED (finding m31). The stock image starts
+# its master as root solely to bind privileged port 80; instead we grant the
+# nginx binary the single capability required to bind a low port
+# (CAP_NET_BIND_SERVICE) and make the paths nginx writes to owned by the
+# image's built-in non-root `nginx` user (uid 101). Container port stays 80 to
+# match the documented docker-compose ${UI_PORT}:80 mapping, so nothing
+# downstream needs to change.
+RUN apk add --no-cache libcap \
+ && setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx \
+ && chown -R nginx:nginx /var/cache/nginx /var/log/nginx \
+ && touch /var/run/nginx.pid && chown nginx:nginx /var/run/nginx.pid
 
 # SPA + same-origin /api reverse-proxy config (proxies /api to the `bff`
 # service). Installed as the default server block; the stock nginx.conf
@@ -66,6 +86,16 @@ COPY nginx.conf /etc/nginx/conf.d/default.conf
 
 # Static assets built in stage 1. The nginx.conf `root` is /usr/share/nginx/html.
 COPY --from=build /app/dist /usr/share/nginx/html
+
+# Defense-in-depth for finding M05: even though production source maps are
+# disabled in vite.config.ts, strip any stray *.map so none can ever be served
+# from the public document root. Then hand ownership of the served tree to the
+# unprivileged nginx user (the COPY above lands as root).
+RUN find /usr/share/nginx/html -name '*.map' -type f -delete \
+ && chown -R nginx:nginx /usr/share/nginx/html
+
+# Drop root: the master and worker processes both run as the non-root nginx user.
+USER nginx
 
 # Container-internal port; docker-compose maps ${UI_PORT}:80.
 EXPOSE 80

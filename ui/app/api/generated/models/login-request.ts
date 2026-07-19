@@ -14,7 +14,17 @@
 
 
 
+/**
+ * Sign-on credentials posted by the UI Sign-On screen [SRC: COSGN00C | COSGN00.bms]. Both fields are up to 8 characters, mirroring the legacy USERID and PASSWD fields on the COSGN00 map. 
+ */
 export interface LoginRequest {
+    /**
+     * User ID (SEC-USR-ID X(08); COSGN00 field USERID).
+     */
     'userId': string;
+    /**
+     * Password (SEC-USR-PWD X(08); COSGN00 field PASSWD).
+     */
     'password': string;
 }
+

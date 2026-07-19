@@ -9,8 +9,10 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
-    # Placeholder default ONLY — never a real secret. Compose injects the real value from .env APP_USER_PASSWORD.
-    password: ${SPRING_DATASOURCE_PASSWORD:change_me_app_password}
+    # No secret is committed: the datasource password has an EMPTY default and MUST be supplied by the
+    # environment (docker-compose / .env APP_USER_PASSWORD). An unset password fails the DB connection
+    # rather than silently using a baked-in credential (CWE-798).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
     driver-class-name: oracle.jdbc.OracleDriver
   jpa:
     hibernate:
@@ -45,11 +47,12 @@ management:
       show-details: when_authorized
 
 # Correlation-ID header name consumed by the sibling config/CorrelationIdFilter (OncePerRequestFilter + MDC).
-# NOTE: the property key is `correlation.header` (account-svc convention) — it is intentionally NOT
-# prefixed (a different sibling service uses a prefixed variant). The filter reads it via
-# @Value("${correlation.header:X-Correlation-ID}") and writes the id to SLF4J MDC under key `correlationId`.
-correlation:
-  header: ${CORRELATION_HEADER:X-Correlation-ID}
+# The property key is `carddemo.correlation.header`, standardized across every service so the filter reads
+# it via @Value("${carddemo.correlation.header:X-Correlation-ID}") and writes the id to SLF4J MDC under key
+# `correlationId`. Overridable via the CORRELATION_HEADER environment variable.
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
 
 logging:
   pattern:

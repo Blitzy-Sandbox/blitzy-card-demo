@@ -14,6 +14,7 @@
  */
 import { PageContainer } from '../../components/PageContainer';
 import { DataTable, type DataTableColumn } from '../../components/DataTable';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Row shape derived from the legacy security-user record `SEC-USER-DATA`
@@ -56,6 +57,8 @@ const rows: UserRow[] = [];
 export default function UserList() {
   return (
     <PageContainer title="User List">
+      {/* Canonical [DEFERRED] marker; the table below shows the list SHAPE only. */}
+      <DeferredNotice feature="User List" sx={{ mb: 3 }} />
       <DataTable<UserRow>
         columns={columns}
         rows={rows}

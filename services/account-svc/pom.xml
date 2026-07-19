@@ -41,9 +41,15 @@
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <openapi-generator.version>7.23.0</openapi-generator.version>
+    <!--
+      Security override (finding m29): the Spring Boot 3.5.16 BOM pins
+      jackson-bom 2.21.4, whose jackson-databind is affected by a known
+      advisory (fixed in 2.21.5). Overriding this property re-imports the
+      aligned jackson-bom 2.21.5, bumping every RUNTIME Jackson artifact in
+      lock-step (annotations stay on their 2.21 metadata line).
+    -->
+    <jackson-bom.version>2.21.5</jackson-bom.version>
     <ojdbc.version>23.26.2.0.0</ojdbc.version>
-    <springdoc.version>2.8.9</springdoc.version>
-    <jackson-databind-nullable.version>0.2.6</jackson-databind-nullable.version>
     <!-- Overridable so the Docker build can repoint to an in-context spec copy if needed. -->
     <openapi.spec>${project.basedir}/../../contracts/account-svc.openapi.yaml</openapi.spec>
   </properties>
@@ -90,23 +96,14 @@
     </dependency>
 
     <!--
-      OpenAPI generated-code support. Brings io.swagger.core.v3:swagger-annotations-jakarta so the
-      generated (spring / interfaceOnly) interfaces annotated with io.swagger.v3.oas.annotations.*
-      compile, provides the io.swagger.v3.oas.models.OpenAPI type used by OpenApiConfig, and exposes
-      a local Swagger-UI. The frozen /contracts spec remains the single source of truth; springdoc
-      here only satisfies annotation deps and serves a local API-docs UI - it does not replace it.
+      Lean generator profile (finding M14): documentationProvider=none +
+      annotationLibrary=none + openApiNullable=false mean the generated
+      interfaces/models carry NO io.swagger.v3.oas.annotations.* and NO
+      JsonNullable wrapper type, so neither springdoc-openapi nor
+      jackson-databind-nullable is required on the runtime classpath. The frozen
+      /contracts spec remains the single source of truth. Removing springdoc also
+      drops the transitive commons-lang3 3.17.0 it pulled in (finding m30).
     -->
-    <dependency>
-      <groupId>org.springdoc</groupId>
-      <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-      <version>${springdoc.version}</version>
-    </dependency>
-    <!-- Required by generated models when openApiNullable is on (JsonNullable wrapper type). -->
-    <dependency>
-      <groupId>org.openapitools</groupId>
-      <artifactId>jackson-databind-nullable</artifactId>
-      <version>${jackson-databind-nullable.version}</version>
-    </dependency>
 
     <!-- Test scope: context-load / health smoke test (version managed by the Boot BOM). -->
     <dependency>
@@ -163,12 +160,76 @@
                 <useSpringBoot3>true</useSpringBoot3>
                 <useTags>true</useTags>
                 <useJakartaEe>true</useJakartaEe>
-                <openApiNullable>true</openApiNullable>
+                <!--
+                  Lean profile (finding M14): documentationProvider=none +
+                  annotationLibrary=none => generated code carries zero
+                  swagger/springdoc build-time dependency; openApiNullable=false
+                  drops the JsonNullable wrapper. Matches the card-svc reference.
+                -->
+                <documentationProvider>none</documentationProvider>
+                <annotationLibrary>none</annotationLibrary>
+                <openApiNullable>false</openApiNullable>
                 <skipDefaultInterface>false</skipDefaultInterface>
               </configOptions>
             </configuration>
           </execution>
         </executions>
+        <!--
+          Security override (finding M12): the openapi-generator 7.23.0 plugin
+          realm otherwise resolves vulnerable build-time transitives - Jackson
+          2.21.1, Handlebars 4.3.1, and Plexus-Utils 4.0.0 (incl. CVE-2025-67030
+          Directory Traversal). These plugin-scoped <dependencies> pin patched,
+          compatible versions on the GENERATOR classpath ONLY (runtime graph
+          untouched) while retaining the pinned engine version. handlebars-jackson2
+          stays at its terminal 4.3.1 (dropped in handlebars.java 4.4+); the
+          `spring` generator renders via Mustache so the Handlebars helper is
+          never instantiated (verified by green generate-sources).
+        -->
+        <dependencies>
+          <!-- CVE-2025-67030 (Directory Traversal) fixed in 4.0.3. -->
+          <dependency>
+            <groupId>org.codehaus.plexus</groupId>
+            <artifactId>plexus-utils</artifactId>
+            <version>4.0.3</version>
+          </dependency>
+          <!-- Path-traversal + transitive commons-lang3 advisory fixed by 4.5.x. -->
+          <dependency>
+            <groupId>com.github.jknack</groupId>
+            <artifactId>handlebars</artifactId>
+            <version>4.5.2</version>
+          </dependency>
+          <!-- Aligned patched Jackson 2.21.5 across the generator classpath. -->
+          <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+          <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-core</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+          <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-guava</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+          <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-joda</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+          <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+          <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>2.21.5</version>
+          </dependency>
+        </dependencies>
       </plugin>
     </plugins>
   </build>

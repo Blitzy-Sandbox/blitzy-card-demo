@@ -14,8 +14,21 @@
 
 
 
+/**
+ * [DEFERRED] Bill-payment instruction submitted from the placeholder Bill Payment screen [SRC: COBIL00C | ACCTDAT]. The amount is a decimal string (2 dp).
+ */
 export interface BillPaymentRequest {
+    /**
+     * Account to pay from (ACCT-ID 9(11)).
+     */
     'accountId': string;
+    /**
+     * Optional payment amount as a positive decimal string (up to 2 dp). Omit to pay the full current balance (legacy default). When present it must be strictly positive; zero and negative amounts are invalid.
+     */
     'amount'?: string;
-    'confirm'?: boolean;
+    /**
+     * Explicit payment confirmation. Required and must be `true` to submit a payment; an absent or `false` value is rejected (mirrors the legacy COBIL00 CONFIRM field).
+     */
+    'confirm': boolean;
 }
+

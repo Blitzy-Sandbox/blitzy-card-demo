@@ -1,6 +1,6 @@
 import { useParams } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Transaction View — [DEFERRED] placeholder screen.
@@ -20,7 +20,7 @@ export default function TransactionView() {
       title="Transaction View"
       subtitle={transactionId ? `Transaction ${transactionId}` : undefined}
     >
-      <Empty message="Transaction View is not yet implemented (deferred)." />
+      <DeferredNotice feature="Transaction View" />
     </PageContainer>
   );
 }

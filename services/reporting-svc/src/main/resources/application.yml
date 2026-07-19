@@ -13,7 +13,10 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
-    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    # No secret is committed: the datasource password has an EMPTY default and MUST be supplied by the
+    # environment (docker-compose / .env). An unset password fails the DB connection rather than
+    # silently using a baked-in credential (CWE-798).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
     driver-class-name: oracle.jdbc.OracleDriver
     hikari:
       # Resilient startup: reporting-svc is NOT health-gated and may start before Oracle is ready.

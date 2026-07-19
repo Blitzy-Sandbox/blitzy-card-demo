@@ -57,15 +57,20 @@ export function Empty({ message = 'No data to display.', children, sx }: EmptyPr
   return (
     <Box
       role="status"
-      sx={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-        py: 4,
-        px: 2,
-        ...sx,
-      }}
+      // Merge the consumer `sx` last using MUI's array form so object, array, and
+      // callback `sx` values are all honoured. A plain object spread (`...sx`)
+      // silently breaks when `sx` is an array or a theme callback (finding m35).
+      sx={[
+        {
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          textAlign: 'center',
+          py: 4,
+          px: 2,
+        },
+        ...(Array.isArray(sx) ? sx : sx ? [sx] : []),
+      ]}
     >
       {children ?? (
         // Muted body2 text for the empty state. The `text.secondary` palette

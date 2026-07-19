@@ -70,9 +70,10 @@ export function PageContainer({
       maxWidth={maxWidth}
       // Merge the default vertical page padding with any caller-provided `sx`
       // using MUI's array-merge form so array/callback `sx` values are honored
-      // (object spread would silently drop those SxProps shapes). All values
-      // resolve to theme spacing tokens — no hardcoded px.
-      sx={[{ py: 3 }, ...(Array.isArray(sx) ? sx : [sx])]}
+      // (object spread would silently drop those SxProps shapes). The `sx ? … : []`
+      // guard avoids appending `undefined` when no `sx` is passed (finding m35).
+      // All values resolve to theme spacing tokens — no hardcoded px.
+      sx={[{ py: 3 }, ...(Array.isArray(sx) ? sx : sx ? [sx] : [])]}
     >
       {hasHeader ? (
         <Stack
@@ -91,7 +92,9 @@ export function PageContainer({
               </Typography>
             ) : null}
             {subtitle ? (
-              <Typography variant="body2" color="text.secondary">
+              // `text.secondary` via `sx`, not the `color` prop: MUI v9 no longer
+              // resolves dotted palette paths through `color` (finding m36).
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                 {subtitle}
               </Typography>
             ) : null}

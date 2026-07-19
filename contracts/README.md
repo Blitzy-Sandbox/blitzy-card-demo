@@ -19,12 +19,12 @@ tracing it back to the legacy CardDemo topology.
 | File | Description | Provenance |
 |------|-------------|------------|
 | `auth-svc.openapi.yaml` | Permissive sign-on / token issuance contract. | [SRC: COSGN00C \| COSGN00.bms] |
-| `account-svc.openapi.yaml` | Account view / update contract. | [SRC: COACTVWC/COACTUPC \| CVACT01Y] |
+| `account-svc.openapi.yaml` | Account view / update contract. | [SRC: COACTVWC/COACTUPC \| ACCTDAT] |
 | `card-svc.openapi.yaml` | Card domain contract, including the **live tracer** `GET /cards/{cardNumber}`. | [SRC: COCRDSLC \| CARDDAT] |
-| `transaction-svc.openapi.yaml` | Transaction list / view / add contract. | [SRC: COTRN00C/01C/02C \| CVTRA05Y] |
-| `payment-svc.openapi.yaml` | Bill payment contract. | [SRC: COBIL00C] |
-| `useradmin-svc.openapi.yaml` | User admin (list/add/update/delete) + admin menu contract. | [SRC: COUSR00C-03C, COADM01C \| CSUSR01Y] |
-| `reporting-svc.openapi.yaml` | Reporting / statement async job contract (health-exempt). | [SRC: CORPT00C, CBSTM03A/B] |
+| `transaction-svc.openapi.yaml` | Transaction list / view / add contract. | [SRC: COTRN00C/COTRN01C/COTRN02C \| TRANSACT] |
+| `payment-svc.openapi.yaml` | Bill payment contract. | [SRC: COBIL00C \| ACCTDAT] |
+| `useradmin-svc.openapi.yaml` | User admin (list/add/update/delete) + admin menu contract. | [SRC: COUSR00C-03C, COADM01C \| USRSEC] |
+| `reporting-svc.openapi.yaml` | Reporting / statement async job contract (health-exempt). | [SRC: CORPT00C, CBSTM03A/B \| TRANSACT] |
 | `bff.openapi.yaml` | BFF aggregation contract consumed by the UI TypeScript client; includes tracer aggregation `GET /api/cards/{cardNumber}`. | [SRC: COMEN01C \| COMEN02Y] |
 | `VERSION` | Frozen version pin: `1.0.0`. | (platform) |
 | `README.md` | This file: freeze policy and regeneration instructions. | (platform) |
@@ -42,10 +42,12 @@ and from the container start-and-serve requirement (see convention 2 below).
   initial authoring. This folder is shared and is owned by the platform / contract layer under
   the per-service write-ownership matrix; the domain services own `/services/<svc>/**` and the
   UI owns `/ui/**`, but neither owns `/contracts`.
-- **A contract mismatch must fail the build, not surface at runtime.** Because both the Java
-  server interfaces and the UI TypeScript client are generated from these specifications at
-  build time, any drift between a consumer and its contract is caught by code generation and
-  compilation - it fails the build rather than appearing as a runtime error.
+- **A contract mismatch must fail the build, not surface at runtime.** The Java server interfaces
+  are generated from these specifications at build time (Maven `generate-sources`), so any
+  Java-side drift is caught by code generation and compilation and fails the Maven build. The UI
+  TypeScript client is generated out-of-band and committed (see §5.2); the UI build
+  (`tsc --noEmit && vite build`) type-checks the committed client against the UI code, so consumer
+  drift is caught at build time rather than appearing as a runtime error.
 - **Evolving a contract (future, non-frozen runs only).** To change a contract in a future run,
   bump `contracts/VERSION` following SemVer, update the matching `info.version`, and regenerate
   all consumers (Java interfaces and the UI client). Never silently hand-edit generated code to
@@ -89,7 +91,9 @@ generation as part of the build; never commit hand-edits to generated code.
 
 Each `/services/<svc>/pom.xml` configures `org.openapitools:openapi-generator-maven-plugin`
 (version `7.23.0`) with `generatorName=spring`, `interfaceOnly=true`, `useSpringBoot3=true`,
-and `useTags=true`. The input specification is the matching `/contracts/<svc>.openapi.yaml`.
+`useJakartaEe=true`, `useTags=true`, and `documentationProvider=none` (the lean profile emits
+only API interfaces and models — no runtime documentation surface). The input specification is
+the matching `/contracts/<svc>.openapi.yaml`.
 The `apiPackage` is `com.carddemo.<short>.api` and the `modelPackage` is
 `com.carddemo.<short>.model`, where `<short>` is the service name with the `-svc` suffix
 removed (for example `card-svc` -> `card`; `bff` has no suffix so `<short>` -> `bff`).
@@ -117,7 +121,9 @@ responses, except the live tracer in `card-svc`, which performs a real Oracle re
         <configOptions>
           <interfaceOnly>true</interfaceOnly>
           <useSpringBoot3>true</useSpringBoot3>
+          <useJakartaEe>true</useJakartaEe>
           <useTags>true</useTags>
+          <documentationProvider>none</documentationProvider>
         </configOptions>
       </configuration>
     </execution>
@@ -142,14 +148,17 @@ Per-service package mapping (illustrates the `<short>` rule):
 
 The UI client is generated with `@openapitools/openapi-generator-cli` (which wraps generator
 `7.23.0`) using the `typescript-axios` generator, sourced from `contracts/bff.openapi.yaml`
-**ONLY**, and emitted into the UI at `ui/app/api` (configured in `ui/openapitools.json`). The
-UI imports the generated client and binds **only** to the BFF; the generated client is never
+**ONLY**, and emitted into the UI at `ui/app/api/generated` (configured in `ui/openapitools.json`).
+Unlike the Java interfaces, the UI client is generated **out-of-band** — via the `npm run generate:api`
+script, **not** during the UI build — and the generated output is **committed** to the repository.
+The UI build (`tsc --noEmit && vite build`) consumes the committed client and does not regenerate it.
+The UI imports the generated client and binds **only** to the BFF; the generated client is never
 hand-edited.
 
 ```jsonc
-// ui/openapitools.json (illustrative)
+// ui/openapitools.json
 {
-  "$schema": "node_modules/@openapitools/openapi-generator-cli/config.schema.json",
+  "$schema": "./node_modules/@openapitools/openapi-generator-cli/config.schema.json",
   "spaces": 2,
   "generator-cli": {
     "version": "7.23.0",
@@ -157,7 +166,15 @@ hand-edited.
       "bff-client": {
         "generatorName": "typescript-axios",
         "glob": "../contracts/bff.openapi.yaml",
-        "output": "app/api"
+        "output": "app/api/generated",
+        "additionalProperties": {
+          "supportsES6": true,
+          "withSeparateModelsAndApi": true,
+          "apiPackage": "apis",
+          "modelPackage": "models",
+          "useSingleRequestParameter": true,
+          "enumPropertyNaming": "original"
+        }
       }
     }
   }
@@ -165,11 +182,10 @@ hand-edited.
 ```
 
 ```bash
-# Run from the /ui directory (bff.openapi.yaml is the ONLY input; output is ui/app/api)
-npx @openapitools/openapi-generator-cli generate \
-  -g typescript-axios \
-  -i ../contracts/bff.openapi.yaml \
-  -o app/api
+# Run from the /ui directory. This reads ui/openapitools.json (bff.openapi.yaml is the ONLY
+# input; output is ui/app/api/generated). Run it out-of-band and COMMIT the regenerated client;
+# the UI build (tsc --noEmit && vite build) does NOT regenerate.
+npm run generate:api
 ```
 
 ## 6. Provenance

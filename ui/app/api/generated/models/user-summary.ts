@@ -14,10 +14,25 @@
 
 
 
+/**
+ * [DEFERRED] Lightweight admin-user row backing the placeholder User Admin list screen [SRC: COUSR00C | USRSEC].
+ */
 export interface UserSummary {
+    /**
+     * User id (SEC-USR-ID X(08)).
+     */
     'userId'?: string;
+    /**
+     * First name (SEC-USR-FNAME X(20)).
+     */
     'firstName'?: string;
+    /**
+     * Last name (SEC-USR-LNAME X(20)).
+     */
     'lastName'?: string;
+    /**
+     * User type flag (SEC-USR-TYPE X(01)): A = administrator, U = regular user.
+     */
     'userType'?: UserSummaryUserTypeEnum;
 }
 
@@ -27,3 +42,5 @@ export const UserSummaryUserTypeEnum = {
 } as const;
 
 export type UserSummaryUserTypeEnum = typeof UserSummaryUserTypeEnum[keyof typeof UserSummaryUserTypeEnum];
+
+

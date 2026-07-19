@@ -8,7 +8,7 @@ The following table catalogs each write-ownership zone, its sole owner, and the 
 
 | Zone / Path | Owner | Rules / Notes |
 | --- | --- | --- |
-| `/services/<svc>/**` | The individual service (one per bounded context) | Owned **exclusively** by that service; one bounded context per deployable service `[SRC: CARDDEMO.CSD]`. Services: auth, account, card, transaction, payment, useradmin, reporting, bff. |
+| `/services/<svc>/**` | The individual service | Owned **exclusively** by that service. **Seven bounded-context domain services** — auth, account, card, transaction, payment, useradmin, reporting — each own their tree (one bounded context per deployable service `[SRC: CARDDEMO.CSD]`); the **`bff`** is a thin aggregation service (not a bounded context), for **eight Spring services in total**. |
 | `/contracts/**` | Shared (platform) | **FROZEN single source of truth** (OpenAPI 3.1); versioned; frozen after this run. Java server interfaces + UI TypeScript client are generated from these; never hand-edited. |
 | `/ui/app/**` | UI shell | Routing, theme (`theme.ts`), layout, auth (AuthProvider/RouteGuard), and generated API client output. |
 | `/ui/components/**` | UI shell (shared) | Shared, reusable MUI-composed components (PageContainer, DataTable, StatusChip, Loading/Empty/Error). |

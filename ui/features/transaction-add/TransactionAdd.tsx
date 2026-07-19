@@ -11,7 +11,7 @@
  * be a failure (AAP §0.1.2, §0.7.2, §0.8).
  *
  * Design-system compliance (AAP §0.5): this file composes the shared
- * `PageContainer` and `Empty` components — both built from `@mui/material`
+ * `PageContainer` and `DeferredNotice` components — both built from `@mui/material`
  * core primitives and theme tokens — so it is design-system compliant
  * transitively without importing any MUI primitive or hardcoding any value.
  *
@@ -21,22 +21,22 @@
  * behavior — the screen is deferred.
  */
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * TransactionAdd renders the deferred Transaction Add placeholder screen.
  *
  * Pure, presentational, and prop-less: the router mounts it as
  * `<TransactionAdd />` for the `/transactions/new` route. It returns the
- * standard page frame with the "Transaction Add" title wrapping a centered,
- * muted deferred-state message.
+ * standard page frame with the "Transaction Add" title wrapping a shared
+ * `DeferredNotice` that renders the canonical `[DEFERRED]` marker.
  *
  * @returns The framed deferred-placeholder page element.
  */
 export default function TransactionAdd() {
   return (
     <PageContainer title="Transaction Add">
-      <Empty message="Transaction Add is not yet implemented (deferred)." />
+      <DeferredNotice feature="Transaction Add" />
     </PageContainer>
   );
 }

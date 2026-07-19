@@ -15,7 +15,7 @@
  *    customer details, etc.).
  * A typed placeholder is the correct outcome; inventing functionality here would
  * be a failure. All visual output is composed from the shared, MUI-token-compliant
- * `PageContainer` + `Empty` components — this file adds no raw HTML, no
+ * `PageContainer` + `DeferredNotice` components — this file adds no raw HTML, no
  * `@mui/material` primitives, no `@mui/x-*`, and no hardcoded colors/spacing.
  *
  * Provenance: [SRC: COACTVWC | COMEN02Y.cpy:L25-L29] — main-menu option 1
@@ -29,7 +29,7 @@
  */
 import { useParams } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * AccountView renders the deferred Account View page frame.
@@ -42,7 +42,8 @@ import { Empty } from '../../components/Empty';
  * `string` prop of {@link PageContainer} is satisfied without a type error.
  *
  * @returns The framed, deferred Account View screen: a `PageContainer` titled
- *          "Account View" wrapping an `Empty` "not yet implemented" message.
+ *          "Account View" wrapping a shared `DeferredNotice` that renders the
+ *          canonical `[DEFERRED]` marker.
  */
 export default function AccountView() {
   // [SRC: COACTVWC | COMEN02Y.cpy:L25-L29] — main-menu option 1 "Account View".
@@ -55,7 +56,7 @@ export default function AccountView() {
       title="Account View"
       subtitle={accountId ? `Account ${accountId}` : undefined}
     >
-      <Empty message="Account View is not yet implemented (deferred)." />
+      <DeferredNotice feature="Account View" />
     </PageContainer>
   );
 }

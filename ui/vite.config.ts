@@ -18,18 +18,17 @@ import react from '@vitejs/plugin-react';
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // Load ALL environment variables for the active mode (empty prefix ''), not
-  // just VITE_-prefixed ones. VITE_BFF_PROXY_TARGET is a dev-only, server-side
-  // value used to configure the proxy below; it is intentionally NOT a client
-  // -inlined value. Only VITE_-prefixed vars are exposed to client code via
-  // `import.meta.env`.
+  // just VITE_-prefixed ones. BFF_PROXY_TARGET is a dev-only, server-side value
+  // used to configure the proxy below; it is intentionally NOT in the `VITE_`
+  // namespace, so it is never inlined into the client bundle. Only VITE_-prefixed
+  // vars are exposed to client code via `import.meta.env`.
   const env = loadEnv(mode, process.cwd(), '');
 
   // Where `npm run dev` proxies "/api" during local development. Defaults to the
   // BFF host port (root .env.example sets BFF_PORT=8080; documented in
-  // ui/.env.example as VITE_BFF_PROXY_TARGET). This proxy is used ONLY by the
-  // Vite dev server — in the compose/nginx production path nginx does the
-  // proxying instead.
-  const bffProxyTarget = env.VITE_BFF_PROXY_TARGET || 'http://localhost:8080';
+  // ui/.env.example as BFF_PROXY_TARGET). This proxy is used ONLY by the Vite dev
+  // server — in the compose/nginx production path nginx does the proxying instead.
+  const bffProxyTarget = env.BFF_PROXY_TARGET || 'http://localhost:8080';
 
   return {
     plugins: [react()],
@@ -51,7 +50,12 @@ export default defineConfig(({ mode }) => {
     build: {
       // The multi-stage ui/Dockerfile copies /app/dist into the nginx image.
       outDir: 'dist',
-      sourcemap: true,
+      // Do NOT emit production source maps: they would be copied into the public
+      // nginx tree and expose original TypeScript sources and module structure to
+      // anyone who can reach the site (finding M05). The nginx image also strips
+      // any stray *.map as defense-in-depth. Use a temporary local override only
+      // when actively debugging a production build.
+      sourcemap: false,
     },
   };
 });

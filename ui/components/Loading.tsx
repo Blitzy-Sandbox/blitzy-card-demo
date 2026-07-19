@@ -28,6 +28,45 @@ import type { SxProps, Theme } from '@mui/material';
 import { Box, CircularProgress, Skeleton, Stack, Typography } from '@mui/material';
 
 /**
+ * Spacing-scale multiple used for the spinner variant's reserved vertical space.
+ * Resolved through `theme.spacing()` (8px base → 200px) rather than a hardcoded
+ * pixel value (finding m33 — no hardcoded dimensions).
+ */
+const SPINNER_MIN_HEIGHT_UNITS = 25;
+
+/**
+ * Spacing-scale multiple used for each skeleton row's height. Resolved through
+ * `theme.spacing()` (8px base → 32px) rather than a hardcoded pixel value (m33).
+ */
+const SKELETON_ROW_HEIGHT_UNITS = 4;
+
+/** Default skeleton row count when `rows` is omitted or non-finite. */
+const DEFAULT_ROWS = 3;
+/** Lower/upper bounds applied to `rows` so the skeleton can never render an
+ * unbounded or non-positive number of placeholder lines (finding m33). */
+const MIN_ROWS = 1;
+const MAX_ROWS = 12;
+
+/**
+ * Screen-reader-only style: visually removes an element while keeping it in the
+ * accessibility tree so assistive technology can announce it. This is the
+ * standard "visually hidden" clipping technique (the same one MUI ships as
+ * `@mui/utils` `visuallyHidden`); its values are an a11y mechanism, not design
+ * tokens, so they are exempt from the no-hardcoded-values rule (finding m34).
+ */
+const visuallyHidden: SxProps<Theme> = {
+  position: 'absolute',
+  width: '1px',
+  height: '1px',
+  padding: 0,
+  margin: '-1px',
+  overflow: 'hidden',
+  clip: 'rect(0 0 0 0)',
+  whiteSpace: 'nowrap',
+  border: 0,
+};
+
+/**
  * Props for {@link Loading}.
  */
 export interface LoadingProps {
@@ -46,6 +85,8 @@ export interface LoadingProps {
   label?: string;
   /**
    * Number of skeleton placeholder lines to render when `variant='skeleton'`.
+   * Clamped to the inclusive range [{@link MIN_ROWS}, {@link MAX_ROWS}] and
+   * floored; non-finite values fall back to {@link DEFAULT_ROWS} (finding m33).
    *
    * @defaultValue `3`
    */
@@ -53,9 +94,11 @@ export interface LoadingProps {
   /**
    * Minimum block-size (vertical space) reserved for the spinner variant so the
    * indicator is visually centered within the available area. Accepts any MUI
-   * `sx`-compatible dimension (a bare number is interpreted as pixels).
+   * `sx`-compatible dimension (a bare number is interpreted as pixels). When
+   * omitted, defaults to a theme-`spacing()` multiple rather than a hardcoded
+   * pixel value (finding m33).
    *
-   * @defaultValue `200`
+   * @defaultValue `theme.spacing(25)` (200px at the default 8px base)
    */
   minHeight?: number | string;
   /**
@@ -80,23 +123,45 @@ export interface LoadingProps {
 export function Loading({
   variant = 'spinner',
   label,
-  rows = 3,
-  minHeight = 200,
+  rows = DEFAULT_ROWS,
+  minHeight,
   sx,
 }: LoadingProps) {
+  // Accessible status text announced to assistive technology (finding m34). A
+  // visible `label` doubles as the announcement; otherwise a hidden fallback is
+  // rendered so `role="status"` always has an accessible name.
+  const statusLabel = label ?? 'Loading…';
+
   if (variant === 'skeleton') {
+    // Clamp the requested row count into a bounded, positive, integral range so
+    // the skeleton can never render an unbounded or non-positive count (m33).
+    const requestedRows = Number.isFinite(rows) ? Math.floor(rows) : DEFAULT_ROWS;
+    const safeRows = Math.min(MAX_ROWS, Math.max(MIN_ROWS, requestedRows));
+
     return (
       <Stack
         spacing={1}
+        // `role="status"` + `aria-live` announce the loading region, and the
+        // visually-hidden label below gives it an accessible name (m34).
+        // `aria-busy` is scoped to this region, not the whole document.
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
         // Merge the consumer `sx` last using MUI's array form so object, array,
         // and callback `sx` values are all honoured (a plain object spread would
         // silently break the array/callback cases).
         sx={[{ width: '100%' }, ...(Array.isArray(sx) ? sx : sx ? [sx] : [])]}
-        aria-busy="true"
-        aria-live="polite"
       >
-        {Array.from({ length: rows }).map((_, index) => (
-          <Skeleton key={index} variant="rectangular" height={32} />
+        <Box component="span" sx={visuallyHidden}>
+          {statusLabel}
+        </Box>
+        {Array.from({ length: safeRows }).map((_, index) => (
+          <Skeleton
+            key={index}
+            variant="rectangular"
+            // Height via a theme-`spacing()` multiple, not a hardcoded px (m33).
+            sx={{ height: (theme) => theme.spacing(SKELETON_ROW_HEIGHT_UNITS) }}
+          />
         ))}
       </Stack>
     );
@@ -107,15 +172,17 @@ export function Loading({
       role="status"
       aria-live="polite"
       sx={[
-        {
+        (theme) => ({
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
           justifyContent: 'center',
           gap: 2,
           py: 4,
-          minHeight,
-        },
+          // Default the reserved height to a theme-`spacing()` multiple rather
+          // than a hardcoded px; an explicit `minHeight` prop still wins (m33).
+          minHeight: minHeight ?? theme.spacing(SPINNER_MIN_HEIGHT_UNITS),
+        }),
         ...(Array.isArray(sx) ? sx : sx ? [sx] : []),
       ]}
     >
@@ -127,7 +194,12 @@ export function Loading({
         <Typography variant="body2" sx={{ color: 'text.secondary' }}>
           {label}
         </Typography>
-      ) : null}
+      ) : (
+        // No visible caption → provide a hidden accessible name for role=status.
+        <Box component="span" sx={visuallyHidden}>
+          {statusLabel}
+        </Box>
+      )}
     </Box>
   );
 }

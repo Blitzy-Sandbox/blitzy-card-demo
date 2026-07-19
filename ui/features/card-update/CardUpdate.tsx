@@ -10,7 +10,7 @@
  */
 import { useParams } from 'react-router-dom';
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 export default function CardUpdate() {
   // Read the route param for display context only (no data fetching / no BFF call).
@@ -21,7 +21,7 @@ export default function CardUpdate() {
       title="Credit Card Update"
       subtitle={cardNumber ? `Card ${cardNumber}` : undefined}
     >
-      <Empty message="Credit Card Update is not yet implemented (deferred)." />
+      <DeferredNotice feature="Credit Card Update" />
     </PageContainer>
   );
 }

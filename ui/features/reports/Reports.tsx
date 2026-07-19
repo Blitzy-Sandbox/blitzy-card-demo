@@ -1,5 +1,5 @@
 import { PageContainer } from '../../components/PageContainer';
-import { Empty } from '../../components/Empty';
+import { DeferredNotice } from '../../components/DeferredNotice';
 
 /**
  * Transaction Reports screen — [DEFERRED] placeholder (zero business logic).
@@ -16,7 +16,7 @@ import { Empty } from '../../components/Empty';
 export default function Reports() {
   return (
     <PageContainer title="Transaction Reports">
-      <Empty message="Transaction Reports is not yet implemented (deferred)." />
+      <DeferredNotice feature="Transaction Reports" />
     </PageContainer>
   );
 }

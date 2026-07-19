@@ -40,11 +40,11 @@ servers:
 tags:
   - name: Reports
     description: >-
-      Transaction report job submission and job-status polling. [SRC: CORPT00C]
+      Transaction report job submission and job-status polling. [SRC: CORPT00C | TRANSACT]
   - name: Statements
     description: >-
       Account statement generation job submission (plain-text / HTML).
-      [SRC: CBSTM03A/B]
+      [SRC: CBSTM03A/B | TRANSACT]
 paths:
   /reports:
     post:
@@ -82,6 +82,8 @@ paths:
                 $ref: '#/components/schemas/JobAcknowledgement'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
   /statements:
@@ -122,6 +124,8 @@ paths:
                 $ref: '#/components/schemas/JobAcknowledgement'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
   /jobs/{jobId}:
@@ -154,6 +158,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/JobStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '500':
@@ -178,7 +184,7 @@ components:
         Parameters for a transaction report job. Report scope is selected by
         `reportType`; for a `CUSTOM` range both `startDate` and `endDate` are
         required. Derived from the legacy Transaction Reports screen radios
-        (Monthly / Yearly / Custom). [SRC: CORPT00C]
+        (Monthly / Yearly / Custom). [SRC: CORPT00C | TRANSACT]
       required:
         - reportType
       properties:
@@ -196,29 +202,44 @@ components:
         startDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: >-
             Inclusive report start date in `YYYY-MM-DD` format. Required only
-            when `reportType` is `CUSTOM`; ignored otherwise.
+            when `reportType` is `CUSTOM`; ignored otherwise. When both bounds
+            are supplied, `startDate` must not be after `endDate`.
           example: '2026-01-01'
         endDate:
           type: string
           maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
           description: >-
             Inclusive report end date in `YYYY-MM-DD` format. Required only when
-            `reportType` is `CUSTOM`; ignored otherwise.
+            `reportType` is `CUSTOM`; ignored otherwise. When both bounds are
+            supplied, `endDate` must not be before `startDate`.
           example: '2026-01-31'
+      if:
+        properties:
+          reportType:
+            const: CUSTOM
+        required:
+          - reportType
+      then:
+        required:
+          - startDate
+          - endDate
     StatementRequest:
       type: object
       description: >-
         Parameters for an account statement generation job. Derived from the
         legacy batch statement generators, which emit statements in plain-text
-        and HTML formats. [SRC: CBSTM03A/B]
+        and HTML formats. [SRC: CBSTM03A/B | TRANSACT]
       properties:
         accountId:
           type: string
           maxLength: 11
+          pattern: '^[0-9]{1,11}$'
           description: >-
-            Target account identifier (11-digit account number). Omit to
+            Target account identifier (1-to-11-digit account number). Omit to
             generate statements for all accounts.
           example: '00000000011'
         format:
@@ -325,6 +346,9 @@ components:
       description: >-
         RFC 7807 problem-details payload returned for error responses via the
         `application/problem+json` media type.
+      required:
+        - status
+        - title
       properties:
         type:
           type: string
@@ -364,6 +388,19 @@ components:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /reports
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
     NotFound:
       description: The requested resource could not be found.
       content:

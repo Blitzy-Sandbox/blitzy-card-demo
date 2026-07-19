@@ -12,14 +12,34 @@
  * Do not edit the class manually.
  */
 
+
 // May contain unused imports in some cases
 // @ts-ignore
 import type { TransactionSummary } from './transaction-summary';
 
+/**
+ * [DEFERRED] A single page of transaction summaries. Typed placeholder shape for the transaction list aggregation.
+ */
 export interface TransactionListResponse {
-    'items'?: Array<TransactionSummary>;
-    'page'?: number;
-    'size'?: number;
-    'totalItems'?: number;
-    'totalPages'?: number;
+    /**
+     * The transaction summaries on this page.
+     */
+    'items': Array<TransactionSummary>;
+    /**
+     * Zero-based page index.
+     */
+    'page': number;
+    /**
+     * Page size (number of rows per page).
+     */
+    'size': number;
+    /**
+     * Total number of transactions matching the query.
+     */
+    'totalItems': number;
+    /**
+     * Total number of pages available.
+     */
+    'totalPages': number;
 }
+

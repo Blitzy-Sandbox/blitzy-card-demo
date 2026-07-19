@@ -14,10 +14,25 @@
 
 
 
+/**
+ * [DEFERRED] Lightweight account display subset backing the placeholder Account View screen [SRC: COACTVWC | ACCTDAT]. Monetary values are decimal strings (2 dp) to avoid binary floating-point drift.
+ */
 export interface AccountView {
+    /**
+     * Account identifier (ACCT-ID 9(11)).
+     */
     'accountId'?: string;
+    /**
+     * Active status flag (ACCT-ACTIVE-STATUS X(01)).
+     */
     'activeStatus'?: AccountViewActiveStatusEnum;
+    /**
+     * Current balance; decimal string, 2 dp (ACCT-CURR-BAL S9(10)V99).
+     */
     'currentBalance'?: string;
+    /**
+     * Credit limit; decimal string, 2 dp (ACCT-CREDIT-LIMIT S9(10)V99).
+     */
     'creditLimit'?: string;
 }
 
@@ -27,3 +42,5 @@ export const AccountViewActiveStatusEnum = {
 } as const;
 
 export type AccountViewActiveStatusEnum = typeof AccountViewActiveStatusEnum[keyof typeof AccountViewActiveStatusEnum];
+
+

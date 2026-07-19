@@ -14,10 +14,25 @@
 
 
 
+/**
+ * A single main-menu navigation entry derived from the legacy CardDemo main menu [SRC: COMEN01C | COMEN02Y]. The `route` is the UI route path the option navigates to; option 4 (Credit Card View) routes to the live Card Detail tracer screen. 
+ */
 export interface MenuOption {
+    /**
+     * The menu option number (CDEMO-MENU-OPT-NUM 9(02)), 1-based.
+     */
     'optionNumber'?: number;
+    /**
+     * Human-readable menu label (CDEMO-MENU-OPT-NAME X(35)).
+     */
     'label'?: string;
+    /**
+     * The UI route path this option navigates to (for example \"/cards/0500024453765740\" for Credit Card View -> the tracer screen).
+     */
     'route'?: string;
+    /**
+     * Which user type may see this option (CDEMO-MENU-OPT-USRTYPE X(01)): A = admin only, U = regular user, ALL = everyone.
+     */
     'userType'?: MenuOptionUserTypeEnum;
 }
 
@@ -28,3 +43,5 @@ export const MenuOptionUserTypeEnum = {
 } as const;
 
 export type MenuOptionUserTypeEnum = typeof MenuOptionUserTypeEnum[keyof typeof MenuOptionUserTypeEnum];
+
+
