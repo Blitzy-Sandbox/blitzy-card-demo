@@ -47,9 +47,6 @@ public class PaymentController implements PaymentsApi {
     /** Fixed placeholder monetary value (decimal string, mirroring ACCT-CURR-BAL PIC S9(10)V99). */
     private static final String PLACEHOLDER_AMOUNT = "0.00";
 
-    /** Fixed placeholder payment transaction identifier (TRAN-ID, PIC 9(16); &le; 16 chars). */
-    private static final String PLACEHOLDER_TRANSACTION_ID = "0000000000000001";
-
     /**
      * {@code GET /payments/balance/{accountId}} &mdash; retrieve the current balance for an account.
      *
@@ -79,14 +76,25 @@ public class PaymentController implements PaymentsApi {
      * {@code accountId} is echoed back (null-safe) for realism. Mirrors the legacy confirm-and-pay
      * step of {@code COBIL00C} without any of its side effects.</p>
      *
+     * <p><strong>Honest stub semantics.</strong> Because no work is actually performed, the
+     * response reports {@link BillPaymentResponse.StatusEnum#PENDING PENDING} &mdash; <em>not</em>
+     * {@code CONFIRMED} &mdash; and carries an empty {@code transactionId} ({@code ""}), since no
+     * payment transaction was posted. This deliberately matches the BFF
+     * {@code aggregation.PaymentsAggregator} so the deferred Bill Payment feature presents a single,
+     * consistent, truthful placeholder shape across the topology. Reporting {@code CONFIRMED} with a
+     * fabricated transaction id would falsely imply a completed payment and is therefore avoided.</p>
+     *
      * @param billPaymentRequest the bill-payment instruction; echoed for realism, otherwise ignored
      * @param xCorrelationID     optional correlation identifier; accepted for contract fidelity and
      *                           ignored here (MDC propagation is owned by {@code CorrelationIdFilter})
-     * @return {@code 200 OK} with a typed placeholder confirmation payload
+     * @return {@code 200 OK} with a typed placeholder confirmation payload (status {@code PENDING})
      */
     @Override
     public ResponseEntity<BillPaymentResponse> payBill(BillPaymentRequest billPaymentRequest, UUID xCorrelationID) {
-        // [DEFERRED] typed stub — placeholder confirmation; no TRANSACT write, no balance rewrite (see COBIL00C WRITE-TRANSACT-FILE / UPDATE-ACCTDAT-FILE).
+        // [DEFERRED] typed stub — nothing processed: no TRANSACT write, no balance rewrite (see COBIL00C
+        // WRITE-TRANSACT-FILE / UPDATE-ACCTDAT-FILE). Report PENDING + empty transactionId (honest stub),
+        // consistent with the BFF PaymentsAggregator; CONFIRMED + a synthetic id would falsely imply a
+        // completed payment.
         String accountId = (billPaymentRequest != null && billPaymentRequest.getAccountId() != null)
                 ? billPaymentRequest.getAccountId()
                 : PLACEHOLDER_ACCOUNT_ID;
@@ -95,8 +103,8 @@ public class PaymentController implements PaymentsApi {
                 .previousBalance(PLACEHOLDER_AMOUNT)
                 .paymentAmount(PLACEHOLDER_AMOUNT)
                 .newBalance(PLACEHOLDER_AMOUNT)
-                .transactionId(PLACEHOLDER_TRANSACTION_ID)
-                .status(BillPaymentResponse.StatusEnum.CONFIRMED);
+                .transactionId("")
+                .status(BillPaymentResponse.StatusEnum.PENDING);
         return ResponseEntity.ok(placeholder);
     }
 }

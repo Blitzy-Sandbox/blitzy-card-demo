@@ -1,4 +1,4 @@
-package com.carddemo.account.config;
+package com.carddemo.transaction.config;
 
 import java.io.IOException;
 import java.util.UUID;
@@ -16,11 +16,11 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 /**
- * The REAL correlation-ID hop for {@code account-svc} (CardDemo walking skeleton).
+ * The REAL correlation-ID hop for {@code transaction-svc} (CardDemo walking skeleton).
  *
  * <p>Runs exactly once per request (extends {@link OncePerRequestFilter}) and is
  * registered automatically as a {@link Component} via the component scan rooted at
- * {@code AccountApplication} &mdash; no explicit servlet-filter registration is
+ * {@code TransactionApplication} &mdash; no explicit servlet-filter registration is
  * required. For every inbound request it:</p>
  * <ol>
  *   <li>reads the correlation-ID header (name from the {@code carddemo.correlation.header}
@@ -34,7 +34,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * </ol>
  *
  * <p>Authentication in the skeleton is a permissive stub, but this correlation hop is
- * genuine (AAP &sect;0.4 / &sect;0.8): the identifier propagates UI -&gt; BFF -&gt; account-svc
+ * genuine (AAP &sect;0.4 / &sect;0.8): the identifier propagates UI -&gt; BFF -&gt; transaction-svc
  * so a single request can be traced across every service boundary via the SLF4J MDC. In
  * the tracer the UI/BFF supply the id, which is then propagated unchanged; when absent a
  * new id is minted here as the first hop.</p>
@@ -43,19 +43,17 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * worker thread, so a value left in the MDC would bleed into the next, unrelated request
  * handled by the same thread.</p>
  *
- * <p><strong>Convention note:</strong> the account-svc header property key is
+ * <p><strong>Convention note:</strong> the transaction-svc header property key is
  * {@code carddemo.correlation.header}, standardized across every service in the topology
- * (auth/card/transaction/payment/useradmin/reporting/bff) and matching the sibling
+ * (auth/account/card/payment/useradmin/reporting/bff) and matching the sibling
  * {@code application.yml}. The MDC key is always the literal {@code correlationId}.</p>
  *
- * <p>Provenance: [SRC: COACTVWC/COACTUPC | ACCTDAT] &mdash; app/csd/CARDDEMO.CSD
- * ({@code DEFINE PROGRAM(COACTVWC)} / {@code TRANSID(CAVW)}, "Accept and process Account
- * View request", and {@code DEFINE PROGRAM(COACTUPC)} / {@code TRANSID(CAUP)}, "Accept and
- * process ACCOUNT UPDATE") over {@code DEFINE FILE(ACCTDAT)}
- * (DSNAME {@code AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}); account-svc is the modern account
- * bounded context. The legacy references are provenance/topology ONLY &mdash; this
- * cross-cutting infrastructure is not dictated by COBOL logic and no COBOL behavior is
- * ported.</p>
+ * <p>Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT] &mdash; app/csd/CARDDEMO.CSD
+ * ({@code DEFINE PROGRAM(COTRN00C)} / {@code TRANSID(CT00)} List, {@code COTRN01C} /
+ * {@code TRANSID(CT01)} View, {@code COTRN02C} / {@code TRANSID(CT02)} Add) over
+ * {@code DEFINE FILE(TRANSACT)}; transaction-svc is the modern transaction bounded context.
+ * The legacy references are provenance/topology ONLY &mdash; this cross-cutting
+ * infrastructure is not dictated by COBOL logic and no COBOL behavior is ported.</p>
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -65,7 +63,7 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
     private static final String MDC_KEY = "correlationId";
 
     /**
-     * Name of the HTTP header that carries the correlation ID. Sourced from the account-svc
+     * Name of the HTTP header that carries the correlation ID. Sourced from the transaction-svc
      * {@code carddemo.correlation.header} property (overridable via the {@code CORRELATION_HEADER}
      * environment variable) and defaulting to {@code X-Correlation-ID}, keeping the header
      * consistent across every service in the topology.

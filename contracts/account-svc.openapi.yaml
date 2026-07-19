@@ -165,7 +165,14 @@ components:
           example: '00000000011'
         activeStatus:
           type: string
-          maxLength: 1
+          # NOTE: activeStatus is fully constrained by the enum below (single-character
+          # values Y|N). The redundant `maxLength: 1` was intentionally removed: the
+          # OpenAPI 'spring' generator renders maxLength as jakarta `@Size(max = 1)`,
+          # which is INVALID on the generated enum-typed getter and throws
+          # HV000030 (UnexpectedTypeException) the moment Hibernate Validator applies
+          # bean validation. The enum alone preserves the ACCT-ACTIVE-STATUS PIC X(01)
+          # domain (Y|N). Mirrors the identical fix already applied to User.userType in
+          # useradmin-svc.openapi.yaml.
           enum:
             - 'Y'
             - 'N'
@@ -244,7 +251,11 @@ components:
       properties:
         activeStatus:
           type: string
-          maxLength: 1
+          # NOTE: redundant `maxLength: 1` removed — see the Account.activeStatus note.
+          # The enum below fully constrains the ACCT-ACTIVE-STATUS PIC X(01) domain (Y|N);
+          # rendering maxLength as `@Size` on the generated enum getter throws HV000030
+          # (UnexpectedTypeException), which previously failed EVERY PUT /accounts/{id}
+          # request-body validation with HTTP 500 before the controller ran.
           enum:
             - 'Y'
             - 'N'

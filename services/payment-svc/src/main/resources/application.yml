@@ -8,6 +8,14 @@
 spring:
   application:
     name: payment-svc
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. With this enabled, framework-handled
+      # validation failures (e.g. MethodArgumentNotValidException on request bodies) are rendered
+      # as application/problem+json 400s, matching the frozen OpenAPI contract's error shape. The
+      # sibling web/GlobalExceptionHandler additionally maps path/query ConstraintViolationException
+      # (which the framework does NOT handle) to the same 400 problem+json envelope.
+      enabled: true
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
@@ -46,7 +54,16 @@ management:
         enabled: true
 
 # Correlation-ID header name consumed by the sibling config/CorrelationIdFilter
-# (OncePerRequestFilter + SLF4J MDC), read via @Value("${correlation.header:X-Correlation-ID}").
-# Top-level 'correlation.header' key; compose env CORRELATION_HEADER binds here via relaxed binding.
-correlation:
-  header: ${CORRELATION_HEADER:X-Correlation-ID}
+# (OncePerRequestFilter + SLF4J MDC), read via @Value("${carddemo.correlation.header:X-Correlation-ID}").
+# Standardized 'carddemo.correlation.header' key across every service in the topology
+# (auth/account/card/transaction/useradmin/reporting/bff); compose env CORRELATION_HEADER binds here
+# via relaxed binding.
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter) on every log line,
+    # making the real UI -> BFF -> payment-svc hop observable. Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:payment-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"

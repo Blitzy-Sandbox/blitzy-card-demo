@@ -7,6 +7,15 @@
 spring:
   application:
     name: bff
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. With this enabled, framework-handled
+      # validation failures (e.g. MethodArgumentNotValidException on request bodies) are rendered as
+      # application/problem+json 400s, matching the frozen OpenAPI contract's error shape. The sibling
+      # web/GlobalExceptionHandler additionally maps path/query ConstraintViolationException (raised by
+      # @Validated constraints on the generated API path params, e.g. AccountsApi accountId) to the
+      # same 400 problem+json envelope.
+      enabled: true
   # Intentionally NO Spring DataSource block and NO Spring JPA block here — the BFF owns NO
   # schema/persistence and has NO JDBC or JPA libraries on its classpath. docker-compose injects
   # SPRING_DATASOURCE_* generically to all services; because nothing on the BFF classpath consumes
@@ -37,7 +46,13 @@ carddemo:
   services:
     # card-svc is the LIVE tracer target for Card Detail aggregation.
     card-svc-url: ${CARD_SVC_URL:http://card-svc:8080}
-    # auth-svc backs the permissive login forward (POST /api/auth/login).
+    # Reserved [DEFERRED] seam for a future BFF -> auth-svc forward. In this skeleton the sign-on flow
+    # (POST /api/auth/login) is a LOCAL permissive stub per AAP §0.8 ("exactly one tracer slice is live
+    # ... everything else is a stub"), §0.1.1 (the topology diagram marks BFF -.stub.-> AUTH vs
+    # BFF ==> live ==> CARD) and §0.7.1 (BFF non-card aggregators are local stubs): AuthAggregator mints
+    # the token locally and makes NO downstream call, so NO bean consumes this URL today. It is retained
+    # only because docker-compose injects AUTH_SVC_URL and to document the deferred seam; wiring a live
+    # forward here is intentionally out of scope for the walking skeleton.
     auth-svc-url: ${AUTH_SVC_URL:http://auth-svc:8080}
   # Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
   correlation:

@@ -6,6 +6,13 @@
 spring:
   application:
     name: account-svc
+  mvc:
+    # RFC 7807 problem details: render Spring MVC-handled errors (e.g. body-validation
+    # MethodArgumentNotValidException, 415/405/404) as application/problem+json, matching
+    # the contract-declared error content type. Path/query-parameter ConstraintViolationException
+    # is mapped to a 400 problem+json by the sibling web/GlobalExceptionHandler.
+    problemdetails:
+      enabled: true
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}

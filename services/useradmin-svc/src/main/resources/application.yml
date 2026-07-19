@@ -6,6 +6,14 @@
 spring:
   application:
     name: useradmin-svc
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. With this enabled, framework-handled
+      # validation failures (e.g. MethodArgumentNotValidException on request bodies) are rendered
+      # as application/problem+json 400s, matching the frozen OpenAPI contract's error shape. The
+      # sibling web/GlobalExceptionHandler additionally maps path/query ConstraintViolationException
+      # (which the framework does NOT handle) to the same 400 problem+json envelope.
+      enabled: true
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
