@@ -361,7 +361,13 @@ components:
             - Hopper
         userType:
           type: string
-          maxLength: 1
+          # NOTE: userType is fully constrained by the enum below (single-character
+          # values A|U). The redundant `maxLength: 1` was intentionally removed: the
+          # OpenAPI 'spring' generator renders maxLength as jakarta `@Size(max = 1)`,
+          # which is INVALID on the generated enum-typed getter and throws
+          # jakarta.validation.UnexpectedTypeException (HV000030) during @Valid
+          # request-body validation. The enum alone preserves the SEC-USR-TYPE PIC X(1)
+          # domain (A=Admin, U=User) without any behavioural change.
           enum:
             - A
             - U
@@ -412,7 +418,10 @@ components:
             - Pass123
         userType:
           type: string
-          maxLength: 1
+          # NOTE: redundant `maxLength: 1` removed — see the User.userType note. The
+          # enum below fully constrains the SEC-USR-TYPE PIC X(1) domain (A|U); rendering
+          # maxLength as `@Size` on the generated enum getter would throw HV000030
+          # (UnexpectedTypeException) during @Valid request-body validation.
           enum:
             - A
             - U
@@ -456,7 +465,10 @@ components:
             - Pass123
         userType:
           type: string
-          maxLength: 1
+          # NOTE: redundant `maxLength: 1` removed — see the User.userType note. The
+          # enum below fully constrains the SEC-USR-TYPE PIC X(1) domain (A|U); rendering
+          # maxLength as `@Size` on the generated enum getter would throw HV000030
+          # (UnexpectedTypeException) during @Valid request-body validation.
           enum:
             - A
             - U
