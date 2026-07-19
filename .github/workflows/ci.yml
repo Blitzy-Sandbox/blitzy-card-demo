@@ -1,0 +1,207 @@
+# CardDemo Walking Skeleton — Continuous Integration
+#
+# Container-based CI pipeline that proves the modernized CardDemo walking
+# skeleton BUILDS GREEN and that the single vertical tracer slice
+# (UI -> BFF -> card-svc -> Oracle FREEPDB1 seeded row -> Card Detail) is wired.
+#
+# This is the clean-room, container-based analog of the legacy build-submission
+# JCL; nothing legacy is ported or modified — the legacy artifacts are read-only
+# provenance:
+#   [SRC: BUILDBAT/BUILDBMS/BUILDONL | samples/jcl]  legacy COBOL/BMS/CICS compile jobs -> `mvn package` + UI `npm run build` + Docker image builds
+#   [SRC: DFHCSDUP/IDCAMS | app/jcl]                 legacy IDCAMS VSAM DEFINE + REPRO / CSD load  -> Flyway migrations (V1 schema + V2 single-row seed)
+#   [SRC: CARDDEMO.CSD | app/csd]                    CSD file/program topology                     -> the 8 bounded-context services the reactor builds
+name: CI
+
+# Trigger on pushes to main, on every pull request, and on manual dispatch.
+on:
+  push:
+    branches: [ main ]
+  pull_request: {}
+  workflow_dispatch: {}
+
+# Cancel superseded runs on the same ref so CI always reflects the latest commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: CI only needs to read the repository contents.
+permissions:
+  contents: read
+
+jobs:
+  # A single job keeps the runner-local Oracle instance shared across every
+  # step (Java, Node, and Oracle all live on the same ubuntu-latest runner);
+  # a matrix/multi-job split is not required and would complicate DB sharing.
+  build:
+    name: Build & verify walking skeleton (green)
+    runs-on: ubuntu-latest
+
+    # Job-level datasource/credentials so every step is consistent. The CI
+    # Oracle is ephemeral, so a throwaway literal password is acceptable and is
+    # reused verbatim by the Oracle action, the Flyway step, and Spring.
+    env:
+      ORACLE_APP_USER: carddemo
+      ORACLE_APP_PASSWORD: carddemo
+      ORACLE_PDB: FREEPDB1
+      # In CI, Oracle is reachable on the runner host as localhost:1521 (the
+      # docker-compose service name 'oracle' only applies inside the compose
+      # network — see Reconciliation #4).
+      DB_URL: jdbc:oracle:thin:@localhost:1521/FREEPDB1
+      CORRELATION_HEADER: X-Correlation-ID
+
+    steps:
+      # 1. Check out the full tree. The whole repo is required: each service pom
+      #    reads its contract at ../../contracts/<svc>.openapi.yaml and the UI
+      #    reads ../contracts/bff.openapi.yaml, so /contracts, /db, /services and
+      #    /ui must all be present.
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Java 21 (Temurin) toolchain for the Maven reactor. `cache: maven` is
+      #    safe — the reactor pom.xml + module poms provide a stable cache key.
+      - name: Set up Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 3. Node 22 for the Vite 8 UI build (Vite 8 requires Node >= 22.12).
+      #    NOTE: npm caching is intentionally NOT enabled. Although a committed
+      #    ui/package-lock.json now exists, setup-node's npm cache looks for the
+      #    lockfile at the repo root by default and would additionally need an
+      #    explicit cache-dependency-path: ui/package-lock.json; omitting caching
+      #    keeps this step simple and reliably green (build-green > marginal
+      #    speedup).
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 4. Provision Oracle Database Free 23ai BEFORE the Maven build so the
+      #    services' context-load/health smoke tests and the tracer read connect
+      #    to a real Oracle datasource. This mirrors the docker-compose gating
+      #    order Oracle -> migrations -> services (Reconciliation #2). The action
+      #    waits for DB health before completing, so Oracle is up on
+      #    localhost:1521 immediately after this step.
+      #
+      #    Tag reconciliation (build-green > literal wording): the AAP text pins
+      #    '23.8-slim', but that tag (and '23.26.0-slim') is NOT published on
+      #    Docker Hub. The repository's .env.example pins
+      #    ORACLE_IMAGE_TAG=23.26.2-slim — a real, concrete patch tag chosen
+      #    precisely so the topology starts green — and the action tag input is
+      #    meant to "match root .env.example ORACLE_IMAGE_TAG". We therefore pin
+      #    the real 23.26.2-slim: an explicit patch tag (never 'latest', never
+      #    the bare moving '23'/'23-slim' major tag).
+      #
+      #    The app user is auto-created in the default PDB FREEPDB1, so we do NOT
+      #    set `oracle-database` (that would create an extra named PDB and add
+      #    startup time). `container-runtime: docker` matches the Docker
+      #    pre-installed on ubuntu-latest and the Flyway `docker run` step below.
+      #    Flyway (next step) owns the schema + flyway_schema_history, so we do
+      #    NOT use the action's setup/startup-scripts for migrations.
+      - name: Provision Oracle Database Free 23ai
+        uses: gvenzl/setup-oracle-free@v1
+        with:
+          tag: '23.26.2-slim'
+          app-user: ${{ env.ORACLE_APP_USER }}
+          app-user-password: ${{ env.ORACLE_APP_PASSWORD }}
+          oracle-password: ${{ env.ORACLE_APP_PASSWORD }}
+          container-runtime: docker
+
+      # 5. Apply the Flyway migrations (V1 baseline schema + V2 single-row tracer
+      #    seed) against the live Oracle PDB. Modern analog of the legacy IDCAMS
+      #    VSAM DEFINE + REPRO load jobs. Uses a pinned FULL Flyway image (the
+      #    full image bundles the Oracle JDBC driver) via `docker run
+      #    --network host` so it reaches the Oracle listener on localhost:1521.
+      #    Mirrors the docker-compose flyway one-shot service arguments exactly;
+      #    -connectRetries=60 provides resilience if Oracle needs a moment.
+      - name: Apply Flyway migrations
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/db/migration:/flyway/sql:ro" \
+            flyway/flyway:11 \
+            -url="${{ env.DB_URL }}" \
+            -user="${{ env.ORACLE_APP_USER }}" \
+            -password="${{ env.ORACLE_APP_PASSWORD }}" \
+            -connectRetries=60 \
+            -locations=filesystem:/flyway/sql \
+            migrate
+
+      # 6. Export the Spring datasource env for the Maven build so context-load
+      #    smoke tests and the tracer integration connect to the live seeded DB.
+      #    SPRING_FLYWAY_ENABLED=false disables in-service Flyway (the dedicated
+      #    step above already owns the schema + flyway_schema_history), exactly
+      #    as docker-compose.yml disables in-service Flyway — this avoids a
+      #    double-migration / schema-history conflict.
+      - name: Export Spring datasource environment
+        run: |
+          {
+            echo "SPRING_DATASOURCE_URL=${{ env.DB_URL }}"
+            echo "SPRING_DATASOURCE_USERNAME=${{ env.ORACLE_APP_USER }}"
+            echo "SPRING_DATASOURCE_PASSWORD=${{ env.ORACLE_APP_PASSWORD }}"
+            echo "SPRING_FLYWAY_ENABLED=false"
+            echo "CORRELATION_HEADER=${{ env.CORRELATION_HEADER }}"
+          } >> "$GITHUB_ENV"
+
+      # 7. Build all 8 services through the root reactor (pure aggregator pom:
+      #    services/{auth,account,card,transaction,payment,useradmin,reporting}-svc
+      #    + services/bff). During generate-sources each service's
+      #    openapi-generator-maven-plugin generates the Java Spring server
+      #    interfaces from /contracts/<svc>.openapi.yaml, so Java contract codegen
+      #    happens automatically here — no separate Java codegen step is needed
+      #    (Reconciliation #3). `package` also runs each service's
+      #    <Svc>ApplicationTests context-load/health smoke test; a
+      #    contract/interface mismatch fails the build here (contract-first
+      #    guarantee). reporting-svc compiles + tests here too — it is exempt only
+      #    from the HTTP start-and-serve assertion, not from the reactor build.
+      - name: Build backend (all 8 services) and run smoke tests
+        run: mvn -B -ntp -f pom.xml package
+
+      # 8. Install UI dependencies with `npm install` (NOT `npm ci`). A committed
+      #    ui/package-lock.json now exists (so `npm ci` would also work today),
+      #    but CI deliberately uses `npm install` per Reconciliation #1's
+      #    build-green intent: it installs whether or not the lockfile is perfectly
+      #    in sync with package.json, staying robust to any drift introduced while
+      #    parallel agents' UI files are reconciled. (The ui/Dockerfile uses
+      #    `npm ci` for byte-reproducible images; CI favors tolerance.)
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm install
+
+      # 9. Regenerate the typed TypeScript client from the FROZEN bff contract
+      #    (../contracts/bff.openapi.yaml) into ui/app/api/generated. Validates
+      #    contract -> client generation in CI. Needs the JRE from step 2, the
+      #    ../contracts tree from checkout, and openapi-generator-cli from step 8.
+      - name: Generate UI API client
+        working-directory: ui
+        run: npm run generate:api
+
+      # 10. Type-check the app + generated client and bundle the SPA
+      #     (`tsc --noEmit && vite build`) to ui/dist.
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+      # 11. Green assertion. The reactor (compile + tests for all 8 services),
+      #     the UI type-check + bundle, and the contract codegen have all been
+      #     exercised above; any failure already fails the job. As an extra guard
+      #     that the tracer DATA path is live, confirm the single seeded tracer
+      #     row exists in the live Oracle PDB (V2__seed_tracer.sql seeds
+      #     CARD_NUM='0500024453765740'). The connection coordinates are the same
+      #     ones Flyway already used successfully in step 5.
+      #
+      #     reporting-svc is intentionally NOT asserted to serve HTTP health — it
+      #     is an async job stub and only needs to have built green in the reactor.
+      - name: Assert walking skeleton is green
+        run: |
+          echo "Verifying the single tracer seed row exists in Oracle ${ORACLE_PDB}..."
+          docker exec oracledb bash -lc "echo -e 'SET HEADING OFF FEEDBACK OFF PAGESIZE 0 VERIFY OFF\nSELECT CARD_NUM FROM CARD WHERE CARD_NUM = '\''0500024453765740'\'';' | sqlplus -s ${ORACLE_APP_USER}/${ORACLE_APP_PASSWORD}@localhost:1521/${ORACLE_PDB}" | tee tracer_seed_check.txt
+          if grep -q '0500024453765740' tracer_seed_check.txt; then
+            echo "Tracer seed row present — card-svc natural-key read path is exercisable."
+          else
+            echo "Tracer seed row missing — failing the green assertion."
+            exit 1
+          fi
+          rm -f tracer_seed_check.txt
+          echo "Walking skeleton GREEN: 8-service Maven reactor built + tested, Java contracts generated, UI type-checked + bundled + client generated, and the Oracle-backed tracer seed verified."
