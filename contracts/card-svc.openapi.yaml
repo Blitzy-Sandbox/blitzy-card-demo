@@ -1,0 +1,450 @@
+openapi: 3.1.0
+info:
+  title: Card Service API
+  version: "1.0.0"
+  description: |
+    Frozen OpenAPI 3.1 single-source-of-truth (SSoT) contract for the CardDemo
+    walking-skeleton `card-svc` bounded context. This specification is
+    hand-authored ONCE and then FROZEN; it is NEVER hand-edited afterwards
+    (AAP 0.1.1, 0.8). Java Spring server interfaces are generated from this
+    contract via `openapi-generator-maven-plugin`
+    (generatorName=spring, interfaceOnly=true); the thin BFF fronts this same
+    shape for the React UI.
+
+    This contract carries the ONE fully-wired vertical tracer slice of the
+    skeleton: `GET /cards/{cardNumber}`, which performs a REAL Oracle read of a
+    single Flyway-seeded row. Every other operation is a typed placeholder stub
+    ([DEFERRED]) - interface + typed stub is the correct default; a hallucinated
+    implementation is a failure.
+
+    Provenance: [SRC: COCRDSLC | CARDDAT] - the legacy Credit Card View
+    transaction (CCDL -> COCRDSLC) reading the CARDDAT VSAM KSDS keyed on the
+    16-character card number. Card field shapes derive from copybook
+    CVACT02Y.cpy (CARD-RECORD) and the Card Detail BMS map COCRDSL.bms.
+
+    Requirement family: F-SKEL (CardDemo Walking Skeleton).
+  contact:
+    name: CardDemo Skeleton Team
+    url: https://github.com/aws-samples/aws-mainframe-modernization-carddemo
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8083
+    description: >-
+      Local direct access to card-svc (host port CARD_SVC_PORT=8083). The
+      container listens on 8080 internally; 8083 is the mapped host port for
+      direct local testing only.
+  - url: /
+    description: Relative / in-cluster base path (used when fronted by the BFF).
+tags:
+  - name: Cards
+    description: >-
+      Credit card domain operations derived from the legacy CardDemo card
+      programs (COCRDSLC / COCRDLIC / COCRDUPC).
+  - name: Health
+    description: >-
+      Container health / readiness endpoint used for docker-compose and CI
+      startup gating.
+security:
+  - bearerAuth: []
+paths:
+  /cards/{cardNumber}:
+    get:
+      tags:
+        - Cards
+      operationId: getCardByNumber
+      summary: Retrieve a single card by its natural 16-digit card number (LIVE TRACER)
+      description: |
+        The ONE fully-wired vertical tracer slice of the walking skeleton
+        [SRC: COCRDSLC | CARDDAT]. card-svc performs a REAL Oracle read of the
+        seeded row via `CardRepository.findById(cardNumber)`, keyed on the
+        natural 16-character card number (the surrogate identity primary key is
+        deliberately kept off the read path). The 200 / 404 / 500 responses
+        drive the UI's real loading / empty / error states respectively.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cardNumber
+          in: path
+          required: true
+          description: The natural 16-digit card number (CARD-NUM X(16)).
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: "^[0-9]{16}$"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Card found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    put:
+      tags:
+        - Cards
+      operationId: updateCard
+      summary: Update the writable fields of a card
+      description: |
+        [DEFERRED] Credit Card Update [SRC: COCRDUPC | CARDDAT]. Part of the
+        frozen contract, but the card-svc controller returns a typed placeholder
+        response in the skeleton. Only non-key fields are writable; `cardNumber`
+        and `accountId` are natural keys and are not modifiable.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cardNumber
+          in: path
+          required: true
+          description: The natural 16-digit card number (CARD-NUM X(16)).
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: "^[0-9]{16}$"
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        description: The writable card fields to apply.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CardUpdateRequest"
+      responses:
+        "200":
+          description: Card updated (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Card"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /cards:
+    get:
+      tags:
+        - Cards
+      operationId: listCards
+      summary: List cards, optionally filtered by account id
+      description: |
+        [DEFERRED] Credit Card List [SRC: COCRDLIC | CARDDAT]. Part of the
+        frozen contract, but the card-svc controller returns a typed placeholder
+        response; no real pagination or persistence is wired in the skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: accountId
+          in: query
+          required: false
+          description: Optional owning-account filter (CARD-ACCT-ID 9(11)).
+          schema:
+            type: string
+            maxLength: 11
+            pattern: "^[0-9]{1,11}$"
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (number of rows per page).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: A page of card summaries (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: healthCheck
+      summary: Container health / readiness probe
+      description: |
+        This documents the Spring Boot Actuator health endpoint used by
+        docker-compose / CI gating. The generated Health API interface MUST be
+        left UNIMPLEMENTED - Actuator serves `/actuator/health` at runtime. Do
+        NOT write a controller for this path (avoids a duplicate
+        request-mapping conflict with Actuator).
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Correlation ID propagated UI -> BFF -> card-svc and logged via SLF4J
+        MDC. Optional on inbound requests; when absent the service generates
+        one.
+      schema:
+        type: string
+        format: uuid
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Bearer token issued by auth-svc. Permissive in the skeleton: token
+        presence is a real hop that is propagated through UI -> BFF -> card-svc,
+        but it is NOT cryptographically validated in this walking skeleton.
+  responses:
+    BadRequest:
+      description: >-
+        Malformed request (for example, the card number is not exactly 16
+        digits). Mirrors the legacy validation message "Card number if supplied
+        must be a 16 digit number".
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >-
+        The requested card does not exist. Drives the UI EMPTY state
+        ("Did not find this card") - mirrors the legacy message "Did not find
+        this account in cards database".
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: >-
+        Unexpected server or data-access error. Drives the UI ERROR state -
+        mirrors the legacy message "Error reading Card Data File".
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    Card:
+      type: object
+      description: |
+        Canonical Card read DTO mirroring CARD-RECORD [CVACT02Y.cpy], using the
+        five-field shape mandated by AAP 0.4. The CVV (CARD-CVV-CD) is
+        intentionally EXCLUDED from the read DTO.
+      required:
+        - cardNumber
+        - accountId
+        - embossedName
+        - expiryDate
+        - activeStatus
+      properties:
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: "^[0-9]{16}$"
+          description: >-
+            16-digit card number - the natural key (CARD-NUM X(16)); keeps the
+            surrogate primary key off the read path.
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: >-
+            Owning account id (CARD-ACCT-ID 9(11)). Represented as a numeric
+            string to preserve zero-padding.
+        embossedName:
+          type: string
+          maxLength: 50
+          description: >-
+            Name embossed on the card (CARD-EMBOSSED-NAME X(50); screen field
+            CRDNAME).
+        expiryDate:
+          type: string
+          maxLength: 10
+          description: >-
+            Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10); screen
+            fields EXPMON/EXPYEAR). Kept as a plain string to match the legacy
+            10-character value.
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: >-
+            Card active flag Y/N (CARD-ACTIVE-STATUS X(01); screen field
+            CRDSTCD).
+      example:
+        cardNumber: "4000000000000001"
+        accountId: "00000000001"
+        embossedName: "JOHN Q PUBLIC"
+        expiryDate: "2027-12-31"
+        activeStatus: "Y"
+    CardSummary:
+      type: object
+      description: >-
+        Lightweight card list row (a subset of Card) used by the list
+        operation [SRC: COCRDLIC | CARDDAT].
+      required:
+        - cardNumber
+        - accountId
+        - activeStatus
+      properties:
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: "^[0-9]{16}$"
+          description: 16-digit card number - the natural key (CARD-NUM X(16)).
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: Owning account id (CARD-ACCT-ID 9(11)).
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: Card active flag Y/N (CARD-ACTIVE-STATUS X(01)).
+    CardListResponse:
+      type: object
+      description: >-
+        A single page of card summaries. Typed placeholder shape for the
+        [DEFERRED] list operation.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+      properties:
+        items:
+          type: array
+          description: The card summaries on this page.
+          items:
+            $ref: "#/components/schemas/CardSummary"
+        page:
+          type: integer
+          format: int32
+          description: Zero-based page index.
+        size:
+          type: integer
+          format: int32
+          description: Page size (number of rows per page).
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of cards matching the query.
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages available.
+    CardUpdateRequest:
+      type: object
+      description: |
+        [DEFERRED] Writable card fields for the update operation
+        [SRC: COCRDUPC | CARDDAT]. `cardNumber` and `accountId` are natural keys
+        and are intentionally NOT writable.
+      required:
+        - activeStatus
+      properties:
+        embossedName:
+          type: string
+          maxLength: 50
+          description: Name embossed on the card (CARD-EMBOSSED-NAME X(50)).
+        expiryDate:
+          type: string
+          maxLength: 10
+          description: Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10)).
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: Card active flag Y/N (CARD-ACTIVE-STATUS X(01)).
+    Error:
+      type: object
+      description: |
+        RFC 7807 problem detail, aligned with the Spring Boot 3 `ProblemDetail`
+        representation and served as `application/problem+json`.
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+          description: A URI reference that identifies the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code generated for this occurrence.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: A URI reference that identifies the specific occurrence.
+        correlationId:
+          type: string
+          description: >-
+            The X-Correlation-ID associated with the request, echoed back for
+            log / trace correlation via MDC.
+    HealthStatus:
+      type: object
+      description: >-
+        Spring Boot Actuator health representation. Documentation only - the
+        generated interface is left unimplemented and Actuator serves this at
+        runtime.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          description: Aggregate health status reported by Actuator.
+        components:
+          type: object
+          additionalProperties: true
+          description: >-
+            Optional per-component health details (data source, disk space,
+            and so on).
+

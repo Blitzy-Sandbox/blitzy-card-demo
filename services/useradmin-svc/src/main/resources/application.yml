@@ -1,0 +1,64 @@
+# useradmin-svc — CardDemo walking skeleton
+# User Administration + Admin Menu bounded context (typed stub; all user-admin behavior is [DEFERRED]).
+# Provenance: [SRC: COUSR00C-03C, COADM01C | USRSEC] (legacy user list/add/update/delete CU00-CU03 -> COUSR00C-03C
+# and admin menu CA00 -> COADM01C, reading the USRSEC VSAM KSDS).
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: useradmin-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    # driver-class-name is optional: Spring Boot auto-detects oracle.jdbc.OracleDriver
+    # from the jdbc:oracle:thin: URL (ojdbc11 is on the runtime classpath via pom.xml).
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        # Set explicitly so the EntityManagerFactory does NOT require a live DB
+        # connection to auto-detect the dialect at startup. Oracle 23ai -> OracleDialect.
+        dialect: org.hibernate.dialect.OracleDialect
+  flyway:
+    # The dedicated /db docker-compose Flyway step owns schema + seed. This service never migrates.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # Enables liveness/readiness probe groups; /actuator/health backs the
+      # docker-compose healthcheck and the `service_healthy` gate.
+      probes:
+        enabled: true
+
+# Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter) on every log line,
+    # making the real UI -> BFF -> useradmin-svc hop observable. Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:useradmin-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+# In the docker profile every value is supplied by environment variables injected by
+# docker-compose (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD,
+# SPRING_FLYWAY_ENABLED, CORRELATION_HEADER, SERVER_PORT). No profile-specific overrides are
+# required for the walking skeleton.

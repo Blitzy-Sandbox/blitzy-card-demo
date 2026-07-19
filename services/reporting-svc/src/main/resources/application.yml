@@ -1,0 +1,58 @@
+# reporting-svc — CardDemo walking skeleton
+# ASYNC JOB STUB — HEALTH-EXEMPT: builds green + has an invokable job entrypoint, but is NOT
+# held to start-and-serve, is NOT in the docker-compose service_healthy chain, and publishes NO host port.
+# Report/statement calculation is [DEFERRED] (typed stubs only).
+# Provenance: [SRC: CORPT00C, CBSTM03A/B | TRANSACT]
+#   app/csd/CARDDEMO.CSD  FILE(TRANSACT) DSNAME AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS
+#   app/csd/CARDDEMO.CSD  TRANSACTION(CR00) PROGRAM(CORPT00C)   (online Transaction Reports)
+#   app/cbl/CBSTM03A.CBL / CBSTM03B.CBL                          (batch statement generation)
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: reporting-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    driver-class-name: oracle.jdbc.OracleDriver
+    hikari:
+      # Resilient startup: reporting-svc is NOT health-gated and may start before Oracle is ready.
+      # -1 = keep retrying the initial connection in the background instead of failing fast,
+      # so the container comes up green even if Oracle is briefly unavailable.
+      initialization-fail-timeout: -1
+  jpa:
+    hibernate:
+      # Schema is owned exclusively by the /db Flyway compose step. Never create/alter/validate.
+      ddl-auto: none
+    # Explicit dialect so the EntityManagerFactory builds WITHOUT a live DB connection
+    # (no JDBC-metadata dialect auto-detection) — supports build-green without a running Oracle.
+    database-platform: org.hibernate.dialect.OracleDialect
+    show-sql: false
+  flyway:
+    # The dedicated /db docker-compose Flyway step owns V1__baseline.sql + V2__seed_tracer.sql.
+    # This service never migrates (also injected as env SPRING_FLYWAY_ENABLED=false).
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+
+server:
+  # Internal port only; docker-compose publishes NO host port for this health-exempt job stub.
+  port: ${SERVER_PORT:8080}
+
+# Correlation-ID header name consumed by config/CorrelationIdFilter.java
+# (@Value("${carddemo.correlation.header:X-Correlation-ID}"); the filter puts the value into SLF4J MDC key `correlationId`).
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # Surfaces the MDC correlation id set by CorrelationIdFilter on every log line (default '-' when absent),
+    # keeping logs consistent with the other services. Cross-service parity (optional but recommended).
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:reporting-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+# docker-compose sets SPRING_PROFILES_ACTIVE=docker. All runtime values already come from injected
+# environment variables, so this profile carries no overrides — it only documents/activates cleanly.

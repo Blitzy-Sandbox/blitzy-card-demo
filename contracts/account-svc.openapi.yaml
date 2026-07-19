@@ -1,0 +1,351 @@
+openapi: 3.1.0
+info:
+  title: Account Service API
+  version: 1.0.0
+  description: |
+    Frozen OpenAPI 3.1 single source of truth (SSoT) for the CardDemo
+    account-svc bounded context.
+
+    Provenance: [SRC: COACTVWC/COACTUPC | ACCTDAT] - derived from the legacy
+    CICS Account View transaction (CAVW -> COACTVWC) and Account Update
+    transaction (CAUP -> COACTUPC), which read and write the ACCTDAT VSAM KSDS.
+    The Account schema mirrors the ACCOUNT-RECORD copybook layout
+    [app/cpy/CVACT01Y.cpy].
+
+    [DEFERRED]: All account operations are typed stubs in this walking
+    skeleton. Controllers implement the generated interface and return typed
+    placeholder responses; no account business logic, persistence, or
+    validation is live (only the card-svc tracer slice is wired end-to-end,
+    per AAP section 0.7.2). Monetary amounts are represented as decimal
+    strings (2 decimal places) to avoid binary floating-point drift. This
+    contract is versioned and frozen after this run.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8082
+    description: Local account-svc endpoint (ACCOUNT_SVC_PORT).
+  - url: /
+    description: Relative base path (container-internal, fronted by the BFF).
+tags:
+  - name: Accounts
+    description: Account view and update operations (typed stubs, [DEFERRED]).
+  - name: Health
+    description: Liveness and readiness probe served by Spring Boot Actuator.
+paths:
+  /accounts/{accountId}:
+    parameters:
+      - name: accountId
+        in: path
+        required: true
+        description: Account identifier (ACCT-ID, PIC 9(11)).
+        schema:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+    get:
+      tags:
+        - Accounts
+      operationId: getAccount
+      summary: Retrieve an account by id.
+      description: |
+        Return the account identified by accountId.
+        [SRC: COACTVWC] [DEFERRED] - typed stub; returns a typed placeholder
+        Account. No live account read is wired in this skeleton.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Account found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      tags:
+        - Accounts
+      operationId: updateAccount
+      summary: Update the writable fields of an account.
+      description: |
+        Update the mutable fields of the account identified by accountId
+        (accountId itself is the key and is not writable).
+        [SRC: COACTUPC] [DEFERRED] - typed stub; returns a typed placeholder
+        Account. No live account update is wired in this skeleton.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountUpdateRequest'
+      responses:
+        '200':
+          description: Account updated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Account'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      summary: Service health probe.
+      description: |
+        Liveness/readiness probe used for docker-compose service_healthy
+        gating.
+
+        NOTE: Generated Health API interface MUST be left UNIMPLEMENTED -
+        Actuator serves /actuator/health; do NOT write a controller for it.
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Service health status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: |
+        Correlation identifier propagated across the UI -> BFF -> domain
+        service hop and placed into the SLF4J MDC for trace logging.
+      schema:
+        type: string
+        format: uuid
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer token issued by auth-svc (permissive stub). The token hop is
+        real even though credential validation is deferred.
+  schemas:
+    Account:
+      type: object
+      description: |
+        Account entity mirroring the legacy ACCOUNT-RECORD layout
+        [app/cpy/CVACT01Y.cpy]. Monetary fields are decimal strings (2 dp).
+      required:
+        - accountId
+        - activeStatus
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+          description: Account identifier (ACCT-ID, PIC 9(11)).
+          example: '00000000011'
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - 'Y'
+            - 'N'
+          description: Active status flag (ACCT-ACTIVE-STATUS, PIC X(01)).
+          example: 'Y'
+        currentBalance:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Current balance. Monetary amount; decimal string, 2 dp
+            (ACCT-CURR-BAL, PIC S9(10)V99).
+          example: '1000.00'
+        creditLimit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Credit limit. Monetary amount; decimal string, 2 dp
+            (ACCT-CREDIT-LIMIT, PIC S9(10)V99).
+          example: '5000.00'
+        cashCreditLimit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Cash credit limit. Monetary amount; decimal string, 2 dp
+            (ACCT-CASH-CREDIT-LIMIT, PIC S9(10)V99).
+          example: '1000.00'
+        currentCycleCredit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Current cycle credit. Monetary amount; decimal string, 2 dp
+            (ACCT-CURR-CYC-CREDIT, PIC S9(10)V99).
+          example: '0.00'
+        currentCycleDebit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Current cycle debit. Monetary amount; decimal string, 2 dp
+            (ACCT-CURR-CYC-DEBIT, PIC S9(10)V99).
+          example: '0.00'
+        openDate:
+          type: string
+          maxLength: 10
+          description: Account open date, YYYY-MM-DD (ACCT-OPEN-DATE, PIC X(10)).
+          example: '2020-01-01'
+        expiryDate:
+          type: string
+          maxLength: 10
+          description: Account expiry date, YYYY-MM-DD (ACCT-EXPIRAION-DATE, PIC X(10)).
+          example: '2025-01-01'
+        reissueDate:
+          type: string
+          maxLength: 10
+          description: Account reissue date, YYYY-MM-DD (ACCT-REISSUE-DATE, PIC X(10)).
+          example: '2023-01-01'
+        addressZip:
+          type: string
+          maxLength: 10
+          description: Address ZIP code (ACCT-ADDR-ZIP, PIC X(10)).
+          example: '12345'
+        groupId:
+          type: string
+          maxLength: 10
+          description: Account group id (ACCT-GROUP-ID, PIC X(10)).
+          example: 'DEFAULT'
+    AccountUpdateRequest:
+      type: object
+      description: |
+        Writable subset of Account for the update operation. accountId is the
+        key and is not part of the request body. Mirrors the mutable
+        ACCT-UPDATE-* fields of the legacy Account Update program
+        [app/cbl/COACTUPC.cbl].
+      properties:
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - 'Y'
+            - 'N'
+          description: Active status flag (ACCT-ACTIVE-STATUS, PIC X(01)).
+          example: 'Y'
+        creditLimit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Credit limit. Monetary amount; decimal string, 2 dp
+            (ACCT-CREDIT-LIMIT, PIC S9(10)V99).
+          example: '5000.00'
+        cashCreditLimit:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Cash credit limit. Monetary amount; decimal string, 2 dp
+            (ACCT-CASH-CREDIT-LIMIT, PIC S9(10)V99).
+          example: '1000.00'
+        expiryDate:
+          type: string
+          maxLength: 10
+          description: Account expiry date, YYYY-MM-DD (ACCT-EXPIRAION-DATE, PIC X(10)).
+          example: '2025-01-01'
+        reissueDate:
+          type: string
+          maxLength: 10
+          description: Account reissue date, YYYY-MM-DD (ACCT-REISSUE-DATE, PIC X(10)).
+          example: '2023-01-01'
+        addressZip:
+          type: string
+          maxLength: 10
+          description: Address ZIP code (ACCT-ADDR-ZIP, PIC X(10)).
+          example: '12345'
+        groupId:
+          type: string
+          maxLength: 10
+          description: Account group id (ACCT-GROUP-ID, PIC X(10)).
+          example: 'DEFAULT'
+    Error:
+      type: object
+      description: |
+        RFC 7807 problem-details error payload, served as
+        application/problem+json.
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI reference identifying the problem type.
+          example: 'about:blank'
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+          example: 'Not Found'
+        status:
+          type: integer
+          format: int32
+          description: HTTP status code generated for this occurrence.
+          example: 404
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: 'Account 00000000011 was not found.'
+        instance:
+          type: string
+          format: uri
+          description: URI reference identifying the specific occurrence.
+          example: '/accounts/00000000011'
+        correlationId:
+          type: string
+          format: uuid
+          description: Correlation id echoed from the X-Correlation-ID request header.
+    HealthStatus:
+      type: object
+      description: Actuator-style aggregate health status payload.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          description: Aggregate health status.
+          example: 'UP'
+        components:
+          type: object
+          additionalProperties: true
+          description: Optional per-component health details.
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested account does not exist.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: An unexpected server error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+

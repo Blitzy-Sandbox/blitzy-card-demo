@@ -1,0 +1,303 @@
+openapi: 3.1.0
+info:
+  title: Payment Service API
+  version: 1.0.0
+  description: |
+    Frozen OpenAPI 3.1 single source of truth (SSoT) for the CardDemo **payment-svc**
+    bounded context (Bill Payment).
+
+    Provenance: [SRC: COBIL00C | ACCTDAT] — legacy CICS Bill Payment transaction
+    `CB00 -> COBIL00C` (mapset `COBIL00`, screen `app/bms/COBIL00.bms`). The legacy flow
+    reads the account balance from the `ACCTDAT` dataset, displays the current balance
+    (`CURBAL`), and — on confirmation (`CONFIRM`) — pays the full outstanding balance and
+    records a payment transaction. Field shapes derive from `ACCOUNT-RECORD`
+    (app/cpy/CVACT01Y.cpy): `ACCT-ID PIC 9(11)` and `ACCT-CURR-BAL PIC S9(10)V99`.
+
+    [DEFERRED] All operations in this contract are typed stubs for the walking-skeleton
+    run. Controllers implement the generated API interfaces and return typed placeholder
+    responses only; no payment business logic, persistence, or balance mutation is
+    implemented. This contract is the versioned, frozen source of truth after this run and
+    must not be hand-edited downstream — the Java server interfaces and any TypeScript
+    client are regenerated from it.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8085
+    description: Local payment-svc endpoint (PAYMENT_SVC_PORT).
+  - url: /
+    description: Relative base path (served behind the BFF / gateway on the same origin).
+tags:
+  - name: Payments
+    description: >-
+      Bill payment operations — balance inquiry and full-balance payment.
+      [DEFERRED] typed stubs sourced from legacy COBIL00C.
+  - name: Health
+    description: >-
+      Service liveness/readiness. Served by Spring Boot Actuator at /actuator/health;
+      the generated interface is intentionally left unimplemented.
+paths:
+  /payments/balance/{accountId}:
+    get:
+      tags:
+        - Payments
+      operationId: getBalance
+      summary: Retrieve the current balance for an account
+      description: >-
+        [SRC: COBIL00C] [DEFERRED] Returns the current outstanding balance for the given
+        account, mirroring the Bill Payment screen step that displays `CURBAL`
+        (app/bms/COBIL00.bms). Typed stub — returns a placeholder BalanceResponse; no real
+        account lookup is performed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: accountId
+          in: path
+          required: true
+          description: 11-digit account identifier (ACCT-ID, PIC 9(11)).
+          schema:
+            type: string
+            maxLength: 11
+            pattern: '^[0-9]{1,11}$'
+          example: "00000000011"
+      responses:
+        '200':
+          description: Current balance for the account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BalanceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /payments/bill:
+    post:
+      tags:
+        - Payments
+      operationId: payBill
+      summary: Pay the outstanding balance for an account
+      description: >-
+        [SRC: COBIL00C] [DEFERRED] Executes an online bill payment for the account,
+        mirroring legacy `COBIL00C`: on confirmation the full current balance is paid and a
+        payment transaction is recorded. Omit `amount` to pay the full current balance
+        (legacy default behaviour). Typed stub — returns a placeholder BillPaymentResponse;
+        no balance mutation or transaction is persisted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        description: Bill payment instruction.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BillPaymentRequest'
+      responses:
+        '200':
+          description: Payment result (stubbed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillPaymentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      summary: Service health probe
+      description: >-
+        Liveness/readiness probe used for docker-compose `service_healthy` gating.
+        NOTE: The generated Health API interface MUST be left UNIMPLEMENTED — Spring Boot
+        Actuator serves `/actuator/health`; do NOT write a controller for it.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Bearer token issued by auth-svc. For the walking-skeleton run the token hop is real
+        while credential validation is a permissive stub.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Correlation identifier propagated across the UI -> BFF -> payment-svc hop and placed
+        into the SLF4J MDC for trace logging. Generated upstream when absent.
+      schema:
+        type: string
+        maxLength: 64
+      example: "b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04"
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested account could not be found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: An unexpected server error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    BillPaymentRequest:
+      type: object
+      description: >-
+        Instruction to pay an account balance. Mirrors screen COBIL00 (enter Account ID,
+        then confirm to pay).
+      additionalProperties: false
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+          description: 11-digit account identifier (ACCT-ID, PIC 9(11)).
+          example: "00000000011"
+        amount:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: >-
+            Optional payment amount as a decimal string (S9(10)V99). Omit to pay the full
+            current balance (legacy default).
+          example: "1250.00"
+        confirm:
+          type: boolean
+          default: false
+          description: Confirmation flag mirroring screen CONFIRM; must be true to execute.
+      required:
+        - accountId
+    BillPaymentResponse:
+      type: object
+      description: Result of a bill payment (typed stub).
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+          description: 11-digit account identifier (ACCT-ID, PIC 9(11)).
+          example: "00000000011"
+        previousBalance:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: Account balance before the payment, decimal string (S9(10)V99).
+          example: "1250.00"
+        paymentAmount:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: Amount paid, decimal string (S9(10)V99).
+          example: "1250.00"
+        newBalance:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: Account balance after the payment, decimal string (S9(10)V99).
+          example: "0.00"
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Generated payment transaction identifier (TRAN-ID, PIC 9(16)).
+          example: "0000000000000123"
+        status:
+          type: string
+          enum:
+            - CONFIRMED
+            - PENDING
+            - DECLINED
+          description: Outcome of the payment request.
+          example: CONFIRMED
+      required:
+        - accountId
+        - status
+    BalanceResponse:
+      type: object
+      description: >-
+        Current balance for an account. Mirrors the `CURBAL` display step on screen COBIL00.
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+          description: 11-digit account identifier (ACCT-ID, PIC 9(11)).
+          example: "00000000011"
+        currentBalance:
+          type: string
+          pattern: '^-?\d{1,10}(\.\d{1,2})?$'
+          description: Current outstanding balance, decimal string (S9(10)V99).
+          example: "1250.00"
+      required:
+        - accountId
+        - currentBalance
+    Error:
+      type: object
+      description: RFC 7807 problem detail describing an error condition.
+      properties:
+        type:
+          type: string
+          format: uri
+          description: A URI reference that identifies the problem type.
+          example: "about:blank"
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+          example: "Not Found"
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code for this occurrence of the problem.
+          example: 404
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence of the problem.
+          example: "Account ID NOT found..."
+        instance:
+          type: string
+          format: uri
+          description: A URI reference that identifies the specific occurrence of the problem.
+          example: "/payments/balance/00000000011"
+        correlationId:
+          type: string
+          description: Correlation identifier echoed from the X-Correlation-ID request header.
+          example: "b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04"
+      required:
+        - status
+        - title
+    HealthStatus:
+      type: object
+      description: Minimal health payload (shape mirrors Spring Boot Actuator health output).
+      properties:
+        status:
+          type: string
+          description: Aggregate health status reported by the service.
+          example: UP
+      required:
+        - status

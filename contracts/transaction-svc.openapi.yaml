@@ -1,0 +1,475 @@
+# =============================================================================
+# CardDemo Walking Skeleton — Transaction Service API (transaction-svc)
+# -----------------------------------------------------------------------------
+# FROZEN OpenAPI 3.1 contract — Single Source of Truth (SSoT).
+# Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
+# All operations are typed stubs [DEFERRED] in the walking skeleton (AAP 0.7.2).
+# This contract is versioned and frozen after this run; do NOT hand-edit
+# generated artifacts — regenerate from this specification instead.
+# =============================================================================
+openapi: 3.1.0
+info:
+  title: Transaction Service API
+  version: 1.0.0
+  description: |-
+    Frozen OpenAPI 3.1 contract (Single Source of Truth) for the CardDemo
+    **transaction-svc** bounded context of the walking skeleton.
+
+    Provenance: `[SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]` — derived from the
+    legacy CICS Transaction List (`CT00` -> `COTRN00C`), Transaction View
+    (`CT01` -> `COTRN01C`) and Transaction Add (`CT02` -> `COTRN02C`) programs
+    reading/writing the `TRANSACT` VSAM KSDS. The `Transaction` schema mirrors the
+    `TRAN-RECORD` copybook layout [app/cpy/CVTRA05Y.cpy]; add-form fields derive
+    from [app/bms/COTRN02.bms]; transaction type / category codes reference
+    [app/cpy/CVTRA03Y.cpy] and [app/cpy/CVTRA04Y.cpy].
+
+    `[DEFERRED]` — Every operation in this contract is a **typed stub**. The
+    controllers generated from this specification return typed placeholder
+    responses only; no transaction business logic is implemented in the walking
+    skeleton (AAP section 0.7.2). Contracts are versioned and frozen after this run.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8084
+    description: Local transaction-svc instance (TRANSACTION_SVC_PORT=8084).
+  - url: /
+    description: Relative server (same-origin; used when fronted by the BFF).
+tags:
+  - name: Transactions
+    description: >-
+      Transaction list, view and add operations
+      [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]. All operations are typed
+      stubs `[DEFERRED]` in the walking skeleton.
+  - name: Health
+    description: >-
+      Service liveness / readiness. Served by Spring Boot Actuator at runtime.
+security:
+  - bearerAuth: []
+paths:
+  /transactions:
+    get:
+      tags:
+        - Transactions
+      operationId: listTransactions
+      summary: List transactions
+      description: >-
+        List transactions with optional filtering by card number or account id,
+        paginated. `[SRC: COTRN00C]` (legacy Transaction List `CT00`).
+        `[DEFERRED]` — typed stub; returns a typed placeholder page in the
+        walking skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: cardNumber
+          in: query
+          required: false
+          description: Optional 16-digit card number filter (TRAN-CARD-NUM).
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: '^[0-9]{16}$'
+        - name: accountId
+          in: query
+          required: false
+          description: Optional account id filter (up to 11 digits).
+          schema:
+            type: string
+            maxLength: 11
+            pattern: '^[0-9]{1,11}$'
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (number of items per page).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of transactions (typed placeholder).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransactionListResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      tags:
+        - Transactions
+      operationId: createTransaction
+      summary: Add a transaction
+      description: >-
+        Add a new transaction. The transaction identifier is server-assigned.
+        `[SRC: COTRN02C]` (legacy Transaction Add `CT02`). `[DEFERRED]` — typed
+        stub; returns a typed placeholder in the walking skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        description: Transaction to create (transactionId is server-assigned).
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionCreateRequest'
+      responses:
+        '201':
+          description: >-
+            Transaction created (typed placeholder). The `Location` header
+            carries the URI of the newly created transaction.
+          headers:
+            Location:
+              description: URI of the created transaction (/transactions/{transactionId}).
+              schema:
+                type: string
+                format: uri-reference
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /transactions/{transactionId}:
+    get:
+      tags:
+        - Transactions
+      operationId: getTransaction
+      summary: View a transaction
+      description: >-
+        Retrieve a single transaction by its identifier. `[SRC: COTRN01C]`
+        (legacy Transaction View `CT01`). `[DEFERRED]` — typed stub; returns a
+        typed placeholder in the walking skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: transactionId
+          in: path
+          required: true
+          description: Transaction identifier (TRAN-ID, PIC X(16)).
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 16
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: The requested transaction (typed placeholder).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Transaction'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: healthCheck
+      summary: Service health
+      description: >-
+        Liveness / readiness probe used for container health gating.
+
+
+        NOTE: The generated Health API interface MUST be left UNIMPLEMENTED —
+        Actuator serves `/actuator/health`; do NOT write a controller for it.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+        '503':
+          description: Service is unhealthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Bearer token issued by auth-svc. In the walking skeleton authentication
+        is a permissive stub, but the token hop is real and propagated end to end.
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Correlation identifier propagated across the UI -> BFF -> domain-service
+        hop and placed on the SLF4J MDC for trace logging. Generated upstream if
+        absent.
+      schema:
+        type: string
+        maxLength: 64
+      example: 7b1f2c3d-4e5a-6789-abcd-ef0123456789
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: The requested resource was not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: An unexpected internal error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    Transaction:
+      type: object
+      description: >-
+        A financial transaction. Mirrors the legacy `TRAN-RECORD` layout
+        [app/cpy/CVTRA05Y.cpy].
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction identifier (TRAN-ID, PIC X(16)); server-assigned.
+        typeCode:
+          type: string
+          maxLength: 2
+          description: >-
+            Transaction type code (TRAN-TYPE-CD, PIC X(02)); references
+            [app/cpy/CVTRA03Y.cpy].
+        categoryCode:
+          type: string
+          maxLength: 4
+          pattern: '^[0-9]{1,4}$'
+          description: >-
+            Transaction category code (TRAN-CAT-CD, PIC 9(04)); references
+            [app/cpy/CVTRA04Y.cpy].
+        source:
+          type: string
+          maxLength: 10
+          description: Transaction source (TRAN-SOURCE, PIC X(10)).
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description (TRAN-DESC, PIC X(100)).
+        amount:
+          type: string
+          pattern: '^-?\d{1,9}(\.\d{1,2})?$'
+          description: >-
+            Monetary amount as a decimal string (TRAN-AMT, PIC S9(09)V99;
+            add-screen hint `(-99999999.99)`). Represented as a string to
+            preserve fixed-point fidelity.
+          examples:
+            - '-99999999.99'
+        merchantId:
+          type: string
+          maxLength: 9
+          pattern: '^[0-9]{1,9}$'
+          description: Merchant identifier (TRAN-MERCHANT-ID, PIC 9(09)).
+        merchantName:
+          type: string
+          maxLength: 50
+          description: Merchant name (TRAN-MERCHANT-NAME, PIC X(50)).
+        merchantCity:
+          type: string
+          maxLength: 50
+          description: Merchant city (TRAN-MERCHANT-CITY, PIC X(50)).
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: Merchant ZIP / postal code (TRAN-MERCHANT-ZIP, PIC X(10)).
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9]{16}$'
+          description: Card number (TRAN-CARD-NUM, PIC X(16)); 16 digits.
+        originTimestamp:
+          type: string
+          maxLength: 26
+          description: Origination timestamp (TRAN-ORIG-TS, PIC X(26)).
+        processTimestamp:
+          type: string
+          maxLength: 26
+          description: Processing timestamp (TRAN-PROC-TS, PIC X(26)).
+      required:
+        - transactionId
+        - cardNumber
+        - amount
+    TransactionCreateRequest:
+      type: object
+      description: >-
+        Writable fields for adding a transaction (add-screen
+        [app/bms/COTRN02.bms]). `transactionId` is server-assigned and therefore
+        not accepted on create.
+      properties:
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: '^[0-9]{16}$'
+          description: Card number (TRAN-CARD-NUM, PIC X(16)); 16 digits.
+        typeCode:
+          type: string
+          maxLength: 2
+          description: Transaction type code (TRAN-TYPE-CD, PIC X(02)).
+        categoryCode:
+          type: string
+          maxLength: 4
+          pattern: '^[0-9]{1,4}$'
+          description: Transaction category code (TRAN-CAT-CD, PIC 9(04)).
+        source:
+          type: string
+          maxLength: 10
+          description: Transaction source (TRAN-SOURCE, PIC X(10)).
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description (TRAN-DESC, PIC X(100)).
+        amount:
+          type: string
+          pattern: '^-?\d{1,9}(\.\d{1,2})?$'
+          description: Monetary amount as a decimal string (TRAN-AMT, PIC S9(09)V99).
+          examples:
+            - '100.00'
+        merchantId:
+          type: string
+          maxLength: 9
+          pattern: '^[0-9]{1,9}$'
+          description: Merchant identifier (TRAN-MERCHANT-ID, PIC 9(09)).
+        merchantName:
+          type: string
+          maxLength: 50
+          description: Merchant name (TRAN-MERCHANT-NAME, PIC X(50)).
+        merchantCity:
+          type: string
+          maxLength: 50
+          description: Merchant city (TRAN-MERCHANT-CITY, PIC X(50)).
+        merchantZip:
+          type: string
+          maxLength: 10
+          description: Merchant ZIP / postal code (TRAN-MERCHANT-ZIP, PIC X(10)).
+        originTimestamp:
+          type: string
+          maxLength: 26
+          description: Origination timestamp (TRAN-ORIG-TS, PIC X(26)).
+        processTimestamp:
+          type: string
+          maxLength: 26
+          description: Processing timestamp (TRAN-PROC-TS, PIC X(26)).
+      required:
+        - cardNumber
+        - amount
+        - typeCode
+        - categoryCode
+    TransactionListResponse:
+      type: object
+      description: A page of transactions with pagination metadata.
+      properties:
+        items:
+          type: array
+          description: The transactions on this page.
+          items:
+            $ref: '#/components/schemas/Transaction'
+        page:
+          type: integer
+          format: int32
+          description: Zero-based page index.
+        size:
+          type: integer
+          format: int32
+          description: Page size (items per page).
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of matching transactions.
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+    Error:
+      type: object
+      description: >-
+        RFC 7807 problem detail (`application/problem+json`) returned for error
+        conditions.
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+          description: A URI reference that identifies the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code for this occurrence of the problem.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: A URI reference that identifies the specific occurrence.
+        correlationId:
+          type: string
+          description: Correlation identifier (X-Correlation-ID) for this occurrence.
+      required:
+        - title
+        - status
+    HealthStatus:
+      type: object
+      description: Aggregate health status (Actuator-compatible shape).
+      properties:
+        status:
+          type: string
+          description: Aggregate status indicator.
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          examples:
+            - UP
+      required:
+        - status
+

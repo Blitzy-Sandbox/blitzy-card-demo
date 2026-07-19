@@ -1,0 +1,80 @@
+# account-svc — CardDemo walking skeleton
+# Typed-stub account service (request-serving, health-gated; endpoints are [DEFERRED] typed placeholders).
+# Provenance: [SRC: COACTVWC/COACTUPC | ACCTDAT] (legacy Account View CAVW->COACTVWC and Account Update
+# CAUP->COACTUPC over the ACCTDAT VSAM KSDS).
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: account-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # Placeholder default ONLY — never a real secret. Compose injects the real value from .env APP_USER_PASSWORD.
+    password: ${SPRING_DATASOURCE_PASSWORD:change_me_app_password}
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.
+      # The dedicated /db docker-compose Flyway step owns all DDL + seed data.
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        # Set explicitly so the EntityManagerFactory does NOT require a live DB connection
+        # to auto-detect the dialect at startup. Oracle 23ai -> OracleDialect.
+        dialect: org.hibernate.dialect.OracleDialect
+  flyway:
+    # DISABLED: the dedicated /db docker-compose Flyway step owns migrations. In-service Flyway
+    # MUST stay OFF to avoid double-migration / schema-history conflicts. (Compose also injects false.)
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # /actuator/health backs the docker-compose healthcheck and the service_healthy gate.
+      probes:
+        enabled: true
+      # Base default; the `local` profile document below overrides this to `always`.
+      show-details: when_authorized
+
+# Correlation-ID header name consumed by the sibling config/CorrelationIdFilter (OncePerRequestFilter + MDC).
+# NOTE: the property key is `correlation.header` (account-svc convention) — it is intentionally NOT
+# prefixed (a different sibling service uses a prefixed variant). The filter reads it via
+# @Value("${correlation.header:X-Correlation-ID}") and writes the id to SLF4J MDC under key `correlationId`.
+correlation:
+  header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter under MDC key
+    # `correlationId`) on every log line, making the real UI -> BFF -> account-svc hop observable.
+    # Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:account-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+# In the docker profile every value is supplied by environment variables injected by docker-compose
+# (SPRING_DATASOURCE_URL/USERNAME/PASSWORD, SPRING_FLYWAY_ENABLED, CORRELATION_HEADER, SERVER_PORT).
+# No profile-specific overrides are required for the walking skeleton.
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+management:
+  endpoint:
+    health:
+      # Local dev: expose full health detail (compose override also injects
+      # MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS=always as belt-and-suspenders).
+      show-details: always
