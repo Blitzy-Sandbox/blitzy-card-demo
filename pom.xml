@@ -1,0 +1,108 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  CardDemo Walking Skeleton — ROOT MAVEN MULTI-MODULE REACTOR AGGREGATOR
+  ============================================================================
+  Provenance: [SRC: CARDDEMO.CSD] — app/csd/CARDDEMO.CSD registers the legacy
+  CICS transaction -> program -> VSAM-file groupings that this modernized
+  skeleton reorganizes into one Spring Boot 3 / Java 21 service per bounded
+  context. This file simply enumerates those services as reactor modules.
+
+  WHAT THIS FILE IS
+    A PURE reactor aggregator (packaging=pom) whose ONLY job is to enumerate
+    the eight backend service modules so Maven can build, test, and compute a
+    correct build order for the whole backend with a single command:
+
+        mvn -f pom.xml package        # build + test all 8 services (reactor)
+        mvn -f pom.xml -N validate    # validate just this aggregator (non-recursive)
+
+  WHAT THIS FILE IS NOT — CRITICAL DESIGN DECISION
+    This is NOT the Maven <parent> of the service modules. Each service module
+    independently declares spring-boot-starter-parent (Spring Boot 3.5.x) as
+    ITS parent to inherit dependency management, plugin management, and the
+    Java 21 wiring. A Maven POM may have only ONE parent, so making this
+    aggregator a parent would conflict with spring-boot-starter-parent.
+
+    In Maven, AGGREGATION (the <modules> list below) and INHERITANCE (a
+    module's <parent>) are INDEPENDENT concepts: a reactor can build modules
+    that do not inherit from it. The service POMs use an empty <relativePath/>
+    so they resolve their real parent (spring-boot-starter-parent) from the
+    local repository rather than walking up the directory tree to this file.
+
+    Consequences (kept intentionally minimal — this aggregator forces nothing
+    on its modules because it is not their parent and they inherit nothing):
+      * NO <dependencies>          — each module owns its own dependency set.
+      * NO <dependencyManagement>  — Spring Boot's BOM (via each module's
+                                     parent) manages all runtime versions.
+      * NO <build><plugins>        — each module owns its build (spring-boot +
+                                     openapi-generator).
+    The only content below the coordinates is a couple of build-neutral,
+    non-inherited <properties> and the <modules> list itself.
+
+  MODULE SCOPE
+    Exactly the eight backend bounded-context services under services/** (AAP
+    0.1.1 / 0.6.1 Group 2). Explicitly EXCLUDED because they are NOT Maven
+    modules:
+      * /ui        — React 19 + Vite (npm) single-page application.
+      * /contracts — frozen OpenAPI 3.1 single-source-of-truth (consumed by
+                     code generation, not built by Maven).
+      * /db        — Flyway migration SQL (applied by a dedicated
+                     docker-compose step, not built by Maven).
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Aggregator coordinates. groupId matches the AAP package convention
+      com.carddemo.<svc>; the modules themselves also use groupId com.carddemo.
+    -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>carddemo-skeleton-aggregator</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>CardDemo Walking Skeleton (Aggregator)</name>
+    <description>
+        Multi-module Maven reactor aggregator for the modernized CardDemo walking skeleton. It
+        enumerates the eight Spring Boot 3 / Java 21 bounded-context services (auth, account, card,
+        transaction, payment, useradmin, reporting, and the backend-for-frontend bff) so the entire
+        backend can be built and tested with a single reactor command. This is a topology-only
+        skeleton: every service exposes its frozen OpenAPI 3.1 contract and returns typed placeholder
+        responses, with exactly one live vertical tracer slice (UI to bff to card-svc to Oracle
+        FREEPDB1 seeded row, rendered as Card Detail). This POM is a PURE aggregator, not a Spring
+        Boot parent: it declares no dependencies, no dependency management, and no build plugins.
+    </description>
+
+    <!--
+      Build-neutral properties. These are NOT inherited by the modules (this POM is not their
+      parent); they document the aggregator's own target and keep encoding deterministic for any
+      goal invoked directly on the aggregator (e.g. reporting/help goals). They intentionally do
+      not add plugins or dependencies.
+    -->
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>21</maven.compiler.release>
+    </properties>
+
+    <!--
+      Reactor modules — EXACTLY the eight backend bounded-context services (AAP 0.1.1 / 0.6.1
+      Group 2). Each directory contains its own spring-boot-starter-parent-based pom.xml authored
+      by the owning service agent. The listed order is not significant: Maven computes the actual
+      build order from inter-module dependencies (there are none between these services in the
+      skeleton). Derived from the legacy CICS program groupings in app/csd/CARDDEMO.CSD
+      [SRC: CARDDEMO.CSD].
+    -->
+    <modules>
+        <module>services/auth-svc</module>
+        <module>services/account-svc</module>
+        <module>services/card-svc</module>
+        <module>services/transaction-svc</module>
+        <module>services/payment-svc</module>
+        <module>services/useradmin-svc</module>
+        <module>services/reporting-svc</module>
+        <module>services/bff</module>
+    </modules>
+</project>
