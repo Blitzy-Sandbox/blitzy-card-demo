@@ -1,0 +1,1000 @@
+openapi: 3.1.0
+info:
+  title: BFF Aggregation API
+  version: "1.0.0"
+  description: "Frozen OpenAPI 3.1 SSoT for the CardDemo backend-for-frontend (bff). The UI binds only to the BFF. Only the Card Detail tracer is LIVE. [SRC: COCRDSLC | CARDDAT]"
+  contact:
+    name: CardDemo Skeleton Team
+    url: https://github.com/aws-samples/aws-mainframe-modernization-carddemo
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8080
+    description: >-
+      Local backend-for-frontend endpoint (host port BFF_PORT=8080). This is the
+      ONLY backend origin the React UI talks to; the UI never calls a domain
+      service directly.
+  - url: /
+    description: >-
+      Relative base path. Used when the UI and BFF are served behind the same
+      origin (for example the nginx-served SPA proxying /api and /actuator to the
+      bff container).
+tags:
+  - name: CardDetail
+    description: >-
+      The one fully-wired vertical tracer slice: Card Detail. The BFF fronts
+      card-svc GET /cards/{cardNumber} and renders into the React Card Detail
+      screen with real loading / empty / error states [SRC: COCRDSLC | CARDDAT].
+  - name: Auth
+    description: >-
+      Sign-on aggregation. The UI posts credentials here; the BFF forwards to
+      auth-svc and returns a real (permissive) bearer token [SRC: COSGN00].
+  - name: Menu
+    description: >-
+      Main-menu navigation aggregation derived from the legacy 10-option
+      CardDemo main menu; drives the MUI navigation Drawer [SRC: COMEN02Y].
+  - name: Accounts
+    description: Account aggregation ([DEFERRED] typed stub).
+  - name: Cards
+    description: Card list aggregation ([DEFERRED] typed stub).
+  - name: Transactions
+    description: Transaction aggregation ([DEFERRED] typed stub).
+  - name: Payments
+    description: Bill-payment aggregation ([DEFERRED] typed stub).
+  - name: Users
+    description: User-admin aggregation ([DEFERRED] typed stub).
+  - name: Health
+    description: >-
+      Container health / readiness endpoint used for docker-compose and CI
+      startup gating (the ui service depends on bff being healthy).
+security:
+  - bearerAuth: []
+paths:
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      operationId: login
+      summary: Sign on and obtain a bearer token (permissive stub)
+      description: |
+        The UI Sign-On screen posts the User ID and Password here
+        [SRC: COSGN00]. The BFF forwards the request to auth-svc, which issues a
+        REAL bearer token that the UI carries on every subsequent request. This
+        operation is UNAUTHENTICATED (it is the entry point that mints the
+        token). Credential validation is permissive in the walking skeleton, but
+        the token hop and the correlation-ID hop are real.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        description: Sign-on credentials (User ID + Password), each up to 8 characters.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated; a bearer token is returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /api/menu:
+    get:
+      tags:
+        - Menu
+      operationId: getMenu
+      summary: Retrieve the main-menu navigation options
+      description: |
+        Return the CardDemo main-menu options that drive the MUI navigation
+        Drawer [SRC: COMEN02Y]. The "Credit Card View" option routes to the live
+        Card Detail tracer screen. The BFF assembles this list; the UI binds to
+        it only through the BFF.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: The main-menu navigation options.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MenuResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/cards/{cardNumber}:
+    get:
+      tags:
+        - CardDetail
+      operationId: getCardDetail
+      summary: Retrieve a single card's detail by its 16-digit card number (LIVE TRACER)
+      description: |
+        The one fully-wired vertical slice: BFF calls card-svc via the generated
+        client, propagating X-Correlation-ID; renders into the React Card Detail
+        screen with real loading/empty/error states [SRC: COCRDSLC | CARDDAT].
+        The 200 / 404 / 500 responses drive the UI's real data / empty / error
+        states respectively.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cardNumber
+          in: path
+          required: true
+          description: The natural 16-digit card number (CARD-NUM X(16)).
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: "^[0-9]{16}$"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Card found; the Card Detail payload flows through unchanged.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/cards:
+    get:
+      tags:
+        - Cards
+      operationId: listCards
+      summary: List cards, optionally filtered by account id
+      description: |
+        [DEFERRED] Credit Card List aggregation [SRC: COCRDLIC | CARDDAT]. Part
+        of the frozen contract, but the BFF returns a typed placeholder response;
+        no real aggregation, pagination, or persistence is wired in the skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: accountId
+          in: query
+          required: false
+          description: Optional owning-account filter (CARD-ACCT-ID 9(11)).
+          schema:
+            type: string
+            maxLength: 11
+            pattern: "^[0-9]{1,11}$"
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (number of rows per page).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: A page of card summaries (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CardListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/accounts/{accountId}:
+    get:
+      tags:
+        - Accounts
+      operationId: getAccount
+      summary: Retrieve an account view by id
+      description: |
+        [DEFERRED] Account View aggregation [SRC: COACTVWC | ACCTDAT]. Part of
+        the frozen contract, but the BFF returns a typed placeholder AccountView;
+        no live account read is wired in this skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: accountId
+          in: path
+          required: true
+          description: Account identifier (ACCT-ID 9(11)).
+          schema:
+            type: string
+            maxLength: 11
+            pattern: "^[0-9]{1,11}$"
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Account found (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AccountView"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/transactions:
+    get:
+      tags:
+        - Transactions
+      operationId: listTransactions
+      summary: List transactions, optionally filtered by card number
+      description: |
+        [DEFERRED] Transaction List aggregation [SRC: COTRN00C | TRANSACT]. Part
+        of the frozen contract, but the BFF returns a typed placeholder response;
+        no real aggregation or persistence is wired in the skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: cardNumber
+          in: query
+          required: false
+          description: Optional card-number filter (CARD-NUM X(16)).
+          schema:
+            type: string
+            minLength: 16
+            maxLength: 16
+            pattern: "^[0-9]{16}$"
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (number of rows per page).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: A page of transaction summaries (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransactionListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/payments/bill:
+    post:
+      tags:
+        - Payments
+      operationId: payBill
+      summary: Submit a bill payment
+      description: |
+        [DEFERRED] Bill Payment aggregation [SRC: COBIL00C | ACCTDAT]. Part of
+        the frozen contract, but the BFF returns a typed placeholder response; no
+        real balance mutation or persistence is wired in the skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      requestBody:
+        required: true
+        description: The bill-payment instruction.
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BillPaymentRequest"
+      responses:
+        "200":
+          description: Bill payment accepted (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BillPaymentResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/users:
+    get:
+      tags:
+        - Users
+      operationId: listUsers
+      summary: List administrative users
+      description: |
+        [DEFERRED] User Admin list aggregation [SRC: COUSR00C | USRSEC]. Part of
+        the frozen contract, but the BFF returns a typed placeholder response; no
+        real aggregation or persistence is wired in the skeleton.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Page size (number of rows per page).
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: A page of user summaries (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      summary: Container health / readiness probe
+      description: |
+        This documents the Spring Boot Actuator health endpoint used by
+        docker-compose / CI startup gating (the ui service depends on bff being
+        healthy). Generated Health API interface MUST be left UNIMPLEMENTED -
+        Actuator serves `/actuator/health`; do NOT write a controller for it
+        (avoids a duplicate request-mapping conflict with Actuator).
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/CorrelationId"
+      responses:
+        "200":
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Correlation ID; the UI Axios interceptor sets it, BFF propagates it to
+        card-svc, and it is logged via MDC. If absent, BFF generates one.
+      schema:
+        type: string
+        format: uuid
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Bearer token issued by auth-svc via the BFF sign-on aggregation.
+        Permissive in the skeleton: the token presence is a real hop that is
+        propagated through UI -> BFF -> card-svc, but it is NOT cryptographically
+        validated in this walking skeleton.
+  responses:
+    BadRequest:
+      description: >-
+        Malformed request (for example, the card number is not exactly 16
+        digits). Served as RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: >-
+        Missing or invalid bearer token. The UI route guards redirect to the
+        Sign-On screen. Served as RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: >-
+        The requested resource does not exist. For the Card Detail tracer this
+        drives the UI EMPTY state. Served as RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: >-
+        Unexpected server or upstream error. For the Card Detail tracer this
+        drives the UI ERROR state. Served as RFC 7807 application/problem+json.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    CardDetail:
+      type: object
+      description: |
+        Card Detail view-model rendered by the React Card Detail tracer screen.
+        This shape is IDENTICAL to the card-svc `Card` DTO (five fields) so the
+        tracer payload flows through the BFF unchanged
+        [SRC: COCRDSLC | CARDDAT]. Fields mirror CARD-RECORD [CVACT02Y.cpy] and
+        the Card Detail BMS map [COCRDSL.bms]. The CVV is intentionally EXCLUDED.
+      required:
+        - cardNumber
+        - accountId
+        - embossedName
+        - expiryDate
+        - activeStatus
+      properties:
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: "^[0-9]{16}$"
+          description: >-
+            16-digit card number - the natural key (CARD-NUM X(16); screen field
+            CARDSID).
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: >-
+            Owning account id (CARD-ACCT-ID 9(11); screen field ACCTSID).
+            Represented as a numeric string to preserve zero-padding.
+        embossedName:
+          type: string
+          maxLength: 50
+          description: >-
+            Name embossed on the card (CARD-EMBOSSED-NAME X(50); screen field
+            CRDNAME).
+        expiryDate:
+          type: string
+          maxLength: 10
+          description: >-
+            Expiry date in YYYY-MM-DD form (CARD-EXPIRAION-DATE X(10); screen
+            fields EXPMON/EXPYEAR).
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: >-
+            Card active flag Y/N (CARD-ACTIVE-STATUS X(01); screen field
+            CRDSTCD).
+      example:
+        cardNumber: "4000000000000001"
+        accountId: "00000000001"
+        embossedName: "JOHN Q PUBLIC"
+        expiryDate: "2027-12-31"
+        activeStatus: "Y"
+    LoginRequest:
+      type: object
+      description: |
+        Sign-on credentials posted by the UI Sign-On screen [SRC: COSGN00].
+        Both fields are up to 8 characters, mirroring the legacy USERID and
+        PASSWD fields on the COSGN00 map.
+      required:
+        - userId
+        - password
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: User ID (SEC-USR-ID X(08); COSGN00 field USERID).
+          example: "USER0001"
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 8
+          description: Password (SEC-USR-PWD X(08); COSGN00 field PASSWD).
+          example: "PASSWORD"
+    LoginResponse:
+      type: object
+      description: |
+        Result of a successful sign-on. Carries the real (permissive) bearer
+        token the UI attaches to every subsequent request, plus the resolved
+        user identity.
+      required:
+        - token
+        - userId
+        - userType
+      properties:
+        token:
+          type: string
+          description: The bearer token to send in the Authorization header.
+          example: "stub-bearer-token-not-a-real-jwt"
+        userId:
+          type: string
+          maxLength: 8
+          description: The authenticated user id (SEC-USR-ID X(08)).
+          example: "USER0001"
+        userType:
+          type: string
+          enum:
+            - A
+            - U
+          description: >-
+            User type flag (SEC-USR-TYPE X(01)): A = administrator, U = regular
+            user.
+          example: "U"
+        expiresIn:
+          type: integer
+          format: int64
+          description: Token time-to-live in seconds.
+          example: 3600
+        tokenType:
+          type: string
+          default: Bearer
+          description: The token scheme; always "Bearer" in the skeleton.
+          example: "Bearer"
+    MenuOption:
+      type: object
+      description: |
+        A single main-menu navigation entry derived from the legacy CardDemo
+        main menu [SRC: COMEN02Y]. The `route` is the UI route path the option
+        navigates to; option 4 (Credit Card View) routes to the live Card Detail
+        tracer screen.
+      properties:
+        optionNumber:
+          type: integer
+          format: int32
+          description: The menu option number (CDEMO-MENU-OPT-NUM 9(02)), 1-based.
+          example: 4
+        label:
+          type: string
+          maxLength: 35
+          description: Human-readable menu label (CDEMO-MENU-OPT-NAME X(35)).
+          example: "Credit Card View"
+        route:
+          type: string
+          description: >-
+            The UI route path this option navigates to (for example
+            "/cards/0500024453765740" for Credit Card View -> the tracer screen).
+          example: "/cards/0500024453765740"
+        userType:
+          type: string
+          enum:
+            - A
+            - U
+            - ALL
+          description: >-
+            Which user type may see this option (CDEMO-MENU-OPT-USRTYPE X(01)):
+            A = admin only, U = regular user, ALL = everyone.
+          example: "U"
+    MenuResponse:
+      type: object
+      description: >-
+        The full set of main-menu navigation options that drive the MUI
+        navigation Drawer [SRC: COMEN02Y].
+      required:
+        - options
+      properties:
+        options:
+          type: array
+          description: The ordered main-menu options.
+          items:
+            $ref: "#/components/schemas/MenuOption"
+      example:
+        options:
+          - optionNumber: 1
+            label: "Account View"
+            route: "/accounts/50"
+            userType: "U"
+          - optionNumber: 2
+            label: "Account Update"
+            route: "/accounts/50/edit"
+            userType: "U"
+          - optionNumber: 3
+            label: "Credit Card List"
+            route: "/cards"
+            userType: "U"
+          - optionNumber: 4
+            label: "Credit Card View"
+            route: "/cards/0500024453765740"
+            userType: "U"
+          - optionNumber: 5
+            label: "Credit Card Update"
+            route: "/cards/0500024453765740/edit"
+            userType: "U"
+          - optionNumber: 6
+            label: "Transaction List"
+            route: "/transactions"
+            userType: "U"
+          - optionNumber: 7
+            label: "Transaction View"
+            route: "/transactions/1"
+            userType: "U"
+          - optionNumber: 8
+            label: "Transaction Add"
+            route: "/transactions/new"
+            userType: "U"
+          - optionNumber: 9
+            label: "Transaction Reports"
+            route: "/reports"
+            userType: "U"
+          - optionNumber: 10
+            label: "Bill Payment"
+            route: "/bill-payment"
+            userType: "U"
+    AccountView:
+      type: object
+      description: >-
+        [DEFERRED] Lightweight account display subset backing the placeholder
+        Account View screen [SRC: COACTVWC | ACCTDAT]. Monetary values are
+        decimal strings (2 dp) to avoid binary floating-point drift.
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: Account identifier (ACCT-ID 9(11)).
+          example: "00000000050"
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: Active status flag (ACCT-ACTIVE-STATUS X(01)).
+          example: "Y"
+        currentBalance:
+          type: string
+          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
+          description: Current balance; decimal string, 2 dp (ACCT-CURR-BAL S9(10)V99).
+          example: "1000.00"
+        creditLimit:
+          type: string
+          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
+          description: Credit limit; decimal string, 2 dp (ACCT-CREDIT-LIMIT S9(10)V99).
+          example: "5000.00"
+    CardSummary:
+      type: object
+      description: >-
+        [DEFERRED] Lightweight card list row (a subset of CardDetail) backing the
+        placeholder Credit Card List screen [SRC: COCRDLIC | CARDDAT].
+      properties:
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: "^[0-9]{16}$"
+          description: 16-digit card number - the natural key (CARD-NUM X(16)).
+          example: "4000000000000001"
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: Owning account id (CARD-ACCT-ID 9(11)).
+          example: "00000000001"
+        activeStatus:
+          type: string
+          maxLength: 1
+          enum:
+            - "Y"
+            - "N"
+          description: Card active flag Y/N (CARD-ACTIVE-STATUS X(01)).
+          example: "Y"
+    CardListResponse:
+      type: object
+      description: >-
+        [DEFERRED] A single page of card summaries. Typed placeholder shape for
+        the card list aggregation.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+      properties:
+        items:
+          type: array
+          description: The card summaries on this page.
+          items:
+            $ref: "#/components/schemas/CardSummary"
+        page:
+          type: integer
+          format: int32
+          description: Zero-based page index.
+          example: 0
+        size:
+          type: integer
+          format: int32
+          description: Page size (number of rows per page).
+          example: 20
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of cards matching the query.
+          example: 0
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages available.
+          example: 0
+    TransactionSummary:
+      type: object
+      description: >-
+        [DEFERRED] Lightweight transaction list row backing the placeholder
+        Transaction List screen [SRC: COTRN00C | TRANSACT]. The amount is a
+        decimal string (2 dp) to avoid binary floating-point drift.
+      properties:
+        transactionId:
+          type: string
+          maxLength: 16
+          description: Transaction identifier (TRAN-ID X(16)).
+          example: "0000000000000001"
+        cardNumber:
+          type: string
+          minLength: 16
+          maxLength: 16
+          pattern: "^[0-9]{16}$"
+          description: Card number the transaction posted to (CARD-NUM X(16)).
+          example: "4000000000000001"
+        amount:
+          type: string
+          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
+          description: Transaction amount; decimal string, 2 dp (TRAN-AMT S9(10)V99).
+          example: "42.00"
+        description:
+          type: string
+          maxLength: 100
+          description: Transaction description (TRAN-DESC X(100)).
+          example: "PURCHASE"
+    TransactionListResponse:
+      type: object
+      description: >-
+        [DEFERRED] A single page of transaction summaries. Typed placeholder
+        shape for the transaction list aggregation.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+      properties:
+        items:
+          type: array
+          description: The transaction summaries on this page.
+          items:
+            $ref: "#/components/schemas/TransactionSummary"
+        page:
+          type: integer
+          format: int32
+          description: Zero-based page index.
+          example: 0
+        size:
+          type: integer
+          format: int32
+          description: Page size (number of rows per page).
+          example: 20
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of transactions matching the query.
+          example: 0
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages available.
+          example: 0
+    BillPaymentRequest:
+      type: object
+      description: >-
+        [DEFERRED] Bill-payment instruction submitted from the placeholder Bill
+        Payment screen [SRC: COBIL00C | ACCTDAT]. The amount is a decimal string
+        (2 dp).
+      required:
+        - accountId
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: Account to pay from (ACCT-ID 9(11)).
+          example: "00000000050"
+        amount:
+          type: string
+          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
+          description: Payment amount; decimal string, 2 dp.
+          example: "100.00"
+        confirm:
+          type: boolean
+          description: Whether the user confirmed the payment.
+          example: true
+    BillPaymentResponse:
+      type: object
+      description: >-
+        [DEFERRED] Result of a bill payment. Typed placeholder shape for the
+        bill-payment aggregation.
+      required:
+        - accountId
+        - status
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: "^[0-9]{1,11}$"
+          description: Account the payment applied to (ACCT-ID 9(11)).
+          example: "00000000050"
+        newBalance:
+          type: string
+          pattern: "^-?\\d{1,10}(\\.\\d{1,2})?$"
+          description: Resulting balance after payment; decimal string, 2 dp.
+          example: "900.00"
+        transactionId:
+          type: string
+          maxLength: 16
+          description: The identifier of the posted payment transaction (TRAN-ID X(16)).
+          example: "0000000000000002"
+        status:
+          type: string
+          enum:
+            - CONFIRMED
+            - PENDING
+            - DECLINED
+          description: The outcome of the payment.
+          example: "CONFIRMED"
+    UserSummary:
+      type: object
+      description: >-
+        [DEFERRED] Lightweight admin-user row backing the placeholder User Admin
+        list screen [SRC: COUSR00C | USRSEC].
+      properties:
+        userId:
+          type: string
+          maxLength: 8
+          description: User id (SEC-USR-ID X(08)).
+          example: "USER0001"
+        firstName:
+          type: string
+          maxLength: 20
+          description: First name (SEC-USR-FNAME X(20)).
+          example: "JOHN"
+        lastName:
+          type: string
+          maxLength: 20
+          description: Last name (SEC-USR-LNAME X(20)).
+          example: "PUBLIC"
+        userType:
+          type: string
+          enum:
+            - A
+            - U
+          description: >-
+            User type flag (SEC-USR-TYPE X(01)): A = administrator, U = regular
+            user.
+          example: "U"
+    UserListResponse:
+      type: object
+      description: >-
+        [DEFERRED] A single page of user summaries. Typed placeholder shape for
+        the user-admin list aggregation.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+      properties:
+        items:
+          type: array
+          description: The user summaries on this page.
+          items:
+            $ref: "#/components/schemas/UserSummary"
+        page:
+          type: integer
+          format: int32
+          description: Zero-based page index.
+          example: 0
+        size:
+          type: integer
+          format: int32
+          description: Page size (number of rows per page).
+          example: 20
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of users matching the query.
+          example: 0
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages available.
+          example: 0
+    Error:
+      type: object
+      description: |
+        RFC 7807 problem detail, aligned with the Spring Boot 3 `ProblemDetail`
+        representation and served as `application/problem+json`. Generated as
+        `ModelError` in the TypeScript client (the name `Error` is reserved).
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+          description: A URI reference that identifies the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code generated for this occurrence.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+        instance:
+          type: string
+          format: uri
+          description: A URI reference that identifies the specific occurrence.
+        correlationId:
+          type: string
+          description: >-
+            The X-Correlation-ID associated with the request, echoed back for
+            log / trace correlation via MDC.
+    HealthStatus:
+      type: object
+      description: >-
+        Spring Boot Actuator health representation. Documentation only - the
+        generated interface is left unimplemented and Actuator serves this at
+        runtime.
+      properties:
+        status:
+          type: string
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          description: Aggregate health status reported by Actuator.
+        components:
+          type: object
+          additionalProperties: true
+          description: >-
+            Optional per-component health details (data source, disk space, and
+            so on).
