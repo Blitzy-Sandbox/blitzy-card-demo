@@ -43,18 +43,24 @@
 # !!! CRITICAL — curl IS INSTALLED IN THE RUNTIME STAGE ON PURPOSE !!!
 # ---------------------------------------------------------------------------
 # The docker-compose `service_healthy` gate probes this service with
-# `CMD-SHELL curl -f http://localhost:8080/actuator/health || exit 1`. The
-# `eclipse-temurin:21-jre` base image does NOT ship curl, so the runtime stage
-# installs it (and cleans apt lists). Do not remove it — the compose health gate
+# `CMD-SHELL curl -f http://localhost:8080/actuator/health || exit 1`. Curl
+# is installed explicitly below (and apt lists cleaned) so the health probe
+# never depends on whether the pinned base bundles curl. Do not remove it — the
+# compose health gate
 # (and the HEALTHCHECK below) depend on it.
 # =============================================================================
 
 
 # ---------- Stage 1: build (OpenAPI codegen + compile + repackage) ----------
-# maven:3.9-eclipse-temurin-21 provides a JDK 21 toolchain + Maven, satisfying the
+# The pinned maven-on-Temurin-21 base provides a JDK 21 toolchain + Maven, satisfying the
 # "JDK 21 build" requirement. The bootable jar it produces runs on the JRE 21
 # runtime stage below.
-FROM maven:3.9-eclipse-temurin-21 AS build
+# S-01 (supply-chain hardening): build base standardized across ALL 8 services and
+# pinned by digest. Ubuntu 24.04 LTS (noble) + Temurin 21 JDK + Maven 3.9.9. Earlier
+# the services mixed floating maven:3.9(.9)-eclipse-temurin-21 tags; the digest makes
+# builds reproducible. This stage is discarded by the multi-stage build and ships
+# nothing into the runtime image.
+FROM maven:3.9.9-eclipse-temurin-21-noble@sha256:2fa8b35172589aafa259fe953f4829859169bb0516f28f2b5a027c7c52017bee AS build
 
 WORKDIR /build
 
@@ -84,10 +90,14 @@ RUN mvn -B -DskipTests clean package
 
 
 # ---------- Stage 2: runtime (JRE 21, health-ready, non-root) ----------
-FROM eclipse-temurin:21-jre AS runtime
+# S-01 (supply-chain hardening): runtime base pinned by digest to
+# eclipse-temurin:21-jre-noble (Ubuntu 24.04 LTS). The floating :21-jre tag had
+# drifted to an Ubuntu 26.04 build bundling an unused /usr/bin/pebble Go binary with
+# 5 HIGH CVEs; the -noble line ships no pebble. The digest freezes the scanned image.
+FROM eclipse-temurin:21-jre-noble@sha256:373787d1d45a87f084fda43e7de0e9acf5eedee049446efac738f13587ec4c64 AS runtime
 
-# Install curl for the docker-compose healthcheck + the HEALTHCHECK below. The
-# JRE base has no curl. Clean apt lists to keep the image lean.
+# Install curl for the docker-compose healthcheck + the HEALTHCHECK below so the
+# probe never depends on base-image drift. Clean apt lists to keep the image lean.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*

@@ -49,7 +49,7 @@ graph LR
     end
 
     UI -->|binds only to BFF| BFF
-    BFF -.stub.-> AUTH
+    BFF -->|real hop, permissive-stub auth| AUTH
     BFF -.stub.-> ACCT
     BFF ==>|TRACER live| CARD
     BFF -.stub.-> TXN
@@ -60,7 +60,7 @@ graph LR
     RPT -.job stub, no serve.-> ORA
 ```
 
-Solid double arrows (`==>`) denote the one fully-wired vertical tracer slice; dotted arrows (`-.stub.->`) denote stubbed seams.
+Thick double arrows (`==>`) denote the single fully-wired, **live** vertical tracer slice (UI → BFF → `card-svc` → Oracle). Solid single arrows (`-->`) denote **real** request hops that are wired and exercised at runtime — the UI→BFF binding and the **BFF→`auth-svc`** auth hop, which is a real seam over a *permissive* stub (a real `auth-svc`-issued token and the correlation-ID propagation are live; only server-side token *validation* is `[DEFERRED]`). Dotted arrows (`-.stub.->`) denote stubbed seams — typed placeholder responses with no live behavior.
 
 ## Contract-First APIs
 

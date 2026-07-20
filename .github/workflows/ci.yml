@@ -55,7 +55,7 @@ jobs:
       #    reads ../contracts/bff.openapi.yaml, so /contracts, /db, /services and
       #    /ui must all be present.
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1 (S-02: SHA-pinned)
 
       # 1b. Contract SSoT drift guard (QA-011-F1). The frozen OpenAPI 3.1 specs
       #     under /contracts are the single source of truth (AAP 0.4): "a contract
@@ -97,7 +97,7 @@ jobs:
       # 2. Java 21 (Temurin) toolchain for the Maven reactor. `cache: maven` is
       #    safe — the reactor pom.xml + module poms provide a stable cache key.
       - name: Set up Java 21 (Temurin)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4.8.0 (S-02: SHA-pinned)
         with:
           distribution: temurin
           java-version: '21'
@@ -111,7 +111,7 @@ jobs:
       #    keeps this step simple and reliably green (build-green > marginal
       #    speedup).
       - name: Set up Node.js 22
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0 (S-02: SHA-pinned)
         with:
           node-version: '22'
 
@@ -138,7 +138,7 @@ jobs:
       #    Flyway (next step) owns the schema + flyway_schema_history, so we do
       #    NOT use the action's setup/startup-scripts for migrations.
       - name: Provision Oracle Database Free 23ai
-        uses: gvenzl/setup-oracle-free@v1
+        uses: gvenzl/setup-oracle-free@a8df5179017826f38de252982830cd9caab03bae # v1.2.0 (S-02: SHA-pinned)
         with:
           tag: '23.26.2-slim'
           app-user: ${{ env.ORACLE_APP_USER }}

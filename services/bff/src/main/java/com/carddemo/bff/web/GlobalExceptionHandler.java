@@ -1,5 +1,6 @@
 package com.carddemo.bff.web;
 
+import java.util.List;
 import java.util.Set;
 
 import jakarta.validation.ConstraintViolationException;
@@ -14,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
@@ -211,8 +213,47 @@ public class GlobalExceptionHandler {
             ConstraintViolationException.class
     })
     public ResponseEntity<ProblemDetail> handleValidation(Exception ex) {
-        log.warn("Request validation failed: {}", ex.getMessage());
+        // SECURITY (CWE-532 / OWASP A09 / QA finding F-01): NEVER log ex.getMessage()
+        // here. For a MethodArgumentNotValidException, getMessage() serializes the
+        // ENTIRE BindingResult -- INCLUDING every rejected field VALUE (e.g. a login
+        // password that failed the @Size(1,8) constraint), which would write the
+        // plaintext credential to the server log. Log only the offending field
+        // NAMES so diagnostics stay useful while no submitted value (credential or
+        // otherwise) is ever persisted to the logs. The client response detail is
+        // already the stable, generic "Request validation failed" (no field echo).
+        log.warn("Request validation failed for field(s): {}", validationFieldNames(ex));
         return problem(HttpStatus.BAD_REQUEST, "Bad Request", "Request validation failed");
+    }
+
+    /**
+     * Extracts the offending field/property <strong>names</strong> from a validation exception
+     * for safe (non-leaking) logging &mdash; it NEVER returns any submitted value. Covers the
+     * three validation types this advice handles: {@link MethodArgumentNotValidException}
+     * (request-body binding &mdash; the bound field names), {@link ConstraintViolationException}
+     * (Jakarta bean-validation &mdash; the violated property paths), and any other type (its
+     * simple class name only). This is the security-critical counterpart to
+     * {@link #handleValidation(Exception)}: it exists specifically so a rejected credential
+     * value (QA finding F-01) can never reach the log stream.
+     *
+     * @param ex the raised validation exception; never {@code null}
+     * @return the distinct offending field/property names (never any rejected value)
+     */
+    private static List<String> validationFieldNames(Exception ex) {
+        if (ex instanceof MethodArgumentNotValidException manv) {
+            return manv.getBindingResult().getFieldErrors().stream()
+                    .map(FieldError::getField)
+                    .distinct()
+                    .toList();
+        }
+        if (ex instanceof ConstraintViolationException cve) {
+            return cve.getConstraintViolations().stream()
+                    .map(v -> v.getPropertyPath().toString())
+                    .distinct()
+                    .toList();
+        }
+        // HandlerMethodValidationException (or any other validation type): report
+        // only the exception type -- never a bound parameter VALUE.
+        return List.of(ex.getClass().getSimpleName());
     }
 
     /**

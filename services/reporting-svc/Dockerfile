@@ -39,10 +39,15 @@
 
 
 # ---------- Stage 1: build (OpenAPI codegen + compile + package) ----------
-# maven:3.9-eclipse-temurin-21 == Eclipse Temurin 21 JDK + Maven 3.9. This
-# satisfies the "temurin 21-jdk" build-stage lineage while providing Maven
+# The pinned maven:3.9.9-eclipse-temurin-21-noble base == Eclipse Temurin 21 JDK +
+# Maven 3.9.9. This satisfies the "temurin 21-jdk" build-stage lineage while providing Maven
 # without requiring a committed mvnw wrapper.
-FROM maven:3.9-eclipse-temurin-21 AS build
+# S-01 (supply-chain hardening): build base standardized across ALL 8 services and
+# pinned by digest. Ubuntu 24.04 LTS (noble) + Temurin 21 JDK + Maven 3.9.9. Earlier
+# the services mixed floating maven:3.9(.9)-eclipse-temurin-21 tags; the digest makes
+# builds reproducible. This stage is discarded by the multi-stage build and ships
+# nothing into the runtime image.
+FROM maven:3.9.9-eclipse-temurin-21-noble@sha256:2fa8b35172589aafa259fe953f4829859169bb0516f28f2b5a027c7c52017bee AS build
 WORKDIR /workspace
 
 # Frozen OpenAPI SSoT. Placed at /workspace/contracts so that, from the module
@@ -81,9 +86,13 @@ RUN mvn -B -q -e -DskipTests clean package
 
 
 # ---------- Stage 2: runtime (JRE — invokable job-stub entrypoint) ----------
-# eclipse-temurin:21-jre is the slim runtime half of the multi-stage lineage
+# eclipse-temurin:21-jre-noble is the slim runtime half of the multi-stage lineage
 # (Temurin 21 JDK build -> Temurin 21 JRE runtime).
-FROM eclipse-temurin:21-jre AS runtime
+# S-01 (supply-chain hardening): runtime base pinned by digest to
+# eclipse-temurin:21-jre-noble (Ubuntu 24.04 LTS). The floating :21-jre tag had
+# drifted to an Ubuntu 26.04 build bundling an unused /usr/bin/pebble Go binary with
+# 5 HIGH CVEs; the -noble line ships no pebble. The digest freezes the scanned image.
+FROM eclipse-temurin:21-jre-noble@sha256:373787d1d45a87f084fda43e7de0e9acf5eedee049446efac738f13587ec4c64 AS runtime
 WORKDIR /app
 
 # Run as a dedicated, non-root system user for good container hygiene.
