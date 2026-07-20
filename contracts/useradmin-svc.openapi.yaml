@@ -260,7 +260,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: |
         Bearer token issued by `auth-svc` (a permissive stub in the walking
         skeleton). The token is carried on every business request; the
@@ -276,7 +275,6 @@ components:
         omitted, the service generates one.
       schema:
         type: string
-        format: uuid
         examples:
           - 6f9619ff-8b86-d011-b42d-00cf4fc964ff
     UserIdPath:

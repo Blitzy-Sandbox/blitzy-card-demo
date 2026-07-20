@@ -80,20 +80,22 @@ import com.carddemo.bff.aggregation.CardDetailAggregator;
  *       no longer triggers a binding type mismatch, and {@code config.CorrelationIdFilter} remains
  *       the sole owner of correlation-ID validation and minting.</li>
  *   <li>{@link RestClientResponseException} &rarr; <strong>502 Bad Gateway</strong> &mdash; a
- *       <em>downstream</em> error response from card-svc that is NOT a 404 (the aggregator already
- *       maps card-svc's 404 to {@link java.util.Optional#empty()} &rarr; 404 here). A non-404
- *       {@code 4xx} or any {@code 5xx} returned by card-svc is an upstream-dependency failure from
- *       the SPA's point of view, so it is deliberately mapped to 502 rather than being allowed to
- *       fall through to a misleading 500. The downstream status is logged server-side for
- *       diagnosis; the downstream response body is never echoed to the client.</li>
+ *       <em>downstream</em> error response (from card-svc on the Card Detail hop, or from auth-svc
+ *       on the sign-on hop) that is NOT a 404 (the card aggregator already maps card-svc's 404 to
+ *       {@link java.util.Optional#empty()} &rarr; 404 here). A non-404 {@code 4xx} or any {@code 5xx}
+ *       returned by a downstream is an upstream-dependency failure from the SPA's point of view, so
+ *       it is deliberately mapped to 502 rather than being allowed to fall through to a misleading
+ *       500. The downstream status is logged server-side for diagnosis; the downstream response body
+ *       is never echoed to the client.</li>
  *   <li>{@link Exception} (fallback) &rarr; <strong>500</strong> &mdash; the UI error state,
  *       covering any remaining uncaught exception propagating from the aggregation edge &mdash;
- *       most relevantly a card-svc connection failure or timeout ({@code ResourceAccessException},
- *       which carries no HTTP status and so is not a {@link RestClientResponseException}). This
- *       branch is logged at {@code ERROR} with the stack trace (the specific 4xx / 502 branches
- *       above are logged at {@code WARN}), so a genuine server fault is diagnosable from the logs
- *       rather than silent. Because Spring dispatches to the MOST SPECIFIC handler, this fallback
- *       never shadows the 404/400/405/406/415/502 handlers above.</li>
+ *       most relevantly a downstream (card-svc or auth-svc) connection failure or timeout
+ *       ({@code ResourceAccessException}, which carries no HTTP status and so is not a
+ *       {@link RestClientResponseException}). This branch is logged at {@code ERROR} with the stack
+ *       trace (the specific 4xx / 502 branches above are logged at {@code WARN}), so a genuine
+ *       server fault is diagnosable from the logs rather than silent. Because Spring dispatches to
+ *       the MOST SPECIFIC handler, this fallback never shadows the 404/400/405/406/415/502
+ *       handlers above.</li>
  * </ul>
  *
  * <p><strong>Correlation-ID enrichment.</strong> Every problem body is enriched with the
@@ -328,31 +330,34 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Maps a <em>downstream</em> card-svc error response to <strong>502 Bad Gateway</strong>
-     * ({@code application/problem+json}). The {@code CardDetailAggregator} performs the live
-     * {@code RestClient} hop to card-svc and maps only card-svc's {@code 404} to
-     * {@link java.util.Optional#empty()} (which surfaces here as a 404). Any other status card-svc
-     * returns &mdash; a non-404 {@code 4xx} ({@link org.springframework.web.client.HttpClientErrorException})
-     * or any {@code 5xx} ({@link org.springframework.web.client.HttpServerErrorException}), both
-     * subclasses of {@link RestClientResponseException} &mdash; is an upstream-dependency failure
-     * from the SPA's point of view. Mapping it to a deliberate 502 (rather than letting it reach
-     * the {@code Exception} fallback as a misleading 500) tells the UI its downstream dependency
-     * failed. The downstream status code is logged at {@code WARN} for diagnosis; the downstream
-     * response body is deliberately NOT echoed to the client (sanitized).
+     * Maps a <em>downstream</em> service error response to <strong>502 Bad Gateway</strong>
+     * ({@code application/problem+json}). This is a generic handler (by exception type) shared by
+     * every real downstream hop the BFF makes: the {@code CardDetailAggregator} card-svc hop and the
+     * {@code AuthAggregator} auth-svc sign-on hop. For the card hop the aggregator maps only
+     * card-svc's {@code 404} to {@link java.util.Optional#empty()} (which surfaces here as a 404);
+     * any other status a downstream returns &mdash; a non-404 {@code 4xx}
+     * ({@link org.springframework.web.client.HttpClientErrorException}) or any {@code 5xx}
+     * ({@link org.springframework.web.client.HttpServerErrorException}), both subclasses of
+     * {@link RestClientResponseException} &mdash; is an upstream-dependency failure from the SPA's
+     * point of view. Mapping it to a deliberate 502 (rather than letting it reach the
+     * {@code Exception} fallback as a misleading 500) tells the UI its downstream dependency failed.
+     * The downstream status code is logged at {@code WARN} for diagnosis; the downstream response
+     * body is deliberately NOT echoed to the client (sanitized), so the detail is a fixed,
+     * service-agnostic summary.
      *
-     * <p>Note: a card-svc connection failure or timeout raises
+     * <p>Note: a downstream connection failure or timeout raises
      * {@code org.springframework.web.client.ResourceAccessException} (no HTTP status, so not a
      * {@link RestClientResponseException}); that lands in the {@code Exception} fallback below.</p>
      *
-     * @param ex the downstream error carrying the card-svc HTTP status (logged, never returned)
+     * @param ex the downstream error carrying the downstream HTTP status (logged, never returned)
      * @return a 502 {@link ProblemDetail} response enriched with the correlation id
      */
     @ExceptionHandler(RestClientResponseException.class)
     public ResponseEntity<ProblemDetail> handleDownstreamError(RestClientResponseException ex) {
-        log.warn("Downstream card-svc returned {} for aggregation request; mapping to 502 Bad Gateway",
+        log.warn("A downstream service returned {} for an aggregation request; mapping to 502 Bad Gateway",
                 ex.getStatusCode());
         return problem(HttpStatus.BAD_GATEWAY, "Bad Gateway",
-                "Error retrieving card detail from the card service");
+                "A downstream service returned an error while processing the request");
     }
 
     /**
@@ -383,11 +388,12 @@ public class GlobalExceptionHandler {
     /**
      * Fallback handler mapping any otherwise-uncaught exception to
      * <strong>500 Internal Server Error</strong> ({@code application/problem+json}) &mdash;
-     * the UI error state. This mirrors the legacy {@code OTHER} read-error branch and catches,
-     * for instance, a card-svc connection failure or timeout
-     * ({@code ResourceAccessException}) propagating from the {@code CardDetailAggregator}. The
-     * exception is logged at {@code ERROR} with its stack trace so a genuine server fault is
-     * diagnosable from the logs (the specific 4xx / 502 handlers above log at {@code WARN}).
+     * the UI error state. It catches, for instance, a downstream connection failure or timeout
+     * ({@code ResourceAccessException}) propagating from either the {@code CardDetailAggregator}
+     * card-svc hop or the {@code AuthAggregator} auth-svc sign-on hop (that exception carries no
+     * HTTP status, so it is not a {@link RestClientResponseException} and does not hit the 502
+     * handler). The exception is logged at {@code ERROR} with its stack trace so a genuine server
+     * fault is diagnosable from the logs (the specific 4xx / 502 handlers above log at {@code WARN}).
      * Spring's most-specific-handler selection ensures this never shadows the
      * 404/400/405/406/415/502 handlers above.
      *
@@ -399,7 +405,7 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ProblemDetail> handleUnexpected(Exception ex) {
         log.error("Unhandled exception mapped to 500 Internal Server Error", ex);
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error",
-                "Error reading Card Data File");
+                "The request could not be completed due to an unexpected error");
     }
 
     /**

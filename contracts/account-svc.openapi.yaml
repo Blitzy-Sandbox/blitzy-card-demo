@@ -138,12 +138,10 @@ components:
         service hop and placed into the SLF4J MDC for trace logging.
       schema:
         type: string
-        format: uuid
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: |
         Bearer token issued by auth-svc (permissive stub). The token hop is
         real even though credential validation is deferred.

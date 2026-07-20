@@ -2,6 +2,7 @@ package com.carddemo.auth.config;
 
 import java.io.IOException;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -26,9 +27,10 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * <ol>
  *   <li>reads the correlation-ID header, whose name comes from the
  *       {@code carddemo.correlation.header} property (default {@code X-Correlation-ID});</li>
- *   <li>generates a fresh random UUID when that header is missing or blank, making
- *       {@code auth-svc} resilient as a first hop (in the tracer the UI/BFF already supply
- *       an id, which is then propagated unchanged);</li>
+ *   <li>trusts the inbound header ONLY when it is a bounded canonical UUID, and generates a
+ *       fresh random UUID otherwise (missing, blank, malformed, over-long, or injection-bearing)
+ *       &mdash; so no unvalidated client input reaches the logs or the response header (CWE-20);
+ *       in the tracer the UI/BFF already supply a canonical id, which is propagated unchanged;</li>
  *   <li>places the value into the SLF4J {@link MDC} under the key {@code correlationId}
  *       (rendered by the {@code %X{correlationId:-}} console log pattern configured in
  *       {@code application.yml});</li>
@@ -58,6 +60,17 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
 
     /** MDC key printed by the {@code application.yml} log pattern {@code %X{correlationId:-}}. */
     private static final String MDC_KEY = "correlationId";
+
+    /**
+     * Strict canonical RFC&nbsp;4122 UUID pattern (8-4-4-4-12 hex, exactly 36 chars). An inbound
+     * correlation-ID header is trusted ONLY when it matches this bound; any other value (malformed,
+     * over-long, or carrying CR/LF or other control characters for log- or response-header
+     * injection) is rejected and replaced with a freshly generated UUID. This closes CWE-20 on the
+     * value written to the SLF4J MDC and echoed back on the response header, matching card-svc's
+     * bounded correlation-ID policy uniformly across every service.
+     */
+    private static final Pattern CANONICAL_UUID = Pattern.compile(
+            "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     /**
      * Name of the HTTP header that carries the correlation ID. Sourced from the
@@ -95,10 +108,14 @@ public class CorrelationIdFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain)
             throws ServletException, IOException {
-        String correlationId = request.getHeader(correlationHeader);
-        if (correlationId == null || correlationId.isBlank()) {
-            correlationId = UUID.randomUUID().toString();
-        }
+        // Trust the inbound correlation ID only when it is a bounded canonical UUID; otherwise
+        // (missing, blank, malformed, over-long, or injection-bearing) mint a fresh one. Only the
+        // validated value reaches the SLF4J MDC and the echoed response header, so no unvalidated
+        // client input can be written to the logs or the response headers (CWE-20).
+        String inbound = request.getHeader(correlationHeader);
+        String correlationId = (inbound != null && CANONICAL_UUID.matcher(inbound).matches())
+                ? inbound
+                : UUID.randomUUID().toString();
         MDC.put(MDC_KEY, correlationId);
         response.setHeader(correlationHeader, correlationId);
         try {

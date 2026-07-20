@@ -20,8 +20,11 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
-    # Benign local-only default; the real password is env-injected by docker-compose (.env). Never a real secret.
-    password: ${SPRING_DATASOURCE_PASSWORD:carddemo}
+    # No usable default: the password is REQUIRED and injected at runtime by
+    # docker-compose from .env (APP_USER_PASSWORD). An EMPTY default makes the
+    # datasource fail fast rather than run on a committed secret (finding P4-M11;
+    # matches card/account/auth/useradmin/reporting).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
   jpa:
     hibernate:
       # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.

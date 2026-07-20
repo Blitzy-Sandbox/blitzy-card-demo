@@ -31,7 +31,7 @@ export const HealthApiAxiosParamCreator = function (configuration?: Configuratio
         /**
          * This documents the Spring Boot Actuator health endpoint used by docker-compose / CI startup gating (the ui service depends on bff being healthy). Generated Health API interface MUST be left UNIMPLEMENTED - Actuator serves `/actuator/health`; do NOT write a controller for it (avoids a duplicate request-mapping conflict with Actuator). 
          * @summary Container health / readiness probe
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -74,7 +74,7 @@ export const HealthApiFp = function(configuration?: Configuration) {
         /**
          * This documents the Spring Boot Actuator health endpoint used by docker-compose / CI startup gating (the ui service depends on bff being healthy). Generated Health API interface MUST be left UNIMPLEMENTED - Actuator serves `/actuator/health`; do NOT write a controller for it (avoids a duplicate request-mapping conflict with Actuator). 
          * @summary Container health / readiness probe
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -111,7 +111,7 @@ export const HealthApiFactory = function (configuration?: Configuration, basePat
  */
 export interface HealthApiHealthCheckRequest {
     /**
-     * Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+     * Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
      */
     readonly xCorrelationID?: string
 }

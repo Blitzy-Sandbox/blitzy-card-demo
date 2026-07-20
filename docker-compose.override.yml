@@ -23,12 +23,20 @@
 #   * in-service Flyway stays DISABLED (SPRING_FLYWAY_ENABLED=false); the
 #     dedicated one-shot `flyway` step remains the sole owner of migrations.
 #
+# This override also OWNS the local-dev host ports for the DB, the domain
+# services and the bff. The base file (P4-M14) keeps those INTERNAL and publishes
+# only the ui ingress; re-adding the host bindings here (auto-merged locally,
+# absent in CI) preserves developer ergonomics without exposing the private
+# topology in CI/production.
+#
 # Conventions matched to the base file: the obsolete top-level `version:` key is
 # intentionally OMITTED; the SAME service names are used (no new services or
 # required infrastructure); and every interpolated variable referenced here
-# (ORACLE_PORT, UI_PORT) is defined in /.env.example. The 8 Spring Boot bounded
-# contexts and the Oracle data layer derive from the legacy CICS registrations
-# in app/csd/CARDDEMO.CSD  [SRC: CARDDEMO.CSD].
+# (ORACLE_PORT, AUTH_SVC_PORT, ACCOUNT_SVC_PORT, CARD_SVC_PORT,
+# TRANSACTION_SVC_PORT, PAYMENT_SVC_PORT, USERADMIN_SVC_PORT, BFF_PORT, UI_PORT)
+# is defined in /.env.example. The 8 Spring Boot bounded contexts and the Oracle
+# data layer derive from the legacy CICS registrations in app/csd/CARDDEMO.CSD
+# [SRC: CARDDEMO.CSD].
 # =============================================================================
 
 services:
@@ -37,10 +45,11 @@ services:
   # DATA LAYER — oracle: faster local health feedback + explicit host DB access
   # ===========================================================================
   oracle:
-    # Re-state the listener publish so local DB tools (SQL*Plus, SQLcl, DBeaver,
-    # IntelliJ Database, ...) can reach FREEPDB1 at localhost:${ORACLE_PORT}.
-    # This is already published by the base file; restating it here makes host
-    # access explicit for local dev (identical mapping -> no new binding).
+    # Publish the listener so local DB tools (SQL*Plus, SQLcl, DBeaver, IntelliJ
+    # Database, ...) can reach FREEPDB1 at localhost:${ORACLE_PORT}. The BASE file
+    # keeps this port INTERNAL (P4-M14: only the ui ingress is published there);
+    # this override re-adds the host binding for LOCAL DEV ONLY, so CI/production
+    # (base-only) never exposes the database off the private network.
     ports:
       - "${ORACLE_PORT:-1521}:1521"
     # Poll more frequently and shorten the start grace so a locally-cached image
@@ -59,7 +68,18 @@ services:
 
   # ===========================================================================
   # REQUEST-SERVING SPRING BOOT SERVICES — dev logging + detailed health
+  #                                        + LOCAL host port access
   # ---------------------------------------------------------------------------
+  # The BASE file keeps every domain service AND the bff INTERNAL (P4-M14: only
+  # the ui ingress is published there, and the SPA reaches the bff through the ui
+  # container's nginx proxy over the private network). This override re-adds a
+  # distinct host port per service for LOCAL DEV ONLY — direct curl/Postman
+  # access and pointing `npm run dev` at the bff at localhost:${BFF_PORT}. Because
+  # CI uses ONLY the base file, these host bindings never exist in CI/production.
+  # Host->container mapping (container SERVER_PORT is 8080 for all): auth 8081,
+  # account 8082, card 8083, transaction 8084, payment 8085, useradmin 8086,
+  # bff 8080. Every variable/default matches /.env.example.
+  #
   # Docker Compose MERGES `environment` maps, so the base file's shared
   # datasource-env (SPRING_DATASOURCE_URL/USERNAME/PASSWORD, CORRELATION_HEADER,
   # SERVER_PORT, TZ) is PRESERVED; the keys below are added / overridden on top.
@@ -77,6 +97,8 @@ services:
 
   # auth-svc — permissive Sign-On stub (real token + correlation-ID hop).
   auth-svc:
+    ports:
+      - "${AUTH_SVC_PORT:-8081}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -85,6 +107,8 @@ services:
 
   # account-svc — typed-stub Account bounded context.
   account-svc:
+    ports:
+      - "${ACCOUNT_SVC_PORT:-8082}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -95,6 +119,8 @@ services:
   # Oracle SELECT it issues (show + format SQL) so the seeded-row read shows
   # in local logs. This does NOT alter behaviour, only logging verbosity.
   card-svc:
+    ports:
+      - "${CARD_SVC_PORT:-8083}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -105,6 +131,8 @@ services:
 
   # transaction-svc — typed-stub Transaction bounded context.
   transaction-svc:
+    ports:
+      - "${TRANSACTION_SVC_PORT:-8084}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -113,6 +141,8 @@ services:
 
   # payment-svc — typed-stub Bill-Payment bounded context.
   payment-svc:
+    ports:
+      - "${PAYMENT_SVC_PORT:-8085}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -121,6 +151,8 @@ services:
 
   # useradmin-svc — typed-stub User-Admin bounded context.
   useradmin-svc:
+    ports:
+      - "${USERADMIN_SVC_PORT:-8086}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -129,6 +161,8 @@ services:
 
   # bff — thin backend-for-frontend the SPA binds to; fronts the live tracer.
   bff:
+    ports:
+      - "${BFF_PORT:-8080}:8080"
     environment:
       SPRING_PROFILES_ACTIVE: local
       MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
@@ -152,10 +186,12 @@ services:
   # ===========================================================================
   # UI (React 19 + MUI SPA, served by nginx) — explicit host access
   # ---------------------------------------------------------------------------
-  # Re-state the host port so the SPA is reachable at localhost:${UI_PORT}
-  # for the local browser. The image serves a STATIC nginx build, so hot-reload
-  # source bind mounts are intentionally OUT OF SCOPE for this skeleton — none
-  # are added. Identical mapping to the base -> no new binding.
+  # ui is the ONE approved ingress the BASE file already publishes (P4-M14), so
+  # unlike the domain services above this is NOT re-adding an internalized port —
+  # it merely re-states the SAME mapping so the SPA stays reachable at
+  # localhost:${UI_PORT} for the local browser (identical mapping -> no new
+  # binding). The image serves a STATIC nginx build, so hot-reload source bind
+  # mounts are intentionally OUT OF SCOPE for this skeleton — none are added.
   # ===========================================================================
   ui:
     ports:

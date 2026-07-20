@@ -31,7 +31,7 @@ export const MenuApiAxiosParamCreator = function (configuration?: Configuration)
         /**
          * Return the CardDemo main-menu options that drive the MUI navigation Drawer [SRC: COMEN01C | COMEN02Y]. The \"Credit Card View\" option routes to the live Card Detail tracer screen. The BFF assembles this list; the UI binds to it only through the BFF. 
          * @summary Retrieve the main-menu navigation options
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -78,7 +78,7 @@ export const MenuApiFp = function(configuration?: Configuration) {
         /**
          * Return the CardDemo main-menu options that drive the MUI navigation Drawer [SRC: COMEN01C | COMEN02Y]. The \"Credit Card View\" option routes to the live Card Detail tracer screen. The BFF assembles this list; the UI binds to it only through the BFF. 
          * @summary Retrieve the main-menu navigation options
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -115,7 +115,7 @@ export const MenuApiFactory = function (configuration?: Configuration, basePath?
  */
 export interface MenuApiGetMenuRequest {
     /**
-     * Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+     * Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
      */
     readonly xCorrelationID?: string
 }

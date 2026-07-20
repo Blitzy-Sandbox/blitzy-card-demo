@@ -1,150 +1,125 @@
-# syntax=docker/dockerfile:1
-
 # =============================================================================
-# CardDemo Walking Skeleton — auth-svc runtime image (multi-stage)
-# Provenance: [SRC: COSGN00C | COSGN00.bms] — legacy CICS Sign-On transaction
-# CC00 -> COSGN00C reading the USRSEC VSAM KSDS.
+# auth-svc -- multi-stage, SELF-CONTAINED Docker image (permissive Sign-On stub).
+# =============================================================================
+# Provenance: [SRC: COSGN00C | COSGN00.bms] -- legacy CICS Sign-On transaction
+#   CC00 -> COSGN00C reading the USRSEC VSAM KSDS.
+#
+# auth-svc is a REQUEST-SERVING, HEALTH-GATED, long-running container: it starts
+# in the docker-compose `depends_on: condition: service_healthy` chain, is probed
+# over HTTP against Spring Boot Actuator /actuator/health, and is the SOLE token
+# authority + first hop of the real correlation-ID propagation (the BFF calls it).
+#
 # -----------------------------------------------------------------------------
-# auth-svc is a REQUEST-SERVING, HEALTH-GATED, LONG-RUNNING container: it starts
-# in the docker-compose `depends_on: condition: service_healthy` chain and is
-# probed over HTTP against Spring Boot Actuator /actuator/health.
+# *** CRITICAL -- BUILD CONTEXT MUST BE THE REPOSITORY ROOT ***
+# -----------------------------------------------------------------------------
+# The auth-svc pom.xml runs OpenAPI codegen from the FROZEN contract SSoT by the
+# RELATIVE path  ${project.basedir}/../../contracts/auth-svc.openapi.yaml. The
+# contract lives under /contracts and is DELIBERATELY NOT duplicated into this
+# service, so the in-image codegen (openapi-generator-maven-plugin) can find it,
+# this Dockerfile is authored to be built with the REPOSITORY ROOT as the build
+# context -- it COPYies both `contracts/` and `services/auth-svc/` while
+# preserving the services/auth-svc -> ../../contracts layout the pom needs.
+# This makes a CLEAN checkout / no-cache Compose build succeed with NO host-built
+# jar (finding P4-M08); the whole build -- codegen, compile, package -- happens
+# inside the image, identical to card-svc.
 #
-# Stage 1 (builder): eclipse-temurin:21-jdk — take the PRE-BUILT, repackaged,
-#                    LAYERED Spring Boot jar and explode it into cache-friendly
-#                    layers with `java -Djarmode=layertools ... extract`.
-# Stage 2 (runtime): eclipse-temurin:21-jre — copy the exploded layers, add curl
-#                    for the healthcheck, run as a NON-ROOT user, and launch via
-#                    the Spring Boot 3.2+ JarLauncher. (Per AAP §0.3.)
+#   Correct manual build (note the trailing '.' == repo root):
+#     docker build -f services/auth-svc/Dockerfile -t carddemo/auth-svc .
 #
-# ---- CONTRACT: this image expects a PRE-BUILT jar (READ THIS FIRST) ----------
-# The Spring Boot jar MUST be built OUTSIDE Docker (`mvn package`) BEFORE
-# `docker build`, because the sibling pom.xml runs OpenAPI codegen from
-# ../../contracts/auth-svc.openapi.yaml — a path OUTSIDE this build context.
-# The planned docker-compose.yml builds this image with:
-#     build:
-#       context: ./services/auth-svc      # <-- CANNOT see the repo-level /contracts
-#       dockerfile: Dockerfile
-# A build context of ./services/auth-svc cannot see /contracts, so a fully
-# self-contained "run Maven (with codegen) inside the image" build would FAIL
-# code generation. Instead CI/dev builds the jar first (where ../../contracts
-# resolves), then builds this image:
-#     mvn -f services/auth-svc/pom.xml clean package   # or: mvn -pl services/auth-svc -am package
-#     docker compose build auth-svc                     # then build this image
-# This Dockerfile then simply COPYies target/*.jar from the build context.
-# Because target/ lives INSIDE ./services/auth-svc, it IS in the compose build
-# context — so this design is fully compatible with the planned compose config.
+#   Required docker-compose wiring (kept in sync in /docker-compose.yml):
+#     services:
+#       auth-svc:
+#         build:
+#           context: .                               # repo root, NOT ./services/auth-svc
+#           dockerfile: services/auth-svc/Dockerfile
+#   If compose instead used `context: ./services/auth-svc`, the `COPY contracts/`
+#   line below would FAIL because /contracts is outside that narrower context.
+#   This is the standard monorepo pattern for shared-contract codegen.
 #
-# ---- ALTERNATIVE (documented for maintainers; NOT the active path) -----------
-# If someone instead sets the compose build context to the repository root:
-#     build:
-#       context: .
-#       dockerfile: services/auth-svc/Dockerfile
-# then a self-contained Maven build becomes possible: COPY both
-# `services/auth-svc` and `contracts` into a jdk stage and run `mvn package`
-# there (codegen would resolve /contracts). This variant is intentionally NOT
-# implemented here because it diverges from the planned compose context
-# (context: ./services/auth-svc). Keep the pre-built-jar design as the one
-# active path unless the compose context is deliberately changed.
-#
-# ---- Coordinated runtime facts (MUST match docker-compose + application.yml) --
-#   * Container-internal port is 8080 (EXPOSE 8080). Compose sets SERVER_PORT=8080
-#     and maps host AUTH_SVC_PORT (8081) -> container 8080.
-#   * The compose healthcheck runs `curl -f http://localhost:8080/actuator/health`.
-#     eclipse-temurin:21-jre is Debian/Ubuntu-based and ships NO curl, so curl is
-#     installed below — REQUIRED, not optional.
-#   * Datasource/correlation config arrives at RUNTIME via env vars injected by
-#     compose (SPRING_DATASOURCE_URL / SPRING_DATASOURCE_USERNAME /
-#     SPRING_DATASOURCE_PASSWORD, SPRING_PROFILES_ACTIVE=docker,
-#     SPRING_FLYWAY_ENABLED=false, CORRELATION_HEADER=X-Correlation-ID,
-#     SERVER_PORT). This image hardcodes NONE of them (only a harmless
-#     SERVER_PORT default).
-#   * No auth behavior lives here — the permissive-stub logic lives in src/.
-#
-# Lean & reproducible: explicit image tags (no `latest`), --no-install-recommends,
-# apt lists cleaned in-layer, layered COPY for cache efficiency, non-root runtime.
+# Runtime configuration is INJECTED by compose/.env (never hardcoded here):
+#   SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD, SERVER_PORT (internal stays
+#   8080), SPRING_FLYWAY_ENABLED=false, SPRING_PROFILES_ACTIVE=docker,
+#   CORRELATION_HEADER. No auth behavior lives here -- the permissive-stub logic
+#   lives in src/.
 # =============================================================================
 
 
-# ---------- Stage 1: builder / prep (explode the layered jar) ----------
-FROM eclipse-temurin:21-jdk AS builder
-WORKDIR /workspace
+# -----------------------------------------------------------------------------
+# Phase A -- BUILD STAGE: OpenAPI codegen + compile + package the Spring Boot jar.
+# Eclipse Temurin JDK 21 with Maven preinstalled (pinned tag; never `latest`).
+# -----------------------------------------------------------------------------
+FROM maven:3.9.9-eclipse-temurin-21 AS build
 
-# Copy the PRE-BUILT, repackaged Spring Boot jar from the build context
-# (services/auth-svc/target/). `spring-boot-maven-plugin repackage` leaves
-# exactly ONE runnable jar — the non-runnable original is `*.jar.original`,
-# which this glob does NOT match — so `target/*.jar` resolves to a single file
-# (auth-svc-0.1.0-SNAPSHOT.jar).
-COPY target/*.jar app.jar
+WORKDIR /build
 
-# Explode the executable jar into Spring Boot layers for cache-efficient image
-# layering. Produces four directories under /workspace, ordered least- to
-# most-frequently-changing: dependencies/, spring-boot-loader/,
-# snapshot-dependencies/, application/.
-#
-# VERSION NOTE: `-Djarmode=layertools ... extract` is DEPRECATED as of Spring
-# Boot 3.3 (it prints a deprecation warning but still works on the 3.5.x line
-# this project pins). Its successor is
-# `java -Djarmode=tools -jar app.jar extract --layers --launcher`.
-# FALLBACK: if a future Spring Boot release removes the `layertools` jarmode
-# entirely, drop this extract + the per-layer COPY below and instead copy
-# `app.jar` straight into the runtime stage with
-# `ENTRYPOINT ["java","-jar","/app/app.jar"]`.
-RUN java -Djarmode=layertools -jar app.jar extract
+# 1) Frozen contract SSoT first -- it changes rarely, so this layer caches well.
+#    Preserving contracts/ at /build/contracts keeps the ../../contracts layout
+#    intact: from WORKDIR /build/services/auth-svc, the pom's
+#    ${project.basedir}/../../contracts resolves to /build/contracts, so codegen
+#    finds /build/contracts/auth-svc.openapi.yaml.
+COPY contracts/ contracts/
+
+# 2) The service POM next (before src) so the dependency layer is keyed on the
+#    POM alone and is not invalidated by ordinary source edits.
+COPY services/auth-svc/pom.xml services/auth-svc/pom.xml
+
+# 3) Optional layer-caching optimization: pre-resolve dependencies into a layer
+#    keyed on the POM. Made NON-FATAL (`|| true`) so partial offline resolution
+#    never breaks the build -- the subsequent ONLINE `mvn package` fetches
+#    anything still missing.
+RUN mvn -f services/auth-svc/pom.xml -B -q -DskipTests dependency:go-offline || true
+
+# 4) Sources last -- the most frequently changing input.
+COPY services/auth-svc/src services/auth-svc/src
+
+# Build from the module directory so ${project.basedir}/../../contracts resolves
+# to /build/contracts (see note 1).
+WORKDIR /build/services/auth-svc
+
+# generate-sources (OpenAPI codegen) -> compile -> package the executable fat jar.
+# -DskipTests: Oracle is NOT available at image-build time (CI provisions it via
+# gvenzl/setup-oracle-free@v1; the smoke test is a mocked context-load anyway).
+RUN mvn -B -q -DskipTests clean package
 
 
-# ---------- Stage 2: runtime (lean JRE, non-root, healthchecked) ----------
-FROM eclipse-temurin:21-jre
+# -----------------------------------------------------------------------------
+# Phase B -- RUNTIME STAGE: slim, health-checkable, JRE-only image.
+# The builder stage above is discarded; only this stage's layers ship.
+# -----------------------------------------------------------------------------
+FROM eclipse-temurin:21-jre AS runtime
 
-# Install curl for the container healthcheck (both the compose healthcheck and
-# the HEALTHCHECK below curl /actuator/health). --no-install-recommends keeps the
-# layer minimal; the apt lists are removed in the SAME layer so they are never
-# persisted in the image.
+# curl is required by BOTH the image-level HEALTHCHECK below and the
+# docker-compose healthcheck (`curl -f http://localhost:8080/actuator/health`).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create a dedicated, unprivileged system user/group and run as it (never root).
-# --home /app matches WORKDIR so the process owns its working directory.
-RUN groupadd --system app \
-    && useradd --system --gid app --home /app app
+# Dedicated non-root system user (defense-in-depth). Primary group `root` (gid 0)
+# so the COPYed jar (mode 644, owner root) stays readable; `java -jar` needs only
+# read access, and /app (mode 755) remains traversable.
+RUN useradd -r -u 1001 -g root appuser
 
 WORKDIR /app
 
-# Copy the exploded layers from the builder in dependency-stability order
-# (least- to most-frequently-changing) so Docker caches the large, stable
-# dependency layers across rebuilds and only re-lays the small application layer
-# when code changes. `--chown=app:app` hands ownership to the non-root runtime
-# user. Merged into a single /app directory, these four layers form a
-# JarLauncher-runnable layout (META-INF/MANIFEST.MF + BOOT-INF/*).
-COPY --from=builder --chown=app:app /workspace/dependencies/ ./
-COPY --from=builder --chown=app:app /workspace/spring-boot-loader/ ./
-COPY --from=builder --chown=app:app /workspace/snapshot-dependencies/ ./
-COPY --from=builder --chown=app:app /workspace/application/ ./
+# Copy ONLY the packaged fat jar from the build stage. auth-svc has no custom
+# <finalName>, so `spring-boot-maven-plugin repackage` yields exactly
+# auth-svc-<version>.jar (the non-runnable `*.jar.original` does NOT match the
+# `auth-svc-*.jar` glob), making this single-file COPY to /app/app.jar unambiguous.
+COPY --from=build /build/services/auth-svc/target/auth-svc-*.jar /app/app.jar
 
-# Container-internal port; docker-compose maps host AUTH_SVC_PORT (8081) -> 8080.
+# Drop privileges AFTER the copy (best practice). appuser can read /app/app.jar.
+USER appuser
+
+# The service listens on 8080 INTERNALLY (Spring Boot default). Compose maps the
+# host port ${AUTH_SVC_PORT:-8081}:8080 (dev overlay only); the internal port is
+# always 8080.
 EXPOSE 8080
 
-# Harmless default so a bare `docker run` listens on 8080; compose overrides via
-# the injected SERVER_PORT env var
-# (application.yml: server.port=${SERVER_PORT:8080}).
-ENV SERVER_PORT=8080
-
-# Standalone `docker run` health signal that MIRRORS the compose healthcheck, so
-# `docker run` and `docker compose` behave identically. The generous
-# --start-period gives the JVM + Spring context (and a possibly slow Oracle
-# connection) time to come up before failures are counted; --interval/--retries
-# match a service that gates other containers via `service_healthy`. Under
-# compose the compose-level healthcheck drives the `service_healthy` gate.
-HEALTHCHECK --interval=15s --timeout=5s --retries=10 --start-period=60s \
+# Image-level health so docker/compose can gate dependents on `service_healthy`.
+# The generous start-period accommodates JVM + Oracle connection warm-up.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=10 \
     CMD curl -f http://localhost:8080/actuator/health || exit 1
 
-# Drop privileges for the running container.
-USER app
-
-# Spring Boot 3.2+ layered launcher main class. Verified in the repackaged jar
-# MANIFEST (Main-Class=org.springframework.boot.loader.launch.JarLauncher): it
-# reads BOOT-INF/classpath.idx from the merged layers and launches the
-# Start-Class (the @SpringBootApplication).
-# VERSION NOTE: Spring Boot < 3.2 used org.springframework.boot.loader.JarLauncher
-# (no `.launch` segment); this project is 3.5.x, so the `.launch.` form is correct.
-ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+# Run the Spring Boot fat jar. Datasource / profile / port / correlation env are
+# injected by compose/.env at run time -- intentionally NOT baked into the image.
+ENTRYPOINT ["java", "-jar", "/app/app.jar"]

@@ -19,9 +19,11 @@ spring:
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
     username: ${SPRING_DATASOURCE_USERNAME:carddemo}
-    # Placeholder default ONLY — never a real secret. docker-compose injects
-    # SPRING_DATASOURCE_PASSWORD from .env (APP_USER_PASSWORD).
-    password: ${SPRING_DATASOURCE_PASSWORD:change_me_app_password}
+    # No usable default: the password is REQUIRED and injected at runtime by
+    # docker-compose from .env (APP_USER_PASSWORD). An EMPTY default makes the
+    # datasource fail fast rather than run on a committed secret (finding P4-M11;
+    # matches card/account/auth/useradmin/reporting).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
     driver-class-name: oracle.jdbc.OracleDriver
   jpa:
     # Set explicitly so the EntityManagerFactory does NOT need a live DB connection to auto-detect

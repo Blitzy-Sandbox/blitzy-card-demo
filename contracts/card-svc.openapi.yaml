@@ -234,7 +234,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: >-
         Bearer token issued by auth-svc. Permissive in the skeleton: token
         presence is a real hop that is propagated through UI -> BFF -> card-svc,

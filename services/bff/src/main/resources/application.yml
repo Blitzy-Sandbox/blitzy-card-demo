@@ -46,13 +46,14 @@ carddemo:
   services:
     # card-svc is the LIVE tracer target for Card Detail aggregation.
     card-svc-url: ${CARD_SVC_URL:http://card-svc:8080}
-    # Reserved [DEFERRED] seam for a future BFF -> auth-svc forward. In this skeleton the sign-on flow
-    # (POST /api/auth/login) is a LOCAL permissive stub per AAP §0.8 ("exactly one tracer slice is live
-    # ... everything else is a stub"), §0.1.1 (the topology diagram marks BFF -.stub.-> AUTH vs
-    # BFF ==> live ==> CARD) and §0.7.1 (BFF non-card aggregators are local stubs): AuthAggregator mints
-    # the token locally and makes NO downstream call, so NO bean consumes this URL today. It is retained
-    # only because docker-compose injects AUTH_SVC_URL and to document the deferred seam; wiring a live
-    # forward here is intentionally out of scope for the walking skeleton.
+    # auth-svc is the LIVE sign-on target. The sign-on flow (POST /api/auth/login) is a REAL hop:
+    # AuthAggregator forwards it to auth-svc POST /auth/login via the authServiceRestClient bean
+    # (config/OpenApiConfig), so auth-svc — not the BFF — is the single authority that issues the
+    # bearer token, per AAP §0.1.3 ("auth-svc ... issues a real token") and §0.4 ("the UI Sign-On
+    # posts through the BFF to auth-svc, which returns a token"). Auth remains a PERMISSIVE stub
+    # (auth-svc does no credential validation/hashing/RBAC/session), but the token hop and the
+    # correlation-ID hop are genuinely wired; the §0.8 "one live tracer" rule governs the live DATA
+    # tracer (Card Detail read), not these real service-to-service hops.
     auth-svc-url: ${AUTH_SVC_URL:http://auth-svc:8080}
   # Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
   correlation:

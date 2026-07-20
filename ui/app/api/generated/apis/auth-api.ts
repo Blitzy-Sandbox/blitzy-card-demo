@@ -31,10 +31,10 @@ import type { LoginResponse } from '../models';
 export const AuthApiAxiosParamCreator = function (configuration?: Configuration) {
     return {
         /**
-         * 
-         * @summary Permissive sign-on through the BFF
-         * @param {LoginRequest} loginRequest 
-         * @param {string} [xCorrelationID] Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+         * The UI Sign-On screen posts the User ID and Password here [SRC: COSGN00C | COSGN00.bms]. The BFF forwards the request to auth-svc, which issues a REAL bearer token that the UI carries on every subsequent request. This operation is UNAUTHENTICATED (it is the entry point that mints the token). Credential validation is permissive in the walking skeleton, but the token hop and the correlation-ID hop are real. 
+         * @summary Sign on and obtain a bearer token (permissive stub)
+         * @param {LoginRequest} loginRequest Sign-on credentials (User ID + Password), each up to 8 characters.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -79,10 +79,10 @@ export const AuthApiFp = function(configuration?: Configuration) {
     const localVarAxiosParamCreator = AuthApiAxiosParamCreator(configuration)
     return {
         /**
-         * 
-         * @summary Permissive sign-on through the BFF
-         * @param {LoginRequest} loginRequest 
-         * @param {string} [xCorrelationID] Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+         * The UI Sign-On screen posts the User ID and Password here [SRC: COSGN00C | COSGN00.bms]. The BFF forwards the request to auth-svc, which issues a REAL bearer token that the UI carries on every subsequent request. This operation is UNAUTHENTICATED (it is the entry point that mints the token). Credential validation is permissive in the walking skeleton, but the token hop and the correlation-ID hop are real. 
+         * @summary Sign on and obtain a bearer token (permissive stub)
+         * @param {LoginRequest} loginRequest Sign-on credentials (User ID + Password), each up to 8 characters.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -102,8 +102,8 @@ export const AuthApiFactory = function (configuration?: Configuration, basePath?
     const localVarFp = AuthApiFp(configuration)
     return {
         /**
-         * 
-         * @summary Permissive sign-on through the BFF
+         * The UI Sign-On screen posts the User ID and Password here [SRC: COSGN00C | COSGN00.bms]. The BFF forwards the request to auth-svc, which issues a REAL bearer token that the UI carries on every subsequent request. This operation is UNAUTHENTICATED (it is the entry point that mints the token). Credential validation is permissive in the walking skeleton, but the token hop and the correlation-ID hop are real. 
+         * @summary Sign on and obtain a bearer token (permissive stub)
          * @param {AuthApiLoginRequest} requestParameters Request parameters.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -118,10 +118,13 @@ export const AuthApiFactory = function (configuration?: Configuration, basePath?
  * Request parameters for login operation in AuthApi.
  */
 export interface AuthApiLoginRequest {
+    /**
+     * Sign-on credentials (User ID + Password), each up to 8 characters.
+     */
     readonly loginRequest: LoginRequest
 
     /**
-     * Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+     * Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
      */
     readonly xCorrelationID?: string
 }
@@ -131,8 +134,8 @@ export interface AuthApiLoginRequest {
  */
 export class AuthApi extends BaseAPI {
     /**
-     * 
-     * @summary Permissive sign-on through the BFF
+     * The UI Sign-On screen posts the User ID and Password here [SRC: COSGN00C | COSGN00.bms]. The BFF forwards the request to auth-svc, which issues a REAL bearer token that the UI carries on every subsequent request. This operation is UNAUTHENTICATED (it is the entry point that mints the token). Credential validation is permissive in the walking skeleton, but the token hop and the correlation-ID hop are real. 
+     * @summary Sign on and obtain a bearer token (permissive stub)
      * @param {AuthApiLoginRequest} requestParameters Request parameters.
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}

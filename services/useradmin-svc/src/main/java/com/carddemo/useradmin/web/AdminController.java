@@ -5,7 +5,6 @@ import com.carddemo.useradmin.model.AdminMenuResponse;
 import com.carddemo.useradmin.model.MenuOption;
 
 import java.util.List;
-import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
@@ -54,7 +53,7 @@ public class AdminController implements AdminApi {
     /**
      * Return the four static CardDemo admin-menu options.
      *
-     * <p>Implements {@link AdminApi#getAdminMenu(UUID)}. Always responds {@code 200 OK} with the
+     * <p>Implements {@link AdminApi#getAdminMenu(String)}. Always responds {@code 200 OK} with the
      * fixed four-option {@link AdminMenuResponse}; the response is deterministic and independent of
      * any request state. The options are ordered by their 1-based {@code optionNumber}, mirroring
      * the legacy {@code CDEMO-ADMIN-OPT} table order.</p>
@@ -69,7 +68,7 @@ public class AdminController implements AdminApi {
      * @return {@code 200 OK} with the four admin-menu options in order.
      */
     @Override
-    public ResponseEntity<AdminMenuResponse> getAdminMenu(UUID xCorrelationID) {
+    public ResponseEntity<AdminMenuResponse> getAdminMenu(String xCorrelationID) {
         // Verbatim from app/cpy/COADM02Y.cpy (CARDDEMO-ADMIN-MENU-OPTIONS, count = 4).
         // Labels trimmed of PIC X(35) padding; program names are exact PIC X(08) identifiers.
         AdminMenuResponse body = new AdminMenuResponse().options(List.of(

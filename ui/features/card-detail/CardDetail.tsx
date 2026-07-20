@@ -61,6 +61,7 @@ import { Empty } from '../../components/Empty';
 import { Error as ErrorState } from '../../components/Error';
 
 import { useCardDetail } from './useCardDetail';
+import { formatExpiry } from './formatExpiry';
 
 /**
  * Card Detail tracer screen (default export — matches the router's default
@@ -150,13 +151,15 @@ export default function CardDetail() {
               </Stack>
             </Grid>
 
-            {/* Expiry — CARD-EXPIRAION-DATE X(10) / EXPMON + EXPYEAR */}
+            {/* Expiry — CARD-EXPIRAION-DATE X(10) / EXPMON + EXPYEAR. Displayed as
+                MM/YYYY per architecture.md ("Expiry (mm/yyyy)") via the safe
+                formatExpiry helper, which degrades gracefully on unexpected input. */}
             <Grid size={{ xs: 12, sm: 6 }}>
               <Stack spacing={0.5} sx={{ alignItems: 'flex-start' }}>
                 <Typography variant="body2" sx={{ color: 'text.secondary' }}>
                   Expiry
                 </Typography>
-                <Typography variant="body1">{data.expiryDate}</Typography>
+                <Typography variant="body1">{formatExpiry(data.expiryDate)}</Typography>
               </Stack>
             </Grid>
           </Grid>

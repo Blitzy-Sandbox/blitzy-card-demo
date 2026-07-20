@@ -45,6 +45,12 @@ tags:
     description: >-
       Account statement generation job submission (plain-text / HTML).
       [SRC: CBSTM03A/B | TRANSACT]
+  - name: Batch
+    description: >-
+      Deferred batch program job-stub submissions: daily transaction posting
+      ([SRC: CBTRN02C | TRANSACT]), interest calculation
+      ([SRC: CBACT04C | ACCTDAT]), and the batch transaction report
+      ([SRC: CBTRN03C | TRANSACT]). All are inert typed stubs.
 paths:
   /reports:
     post:
@@ -128,6 +134,105 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalError'
+  /jobs/daily-posting:
+    post:
+      tags:
+        - Batch
+      operationId: submitDailyPosting
+      summary: Submit the daily transaction posting batch job
+      description: |
+        Submit the legacy Daily Transaction Posting batch program as an
+        asynchronous, fire-and-forget job. Mirrors `CBTRN02C`, which posts the
+        day's transactions from the daily transaction file against the
+        `TRANSACT` / `ACCTDAT` datasets. [SRC: CBTRN02C | TRANSACT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO posting logic,
+        NO dataset read, and NO balance update is performed in the walking
+        skeleton — the operation exists only to freeze the job roster shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The daily-posting job has been queued for asynchronous
+            processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/interest-calculation:
+    post:
+      tags:
+        - Batch
+      operationId: submitInterestCalculation
+      summary: Submit the interest calculation batch job
+      description: |
+        Submit the legacy Interest Calculation batch program as an
+        asynchronous, fire-and-forget job. Mirrors `CBACT04C`, which computes
+        interest over the `ACCTDAT` accounts and their category balances.
+        [SRC: CBACT04C | ACCTDAT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO interest
+        calculation, NO dataset read, and NO balance update is performed in the
+        walking skeleton — the operation exists only to freeze the job roster
+        shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The interest-calculation job has been queued for
+            asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/transaction-report:
+    post:
+      tags:
+        - Batch
+      operationId: submitTransactionReport
+      summary: Submit the transaction report batch job
+      description: |
+        Submit the legacy batch Transaction Report program as an asynchronous,
+        fire-and-forget job. Mirrors `CBTRN03C` (the batch transaction report),
+        which reads the `TRANSACT` dataset and prints a transaction detail
+        report. This is distinct from the online Transaction Reports screen
+        (`CORPT00C`, `POST /reports`). [SRC: CBTRN03C | TRANSACT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO report
+        generation, NO dataset read, and NO file output is performed in the
+        walking skeleton — the operation exists only to freeze the job roster
+        shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The transaction-report job has been queued for
+            asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
   /jobs/{jobId}:
     get:
       tags:
@@ -176,7 +281,6 @@ components:
         omitted, the service generates one for the request.
       schema:
         type: string
-        format: uuid
   schemas:
     ReportRequest:
       type: object
@@ -268,10 +372,17 @@ components:
           example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
         jobType:
           type: string
-          description: The kind of job that was submitted.
+          description: >-
+            The kind of job that was submitted. `REPORT` and `STATEMENT` are the
+            online-submitted jobs; `DAILY_POSTING` ([SRC: CBTRN02C]),
+            `INTEREST_CALCULATION` ([SRC: CBACT04C]) and `TRANSACTION_REPORT`
+            ([SRC: CBTRN03C]) are the deferred batch job-stub entrypoints.
           enum:
             - REPORT
             - STATEMENT
+            - DAILY_POSTING
+            - INTEREST_CALCULATION
+            - TRANSACTION_REPORT
           example: REPORT
         status:
           type: string
@@ -305,10 +416,17 @@ components:
           example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
         jobType:
           type: string
-          description: The kind of job.
+          description: >-
+            The kind of job. `REPORT` and `STATEMENT` are the online-submitted
+            jobs; `DAILY_POSTING` ([SRC: CBTRN02C]), `INTEREST_CALCULATION`
+            ([SRC: CBACT04C]) and `TRANSACTION_REPORT` ([SRC: CBTRN03C]) are the
+            deferred batch job-stub entrypoints.
           enum:
             - REPORT
             - STATEMENT
+            - DAILY_POSTING
+            - INTEREST_CALCULATION
+            - TRANSACTION_REPORT
           example: REPORT
         status:
           type: string
@@ -417,7 +535,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: >-
         Bearer token obtained from the permissive auth-svc login stub. The token
         hop is a real seam (propagated on every business request) even though

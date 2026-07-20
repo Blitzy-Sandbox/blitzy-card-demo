@@ -57,8 +57,9 @@ export const theme = createTheme({
   },
 
   typography: {
-    // Roboto-first stack. The Roboto webfont (weights 300/400/500/700) is loaded
-    // via a <link> in ui/index.html - do NOT add @fontsource packages here.
+    // Roboto-first stack. The Roboto webfont (weights 300/400/500/700) is
+    // SELF-HOSTED via @fontsource/roboto, imported as side-effect CSS in
+    // ui/app/App.tsx (finding P4-m01) - no external Google Fonts <link> is used.
     fontFamily: '"Roboto", "Helvetica", "Arial", sans-serif',
     fontWeightLight: 300,
     fontWeightRegular: 400,

@@ -34,7 +34,7 @@ export const TransactionsApiAxiosParamCreator = function (configuration?: Config
          * @param {string} [cardNumber] Optional card-number filter (CARD-NUM X(16)).
          * @param {number} [page] Zero-based page index.
          * @param {number} [size] Page size (number of rows per page).
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -96,7 +96,7 @@ export const TransactionsApiFp = function(configuration?: Configuration) {
          * @param {string} [cardNumber] Optional card-number filter (CARD-NUM X(16)).
          * @param {number} [page] Zero-based page index.
          * @param {number} [size] Page size (number of rows per page).
-         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -148,7 +148,7 @@ export interface TransactionsApiListTransactionsRequest {
     readonly size?: number
 
     /**
-     * Correlation ID; the UI Axios interceptor sets it, BFF propagates it to card-svc, and it is logged via MDC. If absent, BFF generates one.
+     * Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
      */
     readonly xCorrelationID?: string
 }

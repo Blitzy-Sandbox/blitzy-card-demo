@@ -11,9 +11,9 @@ import { DeferredNotice } from '../../components/DeferredNotice';
  * frame plus a deferred-state message. Does NOT fetch data, import the generated
  * client, use auth, or call the BFF.
  *
- * NOTE: Intentionally NOT wired into ui/app/routes.tsx this run. This is a
- * standalone, self-compilable module so a future run can add the
- * `/users/:userId/delete` route without changing this file.
+ * Routing: wired into ui/app/routes.tsx at `/users/:userId/delete` as an inert
+ * [DEFERRED] navigation seam (finding P4-M07) — the route renders this placeholder
+ * only; NO delete behavior is implemented (AAP §0.1.2, §0.7.2).
  */
 export default function UserDelete() {
   return (

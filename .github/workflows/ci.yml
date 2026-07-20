@@ -111,16 +111,22 @@ jobs:
 
       # 5. Apply the Flyway migrations (V1 baseline schema + V2 single-row tracer
       #    seed) against the live Oracle PDB. Modern analog of the legacy IDCAMS
-      #    VSAM DEFINE + REPRO load jobs. Uses a pinned FULL Flyway image (the
-      #    full image bundles the Oracle JDBC driver) via `docker run
-      #    --network host` so it reaches the Oracle listener on localhost:1521.
+      #    VSAM DEFINE + REPRO load jobs. Uses a Flyway image pinned to an
+      #    IMMUTABLE digest (tag + @sha256) via `docker run --network host` so it
+      #    reaches the Oracle listener on localhost:1521 and is byte-for-byte
+      #    reproducible — the moving `flyway/flyway:11` tag is intentionally NOT
+      #    used (P4-M09: deterministic pipeline). This is the EXACT same reference
+      #    the docker-compose `flyway` step resolves via FLYWAY_IMAGE_TAG in
+      #    /.env.example, so CI mirrors compose. The pinned `11-alpine` image
+      #    bundles the Oracle JDBC driver (verified: /flyway/drivers/ojdbc11), so
+      #    the alpine variant runs Oracle migrations without a driver add-on.
       #    Mirrors the docker-compose flyway one-shot service arguments exactly;
       #    -connectRetries=60 provides resilience if Oracle needs a moment.
       - name: Apply Flyway migrations
         run: |
           docker run --rm --network host \
             -v "$PWD/db/migration:/flyway/sql:ro" \
-            flyway/flyway:11 \
+            flyway/flyway:11-alpine@sha256:df06535dfd6559ae5f0628c4761013dfa4ea6a30cf6e34294931d8091f55a18f \
             -url="${{ env.DB_URL }}" \
             -user="${{ env.ORACLE_APP_USER }}" \
             -password="${{ env.ORACLE_APP_PASSWORD }}" \
@@ -158,16 +164,17 @@ jobs:
       - name: Build backend (all 8 services) and run smoke tests
         run: mvn -B -ntp -f pom.xml package
 
-      # 8. Install UI dependencies with `npm install` (NOT `npm ci`). A committed
-      #    ui/package-lock.json now exists (so `npm ci` would also work today),
-      #    but CI deliberately uses `npm install` per Reconciliation #1's
-      #    build-green intent: it installs whether or not the lockfile is perfectly
-      #    in sync with package.json, staying robust to any drift introduced while
-      #    parallel agents' UI files are reconciled. (The ui/Dockerfile uses
-      #    `npm ci` for byte-reproducible images; CI favors tolerance.)
+      # 8. Install UI dependencies with `npm ci` (P4-M09: deterministic pipeline).
+      #    A committed ui/package-lock.json exists, so `npm ci` performs a clean,
+      #    reproducible install strictly from the lockfile and FAILS if
+      #    package.json and the lockfile have drifted out of sync — turning any
+      #    accidental dependency drift into a hard CI failure instead of silently
+      #    resolving new versions. This matches the ui/Dockerfile, which also uses
+      #    `npm ci` for byte-reproducible images, so CI and the image build install
+      #    identical dependency trees.
       - name: Install UI dependencies
         working-directory: ui
-        run: npm install
+        run: npm ci
 
       # 9. Regenerate the typed TypeScript client from the FROZEN bff contract
       #    (../contracts/bff.openapi.yaml) into ui/app/api/generated. Validates
@@ -177,13 +184,56 @@ jobs:
         working-directory: ui
         run: npm run generate:api
 
-      # 10. Type-check the app + generated client and bundle the SPA
+      # 9b. Codegen determinism gate (P4-M09). The typed TS client under
+      #     ui/app/api/generated is COMMITTED and MUST be byte-identical to a
+      #     fresh generation from the frozen bff contract. `git diff --exit-code`
+      #     fails the build if regeneration produced any change — i.e. if the
+      #     committed client drifted from /contracts/bff.openapi.yaml (the single
+      #     source of truth, frozen per AAP 0.8). This makes a contract/client
+      #     mismatch a hard CI failure at build time rather than a runtime
+      #     surprise, mirroring the contract-first guarantee the Java reactor
+      #     already enforces for the server interfaces.
+      - name: Assert generated UI client is in sync with the frozen contract
+        run: |
+          if ! git diff --exit-code -- ui/app/api/generated; then
+            echo "::error::Generated UI client is out of sync with contracts/bff.openapi.yaml."
+            echo "Run 'npm run generate:api' in ui/ and commit ui/app/api/generated."
+            exit 1
+          fi
+          echo "Generated UI client matches the frozen bff contract (no drift)."
+
+      # 10. Unit-test the UI (P4-M09). `npm test` runs Vitest once in
+      #     non-watch/CI mode (vitest run), exercising the UI's unit tests
+      #     (e.g. the Card Detail expiry MM/YYYY formatter). Runs before the
+      #     bundle so a logic regression fails fast.
+      - name: Test UI (Vitest)
+        working-directory: ui
+        run: npm test
+
+      # 11. Type-check the app + generated client and bundle the SPA
       #     (`tsc --noEmit && vite build`) to ui/dist.
       - name: Build UI
         working-directory: ui
         run: npm run build
 
-      # 11. Green assertion. The reactor (compile + tests for all 8 services),
+      # 12. Build every container image via `docker compose build` (P4-M08 /
+      #     AAP-42: clean, self-contained image builds). This uses ONLY the base
+      #     docker-compose.yml (the CI-authoritative deployment unit; the local
+      #     override is excluded), so it exercises each service's Dockerfile from a
+      #     CLEAN repository context exactly as a fresh checkout would — every
+      #     backend image runs Maven + OpenAPI codegen IN-CONTAINER and the UI
+      #     image runs `npm ci` + `npm run build` in-container, with NO dependency
+      #     on host-built JARs or host node_modules. A Dockerfile that cannot build
+      #     self-contained (e.g. one that COPYs a pre-built target/*.jar or an
+      #     out-of-context file) fails here. This is a BUILD-only gate; it does not
+      #     start the topology (full compose-up start/health-gate + end-to-end HTTP
+      #     tracer is a runtime acceptance concern beyond the AAP 0.6.1 CI scope of
+      #     "build + codegen + Oracle provision + green assert" — the tracer DATA
+      #     path is already verified by the seed check below).
+      - name: Build all container images (self-contained)
+        run: docker compose -f docker-compose.yml build
+
+      # 13. Green assertion. The reactor (compile + tests for all 8 services),
       #     the UI type-check + bundle, and the contract codegen have all been
       #     exercised above; any failure already fails the job. As an extra guard
       #     that the tracer DATA path is live, confirm the single seeded tracer
@@ -204,4 +254,4 @@ jobs:
             exit 1
           fi
           rm -f tracer_seed_check.txt
-          echo "Walking skeleton GREEN: 8-service Maven reactor built + tested, Java contracts generated, UI type-checked + bundled + client generated, and the Oracle-backed tracer seed verified."
+          echo "Walking skeleton GREEN: 8-service Maven reactor built + tested, Java contracts generated, UI deps installed via npm ci, TS client generated + verified in-sync with the frozen contract, UI unit-tested + type-checked + bundled, all container images built self-contained via docker compose, and the Oracle-backed tracer seed verified."

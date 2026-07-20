@@ -48,6 +48,15 @@ and from the container start-and-serve requirement (see convention 2 below).
   TypeScript client is generated out-of-band and committed (see §5.2); the UI build
   (`tsc --noEmit && vite build`) type-checks the committed client against the UI code, so consumer
   drift is caught at build time rather than appearing as a runtime error.
+  - **BFF vendored copy (kept byte-identical).** For build isolation the BFF Java build reads a
+    vendored copy of the BFF spec at `services/bff/src/main/resources/openapi/bff.openapi.yaml`
+    rather than reaching up into `/contracts`. That vendored copy is maintained **byte-identical**
+    to the canonical `contracts/bff.openapi.yaml` (same SHA-256), so the SSoT guarantee holds:
+    the Java BFF interfaces and the UI client are generated from the same contract bytes.
+  - **CI enforces it (verifiable).** The CI pipeline (`.github/workflows/ci.yml`) regenerates the
+    UI client and runs `git diff --exit-code -- ui/app/api/generated`; if the committed client is
+    not byte-identical to a fresh generation from the frozen contract, CI fails. This turns the
+    "generated, never hand-edited" rule into an executable check rather than a convention.
 - **Evolving a contract (future, non-frozen runs only).** To change a contract in a future run,
   bump `contracts/VERSION` following SemVer, update the matching `info.version`, and regenerate
   all consumers (Java interfaces and the UI client). Never silently hand-edit generated code to
@@ -69,12 +78,20 @@ honor them exactly so that generated servers and the generated client stay compa
    `application/problem+json`) with fields `type`, `title`, `status`, `detail`, `instance`, and
    `correlationId` is used for `400`, `404`, and `500` responses.
 4. **Correlation ID.** Every operation documents an optional request header `X-Correlation-ID`
-   (`string`, `format: uuid`) via a reusable parameter. The correlation ID propagates
-   UI -> BFF -> card-svc and is logged via SLF4J MDC in each service.
-5. **Security.** A `bearerAuth` HTTP bearer (JWT) security scheme is defined. Only
-   `auth-svc POST /auth/login` and `bff POST /api/auth/login` are unauthenticated; all other
-   business operations carry `bearerAuth`. This is a permissive stub - the token hop is real,
-   but token validation is not implemented in this skeleton.
+   as a reusable parameter typed as a plain **`string`** (no `format: uuid`). The type is a
+   plain string deliberately: each service normalizes the inbound value with a bounded canonical
+   policy (accepting a well-formed UUID and otherwise minting one), so pinning the wire contract
+   to `format: uuid` would have caused generated clients to reject or fail binder conversion on
+   the very malformed values the normalization is designed to absorb. The correlation ID
+   propagates UI -> BFF -> card-svc and is logged via SLF4J MDC in each service.
+5. **Security.** A `bearerAuth` HTTP bearer security scheme is defined (`scheme: bearer` with
+   **no** `bearerFormat`). The `bearerFormat: JWT` hint is intentionally omitted because the
+   issued tokens are **opaque** (an `auth-svc`-minted UUID); nothing parses or validates a JWT,
+   so advertising `JWT` would misdescribe the wire contract. Only `auth-svc POST /auth/login` and
+   `bff POST /api/auth/login` are unauthenticated; all other business operations carry
+   `bearerAuth`. This is a permissive stub - the token hop is real (the BFF obtains the token from
+   `auth-svc` and propagates it), but server-side token validation is deliberately **[DEFERRED]**
+   in this skeleton (see the deferred-hardening register in `deferred-epics.md`).
 6. **Version pin.** `1.0.0` is used across every `info.version` and in `contracts/VERSION`.
 7. **Path style.** Domain services use bare resource paths (`/cards`, `/accounts`,
    `/transactions`, `/payments`, `/users`, `/reports`); the BFF uses the `/api/**` prefix. The

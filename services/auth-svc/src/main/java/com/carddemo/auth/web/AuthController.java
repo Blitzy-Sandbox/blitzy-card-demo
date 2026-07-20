@@ -70,7 +70,7 @@ public class AuthController implements AuthApi {
      *         the upper-cased user id, {@code userType=U}, a 3600s lifetime, and {@code tokenType="Bearer"}
      */
     @Override
-    public ResponseEntity<LoginResponse> login(LoginRequest loginRequest, UUID xCorrelationID) {
+    public ResponseEntity<LoginResponse> login(LoginRequest loginRequest, String xCorrelationID) {
         // Normalize the user id to upper case (legacy MOVE FUNCTION UPPER-CASE(USERIDI)) using an
         // explicit, locale-independent transform so the result is deterministic across environments.
         final String userId = loginRequest.getUserId().toUpperCase(Locale.ROOT);
@@ -101,7 +101,7 @@ public class AuthController implements AuthApi {
      * @return HTTP 200 with a permissive {@link TokenValidationResponse} ({@code valid=true})
      */
     @Override
-    public ResponseEntity<TokenValidationResponse> validateToken(UUID xCorrelationID) {
+    public ResponseEntity<TokenValidationResponse> validateToken(String xCorrelationID) {
         // [DEFERRED] permissive stub — no real token parsing/verification (F-SKEL skeleton).
         final TokenValidationResponse response = new TokenValidationResponse(Boolean.TRUE)
                 .userType(TokenValidationResponse.UserTypeEnum.U);

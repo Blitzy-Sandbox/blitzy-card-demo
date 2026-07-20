@@ -21,9 +21,12 @@ import org.springframework.web.context.request.ServletRequestAttributes;
  *
  * <p><strong>BFF-specific divergence.</strong> In the domain services (card-svc, auth-svc)
  * {@code OpenApiConfig} is an empty {@link Configuration} marker. Here it additionally
- * declares the synchronous {@link RestClient} the BFF uses to call {@code card-svc} for the
- * one LIVE Card Detail tracer (UI -&gt; BFF -&gt; card-svc -&gt; Oracle FREEPDB1 seeded row).
- * The BFF performs aggregation only: no domain logic and no persistence.</p>
+ * declares the synchronous {@link RestClient} beans the BFF uses to call its downstream
+ * services: {@code cardServiceRestClient} for the one LIVE Card Detail tracer
+ * (UI -&gt; BFF -&gt; card-svc -&gt; Oracle FREEPDB1 seeded row), and {@code authServiceRestClient}
+ * for the real sign-on hop (UI -&gt; BFF -&gt; auth-svc), so auth-svc is the single authority that
+ * issues the bearer token (AAP §0.1.3 / §0.4). The BFF performs aggregation only: no domain logic
+ * and no persistence; every other aggregator remains a typed {@code [DEFERRED]} stub.</p>
  *
  * <p><strong>Contract is the single source of truth (SSoT).</strong> The frozen OpenAPI 3.1
  * contracts under {@code /contracts} drive build-time generation of the API interfaces
@@ -65,6 +68,10 @@ public class OpenApiConfig {
     @Value("${carddemo.services.card-svc-url:http://card-svc:8080}")
     private String cardServiceBaseUrl;
 
+    /** auth-svc base URL; bound to application.yml {@code carddemo.services.auth-svc-url}. */
+    @Value("${carddemo.services.auth-svc-url:http://auth-svc:8080}")
+    private String authServiceBaseUrl;
+
     /** Correlation-ID header name; bound to application.yml {@code carddemo.correlation.header}. */
     @Value("${carddemo.correlation.header:X-Correlation-ID}")
     private String correlationHeader;
@@ -85,6 +92,25 @@ public class OpenApiConfig {
      */
     @Value("${carddemo.services.card-svc-read-timeout-ms:5000}")
     private long readTimeoutMs;
+
+    /**
+     * Connect timeout (milliseconds) for the downstream auth-svc client; bound to
+     * {@code carddemo.services.auth-svc-connect-timeout-ms} (default 2000&nbsp;ms). Bounds how long
+     * the BFF waits to establish a TCP connection to auth-svc before failing fast, mirroring the
+     * card-svc client so the sign-on hop is subject to the same bounded-failure discipline.
+     */
+    @Value("${carddemo.services.auth-svc-connect-timeout-ms:2000}")
+    private long authConnectTimeoutMs;
+
+    /**
+     * Read timeout (milliseconds) for the downstream auth-svc client; bound to
+     * {@code carddemo.services.auth-svc-read-timeout-ms} (default 5000&nbsp;ms). Bounds how long the
+     * BFF waits for auth-svc to respond once connected, so a slow or hanging auth-svc yields a
+     * bounded error (surfaced as an {@code application/problem+json} with the correlation id)
+     * instead of an indefinite wait that would exhaust Tomcat worker threads.
+     */
+    @Value("${carddemo.services.auth-svc-read-timeout-ms:5000}")
+    private long authReadTimeoutMs;
 
     /**
      * Synchronous RestClient for the LIVE Card Detail tracer. Injected by type into the
@@ -112,6 +138,38 @@ public class OpenApiConfig {
     }
 
     /**
+     * Synchronous RestClient for the sign-on hop. Injected by type into {@code AuthAggregator},
+     * which forwards the UI's Sign-On {@code POST /auth/login} to auth-svc so that <em>auth-svc</em>
+     * &mdash; not the BFF &mdash; is the single authority that issues the bearer token. This realizes
+     * the auth seam the AAP designates real: AAP §0.1.3 ("an {@code auth-svc} permissive login stub
+     * that issues a real token") and §0.4 ("the UI Sign-On posts through the BFF to {@code auth-svc},
+     * which returns a token"). Auth remains a <em>permissive</em> stub (auth-svc performs no credential
+     * validation, hashing, RBAC, or session management), but the token hop is genuinely wired, exactly
+     * like the correlation-ID hop. Created at context load but makes no network call until invoked, so
+     * the context-load smoke test stays green without a running auth-svc.
+     *
+     * <p>Configured with (a) an explicit {@link ClientHttpRequestFactory} carrying connect and read
+     * timeouts so a slow/hanging auth-svc fails within a bounded time; and (b) the correlation-ID
+     * forwarding interceptor, so the sign-on request carries the same {@code X-Correlation-ID} through
+     * UI &rarr; BFF &rarr; auth-svc and is logged via MDC in every tier. The Authorization-forwarding
+     * interceptor is deliberately <em>not</em> attached here: {@code POST /auth/login} is the
+     * unauthenticated entry point that <em>mints</em> the token, so there is no inbound bearer token to
+     * forward on this leg (unlike the card-svc client, whose calls carry the token the UI already
+     * holds).</p>
+     *
+     * @return a synchronous {@link RestClient} pre-configured with the auth-svc base URL, bounded
+     *         connect/read timeouts, and the correlation-ID forwarding interceptor
+     */
+    @Bean
+    RestClient authServiceRestClient() {
+        return RestClient.builder()
+                .baseUrl(authServiceBaseUrl)
+                .requestFactory(authServiceRequestFactory())
+                .requestInterceptor(correlationIdForwardingInterceptor())
+                .build();
+    }
+
+    /**
      * Builds the downstream {@link ClientHttpRequestFactory} with explicit connect and read
      * timeouts (finding F2: bounded downstream failure). {@link ClientHttpRequestFactoryBuilder#detect()}
      * auto-selects the best factory available on the classpath &mdash; here the JDK
@@ -128,6 +186,23 @@ public class OpenApiConfig {
                 .build(ClientHttpRequestFactorySettings.defaults()
                         .withConnectTimeout(Duration.ofMillis(connectTimeoutMs))
                         .withReadTimeout(Duration.ofMillis(readTimeoutMs)));
+    }
+
+    /**
+     * Builds the downstream auth-svc {@link ClientHttpRequestFactory} with explicit connect and read
+     * timeouts, mirroring {@link #cardServiceRequestFactory()} so the sign-on hop is bounded by the
+     * same failure discipline. {@link ClientHttpRequestFactoryBuilder#detect()} auto-selects the JDK
+     * {@code HttpClient}-backed factory available on the classpath. The read timeout is the key
+     * control: without it a hanging auth-svc would tie up a Tomcat worker thread indefinitely.
+     *
+     * @return a {@link ClientHttpRequestFactory} whose connect/read timeouts are bounded by
+     *         {@code authConnectTimeoutMs} / {@code authReadTimeoutMs}
+     */
+    private ClientHttpRequestFactory authServiceRequestFactory() {
+        return ClientHttpRequestFactoryBuilder.detect()
+                .build(ClientHttpRequestFactorySettings.defaults()
+                        .withConnectTimeout(Duration.ofMillis(authConnectTimeoutMs))
+                        .withReadTimeout(Duration.ofMillis(authReadTimeoutMs)));
     }
 
     /**

@@ -139,7 +139,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: >-
         Bearer token issued by auth-svc. For the walking-skeleton run the token hop is real
         while credential validation is a permissive stub.
@@ -153,7 +152,6 @@ components:
         into the SLF4J MDC for trace logging. Generated upstream when absent.
       schema:
         type: string
-        format: uuid
       example: "b7f3c1e2-6a9d-4b2e-9c31-2f8a5d7e1c04"
   responses:
     BadRequest:

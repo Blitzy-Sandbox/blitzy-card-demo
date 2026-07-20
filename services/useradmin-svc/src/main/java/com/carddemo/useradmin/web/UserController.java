@@ -7,7 +7,6 @@ import com.carddemo.useradmin.model.UserListResponse;
 import com.carddemo.useradmin.model.UserUpdateRequest;
 
 import java.util.ArrayList;
-import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -76,7 +75,7 @@ public class UserController implements UsersApi {
      * @return {@code 200 OK} with an empty page of users
      */
     @Override
-    public ResponseEntity<UserListResponse> listUsers(UUID xCorrelationID, Integer page, Integer size) {
+    public ResponseEntity<UserListResponse> listUsers(String xCorrelationID, Integer page, Integer size) {
         // Empty page placeholder. totalItems is int64 in the contract -> must be a Long (0L).
         UserListResponse body = new UserListResponse()
                 .items(new ArrayList<>())
@@ -104,7 +103,7 @@ public class UserController implements UsersApi {
      * @return {@code 201 CREATED} with the echoed user (password omitted)
      */
     @Override
-    public ResponseEntity<User> createUser(UserCreateRequest userCreateRequest, UUID xCorrelationID) {
+    public ResponseEntity<User> createUser(UserCreateRequest userCreateRequest, String xCorrelationID) {
         // Echo request fields EXCLUDING password (the User model has no password field, and the
         // password must never be returned or logged). Cross-convert the userType enum by value.
         User body = new User()
@@ -127,7 +126,7 @@ public class UserController implements UsersApi {
      * @return {@code 200 OK} with a placeholder user
      */
     @Override
-    public ResponseEntity<User> getUser(String userId, UUID xCorrelationID) {
+    public ResponseEntity<User> getUser(String userId, String xCorrelationID) {
         User body = new User()
                 .userId(userId)
                 .firstName("")
@@ -151,7 +150,7 @@ public class UserController implements UsersApi {
      * @return {@code 200 OK} with the echoed, updated user (password omitted)
      */
     @Override
-    public ResponseEntity<User> updateUser(String userId, UserUpdateRequest userUpdateRequest, UUID xCorrelationID) {
+    public ResponseEntity<User> updateUser(String userId, UserUpdateRequest userUpdateRequest, String xCorrelationID) {
         User body = new User()
                 .userId(userId)
                 .firstName(userUpdateRequest.getFirstName())
@@ -172,7 +171,7 @@ public class UserController implements UsersApi {
      * @return {@code 204 NO CONTENT}
      */
     @Override
-    public ResponseEntity<Void> deleteUser(String userId, UUID xCorrelationID) {
+    public ResponseEntity<Void> deleteUser(String userId, String xCorrelationID) {
         return ResponseEntity.noContent().build();
     }
 }

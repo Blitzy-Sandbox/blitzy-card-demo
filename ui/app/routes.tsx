@@ -56,6 +56,7 @@ import AdminMenu from '../features/admin-menu/AdminMenu';
 import UserList from '../features/user-list/UserList';
 import UserAdd from '../features/user-add/UserAdd';
 import UserUpdate from '../features/user-update/UserUpdate';
+import UserDelete from '../features/user-delete/UserDelete';
 
 /**
  * AppRoutes — the declarative route table for the CardDemo SPA.
@@ -107,11 +108,15 @@ export function AppRoutes() {
           <Route path="/bill-payment" element={<BillPayment />} />
 
           {/* Admin & user management — admin menu (COADM01C) and the user CRUD
-              screens (COUSR00C list / COUSR01C add / COUSR02C update). */}
+              screens (COUSR00C list / COUSR01C add / COUSR02C update /
+              COUSR03C delete). The delete route is an inert [DEFERRED] seam:
+              it renders the standard page frame + a deferred notice and performs
+              NO delete behavior (AAP §0.1.2, §0.7.2). [SRC: COUSR03C | COUSR03.bms] */}
           <Route path="/admin" element={<AdminMenu />} />
           <Route path="/users" element={<UserList />} />
           <Route path="/users/new" element={<UserAdd />} />
           <Route path="/users/:userId/edit" element={<UserUpdate />} />
+          <Route path="/users/:userId/delete" element={<UserDelete />} />
         </Route>
       </Route>
 

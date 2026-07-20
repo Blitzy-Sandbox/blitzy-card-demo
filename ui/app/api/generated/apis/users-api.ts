@@ -29,11 +29,11 @@ import type { UserListResponse } from '../models';
 export const UsersApiAxiosParamCreator = function (configuration?: Configuration) {
     return {
         /**
-         * 
-         * @summary List users [DEFERRED]
-         * @param {number} [page] 
-         * @param {number} [size] 
-         * @param {string} [xCorrelationID] Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+         * [DEFERRED] User Admin list aggregation [SRC: COUSR00C | USRSEC]. Part of the frozen contract, but the BFF returns a typed placeholder response; no real aggregation or persistence is wired in the skeleton. 
+         * @summary List administrative users
+         * @param {number} [page] Zero-based page index.
+         * @param {number} [size] Page size (number of rows per page).
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -62,7 +62,7 @@ export const UsersApiAxiosParamCreator = function (configuration?: Configuration
                 localVarQueryParameter['size'] = size;
             }
 
-            localVarHeaderParameter['Accept'] = 'application/json';
+            localVarHeaderParameter['Accept'] = 'application/json,application/problem+json';
 
             if (xCorrelationID != null) {
                 localVarHeaderParameter['X-Correlation-ID'] = String(xCorrelationID);
@@ -86,11 +86,11 @@ export const UsersApiFp = function(configuration?: Configuration) {
     const localVarAxiosParamCreator = UsersApiAxiosParamCreator(configuration)
     return {
         /**
-         * 
-         * @summary List users [DEFERRED]
-         * @param {number} [page] 
-         * @param {number} [size] 
-         * @param {string} [xCorrelationID] Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+         * [DEFERRED] User Admin list aggregation [SRC: COUSR00C | USRSEC]. Part of the frozen contract, but the BFF returns a typed placeholder response; no real aggregation or persistence is wired in the skeleton. 
+         * @summary List administrative users
+         * @param {number} [page] Zero-based page index.
+         * @param {number} [size] Page size (number of rows per page).
+         * @param {string} [xCorrelationID] Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
          */
@@ -110,8 +110,8 @@ export const UsersApiFactory = function (configuration?: Configuration, basePath
     const localVarFp = UsersApiFp(configuration)
     return {
         /**
-         * 
-         * @summary List users [DEFERRED]
+         * [DEFERRED] User Admin list aggregation [SRC: COUSR00C | USRSEC]. Part of the frozen contract, but the BFF returns a typed placeholder response; no real aggregation or persistence is wired in the skeleton. 
+         * @summary List administrative users
          * @param {UsersApiListUsersRequest} requestParameters Request parameters.
          * @param {*} [options] Override http request option.
          * @throws {RequiredError}
@@ -126,12 +126,18 @@ export const UsersApiFactory = function (configuration?: Configuration, basePath
  * Request parameters for listUsers operation in UsersApi.
  */
 export interface UsersApiListUsersRequest {
+    /**
+     * Zero-based page index.
+     */
     readonly page?: number
 
+    /**
+     * Page size (number of rows per page).
+     */
     readonly size?: number
 
     /**
-     * Correlation ID propagated UI-&gt;BFF-&gt;card-svc, logged via MDC.
+     * Correlation ID; the UI Axios interceptor sets it on each request, the BFF propagates it downstream to card-svc, and it is logged via SLF4J MDC. Optional on inbound requests; when absent the BFF generates one. Typed as a plain string (NOT format: uuid): the BFF\&#39;s CorrelationIdFilter is the sole owner of correlation-ID validation and minting - it trusts an inbound value only when it is a canonical UUID and otherwise mints a fresh one, tolerating any non-canonical header value. Binding this header as a strict uuid would make the framework reject a non-canonical value with a 400 before the request reaches the filter and the aggregation layer, defeating that deliberate tolerance, so the header is a free-form string on the wire.
      */
     readonly xCorrelationID?: string
 }
@@ -141,8 +147,8 @@ export interface UsersApiListUsersRequest {
  */
 export class UsersApi extends BaseAPI {
     /**
-     * 
-     * @summary List users [DEFERRED]
+     * [DEFERRED] User Admin list aggregation [SRC: COUSR00C | USRSEC]. Part of the frozen contract, but the BFF returns a typed placeholder response; no real aggregation or persistence is wired in the skeleton. 
+     * @summary List administrative users
      * @param {UsersApiListUsersRequest} requestParameters Request parameters.
      * @param {*} [options] Override http request option.
      * @throws {RequiredError}

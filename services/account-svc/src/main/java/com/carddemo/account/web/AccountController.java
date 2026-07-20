@@ -1,6 +1,5 @@
 package com.carddemo.account.web;
 
-import java.util.UUID;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
@@ -73,7 +72,7 @@ public class AccountController implements AccountsApi {
      * @return {@code 200 OK} wrapping a typed placeholder {@link Account}
      */
     @Override
-    public ResponseEntity<Account> getAccount(String accountId, UUID xCorrelationID) {
+    public ResponseEntity<Account> getAccount(String accountId, String xCorrelationID) {
         // [DEFERRED] typed stub — returns a placeholder Account; no ACCTDAT read (see COACTVWC).
         Account placeholder = new Account()
                 .accountId(accountId)
@@ -108,7 +107,7 @@ public class AccountController implements AccountsApi {
      * @return {@code 200 OK} wrapping a typed placeholder {@link Account}
      */
     @Override
-    public ResponseEntity<Account> updateAccount(String accountId, AccountUpdateRequest accountUpdateRequest, UUID xCorrelationID) {
+    public ResponseEntity<Account> updateAccount(String accountId, AccountUpdateRequest accountUpdateRequest, String xCorrelationID) {
         // [DEFERRED] typed stub — echoes a placeholder Account; no ACCTDAT write (see COACTUPC).
         Account placeholder = new Account()
                 .accountId(accountId)

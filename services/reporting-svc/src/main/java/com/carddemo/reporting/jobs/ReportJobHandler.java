@@ -35,32 +35,46 @@ public class ReportJobHandler {
     public JobAcknowledgement submitReportJob(ReportRequest request) {
         ReportRequest.ReportTypeEnum reportType = request != null ? request.getReportType() : null;
         log.info("[DEFERRED] submitReportJob stub accepted report job: reportType={}", reportType);
+        // jobId is the nil-UUID sentinel, never a random UUID: no job is queued, so we must not
+        // hand back a plausible-looking tracking id for work that never happens (finding P4-M06).
         return new JobAcknowledgement()
-                .jobId(UUID.randomUUID())
+                .jobId(JobStubs.DEFERRED_JOB_ID)
                 .jobType(JobAcknowledgement.JobTypeEnum.REPORT)
                 .status(JobAcknowledgement.StatusEnum.ACCEPTED)
                 .submittedAt(OffsetDateTime.now());
     }
 
     /**
-     * [DEFERRED] Returns a typed job-status placeholder for the given job id.
+     * [DEFERRED] Returns an honest typed job-status placeholder for the given job id.
      *
-     * @param jobId the job identifier
-     * @return a typed {@link JobStatus} stub with status COMPLETED
+     * <p>Because reporting-svc never actually executes, queues, or stores a job in the walking
+     * skeleton, this stub must not fabricate completion (finding P4-M06 / AAP-35). It therefore
+     * reports the non-terminal, truthful status {@code ACCEPTED} and leaves {@code submittedAt} and
+     * {@code completedAt} {@code null} — the contract explicitly permits a null {@code completedAt}
+     * "while the job is still ACCEPTED or RUNNING", and there is no genuine submission time to
+     * report. The requested {@code jobId} is echoed back when it is a well-formed UUID; an
+     * unparseable id falls back to the nil-UUID sentinel rather than a freshly-minted random UUID,
+     * so the response never invents a plausible-looking tracking identifier.</p>
+     *
+     * @param jobId the job identifier from the caller (echoed when a valid UUID)
+     * @return a typed {@link JobStatus} stub with a non-fabricated {@code ACCEPTED} status
      */
     public JobStatus getJobStatus(String jobId) {
         log.info("[DEFERRED] getJobStatus stub invoked: jobId={}", jobId);
-        JobStatus status = new JobStatus()
-                .jobType(JobStatus.JobTypeEnum.REPORT)
-                .status(JobStatus.StatusEnum.COMPLETED)
-                .submittedAt(OffsetDateTime.now())
-                .completedAt(OffsetDateTime.now())
-                .message("[DEFERRED] stub");
+        UUID echoedId;
         try {
-            status.jobId(UUID.fromString(jobId));
+            echoedId = UUID.fromString(jobId);
         } catch (IllegalArgumentException | NullPointerException ex) {
-            status.jobId(UUID.randomUUID());
+            echoedId = JobStubs.DEFERRED_JOB_ID;
         }
-        return status;
+        // No submittedAt / completedAt: the skeleton neither queues nor runs the job, so fabricating
+        // those timestamps (or a COMPLETED status) would misrepresent work that never happened.
+        return new JobStatus()
+                .jobId(echoedId)
+                .jobType(JobStatus.JobTypeEnum.REPORT)
+                .status(JobStatus.StatusEnum.ACCEPTED)
+                .message("[DEFERRED] reporting-svc is an async job stub: no report job is executed, "
+                        + "tracked, or completed in the walking skeleton. completedAt is null "
+                        + "because no work is performed.");
     }
 }

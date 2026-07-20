@@ -37,3 +37,9 @@ target/
 *.log
 .DS_Store
 Thumbs.db
+
+# ---- Blitzy platform working artifacts (never part of the deliverable) ----
+# The Blitzy Platform writes QA logs, review artifacts, screenshots, and screen
+# recordings under ./blitzy during a run. These are transient, machine-specific
+# validation outputs — not skeleton source — so they must never be committed.
+blitzy/

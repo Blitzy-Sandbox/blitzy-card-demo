@@ -222,7 +222,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: >-
         Bearer token issued by auth-svc. In the walking skeleton authentication
         is a permissive stub, but the token hop is real and propagated end to end.
@@ -237,7 +236,6 @@ components:
         absent.
       schema:
         type: string
-        format: uuid
       example: 7b1f2c3d-4e5a-6789-abcd-ef0123456789
   responses:
     BadRequest:

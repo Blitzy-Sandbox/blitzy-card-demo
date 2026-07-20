@@ -1,7 +1,6 @@
 package com.carddemo.reporting.jobs;
 
 import java.time.OffsetDateTime;
-import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,8 +41,10 @@ public class StatementJobHandler {
         // operators keep a correlation hint without the full sensitive id appearing in the logs.
         log.info("[DEFERRED] submitStatementJob stub accepted statement job: format={}, accountId={}",
                 format, maskAccountId(accountId));
+        // jobId is the nil-UUID sentinel, never a random UUID: no job is queued, so we must not
+        // hand back a plausible-looking tracking id for work that never happens (finding P4-M06).
         return new JobAcknowledgement()
-                .jobId(UUID.randomUUID())
+                .jobId(JobStubs.DEFERRED_JOB_ID)
                 .jobType(JobAcknowledgement.JobTypeEnum.STATEMENT)
                 .status(JobAcknowledgement.StatusEnum.ACCEPTED)
                 .submittedAt(OffsetDateTime.now());

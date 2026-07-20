@@ -7,7 +7,6 @@ import com.carddemo.payment.model.BillPaymentResponse;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.UUID;
 
 /**
  * CardDemo Payment Service &mdash; web/REST layer.
@@ -60,7 +59,7 @@ public class PaymentController implements PaymentsApi {
      * @return {@code 200 OK} with a typed placeholder balance payload
      */
     @Override
-    public ResponseEntity<BalanceResponse> getBalance(String accountId, UUID xCorrelationID) {
+    public ResponseEntity<BalanceResponse> getBalance(String accountId, String xCorrelationID) {
         // [DEFERRED] typed stub — placeholder balance; no ACCTDAT read (see COBIL00C READ-ACCTDAT-FILE).
         BalanceResponse placeholder = new BalanceResponse()
                 .accountId(accountId)
@@ -90,7 +89,7 @@ public class PaymentController implements PaymentsApi {
      * @return {@code 200 OK} with a typed placeholder confirmation payload (status {@code PENDING})
      */
     @Override
-    public ResponseEntity<BillPaymentResponse> payBill(BillPaymentRequest billPaymentRequest, UUID xCorrelationID) {
+    public ResponseEntity<BillPaymentResponse> payBill(BillPaymentRequest billPaymentRequest, String xCorrelationID) {
         // [DEFERRED] typed stub — nothing processed: no TRANSACT write, no balance rewrite (see COBIL00C
         // WRITE-TRANSACT-FILE / UPDATE-ACCTDAT-FILE). Report PENDING + empty transactionId (honest stub),
         // consistent with the BFF PaymentsAggregator; CONFIRMED + a synthetic id would falsely imply a

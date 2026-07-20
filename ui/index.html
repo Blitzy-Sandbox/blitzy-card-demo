@@ -6,13 +6,11 @@
     <meta name="description" content="CardDemo — mainframe-modernization walking skeleton" />
     <title>CardDemo</title>
 
-    <!-- MUI default typography: Roboto (weights 300/400/500/700 used by the MUI v9 theme in app/theme/theme.ts). Loaded from the Google Fonts CDN; no npm font packages are used. -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      rel="stylesheet"
-      href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap"
-    />
+    <!-- MUI default typography: Roboto (weights 300/400/500/700 used by the MUI v9
+         theme in app/theme/theme.ts) is SELF-HOSTED via @fontsource/roboto,
+         imported in app/App.tsx. No external Google Fonts CDN <link> is used, so
+         the strict same-origin CSP in ui/nginx.conf (font-src 'self') serves the
+         fonts without a CDN allowance (finding P4-m01). -->
   </head>
   <body>
     <!-- React mount node. app/main.tsx calls createRoot(document.getElementById('root')!). -->

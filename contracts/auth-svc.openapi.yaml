@@ -153,13 +153,11 @@ components:
         a service generates one.
       schema:
         type: string
-        format: uuid
       example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: |-
         Bearer token issued by POST /auth/login. Permissive stub - the token is real
         and its presence is required on protected operations, but its contents are not
@@ -203,7 +201,6 @@ components:
           description: "Authenticated user id, SEC-USR-ID X(8)."
         userType:
           type: string
-          maxLength: 1
           enum:
             - A
             - U
@@ -231,7 +228,6 @@ components:
           description: "User id associated with the token, SEC-USR-ID X(8)."
         userType:
           type: string
-          maxLength: 1
           enum:
             - A
             - U

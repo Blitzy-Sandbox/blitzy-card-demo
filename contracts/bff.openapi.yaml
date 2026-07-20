@@ -433,7 +433,6 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
       description: >-
         Bearer token issued by auth-svc via the BFF sign-on aggregation.
         Permissive in the skeleton: the token presence is a real hop that is
@@ -554,7 +553,6 @@ components:
             fields EXPMON/EXPYEAR).
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"
@@ -613,7 +611,6 @@ components:
           example: "USER0001"
         userType:
           type: string
-          maxLength: 1
           enum:
             - A
             - U
@@ -735,7 +732,6 @@ components:
           example: "00000000050"
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"
@@ -772,7 +768,6 @@ components:
           example: "00000000001"
         activeStatus:
           type: string
-          maxLength: 1
           enum:
             - "Y"
             - "N"
@@ -981,7 +976,6 @@ components:
           example: "PUBLIC"
         userType:
           type: string
-          maxLength: 1
           enum:
             - A
             - U

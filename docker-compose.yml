@@ -29,15 +29,14 @@
 # All ${VAR} substitutions resolve from the root `.env` file (template
 # /.env.example — `cp .env.example .env` and fill in the REQUIRED secrets).
 #
-# NOTE on build contexts (they are NOT uniform — each Dockerfile documents its
-# own required wiring, honored below so the topology builds green):
+# NOTE on build contexts (now UNIFORM for every service — finding P4-M08):
 #   • context: .  (repo root) + dockerfile: services/<svc>/Dockerfile
-#       → card-svc, payment-svc, useradmin-svc, reporting-svc
-#         (their in-image OpenAPI codegen COPYies the repo-root /contracts SSoT,
-#          which a service-scoped context could not see).
-#   • context: ./services/<svc> + dockerfile: Dockerfile
-#       → auth-svc, account-svc, transaction-svc, bff.
-#   • context: ./ui + dockerfile: Dockerfile  → ui.
+#       → ALL 8 Spring Boot services (auth, account, card, transaction, payment,
+#         useradmin, reporting, bff). Each runs its OpenAPI codegen + `mvn
+#         package` IN-IMAGE from the repo-root /contracts SSoT (or, for the bff,
+#         its byte-identical vendored copy), so a clean / no-cache Compose build
+#         needs NO host-built jar and starts green.
+#   • context: ./ui + dockerfile: Dockerfile  → ui (Node build → nginx serve).
 #
 # The obsolete top-level `version:` key is intentionally OMITTED (current
 # Compose Specification).
@@ -94,9 +93,11 @@ services:
       APP_USER: ${APP_USER}
       APP_USER_PASSWORD: ${APP_USER_PASSWORD}
       TZ: ${TZ:-UTC}
-    ports:
-      # Host ${ORACLE_PORT} (default 1521) → container listener 1521.
-      - "${ORACLE_PORT:-1521}:1521"
+    # NO host port in the base deployment unit: Oracle stays INTERNAL to
+    # carddemo-net and is reached only by Flyway/services via container DNS
+    # (host `oracle`). Host access for local DB tools is provided by
+    # docker-compose.override.yml (LOCAL DEV ONLY; CI runs `-f docker-compose.yml`
+    # and never exposes the DB). Minimizes the attack surface (finding P4-M14).
     volumes:
       # Persist Oracle datafiles across restarts.
       - oracle-data:/opt/oracle/oradata
@@ -150,12 +151,13 @@ services:
 
   # auth-svc — permissive Sign-On stub that issues a real token and starts the
   # correlation-ID hop.  [SRC: COSGN00C | COSGN00.bms]
-  # Build context is the SERVICE directory (prebuilt-jar Dockerfile strategy:
-  # `mvn package` runs first in CI/host, then the image packages target/*.jar).
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT and runs `mvn package` (self-contained -- no
+  # host-built jar), so a clean / no-cache build is green (finding P4-M08).
   auth-svc:
     build:
-      context: ./services/auth-svc
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/auth-svc/Dockerfile
     image: carddemo/auth-svc:local
     depends_on:
       flyway:
@@ -163,20 +165,23 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${AUTH_SVC_PORT:-8081}:8080"
+    # No host port in the base file: reached only via the internal network
+    # (bff -> auth-svc). Dev host access is added in docker-compose.override.yml
+    # (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
       - carddemo-net
 
   # account-svc — typed-stub Account bounded context.  [SRC: COACTVWC/COACTUPC | ACCTDAT]
-  # Build context is the SERVICE directory (its Dockerfile expects a build-time
-  # copy of the frozen contract placed by the CI/compose pre-step).
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT (the pom's default openapi.spec ../../contracts
+  # resolves in-image), so no pre-step contract copy is needed and a clean /
+  # no-cache build is green (finding P4-M08).
   account-svc:
     build:
-      context: ./services/account-svc
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/account-svc/Dockerfile
     image: carddemo/account-svc:local
     depends_on:
       flyway:
@@ -184,8 +189,8 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${ACCOUNT_SVC_PORT:-8082}:8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
@@ -206,8 +211,9 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${CARD_SVC_PORT:-8083}:8080"
+    # No host port in the base file: the tracer read is reached via the bff
+    # (ui -> bff -> card-svc), never directly. Dev host access is added in
+    # docker-compose.override.yml (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
@@ -215,11 +221,13 @@ services:
 
   # transaction-svc — typed-stub Transaction bounded context.
   # [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
-  # Build context is the SERVICE directory (prebuilt-jar Dockerfile strategy).
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT and runs `mvn package` (self-contained -- no
+  # host-built jar), so a clean / no-cache build is green (finding P4-M08).
   transaction-svc:
     build:
-      context: ./services/transaction-svc
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/transaction-svc/Dockerfile
     image: carddemo/transaction-svc:local
     depends_on:
       flyway:
@@ -227,8 +235,8 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${TRANSACTION_SVC_PORT:-8084}:8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
@@ -247,8 +255,8 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${PAYMENT_SVC_PORT:-8085}:8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
@@ -268,8 +276,8 @@ services:
     environment:
       <<: *datasource-env
       SERVER_PORT: "8080"
-    ports:
-      - "${USERADMIN_SVC_PORT:-8086}:8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:
@@ -280,11 +288,15 @@ services:
   # card-svc to be healthy (in addition to the Flyway gate). Downstream service
   # base URLs are injected for the internal compose network; only CARD_SVC_URL
   # is on the live path — the rest are stub targets for topology completeness.
-  # Build context is the SERVICE directory (contract is vendored inside src/).
+  # Build context is the REPO ROOT (uniform with every other service). The bff
+  # generates from its VENDORED in-module spec (src/main/resources/openapi/
+  # bff.openapi.yaml, kept byte-identical to /contracts/bff.openapi.yaml per
+  # P4-M01) and runs `mvn package` in-image (self-contained -- no host-built
+  # jar), so a clean / no-cache build is green (finding P4-M08).
   bff:
     build:
-      context: ./services/bff
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: services/bff/Dockerfile
     image: carddemo/bff:local
     depends_on:
       flyway:
@@ -300,8 +312,10 @@ services:
       TRANSACTION_SVC_URL: http://transaction-svc:8080
       PAYMENT_SVC_URL: http://payment-svc:8080
       USERADMIN_SVC_URL: http://useradmin-svc:8080
-    ports:
-      - "${BFF_PORT:-8080}:8080"
+    # No host port in the base file: the SPA reaches the bff through the ui
+    # container's nginx reverse proxy (/api/ -> http://bff:8080) over the internal
+    # network, so ONLY the ui ingress is published. Dev host access to the bff
+    # (e.g. for `npm run dev`) is added in docker-compose.override.yml (P4-M14).
     healthcheck: *actuator-healthcheck
     restart: unless-stopped
     networks:

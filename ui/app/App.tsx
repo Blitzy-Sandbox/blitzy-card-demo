@@ -46,13 +46,25 @@
  *   • No path aliases configured — local imports are relative siblings.
  *   • MUI v9 core — `CssBaseline`/`ThemeProvider` imported from the package root
  *     `@mui/material` (both are re-exported there).
- *   • The Roboto webfont is loaded via a <link> in `ui/index.html`; this module
- *     imports no font packages.
+ *   • The Roboto webfont is SELF-HOSTED via the `@fontsource/roboto` package
+ *     (weights 300/400/500/700 — the weights used by the MUI v9 theme in
+ *     `theme/theme.ts`), imported as side-effect CSS below. No external Google
+ *     Fonts <link> is used, so the strict same-origin CSP in `ui/nginx.conf`
+ *     (`font-src 'self'`) serves the fonts without a CDN allowance and typography
+ *     never falls back to a system font (finding P4-m01).
  *
  * This component is intentionally a PURE composition root: no business logic, no
  * data fetching, and no layout markup. The application chrome (AppBar + Drawer)
  * lives in `ui/app/layout/AppShell`, reached through the guarded routes.
  */
+// Self-hosted Roboto webfont (side-effect CSS imports). Vite bundles these and the
+// referenced .woff2 files into the app, served same-origin — so they satisfy the
+// `font-src 'self'` / `style-src 'self'` CSP without any external font origin.
+import '@fontsource/roboto/300.css';
+import '@fontsource/roboto/400.css';
+import '@fontsource/roboto/500.css';
+import '@fontsource/roboto/700.css';
+
 import { CssBaseline, ThemeProvider } from '@mui/material';
 import { BrowserRouter } from 'react-router-dom';
 

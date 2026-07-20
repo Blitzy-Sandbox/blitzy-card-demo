@@ -35,17 +35,18 @@ INSERT INTO ACCOUNT (
     NULL
 );
 
+-- CARD_CVV_CD is intentionally NEITHER a column NOR a seed value: the CVV is
+-- sensitive card data excluded from the skeleton (finding P7-M16). The tracer
+-- read path exposes only the five non-sensitive Card Detail fields.
 INSERT INTO CARD (
     CARD_NUM,
     CARD_ACCT_ID,
-    CARD_CVV_CD,
     CARD_EMBOSSED_NAME,
     CARD_EXPIRAION_DATE,
     CARD_ACTIVE_STATUS
 ) VALUES (
     '0500024453765740',
     50,
-    747,
     'Aniya Von',
     '2023-03-09',
     'Y'

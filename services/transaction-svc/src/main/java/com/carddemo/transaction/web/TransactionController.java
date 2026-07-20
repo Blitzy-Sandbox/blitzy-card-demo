@@ -9,7 +9,6 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Collections;
-import java.util.UUID;
 
 /**
  * CardDemo Transaction Service — web/REST layer.
@@ -109,7 +108,7 @@ public class TransactionController implements TransactionsApi {
      */
     @Override
     public ResponseEntity<TransactionListResponse> listTransactions(
-            UUID xCorrelationID, String cardNumber, String accountId, Integer page, Integer size) {
+            String xCorrelationID, String cardNumber, String accountId, Integer page, Integer size) {
         // [DEFERRED] typed stub — no TRANSACT read (see COTRN00C); returns an empty, well-formed page.
         int effectivePage = (page != null) ? page : DEFAULT_PAGE;
         int effectiveSize = (size != null) ? size : DEFAULT_SIZE;
@@ -131,7 +130,7 @@ public class TransactionController implements TransactionsApi {
      * is echoed into the placeholder for realism when present; no lookup is performed.</p>
      */
     @Override
-    public ResponseEntity<Transaction> getTransaction(String transactionId, UUID xCorrelationID) {
+    public ResponseEntity<Transaction> getTransaction(String transactionId, String xCorrelationID) {
         // [DEFERRED] typed stub — no TRANSACT read (see COTRN01C); returns a placeholder Transaction.
         Transaction placeholder = placeholderTransaction();
         if (transactionId != null) {
@@ -151,7 +150,7 @@ public class TransactionController implements TransactionsApi {
      */
     @Override
     public ResponseEntity<Transaction> createTransaction(
-            TransactionCreateRequest transactionCreateRequest, UUID xCorrelationID) {
+            TransactionCreateRequest transactionCreateRequest, String xCorrelationID) {
         // [DEFERRED] typed stub — no TRANSACT write (see COTRN02C); echoes a placeholder Transaction with a server-assigned id.
         Transaction placeholder = placeholderTransaction();
         if (transactionCreateRequest != null) {

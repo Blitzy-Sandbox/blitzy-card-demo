@@ -1,110 +1,108 @@
-# syntax=docker/dockerfile:1
-
 # =============================================================================
-# CardDemo Walking Skeleton — transaction-svc runtime image (multi-stage)
-# -----------------------------------------------------------------------------
-# What this is:
-#   Container image for the TRANSACTION bounded-context service, a Spring Boot
-#   3.5.x / Java 21 application. In the walking skeleton every endpoint is a
-#   typed placeholder ([DEFERRED] — no business logic), but the service is
-#   REQUEST-SERVING and HEALTH-GATED: it starts green as a long-running
-#   container and exposes Spring Boot Actuator /actuator/health so the
-#   docker-compose `depends_on: condition: service_healthy` chain (and the
-#   dependent `bff`) can gate on it.
-#   Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
-#     - Legacy CICS programs COTRN00C (CT00, list), COTRN01C (CT01, view) and
-#       COTRN02C (CT02, add) over the TRANSACT VSAM KSDS, registered in
-#       app/csd/CARDDEMO.CSD.
+# transaction-svc -- multi-stage, SELF-CONTAINED image (typed-stub Transaction).
+# =============================================================================
+# Provenance: [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT] -- legacy Transaction
+#   list / view / add.
+#
+# transaction-svc is a REQUEST-SERVING, HEALTH-GATED, long-running container: it
+# starts in the docker-compose `depends_on: condition: service_healthy` chain and
+# is probed over HTTP against Spring Boot Actuator /actuator/health. All endpoints
+# are [DEFERRED] typed placeholders; no domain logic ships in the skeleton.
 #
 # -----------------------------------------------------------------------------
-# PREREQUISITE — `mvn package` MUST run BEFORE `docker build` (read this first):
-#   The root /docker-compose.yml builds this service with
-#     build: { context: ./services/transaction-svc, dockerfile: Dockerfile }
-#   so the Docker build context is the SERVICE DIRECTORY ONLY. It does NOT
-#   include the repository's /contracts folder, and a Dockerfile cannot COPY
-#   files from outside its build context (`../../contracts` is rejected by
-#   Docker). Because OpenAPI code generation needs
-#   ../../contracts/transaction-svc.openapi.yaml, in-container Maven codegen is
-#   IMPOSSIBLE with this context.
-#
-#   Therefore this Dockerfile uses the PREBUILT-JAR strategy: Maven runs first
-#   on the host / in CI (where /contracts IS reachable) via `mvn package`,
-#   which runs OpenAPI codegen and repackages the executable Spring Boot fat
-#   jar as target/transaction-svc.jar (name fixed by
-#   <finalName>transaction-svc</finalName> in pom.xml). This Dockerfile then
-#   simply packages that prebuilt jar into a runtime image — it does NOT run
-#   Maven or codegen and does NOT copy any contract.
-#
-#   Consequence: a cold `docker compose build` (or `docker build`) with NO
-#   prior Maven build FAILS at the jar COPY step below. That is EXPECTED and
-#   INTENDED given the compose build-context choice — run `mvn package` first.
-#
+# *** CRITICAL -- BUILD CONTEXT MUST BE THE REPOSITORY ROOT ***
 # -----------------------------------------------------------------------------
-# Build (from the repo root, after a Maven build produced the jar, e.g.
-#   `mvn -pl services/transaction-svc -am package` or a full reactor build):
-#   docker build -t carddemo/transaction-svc:local services/transaction-svc
-# Run: orchestrated by /docker-compose.yml, which maps the host port
-#   ${TRANSACTION_SVC_PORT:-8084} -> container 8080 and sets SERVER_PORT=8080.
-#   The compose healthcheck is:
-#     ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+# The transaction-svc pom.xml runs OpenAPI codegen from the FROZEN contract SSoT
+# by the RELATIVE path
+#   ${project.basedir}/../../contracts/transaction-svc.openapi.yaml.
+# The contract lives under /contracts and is DELIBERATELY NOT duplicated into this
+# service. Building with the REPOSITORY ROOT as the build context lets this
+# Dockerfile COPY both `contracts/` and `services/transaction-svc/` while
+# preserving the services/transaction-svc -> ../../contracts layout the pom needs.
+# A CLEAN checkout / no-cache Compose build now succeeds with NO host-built jar
+# (finding P4-M08): codegen, compile and package all happen inside the image,
+# identical to card-svc.
+#
+#   Correct manual build (note the trailing '.' == repo root):
+#     docker build -f services/transaction-svc/Dockerfile -t carddemo/transaction-svc .
+#
+#   Required docker-compose wiring (kept in sync in /docker-compose.yml):
+#     services:
+#       transaction-svc:
+#         build:
+#           context: .                               # repo root, NOT ./services/transaction-svc
+#           dockerfile: services/transaction-svc/Dockerfile
+#
+# Runtime configuration is INJECTED by compose/.env (never hardcoded here):
+#   SPRING_DATASOURCE_URL / _USERNAME / _PASSWORD, SERVER_PORT (internal stays
+#   8080), SPRING_FLYWAY_ENABLED=false, SPRING_PROFILES_ACTIVE=docker,
+#   CORRELATION_HEADER.
 # =============================================================================
 
-# ---------- Stage 1: builder (validate & stage the prebuilt jar) ----------
-# The mandated 21-jdk builder stage. It does NOT compile anything here (codegen
-# + package already happened on the host/CI, see PREREQUISITE above); it stages
-# the prebuilt jar and fails fast with a clear error if it is missing.
-FROM eclipse-temurin:21-jdk AS builder
+
+# -----------------------------------------------------------------------------
+# Phase A -- BUILD STAGE: OpenAPI codegen + compile + package the Spring Boot jar.
+# -----------------------------------------------------------------------------
+FROM maven:3.9.9-eclipse-temurin-21 AS build
+
 WORKDIR /build
 
-# Copy the prebuilt Spring Boot executable jar produced by `mvn package`
-# (finalName=transaction-svc => target/transaction-svc.jar). The service-dir
-# build context cannot reach ../../contracts, so codegen + package happen on
-# the host / in CI first. The repackaged thin jar (transaction-svc.jar.original)
-# is intentionally NOT matched — only the executable fat jar is copied.
-COPY target/transaction-svc.jar app.jar
+# 1) Frozen contract SSoT first (stable layer). Preserving contracts/ at
+#    /build/contracts keeps the ../../contracts layout intact: from WORKDIR
+#    /build/services/transaction-svc, the pom's
+#    ${project.basedir}/../../contracts resolves to /build/contracts, so codegen
+#    finds /build/contracts/transaction-svc.openapi.yaml.
+COPY contracts/ contracts/
 
-# Fail fast with a clear, early error if the jar is missing or empty — this
-# means the `mvn package` prerequisite was skipped. `-s` is true only for a
-# file that exists and has a size greater than zero.
-RUN test -s app.jar
+# 2) The service POM next (before src) for POM-keyed dependency layer caching.
+COPY services/transaction-svc/pom.xml services/transaction-svc/pom.xml
 
-# ---------- Stage 2: runtime (lean JRE + curl for the compose healthcheck) ----------
+# 3) Non-fatal offline dependency pre-resolution (see auth/card Dockerfile notes).
+RUN mvn -f services/transaction-svc/pom.xml -B -q -DskipTests dependency:go-offline || true
+
+# 4) Sources last -- the most frequently changing input.
+COPY services/transaction-svc/src services/transaction-svc/src
+
+# Build from the module directory so ${project.basedir}/../../contracts resolves
+# to /build/contracts (see note 1).
+WORKDIR /build/services/transaction-svc
+
+# generate-sources (OpenAPI codegen) -> compile -> package the executable fat jar.
+# -DskipTests: Oracle is not available at image-build time.
+RUN mvn -B -q -DskipTests clean package
+
+
+# -----------------------------------------------------------------------------
+# Phase B -- RUNTIME STAGE: slim, health-checkable, JRE-only image.
+# -----------------------------------------------------------------------------
 FROM eclipse-temurin:21-jre AS runtime
 
-# Install curl for the docker-compose Actuator healthcheck
-# ("curl -f http://localhost:8080/actuator/health"). eclipse-temurin:21-jre is
-# Ubuntu-based but does NOT ship curl; without it the container never reports
-# `healthy` and the whole service_healthy gating chain (and the bff) stalls.
-# --no-install-recommends + cleaning the apt lists keeps the layer small.
+# curl for the image-level HEALTHCHECK and the compose healthcheck.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl \
- && rm -rf /var/lib/apt/lists/*
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create a dedicated non-root system user/group to run the JVM (least
-# privilege). nologin shell + system account: this identity only runs the app.
-RUN groupadd --system spring \
- && useradd --system --gid spring --home-dir /app --shell /usr/sbin/nologin spring
+# Dedicated non-root system user (primary group root/gid 0 so the root-owned jar
+# stays readable; java -jar needs only read access).
+RUN useradd -r -u 1001 -g root appuser
 
 WORKDIR /app
 
-# Bring only the executable jar across from the builder stage (the JDK, apt
-# caches, and any build scratch stay behind — the runtime image is JRE-only).
-COPY --from=builder /build/app.jar /app/app.jar
+# Copy ONLY the packaged fat jar. transaction-svc pins <finalName>transaction-svc</finalName>,
+# so `spring-boot-maven-plugin repackage` yields exactly target/transaction-svc.jar
+# (the non-runnable original is transaction-svc.jar.original). This exact-name COPY
+# to /app/app.jar is therefore unambiguous.
+COPY --from=build /build/services/transaction-svc/target/transaction-svc.jar /app/app.jar
 
-# Ensure the runtime user owns its working directory and the jar.
-RUN chown -R spring:spring /app
+# Drop privileges after the copy.
+USER appuser
 
-# Drop root for everything below (and at container runtime).
-USER spring
-
-# Container-internal port. Compose publishes ${TRANSACTION_SVC_PORT:-8084}:8080
-# and sets SERVER_PORT=8080; Spring Boot binds SERVER_PORT via relaxed env
-# binding, so the app listens on 8080 to match this EXPOSE and the healthcheck
-# URL. Do NOT hardcode a different port.
+# Internal port 8080; compose maps host ${TRANSACTION_SVC_PORT:-8084}:8080 (dev only).
 EXPOSE 8080
 
-# Exec form (JSON array) so the JVM is PID 1 and receives SIGTERM directly for
-# graceful shutdown — no `sh -c` wrapper (which would break PID-1 signalling).
-# Plain `java -jar` (no Spring Boot layered-jar / jarmode extraction) is used
-# deliberately: it is bulletproof across Boot patch versions for this skeleton.
+# Image-level health mirrors the compose healthcheck / service_healthy gate.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=60s --retries=10 \
+    CMD curl -f http://localhost:8080/actuator/health || exit 1
+
+# Run the Spring Boot fat jar; runtime env injected by compose/.env.
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]
