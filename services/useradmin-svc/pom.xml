@@ -203,6 +203,9 @@
               <generateApiDocumentation>false</generateApiDocumentation>
               <generateModelDocumentation>false</generateModelDocumentation>
               <configOptions>
+                <!-- QA finding INFO-1: hide the @Generated(date=...) timestamp so the build-output
+                     Java sources are byte-deterministic across rebuilds (no committed/gated impact). -->
+                <hideGenerationTimestamp>true</hideGenerationTimestamp>
                 <!-- Generate ONLY API interfaces + models (no controllers /
                      no stub server); controllers are hand-written in src. -->
                 <interfaceOnly>true</interfaceOnly>

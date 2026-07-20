@@ -1,5 +1,7 @@
 # CardDemo Contracts - Frozen OpenAPI 3.1 Single Source of Truth (SSoT)
 
+## 1. Overview
+
 This `/contracts` directory holds the contract-first, versioned, and frozen OpenAPI 3.1
 specifications that are the single source of truth (SSoT) for the entire CardDemo walking
 skeleton (F-SKEL). The Java server interfaces (one per backend service) and the UI

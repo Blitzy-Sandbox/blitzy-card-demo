@@ -40,7 +40,15 @@ export default function MainMenu() {
               <Card variant="outlined">
                 <CardActionArea component={Link} to={option.path}>
                   <CardContent>
-                    <Typography variant="subtitle1">{option.label}</Typography>
+                    {/* Render as an <h2> (component) while keeping the subtitle1
+                        visual scale (variant): the page title from PageContainer is
+                        an <h1>, so a bare subtitle1 (which MUI maps to <h6> by
+                        default) skipped h2–h5 and failed the heading-order rule
+                        (QA Issue #2). MUI decouples variant (styling) from component
+                        (semantics), so this fixes the a11y order with no visual change. */}
+                    <Typography variant="subtitle1" component="h2">
+                      {option.label}
+                    </Typography>
                   </CardContent>
                 </CardActionArea>
               </Card>

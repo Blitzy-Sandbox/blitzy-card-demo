@@ -191,6 +191,9 @@
                             <generateSupportingFiles>true</generateSupportingFiles>
                             <supportingFilesToGenerate>ApiUtil.java</supportingFilesToGenerate>
                             <configOptions>
+                                <!-- QA finding INFO-1: hide the @Generated(date=...) timestamp so the build-output
+                                     Java sources are byte-deterministic across rebuilds (no committed/gated impact). -->
+                                <hideGenerationTimestamp>true</hideGenerationTimestamp>
                                 <!-- API interfaces + models, no controller stubs. -->
                                 <interfaceOnly>true</interfaceOnly>
                                 <!-- jakarta.* imports (Spring Boot 3 / Jakarta EE 10). -->

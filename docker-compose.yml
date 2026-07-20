@@ -242,7 +242,7 @@ services:
     networks:
       - carddemo-net
 
-  # payment-svc — typed-stub Bill-Payment bounded context.  [SRC: COBIL00C | TRANSACT]
+  # payment-svc — typed-stub Bill-Payment bounded context.  [SRC: COBIL00C | ACCTDAT]
   # Build context is the REPO ROOT (in-image codegen COPYies /contracts).
   payment-svc:
     build:
@@ -371,7 +371,13 @@ services:
     healthcheck:
       # Optional (not required by the run contract, nothing depends on ui). Uses
       # busybox wget shipped in nginx:alpine to confirm the static server answers.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:80/ || exit 1"]
+      # Probe the EXPLICIT IPv4 loopback (127.0.0.1), NOT `localhost`: inside the
+      # container `localhost` resolves to ::1 (IPv6) first, but nginx binds IPv4
+      # 0.0.0.0:80 only (ui/nginx.conf `listen 80;`), so a `localhost` probe hits
+      # [::1]:80 and is refused — leaving the container perpetually `unhealthy`
+      # and breaking `docker compose up --wait`. 127.0.0.1 is deterministic and
+      # always reaches the served IPv4 socket.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5

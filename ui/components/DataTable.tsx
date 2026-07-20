@@ -152,7 +152,27 @@ export function DataTable<T>({
 
   return (
     <Box sx={sx}>
-      <TableContainer component={Paper}>
+      <TableContainer
+        component={Paper}
+        // Constrain the scroll container so a wide table (e.g. the 4-column
+        // Transaction / User lists at narrow viewports) scrolls horizontally
+        // WITHIN this container instead of forcing the flex `<main>` ancestor
+        // wider than the viewport, which produced document-level horizontal
+        // overflow at 375px (QA responsive finding on /transactions).
+        //
+        // Why this exact idiom: `<main>` (the app shell content region) is a
+        // flex item with the default `min-width: auto`, so its minimum size is
+        // its min-content size — which, without this rule, is the table's
+        // intrinsic min-content width. `width: 0` stops that intrinsic width
+        // from propagating up (the container contributes a 0 basis), so `<main>`
+        // stays viewport-width; `minWidth: '100%'` keeps the container rendered
+        // full-width within that now-constrained space; and `overflowX: 'auto'`
+        // restores horizontal scrolling for the table itself.
+        //
+        // Design-system compliant: `0`, `100%`, and `auto` are structural values
+        // (token-exempt) — no hardcoded spacing/color is introduced.
+        sx={{ width: 0, minWidth: '100%', overflowX: 'auto' }}
+      >
         <Table size={dense ? 'small' : 'medium'} aria-label={ariaLabel}>
           <TableHead>
             <TableRow>

@@ -15,7 +15,7 @@ name: CI
 # Trigger on pushes to main, on every pull request, and on manual dispatch.
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request: {}
   workflow_dispatch: {}
 
@@ -56,6 +56,43 @@ jobs:
       #    /ui must all be present.
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # 1b. Contract SSoT drift guard (QA-011-F1). The frozen OpenAPI 3.1 specs
+      #     under /contracts are the single source of truth (AAP 0.4): "a contract
+      #     mismatch fails the build rather than surfacing at runtime". Only the
+      #     bff vendors a byte-identical module-local copy of its contract (at
+      #     services/bff/src/main/resources/openapi/bff.openapi.yaml) because its
+      #     Docker build context (./services/bff) excludes the repo-root
+      #     /contracts; the other 7 services read ../../contracts/<svc>.openapi.yaml
+      #     directly and cannot drift. This step fails the build if ANY such
+      #     vendored copy diverges from its frozen /contracts counterpart, so drift
+      #     is caught here at build time instead of leaking weaker generated
+      #     validation into the running service (the regression fixed in QA-011-F1).
+      - name: Verify vendored OpenAPI specs match frozen /contracts SSoT
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          drift=0
+          for vendored in services/*/src/main/resources/openapi/*.openapi.yaml; do
+            frozen="contracts/$(basename "$vendored")"
+            if [ ! -f "$frozen" ]; then
+              echo "::error file=$vendored::No frozen SSoT counterpart at $frozen"
+              drift=1
+              continue
+            fi
+            if cmp -s "$frozen" "$vendored"; then
+              echo "OK: $vendored is byte-identical to $frozen"
+            else
+              echo "::error file=$vendored::Contract SSoT drift — $vendored differs from frozen $frozen"
+              diff -u "$frozen" "$vendored" || true
+              drift=1
+            fi
+          done
+          if [ "$drift" -ne 0 ]; then
+            echo "Contract SSoT drift detected. Re-sync the vendored copy: cp <frozen-contract> <vendored-copy>."
+            exit 1
+          fi
+          echo "All vendored OpenAPI specs are byte-identical to the frozen /contracts SSoT."
 
       # 2. Java 21 (Temurin) toolchain for the Maven reactor. `cache: maven` is
       #    safe — the reactor pom.xml + module poms provide a stable cache key.

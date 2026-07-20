@@ -1,9 +1,7 @@
-import { useState } from 'react';
 import {
   Box,
   Divider,
   Drawer,
-  IconButton,
   List,
   ListItem,
   ListItemButton,
@@ -11,9 +9,9 @@ import {
   ListItemText,
   Toolbar,
 } from '@mui/material';
-import MenuIcon from '@mui/icons-material/Menu';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 import { ADMIN_NAV_ITEM, MAIN_MENU_ITEMS, type NavItem } from './navItems';
+import { drawerStore, useDrawerOpen } from './drawerState';
 
 /**
  * NavMenu — the primary CardDemo navigation.
@@ -23,15 +21,24 @@ import { ADMIN_NAV_ITEM, MAIN_MENU_ITEMS, type NavItem } from './navItems';
  *     ({@link MAIN_MENU_ITEMS} = the canonical 10 options; {@link ADMIN_NAV_ITEM}
  *     kept in its own section as a separate administrative flow). No route data
  *     is duplicated here or in MainMenu.
- *   • M21 — responsive: a `temporary` Drawer with an accessible toggle at the
- *     xs/sm breakpoints, and a `permanent` Drawer at md+ (so mobile is no longer
- *     obstructed by an always-open 240px rail).
+ *   • M21 — responsive: a `temporary` Drawer at the xs/sm breakpoints and a
+ *     `permanent` Drawer at md+ (so mobile is no longer obstructed by an
+ *     always-open 240px rail).
  *   • M22 — accessibility: the list lives inside a labeled `<nav>` landmark, each
  *     item is a real router link (`ListItemButton` backed by react-router
  *     `Link`), and the current route is marked with `aria-current="page"`.
+ *   • Hamburger/AppBar-title overlap (QA responsive finding): the mobile
+ *     open/close toggle is NO LONGER a free-floating, fixed-position button
+ *     layered over the AppBar title. NavMenu now OWNS the Drawer only; the toggle
+ *     lives inside the AppBar `Toolbar` ({@link ./Header.Header}), the standard
+ *     MUI responsive-AppBar pattern. The two are decoupled through the shared
+ *     {@link ./drawerState.drawerStore} module store, so the AppBar button and
+ *     this Drawer stay in sync without lifting state into `AppShell`.
  *
- * The component is self-contained (the app shell / header is not yet built): it
- * owns its own mobile toggle rather than depending on an AppBar hamburger.
+ * The temporary Drawer's open state is read from the shared store via
+ * {@link useDrawerOpen}; closing (backdrop click, Escape, or selecting an item)
+ * calls {@link drawerStore.close}. MUI's temporary Drawer (a Modal) still
+ * handles Escape-to-close and focus restoration to the invoking toggle.
  */
 
 /**
@@ -43,10 +50,11 @@ const DRAWER_WIDTH_UNITS = 30;
 
 export function NavMenu() {
   const { pathname } = useLocation();
-  const [mobileOpen, setMobileOpen] = useState(false);
+  // Mobile Drawer open state is shared with the AppBar toggle (Header) via the
+  // module store, so the two sibling components stay in sync without a Provider.
+  const mobileOpen = useDrawerOpen();
 
-  const toggleMobile = () => setMobileOpen((open) => !open);
-  const closeMobile = () => setMobileOpen(false);
+  const closeMobile = () => drawerStore.close();
 
   /** Render one navigation entry as a RouterLink-backed, a11y-correct list item. */
   const renderItem = (item: NavItem) => {
@@ -75,9 +83,14 @@ export function NavMenu() {
   // the separate Admin flow — all inside a single labeled <nav> landmark.
   const navContent = (
     <>
-      {/* Spacer offsetting the (future) fixed AppBar so the list starts below it. */}
+      {/* Spacer offsetting the fixed AppBar so the list starts below it. */}
       <Toolbar />
-      <Box component="nav" aria-label="Primary navigation" sx={{ overflow: 'auto' }}>
+      <Box
+        component="nav"
+        id="primary-navigation"
+        aria-label="Primary navigation"
+        sx={{ overflow: 'auto' }}
+      >
         <List>{MAIN_MENU_ITEMS.map(renderItem)}</List>
         <Divider />
         {/* Admin is a distinct administrative flow, not one of the canonical 10. */}
@@ -88,24 +101,8 @@ export function NavMenu() {
 
   return (
     <>
-      {/* Mobile-only toggle (xs/sm). Hidden at md+ where the permanent rail shows.
-          Carries an explicit aria-label and aria-expanded for assistive tech. */}
-      <IconButton
-        aria-label="Open navigation menu"
-        aria-expanded={mobileOpen}
-        onClick={toggleMobile}
-        sx={(theme) => ({
-          display: { xs: 'inline-flex', md: 'none' },
-          position: 'fixed',
-          top: theme.spacing(1),
-          left: theme.spacing(1),
-          zIndex: theme.zIndex.drawer + 1,
-        })}
-      >
-        <MenuIcon />
-      </IconButton>
-
-      {/* Temporary Drawer for xs/sm — opened by the toggle, dismissible. */}
+      {/* Temporary Drawer for xs/sm — opened by the AppBar toggle (Header), which
+          shares state through the drawer store; dismissible via backdrop/Escape. */}
       <Drawer
         variant="temporary"
         open={mobileOpen}
