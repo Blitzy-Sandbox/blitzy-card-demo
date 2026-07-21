@@ -1,0 +1,96 @@
+# account-svc — CardDemo walking skeleton
+# Typed-stub account service (request-serving, health-gated; endpoints are [DEFERRED] typed placeholders).
+# Provenance: [SRC: COACTVWC/COACTUPC | ACCTDAT] (legacy Account View CAVW->COACTVWC and Account Update
+# CAUP->COACTUPC over the ACCTDAT VSAM KSDS).
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: account-svc
+  mvc:
+    # RFC 7807 problem details: render Spring MVC-handled errors (e.g. body-validation
+    # MethodArgumentNotValidException, 415/405/404) as application/problem+json, matching
+    # the contract-declared error content type. Path/query-parameter ConstraintViolationException
+    # is mapped to a 400 problem+json by the sibling web/GlobalExceptionHandler.
+    problemdetails:
+      enabled: true
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # No secret is committed: the datasource password has an EMPTY default and MUST be supplied by the
+    # environment (docker-compose / .env APP_USER_PASSWORD). An unset password fails the DB connection
+    # rather than silently using a baked-in credential (CWE-798).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.
+      # The dedicated /db docker-compose Flyway step owns all DDL + seed data.
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        # Set explicitly so the EntityManagerFactory does NOT require a live DB connection
+        # to auto-detect the dialect at startup. Oracle 23ai -> OracleDialect.
+        dialect: org.hibernate.dialect.OracleDialect
+  flyway:
+    # DISABLED: the dedicated /db docker-compose Flyway step owns migrations. In-service Flyway
+    # MUST stay OFF to avoid double-migration / schema-history conflicts. (Compose also injects false.)
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.) so a contract-invalid
+      # request body is rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # /actuator/health backs the docker-compose healthcheck and the service_healthy gate.
+      probes:
+        enabled: true
+      # Base default; the `local` profile document below overrides this to `always`.
+      show-details: when_authorized
+
+# Correlation-ID header name consumed by the sibling config/CorrelationIdFilter (OncePerRequestFilter + MDC).
+# The property key is `carddemo.correlation.header`, standardized across every service so the filter reads
+# it via @Value("${carddemo.correlation.header:X-Correlation-ID}") and writes the id to SLF4J MDC under key
+# `correlationId`. Overridable via the CORRELATION_HEADER environment variable.
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter under MDC key
+    # `correlationId`) on every log line, making the real UI -> BFF -> account-svc hop observable.
+    # Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:account-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+# In the docker profile every value is supplied by environment variables injected by docker-compose
+# (SPRING_DATASOURCE_URL/USERNAME/PASSWORD, SPRING_FLYWAY_ENABLED, CORRELATION_HEADER, SERVER_PORT).
+# No profile-specific overrides are required for the walking skeleton.
+
+---
+spring:
+  config:
+    activate:
+      on-profile: local
+management:
+  endpoint:
+    health:
+      # Local dev: expose full health detail (compose override also injects
+      # MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS=always as belt-and-suspenders).
+      show-details: always

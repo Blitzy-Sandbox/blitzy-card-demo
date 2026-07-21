@@ -1,5 +1,20 @@
 # CardDemo COBOL-to-Java Migration — Blitzy Project Guide
 
+!!! danger "Superseded design — NOT authoritative for the walking-skeleton run"
+    This document describes an **earlier, superseded design** — **Java 25 / Spring
+    Boot 3.5.x on PostgreSQL 16**, **AWS S3/SQS/SNS (via LocalStack)**, **Spring
+    Batch**, and a Micrometer/Jaeger/Prometheus/Grafana observability stack — and is
+    retained **only as historical context**. The **authoritative** documentation for
+    this repository is the walking-skeleton set: start at the
+    [Skeleton Overview](skeleton/README.md) and the
+    [Architecture](skeleton/architecture.md). The skeleton pins **Java 21 / Spring
+    Boot 3 on Oracle 23ai**, a **React 19 + MUI SPA + BFF** UI tier,
+    **OpenAPI-generated** clients, and a **docker-compose single-VM** deploy (see the
+    AAP §0.1.2 conflict-resolution note). Paths, commands, and component references
+    below (for example PostgreSQL migrations, AWS services, and `application-*.yml`
+    profiles) refer to that superseded design and do **not** exist in the skeleton
+    repository.
+
 ---
 
 ## 1. Executive Summary

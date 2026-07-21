@@ -1,0 +1,84 @@
+# bff — CardDemo walking skeleton
+# Backend-for-frontend (BFF): AGGREGATION ONLY, NO persistence, NO domain logic.
+# The single backend the React UI binds to. Contains the BFF half of the one live tracer:
+#   GET /api/cards/{cardNumber} -> card-svc GET /cards/{cardNumber} (real Oracle read of the seeded row).
+# Provenance: [SRC: COMEN02Y (navigation) | COCRDSLC | CARDDAT (tracer) | CARDDEMO.CSD (topology)]
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: bff
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. With this enabled, framework-handled
+      # validation failures (e.g. MethodArgumentNotValidException on request bodies) are rendered as
+      # application/problem+json 400s, matching the frozen OpenAPI contract's error shape. The sibling
+      # web/GlobalExceptionHandler additionally maps path/query ConstraintViolationException (raised by
+      # @Validated constraints on the generated API path params, e.g. AccountsApi accountId) to the
+      # same 400 problem+json envelope.
+      enabled: true
+  # Intentionally NO Spring DataSource block and NO Spring JPA block here — the BFF owns NO
+  # schema/persistence and has NO JDBC or JPA libraries on its classpath. docker-compose injects
+  # SPRING_DATASOURCE_* generically to all services; because nothing on the BFF classpath consumes
+  # them, no DataSource autoconfiguration runs and those vars are harmlessly ignored -> the context
+  # loads and starts green with no DB.
+  flyway:
+    # The BFF never migrates or owns schema; the dedicated /db docker-compose Flyway step owns it.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.) so a contract-invalid
+      # request body is rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      # Enables liveness/readiness probe groups; /actuator/health backs the
+      # docker-compose healthcheck and the `service_healthy` gate (ui depends on bff healthy).
+      probes:
+        enabled: true
+
+carddemo:
+  # Downstream service base URLs the BFF aggregates over the internal compose network.
+  # Consumed by the sibling config/OpenApiConfig RestClient bean(s) in the java/ tree.
+  services:
+    # card-svc is the LIVE tracer target for Card Detail aggregation.
+    card-svc-url: ${CARD_SVC_URL:http://card-svc:8080}
+    # auth-svc is the LIVE sign-on target. The sign-on flow (POST /api/auth/login) is a REAL hop:
+    # AuthAggregator forwards it to auth-svc POST /auth/login via the authServiceRestClient bean
+    # (config/OpenApiConfig), so auth-svc — not the BFF — is the single authority that issues the
+    # bearer token, per AAP §0.1.3 ("auth-svc ... issues a real token") and §0.4 ("the UI Sign-On
+    # posts through the BFF to auth-svc, which returns a token"). Auth remains a PERMISSIVE stub
+    # (auth-svc does no credential validation/hashing/RBAC/session), but the token hop and the
+    # correlation-ID hop are genuinely wired; the §0.8 "one live tracer" rule governs the live DATA
+    # tracer (Card Detail read), not these real service-to-service hops.
+    auth-svc-url: ${AUTH_SVC_URL:http://auth-svc:8080}
+  # Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter) on every log line,
+    # making the real UI -> BFF -> card-svc hop observable. Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:bff}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+# --- docker profile ---
+# docker-compose sets SPRING_PROFILES_ACTIVE=docker. This thin, second logical YAML document
+# activates the `docker` profile. In the docker profile every runtime value is already supplied by
+# environment variables injected by docker-compose (SERVER_PORT, SPRING_FLYWAY_ENABLED,
+# CORRELATION_HEADER, CARD_SVC_URL, AUTH_SVC_URL), so NO profile-specific overrides are required
+# for the walking skeleton. It is kept for documentation and cross-service (auth-svc) convention.
+spring:
+  config:
+    activate:
+      on-profile: docker

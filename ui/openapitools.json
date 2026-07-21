@@ -1,0 +1,22 @@
+{
+  "$schema": "./node_modules/@openapitools/openapi-generator-cli/config.schema.json",
+  "spaces": 2,
+  "generator-cli": {
+    "version": "7.23.0",
+    "generators": {
+      "bff-client": {
+        "generatorName": "typescript-axios",
+        "glob": "../contracts/bff.openapi.yaml",
+        "output": "app/api/generated",
+        "additionalProperties": {
+          "supportsES6": true,
+          "withSeparateModelsAndApi": true,
+          "apiPackage": "apis",
+          "modelPackage": "models",
+          "useSingleRequestParameter": true,
+          "enumPropertyNaming": "original"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,198 @@
+# =============================================================================
+# docker-compose.override.yml  —  LOCAL DEVELOPMENT OVERRIDES (auto-merged)
+# =============================================================================
+# Docker Compose AUTOMATICALLY merges this file ON TOP OF docker-compose.yml
+# whenever you run `docker compose up` locally (both the base file and this
+# override are loaded by default). CI, by contrast, uses ONLY the base file
+# (`docker compose -f docker-compose.yml ...`), so NOTHING here affects CI.
+#
+# This layer is ADDITIVE, LOCAL-ONLY developer ergonomics:
+#   * verbose application logging (com.carddemo at DEBUG) so the correlation-ID
+#     from each service's MDC filter shows while tracing UI -> BFF -> card-svc,
+#   * detailed Actuator health output (show-details: always) for debugging,
+#   * card-svc SQL echo so the tracer's REAL Oracle read is printed & formatted,
+#   * faster Oracle health feedback, and explicit host access to the DB and UI.
+#
+# It intentionally does NOT change any orchestration semantics — the base file
+# remains the CI-authoritative deployment unit and stays fully functional alone:
+#   * the oracle -> flyway -> request-serving services -> bff -> ui startup
+#     gating (depends_on conditions) is UNTOUCHED,
+#   * reporting-svc stays HEALTH-EXEMPT (no healthcheck, no port, not gated),
+#   * the ONE live tracer chain  ui -> bff -> card-svc -> Oracle FREEPDB1  is
+#     unaffected,
+#   * in-service Flyway stays DISABLED (SPRING_FLYWAY_ENABLED=false); the
+#     dedicated one-shot `flyway` step remains the sole owner of migrations.
+#
+# This override also OWNS the local-dev host ports for the DB, the domain
+# services and the bff. The base file (P4-M14) keeps those INTERNAL and publishes
+# only the ui ingress; re-adding the host bindings here (auto-merged locally,
+# absent in CI) preserves developer ergonomics without exposing the private
+# topology in CI/production.
+#
+# Conventions matched to the base file: the obsolete top-level `version:` key is
+# intentionally OMITTED; the SAME service names are used (no new services or
+# required infrastructure); and every interpolated variable referenced here
+# (ORACLE_PORT, AUTH_SVC_PORT, ACCOUNT_SVC_PORT, CARD_SVC_PORT,
+# TRANSACTION_SVC_PORT, PAYMENT_SVC_PORT, USERADMIN_SVC_PORT, BFF_PORT, UI_PORT)
+# is defined in /.env.example. The 8 Spring Boot bounded contexts and the Oracle
+# data layer derive from the legacy CICS registrations in app/csd/CARDDEMO.CSD
+# [SRC: CARDDEMO.CSD].
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # DATA LAYER — oracle: faster local health feedback + explicit host DB access
+  # ===========================================================================
+  oracle:
+    # Publish the listener so local DB tools (SQL*Plus, SQLcl, DBeaver, IntelliJ
+    # Database, ...) can reach FREEPDB1 at localhost:${ORACLE_PORT}. The BASE file
+    # keeps this port INTERNAL (P4-M14: only the ui ingress is published there);
+    # this override re-adds the host binding for LOCAL DEV ONLY, so CI/production
+    # (base-only) never exposes the database off the private network.
+    ports:
+      - "${ORACLE_PORT:-1521}:1521"
+    # Poll more frequently and shorten the start grace so a locally-cached image
+    # is reported healthy sooner, giving faster `docker compose up` feedback.
+    # retries stays HIGH so a cold first boot (datafile creation can take
+    # ~1-2 minutes) still has a generous window (30s grace + 40 x 5s = 230s) and
+    # never fails prematurely. A health probe that SUCCEEDS during start_period
+    # marks the container healthy immediately, so this only speeds up the happy
+    # path without weakening the cold-boot safety margin.
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+      start_period: 30s
+
+  # ===========================================================================
+  # REQUEST-SERVING SPRING BOOT SERVICES — dev logging + detailed health
+  #                                        + LOCAL host port access
+  # ---------------------------------------------------------------------------
+  # The BASE file keeps every domain service AND the bff INTERNAL (P4-M14: only
+  # the ui ingress is published there, and the SPA reaches the bff through the ui
+  # container's nginx proxy over the private network). This override re-adds a
+  # distinct host port per service for LOCAL DEV ONLY — direct curl/Postman
+  # access and pointing `npm run dev` at the bff at localhost:${BFF_PORT}. Because
+  # CI uses ONLY the base file, these host bindings never exist in CI/production.
+  # Host->container mapping (container SERVER_PORT is 8080 for all): auth 8081,
+  # account 8082, card 8083, transaction 8084, payment 8085, useradmin 8086,
+  # bff 8080. Every variable/default matches /.env.example.
+  #
+  # Docker Compose MERGES `environment` maps, so the base file's shared
+  # datasource-env (SPRING_DATASOURCE_URL/USERNAME/PASSWORD, CORRELATION_HEADER,
+  # SERVER_PORT, TZ) is PRESERVED; the keys below are added / overridden on top.
+  #   * SPRING_PROFILES_ACTIVE: local  -> activates each service's `local`
+  #     profile document where present (e.g. account-svc -> health show-details:
+  #     always); datasource/JPA config is profile-independent + env-injected, so
+  #     the DB connection is unaffected by the profile switch.
+  #   * MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always -> full Actuator health
+  #     detail locally (belt-and-suspenders alongside the `local` profile).
+  #   * LOGGING_LEVEL_COM_CARDDEMO: DEBUG -> verbose app logs; the MDC filter's
+  #     correlation id appears on every line, making the real hop observable.
+  #   * SPRING_FLYWAY_ENABLED: "false" -> KEEP in-service Flyway disabled; the
+  #     dedicated compose `flyway` step still owns all migrations locally too.
+  # ===========================================================================
+
+  # auth-svc — permissive Sign-On stub (real token + correlation-ID hop).
+  auth-svc:
+    ports:
+      - "${AUTH_SVC_PORT:-8081}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # account-svc — typed-stub Account bounded context.
+  account-svc:
+    ports:
+      - "${ACCOUNT_SVC_PORT:-8082}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # card-svc — THE ONE LIVE TRACER read service. Additionally echoes the real
+  # Oracle SELECT it issues (show + format SQL) so the seeded-row read shows
+  # in local logs. This does NOT alter behaviour, only logging verbosity.
+  card-svc:
+    ports:
+      - "${CARD_SVC_PORT:-8083}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_JPA_SHOW_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # transaction-svc — typed-stub Transaction bounded context.
+  transaction-svc:
+    ports:
+      - "${TRANSACTION_SVC_PORT:-8084}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # payment-svc — typed-stub Bill-Payment bounded context.
+  payment-svc:
+    ports:
+      - "${PAYMENT_SVC_PORT:-8085}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # useradmin-svc — typed-stub User-Admin bounded context.
+  useradmin-svc:
+    ports:
+      - "${USERADMIN_SVC_PORT:-8086}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # bff — thin backend-for-frontend the SPA binds to; fronts the live tracer.
+  bff:
+    ports:
+      - "${BFF_PORT:-8080}:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # ===========================================================================
+  # ASYNC JOB STUB (HEALTH-EXEMPT) — reporting-svc
+  # ---------------------------------------------------------------------------
+  # Verbose logging ONLY, so its stub job handler is observable when invoked.
+  # Deliberately NO healthcheck, NO published host port, and NO SERVER_PORT are
+  # added here: reporting-svc must remain health-exempt and outside the
+  # service_healthy gating chain, exactly as in the base file.
+  # ===========================================================================
+  reporting-svc:
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      LOGGING_LEVEL_COM_CARDDEMO: DEBUG
+      SPRING_FLYWAY_ENABLED: "false"
+
+  # ===========================================================================
+  # UI (React 19 + MUI SPA, served by nginx) — explicit host access
+  # ---------------------------------------------------------------------------
+  # ui is the ONE approved ingress the BASE file already publishes (P4-M14), so
+  # unlike the domain services above this is NOT re-adding an internalized port —
+  # it merely re-states the SAME mapping so the SPA stays reachable at
+  # localhost:${UI_PORT} for the local browser (identical mapping -> no new
+  # binding). The image serves a STATIC nginx build, so hot-reload source bind
+  # mounts are intentionally OUT OF SCOPE for this skeleton — none are added.
+  # ===========================================================================
+  ui:
+    ports:
+      - "${UI_PORT:-3000}:80"

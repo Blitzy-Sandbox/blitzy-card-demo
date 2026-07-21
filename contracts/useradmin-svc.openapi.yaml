@@ -1,0 +1,620 @@
+# =============================================================================
+# CardDemo Walking Skeleton - useradmin-svc OpenAPI 3.1 contract (FROZEN SSoT)
+# -----------------------------------------------------------------------------
+# Provenance: [SRC: COUSR00C-03C, COADM01C | USRSEC]
+#   CU00 -> COUSR00C (User List)    CU01 -> COUSR01C (User Add)
+#   CU02 -> COUSR02C (User Update)  CU03 -> COUSR03C (User Delete)
+#   CA00 -> COADM01C (Admin Menu)
+# User records mirror SEC-USER-DATA [app/cpy/CSUSR01Y.cpy]; admin-menu options
+# derive from [app/cpy/COADM02Y.cpy]; add-form fields from [app/bms/COUSR01.bms].
+#
+# [DEFERRED] Every operation is a TYPED STUB. This contract is the single source
+# of truth and is FROZEN after this run. Java server interfaces (generatorName
+# = spring, interfaceOnly=true) and the UI TypeScript client are generated from
+# this file and are never hand-edited. The password field is accepted on input
+# only and is NEVER returned in any response.
+# =============================================================================
+openapi: 3.1.0
+info:
+  title: User Admin Service API
+  version: 1.0.0
+  description: |
+    Frozen OpenAPI 3.1 single-source-of-truth (SSoT) contract for the CardDemo
+    **useradmin-svc** bounded context: user administration (list, add, update,
+    delete) plus the admin menu.
+
+    **Provenance:** `[SRC: COUSR00C-03C, COADM01C | USRSEC]`
+      - User List   - `CU00 -> COUSR00C`
+      - User Add    - `CU01 -> COUSR01C`
+      - User Update - `CU02 -> COUSR02C`
+      - User Delete - `CU03 -> COUSR03C`
+      - Admin Menu  - `CA00 -> COADM01C`
+
+    User records mirror `SEC-USER-DATA` [app/cpy/CSUSR01Y.cpy] and are persisted
+    in the `USRSEC` VSAM KSDS in the legacy system. Admin-menu options derive
+    from [app/cpy/COADM02Y.cpy].
+
+    **[DEFERRED]** - All operations in this contract are typed stubs. The
+    walking skeleton exposes the frozen contract and returns typed placeholder
+    responses only; no user-administration business logic is implemented in this
+    run (AAP 0.7.2). The `password` field is accepted on input only and is
+    **never** returned in any response.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8086
+    description: Local useradmin-svc instance (USERADMIN_SVC_PORT=8086).
+  - url: /
+    description: Relative base path (when fronted by the BFF / gateway).
+tags:
+  - name: Users
+    description: User administration operations - list, add, update, delete. [DEFERRED]
+  - name: Admin
+    description: Admin menu options. [DEFERRED]
+  - name: Health
+    description: Service liveness/readiness (served by Spring Boot Actuator).
+security:
+  - bearerAuth: []
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      summary: List users
+      description: |
+        List users with pagination. `[SRC: COUSR00C | USRSEC]` `[DEFERRED]` - typed stub;
+        returns a typed placeholder `UserListResponse` and performs no `USRSEC`
+        read in the walking skeleton.
+      tags:
+        - Users
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+        - name: page
+          in: query
+          required: false
+          description: Zero-based page index.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 0
+        - name: size
+          in: query
+          required: false
+          description: Number of users per page.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        '200':
+          description: A page of users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    post:
+      operationId: createUser
+      summary: Create a user
+      description: |
+        Add a new user. `[SRC: COUSR01C | USRSEC]` `[DEFERRED]` - typed stub; returns a
+        typed placeholder `User`. The `password` is accepted on input only and
+        is never returned.
+      tags:
+        - Users
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserCreateRequest'
+      responses:
+        '201':
+          description: The user was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /users/{userId}:
+    get:
+      operationId: getUser
+      summary: Get a user by ID
+      description: |
+        Retrieve a single user by `userId`. `[DEFERRED]` - typed stub; returns a
+        typed placeholder `User`.
+      tags:
+        - Users
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '200':
+          description: The requested user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    put:
+      operationId: updateUser
+      summary: Update a user
+      description: |
+        Update an existing user identified by `userId`. `[SRC: COUSR02C | USRSEC]`
+        `[DEFERRED]` - typed stub; returns a typed placeholder `User`. The
+        `password` is optional (supply only when changing) and is never returned.
+      tags:
+        - Users
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+        - $ref: '#/components/parameters/UserIdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserUpdateRequest'
+      responses:
+        '200':
+          description: The updated user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    delete:
+      operationId: deleteUser
+      summary: Delete a user
+      description: |
+        Delete the user identified by `userId`. `[SRC: COUSR03C | USRSEC]` `[DEFERRED]` -
+        typed stub; performs no deletion in the walking skeleton.
+      tags:
+        - Users
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+        - $ref: '#/components/parameters/UserIdPath'
+      responses:
+        '204':
+          description: The user was deleted (no content).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /admin/menu:
+    get:
+      operationId: getAdminMenu
+      summary: Get the admin menu
+      description: |
+        Return the four admin menu options. `[SRC: COADM01C | COADM02Y]`
+        `[DEFERRED]` - typed stub; returns a typed placeholder
+        `AdminMenuResponse`.
+      tags:
+        - Admin
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: The admin menu options.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminMenuResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator/health:
+    get:
+      operationId: healthCheck
+      summary: Service health
+      description: |
+        Liveness/readiness probe used by docker-compose `service_healthy`
+        gating.
+
+        NOTE: The generated Health API interface MUST be left UNIMPLEMENTED -
+        Spring Boot Actuator serves `/actuator/health`; do NOT write a
+        controller for it.
+      tags:
+        - Health
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationIdHeader'
+      responses:
+        '200':
+          description: The service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        Bearer token issued by `auth-svc` (a permissive stub in the walking
+        skeleton). The token is carried on every business request; the
+        correlation-ID hop is real even though credential validation is stubbed.
+  parameters:
+    CorrelationIdHeader:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: |
+        Correlation identifier propagated across the UI -> BFF -> domain-service
+        chain and placed into the SLF4J MDC for distributed trace logging. When
+        omitted, the service generates one.
+      schema:
+        type: string
+        examples:
+          - 6f9619ff-8b86-d011-b42d-00cf4fc964ff
+    UserIdPath:
+      name: userId
+      in: path
+      required: true
+      description: User identifier (SEC-USR-ID, PIC X(8)).
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 8
+        examples:
+          - USER0001
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /users
+            correlationId: 6f9619ff-8b86-d011-b42d-00cf4fc964ff
+    NotFound:
+      description: The requested user was not found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: A user with the supplied userId already exists.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: An unexpected internal server error occurred.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    User:
+      type: object
+      description: |
+        A user account (response shape). Mirrors `SEC-USER-DATA`
+        [app/cpy/CSUSR01Y.cpy]. The password (`SEC-USR-PWD`) is intentionally
+        omitted and is never exposed in any response.
+      required:
+        - userId
+        - firstName
+        - lastName
+        - userType
+      properties:
+        userId:
+          type: string
+          maxLength: 8
+          description: User identifier (SEC-USR-ID, PIC X(8)).
+          examples:
+            - ADMIN001
+        firstName:
+          type: string
+          maxLength: 20
+          description: First name (SEC-USR-FNAME, PIC X(20)).
+          examples:
+            - Grace
+        lastName:
+          type: string
+          maxLength: 20
+          description: Last name (SEC-USR-LNAME, PIC X(20)).
+          examples:
+            - Hopper
+        userType:
+          type: string
+          # NOTE: userType is fully constrained by the enum below (single-character
+          # values A|U). The redundant `maxLength: 1` was intentionally removed: the
+          # OpenAPI 'spring' generator renders maxLength as jakarta `@Size(max = 1)`,
+          # which is INVALID on the generated enum-typed getter and throws
+          # jakarta.validation.UnexpectedTypeException (HV000030) during @Valid
+          # request-body validation. The enum alone preserves the SEC-USR-TYPE PIC X(1)
+          # domain (A=Admin, U=User) without any behavioural change.
+          enum:
+            - A
+            - U
+          description: User type (SEC-USR-TYPE, PIC X(1)); A=Admin, U=User.
+          examples:
+            - A
+    UserCreateRequest:
+      type: object
+      description: |
+        Payload to create a new user (User Add, `[SRC: COUSR01C | USRSEC]`). The
+        `password` is accepted on input only and is never echoed in responses.
+      required:
+        - userId
+        - firstName
+        - lastName
+        - password
+        - userType
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: User identifier (SEC-USR-ID, PIC X(8)).
+          examples:
+            - USER0001
+        firstName:
+          type: string
+          maxLength: 20
+          description: First name (SEC-USR-FNAME, PIC X(20)).
+          examples:
+            - Grace
+        lastName:
+          type: string
+          maxLength: 20
+          description: Last name (SEC-USR-LNAME, PIC X(20)).
+          examples:
+            - Hopper
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 8
+          description: |
+            Initial password (SEC-USR-PWD, PIC X(8)). Input only; never returned
+            in any response.
+          examples:
+            - Pass123
+        userType:
+          type: string
+          # NOTE: redundant `maxLength: 1` removed — see the User.userType note. The
+          # enum below fully constrains the SEC-USR-TYPE PIC X(1) domain (A|U); rendering
+          # maxLength as `@Size` on the generated enum getter would throw HV000030
+          # (UnexpectedTypeException) during @Valid request-body validation.
+          enum:
+            - A
+            - U
+          description: User type (SEC-USR-TYPE, PIC X(1)); A=Admin, U=User.
+          examples:
+            - U
+    UserUpdateRequest:
+      type: object
+      description: |
+        Payload to update an existing user (User Update, `[SRC: COUSR02C | USRSEC]`). The
+        `userId` is supplied via the path and is not part of the body. The
+        `password` is optional - supply it only when changing it - and is never
+        returned in any response.
+      required:
+        - firstName
+        - lastName
+        - userType
+      properties:
+        firstName:
+          type: string
+          maxLength: 20
+          description: First name (SEC-USR-FNAME, PIC X(20)).
+          examples:
+            - Grace
+        lastName:
+          type: string
+          maxLength: 20
+          description: Last name (SEC-USR-LNAME, PIC X(20)).
+          examples:
+            - Hopper
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 8
+          description: |
+            New password (SEC-USR-PWD, PIC X(8)). Optional; supply only to change
+            it. Input only; never returned.
+          examples:
+            - Pass123
+        userType:
+          type: string
+          # NOTE: redundant `maxLength: 1` removed — see the User.userType note. The
+          # enum below fully constrains the SEC-USR-TYPE PIC X(1) domain (A|U); rendering
+          # maxLength as `@Size` on the generated enum getter would throw HV000030
+          # (UnexpectedTypeException) during @Valid request-body validation.
+          enum:
+            - A
+            - U
+          description: User type (SEC-USR-TYPE, PIC X(1)); A=Admin, U=User.
+          examples:
+            - U
+    UserListResponse:
+      type: object
+      description: A paginated page of users.
+      required:
+        - items
+        - page
+        - size
+        - totalItems
+        - totalPages
+      properties:
+        items:
+          type: array
+          description: The users on this page.
+          items:
+            $ref: '#/components/schemas/User'
+        page:
+          type: integer
+          format: int32
+          description: Zero-based index of this page.
+          examples:
+            - 0
+        size:
+          type: integer
+          format: int32
+          description: Requested page size.
+          examples:
+            - 20
+        totalItems:
+          type: integer
+          format: int64
+          description: Total number of users across all pages.
+          examples:
+            - 0
+        totalPages:
+          type: integer
+          format: int32
+          description: Total number of pages available.
+          examples:
+            - 0
+    MenuOption:
+      type: object
+      description: |
+        A single admin-menu option. Mirrors `CDEMO-ADMIN-OPT`
+        [app/cpy/COADM02Y.cpy].
+      required:
+        - optionNumber
+        - label
+        - targetProgram
+      properties:
+        optionNumber:
+          type: integer
+          format: int32
+          description: 1-based option number (CDEMO-ADMIN-OPT-NUM).
+          examples:
+            - 1
+        label:
+          type: string
+          maxLength: 35
+          description: Human-readable option label (CDEMO-ADMIN-OPT-NAME, PIC X(35)).
+          examples:
+            - User List (Security)
+        targetProgram:
+          type: string
+          maxLength: 8
+          description: Target legacy program (CDEMO-ADMIN-OPT-PGMNAME, PIC X(8)).
+          examples:
+            - COUSR00C
+    AdminMenuResponse:
+      type: object
+      description: |
+        The admin menu. Contains the four options defined in
+        [app/cpy/COADM02Y.cpy]: User List, User Add, User Update, User Delete.
+      required:
+        - options
+      properties:
+        options:
+          type: array
+          description: The admin menu options.
+          items:
+            $ref: '#/components/schemas/MenuOption'
+    Error:
+      type: object
+      description: |
+        RFC 7807 problem detail, returned as `application/problem+json` for all
+        error responses.
+      required:
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          default: about:blank
+          description: A URI reference identifying the problem type.
+          examples:
+            - about:blank
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+          examples:
+            - Bad Request
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code for this occurrence of the problem.
+          examples:
+            - 400
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence.
+          examples:
+            - Validation failed for field 'userType'.
+        instance:
+          type: string
+          format: uri-reference
+          description: A URI reference identifying the specific occurrence.
+          examples:
+            - /users
+        correlationId:
+          type: string
+          format: uuid
+          description: The X-Correlation-ID echoed for cross-service traceability.
+          examples:
+            - 6f9619ff-8b86-d011-b42d-00cf4fc964ff
+    HealthStatus:
+      type: object
+      description: |
+        Spring Boot Actuator health payload.
+
+        NOTE: The generated Health API interface MUST be left UNIMPLEMENTED -
+        Actuator serves `/actuator/health`; do NOT write a controller for it.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          description: Aggregate health status reported by Actuator.
+          examples:
+            - UP
+

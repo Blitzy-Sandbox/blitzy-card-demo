@@ -1,0 +1,45 @@
+# =============================================================================
+# CardDemo Walking Skeleton — root .gitignore
+# -----------------------------------------------------------------------------
+# Keeps real secrets and build artifacts out of version control while preserving
+# the committed "*.example" templates. Patterns WITHOUT a leading slash match at
+# any depth, so (for example) ".env.local" is ignored under /ui as well as at the
+# repository root, and "!.env.example" re-includes the template wherever it lives
+# (both ./.env.example and ./ui/.env.example).
+# =============================================================================
+
+# ---- Secrets / environment files (NEVER commit real values) ----
+# Ignore concrete dotenv files everywhere; keep only the committed templates.
+# `cp .env.example .env` (or `ui/.env.local`) produces an ignored file so real
+# credentials cannot be committed by accident (findings M01 / M07, CWE-798).
+.env
+.env.*
+!.env.example
+# Vite/Node per-developer local overrides (root and /ui): .env.local,
+# .env.development.local, etc.
+*.local
+
+# ---- Node / UI build artifacts ----
+node_modules/
+dist/
+.vite/
+# Production source maps are disabled in ui/vite.config.ts and additionally
+# stripped from the nginx image at build time (finding M05); ignore any that a
+# local/debug build may still emit so they never reach version control.
+*.map
+*.tsbuildinfo
+
+# ---- Java / Maven build artifacts ----
+target/
+*.class
+
+# ---- Logs & OS / editor cruft ----
+*.log
+.DS_Store
+Thumbs.db
+
+# ---- Blitzy platform working artifacts (never part of the deliverable) ----
+# The Blitzy Platform writes QA logs, review artifacts, screenshots, and screen
+# recordings under ./blitzy during a run. These are transient, machine-specific
+# validation outputs — not skeleton source — so they must never be committed.
+blitzy/

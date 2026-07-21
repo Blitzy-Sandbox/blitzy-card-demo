@@ -1,0 +1,57 @@
+# card-svc — CardDemo walking skeleton
+# THE ONE LIVE TRACER service: GET /cards/{cardNumber} performs a REAL Oracle read
+# of the single seeded row in FREEPDB1 (the CARD table).
+# Provenance: [SRC: COCRDSLC | CARDDAT]
+#   app/csd/CARDDEMO.CSD  FILE(CARDDAT) DSNAME AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS  -> Oracle CARD table
+#   app/cbl/COCRDSLC.cbl  reads CARDDAT keyed on the 16-char card number           -> SELECT ... FROM CARD WHERE CARD_NUM = ?
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+spring:
+  application:
+    name: card-svc
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.OracleDialect
+  flyway:
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.) so a contract-invalid
+      # request body is rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
+
+server:
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:card-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker

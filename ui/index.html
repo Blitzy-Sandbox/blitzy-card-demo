@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="CardDemo — mainframe-modernization walking skeleton" />
+    <title>CardDemo</title>
+
+    <!-- MUI default typography: Roboto (weights 300/400/500/700 used by the MUI v9
+         theme in app/theme/theme.ts) is SELF-HOSTED via @fontsource/roboto,
+         imported in app/App.tsx. No external Google Fonts CDN <link> is used, so
+         the strict same-origin CSP in ui/nginx.conf (font-src 'self') serves the
+         fonts without a CDN allowance (finding P4-m01). -->
+  </head>
+  <body>
+    <!-- React mount node. app/main.tsx calls createRoot(document.getElementById('root')!). -->
+    <div id="root"></div>
+    <!-- Vite-root-relative ES module entry (root is ui/); bootstraps the React 19 SPA. -->
+    <script type="module" src="/app/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,13 @@
+# CardDemo Walking Skeleton — robots exclusion policy.
+#
+# This is an internal, authentication-gated modernization skeleton with no
+# public, crawlable content (every screen sits behind the permissive Sign-On
+# route guard, and the one live surface renders a seeded card detail). There is
+# nothing to index, so all well-behaved crawlers are asked to stay out.
+#
+# Shipping this valid static file (finding P5-SEO-01) means nginx serves real
+# robots text for GET /robots.txt instead of falling through to the SPA
+# index.html, which browsers/crawlers/Lighthouse parse as an invalid robots
+# document.
+User-agent: *
+Disallow: /

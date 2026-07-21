@@ -1,0 +1,77 @@
+# payment-svc — CardDemo walking skeleton
+# Bill Payment bounded-context typed-stub service (endpoints are [DEFERRED] typed placeholders).
+# Request-serving + health-gated + long-running (part of the docker-compose service_healthy chain).
+# Provenance: [SRC: COBIL00C | ACCTDAT]
+#   Legacy CICS transaction CB00 -> program COBIL00C (Bill Payment) over the ACCTDAT VSAM KSDS
+#   (DEFINE FILE(ACCTDAT) ... in app/csd/CARDDEMO.CSD). Schema itself is owned by /db, not this service.
+# All values are sane defaults that environment variables (injected by docker-compose) override.
+spring:
+  application:
+    name: payment-svc
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. With this enabled, framework-handled
+      # validation failures (e.g. MethodArgumentNotValidException on request bodies) are rendered
+      # as application/problem+json 400s, matching the frozen OpenAPI contract's error shape. The
+      # sibling web/GlobalExceptionHandler additionally maps path/query ConstraintViolationException
+      # (which the framework does NOT handle) to the same 400 problem+json envelope.
+      enabled: true
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    # No usable default: the password is REQUIRED and injected at runtime by
+    # docker-compose from .env (APP_USER_PASSWORD). An EMPTY default makes the
+    # datasource fail fast rather than run on a committed secret (finding P4-M11;
+    # matches card/account/auth/useradmin/reporting).
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    # Set explicitly so the EntityManagerFactory does NOT need a live DB connection to auto-detect
+    # the dialect at startup (spring-boot-starter-data-jpa is on the classpath but this stub has
+    # zero @Entity classes). Oracle 23ai -> OracleDialect.
+    database-platform: org.hibernate.dialect.OracleDialect
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate — /db owns DDL.
+      ddl-auto: none
+    open-in-view: false
+  flyway:
+    # DISABLED here: schema + seed are owned by /db and applied by the dedicated compose Flyway step
+    # (services depend_on flyway -> service_completed_successfully). In-service Flyway MUST stay OFF to
+    # avoid double-migration / schema-history conflicts. The flyway artifacts still exist on the classpath.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.) so a contract-invalid
+      # request body is rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
+
+server:
+  # Container-internal port; docker-compose maps host ${PAYMENT_SVC_PORT:-8085} -> container 8080.
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      # /actuator/health backs the docker-compose healthcheck; this service IS in the service_healthy chain.
+      probes:
+        enabled: true
+
+# Correlation-ID header name consumed by the sibling config/CorrelationIdFilter
+# (OncePerRequestFilter + SLF4J MDC), read via @Value("${carddemo.correlation.header:X-Correlation-ID}").
+# Standardized 'carddemo.correlation.header' key across every service in the topology
+# (auth/account/card/transaction/useradmin/reporting/bff); compose env CORRELATION_HEADER binds here
+# via relaxed binding.
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter) on every log line,
+    # making the real UI -> BFF -> payment-svc hop observable. Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:payment-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"

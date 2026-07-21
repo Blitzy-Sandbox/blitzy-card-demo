@@ -1,0 +1,402 @@
+# =============================================================================
+# docker-compose.yml  —  THE DEPLOYMENT UNIT for the CardDemo Walking Skeleton
+# =============================================================================
+# This file IS the deployment unit (AAP 0.1.1 / 0.4 / 0.8): the entire modern
+# CardDemo topology runs via docker-compose on a single Linux VM with Docker
+# Engine — NO Kubernetes, NO serverless. The same file is used locally and is
+# referenced by CI. The 8 Spring Boot bounded contexts derive from the legacy
+# CICS registrations in app/csd/CARDDEMO.CSD  [SRC: CARDDEMO.CSD].
+#
+# ORCHESTRATION / STARTUP GATING (non-negotiable, AAP 0.4 / 0.8):
+#   oracle  ──(service_healthy)──▶  flyway  ──(service_completed_successfully)──▶
+#     the 7 request-serving services  ──(each Actuator service_healthy)──▶
+#       bff  (ALSO waits for card-svc healthy)  ──▶  ui  (waits for bff healthy)
+#
+#   • Oracle 23ai (gvenzl/oracle-free) is pinned to an EXPLICIT tag via
+#     ${ORACLE_IMAGE_TAG} — never `latest`, never the moving `23`/`23-slim`
+#     major tags. Default PDB is FREEPDB1; listener on 1521.
+#   • A dedicated one-shot `flyway` step owns ALL schema + seed migrations
+#     (V1__baseline.sql then V2__seed_tracer.sql). In-service Flyway is disabled
+#     (SPRING_FLYWAY_ENABLED=false) to avoid double-migration / history conflicts.
+#   • THE ONE LIVE TRACER SLICE is  ui → bff → card-svc → Oracle FREEPDB1
+#     (a real read of the single Flyway-seeded row). Hence `bff` depends on
+#     `card-svc` being healthy and `ui` depends on `bff` being healthy.
+#   • reporting-svc is an ASYNC JOB STUB and is HEALTH-EXEMPT: it builds green
+#     and has an invokable entrypoint, but it is NOT in the service_healthy
+#     chain, has NO healthcheck, publishes NO host port, and nothing depends on
+#     it via service_healthy.
+#
+# All ${VAR} substitutions resolve from the root `.env` file (template
+# /.env.example — `cp .env.example .env` and fill in the REQUIRED secrets).
+#
+# NOTE on build contexts (now UNIFORM for every service — finding P4-M08):
+#   • context: .  (repo root) + dockerfile: services/<svc>/Dockerfile
+#       → ALL 8 Spring Boot services (auth, account, card, transaction, payment,
+#         useradmin, reporting, bff). Each runs its OpenAPI codegen + `mvn
+#         package` IN-IMAGE from the repo-root /contracts SSoT (or, for the bff,
+#         its byte-identical vendored copy), so a clean / no-cache Compose build
+#         needs NO host-built jar and starts green.
+#   • context: ./ui + dockerfile: Dockerfile  → ui (Node build → nginx serve).
+#
+# The obsolete top-level `version:` key is intentionally OMITTED (current
+# Compose Specification).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Reusable fragments (Compose extension fields — anchors only, NOT services).
+# Kept DRY so the 7 request-serving services share one identical, audited
+# datasource-env and one identical Actuator healthcheck definition.
+# -----------------------------------------------------------------------------
+
+# Spring relaxed-binding environment shared by every Spring Boot service.
+# These env vars OVERRIDE application.yml at runtime. SPRING_FLYWAY_ENABLED is
+# hard-disabled because the dedicated `flyway` step owns migrations. Datasource
+# credentials are injected here (never baked into any image). The bff has no
+# JDBC/JPA on its classpath, so the datasource keys are harmlessly ignored there.
+x-datasource-env: &datasource-env
+  SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-docker}
+  SPRING_DATASOURCE_URL: ${DB_URL}
+  SPRING_DATASOURCE_USERNAME: ${APP_USER}
+  SPRING_DATASOURCE_PASSWORD: ${APP_USER_PASSWORD}
+  SPRING_FLYWAY_ENABLED: "false"
+  CORRELATION_HEADER: ${CORRELATION_HEADER}
+  TZ: ${TZ:-UTC}
+
+# Actuator health probe used to gate every request-serving service via
+# `depends_on: condition: service_healthy`. Each service listens on 8080
+# INTERNALLY; the runtime images (eclipse-temurin:21-jre) install `curl`
+# specifically for this probe (see each service Dockerfile).
+x-actuator-healthcheck: &actuator-healthcheck
+  test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+  interval: 15s
+  timeout: 5s
+  retries: 10
+  start_period: 60s
+
+services:
+
+  # ===========================================================================
+  # DATA LAYER
+  # ===========================================================================
+
+  # Oracle Database Free 23ai. The image auto-creates the ${APP_USER} schema
+  # inside the default PDB FREEPDB1. Pinned to an explicit patch tag via
+  # ${ORACLE_IMAGE_TAG} (never a moving major tag). Its built-in healthcheck.sh
+  # drives the `service_healthy` gate for the whole topology.
+  oracle:
+    image: gvenzl/oracle-free:${ORACLE_IMAGE_TAG}
+    container_name: carddemo-oracle
+    environment:
+      # SYS/SYSTEM/PDBADMIN admin password (REQUIRED — set in .env, no default).
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD}
+      # Application schema user auto-created inside FREEPDB1.
+      APP_USER: ${APP_USER}
+      APP_USER_PASSWORD: ${APP_USER_PASSWORD}
+      TZ: ${TZ:-UTC}
+    # NO host port in the base deployment unit: Oracle stays INTERNAL to
+    # carddemo-net and is reached only by Flyway/services via container DNS
+    # (host `oracle`). Host access for local DB tools is provided by
+    # docker-compose.override.yml (LOCAL DEV ONLY; CI runs `-f docker-compose.yml`
+    # and never exposes the DB). Minimizes the attack surface (finding P4-M14).
+    volumes:
+      # Persist Oracle datafiles across restarts.
+      - oracle-data:/opt/oracle/oradata
+    healthcheck:
+      # Built-in probe shipped on PATH by the gvenzl/oracle-free image. Generous
+      # retries/start_period cover first-boot datafile creation (can take ~1–2m)
+      # so dependents only start once the DB truly accepts connections.
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 90s
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # Dedicated ONE-SHOT Flyway migration step. Applies V1__baseline.sql then
+  # V2__seed_tracer.sql to FREEPDB1, then exits 0 — gating the request-serving
+  # services via `service_completed_successfully`. It is the SINGLE owner of
+  # schema + seed; in-service Flyway is disabled everywhere else. The pinned
+  # flyway/flyway image bundles the Oracle JDBC driver (ojdbc11).
+  flyway:
+    image: flyway/flyway:${FLYWAY_IMAGE_TAG}
+    container_name: carddemo-flyway
+    depends_on:
+      oracle:
+        condition: service_healthy
+    command:
+      # The image ENTRYPOINT is `flyway`; these are its arguments only.
+      - -url=${DB_URL}
+      - -user=${APP_USER}
+      - -password=${APP_USER_PASSWORD}
+      - -connectRetries=60
+      - -locations=filesystem:/flyway/sql
+      - migrate
+    volumes:
+      # Platform-owned migrations, mounted read-only.
+      - ./db/migration:/flyway/sql:ro
+    # One-shot job: apply migrations once and exit; never restart it.
+    restart: "no"
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # REQUEST-SERVING SPRING BOOT SERVICES (7)
+  # Each: builds green, starts green as a long-running container, exposes
+  # Actuator /actuator/health, listens on 8080 internally, and waits for the
+  # Flyway migration step to complete (which transitively guarantees Oracle is
+  # healthy). Host ports come from *_PORT vars in .env.
+  # ===========================================================================
+
+  # auth-svc — permissive Sign-On stub that issues a real token and starts the
+  # correlation-ID hop.  [SRC: COSGN00C | COSGN00.bms]
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT and runs `mvn package` (self-contained -- no
+  # host-built jar), so a clean / no-cache build is green (finding P4-M08).
+  auth-svc:
+    build:
+      context: .
+      dockerfile: services/auth-svc/Dockerfile
+    image: carddemo/auth-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: reached only via the internal network
+    # (bff -> auth-svc). Dev host access is added in docker-compose.override.yml
+    # (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # account-svc — typed-stub Account bounded context.  [SRC: COACTVWC/COACTUPC | ACCTDAT]
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT (the pom's default openapi.spec ../../contracts
+  # resolves in-image), so no pre-step contract copy is needed and a clean /
+  # no-cache build is green (finding P4-M08).
+  account-svc:
+    build:
+      context: .
+      dockerfile: services/account-svc/Dockerfile
+    image: carddemo/account-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # card-svc — THE ONE LIVE TRACER read service: GET /cards/{cardNumber} does a
+  # real Oracle read of the single Flyway-seeded row.  [SRC: COCRDSLC | CARDDAT]
+  # Build context is the REPO ROOT so the in-image OpenAPI codegen can COPY the
+  # frozen /contracts SSoT (dockerfile path is repo-relative).
+  card-svc:
+    build:
+      context: .
+      dockerfile: services/card-svc/Dockerfile
+    image: carddemo/card-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: the tracer read is reached via the bff
+    # (ui -> bff -> card-svc), never directly. Dev host access is added in
+    # docker-compose.override.yml (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # transaction-svc — typed-stub Transaction bounded context.
+  # [SRC: COTRN00C/COTRN01C/COTRN02C | TRANSACT]
+  # Build context is the REPO ROOT: the in-image OpenAPI codegen COPYies the
+  # frozen /contracts SSoT and runs `mvn package` (self-contained -- no
+  # host-built jar), so a clean / no-cache build is green (finding P4-M08).
+  transaction-svc:
+    build:
+      context: .
+      dockerfile: services/transaction-svc/Dockerfile
+    image: carddemo/transaction-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # payment-svc — typed-stub Bill-Payment bounded context.  [SRC: COBIL00C | ACCTDAT]
+  # Build context is the REPO ROOT (in-image codegen COPYies /contracts).
+  payment-svc:
+    build:
+      context: .
+      dockerfile: services/payment-svc/Dockerfile
+    image: carddemo/payment-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # useradmin-svc — typed-stub User-Admin bounded context.
+  # [SRC: COUSR00C-03C/COADM01C | USRSEC]
+  # Build context is the REPO ROOT (in-image codegen COPYies /contracts).
+  useradmin-svc:
+    build:
+      context: .
+      dockerfile: services/useradmin-svc/Dockerfile
+    image: carddemo/useradmin-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+    # No host port in the base file: internal-only (fronted by the bff). Dev host
+    # access is added in docker-compose.override.yml (finding P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+  # bff — thin backend-for-frontend aggregation service and the SINGLE backend
+  # the React SPA binds to. It fronts the live tracer, so it ALSO waits for
+  # card-svc to be healthy (in addition to the Flyway gate). Downstream service
+  # base URLs are injected for the internal compose network; only CARD_SVC_URL
+  # is on the live path — the rest are stub targets for topology completeness.
+  # Build context is the REPO ROOT (uniform with every other service). The bff
+  # generates from its VENDORED in-module spec (src/main/resources/openapi/
+  # bff.openapi.yaml, kept byte-identical to /contracts/bff.openapi.yaml per
+  # P4-M01) and runs `mvn package` in-image (self-contained -- no host-built
+  # jar), so a clean / no-cache build is green (finding P4-M08).
+  bff:
+    build:
+      context: .
+      dockerfile: services/bff/Dockerfile
+    image: carddemo/bff:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+      card-svc:
+        condition: service_healthy
+    environment:
+      <<: *datasource-env
+      SERVER_PORT: "8080"
+      CARD_SVC_URL: http://card-svc:8080
+      AUTH_SVC_URL: http://auth-svc:8080
+      ACCOUNT_SVC_URL: http://account-svc:8080
+      TRANSACTION_SVC_URL: http://transaction-svc:8080
+      PAYMENT_SVC_URL: http://payment-svc:8080
+      USERADMIN_SVC_URL: http://useradmin-svc:8080
+    # No host port in the base file: the SPA reaches the bff through the ui
+    # container's nginx reverse proxy (/api/ -> http://bff:8080) over the internal
+    # network, so ONLY the ui ingress is published. Dev host access to the bff
+    # (e.g. for `npm run dev`) is added in docker-compose.override.yml (P4-M14).
+    healthcheck: *actuator-healthcheck
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+
+  # ===========================================================================
+  # ASYNC JOB STUB (HEALTH-EXEMPT)
+  # ===========================================================================
+
+  # reporting-svc: async job stub — builds green + invokable entrypoint; intentionally excluded from the service_healthy chain per the run contract.
+  # It waits only for the Flyway migration to complete (so the schema exists if a
+  # job runs), has NO healthcheck, publishes NO host port, and NOTHING depends on
+  # it via service_healthy. It is an invokable job-stub entrypoint (may run its
+  # stub handler and exit, or idle) — never held to start-and-serve.
+  # [SRC: CORPT00C, CBSTM03A/B | TRANSACT]
+  # Build context is the REPO ROOT (in-image codegen COPYies /contracts).
+  reporting-svc:
+    build:
+      context: .
+      dockerfile: services/reporting-svc/Dockerfile
+    image: carddemo/reporting-svc:local
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+    environment:
+      # Same datasource/correlation env as the serving services, MINUS SERVER_PORT
+      # (it does not serve HTTP). Flyway stays disabled in-service.
+      <<: *datasource-env
+    # One-shot / invokable job stub — do not restart it and do not health-gate it.
+    restart: "no"
+    networks:
+      - carddemo-net
+
+  # ===========================================================================
+  # UI (React 19 + MUI SPA, served by nginx)
+  # ===========================================================================
+
+  # ui: the React SPA built and served as static assets by nginx. It binds ONLY
+  # to the bff (nginx.conf reverse-proxies /api/ → http://bff:8080), so it waits
+  # for `bff` to be healthy. nginx listens on 80 internally; the host UI_PORT
+  # (default 3000) is mapped to it. Build context is the ./ui directory.
+  ui:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    image: carddemo/ui:local
+    depends_on:
+      bff:
+        condition: service_healthy
+    ports:
+      - "${UI_PORT:-3000}:80"
+    healthcheck:
+      # Optional (not required by the run contract, nothing depends on ui). Uses
+      # busybox wget shipped in nginx:alpine to confirm the static server answers.
+      # Probe the EXPLICIT IPv4 loopback (127.0.0.1), NOT `localhost`: inside the
+      # container `localhost` resolves to ::1 (IPv6) first, but nginx binds IPv4
+      # 0.0.0.0:80 only (ui/nginx.conf `listen 80;`), so a `localhost` probe hits
+      # [::1]:80 and is refused — leaving the container perpetually `unhealthy`
+      # and breaking `docker compose up --wait`. 127.0.0.1 is deterministic and
+      # always reaches the served IPv4 socket.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:80/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - carddemo-net
+
+# =============================================================================
+# NETWORKS & VOLUMES
+# =============================================================================
+
+networks:
+  # Single private bridge network shared by every service; container DNS lets
+  # services reach each other by name (e.g. the bff calls http://card-svc:8080,
+  # Flyway/services reach the DB at host `oracle`).
+  carddemo-net:
+    driver: bridge
+
+volumes:
+  # Named volume persisting Oracle datafiles across container restarts.
+  oracle-data: {}

@@ -1,0 +1,542 @@
+openapi: 3.1.0
+info:
+  title: Reporting Service API
+  version: 1.0.0
+  description: |
+    Frozen OpenAPI 3.1 single source of truth (SSoT) for the CardDemo
+    walking-skeleton `reporting-svc` bounded context.
+
+    Provenance: [SRC: CORPT00C, CBSTM03A/B | TRANSACT] — derived from the legacy
+    online Transaction Reports program (transaction `CR00` -> `CORPT00C`, screen
+    `app/bms/CORPT00.bms`) and the batch Account Statement generators
+    (`CBSTM03A.CBL` / `CBSTM03B.CBL`), all reading the `TRANSACT` dataset.
+
+    [DEFERRED]: Every operation in this contract is a typed stub. No report or
+    statement calculation logic is implemented in the walking skeleton; the
+    operations exist to freeze the contract shape and to generate typed server
+    interfaces (`ReportsApi`, `StatementsApi`) and clients.
+
+    ASYNC JOB STUB — HEALTH-EXEMPT: Unlike every other CardDemo service, this
+    service is an asynchronous job stub. It builds green and exposes invokable
+    job-submission entrypoints (turned downstream into scheduled `*JobHandler`
+    stubs) but is deliberately NOT held to the build-and-start-green /
+    start-and-serve requirement. It is therefore EXCLUDED from the
+    docker-compose `depends_on: condition: service_healthy` chain, publishes no
+    fixed host port, and — by design — this contract intentionally defines NO
+    `/actuator/health` path and NO health-status schema.
+
+    Report and statement submissions follow fire-and-forget semantics and return
+    `202 Accepted` with a job acknowledgement; job progress is polled via
+    `GET /jobs/{jobId}`.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: /
+    description: >-
+      Relative base path. reporting-svc publishes no fixed host port in
+      docker-compose because it is an async job stub (health-exempt) rather than
+      a start-and-serve HTTP service.
+tags:
+  - name: Reports
+    description: >-
+      Transaction report job submission and job-status polling. [SRC: CORPT00C | TRANSACT]
+  - name: Statements
+    description: >-
+      Account statement generation job submission (plain-text / HTML).
+      [SRC: CBSTM03A/B | TRANSACT]
+  - name: Batch
+    description: >-
+      Deferred batch program job-stub submissions: daily transaction posting
+      ([SRC: CBTRN02C | TRANSACT]), interest calculation
+      ([SRC: CBACT04C | ACCTDAT]), and the batch transaction report
+      ([SRC: CBTRN03C | TRANSACT]). All are inert typed stubs.
+paths:
+  /reports:
+    post:
+      tags:
+        - Reports
+      operationId: submitReport
+      summary: Submit a transaction report generation job
+      description: |
+        Submit an asynchronous transaction report job. Mirrors the legacy online
+        Transaction Reports screen (`CORPT00C` / `CR00`), which builds report
+        parameters and submits a batch job to the internal reader for
+        fire-and-forget printing. [SRC: CORPT00C | TRANSACT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; the report itself is
+        produced asynchronously and is not part of the walking-skeleton scope.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        description: Report generation parameters.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportRequest'
+      responses:
+        '202':
+          description: >-
+            Accepted. The report job has been queued for asynchronous
+            processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /statements:
+    post:
+      tags:
+        - Statements
+      operationId: submitStatement
+      summary: Submit an account statement generation job
+      description: |
+        Submit an asynchronous account statement generation job. Mirrors the
+        legacy batch statement generators (`CBSTM03A` / `CBSTM03B`), which print
+        account statements from transaction data in plain-text and HTML formats.
+        [SRC: CBSTM03A/B | TRANSACT] [DEFERRED]
+
+        The request body is optional: omit `accountId` to run for all accounts.
+        Returns `202 Accepted` with a `JobAcknowledgement`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: false
+        description: >-
+          Statement generation parameters. May be omitted entirely to generate
+          statements for all accounts in the default (plain-text) format.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StatementRequest'
+      responses:
+        '202':
+          description: >-
+            Accepted. The statement job has been queued for asynchronous
+            processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/daily-posting:
+    post:
+      tags:
+        - Batch
+      operationId: submitDailyPosting
+      summary: Submit the daily transaction posting batch job
+      description: |
+        Submit the legacy Daily Transaction Posting batch program as an
+        asynchronous, fire-and-forget job. Mirrors `CBTRN02C`, which posts the
+        day's transactions from the daily transaction file against the
+        `TRANSACT` / `ACCTDAT` datasets. [SRC: CBTRN02C | TRANSACT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO posting logic,
+        NO dataset read, and NO balance update is performed in the walking
+        skeleton — the operation exists only to freeze the job roster shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The daily-posting job has been queued for asynchronous
+            processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/interest-calculation:
+    post:
+      tags:
+        - Batch
+      operationId: submitInterestCalculation
+      summary: Submit the interest calculation batch job
+      description: |
+        Submit the legacy Interest Calculation batch program as an
+        asynchronous, fire-and-forget job. Mirrors `CBACT04C`, which computes
+        interest over the `ACCTDAT` accounts and their category balances.
+        [SRC: CBACT04C | ACCTDAT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO interest
+        calculation, NO dataset read, and NO balance update is performed in the
+        walking skeleton — the operation exists only to freeze the job roster
+        shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The interest-calculation job has been queued for
+            asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/transaction-report:
+    post:
+      tags:
+        - Batch
+      operationId: submitTransactionReport
+      summary: Submit the transaction report batch job
+      description: |
+        Submit the legacy batch Transaction Report program as an asynchronous,
+        fire-and-forget job. Mirrors `CBTRN03C` (the batch transaction report),
+        which reads the `TRANSACT` dataset and prints a transaction detail
+        report. This is distinct from the online Transaction Reports screen
+        (`CORPT00C`, `POST /reports`). [SRC: CBTRN03C | TRANSACT] [DEFERRED]
+
+        Returns `202 Accepted` with a `JobAcknowledgement`; NO report
+        generation, NO dataset read, and NO file output is performed in the
+        walking skeleton — the operation exists only to freeze the job roster
+        shape.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '202':
+          description: >-
+            Accepted. The transaction-report job has been queued for
+            asynchronous processing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobAcknowledgement'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /jobs/{jobId}:
+    get:
+      tags:
+        - Reports
+      operationId: getJobStatus
+      summary: Get the status of a submitted reporting job
+      description: |
+        Poll the status of a previously submitted report or statement job by its
+        acknowledgement id. [DEFERRED]
+
+        In the walking skeleton this returns a typed placeholder job status; no
+        real job execution or persistence is performed.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+        - name: jobId
+          in: path
+          required: true
+          description: The job identifier returned by a prior submission.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The current status of the requested job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: >-
+        Correlation identifier propagated across the UI -> BFF -> service call
+        chain and placed into the SLF4J MDC so it appears in trace logs. If
+        omitted, the service generates one for the request.
+      schema:
+        type: string
+  schemas:
+    ReportRequest:
+      type: object
+      description: >-
+        Parameters for a transaction report job. Report scope is selected by
+        `reportType`; for a `CUSTOM` range both `startDate` and `endDate` are
+        required. Derived from the legacy Transaction Reports screen radios
+        (Monthly / Yearly / Custom). [SRC: CORPT00C | TRANSACT]
+      required:
+        - reportType
+      properties:
+        reportType:
+          type: string
+          description: >-
+            Report period selector. `MONTHLY` covers the current month,
+            `YEARLY` covers the current year, and `CUSTOM` covers the inclusive
+            `startDate`..`endDate` range.
+          enum:
+            - MONTHLY
+            - YEARLY
+            - CUSTOM
+          example: CUSTOM
+        startDate:
+          type: string
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: >-
+            Inclusive report start date in `YYYY-MM-DD` format. Required only
+            when `reportType` is `CUSTOM`; ignored otherwise. When both bounds
+            are supplied, `startDate` must not be after `endDate`.
+          example: '2026-01-01'
+        endDate:
+          type: string
+          maxLength: 10
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          description: >-
+            Inclusive report end date in `YYYY-MM-DD` format. Required only when
+            `reportType` is `CUSTOM`; ignored otherwise. When both bounds are
+            supplied, `endDate` must not be before `startDate`.
+          example: '2026-01-31'
+      if:
+        properties:
+          reportType:
+            const: CUSTOM
+        required:
+          - reportType
+      then:
+        required:
+          - startDate
+          - endDate
+    StatementRequest:
+      type: object
+      description: >-
+        Parameters for an account statement generation job. Derived from the
+        legacy batch statement generators, which emit statements in plain-text
+        and HTML formats. [SRC: CBSTM03A/B | TRANSACT]
+      properties:
+        accountId:
+          type: string
+          maxLength: 11
+          pattern: '^[0-9]{1,11}$'
+          description: >-
+            Target account identifier (1-to-11-digit account number). Omit to
+            generate statements for all accounts.
+          example: '00000000011'
+        format:
+          type: string
+          description: Output format of the generated statement.
+          enum:
+            - PLAIN
+            - HTML
+          default: PLAIN
+          example: PLAIN
+    JobAcknowledgement:
+      type: object
+      description: >-
+        Acknowledgement returned when an asynchronous report or statement job is
+        accepted for processing. Reflects the fire-and-forget submission
+        semantics of the legacy online-to-batch job submission.
+      required:
+        - jobId
+        - jobType
+        - status
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: Server-assigned identifier for the accepted job.
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        jobType:
+          type: string
+          description: >-
+            The kind of job that was submitted. `REPORT` and `STATEMENT` are the
+            online-submitted jobs; `DAILY_POSTING` ([SRC: CBTRN02C]),
+            `INTEREST_CALCULATION` ([SRC: CBACT04C]) and `TRANSACTION_REPORT`
+            ([SRC: CBTRN03C]) are the deferred batch job-stub entrypoints.
+          enum:
+            - REPORT
+            - STATEMENT
+            - DAILY_POSTING
+            - INTEREST_CALCULATION
+            - TRANSACTION_REPORT
+          example: REPORT
+        status:
+          type: string
+          description: >-
+            Lifecycle status of the job at acknowledgement time (typically
+            `ACCEPTED` for a freshly queued job).
+          enum:
+            - ACCEPTED
+            - RUNNING
+            - COMPLETED
+            - FAILED
+          example: ACCEPTED
+        submittedAt:
+          type: string
+          format: date-time
+          description: Timestamp (UTC) at which the job was accepted.
+          example: '2026-01-15T09:30:00Z'
+    JobStatus:
+      type: object
+      description: >-
+        Current status of a previously submitted report or statement job,
+        returned when polling `GET /jobs/{jobId}`.
+      required:
+        - jobId
+        - status
+      properties:
+        jobId:
+          type: string
+          format: uuid
+          description: Identifier of the job being reported on.
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+        jobType:
+          type: string
+          description: >-
+            The kind of job. `REPORT` and `STATEMENT` are the online-submitted
+            jobs; `DAILY_POSTING` ([SRC: CBTRN02C]), `INTEREST_CALCULATION`
+            ([SRC: CBACT04C]) and `TRANSACTION_REPORT` ([SRC: CBTRN03C]) are the
+            deferred batch job-stub entrypoints.
+          enum:
+            - REPORT
+            - STATEMENT
+            - DAILY_POSTING
+            - INTEREST_CALCULATION
+            - TRANSACTION_REPORT
+          example: REPORT
+        status:
+          type: string
+          description: Current lifecycle status of the job.
+          enum:
+            - ACCEPTED
+            - RUNNING
+            - COMPLETED
+            - FAILED
+          example: RUNNING
+        submittedAt:
+          type: string
+          format: date-time
+          description: Timestamp (UTC) at which the job was accepted.
+          example: '2026-01-15T09:30:00Z'
+        completedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >-
+            Timestamp (UTC) at which the job finished, or `null` while the job
+            is still `ACCEPTED` or `RUNNING`.
+          example: null
+        message:
+          type:
+            - string
+            - 'null'
+          description: >-
+            Optional human-readable detail (for example, a failure reason), or
+            `null` when there is nothing to report.
+          example: null
+    Error:
+      type: object
+      description: >-
+        RFC 7807 problem-details payload returned for error responses via the
+        `application/problem+json` media type.
+      required:
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: >-
+            A URI reference identifying the problem type. Defaults to
+            `about:blank` when no specific type applies.
+          default: about:blank
+          example: about:blank
+        title:
+          type: string
+          description: Short, human-readable summary of the problem type.
+          example: Bad Request
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code generated for this occurrence.
+          example: 400
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: reportType must be one of MONTHLY, YEARLY, CUSTOM.
+        instance:
+          type: string
+          format: uri-reference
+          description: URI reference identifying the specific occurrence.
+          example: /reports
+        correlationId:
+          type: string
+          format: uuid
+          description: Correlation identifier echoed back for traceability.
+          example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required to access this resource.
+            instance: /reports
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+    NotFound:
+      description: The requested resource could not be found.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: An unexpected internal error occurred while processing the request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Bearer token obtained from the permissive auth-svc login stub. The token
+        hop is a real seam (propagated on every business request) even though
+        credential validation is stubbed in the walking skeleton.
+

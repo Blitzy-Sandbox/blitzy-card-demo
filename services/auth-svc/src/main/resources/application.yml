@@ -1,0 +1,101 @@
+# auth-svc — CardDemo walking skeleton
+# Permissive authentication stub (real token + real correlation-ID hop; no real credential validation).
+# Provenance: [SRC: COSGN00C | COSGN00.bms] (legacy sign-on CC00 -> COSGN00C reading USRSEC).
+# All values are env-parameterized to match the root docker-compose.yml / .env.example.
+#
+# Design constraints (non-negotiable):
+#   * This service OWNS NO SCHEMA and declares NO JPA @Entity — the dedicated /db compose
+#     Flyway step owns V1__baseline.sql + V2__seed_tracer.sql. Hence ddl-auto:none and
+#     flyway.enabled defaults to false here.
+#   * An EXPLICIT Hibernate dialect is set so the EntityManagerFactory can be built at boot
+#     without a live DB connection (spring-boot-starter-data-jpa is on the classpath).
+#   * No secrets are committed: the datasource password has an EMPTY default and is supplied
+#     by the environment (docker-compose / .env).
+spring:
+  application:
+    name: auth-svc
+  mvc:
+    problemdetails:
+      # RFC 7807 rendering for Spring MVC error responses. auth-svc's generated AuthApi carries
+      # validation only on the @Valid @RequestBody (LoginRequest) — there are NO @PathVariable /
+      # @RequestParam constraints — so a malformed body raises MethodArgumentNotValidException, which
+      # Spring MVC handles; enabling this renders that 400 as application/problem+json to match the
+      # frozen contract's error shape. No web/GlobalExceptionHandler is added here because there is no
+      # path/query ConstraintViolationException to map (a handler would be dead code).
+      enabled: true
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:oracle:thin:@oracle:1521/FREEPDB1}
+    username: ${SPRING_DATASOURCE_USERNAME:carddemo}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
+    # driver-class-name is technically optional (Spring Boot auto-detects
+    # oracle.jdbc.OracleDriver from the jdbc:oracle:thin: URL, since ojdbc11 is on the
+    # runtime classpath via pom.xml), but is declared explicitly for clarity.
+    driver-class-name: oracle.jdbc.OracleDriver
+  jpa:
+    hibernate:
+      # This service OWNS NO SCHEMA and declares NO @Entity. Never create/migrate/validate.
+      ddl-auto: none
+    # Disable the Open-Session-In-View anti-pattern; the stub performs no lazy loading.
+    open-in-view: false
+    properties:
+      hibernate:
+        # Set explicitly so the EntityManagerFactory does NOT require a live DB
+        # connection to auto-detect the dialect at startup. Oracle 23ai -> OracleDialect.
+        dialect: org.hibernate.dialect.OracleDialect
+  flyway:
+    # The dedicated /db docker-compose Flyway step owns schema + seed. This service never migrates.
+    enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    # QA API-01 (contract conformance). Omit unset optional properties from serialized responses so
+    # the /auth/validate typed stub never emits `"userId":null`. TokenValidationResponse declares
+    # `userId` as an OPTIONAL string (maxLength 8, NOT nullable, NOT required) in the frozen contract;
+    # emitting an explicit null violates that schema. Every REQUIRED field (validate: `valid`; login:
+    # `token`/`userId`/`userType`) is always populated by AuthController, so omitting only the null
+    # optionals keeps every response contract-valid while removing the illegal null.
+    default-property-inclusion: non_null
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.). A contract-invalid
+      # request body must be rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
+
+server:
+  # Container-internal port. docker-compose maps host 8081 -> container 8080.
+  port: ${SERVER_PORT:8080}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Expose only health (container gating) and info. Nothing sensitive.
+        include: health,info
+  endpoint:
+    health:
+      # Enables liveness/readiness probe groups; /actuator/health backs the
+      # docker-compose healthcheck and the `service_healthy` gate.
+      probes:
+        enabled: true
+
+# Correlation-ID header name consumed by the sibling CorrelationIdFilter (OncePerRequestFilter + MDC).
+# The filter reads it via @Value("${carddemo.correlation.header:X-Correlation-ID}").
+carddemo:
+  correlation:
+    header: ${CORRELATION_HEADER:X-Correlation-ID}
+
+logging:
+  pattern:
+    # %X{correlationId} surfaces the MDC correlation id (set by CorrelationIdFilter) on every log line,
+    # making the real UI -> BFF -> auth-svc hop observable. Default to '-' when absent.
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [${spring.application.name:auth-svc}] [%X{correlationId:-}] %logger{36} - %msg%n"
+
+---
+# Docker profile — activated by docker-compose via SPRING_PROFILES_ACTIVE=docker.
+# In this profile every value is supplied by environment variables injected by
+# docker-compose (SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME, SPRING_DATASOURCE_PASSWORD,
+# SPRING_FLYWAY_ENABLED, CORRELATION_HEADER, SERVER_PORT). No profile-specific overrides are
+# required for the walking skeleton; this document exists to document intent and to prevent any
+# "profile not found" confusion when the docker profile is active.
+spring:
+  config:
+    activate:
+      on-profile: docker

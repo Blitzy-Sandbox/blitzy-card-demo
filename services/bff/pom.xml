@@ -1,0 +1,318 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  bff — Maven build descriptor for the CardDemo backend-for-frontend service.
+  ============================================================================
+  Provenance: [SRC: CARDDEMO.CSD] — the service topology derives from the legacy
+  CICS transaction/program/file registrations in app/csd/CARDDEMO.CSD. The BFF
+  fronts the one live vertical tracer slice, the Credit Card View path
+  [SRC: COCRDSLC | CARDDAT] (transaction CCDL -> program COCRDSLC over the
+  CARDDAT VSAM KSDS), exposed to the UI as GET /api/cards/{cardNumber}.
+
+  Role: this is the SINGLE backend the React 19 SPA binds to (AAP 0.1.1, 0.8:
+  "the UI binds ONLY to the BFF"). The BFF performs HTTP AGGREGATION ONLY — it
+  calls the domain services (card-svc for the live tracer; the rest stubbed)
+  using the synchronous RestClient from spring-web. It owns NO domain logic and
+  NO persistence: there is deliberately NO spring-boot-starter-data-jpa, NO JDBC
+  driver (ojdbc11), and NO Flyway on this module. The compose file sets
+  SPRING_DATASOURCE_* generically for every service, but because no JDBC/JPA is
+  on the BFF classpath, Spring Boot performs no DataSource autoconfiguration and
+  those variables are harmlessly ignored, so the BFF starts green with no DB.
+
+  Contract-first (SSoT): the frozen OpenAPI 3.1 contract is the single source of
+  truth. At build time the openapi-generator-maven-plugin (generatorName=spring,
+  interfaceOnly=true) generates the Java server interfaces (com.carddemo.bff.api.*)
+  and DTO models (com.carddemo.bff.model.*); the hand-written web/*Controller
+  classes `implements` those interfaces and return typed placeholders (LIVE only
+  for the Card Detail tracer). Generated sources live under target/ (transient,
+  never committed) and are never hand-edited.
+
+  Contract input path — VENDORED copy: docker-compose builds this service with
+  build.context=./services/bff, which does NOT include the repo-root /contracts
+  folder, and the multi-stage Dockerfile runs `mvn package` (codegen) INSIDE the
+  Docker build. The generator therefore reads a byte-identical vendored copy of
+  the frozen /contracts/bff.openapi.yaml that lives inside this module at
+  src/main/resources/openapi/bff.openapi.yaml (authored by the services/bff/src
+  subtree). That path resolves identically in the reactor build, a standalone
+  module build, and the Docker build. Referencing ../../contracts/... would
+  escape the Docker build context and break `docker compose build bff`.
+
+  Parent: this module inherits directly from spring-boot-starter-parent. The
+  EMPTY <relativePath/> forces Maven to resolve the parent from the repository
+  rather than walking up to ../../: the repository-root /pom.xml is a PURE
+  reactor AGGREGATOR (packaging=pom, <modules> only), NOT a Maven parent. A POM
+  has exactly one parent, and per-service independence is the documented
+  convention, so this module's real parent is spring-boot-starter-parent.
+
+  Authoritative pinned versions (web-validated in AAP 0.2.2 / 0.3):
+    spring-boot-starter-parent .......... 3.5.16   (final Spring Boot 3.5.x)
+    openapi-generator-maven-plugin ...... 7.23.0   (OpenAPI 3.1 support)
+    java.version ........................ 21
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Parent — Spring Boot starter-parent (dependency-management BOM + plugin
+      management + java.version wiring). Empty <relativePath/>: resolve from the
+      repository, NOT from the root aggregator pom.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <!-- Project coordinates. -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>bff</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+    <name>CardDemo BFF</name>
+    <description>Backend-for-frontend aggregation service (thin; one live Card Detail tracer) for the CardDemo walking skeleton.</description>
+
+    <properties>
+        <!-- Spring Boot parent reads java.version to set the compiler release (21). -->
+        <java.version>21</java.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <!-- OpenAPI generator (contract-first codegen), pinned per AAP 0.3. -->
+        <openapi-generator.version>7.23.0</openapi-generator.version>
+        <!--
+          Security override (finding m29): the Spring Boot 3.5.16 BOM pins
+          jackson-bom 2.21.4, whose jackson-databind is affected by a known
+          advisory (fixed in 2.21.5). Overriding this managed property re-imports
+          the aligned jackson-bom 2.21.5, bumping every RUNTIME Jackson artifact
+          (jackson-databind/core/datatype-*) in lock-step; annotations stay on
+          their 2.21 metadata line. The BFF carries Jackson at runtime via
+          spring-boot-starter-web, so this override protects this module too.
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+    </properties>
+
+    <!--
+      Dependencies — EXACTLY the aggregation-only set (AAP 0.3). Versions are
+      omitted where the Spring Boot 3.5.16 BOM manages them (do NOT hard-code).
+      There is intentionally NO persistence stack here (no data-jpa, no jdbc, no
+      ojdbc11, no Flyway), NO webflux, and NO springdoc/swagger: the lean codegen
+      options in the build section below make the generated sources compile
+      against ONLY spring-boot-starter-web (Jackson / Spring MVC) and
+      spring-boot-starter-validation (jakarta.validation).
+    -->
+    <dependencies>
+        <!--
+          REST endpoints + embedded Tomcat. Also supplies the synchronous
+          RestClient (spring-web, Spring Boot 3.2+) the aggregators use to call
+          card-svc, plus the Spring MVC + Jackson classes the generated API
+          interfaces and models reference.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!--
+          Exposes /actuator/health, consumed by the docker-compose healthcheck
+          and the `depends_on: condition: service_healthy` startup gate.
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!--
+          Supplies jakarta.validation (@Valid, @NotNull, @Size, @Pattern)
+          required by the generated models, which carry bean-validation
+          annotations (useBeanValidation=true).
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Context-load / health smoke test (test scope only). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!--
+              ================================================================
+              Contract-first code generation.
+
+              The Java server API interfaces + DTO models are GENERATED at build
+              time from the frozen OpenAPI 3.1 SSoT and are NEVER hand-edited.
+              Generated sources live under target/ (transient; never committed).
+              The plugin auto-registers <output>/src/main/java as a compile
+              source root, so build-helper-maven-plugin is NOT needed.
+
+              useTags=true -> one interface per OpenAPI tag: CardDetail ->
+              CardDetailApi, Auth -> AuthApi, Menu -> MenuApi, Accounts ->
+              AccountsApi, Cards -> CardsApi, Transactions -> TransactionsApi,
+              Payments -> PaymentsApi, Users -> UsersApi, Health -> HealthApi.
+              The hand-written controllers implement the business interfaces and
+              return typed placeholders (LIVE only for CardDetailApi); the
+              generated HealthApi is intentionally left UNIMPLEMENTED because
+              Spring Boot Actuator serves /actuator/health.
+
+              The lean configOptions (documentationProvider=none,
+              annotationLibrary=none, openApiNullable=false) make the generated
+              code compile against ONLY the declared starters — no
+              swagger-annotations, no springdoc-openapi, and no
+              jackson-databind-nullable dependency is required.
+              ================================================================
+            -->
+            <plugin>
+                <groupId>org.openapitools</groupId>
+                <artifactId>openapi-generator-maven-plugin</artifactId>
+                <version>${openapi-generator.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-bff-api</id>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                        <configuration>
+                            <!--
+                              VENDORED, byte-identical copy of the frozen
+                              /contracts/bff.openapi.yaml. Lives inside this
+                              module so it resolves in the reactor build, the
+                              standalone module build, AND the Docker build
+                              (build.context=./services/bff). Do NOT point at
+                              ../../contracts/... (escapes the Docker context).
+                            -->
+                            <inputSpec>${project.basedir}/src/main/resources/openapi/bff.openapi.yaml</inputSpec>
+                            <generatorName>spring</generatorName>
+                            <!-- Plugin auto-adds <output>/src/main/java as a compile source root. -->
+                            <output>${project.build.directory}/generated-sources/openapi</output>
+                            <apiPackage>com.carddemo.bff.api</apiPackage>
+                            <modelPackage>com.carddemo.bff.model</modelPackage>
+                            <!-- Keep the output lean: no tests, no docs. -->
+                            <generateApiTests>false</generateApiTests>
+                            <generateModelTests>false</generateModelTests>
+                            <generateApiDocumentation>false</generateApiDocumentation>
+                            <generateModelDocumentation>false</generateModelDocumentation>
+                            <!--
+                              The `spring` generator emits default interface
+                              methods that attach the contract's response
+                              EXAMPLES via a tiny `ApiUtil` helper (a "supporting
+                              file"). Since skipDefaultInterface=false and the
+                              contract carries response examples, ApiUtil MUST be
+                              generated for the interfaces to compile. Generate
+                              ONLY ApiUtil.java (whitelist) so the output stays
+                              lean: interfaces + models + the single required
+                              helper — no application/config/build supporting
+                              files, and NO extra runtime dependency (ApiUtil
+                              references only Spring MVC types already provided by
+                              spring-boot-starter-web).
+                            -->
+                            <generateSupportingFiles>true</generateSupportingFiles>
+                            <supportingFilesToGenerate>ApiUtil.java</supportingFilesToGenerate>
+                            <configOptions>
+                                <!-- QA finding INFO-1: hide the @Generated(date=...) timestamp so the build-output
+                                     Java sources are byte-deterministic across rebuilds (no committed/gated impact). -->
+                                <hideGenerationTimestamp>true</hideGenerationTimestamp>
+                                <!-- API interfaces + models only, no controller stubs. -->
+                                <interfaceOnly>true</interfaceOnly>
+                                <!-- Emit jakarta.* imports (Spring Boot 3 / Jakarta EE 10). -->
+                                <useSpringBoot3>true</useSpringBoot3>
+                                <!-- One interface per OpenAPI tag. -->
+                                <useTags>true</useTags>
+                                <!-- Consistent jakarta.* imports. -->
+                                <useJakartaEe>true</useJakartaEe>
+                                <!-- No springdoc/springfox annotations or dependency. -->
+                                <documentationProvider>none</documentationProvider>
+                                <!-- No io.swagger.core.v3 annotations => no swagger-annotations dep. -->
+                                <annotationLibrary>none</annotationLibrary>
+                                <!-- No JsonNullable wrappers => no jackson-databind-nullable dep. -->
+                                <openApiNullable>false</openApiNullable>
+                                <!-- Keep the default getRequest() method on the interface. -->
+                                <skipDefaultInterface>false</skipDefaultInterface>
+                                <!-- jakarta.validation annotations on models (starter-validation). -->
+                                <useBeanValidation>true</useBeanValidation>
+                            </configOptions>
+                        </configuration>
+                    </execution>
+                </executions>
+                <!--
+                  Security override (finding M12): the openapi-generator 7.23.0
+                  plugin realm otherwise resolves vulnerable build-time
+                  transitives — Jackson 2.21.1, Handlebars 4.3.1, and
+                  Plexus-Utils 4.0.0 (incl. CVE-2025-67030 Directory Traversal).
+                  These plugin-scoped <dependencies> pin patched, compatible
+                  versions on the GENERATOR classpath ONLY (the runtime graph is
+                  untouched) while retaining the pinned engine
+                  (${openapi-generator.version}). handlebars is bumped to 4.5.2
+                  (path-traversal + transitive commons-lang3 advisory fixed in
+                  4.5.x); the `spring` generator renders via Mustache, so the
+                  Handlebars helper is never instantiated at generate time.
+                -->
+                <dependencies>
+                    <!-- CVE-2025-67030 (Directory Traversal) fixed in 4.0.3. -->
+                    <dependency>
+                        <groupId>org.codehaus.plexus</groupId>
+                        <artifactId>plexus-utils</artifactId>
+                        <version>4.0.3</version>
+                    </dependency>
+                    <!-- Path-traversal + transitive commons-lang3 advisory fixed by 4.5.x. -->
+                    <dependency>
+                        <groupId>com.github.jknack</groupId>
+                        <artifactId>handlebars</artifactId>
+                        <version>4.5.2</version>
+                    </dependency>
+                    <!-- Aligned patched Jackson 2.21.5 across the generator classpath. -->
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-core</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-guava</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-joda</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-jsr310</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.dataformat</groupId>
+                        <artifactId>jackson-dataformat-yaml</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+
+            <!--
+              spring-boot-maven-plugin (version managed by the parent). Repackages
+              into an executable, layered Spring Boot fat jar
+              (target/bff-0.1.0-SNAPSHOT.jar) that the sibling Dockerfile runtime
+              stage runs via `java -jar`. Main class is auto-detected
+              (com.carddemo.bff.BffApplication).
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>

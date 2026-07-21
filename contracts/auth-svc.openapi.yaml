@@ -1,0 +1,324 @@
+openapi: 3.1.0
+info:
+  title: Auth Service API
+  version: 1.0.0
+  description: |-
+    Authentication (permissive sign-on) service for the CardDemo walking skeleton.
+
+    This OpenAPI 3.1 document is the SINGLE SOURCE OF TRUTH (SSoT) for the auth-svc
+    contract and is FROZEN after this run: the Java server interfaces and any typed
+    clients are GENERATED from this specification and are never hand-edited.
+
+    Skeleton behavior: auth-svc is a PERMISSIVE STUB. It issues a real, opaque bearer
+    token and participates in the real correlation-ID hop, but performs NO real
+    credential validation, password hashing, RBAC, or session management. A login for
+    any well-formed request succeeds.
+
+    Provenance: [SRC: COSGN00C | COSGN00.bms] - legacy CICS Sign-On transaction
+    CC00 -> COSGN00C, which reads the USRSEC VSAM KSDS keyed on user id and compares
+    the password (SEC-USR-PWD), setting the user type (SEC-USR-TYPE: A=Admin, U=User).
+    Form fields USERID X(8) and PASSWD X(8) come from app/bms/COSGN00.bms; the user
+    record layout comes from app/cpy/CSUSR01Y.cpy.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+servers:
+  - url: http://localhost:8081
+    description: Local auth-svc endpoint (AUTH_SVC_PORT=8081).
+  - url: /
+    description: Relative server (same-origin / gateway-relative).
+tags:
+  - name: Auth
+    description: "Permissive sign-on and token validation operations. [SRC: COSGN00C | COSGN00.bms]"
+  - name: Health
+    description: Service liveness/readiness. Served at runtime by Spring Boot Actuator.
+security:
+  - bearerAuth: []
+paths:
+  /auth/login:
+    post:
+      tags:
+        - Auth
+      operationId: login
+      summary: "Permissive sign-on - issues a real bearer token (no credential validation)"
+      description: |-
+        Authenticates a sign-on request and issues a real, opaque bearer token.
+
+        PERMISSIVE STUB: this endpoint does NOT validate credentials, hash passwords,
+        or manage sessions. Any well-formed request (non-empty userId and password,
+        each up to 8 characters) succeeds and receives a real token that downstream
+        services and the BFF propagate. The correlation-ID hop is real.
+
+        Provenance: [SRC: COSGN00C | COSGN00.bms] - legacy CC00 -> COSGN00C sign-on.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        description: Sign-on credentials (userId + password), each up to 8 characters.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              userId: ADMIN001
+              password: changeit
+      responses:
+        '200':
+          description: Sign-on succeeded; a real bearer token is issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+              example:
+                token: example-opaque-bearer-token-value
+                userId: ADMIN001
+                userType: A
+                expiresIn: 3600
+                tokenType: Bearer
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /auth/validate:
+    post:
+      tags:
+        - Auth
+      operationId: validateToken
+      summary: "Validate a bearer token [DEFERRED]"
+      description: |-
+        Validates the bearer token supplied in the Authorization header and reports
+        whether it is currently valid, along with the associated user id and type.
+
+        [DEFERRED]: typed stub only. This operation returns a typed placeholder
+        response in the walking skeleton; no real token verification, RBAC, or
+        session lookup is performed.
+
+        Provenance: [SRC: COSGN00C | COSGN00.bms].
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Token validation result (typed placeholder in the skeleton).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenValidationResponse'
+              example:
+                valid: true
+                userId: ADMIN001
+                userType: A
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /actuator/health:
+    get:
+      tags:
+        - Health
+      operationId: healthCheck
+      summary: Service health check
+      description: |-
+        Liveness/readiness probe used by docker-compose (depends_on: service_healthy)
+        and CI to gate start-up.
+
+        CRITICAL: The generated Health API interface MUST be left UNIMPLEMENTED;
+        Spring Boot Actuator serves /actuator/health at runtime - do NOT write a
+        controller for it.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthStatus'
+              example:
+                status: UP
+components:
+  parameters:
+    CorrelationId:
+      name: X-Correlation-ID
+      in: header
+      required: false
+      description: |-
+        Optional correlation identifier propagated across the UI -> BFF -> service
+        hops and placed into the SLF4J MDC for distributed trace logging. When absent,
+        a service generates one.
+      schema:
+        type: string
+      example: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |-
+        Bearer token issued by POST /auth/login. Permissive stub - the token is real
+        and its presence is required on protected operations, but its contents are not
+        cryptographically verified in the walking skeleton.
+  schemas:
+    LoginRequest:
+      type: object
+      description: "Sign-on credentials. [SRC: COSGN00C | COSGN00.bms]"
+      required:
+        - userId
+        - password
+      properties:
+        userId:
+          type: string
+          minLength: 1
+          maxLength: 8
+          description: "User ID, SEC-USR-ID X(8); form USERID."
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 1
+          maxLength: 8
+          description: "Password, SEC-USR-PWD X(8); form PASSWD."
+    LoginResponse:
+      type: object
+      description: Result of a successful permissive sign-on, carrying the issued bearer token.
+      required:
+        - token
+        - userId
+        - userType
+      properties:
+        token:
+          type: string
+          description: |-
+            The issued bearer token (real, opaque). Carried on subsequent requests and
+            propagated by the BFF to downstream services.
+        userId:
+          type: string
+          maxLength: 8
+          description: "Authenticated user id, SEC-USR-ID X(8)."
+        userType:
+          type: string
+          enum:
+            - A
+            - U
+          description: "A=Admin, U=User - SEC-USR-TYPE X(1)."
+        expiresIn:
+          type: integer
+          format: int64
+          description: Token lifetime in seconds.
+        tokenType:
+          type: string
+          default: Bearer
+          description: Token scheme; always "Bearer".
+    TokenValidationResponse:
+      type: object
+      description: "Result of token validation. [DEFERRED] typed stub."
+      required:
+        - valid
+      properties:
+        valid:
+          type: boolean
+          description: Whether the supplied bearer token is considered valid.
+        userId:
+          type: string
+          maxLength: 8
+          description: "User id associated with the token, SEC-USR-ID X(8)."
+        userType:
+          type: string
+          enum:
+            - A
+            - U
+          description: "A=Admin, U=User - SEC-USR-TYPE X(1)."
+    HealthStatus:
+      type: object
+      description: Aggregate service health as reported by Spring Boot Actuator.
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - UP
+            - DOWN
+            - OUT_OF_SERVICE
+            - UNKNOWN
+          description: Overall health status.
+        components:
+          type: object
+          additionalProperties: true
+          description: Optional per-component health details.
+    Error:
+      type: object
+      description: |-
+        RFC 7807 problem detail describing an error, extended with a correlationId
+        for cross-service trace correlation.
+      required:
+        - status
+        - title
+      properties:
+        type:
+          type: string
+          format: uri
+          default: about:blank
+          description: A URI reference that identifies the problem type.
+        title:
+          type: string
+          description: A short, human-readable summary of the problem type.
+        status:
+          type: integer
+          format: int32
+          description: The HTTP status code generated for this occurrence of the problem.
+        detail:
+          type: string
+          description: A human-readable explanation specific to this occurrence of the problem.
+        instance:
+          type: string
+          format: uri
+          description: A URI reference that identifies the specific occurrence of the problem.
+        correlationId:
+          type: string
+          format: uuid
+          description: Correlation identifier for this occurrence (mirrors X-Correlation-ID).
+  responses:
+    BadRequest:
+      description: The request was malformed or failed validation (e.g. missing or oversized fields).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Bad Request
+            status: 400
+            detail: userId must not be blank and must be at most 8 characters.
+            instance: /auth/login
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+    Unauthorized:
+      description: Authentication is required, or the supplied bearer token is missing or invalid.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Unauthorized
+            status: 401
+            detail: A valid bearer token is required.
+            instance: /auth/validate
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6
+    InternalError:
+      description: An unexpected error occurred while processing the request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            type: about:blank
+            title: Internal Server Error
+            status: 500
+            detail: An unexpected error occurred.
+            instance: /auth/login
+            correlationId: 3fa85f64-5717-4562-b3fc-2c963f66afa6

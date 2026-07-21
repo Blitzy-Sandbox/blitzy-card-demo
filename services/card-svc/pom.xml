@@ -1,0 +1,349 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ============================================================================
+  card-svc — Maven build descriptor for THE ONE LIVE TRACER service.
+  ============================================================================
+  Provenance: [SRC: COCRDSLC | CARDDAT] — app/csd/CARDDEMO.CSD
+  (transaction CCDL -> program COCRDSLC "VIEW CARD DETAIL" over file CARDDAT).
+
+  This is the Spring Boot 3 / Java 21 build descriptor for the card
+  bounded-context service, home of the single fully-wired vertical tracer
+  slice of the CardDemo walking skeleton: GET /cards/{cardNumber}, which
+  performs a REAL Oracle read of a single Flyway-seeded row.
+
+  Contract-first (SSoT): the frozen OpenAPI 3.1 contract at
+  /contracts/card-svc.openapi.yaml is the single source of truth. At build
+  time the openapi-generator-maven-plugin (generatorName=spring,
+  interfaceOnly=true) generates the Java server interfaces
+  (com.carddemo.card.api.*) and DTO models (com.carddemo.card.model.*) from
+  that contract. Those generated sources are NEVER hand-edited — to change
+  the API, edit the frozen contract and regenerate.
+
+  Green in three build paths (AAP 0.6.1):
+    1. root Maven reactor via the aggregator /pom.xml
+    2. standalone module build: mvn -f services/card-svc/pom.xml package
+    3. CI (gvenzl/setup-oracle-free@v1 + full repo checkout)
+
+  Authoritative pinned versions (web-validated in AAP 0.2.2 / 0.3):
+    spring-boot-starter-parent .......... 3.5.16   (final Spring Boot 3.5.x)
+    com.oracle.database.jdbc:ojdbc11 .... 23.26.2.0.0 (Oracle 23ai, JDK 21)
+    openapi-generator-maven-plugin ...... 7.23.0   (OpenAPI 3.1 support)
+    java.version ........................ 21
+    flyway-core / flyway-database-oracle  BOM-managed (Spring Boot 3.5 BOM)
+  ============================================================================
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      Phase A — Parent.
+      This module inherits directly from spring-boot-starter-parent (dependency
+      management, plugin management, sensible defaults, java.version wiring).
+      The empty <relativePath/> forces Maven to resolve the parent from the
+      repository/remote rather than walking up to ../../: the root /pom.xml is a
+      PURE AGGREGATOR (packaging=pom, listing services/card-svc as a <module>),
+      NOT a Spring Boot parent. Per-service independence is the documented
+      convention, so this module's real parent is spring-boot-starter-parent.
+    -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.16</version>
+        <relativePath/>
+    </parent>
+
+    <!-- Phase A — Project coordinates. -->
+    <groupId>com.carddemo</groupId>
+    <artifactId>card-svc</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <name>card-svc</name>
+    <description>CardDemo card bounded-context service (live tracer: GET /cards/{cardNumber})</description>
+    <packaging>jar</packaging>
+
+    <!-- Phase B — Properties. -->
+    <properties>
+        <!-- Drives maven.compiler.release=21 via the Spring Boot parent. -->
+        <java.version>21</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <openapi-generator.version>7.23.0</openapi-generator.version>
+        <ojdbc.version>23.26.2.0.0</ojdbc.version>
+        <!--
+          Test-scope only (QA finding F-1): Testcontainers provides an ephemeral,
+          pinned Oracle Database Free 23ai (gvenzl/oracle-free:23.26.2-slim) so the
+          ONE live tracer's real JPA/Hibernate/Oracle read path is covered by a
+          committed, CI-enforced automated integration test (CardRealOracleReadTest).
+          The version is pinned here and imported via testcontainers-bom below so the
+          whole Testcontainers artifact set (core, junit-jupiter, oracle-free, jdbc)
+          stays on a single self-consistent version, overriding the Spring Boot BOM's
+          managed default. This affects the TEST classpath ONLY — never the runtime graph.
+        -->
+        <testcontainers.version>1.21.4</testcontainers.version>
+        <!--
+          Security override (finding m29): the Spring Boot 3.5.16 BOM pins
+          jackson-bom 2.21.4, whose jackson-databind is affected by a known
+          advisory (fixed in 2.21.5). Overriding this property re-imports the
+          aligned jackson-bom 2.21.5, bumping every RUNTIME Jackson artifact
+          (jackson-databind, jackson-core, jackson-datatype-*, and
+          jackson-annotations at its 2.21 metadata line) in lock-step. This
+          keeps the whole Jackson graph on a single patched, self-consistent
+          version rather than a mixed 2.21.4/2.21.5 set.
+        -->
+        <jackson-bom.version>2.21.5</jackson-bom.version>
+        <!--
+          CRITICAL: the frozen contract SSoT is referenced by RELATIVE PATH into
+          /contracts and is never duplicated into this service. This resolves
+          correctly for the reactor build, the standalone module build, and CI
+          (all have the full repo tree). The Dockerfile handles this path via a
+          repository-root build context that preserves the
+          services/card-svc -> ../../contracts layout.
+        -->
+        <openapi.spec.file>${project.basedir}/../../contracts/card-svc.openapi.yaml</openapi.spec.file>
+    </properties>
+
+    <!--
+      Phase B.1 — Dependency management (TEST scope only).
+      Import the Testcontainers BOM so every org.testcontainers:* artifact on the
+      TEST classpath resolves to one self-consistent version (${testcontainers.version}),
+      overriding the version the Spring Boot 3.5.16 BOM would otherwise manage. This is
+      the ONLY dependency management this module declares; all RUNTIME versions remain
+      governed by spring-boot-starter-parent. Rationale: QA finding F-1 — the tracer's
+      real Oracle read path needs a committed, CI-enforced integration test, and a single
+      aligned Testcontainers version avoids a mixed core/module version set.
+    -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!--
+      Phase C — Dependencies (EXACTLY the AAP 0.3 backend set — no more, no less).
+      Versions are omitted where the Spring Boot 3.5.16 BOM manages them.
+      Do NOT add springdoc-openapi, swagger-annotations, or jackson-databind-nullable:
+      the lean codegen options in Phase D make the generated sources compile against
+      ONLY spring-boot-starter-web (Jackson / Spring MVC) and
+      spring-boot-starter-validation (jakarta.validation).
+    -->
+    <dependencies>
+        <!-- REST endpoints + embedded Tomcat; also provides Jackson used by generated models. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- JPA + Hibernate for the tracer read path (Oracle 23ai via OracleDialect). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- /actuator/health for docker-compose / CI container health gating. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- jakarta.validation used by generated models/interfaces (@NotNull, @Size, @Pattern). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- Oracle 23ai JDBC driver (JDK 21 compatible); runtime scope. -->
+        <dependency>
+            <groupId>com.oracle.database.jdbc</groupId>
+            <artifactId>ojdbc11</artifactId>
+            <version>${ojdbc.version}</version>
+            <scope>runtime</scope>
+        </dependency>
+
+        <!--
+          Flyway present per AAP 0.3 even though spring.flyway.enabled=false in this
+          service (schema/seed are owned by /db). Harmless and inert when disabled.
+          Versions are BOM-managed by the Spring Boot 3.5 dependency management.
+        -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-oracle</artifactId>
+        </dependency>
+
+        <!-- Context-load / health smoke test (test scope only). -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+          QA finding F-1 (TEST scope only): Testcontainers real-Oracle integration test.
+          junit-jupiter wires the @Testcontainers JUnit 5 extension; oracle-free provides
+          OracleContainer for the pinned gvenzl/oracle-free:23.26.2-slim image. Versions are
+          governed by the imported testcontainers-bom above. CardRealOracleReadTest spins an
+          ephemeral Oracle, lets Flyway apply /db/migration V1+V2, and asserts the live tracer
+          read (GET /cards/{cardNumber}) over the REAL JPA/Hibernate/Oracle path. The class is
+          annotated @Testcontainers(disabledWithoutDocker=true) so it runs wherever Docker is
+          available (CI `mvn package`, local) and is gracefully SKIPPED where Docker is absent,
+          keeping every build green. These artifacts touch the TEST classpath only.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>oracle-free</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <!-- Phase D — Build plugins. -->
+    <build>
+        <plugins>
+            <!--
+              D1. spring-boot-maven-plugin (version managed by the parent).
+              Produces the executable fat jar target/card-svc-0.1.0-SNAPSHOT.jar
+              that the Dockerfile runs via `java -jar`. No extra configuration needed.
+            -->
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+
+            <!--
+              D2. openapi-generator-maven-plugin — THE contract-first codegen wiring.
+
+              Rationale (preserve verbatim): documentationProvider=none +
+              annotationLibrary=none + openApiNullable=false make the generated
+              server interfaces + models compile against ONLY
+              spring-boot-starter-web (Jackson/Spring MVC) and
+              spring-boot-starter-validation (jakarta.validation). This is the
+              minimal, deterministic, contract-first codegen for the skeleton; the
+              OpenAPI 3.1 spec under /contracts stays the frozen SSoT and is never
+              hand-edited.
+            -->
+            <plugin>
+                <groupId>org.openapitools</groupId>
+                <artifactId>openapi-generator-maven-plugin</artifactId>
+                <version>${openapi-generator.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-card-api</id>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                        <phase>generate-sources</phase>
+                        <configuration>
+                            <!-- The frozen contract SSoT (relative path into /contracts). -->
+                            <inputSpec>${openapi.spec.file}</inputSpec>
+                            <generatorName>spring</generatorName>
+                            <!-- Plugin auto-adds <output>/src/main/java as a compile source root. -->
+                            <output>${project.build.directory}/generated-sources/openapi</output>
+                            <!-- Generated API interfaces (CardsApi, HealthApi). -->
+                            <apiPackage>com.carddemo.card.api</apiPackage>
+                            <!-- Generated DTO models (Card, ActiveStatusEnum, ...). -->
+                            <modelPackage>com.carddemo.card.model</modelPackage>
+                            <generateApis>true</generateApis>
+                            <generateModels>true</generateModels>
+                            <generateSupportingFiles>true</generateSupportingFiles>
+                            <configOptions>
+                                <!-- QA finding INFO-1: hide the @Generated(date=...) timestamp so the build-output
+                                     Java sources are byte-deterministic across rebuilds (no committed/gated impact). -->
+                                <hideGenerationTimestamp>true</hideGenerationTimestamp>
+                                <!-- Generate ONLY API interfaces + models (no controllers, no app, no pom). -->
+                                <interfaceOnly>true</interfaceOnly>
+                                <!-- Emit jakarta.* imports (Spring Boot 3 / Jakarta EE 10). -->
+                                <useSpringBoot3>true</useSpringBoot3>
+                                <!-- One interface per OpenAPI tag -> CardsApi + HealthApi. -->
+                                <useTags>true</useTags>
+                                <!-- Avoids the springdoc dependency (default is springdoc). -->
+                                <documentationProvider>none</documentationProvider>
+                                <!-- Avoids the swagger-annotations dependency (default swagger2). -->
+                                <annotationLibrary>none</annotationLibrary>
+                                <!-- Avoids the jackson-databind-nullable dependency (default true uses JsonNullable). -->
+                                <openApiNullable>false</openApiNullable>
+                                <!-- Interface methods return ResponseEntity<T> so the controller can return 200/400/404/500. -->
+                                <useResponseEntity>true</useResponseEntity>
+                                <!-- Consistent Jakarta imports. -->
+                                <useJakartaEe>true</useJakartaEe>
+                                <sourceFolder>src/main/java</sourceFolder>
+                            </configOptions>
+                        </configuration>
+                    </execution>
+                </executions>
+                <!--
+                  Security override (finding M12): the openapi-generator 7.23.0
+                  plugin realm otherwise resolves vulnerable build-time
+                  transitives — Jackson 2.21.1, Handlebars 4.3.1, and
+                  Plexus-Utils 4.0.0 (high-severity advisories incl.
+                  CVE-2025-67030 Directory Traversal in plexus-utils). These
+                  plugin-scoped <dependencies> pin patched, compatible versions
+                  on the GENERATOR classpath ONLY (they do not touch the runtime
+                  graph) while retaining the pinned engine (${openapi-generator.version}).
+                  handlebars-jackson2 is intentionally left at its terminal 4.3.1
+                  (the module was dropped in handlebars.java 4.4+); the `spring`
+                  generator renders via Mustache, so the Handlebars helper is
+                  never instantiated — verified by byte-identical generate-sources
+                  output after this override.
+                -->
+                <dependencies>
+                    <!-- CVE-2025-67030 (Directory Traversal) fixed in 4.0.3. -->
+                    <dependency>
+                        <groupId>org.codehaus.plexus</groupId>
+                        <artifactId>plexus-utils</artifactId>
+                        <version>4.0.3</version>
+                    </dependency>
+                    <!-- Path-traversal + transitive commons-lang3 advisory fixed by 4.5.x. -->
+                    <dependency>
+                        <groupId>com.github.jknack</groupId>
+                        <artifactId>handlebars</artifactId>
+                        <version>4.5.2</version>
+                    </dependency>
+                    <!-- Aligned patched Jackson 2.21.5 across the generator classpath. -->
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-databind</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.core</groupId>
+                        <artifactId>jackson-core</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-guava</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-joda</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.datatype</groupId>
+                        <artifactId>jackson-datatype-jsr310</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                    <dependency>
+                        <groupId>com.fasterxml.jackson.dataformat</groupId>
+                        <artifactId>jackson-dataformat-yaml</artifactId>
+                        <version>2.21.5</version>
+                    </dependency>
+                </dependencies>
+            </plugin>
+        </plugins>
+    </build>
+</project>
