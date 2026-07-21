@@ -2,6 +2,9 @@ package com.carddemo.bff.config;
 
 import java.time.Duration;
 
+import com.fasterxml.jackson.databind.MapperFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.json.JsonMapper;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.http.client.ClientHttpRequestFactoryBuilder;
@@ -11,6 +14,7 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.client.ClientHttpRequestFactory;
 import org.springframework.http.client.ClientHttpRequestInterceptor;
+import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.context.request.RequestAttributes;
 import org.springframework.web.context.request.RequestContextHolder;
@@ -120,12 +124,30 @@ public class OpenApiConfig {
      *
      * <p>Configured with (a) an explicit {@link ClientHttpRequestFactory} carrying connect and read
      * timeouts so a slow/hanging card-svc fails within a bounded time; (b) the correlation-ID
-     * forwarding interceptor; and (c) the Authorization (bearer token) forwarding interceptor. The
-     * two interceptors are independent (they copy distinct headers), so their relative order is
-     * immaterial.</p>
+     * forwarding interceptor; (c) the Authorization (bearer token) forwarding interceptor (the two
+     * interceptors are independent &mdash; they copy distinct headers &mdash; so their relative order
+     * is immaterial); and (d) a strict JSON message converter (QA finding API-05) that replaces the
+     * default lenient one so a card-svc {@code 2xx} body whose scalar shapes violate the frozen
+     * contract fails deserialization instead of being silently coerced.</p>
+     *
+     * <p><strong>Strict downstream deserialization (API-05).</strong> The default RestClient Jackson
+     * converter is lenient: it would coerce a JSON number sent for a {@code String} field (e.g.
+     * {@code "cardNumber": 123}) into its string form and accept it, so a contract-invalid downstream
+     * body surfaced to the UI as a {@code 200}. This client instead uses
+     * {@link #strictDownstreamJacksonConverter()}, whose {@link ObjectMapper} disables
+     * {@code ALLOW_COERCION_OF_SCALARS} (rejecting string&nbsp;-&gt;&nbsp;boolean/integer/float) and
+     * applies {@link JacksonCoercionConfig#applyStrictTextualScalarCoercion(ObjectMapper)} (rejecting
+     * number/boolean&nbsp;-&gt;&nbsp;String) &mdash; the same single-source-of-truth policy the bff
+     * enforces on its inbound bodies. A body that cannot be deserialized under this policy raises a
+     * {@code RestClientException} during extraction, which {@code CardDetailAggregator} translates to a
+     * {@code DownstreamResponseException} mapped to {@code 502 Bad Gateway}. Structural violations that
+     * still deserialize (e.g. a missing required field, leaving it {@code null}) are caught by the
+     * complementary bean-validation pass in {@code CardDetailAggregator}, which maps them to the same
+     * {@code 502}. Valid numeric widening (integer for a {@code double}) remains accepted.</p>
      *
      * @return a synchronous {@link RestClient} pre-configured with the card-svc base URL, bounded
-     *         connect/read timeouts, and the correlation-ID + Authorization forwarding interceptors
+     *         connect/read timeouts, the correlation-ID + Authorization forwarding interceptors, and
+     *         the strict downstream JSON converter
      */
     @Bean
     RestClient cardServiceRestClient() {
@@ -134,6 +156,14 @@ public class OpenApiConfig {
                 .requestFactory(cardServiceRequestFactory())
                 .requestInterceptor(correlationIdForwardingInterceptor())
                 .requestInterceptor(authorizationForwardingInterceptor())
+                .messageConverters(converters -> {
+                    // Replace the default lenient Jackson converter with the strict one so downstream
+                    // response bodies are held to the frozen contract's scalar types (API-05). Removing
+                    // the default first keeps exactly one JSON POJO converter, avoiding ambiguity over
+                    // which converter reads the card-svc application/json body.
+                    converters.removeIf(MappingJackson2HttpMessageConverter.class::isInstance);
+                    converters.add(0, strictDownstreamJacksonConverter());
+                })
                 .build();
     }
 
@@ -186,6 +216,42 @@ public class OpenApiConfig {
                 .build(ClientHttpRequestFactorySettings.defaults()
                         .withConnectTimeout(Duration.ofMillis(connectTimeoutMs))
                         .withReadTimeout(Duration.ofMillis(readTimeoutMs)));
+    }
+
+    /**
+     * Builds the strict JSON message converter used to deserialize the downstream card-svc response
+     * body (QA finding API-05), replacing the RestClient's default lenient Jackson converter.
+     *
+     * <p>The backing {@link ObjectMapper} is a dedicated, self-contained instance &mdash; deliberately
+     * <em>not</em> the shared MVC {@code ObjectMapper} bean &mdash; so tightening it for outbound
+     * downstream reads never perturbs the bff's inbound request/response handling. It applies both
+     * halves of the "no cross-type scalar coercion" policy:</p>
+     * <ul>
+     *   <li>{@link MapperFeature#ALLOW_COERCION_OF_SCALARS} is disabled at build time, rejecting
+     *       coercion of a JSON <em>string</em> into a non-textual scalar
+     *       (string&nbsp;-&gt;&nbsp;boolean/integer/float); and</li>
+     *   <li>{@link JacksonCoercionConfig#applyStrictTextualScalarCoercion(ObjectMapper)} rejects
+     *       coercion of a non-textual JSON scalar into a {@code String}
+     *       (number/boolean&nbsp;-&gt;&nbsp;String) &mdash; reusing the bff's single source of truth
+     *       for that rule so inbound and outbound strictness can never drift apart.</li>
+     * </ul>
+     *
+     * <p>All five generated {@code CardDetail} fields are textual/enum, so this policy makes any
+     * numeric-or-boolean-for-string mismatch in a card-svc {@code 2xx} body fail extraction (raising a
+     * {@code RestClientException} the aggregator maps to {@code 502}). The mapper registers no extra
+     * modules because the contract DTO carries none (all {@code String}/enum fields with the enum's own
+     * {@code @JsonCreator}); valid numeric widening is preserved because only the {@code Textual}
+     * logical type is constrained.</p>
+     *
+     * @return a {@link MappingJackson2HttpMessageConverter} backed by the strict, coercion-disabled
+     *         {@link ObjectMapper}
+     */
+    private MappingJackson2HttpMessageConverter strictDownstreamJacksonConverter() {
+        ObjectMapper strictMapper = JsonMapper.builder()
+                .disable(MapperFeature.ALLOW_COERCION_OF_SCALARS)
+                .build();
+        JacksonCoercionConfig.applyStrictTextualScalarCoercion(strictMapper);
+        return new MappingJackson2HttpMessageConverter(strictMapper);
     }
 
     /**

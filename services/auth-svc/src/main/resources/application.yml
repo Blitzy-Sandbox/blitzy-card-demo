@@ -45,6 +45,19 @@ spring:
   flyway:
     # The dedicated /db docker-compose Flyway step owns schema + seed. This service never migrates.
     enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    # QA API-01 (contract conformance). Omit unset optional properties from serialized responses so
+    # the /auth/validate typed stub never emits `"userId":null`. TokenValidationResponse declares
+    # `userId` as an OPTIONAL string (maxLength 8, NOT nullable, NOT required) in the frozen contract;
+    # emitting an explicit null violates that schema. Every REQUIRED field (validate: `valid`; login:
+    # `token`/`userId`/`userType`) is always populated by AuthController, so omitting only the null
+    # optionals keeps every response contract-valid while removing the illegal null.
+    default-property-inclusion: non_null
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.). A contract-invalid
+      # request body must be rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
 
 server:
   # Container-internal port. docker-compose maps host 8081 -> container 8080.

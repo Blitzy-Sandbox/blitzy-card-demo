@@ -3,19 +3,11 @@ import {
   useCallback,
   useContext,
   useMemo,
-  useState,
   type ReactNode,
 } from 'react';
 import { AuthApi, type LoginRequest } from '../api/generated';
 import { apiConfig, axiosInstance } from '../api/correlationId';
-
-/**
- * sessionStorage key holding the bearer token. This provider OWNS writing and
- * clearing it. It MUST stay in lockstep with ui/app/api/correlationId.ts, whose
- * request interceptor only READS this key. The two modules are intentionally
- * decoupled and share only this literal string (no cross-import).
- */
-const TOKEN_STORAGE_KEY = 'carddemo.token';
+import { authStore, useAuthToken } from './authStore';
 
 /** Shape of the authentication context exposed via {@link useAuth}. */
 export interface AuthContextValue {
@@ -32,22 +24,23 @@ interface AuthProviderProps {
 }
 
 export function AuthProvider({ children }: AuthProviderProps) {
-  const [token, setToken] = useState<string | null>(() =>
-    sessionStorage.getItem(TOKEN_STORAGE_KEY),
-  );
+  // Token is derived LIVE from the synchronized {@link authStore} (backed by
+  // sessionStorage) rather than a lazy useState copy that could drift out of sync
+  // with sessionStorage (finding P5-SEC-01). No router hooks are used here — the
+  // provider is intentionally mounted ABOVE <BrowserRouter> (see App.tsx).
+  const token = useAuthToken();
 
   const login = useCallback(async (userId: string, password: string): Promise<void> => {
     const authApi = new AuthApi(apiConfig, undefined, axiosInstance);
     const loginRequest: LoginRequest = { userId, password };
     const response = await authApi.login({ loginRequest });
-    const issuedToken = response.data.token;
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, issuedToken);
-    setToken(issuedToken);
+    // Persist through the store so every subscriber (guard, header, sign-on)
+    // re-syncs immediately.
+    authStore.setToken(response.data.token);
   }, []);
 
   const logout = useCallback((): void => {
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-    setToken(null);
+    authStore.clear();
   }, []);
 
   const value = useMemo<AuthContextValue>(
@@ -63,5 +56,13 @@ export function useAuth(): AuthContextValue {
   if (context === undefined) {
     throw new Error('useAuth must be used within an AuthProvider');
   }
-  return context;
+  // Read the token from the synchronized store HERE (not only from the context
+  // value) so consumers that re-render on navigation — notably RouteGuard via
+  // useLocation — observe the LIVE sessionStorage token. AuthProvider sits above
+  // the router and does NOT re-render on client-side navigation, so relying on the
+  // context-carried token alone would let a token cleared mid-session go unnoticed
+  // until a full reload (finding P5-SEC-01). This adds no router hook to the
+  // provider; it simply re-derives the freshest token at the point of use.
+  const token = useAuthToken();
+  return { ...context, token, isAuthenticated: token !== null };
 }

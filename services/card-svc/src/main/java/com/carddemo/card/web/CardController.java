@@ -177,7 +177,12 @@ public class CardController implements CardsApi {
                 .cardNumber(cardNumber)
                 .accountId("0")
                 .embossedName("")
-                .expiryDate("")
+                // QA API-02 (contract conformance): expiryDate MUST satisfy the frozen contract's
+                // pattern ^\d{4}-\d{2}-\d{2}$ (Card.expiryDate). An empty string is a placeholder value
+                // that violates that pattern, so the typed stub emitted a contract-invalid body. Use a
+                // benign, pattern-valid placeholder date instead (this is a [DEFERRED] stub — no
+                // persistence, so the value is illustrative only).
+                .expiryDate("2000-01-01")
                 .activeStatus(Card.ActiveStatusEnum.Y);
         return ResponseEntity.ok(placeholder);
     }

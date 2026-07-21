@@ -20,7 +20,7 @@
  * legacy Card List screen `app/bms/COCRDLI.bms` (REFERENCE only). Generalized
  * here into a reusable, typed table.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import {
   Box,
@@ -150,29 +150,103 @@ export function DataTable<T>({
     return null;
   };
 
+  // --- Horizontal-scroll affordance (P5-UI-01) -------------------------------
+  // A wide table (e.g. the 4-column Transaction / User lists) overflows its
+  // container at narrow viewports (~357px table inside a 311px container at a
+  // 375px viewport). The overflow is correctly CONTAINED (see the TableContainer
+  // sx below), but horizontal scrollability was not visibly DISCOVERABLE, so the
+  // partially clipped trailing column ("Amount") read as truncated rather than
+  // scrollable.
+  //
+  // Fix: a dynamic edge scroll-shadow. A subtle gradient appears on whichever
+  // edge still hides content and fades out once that edge is reached — the
+  // universally understood "there is more this way" cue. The container is also
+  // exposed as a focusable, labelled scroll region ONLY while it actually
+  // overflows, so keyboard users can pan it and assistive tech announces it.
+  // Every value resolves to a theme token (`divider`, `spacing`, `primary.main`,
+  // `transitions`); `transparent`/`0`/`100%`/`auto` are token-exempt.
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+  const isScrollable = canScrollLeft || canScrollRight;
+
+  const updateScrollShadows = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const maxScrollLeft = el.scrollWidth - el.clientWidth;
+    // 1px tolerance absorbs sub-pixel rounding so a shadow reliably clears at
+    // the extremes.
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft < maxScrollLeft - 1);
+  }, []);
+
+  useEffect(() => {
+    updateScrollShadows();
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    // Recompute when the container or its content is resized (viewport change,
+    // font load, data change) in addition to the onScroll handler below.
+    const observer =
+      typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => updateScrollShadows())
+        : null;
+    observer?.observe(el);
+    window.addEventListener('resize', updateScrollShadows);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', updateScrollShadows);
+    };
+  }, [updateScrollShadows, columns, rows, dense, rowsPerPage, safePage]);
+
   return (
     <Box sx={sx}>
-      <TableContainer
-        component={Paper}
-        // Constrain the scroll container so a wide table (e.g. the 4-column
-        // Transaction / User lists at narrow viewports) scrolls horizontally
-        // WITHIN this container instead of forcing the flex `<main>` ancestor
-        // wider than the viewport, which produced document-level horizontal
-        // overflow at 375px (QA responsive finding on /transactions).
-        //
-        // Why this exact idiom: `<main>` (the app shell content region) is a
-        // flex item with the default `min-width: auto`, so its minimum size is
-        // its min-content size — which, without this rule, is the table's
-        // intrinsic min-content width. `width: 0` stops that intrinsic width
-        // from propagating up (the container contributes a 0 basis), so `<main>`
-        // stays viewport-width; `minWidth: '100%'` keeps the container rendered
-        // full-width within that now-constrained space; and `overflowX: 'auto'`
-        // restores horizontal scrolling for the table itself.
-        //
-        // Design-system compliant: `0`, `100%`, and `auto` are structural values
-        // (token-exempt) — no hardcoded spacing/color is introduced.
-        sx={{ width: 0, minWidth: '100%', overflowX: 'auto' }}
-      >
+      {/* Relative wrapper anchors the edge scroll-shadow overlays (P5-UI-01). */}
+      <Box sx={{ position: 'relative' }}>
+        <TableContainer
+          ref={scrollRef}
+          component={Paper}
+          onScroll={updateScrollShadows}
+          // Expose the container as a focusable, labelled scroll region ONLY
+          // while it actually overflows (P5-UI-01), so keyboard users can pan the
+          // table and assistive tech announces it — without adding a stray
+          // tab-stop when the table already fits.
+          {...(isScrollable
+            ? {
+                tabIndex: 0,
+                role: 'region',
+                'aria-label': `${ariaLabel} (scrollable)`,
+              }
+            : {})}
+          // Constrain the scroll container so a wide table (e.g. the 4-column
+          // Transaction / User lists at narrow viewports) scrolls horizontally
+          // WITHIN this container instead of forcing the flex `<main>` ancestor
+          // wider than the viewport, which produced document-level horizontal
+          // overflow at 375px (QA responsive finding on /transactions).
+          //
+          // Why this exact idiom: `<main>` (the app shell content region) is a
+          // flex item with the default `min-width: auto`, so its minimum size is
+          // its min-content size — which, without this rule, is the table's
+          // intrinsic min-content width. `width: 0` stops that intrinsic width
+          // from propagating up (the container contributes a 0 basis), so
+          // `<main>` stays viewport-width; `minWidth: '100%'` keeps the container
+          // rendered full-width within that now-constrained space; and
+          // `overflowX: 'auto'` restores horizontal scrolling for the table.
+          //
+          // Design-system compliant: `0`, `100%`, and `auto` are structural
+          // values (token-exempt); the focus ring resolves to theme tokens
+          // (`spacing(0.25)` === 2px, `primary.main`).
+          sx={{
+            width: 0,
+            minWidth: '100%',
+            overflowX: 'auto',
+            '&:focus-visible': {
+              outlineStyle: 'solid',
+              outlineWidth: (theme) => theme.spacing(0.25),
+              outlineColor: (theme) => theme.palette.primary.main,
+              outlineOffset: (theme) => `-${theme.spacing(0.25)}`,
+            },
+          }}
+        >
         <Table size={dense ? 'small' : 'medium'} aria-label={ariaLabel}>
           <TableHead>
             <TableRow>
@@ -214,7 +288,40 @@ export function DataTable<T>({
             )}
           </TableBody>
         </Table>
-      </TableContainer>
+        </TableContainer>
+        {/* Left edge cue — visible only when scrolled away from the start. */}
+        <Box
+          aria-hidden
+          sx={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: 0,
+            width: (theme) => theme.spacing(2),
+            pointerEvents: 'none',
+            background: (theme) =>
+              `linear-gradient(to right, ${theme.palette.divider}, transparent)`,
+            opacity: canScrollLeft ? 1 : 0,
+            transition: (theme) => theme.transitions.create('opacity'),
+          }}
+        />
+        {/* Right edge cue — visible only when more content lies to the right. */}
+        <Box
+          aria-hidden
+          sx={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            right: 0,
+            width: (theme) => theme.spacing(2),
+            pointerEvents: 'none',
+            background: (theme) =>
+              `linear-gradient(to left, ${theme.palette.divider}, transparent)`,
+            opacity: canScrollRight ? 1 : 0,
+            transition: (theme) => theme.transitions.create('opacity'),
+          }}
+        />
+      </Box>
       {pagination ? (
         <TablePagination
           component="div"

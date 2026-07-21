@@ -112,6 +112,18 @@ export function useCardDetail(cardNumber: string | undefined): UseCardDetailResu
         // Status mapping is exact: 404 → Empty state (card not found);
         // anything else (500 / network / unknown) → Error state.
         if (isAxiosError(err) && err.response?.status === 404) {
+          // P6-CONSOLE-01: a 404 is an EXPECTED client outcome (unknown card), not
+          // an application error, so it is handled as the Empty state here and is
+          // deliberately NOT logged — this file (and the whole ui/ tree) emit no
+          // app-level console output. The browser still records the failed XHR
+          // ("Failed to load resource … 404") in the Network/Console; that entry is
+          // emitted by the user agent at the network layer and cannot be suppressed
+          // from JavaScript. Eliminating it would require the BFF to answer a
+          // non-404 "optional lookup" response, which the FROZEN OpenAPI contract
+          // (AAP §0.8 — contracts versioned & frozen) forbids this run. The residual
+          // browser log is therefore intentional and acceptable under AAP
+          // frozen-contract precedence; a future contract-versioned optional lookup
+          // is the only fully clean-console path.
           setNotFound(true);
         } else {
           setError(err);

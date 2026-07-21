@@ -2,8 +2,9 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
   name: blitzy-card-demo
-  description: AWS CardDemo COBOL mainframe application migrated to Java 25 + Spring
-    Boot 3.x
+  description: AWS CardDemo COBOL mainframe application modernized as a Java 21 +
+    Spring Boot 3.5 walking skeleton — Oracle 23ai, OpenAPI 3.1 contract-first,
+    React 19 + MUI SPA + BFF, orchestrated with docker-compose.
   tags:
   - COBOL
   - cobol
@@ -26,7 +27,7 @@ metadata:
   - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo
     title: GitHub Repository
   - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/pull/1
-    title: 'PR #1: COBOL to Java 25 Migration'
+    title: 'PR #1: CardDemo Modernized Walking Skeleton'
     icon: github
   - url: https://github.com/Blitzy-Sandbox/blitzy-card-demo/tree/main/blitzy/documentation
     title: Blitzy Documentation

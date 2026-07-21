@@ -1,5 +1,20 @@
 # Technical Specification
 
+!!! danger "Superseded design — NOT authoritative for the walking-skeleton run"
+    This specification describes an **earlier, superseded design** — a full
+    **Java 25 LTS / Spring Boot 3.x** migration to **PostgreSQL 16** with **AWS
+    S3/SQS/SNS (via LocalStack)**, **Spring Batch**, a
+    Micrometer/Jaeger/Prometheus/Grafana observability stack, and a **REST-only**
+    backend with the browser UI explicitly excluded. It is retained **only as
+    historical context**. The **authoritative** documentation for this repository is
+    the walking-skeleton set: start at the [Skeleton Overview](skeleton/README.md)
+    and the [Architecture](skeleton/architecture.md). The skeleton run instead pins
+    **Java 21 / Spring Boot 3 on Oracle 23ai**, a **React 19 + MUI SPA + BFF** UI
+    tier, **OpenAPI 3.1**-generated clients, and a **docker-compose single-VM**
+    deploy (per the AAP §0.1.2 conflict-resolution note). Paths, commands, datasets,
+    and component references throughout this document refer to that superseded design
+    and do **not** exist in the skeleton repository.
+
 # 0. Agent Action Plan
 
 ## 0.1 Intent Clarification

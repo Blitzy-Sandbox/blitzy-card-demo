@@ -37,8 +37,26 @@ export default function MainMenu() {
         <Grid container spacing={2}>
           {MAIN_MENU_ITEMS.map((option) => (
             <Grid key={option.path} size={{ xs: 12, sm: 6, md: 4 }}>
-              <Card variant="outlined">
-                <CardActionArea component={Link} to={option.path}>
+              {/* P5-UI-02: give every tile a UNIFORM height so a wrapping label
+                  (e.g. "Transaction Reports" at the md 3-column width) no longer
+                  renders taller than its single-line row peers, and the last-row
+                  tile ("Bill Payment") matches the rest — fixing the uneven /
+                  orphaned rows at 900px. The Card fills its (stretched) grid cell
+                  (height 100%); the CardActionArea sets a token-derived minimum
+                  height (theme.spacing(11) = 88px, sized to fit a 2-line label) and
+                  centers the label vertically, so short and wrapped labels render at
+                  the same height. */}
+              <Card variant="outlined" sx={{ height: '100%' }}>
+                <CardActionArea
+                  component={Link}
+                  to={option.path}
+                  sx={{
+                    height: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    minHeight: (theme) => theme.spacing(11),
+                  }}
+                >
                   <CardContent>
                     {/* Render as an <h2> (component) while keeping the subtitle1
                         visual scale (variant): the page title from PageContainer is

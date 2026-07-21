@@ -95,12 +95,12 @@ RUN mvn -B -DskipTests clean package
 # 5 HIGH CVEs; the -noble line ships no pebble. The digest freezes the scanned image.
 FROM eclipse-temurin:21-jre-noble@sha256:373787d1d45a87f084fda43e7de0e9acf5eedee049446efac738f13587ec4c64 AS runtime
 
-# The docker-compose healthcheck calls `curl -f http://localhost:8080/actuator/health`,
-# so curl is installed explicitly (independent of base drift). Drop the apt
-# lists to keep the runtime layer small.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+# curl -- used by the image-level HEALTHCHECK below and the docker-compose
+# `service_healthy` probe (`curl -f http://localhost:8080/actuator/health`) -- is
+# ALREADY provided by the eclipse-temurin:21-jre-noble base image, so NO package
+# install is needed. Dropping the redundant `apt-get install curl` removes a
+# build-time network dependency and the Hadolint DL3008 unpinned-package finding
+# (P7-DOCKER-HADOLINT); the curl-based health probes keep working unchanged.
 
 # Run as a dedicated non-root user with a fixed UID/GID (defence in depth; a
 # deterministic non-root UID also plays well with hardened orchestrators that
@@ -109,7 +109,6 @@ RUN apt-get update \
 # A regular (non --system) account is used so the fixed UID 1001 does not trip
 # the SYS_UID_MAX check; --user-group creates a matching `spring` group.
 RUN useradd --uid 1001 --user-group --create-home --shell /usr/sbin/nologin spring
-USER spring
 
 WORKDIR /app
 
@@ -119,6 +118,16 @@ WORKDIR /app
 # so exactly one file is copied to the single-file target /app/app.jar.
 COPY --from=build --chown=spring:spring \
      /build/services/useradmin-svc/target/useradmin-svc-*.jar /app/app.jar
+
+# Drop privileges AFTER WORKDIR + COPY (finding P7-USERADMIN-FS). Because both
+# `WORKDIR /app` and the COPY above run as root, the /app directory is created
+# ROOT-OWNED (mode 755) and is therefore READ-ONLY to the unprivileged `spring`
+# runtime user -- exactly matching the six sibling services. (Previously
+# `USER spring` preceded `WORKDIR /app`, so /app was created owned by `spring`
+# and was writable at runtime -- the defect this finding reported.) The jar is
+# chowned to `spring` purely so it is readable; `java -jar` needs no write access
+# and Spring Boot uses the system temp dir (never /app) at runtime.
+USER spring
 
 # Container listens on 8080 (matches the application.yml SERVER_PORT default and
 # the SERVER_PORT=8080 injected by docker-compose). EXPOSE is documentation only;

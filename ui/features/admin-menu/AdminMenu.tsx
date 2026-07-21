@@ -28,7 +28,7 @@
  * `app/cpy/COADM02Y.cpy`, which enumerates four security options; only the two
  * that map to static modern routes are surfaced as navigation here:
  *   1. User List (Security)  → COUSR00C → /users
- *   2. User Add  (Security)  → COUSR01C → /users/new
+ *   2. Add User  (Security)  → COUSR01C → /users/new
  * Options 3 (User Update → COUSR02C) and 4 (User Delete → COUSR03C) require a
  * selected user id and have no static route, so they are intentionally omitted.
  * The legacy artifacts are REFERENCE only; none of their logic is ported.
@@ -69,8 +69,11 @@ export default function AdminMenu() {
           <ListItemButton component={RouterLink} to="/users">
             <ListItemText primary="User List" secondary="Security" />
           </ListItemButton>
+          {/* P6-COPY-01: canonical label "Add User" — matches the destination
+              screen H1 (ui/features/user-add/UserAdd.tsx) and the legacy BMS map
+              title [COUSR01.bms], so the menu entry and its destination agree. */}
           <ListItemButton component={RouterLink} to="/users/new">
-            <ListItemText primary="User Add" secondary="Security" />
+            <ListItemText primary="Add User" secondary="Security" />
           </ListItemButton>
         </List>
       </Stack>

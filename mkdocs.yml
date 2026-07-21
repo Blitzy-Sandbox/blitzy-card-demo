@@ -1,8 +1,73 @@
-site_name: 'blitzy-card-demo'
+# =============================================================================
+# MkDocs / Backstage TechDocs configuration — CardDemo Modernized Walking Skeleton
+#
+# AUTHORITATIVE documentation for this repository is the walking-skeleton set
+# under docs/skeleton/**, describing the run-contract stack:
+#   Java 21 + Spring Boot 3.5.x  ·  Oracle 23ai (gvenzl/oracle-free, FREEPDB1)
+#   OpenAPI 3.1 contract-first codegen  ·  React 19 + MUI v9 SPA + thin BFF
+#   docker-compose single-VM deploy unit (no Kubernetes, no serverless).
+#
+# The docs/index.md landing (rewritten as the authoritative overview) points at
+# the skeleton set. docs/project-guide.md and docs/technical-specifications.md
+# describe a SUPERSEDED design (Java 25 / PostgreSQL 16 / AWS S3-SQS-SNS /
+# Spring Batch) and are retained ONLY as archived historical context per the
+# AAP §0.1.2 conflict-resolution note; each carries a prominent superseded
+# banner and is grouped under the "Archived — Superseded Design" nav section.
+#
+# MERMAID RENDERING: this repository is rendered by Backstage TechDocs
+# (techdocs-core). Diagrams are emitted through the PyMdown SuperFences custom
+# fence (fence_code_format -> <pre class="mermaid">). That HTML is rendered as a
+# diagram by BOTH Material for MkDocs' native Mermaid loader (local
+# `mkdocs serve`, via techdocs-core's Material theme) and the Backstage TechDocs
+# Mermaid addon. The mkdocs-mermaid2 plugin was intentionally REMOVED: under
+# techdocs-core its client auto-loader is bypassed (so diagrams degraded to code
+# blocks) and it injected a `base_url`-dependent script that raised
+# "base_url is not defined" in the TechDocs reader.
+# =============================================================================
+site_name: CardDemo Modernized Walking Skeleton
+site_description: >-
+  Modernized CardDemo walking skeleton — Java 21 / Spring Boot 3.5.x, Oracle
+  23ai, OpenAPI 3.1 contract-first, React 19 + MUI v9 SPA + BFF, orchestrated
+  with docker-compose. Authoritative docs live under "Skeleton".
+site_url: https://blitzy-sandbox.github.io/blitzy-card-demo/
+
+theme:
+  name: material
+
+# Primary navigation puts the authoritative skeleton documentation first; the
+# superseded design docs are grouped last under an explicit "Archived" heading.
 nav:
   - Home: index.md
-  - Project Guide: project-guide.md
-  - Technical Specifications: technical-specifications.md
+  - Skeleton (Authoritative):
+      - Overview: skeleton/README.md
+      - Architecture: skeleton/architecture.md
+      - Write-Ownership Matrix: skeleton/write-ownership-matrix.md
+      - "[DEFERRED] Epic Register": skeleton/deferred-epics.md
+  - Archived — Superseded Design:
+      - Project Guide (superseded): project-guide.md
+      - Technical Specifications (superseded): technical-specifications.md
+
 plugins:
-  - techdocs-core
-  - mermaid2
+  # techdocs-core is the Backstage TechDocs meta-plugin: it activates the
+  # Material theme, the search plugin, and the PyMdown extension family used by
+  # the TechDocs reader.
+  #
+  # use_material_search: true switches search from the classic MkDocs
+  # SearchPlugin to Material's native search. The classic plugin injects a
+  # `search/main.js` that references an undefined global `base_url` (defined only
+  # by the classic MkDocs theme, not by Material), which raised
+  # "Uncaught ReferenceError: base_url is not defined" in the browser console.
+  # Material's search uses its own scope (__md_scope) and keeps the console clean
+  # while preserving full search integration.
+  - techdocs-core:
+      use_material_search: true
+
+markdown_extensions:
+  # Force Mermaid fenced blocks through the generic SuperFences code formatter
+  # so they emit <pre class="mermaid"> (the render-ready form) instead of a
+  # highlighted code block. This is the Backstage/Material-recommended fence.
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format

@@ -22,6 +22,12 @@ spring:
         dialect: org.hibernate.dialect.OracleDialect
   flyway:
     enabled: ${SPRING_FLYWAY_ENABLED:false}
+  jackson:
+    mapper:
+      # QA API-04 (validation/security). Reject silent scalar coercion on inbound @RequestBody
+      # deserialization (JSON number -> String, string "true" -> boolean, etc.) so a contract-invalid
+      # request body is rejected with 400 rather than coerced and accepted as 200/201.
+      allow-coercion-of-scalars: false
 
 server:
   port: ${SERVER_PORT:8080}

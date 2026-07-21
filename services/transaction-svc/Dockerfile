@@ -86,10 +86,12 @@ RUN mvn -B -q -DskipTests clean package
 # 5 HIGH CVEs; the -noble line ships no pebble. The digest freezes the scanned image.
 FROM eclipse-temurin:21-jre-noble@sha256:373787d1d45a87f084fda43e7de0e9acf5eedee049446efac738f13587ec4c64 AS runtime
 
-# curl for the image-level HEALTHCHECK and the compose healthcheck.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+# curl -- used by the image-level HEALTHCHECK below and the docker-compose
+# `service_healthy` probe (`curl -f http://localhost:8080/actuator/health`) -- is
+# ALREADY provided by the eclipse-temurin:21-jre-noble base image, so NO package
+# install is needed. Dropping the redundant `apt-get install curl` removes a
+# build-time network dependency and the Hadolint DL3008 unpinned-package finding
+# (P7-DOCKER-HADOLINT); the curl-based health probes keep working unchanged.
 
 # Dedicated non-root system user (primary group root/gid 0 so the root-owned jar
 # stays readable; java -jar needs only read access).

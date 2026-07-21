@@ -1,7 +1,11 @@
 package com.carddemo.bff.web;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
@@ -162,6 +166,21 @@ public class GlobalExceptionHandler {
      * the client-facing problem body.
      */
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * Matches any run of 13&ndash;19 consecutive digits &mdash; the ISO/IEC&nbsp;7812 Primary Account
+     * Number (PAN) length range &mdash; used to redact card numbers from text written to the logs
+     * (QA finding SEC-01 / CWE-532). A downstream connection failure or timeout on the Card Detail
+     * tracer raises a {@code ResourceAccessException} whose message embeds the fully-expanded request
+     * URI, e.g. {@code "I/O error on GET request for \"http://card-svc:8080/cards/0500024453765740\""},
+     * so logging that exception verbatim would persist the seeded card's 16-digit PAN to the server
+     * log. Masking a 13&ndash;19 digit range (rather than exactly 16) also covers Visa's 13-digit and
+     * 19-digit variants; the correlation id is a hyphenated UUID whose longest pure-digit run is at
+     * most 12, so it is never affected. */
+    private static final Pattern PAN_PATTERN = Pattern.compile("\\d{13,19}");
+
+    /** Number of trailing PAN digits left visible after masking (PCI-DSS permits the last four). */
+    private static final int PAN_VISIBLE_SUFFIX = 4;
 
     /**
      * Maps the tracer's empty state to <strong>404 Not Found</strong>
@@ -421,7 +440,11 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(CardDetailAggregator.DownstreamResponseException.class)
     public ResponseEntity<ProblemDetail> handleDownstreamResponse(CardDetailAggregator.DownstreamResponseException ex) {
-        log.error("Downstream card-svc returned an unusable response body; mapping to 502 Bad Gateway", ex);
+        // SEC-01: log the full diagnostic stack trace but with any embedded PAN redacted. The cause
+        // chain here (a failed body extraction or a CardDetail constraint violation) can carry the
+        // card number, so the raw exception is never handed to the logger verbatim.
+        log.error("Downstream card-svc returned an unusable response body; mapping to 502 Bad Gateway\n{}",
+                sanitizedStackTrace(ex));
         return problem(HttpStatus.BAD_GATEWAY, "Bad Gateway",
                 "Error retrieving card detail from the card service");
     }
@@ -444,7 +467,10 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ProblemDetail> handleUnexpected(Exception ex) {
-        log.error("Unhandled exception mapped to 500 Internal Server Error", ex);
+        // SEC-01: a downstream connection failure/timeout arrives here as a ResourceAccessException
+        // whose message embeds the expanded "/cards/{cardNumber}" URI. Log the full stack trace with
+        // any PAN redacted rather than passing the raw exception to the logger.
+        log.error("Unhandled exception mapped to 500 Internal Server Error\n{}", sanitizedStackTrace(ex));
         return problem(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error",
                 "The request could not be completed due to an unexpected error");
     }
@@ -487,5 +513,52 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_PROBLEM_JSON)
                 .body(buildProblem(status, title, detail));
+    }
+
+    /**
+     * Renders a throwable's full stack trace (top-level message, every nested cause message, any
+     * suppressed-exception text, and all frames) to a string and redacts any embedded PAN before it
+     * reaches the logs (QA finding SEC-01 / CWE-532). Applying the mask to the ENTIRE rendered trace
+     * in a single pass guarantees a card number is scrubbed wherever it appears &mdash; most notably a
+     * {@code ResourceAccessException} whose message embeds the expanded {@code /cards/{cardNumber}}
+     * request URI &mdash; while preserving the complete stack trace for diagnosis. Only the exception
+     * <em>text</em> is transformed; the {@code ERROR}-level severity and the correlation-id log prefix
+     * are unaffected.
+     *
+     * @param throwable the exception to render and redact; must not be {@code null}
+     * @return the complete stack trace as text with every 13&ndash;19 digit run masked to its last
+     *         {@value #PAN_VISIBLE_SUFFIX} digits
+     */
+    private static String sanitizedStackTrace(Throwable throwable) {
+        StringWriter stringWriter = new StringWriter();
+        throwable.printStackTrace(new PrintWriter(stringWriter));
+        return maskPan(stringWriter.toString());
+    }
+
+    /**
+     * Masks every run of 13&ndash;19 digits in the supplied text (a candidate PAN) by replacing all
+     * but its last {@value #PAN_VISIBLE_SUFFIX} digits with {@code '*'} &mdash; e.g.
+     * {@code 0500024453765740 -> ************5740} (QA finding SEC-01 / CWE-532). Retaining the last
+     * four digits keeps log lines correlatable while satisfying PCI-DSS masking guidance. Text that
+     * matches no PAN-length run is returned unchanged, and a {@code null} input yields {@code null}.
+     * Because {@link #PAN_PATTERN} requires at least 13 digits, the star-count is always positive.
+     *
+     * @param text the text to redact (an exception message or a rendered stack trace)
+     * @return the text with every PAN-length digit run masked, or {@code null} when {@code text} is null
+     */
+    static String maskPan(String text) {
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        Matcher matcher = PAN_PATTERN.matcher(text);
+        StringBuilder sb = new StringBuilder(text.length());
+        while (matcher.find()) {
+            String digits = matcher.group();
+            String masked = "*".repeat(digits.length() - PAN_VISIBLE_SUFFIX)
+                    + digits.substring(digits.length() - PAN_VISIBLE_SUFFIX);
+            matcher.appendReplacement(sb, Matcher.quoteReplacement(masked));
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
     }
 }

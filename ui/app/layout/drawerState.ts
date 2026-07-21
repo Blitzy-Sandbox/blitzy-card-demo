@@ -28,6 +28,20 @@ import { useSyncExternalStore } from 'react';
  * so {@link getSnapshot} is referentially safe for `useSyncExternalStore`.
  */
 
+/**
+ * DOM id of the MOBILE (temporary) navigation container. Shared between the
+ * AppBar hamburger toggle ({@link ../layout/Header.Header}, via `aria-controls`)
+ * and the temporary Drawer's `<nav>` ({@link ../layout/NavMenu.NavMenu}) so the
+ * control unambiguously targets exactly ONE navigation subtree. The permanent
+ * (desktop) Drawer uses a DIFFERENT id (`primary-navigation-desktop`, local to
+ * NavMenu). This removes the duplicate `id="primary-navigation"` that BOTH the
+ * permanent and the keep-mounted temporary Drawers previously rendered
+ * simultaneously (finding P5-A11Y-02: an invalid, ambiguous `aria-controls`
+ * target). Defined in this shared module — already the single decoupling point
+ * between the two sibling components — so the literal cannot drift.
+ */
+export const MOBILE_NAV_ID = 'primary-navigation-mobile';
+
 /** Current open/closed state of the mobile navigation Drawer. */
 let open = false;
 

@@ -21,7 +21,13 @@ export function AppShell() {
     <Box sx={{ display: 'flex' }}>
       <Header />
       <NavMenu />
-      <Box component="main" sx={{ flexGrow: 1, p: 3 }}>
+      {/* P5-A11Y-03: `minWidth: 0` lets the main region shrink below its
+          content's intrinsic min-content width (a flex child defaults to
+          `min-width: auto`, which otherwise propagates wide children up and forces
+          document-level horizontal overflow at extreme-narrow / 200%-zoom widths).
+          Padding is reduced at the xs breakpoint so core content reflows without a
+          horizontal scrollbar. */}
+      <Box component="main" sx={{ flexGrow: 1, minWidth: 0, p: { xs: 2, sm: 3 } }}>
         <Toolbar />
         <Outlet />
       </Box>

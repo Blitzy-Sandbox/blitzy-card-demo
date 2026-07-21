@@ -74,7 +74,12 @@ FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2
 # image's built-in non-root `nginx` user (uid 101). Container port stays 80 to
 # match the documented docker-compose ${UI_PORT}:80 mapping, so nothing
 # downstream needs to change.
-RUN apk add --no-cache libcap \
+#
+# libcap is REQUIRED for the `setcap` below, so it cannot be removed; instead it
+# is pinned to an EXACT version (Hadolint DL3018 / finding P7-DOCKER-HADOLINT).
+# 2.78-r0 is the version published in the pinned nginx:alpine 3.24 base image's
+# apk repository, so this install is reproducible and cannot silently drift.
+RUN apk add --no-cache libcap=2.78-r0 \
  && setcap 'cap_net_bind_service=+ep' /usr/sbin/nginx \
  && chown -R nginx:nginx /var/cache/nginx /var/log/nginx \
  && touch /var/run/nginx.pid && chown nginx:nginx /var/run/nginx.pid
@@ -84,8 +89,21 @@ RUN apk add --no-cache libcap \
 # `http {}` block includes /etc/nginx/conf.d/*.conf.
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 
+# Shared security response headers, `include`d by nginx.conf at the server scope
+# and inside the cache/log-tuned locations (findings M06 + P7-PERF/P7-LOG-PAN).
+# Lives OUTSIDE /etc/nginx/conf.d so the stock `include conf.d/*.conf` does not
+# load it as a standalone server block — it is pulled in only via explicit
+# `include /etc/nginx/snippets/security-headers.conf;`.
+COPY nginx-security-headers.conf /etc/nginx/snippets/security-headers.conf
+
 # Static assets built in stage 1. The nginx.conf `root` is /usr/share/nginx/html.
 COPY --from=build /app/dist /usr/share/nginx/html
+
+# Valid static robots.txt (finding P5-SEO-01). Served from the document root by
+# the `location = /robots.txt` block so GET /robots.txt returns real robots text
+# instead of falling through to the SPA index.html. Ownership is normalized by
+# the chown below.
+COPY robots.txt /usr/share/nginx/html/robots.txt
 
 # Defense-in-depth for finding M05: even though production source maps are
 # disabled in vite.config.ts, strip any stray *.map so none can ever be served

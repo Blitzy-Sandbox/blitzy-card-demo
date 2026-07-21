@@ -10,6 +10,8 @@ import java.util.ArrayList;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
 
 /**
@@ -26,7 +28,13 @@ import org.springframework.web.bind.annotation.RestController;
  * declared <em>on the interface</em>. This controller therefore stays deliberately annotation-light:
  * it carries only {@link RestController} on the type and {@code @Override} on each method, inheriting
  * all request mappings from {@code UsersApi}. Re-declaring any mapping/binding annotation here would
- * risk duplicate or ambiguous handler registration.</p>
+ * risk duplicate or ambiguous handler registration. The <em>single deliberate exception</em> is
+ * {@link #deleteUser} (QA API-03): it carries a method-level {@code @RequestMapping} that widens the
+ * inherited {@code produces} to also accept {@code application/json}, because the frozen contract's
+ * {@code 204}-no-content success would otherwise be rejected with {@code 406} for a plain
+ * {@code Accept: application/json}. That override refines only the {@code produces} of the same
+ * handler method (it does not register a second handler); see {@link #deleteUser} for the full
+ * rationale.</p>
  *
  * <p><strong>Zero persistence (Decision E).</strong> {@code useradmin-svc} owns no JPA entity,
  * repository, or service layer and holds no schema. Consequently this controller injects nothing
@@ -166,11 +174,34 @@ public class UserController implements UsersApi {
      *
      * <p>Returns HTTP {@code 204 No Content}. Performs no deletion in the walking skeleton.</p>
      *
+     * <p><strong>QA API-03 (content-negotiation fix).</strong> This is the single deliberate
+     * exception to the "annotation-light, inherit every mapping" rule described on the type. The
+     * generated {@link UsersApi#deleteUser} interface mapping advertises
+     * {@code produces = {"application/problem+json"}} only &mdash; the OpenAPI generator derives the
+     * {@code produces} list from the union of the operation's response content types, and this
+     * operation's <em>success</em> response is {@code 204} (no body, hence no content type), so the
+     * list is populated solely from the {@code 4xx} error responses (which declare
+     * {@code application/problem+json}). The unintended consequence is that a normal
+     * {@code Accept: application/json} request is rejected with {@code 406 Not Acceptable} even though
+     * a {@code 204} carries no body to negotiate. Because the contract is a frozen single source of
+     * truth (it cannot be edited), this method-level {@code @RequestMapping} override widens
+     * {@code produces} to also accept {@code application/json} so the no-content success is returned
+     * for every reasonable {@code Accept} value. It overrides ONLY the {@code produces} of the SAME
+     * handler method (same HTTP method and {@link UsersApi#PATH_DELETE_USER} path constant), so no
+     * second/duplicate handler is registered; the {@code @PathVariable} / {@code @RequestHeader}
+     * parameter bindings and the {@code @Size} validation continue to be inherited from the interface
+     * exactly as before.</p>
+     *
      * @param userId         the user identifier from the path (validated by the interface)
      * @param xCorrelationID the optional {@code X-Correlation-ID} trace header (bound by the interface)
      * @return {@code 204 NO CONTENT}
      */
     @Override
+    @RequestMapping(
+            method = RequestMethod.DELETE,
+            value = UsersApi.PATH_DELETE_USER,
+            produces = { "application/json", "application/problem+json" }
+    )
     public ResponseEntity<Void> deleteUser(String userId, String xCorrelationID) {
         return ResponseEntity.noContent().build();
     }

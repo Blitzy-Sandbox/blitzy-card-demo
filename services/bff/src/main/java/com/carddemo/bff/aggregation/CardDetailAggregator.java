@@ -1,6 +1,11 @@
 package com.carddemo.bff.aggregation;
 
 import java.util.Optional;
+import java.util.Set;
+
+import jakarta.validation.ConstraintViolation;
+import jakarta.validation.ConstraintViolationException;
+import jakarta.validation.Validator;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -52,7 +57,10 @@ import com.carddemo.bff.model.CardDetail;
  *       {@code WHEN OTHER} file-error path) &rarr; the exception is <em>propagated</em>
  *       untouched to the web layer &rarr; UI <em>error</em> state.</li>
  *   <li>card-svc {@code 2xx} with a body that cannot be extracted into {@link CardDetail}
- *       (truncated/invalid JSON or an out-of-range enum) &rarr; translated to a
+ *       (truncated/invalid JSON, an out-of-range enum, or a scalar whose type is coerced under the
+ *       strict downstream converter), <em>or</em> a body that deserializes but violates the frozen
+ *       {@link CardDetail} contract (a missing required field, a {@code cardNumber} that is not
+ *       exactly 16 digits, an over-long {@code embossedName}, and so on) &rarr; translated to a
  *       {@link DownstreamResponseException} (mapped to {@code 502 Bad Gateway} by the web layer,
  *       with the correlation id) &rarr; UI <em>error</em> state.</li>
  * </ul>
@@ -79,17 +87,30 @@ public class CardDetailAggregator {
     private final RestClient cardServiceRestClient;
 
     /**
-     * Constructor injection of the card-svc {@link RestClient}. As the sole
-     * constructor, Spring autowires it automatically without an explicit
-     * {@code @Autowired} annotation (constructor injection is the enforced
-     * convention; no field or setter injection).
-     *
-     * @param cardServiceRestClient the synchronous client bean for card-svc; Spring
-     *                              supplies the managed {@code cardServiceRestClient}
-     *                              bean, so this is never {@code null}
+     * Bean validator used to enforce the frozen {@link CardDetail} contract on the deserialized
+     * card-svc response (QA finding API-05). Spring Boot autoconfigures a single
+     * {@link jakarta.validation.Validator} (a {@code LocalValidatorFactoryBean} backed by Hibernate
+     * Validator) because {@code spring-boot-starter-validation} is on the classpath. Held
+     * {@code final} for immutability and thread safety; {@code Validator} is thread-safe.
      */
-    public CardDetailAggregator(RestClient cardServiceRestClient) {
+    private final Validator validator;
+
+    /**
+     * Constructor injection of the card-svc {@link RestClient} and the bean {@link Validator}. As the
+     * sole constructor, Spring autowires both dependencies automatically without an explicit
+     * {@code @Autowired} annotation (constructor injection is the enforced convention; no field or
+     * setter injection).
+     *
+     * @param cardServiceRestClient the synchronous client bean for card-svc; Spring supplies the
+     *                              managed {@code cardServiceRestClient} bean, so this is never
+     *                              {@code null}
+     * @param validator             the autoconfigured bean {@link Validator} used to verify the
+     *                              downstream {@link CardDetail} against its contract constraints;
+     *                              Spring supplies the managed bean, so this is never {@code null}
+     */
+    public CardDetailAggregator(RestClient cardServiceRestClient, Validator validator) {
         this.cardServiceRestClient = cardServiceRestClient;
+        this.validator = validator;
     }
 
     /**
@@ -109,18 +130,22 @@ public class CardDetailAggregator {
      * 404 for {@link Optional#empty()}.</p>
      *
      * @param cardNumber the 16-digit natural key of the card to fetch
-     * @return the card wrapped in an {@link Optional} when card-svc returns {@code 200};
+     * @return the card wrapped in an {@link Optional} when card-svc returns {@code 200} with a body
+     *         that both deserializes and satisfies the {@link CardDetail} contract constraints;
      *         {@link Optional#empty()} when card-svc returns {@code 404} (driving the UI
      *         empty state). Any other failure ({@code 400}, {@code 5xx}, a connection error
-     *         such as {@code ResourceAccessException}, or a {@code 2xx} whose body cannot be
-     *         extracted into the contract DTO) is propagated so the web layer surfaces the UI
-     *         error state.
+     *         such as {@code ResourceAccessException}, a {@code 2xx} whose body cannot be
+     *         extracted into the contract DTO, or a {@code 2xx} whose body deserializes but violates
+     *         the contract constraints) is propagated so the web layer surfaces the UI error state.
      * @throws HttpClientErrorException for non-404 {@code 4xx} responses (e.g. {@code 400})
      * @throws org.springframework.web.client.HttpServerErrorException for {@code 5xx} responses
      * @throws org.springframework.web.client.ResourceAccessException when card-svc is
      *         unreachable or the request times out
      * @throws DownstreamResponseException when card-svc returns a {@code 2xx} whose body cannot be
-     *         extracted/deserialized into {@link CardDetail} (mapped to {@code 502} by the web layer)
+     *         extracted/deserialized into {@link CardDetail} (e.g. cross-type scalar coercion rejected
+     *         by the strict downstream converter) <em>or</em> deserializes but fails
+     *         {@link CardDetail} bean-validation (a missing required field, malformed {@code cardNumber},
+     *         over-long {@code embossedName}, and so on) &mdash; both mapped to {@code 502} by the web layer
      */
     public Optional<CardDetail> getCardDetail(String cardNumber) {
         try {
@@ -128,6 +153,25 @@ public class CardDetailAggregator {
                     .uri("/cards/{cardNumber}", cardNumber)
                     .retrieve()
                     .body(CardDetail.class);
+            if (card != null) {
+                // API-05: a 2xx body that DESERIALIZES yet violates the frozen bff CardDetail
+                // contract - e.g. an empty object "{}" that leaves the @NotNull fields null, a
+                // cardNumber that is not exactly 16 digits, or an over-long embossedName - is a
+                // downstream-dependency contract violation, not valid card data. The strict message
+                // converter (config/OpenApiConfig) already fails cross-type scalar COERCION during
+                // extraction; this bean-validation pass covers the complementary STRUCTURAL
+                // violations that still deserialize. Any violation is translated to a
+                // DownstreamResponseException (mapped to 502 Bad Gateway by the web layer, with the
+                // correlation id), mirroring the broad RestClientException branch below. The
+                // violation set is retained only as the logged cause (sanitized by
+                // GlobalExceptionHandler); the client-facing detail stays the generic message.
+                Set<ConstraintViolation<CardDetail>> violations = validator.validate(card);
+                if (!violations.isEmpty()) {
+                    throw new DownstreamResponseException(
+                            "Error retrieving card detail from the card service",
+                            new ConstraintViolationException(violations));
+                }
+            }
             return Optional.ofNullable(card);
         } catch (HttpClientErrorException.NotFound ex) {
             // Legacy COCRDSLC NOTFND -> "Did not find this card" -> UI empty state.

@@ -67,6 +67,32 @@ export const theme = createTheme({
     fontWeightBold: 700,
   },
 
+  // P5-A11Y-01: component-level MINIMUM touch/hit areas. The primary interactive
+  // controls (Sign On / Sign Out `Button`s and the mobile navigation hamburger
+  // `IconButton`) previously rendered below the WCAG 2.5.5 44x44px target size.
+  // Enforcing the minimum here — once, at the theme layer — fixes every instance
+  // app-wide (per the finding's "enforce through MUI theme/component tokens").
+  // The 44px value is expressed as `theme.spacing(5.5)` (8px base x 5.5 = 44px)
+  // so it still resolves to the design-system spacing scale rather than a
+  // hardcoded pixel literal (AAP §0.5.5 "no hardcoded values").
+  components: {
+    MuiButton: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          minHeight: theme.spacing(5.5),
+        }),
+      },
+    },
+    MuiIconButton: {
+      styleOverrides: {
+        root: ({ theme }) => ({
+          minWidth: theme.spacing(5.5),
+          minHeight: theme.spacing(5.5),
+        }),
+      },
+    },
+  },
+
   // MUI defaults, intentionally NOT overridden (documented for reference):
   //   breakpoints: xs 0 / sm 600 / md 900 / lg 1200 / xl 1536
   //   shadows:     the 25-step (0..24) MUI elevation scale

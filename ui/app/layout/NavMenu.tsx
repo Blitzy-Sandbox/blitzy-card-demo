@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import { Link as RouterLink, useLocation } from 'react-router-dom';
 import { ADMIN_NAV_ITEM, MAIN_MENU_ITEMS, type NavItem } from './navItems';
-import { drawerStore, useDrawerOpen } from './drawerState';
+import { drawerStore, useDrawerOpen, MOBILE_NAV_ID } from './drawerState';
 
 /**
  * NavMenu — the primary CardDemo navigation.
@@ -48,6 +48,15 @@ import { drawerStore, useDrawerOpen } from './drawerState';
  */
 const DRAWER_WIDTH_UNITS = 30;
 
+/**
+ * DOM id of the PERMANENT (desktop) navigation container — distinct from the
+ * mobile {@link MOBILE_NAV_ID} so the two Drawers (the temporary one stays
+ * keep-mounted) never render a duplicate id (finding P5-A11Y-02). Only the mobile
+ * id is referenced elsewhere (the AppBar toggle's `aria-controls`), so this one is
+ * local to NavMenu.
+ */
+const DESKTOP_NAV_ID = 'primary-navigation-desktop';
+
 export function NavMenu() {
   const { pathname } = useLocation();
   // Mobile Drawer open state is shared with the AppBar toggle (Header) via the
@@ -80,14 +89,17 @@ export function NavMenu() {
 
   // Shared content for both the temporary (mobile) and permanent (desktop)
   // Drawers: a Toolbar spacer, the canonical 10 main-menu items, a divider, then
-  // the separate Admin flow — all inside a single labeled <nav> landmark.
-  const navContent = (
+  // the separate Admin flow — all inside a single labeled <nav> landmark. The
+  // caller supplies a UNIQUE DOM id per Drawer so that, with the temporary Drawer
+  // kept mounted, the permanent and temporary navs never collide on a shared id
+  // (finding P5-A11Y-02).
+  const renderNavContent = (navId: string) => (
     <>
       {/* Spacer offsetting the fixed AppBar so the list starts below it. */}
       <Toolbar />
       <Box
         component="nav"
-        id="primary-navigation"
+        id={navId}
         aria-label="Primary navigation"
         sx={{ overflow: 'auto' }}
       >
@@ -116,7 +128,7 @@ export function NavMenu() {
           },
         })}
       >
-        {navContent}
+        {renderNavContent(MOBILE_NAV_ID)}
       </Drawer>
 
       {/* Permanent Drawer for md+ — the always-visible desktop rail. */}
@@ -132,7 +144,7 @@ export function NavMenu() {
           },
         })}
       >
-        {navContent}
+        {renderNavContent(DESKTOP_NAV_ID)}
       </Drawer>
     </>
   );
