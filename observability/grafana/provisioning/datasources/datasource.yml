@@ -1,0 +1,48 @@
+# ******************************************************************
+# * File         : datasource.yml
+# * Application  : CardDemo
+# * Type         : Grafana datasource provisioning
+# * Function     : Wires Grafana to the Prometheus server and the Jaeger tracing
+# *                backend so the integration sign-off gate needs no manual
+# *                configuration step to render a populated dashboard. Supplies
+# *                observability the COBOL corpus lacks entirely - its only
+# *                instrumentation is DISPLAY to SYSOUT plus the
+# *                9910-DISPLAY-IO-STATUS renderer of app/cbl/CBTRN02C.cbl.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: carddemo-prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      timeInterval: 15s
+
+  - name: Jaeger
+    uid: carddemo-jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+    isDefault: false
+    editable: false

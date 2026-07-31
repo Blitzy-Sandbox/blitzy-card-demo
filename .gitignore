@@ -1,0 +1,125 @@
+# ******************************************************************
+# * File         : .gitignore
+# * Application  : CardDemo
+# * Type         : Git exclusion rules
+# * Function     : Keeps build output, IDE state, local secrets and container
+# *                volumes out of version control. No legacy equivalent exists;
+# *                per the repository survey no ignore configuration was present
+# *                anywhere, so this convention is established rather than
+# *                inherited. NOTHING under app/ is ever ignored - the COBOL
+# *                corpus is the frozen reference of record.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+# ---- Maven build output ----
+target/
+!.mvn/wrapper/maven-wrapper.properties
+.mvn/wrapper/maven-wrapper.jar
+.mvn/.develocity/
+build/
+out/
+dependency-reduced-pom.xml
+release.properties
+pom.xml.versionsBackup
+pom.xml.releaseBackup
+pom.xml.next
+pom.xml.tag
+
+# ---- Compiled / packaged artefacts ----
+*.class
+*.jar
+*.war
+*.ear
+*.nar
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+!.mvn/wrapper/*.jar
+
+# ---- Test, coverage and scan reports ----
+surefire-reports/
+failsafe-reports/
+jacoco.exec
+jacoco-it.exec
+jacoco-merged.exec
+dependency-check-report.*
+dependency-check/
+*.hprof
+hs_err_pid*
+replay_pid*
+
+# ---- Logs ----
+logs/
+*.log
+!localstack-init/*.log.example
+
+# ---- IDE and editor state ----
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+.apt_generated/
+nbproject/private/
+*.swp
+*.swo
+*~
+
+# ---- OS noise ----
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+
+# ---- Local secrets and environment overrides (never committed) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+*.truststore
+secrets/
+credentials
+
+# ---- Container / infrastructure local state ----
+.localstack/
+volume/
+localstack-volume/
+postgres-data/
+prometheus-data/
+grafana-data/
+
+# ---- Python virtual environments (tooling only, never application code) ----
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# ---- Blitzy scratch space ----
+blitzy/
+blitzy_adhoc_test_*

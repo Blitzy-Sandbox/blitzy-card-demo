@@ -1,0 +1,92 @@
+# ******************************************************************
+# * File         : .editorconfig
+# * Application  : CardDemo
+# * Type         : Editor / formatter configuration
+# * Function     : Establishes deterministic formatting for the newly created
+# *                Java build tree. The repository survey found no formatter,
+# *                linter or style-tool configuration anywhere, so this
+# *                convention is established rather than inherited - and, per
+# *                CONTRIBUTING.md, it deliberately does NOT reach into the
+# *                frozen legacy corpus: app/, samples/ and diagrams/ are
+# *                excluded so no reformatting can ever be applied to them.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 120
+
+[*.java]
+indent_size = 4
+ij_java_class_count_to_use_import_on_demand = 999
+ij_java_names_count_to_use_import_on_demand = 999
+
+[*.{xml,yml,yaml,json}]
+indent_size = 2
+
+[*.sql]
+indent_size = 2
+
+[*.sh]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.cmd]
+end_of_line = crlf
+
+# ---- FROZEN LEGACY CORPUS: no editor rules apply ----
+# The COBOL sources, copybooks, BMS mapsets, JCL members, control cards, the
+# CICS CSD, the VSAM catalogue listing and the data fixtures are byte-for-byte
+# immutable and use CRLF terminators with significant column positions.
+[app/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset
+
+[samples/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset
+
+[diagrams/**]
+charset = unset
+end_of_line = unset
+insert_final_newline = unset
+trim_trailing_whitespace = false
+indent_style = unset
+indent_size = unset
+max_line_length = unset

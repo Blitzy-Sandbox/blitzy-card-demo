@@ -1,0 +1,194 @@
+# ******************************************************************
+# * File         : build.yml
+# * Application  : CardDemo
+# * Type         : GitHub Actions continuous integration workflow
+# * Function     : Provides the deterministic, repeatable zero-warning build
+# *                harness the migration requires. There is no legacy
+# *                equivalent - the z/OS build inputs were the three compile
+# *                templates samples/BATCMP.jcl, samples/CICCMP.jcl and
+# *                samples/BMSCMP.jcl driven by the three procedures
+# *                samples/BUILDBAT.prc, samples/BUILDBMS.prc and
+# *                samples/BUILDONL.prc, all of which are superseded by pom.xml.
+# *                Pinned to JDK 25 and Maven 3.9.11. The frozen COBOL corpus in
+# *                app/ is verified to be untouched on every run.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  JAVA_VERSION: "25"
+  MAVEN_VERSION: "3.9.11"
+  MAVEN_OPTS: "-Xmx2048m -XX:MaxMetaspaceSize=512m"
+
+jobs:
+
+  # --------------------------------------------------------------------------
+  # The legacy corpus is the parity oracle, the field-contract source and the
+  # traceability anchor. Any modification under app/ invalidates all three.
+  # --------------------------------------------------------------------------
+  frozen-corpus-guard:
+    name: Frozen corpus guard (app/ must be unmodified)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Assert no change under app/
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          if [ -z "${base}" ]; then
+            base="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          fi
+          changed="$(git diff --name-only "${base}" HEAD -- app/ || true)"
+          if [ -n "${changed}" ]; then
+            echo "::error::The frozen COBOL corpus under app/ was modified:"
+            echo "${changed}"
+            exit 1
+          fi
+          echo "app/ is unmodified."
+
+  # --------------------------------------------------------------------------
+  # Compile, unit tests, integration and e2e tests, coverage, enforcer.
+  # --------------------------------------------------------------------------
+  verify:
+    name: Zero-warning build, tests and coverage
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Pin Apache Maven ${{ env.MAVEN_VERSION }}
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Report toolchain
+        run: |
+          java -version
+          mvn -version
+
+      - name: Verify (compile, unit + integration + e2e, JaCoCo >= 80% line)
+        run: mvn -B -ntp -Ddependency-check.skip=true clean verify
+
+      - name: Upload surefire and failsafe reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            target/surefire-reports/**
+            target/failsafe-reports/**
+          if-no-files-found: ignore
+
+      - name: Upload JaCoCo coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/**
+          if-no-files-found: ignore
+
+      - name: Upload executable JAR
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carddemo-jar
+          path: target/carddemo-*.jar
+          if-no-files-found: ignore
+
+  # --------------------------------------------------------------------------
+  # OWASP dependency-check. Kept as its own job because the NVD feed update
+  # dominates the run time and needs its own cache. A High/Critical finding
+  # (CVSS >= 7) fails the job; an unavailable feed is reported as a blocker
+  # rather than being silently treated as a pass.
+  # --------------------------------------------------------------------------
+  security-scan:
+    name: OWASP dependency-check (fail on CVSS >= 7)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+          cache: maven
+
+      - name: Pin Apache Maven ${{ env.MAVEN_VERSION }}
+        uses: stCarolas/setup-maven@v5
+        with:
+          maven-version: ${{ env.MAVEN_VERSION }}
+
+      - name: Cache the NVD data directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: nvd-${{ runner.os }}-
+
+      - name: Fail fast when no NVD API key is configured
+        run: |
+          if [ -z "${{ secrets.NVD_API_KEY }}" ]; then
+            echo "::error::NVD_API_KEY is not configured. The OWASP feed update" \
+                 "cannot complete reliably without it, and the scan must not be" \
+                 "reported as passing on incomplete vulnerability data." \
+                 "Request a key at https://nvd.nist.gov/developers/request-an-api-key" \
+                 "and add it as a repository secret named NVD_API_KEY."
+            exit 1
+          fi
+
+      - name: Run the vulnerability scan
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: mvn -B -ntp org.owasp:dependency-check-maven:12.1.0:check
+
+      - name: Upload the dependency-check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-reports
+          path: target/dependency-check/**
+          if-no-files-found: ignore

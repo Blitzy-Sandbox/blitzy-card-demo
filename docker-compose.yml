@@ -1,0 +1,175 @@
+# ******************************************************************
+# * File         : docker-compose.yml
+# * Application  : CardDemo
+# * Type         : Local runtime topology (Docker Compose)
+# * Function     : Provisions the substrate that replaces the z/OS runtime of
+# *                the frozen COBOL corpus in app/. PostgreSQL 16 replaces the
+# *                10 VSAM KSDS clusters catalogued in app/catlg/LISTCAT.txt and
+# *                defined by the 12 IDCAMS jobs in app/jcl. LocalStack replaces
+# *                the 7 GDG bases of app/jcl/DEFGDGB.jcl (S3) and the
+# *                DEFINE TDQUEUE(JOBS) contract of app/csd/CARDDEMO.CSD (SQS
+# *                FIFO), plus operator notification (SNS). Jaeger, Prometheus
+# *                and Grafana supply the observability layer the COBOL corpus
+# *                lacks entirely (its only instrumentation is DISPLAY and the
+# *                9910-DISPLAY-IO-STATUS renderer of app/cbl/CBTRN02C.cbl).
+# *                Supersedes app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl,
+# *                whose purpose was making datasets available to the region.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+#
+# Parallel agents / multiple clones: every published port and every stateful
+# name below is parameterised by CLONE_INDEX (default 0). Start an isolated
+# instance with, for example:
+#     CLONE_INDEX=1 docker compose -p carddemo-1 up -d
+# which shifts PostgreSQL to 5433, LocalStack to 4576, Jaeger UI to 16687,
+# Prometheus to 9091 and Grafana to 3001. Reuse of a single shared stack is
+# preferred where tests do not mutate conflicting state; one container per
+# agent is NOT required.
+
+name: carddemo${CLONE_INDEX:+-}${CLONE_INDEX:-}
+
+services:
+
+  # --------------------------------------------------------------------------
+  # PostgreSQL 16 - replaces the VSAM data substrate
+  # --------------------------------------------------------------------------
+  postgres:
+    image: postgres:16.10-alpine
+    container_name: carddemo-postgres${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-carddemo}
+      POSTGRES_USER: ${POSTGRES_USER:-carddemo}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carddemo}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-carddemo} -d ${POSTGRES_DB:-carddemo}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # LocalStack - S3 (GDG replacement), SQS FIFO (TDQ 'JOBS' replacement), SNS
+  #
+  # Pinned to 4.14.0 to match the LocalStack CLI version the environment
+  # provisions, and because it is the last release line that does not require
+  # an ACTIVE LocalStack licence at container start. S3, SQS and SNS are all
+  # community-tier services, so no Pro licence is needed for CardDemo. Set
+  # LOCALSTACK_IMAGE=localstack/localstack-pro:<tag> and supply an ACTIVE
+  # LOCALSTACK_AUTH_TOKEN if Pro-only services are ever required.
+  # --------------------------------------------------------------------------
+  localstack:
+    image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0}
+    container_name: carddemo-localstack${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    environment:
+      SERVICES: s3,sqs,sns
+      DEBUG: ${LOCALSTACK_DEBUG:-0}
+      PERSISTENCE: 0
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      # Bucket / queue names created by the init hook.
+      CARDDEMO_BATCH_INPUT_BUCKET: ${CARDDEMO_BATCH_INPUT_BUCKET:-carddemo-batch-input}
+      CARDDEMO_BATCH_OUTPUT_BUCKET: ${CARDDEMO_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
+      CARDDEMO_STATEMENTS_BUCKET: ${CARDDEMO_STATEMENTS_BUCKET:-carddemo-statements}
+      CARDDEMO_REPORT_QUEUE: ${CARDDEMO_REPORT_QUEUE:-carddemo-report-jobs.fifo}
+    ports:
+      - "${LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - ./localstack-init:/etc/localstack/init/ready.d:ro
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "awslocal s3 ls >/dev/null 2>&1 || curl -sf http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Jaeger - distributed tracing backend (OTLP in, UI out)
+  # --------------------------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    container_name: carddemo-jaeger${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+    ports:
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${JAEGER_OTLP_GRPC_PORT:-4317}:4317"
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Prometheus - scrapes /actuator/prometheus every 15s
+  # --------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: carddemo-prometheus${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=24h"
+      - "--web.enable-lifecycle"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  # --------------------------------------------------------------------------
+  # Grafana - dashboards, provisioned from observability/grafana
+  # --------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: carddemo-grafana${CLONE_INDEX:+-}${CLONE_INDEX:-}
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      # Determinism: Grafana 11.3 preinstalls grafana-lokiexplore-app from the
+      # network at every start. Disabled so the stack comes up identically with
+      # or without internet access.
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  localstack-data:
+  prometheus-data:
+  grafana-data:

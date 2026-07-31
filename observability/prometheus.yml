@@ -1,0 +1,59 @@
+# ******************************************************************
+# * File         : prometheus.yml
+# * Application  : CardDemo
+# * Type         : Prometheus scrape configuration
+# * Function     : Scrapes the Spring Boot Actuator Prometheus endpoint every
+# *                15 seconds. Replaces the end-of-run DISPLAY counters of
+# *                app/cbl/CBTRN02C.cbl ('TRANSACTIONS PROCESSED :' and
+# *                'TRANSACTIONS REJECTED  :') with continuously scraped
+# *                metrics: carddemo.batch.records.processed,
+# *                carddemo.batch.records.rejected (tagged by reject code
+# *                100/101/102/103/109), carddemo.auth.attempts and
+# *                carddemo.transaction.amount.total.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+  external_labels:
+    application: carddemo
+    environment: local
+
+scrape_configs:
+
+  # CardDemo application metrics. `host.docker.internal` is mapped to the host
+  # gateway by docker-compose.yml, so this target works whether the JAR runs on
+  # the host (./mvnw spring-boot:run) or in a container joined to the network.
+  - job_name: carddemo
+    metrics_path: /actuator/prometheus
+    scheme: http
+    static_configs:
+      - targets:
+          - "host.docker.internal:8080"
+          - "carddemo-app:8080"
+        labels:
+          service: carddemo
+          component: modular-monolith
+
+  # Prometheus self-monitoring.
+  - job_name: prometheus
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - "localhost:9090"

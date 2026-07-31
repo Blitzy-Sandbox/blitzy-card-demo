@@ -1,0 +1,197 @@
+{
+  "__comment": "****************************************************************** * Dashboard    : carddemo-dashboard.json * Application  : CardDemo * Type         : Grafana dashboard definition * Function     : Renders the counters that replace the end-of-run DISPLAY statements of app/cbl/CBTRN02C.cbl ('TRANSACTIONS PROCESSED :' and 'TRANSACTIONS REJECTED  :'), together with HTTP request rate, error rate and latency for the 17 REST endpoints that replace the 17 CICS screen programs, plus JVM health. ****************************************************************** * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. * Licensed under the Apache License, Version 2.0 (the \"License\"). * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 ******************************************************************",
+  "annotations": {
+    "list": []
+  },
+  "editable": false,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "type": "row",
+      "title": "Batch pipeline (replaces CBTRN02C DISPLAY counters)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "stat",
+      "title": "Records processed (total)",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(carddemo_batch_records_processed_total)",
+          "legendFormat": "processed"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Records rejected (total)",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(carddemo_batch_records_rejected_total)",
+          "legendFormat": "rejected"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Rejections by reject code (100 / 101 / 102 / 103 / 109)",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reject_code) (rate(carddemo_batch_records_rejected_total[5m]))",
+          "legendFormat": "{{reject_code}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Online REST surface (replaces 17 CICS screen programs)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Request rate by URI",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count[5m]))",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Error rate (5xx)",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{status=~\"5..\"}[5m]))",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 7 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
+          "legendFormat": "p99"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Authentication and money (replaces COSGN00C / COBIL00C DISPLAY)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Authentication attempts by outcome",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 15 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome) (rate(carddemo_auth_attempts_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "stat",
+      "title": "Transaction amount total",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 15 },
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(carddemo_transaction_amount_total)",
+          "legendFormat": "total"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "JVM",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
+      "collapsed": false,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Heap used by area",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (area) (jvm_memory_used_bytes)",
+          "legendFormat": "{{area}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "GC pause rate",
+      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (cause) (rate(jvm_gc_pause_seconds_sum[5m]))",
+          "legendFormat": "{{cause}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": ["carddemo", "cobol-migration", "batch", "observability"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "utc",
+  "title": "CardDemo - Migration Observability",
+  "uid": "carddemo-overview",
+  "version": 1,
+  "weekStart": ""
+}

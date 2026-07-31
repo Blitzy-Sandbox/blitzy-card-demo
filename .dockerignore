@@ -1,0 +1,83 @@
+# ******************************************************************
+# * File         : .dockerignore
+# * Application  : CardDemo
+# * Type         : Docker build context exclusion rules
+# * Function     : Keeps the build context small and deterministic. The frozen
+# *                COBOL corpus in app/ is REFERENCE material for the migration
+# *                and is never needed inside the runtime image, so it is
+# *                excluded here even though it must never be deleted from the
+# *                repository. No legacy equivalent exists.
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+# ---- Version control and CI ----
+.git
+.gitignore
+.gitattributes
+.github
+
+# ---- Build output (the image builds from source inside the build stage) ----
+target
+build
+out
+
+# ---- Legacy mainframe corpus and z/OS build tooling (reference only) ----
+app
+samples
+diagrams
+
+# ---- Documentation and evidence artefacts ----
+docs
+*.md
+mkdocs.yml
+catalog-info.yaml
+LICENSE
+NOTICE
+
+# ---- Local infrastructure definitions (not needed inside the image) ----
+docker-compose.yml
+localstack-init
+observability
+
+# ---- Secrets and local overrides ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.jks
+secrets
+
+# ---- IDE / editor / OS noise ----
+.idea
+.vscode
+.settings
+.classpath
+.project
+*.iml
+.DS_Store
+Thumbs.db
+
+# ---- Python tooling ----
+.venv
+venv
+__pycache__
+
+# ---- Blitzy scratch space ----
+blitzy
+blitzy_adhoc_test_*
