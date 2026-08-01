@@ -130,7 +130,7 @@ import jakarta.persistence.Embeddable;
  * <pre>
  * table transaction_category
  *   tran_type_cd   from TRAN-TYPE-CD  PIC X(02)   VARCHAR(2)  NOT NULL   part of PK
- *   tran_cat_cd    from TRAN-CAT-CD   PIC 9(04)   INTEGER     NOT NULL   part of PK
+ *   tran_cat_cd    from TRAN-CAT-CD   PIC 9(04)   NUMERIC(4)  NOT NULL   part of PK
  *   PRIMARY KEY (tran_type_cd, tran_cat_cd)
  * </pre>
  *
@@ -153,17 +153,52 @@ import jakarta.persistence.Embeddable;
  * derived solely from {@code app/cpy/CVTRA04Y.cpy} and {@code app/catlg/LISTCAT.txt:L1475}, and no SQL
  * type has been invented beyond it.
  *
+ * <p><strong>Gap now closed, with one consequence.</strong> Both artefacts exist. The migration was
+ * reconciled against this contract and converged on it for every column except one: {@code tran_cat_cd},
+ * which had to become {@code NUMERIC(4)} rather than {@code INTEGER} because a referencing foreign key
+ * made {@code INTEGER} impossible in PostgreSQL. That single divergence was resolved here, in the key
+ * class, rather than in the migration, and it is documented as a Blocker finding below. Every other line
+ * of the contract above stood unchanged.
+ *
  * <p><strong>Finding, severity Medium - JDBC type code pairing.</strong> Hibernate's schema validator
  * compares JDBC type codes and not merely column names, so the Java type and the SQL type must be paired
- * consistently across this class, the owning entity and the migration. Under the plain Jakarta Persistence
- * mapping used here a {@link String} declared with a length of 2 is {@code VARCHAR(2)} and an
- * {@link Integer} is {@code INTEGER}. Declaring the columns as {@code CHAR(2)} or {@code NUMERIC(4)} in
- * the migration would therefore fail validation at startup. Remediation: declare
- * {@code tran_type_cd VARCHAR(2) NOT NULL} and {@code tran_cat_cd INTEGER NOT NULL}. A provider specific
- * annotation such as Hibernate's {@code JdbcTypeCode} would be needed to map {@code CHAR} and is
- * deliberately not used, because this class is restricted to the Jakarta Persistence API; the
- * {@code columnDefinition} attribute was considered and rejected, because it only influences generated
- * DDL, which Flyway owns here, and so cannot reconcile a type code mismatch.
+ * consistently across this class, the owning entity and the migration. Under a bare Jakarta Persistence
+ * mapping a {@link String} declared with a length of 2 resolves to {@code VARCHAR(2)} and an
+ * {@link Integer} resolves to {@code INTEGER}. {@code tran_type_cd} is left bare for exactly that reason
+ * and is declared {@code tran_type_cd VARCHAR(2) NOT NULL} in the migration. A provider specific
+ * annotation such as Hibernate's {@code JdbcTypeCode} would be needed to reach {@code CHAR} and is
+ * deliberately not used, because this class is restricted to the Jakarta Persistence API.
+ *
+ * <p><strong>Correction, severity Medium - what {@code columnDefinition} actually does.</strong> An
+ * earlier revision of this documentation asserted that {@code columnDefinition} only influences generated
+ * DDL, which Flyway owns here, and so cannot reconcile a type code mismatch. <em>That assertion is wrong
+ * and is corrected here.</em> Measured on the pinned stack, Hibernate ORM 6.6.42.Final with the PostgreSQL
+ * dialect: the validator accepts a column when the dialect declares the expected and reported type codes
+ * equivalent, <em>or</em> when the mapping's own type spelling, with parenthesised arguments stripped and
+ * the result lowercased, equals the type name the database reports. {@code columnDefinition} is precisely
+ * what supplies that spelling. So {@code columnDefinition = "numeric(4)"} matches {@code "numeric"}
+ * against PostgreSQL's reported {@code "numeric"} and passes, even though {@code INTEGER} and
+ * {@code NUMERIC} are not equivalent type codes. {@code DisclosureGroupId} already depends on this same
+ * branch, declaring {@code columnDefinition = "bpchar(n)"} over {@code CHAR(n)} columns, so the mechanism
+ * is the established convention of this package rather than a local novelty. It is also pure
+ * {@code jakarta.persistence}, so using it keeps this class inside the API restriction stated above.
+ *
+ * <p><strong>Finding, severity Blocker - a NUMERIC child column cannot reference an INTEGER parent.</strong>
+ * Measured against PostgreSQL 16.10: a foreign key from a {@code NUMERIC(4)} column to an {@code INTEGER}
+ * column is refused outright with {@code foreign key constraint ... cannot be implemented} and
+ * {@code Key columns ... are of incompatible types: numeric and integer}, and {@code NUMERIC(4)}
+ * referencing {@code BIGINT} is refused the same way. This matters because
+ * {@code com.cardemo.model.entity.Transaction} pins its own {@code tran_cat_cd} to the {@code NUMERIC}
+ * JDBC type code, and {@code src/main/resources/db/migration/V1__create_schema.sql} declares a foreign key
+ * from {@code "transaction" (tran_type_cd, tran_cat_cd)} to
+ * {@code transaction_category (tran_type_cd, tran_cat_cd)}. The parent column this class owns must
+ * therefore be {@code NUMERIC(4)}, which a bare {@link Integer} mapping could not have satisfied.
+ * Remediation, applied: {@code tranCatCd} declares {@code columnDefinition = "numeric(4)"}. The two
+ * alternatives were rejected deliberately - demoting the entity's column to {@code INTEGER} would
+ * contradict an explicit type code pin on a posted record column and change the reported type of stored
+ * data, and dropping the foreign key would remove one of the ten referential edges the schema is required
+ * to declare. {@code tran_type_cd} needs no equivalent attribute: its {@code VARCHAR(2)} column was
+ * measured to be a legal foreign key parent for the {@code CHAR(2)} child column that references it.
  *
  * <p><strong>Serialization, and the deserialization constraint.</strong> This type implements
  * {@link Serializable} for exactly one reason: Jakarta Persistence requires the class of a composite
@@ -254,8 +289,19 @@ public class TransactionCategoryId implements Serializable {
      * an unsigned display integer used purely as an identifier, so it maps to {@link Integer}. It is not a
      * monetary amount, and no {@code BigDecimal}, {@code float} or {@code double} appears anywhere in this
      * class.
+     *
+     * <p>{@code columnDefinition = "numeric(4)"} is load bearing rather than decorative, and it is the one
+     * attribute on this class that was added after the migration became available. The column must be
+     * {@code NUMERIC(4)} because {@code com.cardemo.model.entity.Transaction} pins its own
+     * {@code tran_cat_cd} to the {@code NUMERIC} JDBC type code, and PostgreSQL refuses a foreign key from
+     * a {@code NUMERIC} child column to an {@code INTEGER} parent column outright. Without this attribute
+     * the plain {@link Integer} mapping would expect {@code INTEGER} and schema validation would abort
+     * startup. See the corrected Medium finding in the class documentation for the measurement, and
+     * {@code DisclosureGroupId} for the same mechanism applied to its two character components. The
+     * attribute is pure {@code jakarta.persistence}, so the restriction of this class to the Jakarta
+     * Persistence API is preserved and no provider specific annotation is introduced.
      */
-    @Column(name = "tran_cat_cd", nullable = false)
+    @Column(name = "tran_cat_cd", nullable = false, columnDefinition = "numeric(4)")
     private Integer tranCatCd;
 
     /**

@@ -825,7 +825,8 @@ public class UserSecurity {
      *
      * <p>Exactly one failure is possible, and it is raised rather than absorbed:
      * {@link #convertToEntityAttribute(String)} throws {@link IllegalArgumentException} when the column
-     * holds a non blank code that is neither {@code A} nor {@code U}. Nothing is swallowed and nothing
+     * holds a non blank value that is not exactly one character long, or is one character that is neither
+     * {@code A} nor {@code U}. Nothing is swallowed and nothing
      * silently defaults - in particular an unrecognised code never resolves to {@link UserType#USER}, to
      * {@link UserType#ADMIN} or to {@code null}, because guessing a privilege class is the one mistake a
      * role store must never make. The schema is required to carry a check constraint restricting
@@ -878,8 +879,8 @@ public class UserSecurity {
          *   <li>a value that is entirely padding yields {@code null}. This case is real rather than
          *       defensive: the column is fixed width, so a legacy row that never had a user class set
          *       arrives as a blank, and a blank is an absent value rather than an invalid one;</li>
-         *   <li>otherwise the first character of the padding stripped value is resolved through the
-         *       enumeration, and an unrecognised code throws.</li>
+         *   <li>otherwise the padding stripped value is resolved through the enumeration, and anything
+         *       outside the two code domain throws.</li>
          * </ul>
          *
          * <p>Padding is stripped with {@code String.trim()} rather than {@code String.strip()} on
@@ -889,20 +890,29 @@ public class UserSecurity {
          * turning an absent value into a spurious unrecognised code. Neither call depends on a locale,
          * so the behaviour is deterministic on every host.
          *
-         * <p>The first character is taken rather than the whole value being required to be one character
-         * long, because a {@code CHAR(1)} column read back through a driver that pads, or a value
-         * arriving from a wider legacy field, would otherwise be rejected as unrecognised when its
-         * meaning is unambiguous. No case folding is applied: {@code a} is not {@code A}, exactly as the
-         * source's own comparison is exact.
+         * <p>Once padding has been stripped the value must be <em>exactly one</em> character long, and
+         * the length check is delegated to {@link UserType#fromCode(String)} which already reports an
+         * empty result for any other length. Taking the first character of a longer value instead would
+         * be an unsafe default of exactly the kind the security-by-default standard forbids: it would
+         * resolve {@code "AA"} to {@link UserType#ADMIN}, silently granting a privilege class on the
+         * strength of a value the source cannot even represent - {@code app/cpy/COCOM01Y.cpy:L26}
+         * declares {@code CDEMO-USER-TYPE} as {@code PIC X(01)}, so a two character value is not a user
+         * class code at all. The leniency such a shortcut would buy is illusory in any case, because
+         * {@code trim()} above has already removed the padding a driver could have added, so no value a
+         * {@code CHAR(1)} column can produce is affected by the distinction. What is affected is
+         * genuinely corrupt input, and rejecting that is the whole point.
+         *
+         * <p>No case folding is applied: {@code a} is not {@code A}, exactly as the source's own
+         * comparison is exact.
          *
          * @param dbData the raw column value; may be {@code null}, may be padding only, and may be
-         *               longer than one character
+         *               malformed
          * @return the matching user class, or {@code null} when {@code dbData} is {@code null} or
          *         consists only of padding
-         * @throws IllegalArgumentException if the first non padding character is neither {@code A} nor
-         *                                  {@code U}; the message names the column, the rejected
-         *                                  character and its code point, and cites the copybook that
-         *                                  defines the accepted codes
+         * @throws IllegalArgumentException if the padding stripped value is neither {@code A} nor
+         *                                  {@code U}; the message names the column, the whole rejected
+         *                                  value with its length and code units, and cites the copybook
+         *                                  that defines the accepted codes
          */
         @Override
         public UserType convertToEntityAttribute(String dbData) {
@@ -913,14 +923,36 @@ public class UserSecurity {
             if (unpadded.isEmpty()) {
                 return null;
             }
-            final char code = unpadded.charAt(0);
-            return UserType.fromCode(code).orElseThrow(() -> new IllegalArgumentException(
-                    "Unrecognised sec_usr_type code '" + code + "' (code point 0x"
-                            + Integer.toHexString(code) + ") read from column sec_usr_type of table "
-                            + "user_security; app/cpy/COCOM01Y.cpy:L27-L28 defines exactly two codes, "
-                            + "'A' for ADMIN and 'U' for USER, so either the CHECK constraint on this "
+            return UserType.fromCode(unpadded).orElseThrow(() -> new IllegalArgumentException(
+                    "Unrecognised sec_usr_type code '" + unpadded + "' (" + unpadded.length()
+                            + " UTF-16 code unit(s): " + hexUnitsOf(unpadded) + ") read from column "
+                            + "sec_usr_type of table user_security; app/cpy/COCOM01Y.cpy:L26 declares "
+                            + "CDEMO-USER-TYPE as PIC X(01) and :L27-L28 define exactly two codes, 'A' "
+                            + "for ADMIN and 'U' for USER, so either the CHECK constraint on this "
                             + "column is missing from V1__create_schema.sql or the row was written "
                             + "around it"));
+        }
+
+        /**
+         * Renders each UTF-16 code unit of a rejected value in hexadecimal, space separated.
+         *
+         * <p>Present so that a rejection message stays diagnosable when the offending value is
+         * invisible: a low value control byte, a non breaking space or a full width letter all print as
+         * nothing useful on their own, and the length alone does not identify them. {@code
+         * Integer.toHexString} is locale independent, so the rendering is identical on every host.
+         *
+         * @param value the rejected value, never {@code null} and never empty
+         * @return the value's code units, for example {@code 0x41 0x41} for {@code "AA"}
+         */
+        private static String hexUnitsOf(final String value) {
+            final StringBuilder rendered = new StringBuilder(value.length() * 5);
+            for (int index = 0; index < value.length(); index++) {
+                if (index > 0) {
+                    rendered.append(' ');
+                }
+                rendered.append("0x").append(Integer.toHexString(value.charAt(index)));
+            }
+            return rendered.toString();
         }
     }
 }

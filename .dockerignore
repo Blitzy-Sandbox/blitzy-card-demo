@@ -2,11 +2,24 @@
 # * File         : .dockerignore
 # * Application  : CardDemo
 # * Type         : Docker build context exclusion rules
-# * Function     : Keeps the build context small and deterministic. The frozen
-# *                COBOL corpus in app/ is REFERENCE material for the migration
-# *                and is never needed inside the runtime image, so it is
-# *                excluded here even though it must never be deleted from the
-# *                repository. No legacy equivalent exists.
+# * Function     : Keeps the build context that `docker build` uploads to the
+# *                daemon small and deterministic, WITHOUT dropping any source,
+# *                frozen contract, fixture, migration or evidence artefact the
+# *                Maven build and the eight validation gates depend on. No
+# *                ignore, formatter or linter configuration previously existed
+# *                anywhere in this repository, so this convention is
+# *                ESTABLISHED rather than inherited.
+# * Derived from : No legacy equivalent - the mainframe had no container image.
+# *                The two content trees excluded below are the ones the
+# *                migration plan puts out of scope: samples/ (the z/OS compile
+# *                templates BATCMP.jcl, CICCMP.jcl and BMSCMP.jcl, the three
+# *                build procedures, and two binary emulator runtime archives
+# *                under samples/m2 totalling 902 KB, conceptually superseded
+# *                by pom.xml) and app/data/EBCDIC/ (twelve .PS datasets kept
+# *                as byte-level codepage reference only and never parsed by
+# *                the build). CONTRIBUTING.md:33-34 asks contributors to focus
+# *                on the specific change and to ensure local tests pass, which
+# *                is why this file is surgical and why the sweep below exists.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -24,60 +37,320 @@
 # * language governing permissions and limitations under the License
 # ******************************************************************
 
-# ---- Version control and CI ----
-.git
-.gitignore
-.gitattributes
-.github
+# ==================================================================
+# WHAT THIS FILE DOES
+#   `docker build` uploads a build CONTEXT to the daemon before the
+#   first instruction runs. This file decides what never leaves the
+#   working tree. Without it the context is 126 MB, of which 118 MB is
+#   .git history and Maven output that no image layer could ever use.
+#   With it the context is roughly 8 MB. That is a faster, and more
+#   importantly a DETERMINISTIC, build: a context that carries target/
+#   makes the result depend on whatever a previous local `mvn` run left
+#   behind.
+#
+# DOCKERIGNORE IS NOT GITIGNORE - THE ONE THING TO GET RIGHT
+#   The syntaxes look identical and behave differently, so the rules
+#   here are deliberately NOT copied from .gitignore.
+#
+#   Every pattern is ANCHORED AT THE CONTEXT ROOT. In .gitignore a bare
+#   `*.log` hides a log file at any depth; here it matches ./x.log and
+#   nothing else. Depth-independent matching needs an explicit `**/`
+#   prefix, which is why the metadata, editor and credential rules below
+#   all carry one and the build-output rules deliberately do not.
+#
+#   That difference cuts both ways, and one case decides a real defect.
+#   `target` without a prefix reaches ONLY the build directory at the
+#   repository root - and that is exactly what is wanted, because
+#   src/test/resources may hold parity baselines below a path component
+#   of that name. Writing `**/target` would silently delete protected
+#   fixture space from the context. pom.xml declares no <modules>, so
+#   the build is single-module and the anchored form is complete as well
+#   as safe. Should this ever become a multi-module build, add one
+#   anchored rule per module rather than reaching for `**/`.
+#
+#   Docker also always sends Dockerfile and .dockerignore themselves,
+#   whatever the rules say, so there is no rule for either.
+#
+# SCOPE AND PRECEDENCE
+#   The LAST matching pattern wins, so a `!` negation must come after
+#   the rule it re-includes. There is exactly ONE negation in this file
+#   and it is live: `.env.*` genuinely matches .env.example, so
+#   `!.env.example` is required to keep the template - which holds
+#   variable names and empty placeholders only - in the context.
+#
+# WHAT MUST NEVER BE IGNORED
+#   app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl, app/csd, app/ctl,
+#   app/proc, app/catlg   the frozen COBOL corpus. It is at once the
+#                         parity oracle, the field-contract source and
+#                         the traceability anchor, and tests and
+#                         traceability read these contracts.
+#   app/data/ASCII/**     all NINE fixtures: acctdata.txt, carddata.txt,
+#                         cardxref.txt, custdata.txt, dailytran.txt,
+#                         discgrp.txt, tcatbal.txt, trancatg.txt and
+#                         trantype.txt. dailytran.txt is the 300-record,
+#                         350-byte-per-record Gate 1 fixture, and it
+#                         carries both `{` and `}` overpunch signs, so
+#                         it is the only input that exercises the
+#                         cycle-debit branch of the posting logic. Note
+#                         the spelling: the fixture is dailytran.txt in
+#                         full, even though the mainframe DD name and
+#                         dataset are DALYTRAN.
+#   src/**                Java sources, resources, Flyway migrations,
+#                         the validation JSON, and the fixtures and
+#                         parity baselines under src/test/resources
+#   pom.xml, mvnw, mvnw.cmd, .mvn/**        the build, wrapper-pinned
+#   Dockerfile, docker-compose.yml          the topology
+#   localstack-init/**, observability/**    provisioning
+#   docs/**, DECISION_LOG.md, TRACEABILITY_MATRIX.md    gate evidence
+#   .env.example                            names and placeholders only
+#
+#   No glob below matches a content format this repository ships. There
+#   is deliberately no *.txt, *.md, *.json, *.sql, *.yml, *.html or
+#   *.zip rule, and no bare `app`, `build` or `data` rule either.
+#   Fourteen tracked .txt files are fixed-width parity fixtures and the
+#   VSAM catalogue listing, four tracked .json files are application and
+#   dashboard resources, and `data` is a real path component of
+#   app/data. Any of those patterns would silently strip shipped
+#   content. The extension globs that do appear cover only build output,
+#   runtime files, private key material and editor state - none of which
+#   this repository has ever tracked.
+#
+#   Forward compatibility matters as much as the current tree. Several
+#   mandated artefacts are authored after this file - DECISION_LOG.md,
+#   TRACEABILITY_MATRIX.md, the rest of docs/, the Flyway migrations and
+#   the profile YAML among them. A broad rule that looks harmless today
+#   would hide them on the day they land, silently and with no error.
+#
+# WHAT IS DELIBERATELY NOT LISTED, AND WHY
+#   diagrams/ and .github/. Neither is a build input, but neither is a
+#   local-only artefact either: both are tracked, shared reference
+#   material, and .github/workflows/build.yml is the pinned JDK 25 and
+#   Maven 3.9.11 harness that the build-verification gate is proven
+#   against. Excluding tracked shared content to save 1.2 MB would trade
+#   a silent gate failure for a rounding error, so both stay.
+#
+#   .gitignore and .gitattributes. Also tracked shared configuration,
+#   and .gitattributes is the record of which corpus members are
+#   CRLF-terminated - information a fixed-width parity check may need.
+#
+#   Build reports. Every report this build emits already lands under
+#   target/: pom.xml pins the JaCoCo and OWASP output to
+#   ${project.build.directory} and Surefire and Failsafe default there.
+#   Restating those paths would duplicate one rule and could only drift
+#   out of step with it.
+#
+#   A wrapper jar. .mvn/wrapper/maven-wrapper.properties sets
+#   distributionType=only-script, so no maven-wrapper.jar is ever
+#   fetched into .mvn/wrapper and no rule is needed to hide one.
+#
+#   Other language stacks. This is a single-module Maven project with no
+#   Gradle, Node or front-end build, and the AWS CLI virtualenv the
+#   setup guide provisions lives outside the repository. Rules for
+#   node_modules, .venv or __pycache__ would be dead on arrival.
+#
+# HOW TO VERIFY A CHANGE TO THIS FILE
+#   Ask Docker itself rather than reasoning about the patterns; the
+#   anchoring differences above are too easy to get wrong by eye.
+#
+#     printf 'FROM alpine:3.17\nCOPY . /ctx\nRUN find /ctx -type f\n' \
+#       > /tmp/ctx.Dockerfile
+#     DOCKER_BUILDKIT=0 docker build --no-cache -f /tmp/ctx.Dockerfile .
+#
+#   The listing it prints IS the context. Every path named under WHAT
+#   MUST NEVER BE IGNORED above must appear in it, and .git, target,
+#   samples and app/data/EBCDIC must not. Then confirm the real build
+#   still resolves every COPY:
+#
+#     docker build --no-cache -t carddemo:verify .
+#
+# FAILURE MODES TO AVOID
+#   Never add a glob for a format this repository ships, never add a
+#   bare `app`, and never convert an anchored build-output rule to a
+#   `**/` form. Each failure is SILENT: docker build prints nothing,
+#   the file simply is not in the context, and the first symptom is a
+#   fixture-not-found test failure or a gate that cannot be evidenced -
+#   attributed to the test rather than to this file. Re-run the context
+#   listing above after any edit; it is the only check that catches this
+#   class of mistake.
+# ==================================================================
 
-# ---- Build output (the image builds from source inside the build stage) ----
+# ---- Version-control history. 28 MB of packfiles that no image layer
+# ---- can use. Safe to drop because no Maven plugin in this build reads
+# ---- git metadata: there is no git-commit-id or buildnumber plugin, so
+# ---- nothing derives a version or build stamp from .git.
+.git
+
+# ---- Maven build output. Anchored ON PURPOSE, for the reason given at
+# ---- length above: this is the one build directory, it covers the
+# ---- packaged jar, the compiled classes and every generated report,
+# ---- and the anchored form cannot reach a same-named path component
+# ---- under src/test/resources. Dropping it also keeps a stale local
+# ---- jar from ever masking a fresh in-image build.
 target
-build
+
+# ---- IntelliJ IDEA's own compiler output, written to the project root
+# ---- when the IDE builds in place instead of delegating to Maven.
 out
 
-# ---- Legacy mainframe corpus and z/OS build tooling (reference only) ----
-app
-samples
-diagrams
+# ---- A stray class file left beside a source by an ad-hoc `javac`
+# ---- invocation. It lands outside target/, so the rule above does not
+# ---- cover it, and it can land at any depth in the source tree.
+**/*.class
 
-# ---- Documentation and evidence artefacts ----
-docs
-*.md
-mkdocs.yml
-catalog-info.yaml
-LICENSE
-NOTICE
+# ---- JVM fatal-error, replay and heap-dump files. The JVM writes these
+# ---- into the working directory, which for a forked Surefire JVM is
+# ---- not necessarily the project root, so these are depth-independent.
+**/hs_err_pid*
+**/replay_pid*
+**/*.hprof
 
-# ---- Local infrastructure definitions (not needed inside the image) ----
-docker-compose.yml
-localstack-init
-observability
+# ---- Local runtime output from a developer's own `mvn spring-boot:run`
+# ---- or `java -jar`. The application logs to stdout in a container, so
+# ---- anything matching here is by definition host-local. The logs
+# ---- directory is anchored: a nested one would belong to whatever
+# ---- produced it and is covered by the wildcard rules instead.
+logs
+**/*.log
+**/*.pid
+**/*.tmp
 
-# ---- Secrets and local overrides ----
+# ---- Local environment overrides. `.env.*` also matches the template
+# ---- .env.example, which .env.example itself declares must stay
+# ---- available ("Copy it to .env, which is git-ignored"), so the
+# ---- negation that follows is required rather than defensive - it is
+# ---- the only negation in this file. The JWT signing key is
+# ---- environment-indirected with no committed default, so a
+# ---- developer's real values live only in .env and must never be
+# ---- uploaded to the daemon or baked into a layer.
 .env
 .env.*
 !.env.example
-*.pem
-*.key
-*.p12
-*.jks
-secrets
 
-# ---- IDE / editor / OS noise ----
-.idea
-.vscode
-.settings
-.classpath
-.project
-*.iml
-.DS_Store
-Thumbs.db
+# ---- Private key material and credential stores. These are preventive
+# ---- controls: nothing in this repository matches one today, and that
+# ---- is the point - the value is that they fire before the accident,
+# ---- keeping a key a developer dropped into the tree out of the
+# ---- context and therefore out of the image. Public certificate
+# ---- formats are deliberately absent, so a public test certificate
+# ---- added later stays available. id_rsa and id_ed25519 are matched
+# ---- exactly, not as id_rsa*, so a .pub half is not caught too. All
+# ---- are depth-independent, because a leaked credential is a hazard
+# ---- wherever it lands and no deliverable carries any of these names.
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.keystore
+**/id_rsa
+**/id_ed25519
+**/.aws
+**/credentials
+**/secrets
 
-# ---- Python tooling ----
-.venv
-venv
-__pycache__
+# ---- IDE and editor state, all of it user-local. Unlike .gitignore,
+# ---- which keeps the three shareable .vscode team files by negation,
+# ---- the whole directory goes here: none of those files is a build
+# ---- input, so there is nothing for a negation to rescue and adding
+# ---- one would only imply protection it does not provide.
+**/.idea
+**/*.iml
+**/*.ipr
+**/*.iws
+**/.vscode
+**/.classpath
+**/.project
+**/.settings
+**/.factorypath
+**/.apt_generated
 
-# ---- Blitzy scratch space ----
+# ---- Editor swap and backup files, and the residue `git merge` and
+# ---- `git apply` leave behind on a conflict. A .orig or .rej left in
+# ---- the tree would otherwise be uploaded and could be copied into a
+# ---- layer alongside the file it shadows.
+**/*.swp
+**/*.swo
+**/*~
+**/*.bak
+**/*.orig
+**/*.rej
+
+# ---- Operating-system metadata. macOS first, then Windows. Also
+# ---- preventive: these are created by a file browser, not by this
+# ---- project, and appear at arbitrary depth when they appear at all.
+**/.DS_Store
+**/._*
+**/.Spotlight-V100
+**/.Trashes
+**/Thumbs.db
+**/desktop.ini
+
+# ---- Platform scratch: screenshots and screen recordings, and the
+# ---- ad-hoc validation scripts that must never reach a commit, let
+# ---- alone an image layer.
 blitzy
-blitzy_adhoc_test_*
+**/blitzy_adhoc_test_*
+
+# ==================================================================
+# OUT OF SCOPE FOR THE IMAGE BUILD - THE ONLY TWO CONTENT TREES DROPPED
+#
+# These two are the single point where this file deliberately diverges
+# from .gitignore, which keeps both. The two files answer different
+# questions. .gitignore decides what reaches a CLONE, and in a clone
+# these must survive byte-for-byte as the reference of record.
+# .dockerignore decides what reaches the BUILD DAEMON, and the migration
+# plan is explicit that the Java build must never parse either of them.
+#
+# Directory form is used rather than a trailing `/**` so the daemon
+# prunes each subtree without descending into it.
+# ==================================================================
+
+# ---- z/OS build tooling: three compile templates, three build
+# ---- procedures, and two binary emulator runtime archives under
+# ---- samples/m2 that together account for 902 KB of the 930 KB tree.
+# ---- Nothing here has a Java analogue; pom.xml supersedes the set.
+# ---- Excluding the directory is also what makes a `*.zip` rule
+# ---- unnecessary - and a `*.zip` rule is exactly the kind that would
+# ---- later hide these two archives from a clone if copied across.
+samples
+
+# ---- The EBCDIC datasets: twelve fixed-width .PS files retained as
+# ---- byte-level codepage reference only. No transcoding is performed
+# ---- and no codepage conversion utility is built, so the build never
+# ---- reads them. The ASCII fixtures under app/data/ASCII are the
+# ---- authoritative seed and test input and are deliberately untouched
+# ---- by this rule - note that it names the EBCDIC directory
+# ---- specifically and never app/data, which would take both.
+app/data/EBCDIC
+
+# ==================================================================
+# EVERYTHING ELSE IS PROTECTED BY OMISSION, NOT BY NEGATION
+#
+# app/ (less the EBCDIC datasets above), src/, docs/, diagrams/,
+# observability/, localstack-init/, .github/, .mvn/, pom.xml, mvnw,
+# mvnw.cmd, Dockerfile, docker-compose.yml and the evidence artefacts
+# all stay in the context, and they stay there because no rule above
+# reaches them - not because a `!` line rescues them.
+#
+# That is a deliberate choice, and it mirrors how .gitignore protects
+# the same corpus. A line such as `!app/**` would read as protection
+# while doing nothing at all: a negation only takes effect against an
+# earlier pattern that matches, and no pattern above matches anything
+# under app/cbl, app/cpy, app/cpy-bms, app/bms, app/jcl, app/csd,
+# app/ctl, app/proc, app/catlg or app/data/ASCII. Adding one would be
+# dead weight of exactly the kind that misleads the next reader into
+# thinking the guarantee is enforced here when it is not.
+#
+# The guarantee is asserted by test instead, and the test is the
+# context listing given under HOW TO VERIFY A CHANGE above. It walks
+# the context Docker actually built and must show every mandated path
+# present. Any absence is a defect in this file.
+#
+# One case is worth stating explicitly because a wildcard makes it easy
+# to lose. app/jcl holds 29 members and 28 of them end in a lowercase
+# .jcl, while CREASTMT.JCL - the sole source for statement generation -
+# ends in an uppercase .JCL. Docker matches case-sensitively, so any
+# pattern written as app/jcl/*.jcl would treat the two differently.
+# There is no rule here that touches app/jcl at all, which is the only
+# form of that guarantee that cannot be got wrong.
+# ==================================================================

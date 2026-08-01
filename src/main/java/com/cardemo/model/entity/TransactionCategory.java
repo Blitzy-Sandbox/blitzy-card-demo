@@ -78,7 +78,7 @@ import com.cardemo.model.key.TransactionCategoryId;
  * -------------------  ------  -----  --------------------  -----------------  ------------------  ----------
  * TRAN-CAT-KEY         group       6  id                    here, EmbeddedId   composite           PK
  *   TRAN-TYPE-CD       X(02)       2  id.tranTypeCd          key class          tran_type_cd        VARCHAR(2)
- *   TRAN-CAT-CD        9(04)       4  id.tranCatCd           key class          tran_cat_cd         INTEGER
+ *   TRAN-CAT-CD        9(04)       4  id.tranCatCd           key class          tran_cat_cd         NUMERIC(4)
  * TRAN-CAT-TYPE-DESC   X(50)      50  categoryDescription    here               tran_cat_type_desc  CHAR(50)
  * FILLER               X(04)       4  not modelled          not modelled       none                none
  * </pre>
@@ -161,18 +161,26 @@ import com.cardemo.model.key.TransactionCategoryId;
  * {@code tran_cat_cd} as a plain {@code Integer}, which Hibernate resolves to {@code VARCHAR(2)}
  * and {@code INTEGER}. Because the Blocker above forbids restating or overriding a key column,
  * this class cannot and must not harmonise them. The consequence is precise, was measured rather
- * than inferred, and must not be guessed at by whoever authors the schema. Resolving this mapping
- * through Hibernate 6.6.42.Final against the PostgreSQL dialect yields exactly
- * {@code tran_cat_cd=integer}, {@code tran_type_cd=varchar(2)} and
- * {@code tran_cat_type_desc=char(50)}, all three non nullable. So the
- * {@code transaction_category} table mixes
- * {@code VARCHAR(2)}, {@code INTEGER} and {@code CHAR(50)}, and declaring the key columns as
- * {@code CHAR(2)} and {@code NUMERIC(4)} instead, however faithful that looks to
- * {@code PIC X(02)} and {@code PIC 9(04)}, would fail validation at startup against the key
- * class's mapping. The exact required DDL is enumerated under the schema section below.
- * Remediation if the mixture is ever considered unacceptable: change the key class so that it
- * adopts {@code JdbcTypeCode(SqlTypes.CHAR)}, and change the migration in the same commit.
- * Never patch it from here.
+ * than inferred, and must not be guessed at by whoever authors the schema. So the
+ * {@code transaction_category} table is genuinely mixed type, and the exact required DDL is
+ * enumerated under the schema section below. Remediation if the mixture is ever considered
+ * unacceptable: change the key class, and change the migration in the same commit. Never patch it
+ * from here.
+ *
+ * <p><b>Update, severity Blocker, applied when the migration became available.</b> One of the two
+ * key columns did change, through the sanctioned route above rather than from here.
+ * {@code tran_cat_cd} is {@code NUMERIC(4)} and <em>not</em> {@code INTEGER}, because
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares a foreign key from
+ * {@code "transaction" (tran_type_cd, tran_cat_cd)} to this table's primary key, the
+ * {@code tran_cat_cd} column of {@code com.cardemo.model.entity.Transaction} is pinned to the
+ * {@code NUMERIC} JDBC type code, and PostgreSQL 16.10 was measured to refuse a foreign key from a
+ * {@code NUMERIC} child column to an {@code INTEGER} parent column outright. The fix was made in
+ * {@link TransactionCategoryId}, which now declares {@code columnDefinition = "numeric(4)"} on that
+ * component - a pure {@code jakarta.persistence} attribute, so the key class stays inside its own
+ * API restriction, and the same mechanism {@code DisclosureGroupId} already uses for its character
+ * components. No {@code AttributeOverride} was added here and no key column is restated here: the
+ * first Blocker above still holds in full. The table therefore mixes {@code VARCHAR(2)},
+ * {@code NUMERIC(4)} and {@code CHAR(50)}.
  *
  * <p><b>Medium: the COBOL group name {@code TRAN-CAT-KEY} denotes two entirely different keys.</b>
  * {@code app/cpy/CVTRA04Y.cpy:L5} declares {@code TRAN-CAT-KEY} as {@code TRAN-TYPE-CD PIC X(02)}
@@ -330,7 +338,7 @@ import com.cardemo.model.key.TransactionCategoryId;
  *
  * <ul>
  *   <li>table {@code transaction_category} with, in this order,
- *       {@code tran_type_cd VARCHAR(2) NOT NULL}, {@code tran_cat_cd INTEGER NOT NULL} and
+ *       {@code tran_type_cd VARCHAR(2) NOT NULL}, {@code tran_cat_cd NUMERIC(4) NOT NULL} and
  *       {@code tran_cat_type_desc CHAR(50) NOT NULL};</li>
  *   <li>a composite {@code PRIMARY KEY (tran_type_cd, tran_cat_cd)} in that exact COBOL field
  *       order, because the VSAM browse order is the key byte order and reordering the declaration
@@ -338,11 +346,13 @@ import com.cardemo.model.key.TransactionCategoryId;
  *       <b>not</b> the order Hibernate reports internally, which is alphabetical. See the second
  *       Medium finding above;</li>
  *   <li><b>the two key column types are not negotiable and are not what the picture clauses
- *       suggest.</b> They must be {@code VARCHAR(2)} and {@code INTEGER}, matching the plain
- *       Jakarta Persistence mapping that {@link TransactionCategoryId} declares. Writing
- *       {@code tran_type_cd CHAR(2)} or {@code tran_cat_cd NUMERIC(4)}, which is the intuitive
- *       reading of {@code PIC X(02)} and {@code PIC 9(04)}, fails validation at startup. This is
- *       the High severity finding above;</li>
+ *       suggest.</b> They must be {@code VARCHAR(2)} and {@code NUMERIC(4)}, matching exactly what
+ *       {@link TransactionCategoryId} declares - a bare {@code String} of length 2 for the first,
+ *       and an {@code Integer} carrying {@code columnDefinition = "numeric(4)"} for the second.
+ *       Writing {@code tran_type_cd CHAR(2)}, which is the intuitive reading of
+ *       {@code PIC X(02)}, fails validation at startup, and so does writing
+ *       {@code tran_cat_cd INTEGER}, which was the required type before the referencing foreign key
+ *       forced the change. See the High severity finding and the Blocker update above;</li>
  *   <li>the description column, by contrast, must be {@code CHAR(50)}, matching the
  *       {@code JdbcTypeCode(SqlTypes.CHAR)} mapping declared below;</li>
  *   <li>no version column;</li>
@@ -383,8 +393,8 @@ import com.cardemo.model.key.TransactionCategoryId;
  *       tran_type_cd ... found [bpchar (Types#CHAR)], but expecting [varchar(2)
  *       (Types#VARCHAR)]".</b> The migration declared a key column as {@code CHAR} while the key
  *       class maps it as {@code VARCHAR}. Correct the migration to {@code VARCHAR(2)} and
- *       {@code INTEGER}; see the High severity finding above. Do not add an
- *       {@code AttributeOverride} here, which is the Blocker.</li>
+ *       {@code NUMERIC(4)}; see the High severity finding and the Blocker update above. Do not add
+ *       an {@code AttributeOverride} here, which is the Blocker.</li>
  *   <li><b>Startup fails with "wrong column type ... for column tran_cat_type_desc ... found
  *       [bpchar (Types#CHAR)], but expecting [varchar(50) (Types#VARCHAR)]".</b> The
  *       {@code JdbcTypeCode(SqlTypes.CHAR)} annotation has been removed from

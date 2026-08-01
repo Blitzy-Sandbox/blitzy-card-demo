@@ -38,6 +38,30 @@ WORKDIR /workspace
 
 ENV MAVEN_OPTS="-Xmx1024m -XX:MaxMetaspaceSize=256m"
 
+# The Temurin Noble base image ships neither curl nor wget nor mvn, while
+# .mvn/wrapper/maven-wrapper.properties pins distributionType=only-script - so the
+# lite mvnw launcher must fetch the pinned Maven 3.9.11 distribution over HTTPS
+# itself. With no downloader present the wrapper aborts before Maven ever starts,
+# with "no downloader available: install curl or wget". curl is therefore
+# installed here, in the BUILD stage only; it never reaches the runtime image
+# assembled below, so the shipped container gains no network tooling.
+#
+# This does not weaken reproducibility. maven-wrapper.properties carries
+# distributionSha256Sum and the wrapper verifies the downloaded archive against it
+# before use, so the Maven version in play is fixed by checksum rather than by
+# whatever happens to be installed. ca-certificates is already present in the base
+# image and is deliberately not reinstalled.
+#
+# DL3008 is waived on purpose: pinning an exact Ubuntu revision for a transient
+# build-stage tool makes the build fail the moment that revision leaves the
+# archive on a security update, which trades real reproducibility for fragility.
+# The artefact that must be deterministic - the Maven distribution - is pinned by
+# URL and SHA-256 above.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/*
+
 # Copy only the build descriptor and wrapper first so the dependency layer is
 # cached independently of source changes.
 COPY .mvn/ .mvn/
