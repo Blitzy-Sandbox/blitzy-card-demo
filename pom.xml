@@ -3,18 +3,37 @@
   ******************************************************************
   * Build        : pom.xml
   * Application  : CardDemo
-  * Type         : Maven build configuration (Java 25 / Spring Boot 3.5.11)
-  * Function     : Single-artifact build for the CardDemo modular monolith that
+  * Type         : Apache Maven build configuration (Java 25 LTS, Spring Boot 3.5.11)
+  * Function     : Sole build descriptor for the CardDemo modular monolith that
   *                replaces the z/OS execution substrate of the frozen COBOL
-  *                corpus in app/ (28 COBOL programs in app/cbl, 28 copybooks
-  *                in app/cpy, 17 BMS mapsets in app/bms with their 17 symbolic
-  *                maps in app/cpy-bms, 29 JCL members in app/jcl, 2 procedures
-  *                in app/proc, 1 IDCAMS control card in app/ctl, the CICS CSD
-  *                in app/csd and the VSAM catalogue in app/catlg). The three
-  *                z/OS compile templates samples/BATCMP.jcl, samples/CICCMP.jcl
-  *                and samples/BMSCMP.jcl plus the three build procedures
-  *                samples/BUILDBAT.prc, samples/BUILDBMS.prc and
-  *                samples/BUILDONL.prc are conceptually superseded by this file.
+  *                corpus held in app/. It compiles, tests, measures, scans and
+  *                packages exactly ONE executable Spring Boot JAR from the Java
+  *                sources under src/, and it is simultaneously the validation
+  *                gate dependency file: the zero warning compile, the 80 percent
+  *                line coverage floor, the toolchain floors and the dependency
+  *                vulnerability scan are all asserted from this file.
+  *
+  *                Originating legacy corpus, read only and never touched by this
+  *                build: 28 COBOL programs in app/cbl (19,254 lines), 28
+  *                copybooks in app/cpy (2,614 lines), 17 BMS mapsets in app/bms
+  *                with their 17 generated symbolic maps in app/cpy-bms (460
+  *                input field contracts), 29 JCL members in app/jcl (note the
+  *                uppercase CREASTMT.JCL, which a lowercase glob silently
+  *                drops), 2 procedures in app/proc, the IDCAMS control card
+  *                app/ctl/REPROCT.ctl, the CICS resource definitions
+  *                app/csd/CARDDEMO.CSD, the VSAM catalogue listing
+  *                app/catlg/LISTCAT.txt and the 9 ASCII fixtures in
+  *                app/data/ASCII.
+  *
+  *                Superseded z/OS build tooling: the compile templates
+  *                samples/BATCMP.jcl (batch COBOL), samples/CICCMP.jcl (CICS
+  *                COBOL) and samples/BMSCMP.jcl (BMS map assembly), plus the
+  *                build procedures samples/BUILDBAT.prc, samples/BUILDBMS.prc
+  *                and samples/BUILDONL.prc. Those six members remain in
+  *                samples/ as reference and are out of scope; this single file
+  *                replaces the whole set conceptually. The resource install job
+  *                app/jcl/CBADMCDJ.jcl has no build analogue and is superseded
+  *                at runtime by the Spring Security configuration.
   ******************************************************************
   * Copyright Amazon.com, Inc. or its affiliates.
   * All Rights Reserved.
@@ -32,12 +51,101 @@
   * language governing permissions and limitations under the License
   ******************************************************************
 -->
+<!--
+  ==========================================================================
+  HOW TO BUILD, RUN AND TEST
+  ==========================================================================
+  Prerequisites
+    OpenJDK 25 (the enforcer refuses anything lower) and Apache Maven 3.9.11
+    or newer on the 3.9 line. Use ./mvnw to get the pinned Maven without a
+    local installation. A container runtime is required for the integration
+    and end to end tiers, which start PostgreSQL 16 and LocalStack through
+    Testcontainers; no live AWS account and no host database are ever used.
+
+  Commands
+    ./mvnw -B clean compile   compile only, warnings escalated to errors
+    ./mvnw -B clean test      unit suite (Surefire) plus coverage collection
+    ./mvnw -B clean verify    the full gate: compile, unit suite, integration
+                              and end to end suites (Failsafe), merged JaCoCo
+                              report with the 80 percent line floor, dependency
+                              vulnerability scan, then the executable JAR
+    ./mvnw -B clean package   build the JAR without the verify phase gates
+    ./mvnw -B spring-boot:run start the application from source
+
+  Key configuration and defaults, all overridable on the command line
+    jacoco.line.coverage.minimum   0.80   merged line coverage floor
+    owasp.failBuildOnCVSS          7      fail on High and Critical findings
+    testcontainers.version         2.0.3  see the module rename note below
+    dependency.check.skip          false  plugin default; the container image
+                                          build and the main CI job pass
+                                          -Ddependency-check.skip=true because
+                                          a dedicated CI job owns the scan
+    Runtime configuration lives in Spring profiles under
+    src/main/resources/application*.yml, never in a Maven profile, so that no
+    credential is ever expressed as build state. JWT_SECRET must be supplied
+    through the environment; there is deliberately no committed default.
+
+  Common failure modes and troubleshooting
+    "release version 25 not supported"        the build is running on a JDK
+                                              older than 25; check JAVA_HOME.
+    "Detected JDK version ... is not in the
+     allowed range [25,)"                     same cause, caught earlier by the
+                                              enforcer rather than the compiler.
+    "warnings found and Werror specified"      a real compiler warning. Fix the
+                                              source; never relax the compiler
+                                              configuration. Deprecated
+                                              Testcontainers types are the most
+                                              common trigger: import
+                                              org.testcontainers.postgresql.PostgreSQLContainer
+                                              and
+                                              org.testcontainers.localstack.LocalStackContainer,
+                                              not the legacy
+                                              org.testcontainers.containers types.
+    "Could not resolve dependencies ...
+     org.testcontainers:localstack:2.0.3"      the bare module names do not
+                                              exist on the 2.x line. Only the
+                                              prefixed artifact ids resolve.
+    "Rule violated: Coverage checks have
+     not been met"                            merged line coverage is below the
+                                              floor. Add real assertions; do not
+                                              lower the floor and do not exclude
+                                              packages to pass the gate.
+    "One or more dependencies were identified
+     with vulnerabilities that have a CVSS
+     score greater than or equal to 7"        a genuine High or Critical finding
+                                              in the pinned dependency set. Fix
+                                              or document it with a severity and
+                                              a remediation; do not skip the
+                                              scan to make the build green.
+    "Could not connect to the NVD API" or an
+     empty dependency-check report            the vulnerability feed is
+                                              unavailable. Supply NVD_API_KEY in
+                                              the environment and re run. Report
+                                              this as a blocked gate; an
+                                              unavailable feed is never evidence
+                                              of a pass.
+    Testcontainers "Could not find a valid
+     Docker environment"                      no container runtime is reachable.
+                                              The integration and end to end
+                                              tiers cannot run; report the
+                                              prerequisite instead of asserting
+                                              an untested pass.
+  ==========================================================================
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
 
   <modelVersion>4.0.0</modelVersion>
 
+  <!--
+    The Spring Boot parent is the single root of dependency management. Its
+    version is exact: no range, no property indirection, no import ordering
+    that could shift it. Every version resolved below that is not stated
+    explicitly comes from here or from the one imported BOM. relativePath is
+    emptied so the parent is always resolved from the repository rather than
+    from an accidental sibling directory.
+  -->
   <parent>
     <groupId>org.springframework.boot</groupId>
     <artifactId>spring-boot-starter-parent</artifactId>
@@ -45,64 +153,167 @@
     <relativePath/>
   </parent>
 
+  <!--
+    One artifact, jar packaging, no modules. The deployment shape is a modular
+    monolith and not a set of microservices, because atomicity forbids the
+    split: the account update in app/cbl/COACTUPC.cbl commits an account write
+    and a customer write in one unit of work, and the daily posting job in
+    app/cbl/CBTRN02C.cbl commits a category balance upsert, an account update
+    and a transaction insert together. Distributing those writes would require
+    compensating transactions and would forfeit behavioural parity.
+    The group and package root is com.cardemo, spelled that way everywhere.
+  -->
   <groupId>com.cardemo</groupId>
   <artifactId>carddemo</artifactId>
   <version>1.0.0</version>
   <packaging>jar</packaging>
 
   <name>CardDemo</name>
-  <description>AWS CardDemo credit-card management application migrated from IBM Enterprise COBOL/CICS/VSAM/JCL/BMS to Java 25 and Spring Boot 3.5.11</description>
+  <description>AWS CardDemo migrated from z/OS COBOL, CICS, VSAM, JCL and BMS to Java 25 and Spring Boot</description>
 
   <licenses>
     <license>
       <name>Apache License, Version 2.0</name>
       <url>http://www.apache.org/licenses/LICENSE-2.0</url>
+      <distribution>repo</distribution>
     </license>
   </licenses>
 
   <properties>
-    <!-- Language level: AAP pins Java 25 LTS; no preview features are enabled. -->
+
+    <!--
+      Language level. The AAP pins Java 25 LTS. java.version is the property the
+      Spring Boot parent reads and maven.compiler.release is the one the
+      compiler plugin reads; both are set so no path can silently fall back to a
+      lower level. No preview feature is enabled, so the artifact runs on a
+      stock JDK 25 runtime without any additional flag.
+    -->
     <java.version>25</java.version>
     <maven.compiler.release>25</maven.compiler.release>
 
+    <!--
+      Encodings are stated rather than inherited from the platform. The legacy
+      records are fixed width, so charset handling must be an explicit decision
+      in code and never a function of the machine the build runs on.
+    -->
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <!-- Reproducible builds (Maven >= 3.9): stable archive entry timestamps. -->
+
+    <!--
+      Reproducible build support (Maven 3.9 and newer): a fixed archive entry
+      timestamp makes the packaged JAR byte identical across repeated builds of
+      the same source, which is what allows the build output to be cited as
+      evidence rather than merely produced.
+    -->
     <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
 
+    <!--
+      Single entry point, replacing the CICS region and the JES2 initiators: one
+      process hosts the REST surface and the Spring Batch pipeline. The Spring
+      Boot parent derives spring-boot.run.main-class from this property, and the
+      repackage goal below uses it as the JAR Start-Class.
+    -->
     <start-class>com.cardemo.CardDemoApplication</start-class>
 
     <!--
-      Testcontainers: the 2.x line renamed every module artifact. Overriding the
-      Spring Boot managed version here (rather than importing a second BOM) is one
-      half of the mandatory two-part remedy; the other half is using ONLY the
-      prefixed artifact ids testcontainers, testcontainers-localstack,
-      testcontainers-postgresql and testcontainers-junit-jupiter below. The bare
-      ids localstack / postgresql / junit-jupiter do not exist at 2.0.3.
+      TESTCONTAINERS: BUILD BREAKING COORDINATE RENAME. The 2.x line renamed
+      every module artifact, and the remedy has two halves that are BOTH
+      required. Applying either one alone still fails.
+
+      Half one, here: override the version the Spring Boot parent manages by
+      setting this property. The parent already imports the Testcontainers BOM
+      at ${testcontainers.version}, so raising the property switches that import
+      to the 2.0.3 BOM. A second, competing BOM import is deliberately NOT added
+      in dependencyManagement below, because two imports produce an ordering
+      dependent resolution that can silently select the parent managed 1.x line.
+
+      Half two, in the test dependencies below: use only the prefixed artifact
+      ids testcontainers, testcontainers-localstack, testcontainers-postgresql
+      and testcontainers-junit-jupiter. The bare ids localstack, postgresql and
+      junit-jupiter do not exist at 2.0.3 and resolve to HTTP 404.
     -->
     <testcontainers.version>2.0.3</testcontainers.version>
 
-    <!-- Exact plugin pins: no ranges, no LATEST, no RELEASE anywhere. -->
+    <!--
+      Exact pins for the coordinates that no BOM manages. There is no range, no
+      LATEST, no RELEASE and no snapshot anywhere in this file, and the enforcer
+      rules below prove it on every build.
+    -->
     <spring-cloud-aws.version>3.3.0</spring-cloud-aws.version>
     <logstash-logback-encoder.version>8.0</logstash-logback-encoder.version>
+
+    <!--
+      Plugin pins. maven-compiler-plugin.version, maven-surefire-plugin.version,
+      maven-failsafe-plugin.version and maven-enforcer-plugin.version are also
+      declared by the Spring Boot parent; they are restated here because the AAP
+      pins these exact values, so the build must not depend on the parent
+      happening to agree. spring-boot-maven-plugin.version has no parent
+      property and is introduced here so the plugin carries an explicit version
+      at its declaration site rather than relying on inherited plugin
+      management. Lifecycle plugins that the AAP does not pin keep the exact
+      parent managed version instead, referenced by property.
+    -->
     <maven-compiler-plugin.version>3.14.1</maven-compiler-plugin.version>
     <maven-surefire-plugin.version>3.5.4</maven-surefire-plugin.version>
     <maven-failsafe-plugin.version>3.5.4</maven-failsafe-plugin.version>
     <maven-enforcer-plugin.version>3.5.0</maven-enforcer-plugin.version>
-    <jacoco-maven-plugin.version>0.8.12</jacoco-maven-plugin.version>
-    <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
-    <maven-site-plugin.version>3.12.1</maven-site-plugin.version>
-    <maven-project-info-reports-plugin.version>3.9.0</maven-project-info-reports-plugin.version>
+    <!--
+      COVERAGE PLUGIN VERSION: 0.8.13 IS THE FLOOR IMPOSED BY JAVA 25, NOT A
+      PREFERENCE. Two sources disagreed about this coordinate, one citing 0.8.14
+      and the requirement citing 0.8.12, and the instruction was that the lower
+      pin governs. Neither source was correct, because 0.8.12 physically cannot
+      run on this target: Java 25 emits class file major version 69, and the ASM
+      build inside JaCoCo 0.8.12 rejects it outright with
 
-    <!-- Coverage floor asserted by JaCoCo at verify. -->
+        Error while analyzing target/classes/com/cardemo/probe/RejectCode.class
+        with JaCoCo 0.8.12.202403310830/dbfb6f2.
+        Unsupported class file major version 69
+
+      which fails the report goal before any coverage figure is computed. The
+      effect is not a lenient gate but no gate at all, plus a verify phase that
+      can never exit zero. Since a clean verify and an enforced 80 percent floor
+      are both acceptance criteria, and the coordinate was only ever a means to
+      them, the version is raised to the SMALLEST release that can read major
+      version 69. Measured on this toolchain, JDK 25.0.3 with Maven 3.9.11:
+      0.8.12 fails as above, 0.8.13 succeeds, 0.8.14 also succeeds. 0.8.13 is
+      therefore chosen as the minimum viable increment, which keeps the
+      preference for the lower version intact and avoids adopting the 0.8.14
+      figure that was explicitly superseded. Classified Blocker; recorded for the
+      coverage plugin version drift entry in DECISION_LOG.md.
+    -->
+    <jacoco-maven-plugin.version>0.8.13</jacoco-maven-plugin.version>
+    <dependency-check-maven.version>12.1.0</dependency-check-maven.version>
+    <spring-boot-maven-plugin.version>3.5.11</spring-boot-maven-plugin.version>
+    <!--
+      maven-site-plugin is the one lifecycle plugin that Maven 3.9.11 binds
+      without a version reachable through plugin management, and neither the
+      Spring Boot parent nor the super POM exposes a property for it. The value
+      below is exactly the version Maven 3.9.11 would otherwise supply through
+      its default lifecycle bindings, so pinning it changes nothing about the
+      build except that requirePluginVersions can now prove no version floats.
+    -->
+    <maven-site-plugin.version>3.12.1</maven-site-plugin.version>
+
+    <!--
+      Gate thresholds, kept as properties so a reader sees the numbers in one
+      place and a reviewer can diff a change to them. Raising them is welcome;
+      lowering either one to make a red build green is not.
+    -->
     <jacoco.line.coverage.minimum>0.80</jacoco.line.coverage.minimum>
-    <!-- OWASP: fail the build on High/Critical findings (CVSS >= 7). -->
     <owasp.failBuildOnCVSS>7</owasp.failBuildOnCVSS>
+
   </properties>
 
   <dependencyManagement>
     <dependencies>
-      <!-- The single additional BOM permitted by the AAP. -->
+      <!--
+        The single additional BOM. Spring Cloud AWS supplies the S3, SQS and SNS
+        clients that replace the GDG generations catalogued in
+        app/catlg/LISTCAT.txt, the DEFINE TDQUEUE(JOBS) transient data queue in
+        app/csd/CARDDEMO.CSD and operator notification. Importing it here is
+        what allows the three starters below to be declared without a version.
+        No other BOM is imported: see the Testcontainers note above.
+      -->
       <dependency>
         <groupId>io.awspring.cloud</groupId>
         <artifactId>spring-cloud-aws-dependencies</artifactId>
@@ -114,10 +325,15 @@
   </dependencyManagement>
 
   <dependencies>
-    <!-- ============================================================
-         Online presentation layer: replaces the CICS region, the BMS
-         conversations and the COMMAREA/XCTL navigation of app/cbl/CO*.cbl
-         ============================================================ -->
+
+    <!-- ======================================================================
+         Online presentation layer. Replaces the CICS region, the BMS
+         conversations of the 17 mapsets in app/bms and the COMMAREA plus
+         EXEC CICS XCTL navigation of the 17 screen programs in app/cbl. The
+         460 input field contracts in app/cpy-bms fix the DTO shapes, and
+         Jakarta Bean Validation replaces the per field error marker template
+         app/cpy/CSSETATY.cpy.
+         ====================================================================== -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-web</artifactId>
@@ -127,10 +343,15 @@
       <artifactId>spring-boot-starter-validation</artifactId>
     </dependency>
 
-    <!-- ============================================================
-         Data substrate: replaces the 10 VSAM KSDS clusters, 3 alternate
-         indexes and 3 paths catalogued in app/catlg/LISTCAT.txt
-         ============================================================ -->
+    <!-- ======================================================================
+         Data substrate. Replaces the 10 VSAM KSDS clusters, the 3 alternate
+         indexes and their 3 paths catalogued in app/catlg/LISTCAT.txt with 11
+         JPA entities over PostgreSQL 16. Flyway establishes the schema from the
+         12 IDCAMS DEFINE CLUSTER jobs in app/jcl and the 11 record layout
+         copybooks in app/cpy. flyway-database-postgresql is a separate artifact
+         because the database specific modules were split out of flyway-core;
+         without it Flyway cannot resolve the PostgreSQL dialect at runtime.
+         ====================================================================== -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-data-jpa</artifactId>
@@ -144,43 +365,50 @@
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-core</artifactId>
     </dependency>
-    <!-- Required as a separate artifact since the database-specific modules
-         were split out of flyway-core. -->
     <dependency>
       <groupId>org.flywaydb</groupId>
       <artifactId>flyway-database-postgresql</artifactId>
     </dependency>
 
-    <!-- ============================================================
-         Batch substrate: replaces the JES2 job stream in app/jcl plus the
-         DFSORT/IDCAMS utility steps of app/proc and app/ctl
-         ============================================================ -->
+    <!-- ======================================================================
+         Batch substrate. Replaces the JES2 job stream of the 29 JCL members in
+         app/jcl together with the DFSORT and IDCAMS utility steps of
+         app/proc and app/ctl/REPROCT.ctl. Job, Step, Flow and
+         JobExecutionDecider replace EXEC PGM, DD statements and COND gating;
+         java.util.Comparator replaces the DFSORT specifications, so no external
+         sort process is ever spawned.
+         ====================================================================== -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-batch</artifactId>
     </dependency>
 
-    <!-- ============================================================
-         Security: replaces the plaintext SEC-USR-PWD comparison of
-         app/cbl/COSGN00C.cbl over the app/cpy/CSUSR01Y.cpy layout, and the
-         COMMAREA identity propagation of app/cpy/COCOM01Y.cpy
-         ============================================================ -->
+    <!-- ======================================================================
+         Security. Replaces the plaintext SEC-USR-PWD comparison of
+         app/cbl/COSGN00C.cbl over the 80 byte layout app/cpy/CSUSR01Y.cpy with
+         BCrypt, and the COMMAREA identity propagation of app/cpy/COCOM01Y.cpy
+         with JWT claims. Token validation deliberately uses the Spring Security
+         JOSE path supplied by the OAuth2 resource server starter, which the
+         Boot parent manages, rather than a standalone JWT library that would
+         need its own pin and its own vulnerability tracking.
+         ====================================================================== -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-security</artifactId>
     </dependency>
-    <!-- JWT validation via the Spring Security JOSE path; deliberately no
-         separate, separately-pinned JWT library. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
     </dependency>
 
-    <!-- ============================================================
-         Mainframe integration constructs: GDG generations become S3 keys,
-         the app/csd/CARDDEMO.CSD TDQUEUE(JOBS) becomes an SQS FIFO queue,
-         operator notification becomes SNS. LocalStack only, zero live AWS.
-         ============================================================ -->
+    <!-- ======================================================================
+         Mainframe integration constructs. GDG generations become S3 keys over
+         versioned buckets, the DEFINE TDQUEUE(JOBS) extrapartition queue of
+         app/csd/CARDDEMO.CSD becomes an SQS FIFO queue in place of the
+         EXEC CICS WRITEQ TD in app/cbl/CORPT00C.cbl, and operator notification
+         becomes SNS. Every client targets a LocalStack endpoint override; there
+         is no live AWS credential path anywhere in this project.
+         ====================================================================== -->
     <dependency>
       <groupId>io.awspring.cloud</groupId>
       <artifactId>spring-cloud-aws-starter-s3</artifactId>
@@ -194,10 +422,18 @@
       <artifactId>spring-cloud-aws-starter-sns</artifactId>
     </dependency>
 
-    <!-- ============================================================
-         Observability: capability the COBOL corpus lacks entirely (its only
-         instrumentation is DISPLAY plus 9910-DISPLAY-IO-STATUS)
-         ============================================================ -->
+    <!-- ======================================================================
+         Observability. This is new capability, not a translation: the entire
+         COBOL corpus instruments itself with DISPLAY statements and the four
+         character status renderer 9910-DISPLAY-IO-STATUS in
+         app/cbl/CBTRN02C.cbl and nothing else. Actuator supplies the composite
+         health endpoint that replaces app/jcl/OPENFIL.jcl and
+         app/jcl/CLOSEFIL.jcl, the Prometheus registry exposes the named
+         counters that replace the end of run DISPLAY totals, the Micrometer
+         tracing bridge and the OTLP exporter carry trace context to Jaeger, and
+         the Logstash encoder renders JSON logs with the trace, span and
+         correlation identifiers taken from MDC.
+         ====================================================================== -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-actuator</artifactId>
@@ -220,30 +456,51 @@
       <version>${logstash-logback-encoder.version}</version>
     </dependency>
 
-    <!-- ============================================================
-         Test scope
-         ============================================================ -->
+    <!-- ======================================================================
+         Test scope. Everything below is test scoped, so no container or test
+         double can reach the production runtime classpath or the packaged JAR.
+         ====================================================================== -->
+
+    <!--
+      spring-boot-starter-test brings JUnit Jupiter 5.12.2, Mockito 5.17.0 and
+      AssertJ 3.27.7 at the versions the Boot parent resolves; they are not
+      declared individually so there is exactly one source of truth for them.
+    -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-starter-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Role based access control assertions over the 'A' and 'U' user types. -->
     <dependency>
       <groupId>org.springframework.security</groupId>
       <artifactId>spring-security-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- JobLauncherTestUtils and step scope support for the batch pipeline. -->
     <dependency>
       <groupId>org.springframework.batch</groupId>
       <artifactId>spring-batch-test</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Binds container lifecycle to the Spring test context. -->
     <dependency>
       <groupId>org.springframework.boot</groupId>
       <artifactId>spring-boot-testcontainers</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- Testcontainers 2.0.3 prefixed module coordinates ONLY. -->
+
+    <!--
+      Testcontainers 2.0.3, PREFIXED module coordinates only. This is half two
+      of the two part remedy described in the testcontainers.version property
+      above. Do not replace any of these four artifact ids with the bare 1.x
+      names localstack, postgresql or junit-jupiter: they do not exist at 2.0.3.
+      Note for callers, enforced by the zero warning compile: on the 2.x line
+      import org.testcontainers.postgresql.PostgreSQLContainer and
+      org.testcontainers.localstack.LocalStackContainer, because the legacy
+      org.testcontainers.containers equivalents are deprecated and would fail
+      the build.
+    -->
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers</artifactId>
@@ -254,41 +511,64 @@
       <artifactId>testcontainers-junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- PostgreSQL 16 for the 11 repository tests and the batch tiers. -->
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-postgresql</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- LocalStack for the S3 and SQS tiers; never a live AWS endpoint. -->
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers-localstack</artifactId>
       <scope>test</scope>
     </dependency>
+
   </dependencies>
 
   <build>
+
+    <!--
+      Stated rather than left implicit because the container image build copies
+      the artefact by glob: the Dockerfile does
+      COPY target/carddemo-*.jar /app/carddemo.jar. Changing this name breaks
+      the image build, so it is part of the contract rather than cosmetic.
+    -->
     <finalName>${project.artifactId}-${project.version}</finalName>
 
     <pluginManagement>
       <plugins>
-        <!-- Pinned so that no plugin version is ever inherited from the Maven
-             default lifecycle bindings; the enforcer requirePluginVersions rule
-             asserts this. The Spring Boot parent does not manage these. -->
+        <!--
+          maven-site-plugin is bound by the Maven 3.9 default lifecycle without
+          a version that plugin management can see, so the requirePluginVersions
+          rule below rejects the build unless it is pinned here. The pinned value
+          is the one Maven 3.9.11 supplies by default, so the site lifecycle
+          behaves identically; only the proof changes.
+        -->
         <plugin>
           <groupId>org.apache.maven.plugins</groupId>
           <artifactId>maven-site-plugin</artifactId>
           <version>${maven-site-plugin.version}</version>
         </plugin>
-        <plugin>
-          <groupId>org.apache.maven.plugins</groupId>
-          <artifactId>maven-project-info-reports-plugin</artifactId>
-          <version>${maven-project-info-reports-plugin.version}</version>
-        </plugin>
       </plugins>
     </pluginManagement>
 
+    <!--
+      Plugins are declared in lifecycle order, because plugin executions bound
+      to the same phase run in declaration order. That ordering is load bearing
+      at the verify phase: Failsafe must assert the integration and end to end
+      results BEFORE JaCoCo merges the two execution data files and applies the
+      coverage floor, and the coverage floor must be applied before the
+      vulnerability scan and the repackage.
+    -->
     <plugins>
-      <!-- Toolchain floors: fail fast rather than compiling on a wrong JDK. -->
+
+      <!--
+        Toolchain and dependency hygiene floors. Fails in the validate phase, so
+        a wrong JDK, a wrong Maven, a snapshot, a version range or an unpinned
+        plugin is reported before a single class is compiled rather than as a
+        confusing downstream error.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-enforcer-plugin</artifactId>
@@ -296,31 +576,98 @@
         <executions>
           <execution>
             <id>enforce-build-environment</id>
+            <phase>validate</phase>
             <goals>
               <goal>enforce</goal>
             </goals>
             <configuration>
+              <fail>true</fail>
               <rules>
+                <!-- Java 25 or newer. Lower is rejected, never tolerated. -->
                 <requireJavaVersion>
                   <version>[25,)</version>
-                  <message>CardDemo requires JDK 25 or newer (AAP pins OpenJDK 25).</message>
+                  <message>Build with JDK 25 or newer: a lower JDK cannot compile release 25 sources.</message>
                 </requireJavaVersion>
+                <!-- Maven 3.9.11 floor: the plugin set is validated on the 3.9 line. -->
                 <requireMavenVersion>
                   <version>[3.9.11,)</version>
-                  <message>CardDemo requires Apache Maven 3.9.11 or newer on the 3.9 line.</message>
+                  <message>Requires Apache Maven 3.9.11 or newer. Use ./mvnw to get the pinned version.</message>
                 </requireMavenVersion>
+                <!-- Release only: a snapshot would make the build irreproducible. -->
                 <requireReleaseDeps>
-                  <message>No SNAPSHOT dependencies are permitted in a reproducible build.</message>
+                  <message>No SNAPSHOT dependency may enter a reproducible build.</message>
                 </requireReleaseDeps>
+                <!--
+                  No ranges, no LATEST, no RELEASE: every coordinate is exact.
+                  Remediation when this fires: declare an exact version, or let
+                  the Boot parent or the AWS BOM manage it.
+                -->
                 <banDynamicVersions>
                   <allowSnapshots>false</allowSnapshots>
-                  <message>Version ranges, LATEST and RELEASE are banned; every coordinate must be exact.</message>
+                  <allowLatest>false</allowLatest>
+                  <allowRelease>false</allowRelease>
+                  <allowRanges>false</allowRanges>
+                  <allowRangesWithIdenticalBounds>false</allowRangesWithIdenticalBounds>
+                  <excludeOptionals>false</excludeOptionals>
+                  <!-- Empty list: test and provided scopes are checked too, not skipped. -->
+                  <excludedScopes/>
+                  <message>Version ranges, LATEST and RELEASE are banned. Declare an exact version.</message>
                 </banDynamicVersions>
+                <!--
+                  Duplication check: catches the same dependency declared twice,
+                  which is how a scope or an exclusion silently stops applying.
+                -->
+                <banDuplicatePomDependencyVersions>
+                  <message>A dependency is declared twice. Remove the duplicate so its scope still applies.</message>
+                </banDuplicatePomDependencyVersions>
+                <!--
+                  Convergence checks over the graph that actually ships. Both are
+                  a proof of the BOM strategy rather than a fight with it:
+                  because the Boot parent and the AWS BOM pin the compile and
+                  runtime graph, that graph converges and no transitive
+                  dependency asks for a version higher than the one resolved.
+                  Asserting it means a future dependency that breaks the property
+                  fails the build instead of quietly shipping two versions.
+
+                  The scope exclusions are deliberate and evidence based, not a
+                  blanket relaxation. Including test scope makes both rules fail
+                  on exactly one pair that no BOM governs and that never reaches
+                  the artefact: org.jetbrains:annotations resolves to 13.0
+                  through opentelemetry-exporter-otlp, okhttp and kotlin-stdlib
+                  on the runtime path, and to 17.0.0 through
+                  org.testcontainers:testcontainers and org.rnorth.duct-tape on
+                  the test path. Pinning a third party annotations jar to force
+                  agreement between a runtime tracing exporter and a test only
+                  container library would add risk for no production benefit, so
+                  the production graph is held strictly convergent and the test
+                  tooling graph is excluded and documented here.
+                -->
+                <dependencyConvergence>
+                  <excludedScopes>
+                    <excludedScope>test</excludedScope>
+                    <excludedScope>provided</excludedScope>
+                  </excludedScopes>
+                </dependencyConvergence>
+                <requireUpperBoundDeps>
+                  <excludedScopes>
+                    <excludedScope>test</excludedScope>
+                    <excludedScope>provided</excludedScope>
+                  </excludedScopes>
+                </requireUpperBoundDeps>
+                <!--
+                  Every plugin, including the lifecycle plugins, carries an exact
+                  version. banMavenDefaults is what makes this rule catch a
+                  plugin whose version comes only from the Maven default
+                  lifecycle bindings, which is the case the site plugin pin above
+                  exists to satisfy.
+                -->
                 <requirePluginVersions>
-                  <message>Every plugin must declare an exact version.</message>
+                  <message>Every plugin must resolve to an exact version. Pin it in properties.</message>
                   <banLatest>true</banLatest>
                   <banRelease>true</banRelease>
                   <banSnapshots>true</banSnapshots>
+                  <banTimestamps>true</banTimestamps>
+                  <banMavenDefaults>true</banMavenDefaults>
                 </requirePluginVersions>
               </rules>
             </configuration>
@@ -328,7 +675,15 @@
         </executions>
       </plugin>
 
-      <!-- Zero-warning compilation: warnings are escalated to errors. -->
+      <!--
+        Zero warning compilation. Warnings are escalated to errors so that a
+        deprecation or an unchecked cast is a build failure and not a line of
+        log nobody reads. Only a genuine, source grounded warning may be
+        addressed, and it is addressed in the source: this configuration is not
+        relaxed, and warning categories are not disabled wholesale.
+        parameters retains formal parameter names in the class files, which the
+        web and validation layers use for binding and message interpolation.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
@@ -346,15 +701,22 @@
         </configuration>
       </plugin>
 
-      <!-- Unit tests only. Integration and e2e trees are excluded here and
-           executed by Failsafe during integration-test/verify. -->
+      <!--
+        Unit suite only, at the test phase. Discovery uses the standard name
+        patterns so that a unit test added anywhere is picked up, and the
+        integration and end to end package trees are excluded by path so they
+        cannot run here. Restricting discovery to a single package instead would
+        silently skip any test placed elsewhere, which is a swallowed failure.
+        runOrder alphabetical keeps the sequence deterministic across machines.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>${maven-surefire-plugin.version}</version>
         <configuration>
           <includes>
-            <include>**/unit/**/*Test.java</include>
+            <include>**/*Test.java</include>
+            <include>**/*Tests.java</include>
           </includes>
           <excludes>
             <exclude>**/integration/**</exclude>
@@ -362,12 +724,19 @@
           </excludes>
           <runOrder>alphabetical</runOrder>
           <trimStackTrace>false</trimStackTrace>
+          <redirectTestOutputToFile>true</redirectTestOutputToFile>
         </configuration>
       </plugin>
 
-      <!-- Integration + e2e tests. The planned classes end in *Test rather
-           than *IT, so inclusion is path based to avoid double-running the
-           unit suite. -->
+      <!--
+        Integration and end to end suites, at the integration-test phase, with
+        their results asserted at verify. The planned classes end in Test rather
+        than IT, so inclusion is by path: the two trees are included and the
+        Surefire territory is excluded, which is what stops the unit suite from
+        running twice. The verify goal is what turns a failed integration test
+        into a failed build; without it Failsafe records the failure and the
+        build would still succeed.
+      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
@@ -375,13 +744,13 @@
         <configuration>
           <includes>
             <include>**/integration/**/*Test.java</include>
+            <include>**/integration/**/*Tests.java</include>
             <include>**/e2e/**/*Test.java</include>
+            <include>**/e2e/**/*Tests.java</include>
           </includes>
-          <excludes>
-            <exclude>**/unit/**</exclude>
-          </excludes>
           <runOrder>alphabetical</runOrder>
           <trimStackTrace>false</trimStackTrace>
+          <redirectTestOutputToFile>true</redirectTestOutputToFile>
         </configuration>
         <executions>
           <execution>
@@ -394,7 +763,16 @@
         </executions>
       </plugin>
 
-      <!-- Coverage across the unit and integration/e2e executions. -->
+      <!--
+        Coverage across BOTH executions. The unit agent writes jacoco.exec, the
+        integration agent writes jacoco-it.exec, the two are merged, one report
+        is produced from the merged data and the floor is applied to that merged
+        data. Measuring either tier alone would understate coverage and invite
+        padding the gap with trivial tests.
+        No package is excluded. The floor is a real floor: it is not passed by
+        removing core packages from the measurement, and haltOnFailure keeps a
+        shortfall a hard failure.
+      -->
       <plugin>
         <groupId>org.jacoco</groupId>
         <artifactId>jacoco-maven-plugin</artifactId>
@@ -402,6 +780,7 @@
         <executions>
           <execution>
             <id>prepare-unit-agent</id>
+            <phase>initialize</phase>
             <goals>
               <goal>prepare-agent</goal>
             </goals>
@@ -411,6 +790,7 @@
           </execution>
           <execution>
             <id>prepare-integration-agent</id>
+            <phase>pre-integration-test</phase>
             <goals>
               <goal>prepare-agent-integration</goal>
             </goals>
@@ -419,7 +799,7 @@
             </configuration>
           </execution>
           <execution>
-            <id>merge-executions</id>
+            <id>merge-unit-and-integration-data</id>
             <phase>verify</phase>
             <goals>
               <goal>merge</goal>
@@ -474,10 +854,39 @@
         </executions>
       </plugin>
 
-      <!-- Vulnerability scan. Never skipped by default; a High/Critical
-           finding fails the build. An NVD API key should be supplied through
-           the NVD_API_KEY environment variable so the feed update is not
-           rate limited. -->
+      <!--
+        Dependency vulnerability scan, bound to verify and never skipped by
+        default. A finding at CVSS 7 or above, that is High or Critical, fails
+        the build. Test and provided scopes are scanned too, so a vulnerable
+        test only library is still reported.
+
+        The API key is read from the environment and is never committed:
+        NVD_API_KEY is supplied by the continuous integration workflow from a
+        repository secret, and locally it can be passed as
+        -Dnvd.api.key=YOUR_KEY instead.
+
+        Behaviour when NVD_API_KEY is NOT set, stated because it is the one place
+        in this build where the environment shows through: Maven leaves the
+        reference unexpanded, so the plugin receives that reference text verbatim
+        instead of a key. That is harmless while the local vulnerability data
+        under the Maven repository is recent, because the plugin then reports
+        "Skipping the NVD API Update" and scans against the cached data. It
+        becomes a problem only when the data is stale AND no key is available, at
+        which point the feed update is rate limited and the run must be reported
+        as a BLOCKED gate with the exact error. An unreachable or incomplete feed
+        is never evidence that the dependency set is clean, and the remedy is to
+        supply the key, never to lower failBuildOnCVSS or to add a skip.
+
+        The container image build and the main CI job pass
+        -Ddependency-check.skip=true because a dedicated CI job owns this scan
+        and caches the vulnerability data separately. That override is the
+        plugin's own user property; no skip element is set here, so the default
+        remains to run.
+
+        The .NET assembly analyzer is disabled because CardDemo is a Java only
+        project: without a dotnet runtime that analyzer only emits an
+        initialisation error. Java detection is unaffected.
+      -->
       <plugin>
         <groupId>org.owasp</groupId>
         <artifactId>dependency-check-maven</artifactId>
@@ -493,10 +902,6 @@
           <outputDirectory>${project.build.directory}/dependency-check</outputDirectory>
           <skipTestScope>false</skipTestScope>
           <skipProvidedScope>false</skipProvidedScope>
-          <!-- CardDemo is a Java-only project. The .NET assembly analyzer
-               requires a dotnet runtime that is intentionally absent and only
-               emits an initialisation error; disabling it removes that noise
-               without weakening Java vulnerability detection in any way. -->
           <assemblyAnalyzerEnabled>false</assemblyAnalyzerEnabled>
         </configuration>
         <executions>
@@ -510,10 +915,17 @@
         </executions>
       </plugin>
 
-      <!-- Exactly one executable JAR: the modular monolith. -->
+      <!--
+        Exactly one executable JAR: the modular monolith that replaces the CICS
+        region and the JES2 initiators. The version is stated at the declaration
+        site rather than inherited, and the main class is taken from the
+        start-class property so the Start-Class manifest attribute and
+        spring-boot:run can never disagree.
+      -->
       <plugin>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-maven-plugin</artifactId>
+        <version>${spring-boot-maven-plugin.version}</version>
         <configuration>
           <mainClass>${start-class}</mainClass>
         </configuration>
@@ -526,6 +938,7 @@
           </execution>
         </executions>
       </plugin>
+
     </plugins>
   </build>
 
