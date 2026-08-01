@@ -1,0 +1,559 @@
+/*
+ * ******************************************************************
+ * Program     : UserCreateRequest.java
+ * Application : CardDemo
+ * Type        : Java 25 / Spring Boot 3.5.11 data transfer object
+ * Function    : User-add request; the password is write-only and never
+ *               serialized outward.
+ * Source      : app/cpy-bms/COUSR01.CPY (12 fields) @ 7756d89
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.model.dto;
+
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.validation.constraints.Size;
+
+/**
+ * Inbound request payload for the user-add transaction, translated field-for-field from the BMS symbolic
+ * map {@code app/cpy-bms/COUSR01.CPY}, whose input group {@code COUSR1AI} (declared at line 17) carries
+ * exactly <strong>12</strong> input fields. The twelve fields below appear in the map's own declaration
+ * order, and each one names its originating COBOL field, PIC clause and line number.
+ *
+ * <p>The legacy counterpart is {@code app/cbl/COUSR01C.cbl}, the CICS screen program behind transaction
+ * {@code CU01}. That program receives this map, validates the five operator-supplied fields for presence,
+ * and writes an 80-byte record to the {@code USRSEC} VSAM cluster. This class is the request half of that
+ * conversation only: it holds transport state and nothing else, performs no hashing, no normalisation, no
+ * mapping and no arithmetic, and reaches no repository, service or controller.
+ *
+ * <p><strong>Purpose.</strong> Bind an untrusted JSON request body at the HTTP trust boundary, carry the
+ * operator's twelve presented values verbatim into the service layer, and expose eleven of them back out
+ * again. The twelfth, the password, is inbound-only and is described below.
+ *
+ * <p><strong>SECURITY: the password is write-only.</strong> {@code PASSWDI PIC X(8)} at
+ * {@code app/cpy-bms/COUSR01.CPY:78} is the presented plaintext credential. This class carries it
+ * <em>inbound and nothing outbound</em>, enforced by two independent mechanisms so that neither one alone
+ * is load-bearing:
+ * <ul>
+ *   <li>the field is annotated write-only for JSON binding, so the serializer never emits it; and</li>
+ *   <li><strong>no {@code getPassword()} accessor exists at all</strong>, so there is no public read path
+ *       to the credential from any caller, serializer or reflective mapper that honours bean accessors.</li>
+ * </ul>
+ * The persisted layout {@code app/cpy/CSUSR01Y.cpy} is an 80-byte record — {@code SEC-USR-ID PIC X(08)} at
+ * line 18, {@code SEC-USR-FNAME PIC X(20)} at line 19, {@code SEC-USR-LNAME PIC X(20)} at line 20,
+ * {@code SEC-USR-PWD PIC X(08)} at line 21, {@code SEC-USR-TYPE PIC X(01)} at line 22 and
+ * {@code SEC-USR-FILLER PIC X(23)} at line 23, totalling exactly 80 bytes. In the migrated target that
+ * 8-byte plaintext password column becomes a 60-character BCrypt digest column, recognisable by its
+ * dollar-delimited version marker. <strong>This class never carries that digest</strong>: there is no hash
+ * field, no digest field and no salt field here. Hashing is the service layer's responsibility, and the
+ * digest belongs to the persistence entity, never to a transport object.
+ *
+ * <p>Consequently this class deliberately declares no {@code toString()} override. The inherited
+ * {@link Object#toString()} emits only the class name and an identity hash, so no accidental log, debugger
+ * expression or exception message can render the credential, either whole or partially masked. It likewise
+ * declares no {@code equals} or {@code hashCode}, so the credential is never compared as bulk state, and it
+ * does <em>not</em> implement {@code java.io.Serializable}, keeping this credential-bearing object off every
+ * Java deserialization path.
+ *
+ * <p><strong>Two divergences from the sibling update map — both deliberately preserved.</strong>
+ * {@code app/cpy-bms/COUSR02.CPY} also declares 12 input fields, but they are not the same 12, and the two
+ * maps are therefore <em>not</em> unified behind a shared base type, interface or mixin. Doing so would be
+ * factually wrong rather than merely redundant:
+ * <ul>
+ *   <li><strong>Field order differs.</strong> This add map leads with the operator's names and places the
+ *       identifier third — {@code FNAMEI} at line 60, {@code LNAMEI} at line 66, {@code USERIDI} at line 72.
+ *       The update map leads with the identifier — {@code USRIDINI} at {@code COUSR02.CPY:60}, then
+ *       {@code FNAMEI} at line 66 and {@code LNAMEI} at line 72. Each map keeps its own order.</li>
+ *   <li><strong>The identifier field name differs.</strong> This map declares {@code USERIDI}; the update
+ *       map declares the input-suffixed {@code USRIDINI}, as does the user-list map at
+ *       {@code app/cpy-bms/COUSR00.CPY:66}. The citation carried by this class is {@code USERIDI}.</li>
+ * </ul>
+ *
+ * <p><strong>The six recurring header fields are declared inline, by design.</strong> They are not
+ * extracted into a shared helper, base class, interface or mixin, because the recurrence is not uniform:
+ * {@code CURTIMEI} is {@code PIC X(8)} on this map and on fifteen of the seventeen symbolic maps, but
+ * {@code app/cpy-bms/COSGN00.CPY:54} alone declares {@code PIC X(9)}. A shared header abstraction would
+ * have to pick one width and would misrepresent the other, so the six fields are repeated per map instead.
+ *
+ * <p><strong>The user type stays a raw one-character code.</strong> {@code USRTYPEI PIC X(1)} at line 84 is
+ * modelled as a one-character {@code String}, <em>not</em> as the {@code UserType} enum. The enum has
+ * exactly two constants, {@code ADMIN} for {@code 'A'} and {@code USER} for {@code 'U'}, derived from the
+ * 88-level condition names in {@code app/cpy/COCOM01Y.cpy} at lines 27 and 28. Binding an inbound
+ * one-character field to that enum would turn any out-of-domain value into a JSON deserialization failure
+ * and would replace the source program's own validation message with a framework error. That is a
+ * behaviour change, and parity is the contract, so the raw code is carried and the service decides. Within
+ * this package only {@code CommArea}, {@code SignOnResponse} and {@code MenuResponse} reference the enum
+ * type; {@code UserCreateRequest}, {@code UserUpdateRequest} and {@code UserSecurityDto} all carry the raw
+ * {@code X(1)} code.
+ *
+ * <p><strong>Validation matches the source exactly — no stricter, no looser.</strong> Every field carries a
+ * maximum-length constraint equal to its PIC width and nothing more. In particular the password constraint
+ * is a maximum of 8, because the source field is {@code X(8)}; it is deliberately not widened to
+ * accommodate a digest, since the digest lives in the entity rather than here. There is <em>no</em>
+ * password-complexity rule, no minimum length, no character-class requirement and no regular expression,
+ * because {@code app/cbl/COUSR01C.cbl} performs none: its validation is a presence cascade testing
+ * {@code = SPACES OR LOW-VALUES} over {@code FNAMEI} at line 118, {@code LNAMEI} at line 124,
+ * {@code USERIDI} at line 130, {@code PASSWDI} at line 136 and {@code USRTYPEI} at line 142, plus
+ * duplicate-key handling on write, and nothing else. Inventing a complexity rule here would reject input
+ * the legacy system accepts. The declaration order of those five fields is what makes the source's
+ * first-failing-field reporting order reproducible by the service.
+ *
+ * <p>No field is marked as required, because the source tolerates a blank submission and reports it as a
+ * business validation message rather than rejecting the payload outright. Presence is therefore the service
+ * layer's decision, taken in the source's order, not a binding-time rejection.
+ *
+ * <p><strong>The three-state model is preserved.</strong> {@code app/cpy/CSSETATY.cpy} is a parameterised
+ * {@code COPY ... REPLACING} PROCEDURE DIVISION template — parameters {@code (TESTVAR1)},
+ * {@code (SCRNVAR2)} and {@code (MAPNAME3)} — whose body is:
+ * <pre>{@code
+ * IF (FLG-(TESTVAR1)-NOT-OK
+ * OR  FLG-(TESTVAR1)-BLANK)
+ * AND CDEMO-PGM-REENTER
+ *     MOVE DFHRED             TO
+ *          (SCRNVAR2)C OF (MAPNAME3)O
+ *     IF  FLG-(TESTVAR1)-BLANK
+ *         MOVE '*'            TO
+ *          (SCRNVAR2)O OF (MAPNAME3)O
+ *     END-IF
+ * END-IF
+ * }</pre>
+ * The model is OK / NOT-OK / BLANK, in which <strong>BLANK is a state distinct from NOT-OK</strong>: it
+ * additionally stamps an asterisk into the screen field, and the whole block fires only on re-entry, never
+ * on first display. That template is procedural and has no class of its own; it maps onto bean validation
+ * plus per-field error markers. The consequence for this class is that <em>absent</em>, <em>blank</em> and
+ * <em>marked</em> are three distinct states. A null is never coerced to an empty string, an empty string is
+ * never coerced to null, and neither is ever coerced to a sentinel; no field is trimmed, upper-cased or
+ * lower-cased on ingest. A payload that collapsed the three into one would diverge from the source.
+ * Message-level corroboration comes from a sibling program: {@code app/cbl/COACTUPC.cbl:505-508} declares
+ * two different literals for one field, {@code 'Credit Limit must be supplied'} for the blank case and
+ * {@code 'Credit Limit is not valid'} for the invalid case.
+ *
+ * <p>Case folding is likewise left to the service. The sign-on program upper-cases both the identifier and
+ * the password before comparison, so any such operation must be performed with {@code Locale.ROOT} to stay
+ * deterministic — under a Turkish locale {@code toUpperCase()} maps a dotless letter differently and would
+ * silently change authentication outcomes. This class performs no case operation at all.
+ *
+ * <p><strong>Seeded users.</strong> The ten reference users exist only as inline {@code SYSUT1 DD *} data
+ * inside {@code app/jcl/DUSRSECJ.jcl}, fed through IEBGENER at step {@code STEP01} (line 32) into the
+ * cluster defined at lines 64 to 68 as {@code KEYS(8,0) RECORDSIZE(80,80) REUSE INDEXED}. Five carry user
+ * type {@code 'A'} and five carry user type {@code 'U'}, and all ten share one literal plaintext password
+ * that the seed migration replaces with a BCrypt digest at load time. That literal value is deliberately
+ * not reproduced here, in any comment, or in any test fixture for this class.
+ *
+ * <p><strong>Error modes.</strong>
+ * <ul>
+ *   <li><em>Over-length field.</em> A value longer than its PIC width raises a constraint violation whose
+ *       interpolated message states the permitted bounds only. Verified against Hibernate Validator: the
+ *       password violation message renders as a bounds statement and does <em>not</em> echo the submitted
+ *       value.</li>
+ *   <li><em>Credential leakage through a rejected value.</em> Spring's field-error object retains the
+ *       submitted value alongside the message, so a validation failure on the password puts the plaintext
+ *       inside the framework's error object. The default Spring Boot error body does not render it, but a
+ *       custom exception handler that serialises field errors wholesale would leak it. Remediation, which
+ *       belongs to the exception-handling layer and not to this class: emit the field name and message only,
+ *       never the rejected value. Severity: <strong>High</strong> if such a handler is written.</li>
+ *   <li><em>Unknown JSON property.</em> This class opts out of permissive binding rather than into it.
+ *       Note precisely what that does and does not guarantee, because the two are easily confused: the
+ *       class-level setting pins the override to non-permissive and so prevents unknown properties from
+ *       being silently discarded by a class-level opt-in, but it defers the decision to the object mapper's
+ *       fail-on-unknown-properties feature. Strict rejection therefore additionally requires that feature to
+ *       remain enabled in the Jackson configuration, which is outside this class. Severity:
+ *       <strong>Medium</strong>, and stated here rather than overclaimed.</li>
+ *   <li><em>Out-of-domain user type.</em> A one-character value outside {@code 'A'} and {@code 'U'} binds
+ *       successfully and is carried into the service, which reports it using the source's own message. This
+ *       is intentional; see the user-type note above.</li>
+ * </ul>
+ *
+ * <p><strong>Findings carried by this class, classified by severity.</strong>
+ * <ul>
+ *   <li><strong>Medium</strong> — corpus census correction. The specification's headline figure of 460 BMS
+ *       input fields is wrong in both directions. Counting the input group of each of the seventeen
+ *       symbolic maps yields 441: {@code COACTUP} 54, {@code COACTVW} 37, {@code COADM01} 20,
+ *       {@code COBIL00} 10, {@code COCRDLI} 45, {@code COCRDSL} 15, {@code COCRDUP} 17, {@code COMEN01} 20,
+ *       {@code CORPT00} 17, {@code COSGN00} 11, {@code COTRN00} 59, {@code COTRN01} 21, {@code COTRN02} 21,
+ *       {@code COUSR00} 59, {@code COUSR01} 12, {@code COUSR02} 12 and {@code COUSR03} 11. The
+ *       specification's own per-map table sums to 440 because it records {@code COACTVW} as 36 rather than
+ *       37. The verified total is <strong>441</strong>. Impact is documentation-only: this class's own count
+ *       of 12 is unaffected and independently confirmed. Remediation: correct the headline and the
+ *       {@code COACTVW} row.</li>
+ *   <li><strong>Low</strong> — the map reserves a 78-character error-message field, an outbound screen
+ *       concern that arrives on an inbound payload purely because the BMS input group carries every field.
+ *       It is retained for field-contract completeness and is not treated as operator input.</li>
+ * </ul>
+ *
+ * <p><strong>Build and test.</strong> This class is compiled by the project's Maven build against Java 25
+ * under {@code -Xlint:all -Werror} with warnings failing the build; there is nothing to run standalone. Its
+ * regression tests live in {@code src/test/java/com/cardemo/unit/model} and must assert, at minimum, that
+ * exactly twelve fields are declared in the map's order, that serialising a fully populated instance
+ * produces JSON containing no password key and no submitted password value, that deserialising a payload
+ * containing a password does populate the field, and that null, empty and asterisk-marked values remain
+ * three distinguishable states.
+ *
+ * <p><strong>Troubleshooting.</strong> If a password appears in any log line, HTTP response or test
+ * snapshot, the cause is not this class emitting it — there is no read path here. Look instead at a custom
+ * validation-error handler serialising a rejected value, at a mapper configured to auto-detect private
+ * fields rather than bean accessors, or at request-body logging upstream of the controller. If an inbound
+ * password does not arrive at the service, confirm the JSON key is exactly {@code password} and that the
+ * request reaches the write-only setter rather than a getter-driven binder.
+ */
+@JsonIgnoreProperties(ignoreUnknown = false)
+public class UserCreateRequest {
+
+    /**
+     * Terminal transaction identifier. Source {@code TRNNAMEI PIC X(4)} at
+     * {@code app/cpy-bms/COUSR01.CPY:24}.
+     */
+    @Size(max = 4)
+    private String transactionName;
+
+    /**
+     * First screen title line. Source {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COUSR01.CPY:30}.
+     */
+    @Size(max = 40)
+    private String title01;
+
+    /**
+     * Screen date stamp as presented. Source {@code CURDATEI PIC X(8)} at
+     * {@code app/cpy-bms/COUSR01.CPY:36}.
+     */
+    @Size(max = 8)
+    private String currentDate;
+
+    /**
+     * Originating program name. Source {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:42}.
+     */
+    @Size(max = 8)
+    private String programName;
+
+    /**
+     * Second screen title line. Source {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COUSR01.CPY:48}.
+     */
+    @Size(max = 40)
+    private String title02;
+
+    /**
+     * Screen time stamp as presented. Source {@code CURTIMEI PIC X(8)} at
+     * {@code app/cpy-bms/COUSR01.CPY:54}. Width 8 here; {@code app/cpy-bms/COSGN00.CPY:54} alone declares
+     * {@code PIC X(9)}, which is why this header field is declared inline rather than shared.
+     */
+    @Size(max = 8)
+    private String currentTime;
+
+    /**
+     * Operator-supplied first name, and the first field the source validates. Source
+     * {@code FNAMEI PIC X(20)} at {@code app/cpy-bms/COUSR01.CPY:60}. On this add map the names precede the
+     * identifier; the update map {@code app/cpy-bms/COUSR02.CPY} orders them the other way round.
+     */
+    @Size(max = 20)
+    private String firstName;
+
+    /**
+     * Operator-supplied last name, and the second field the source validates. Source
+     * {@code LNAMEI PIC X(20)} at {@code app/cpy-bms/COUSR01.CPY:66}.
+     */
+    @Size(max = 20)
+    private String lastName;
+
+    /**
+     * Operator-supplied user identifier, and the third field the source validates. Source
+     * {@code USERIDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:72} — note the field name, which is
+     * {@code USERIDI} on this map and the input-suffixed {@code USRIDINI} on
+     * {@code app/cpy-bms/COUSR02.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:66}. Width 8 matches the
+     * {@code USRSEC} cluster key length declared as {@code KEYS(8,0)} in {@code app/jcl/DUSRSECJ.jcl}.
+     */
+    @Size(max = 8)
+    private String userId;
+
+    /**
+     * Presented plaintext password, and the fourth field the source validates. Source
+     * {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:78}.
+     *
+     * <p><strong>Inbound only.</strong> This field is bound from a request body and is never serialized
+     * outward: it is annotated write-only for JSON, and this class deliberately declares no
+     * {@code getPassword()} accessor, so no public read path to the credential exists. The maximum length
+     * is 8 because the source field is {@code X(8)}; it is not widened to hold a digest, and no digest,
+     * salt or hash field exists on this class.
+     */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
+    @Size(max = 8)
+    private String password;
+
+    /**
+     * Operator-supplied user type, and the fifth field the source validates. Source
+     * {@code USRTYPEI PIC X(1)} at {@code app/cpy-bms/COUSR01.CPY:84}. Carried as a raw one-character code
+     * rather than as the {@code UserType} enum, so that an out-of-domain value reaches the service and is
+     * reported with the source's own message instead of failing JSON binding.
+     */
+    @Size(max = 1)
+    private String userType;
+
+    /**
+     * Screen error-message area. Source {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COUSR01.CPY:90}.
+     * Present for field-contract completeness because the BMS input group declares it; it is an outbound
+     * screen concern and is not treated as operator input.
+     */
+    @Size(max = 78)
+    private String errorMessage;
+
+    /**
+     * Creates an empty request. Every field starts as {@code null}, which is the distinct
+     * <em>absent</em> state of the three-state model described on this class and is deliberately not
+     * initialised to an empty string.
+     */
+    public UserCreateRequest() {
+        // Intentionally empty: JSON binding and the setters populate this transport object, and no field
+        // is defaulted, because null, empty and marked are three distinct states in the source.
+    }
+
+    /**
+     * Returns the terminal transaction identifier, {@code TRNNAMEI} at
+     * {@code app/cpy-bms/COUSR01.CPY:24}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getTransactionName() {
+        return transactionName;
+    }
+
+    /**
+     * Sets the terminal transaction identifier, {@code TRNNAMEI} at {@code app/cpy-bms/COUSR01.CPY:24}.
+     *
+     * @param transactionName the presented value, stored verbatim; {@code null} and the empty string are
+     *                        retained as distinct states and are neither trimmed nor coerced
+     */
+    public void setTransactionName(String transactionName) {
+        this.transactionName = transactionName;
+    }
+
+    /**
+     * Returns the first screen title line, {@code TITLE01I} at {@code app/cpy-bms/COUSR01.CPY:30}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getTitle01() {
+        return title01;
+    }
+
+    /**
+     * Sets the first screen title line, {@code TITLE01I} at {@code app/cpy-bms/COUSR01.CPY:30}.
+     *
+     * @param title01 the presented value, stored verbatim; {@code null} and the empty string are retained
+     *                as distinct states and are neither trimmed nor coerced
+     */
+    public void setTitle01(String title01) {
+        this.title01 = title01;
+    }
+
+    /**
+     * Returns the screen date stamp as presented, {@code CURDATEI} at
+     * {@code app/cpy-bms/COUSR01.CPY:36}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getCurrentDate() {
+        return currentDate;
+    }
+
+    /**
+     * Sets the screen date stamp as presented, {@code CURDATEI} at {@code app/cpy-bms/COUSR01.CPY:36}.
+     *
+     * @param currentDate the presented value, stored verbatim and never reformatted or parsed here;
+     *                    {@code null} and the empty string are retained as distinct states
+     */
+    public void setCurrentDate(String currentDate) {
+        this.currentDate = currentDate;
+    }
+
+    /**
+     * Returns the originating program name, {@code PGMNAMEI} at {@code app/cpy-bms/COUSR01.CPY:42}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getProgramName() {
+        return programName;
+    }
+
+    /**
+     * Sets the originating program name, {@code PGMNAMEI} at {@code app/cpy-bms/COUSR01.CPY:42}.
+     *
+     * @param programName the presented value, stored verbatim; {@code null} and the empty string are
+     *                    retained as distinct states and are neither trimmed nor coerced
+     */
+    public void setProgramName(String programName) {
+        this.programName = programName;
+    }
+
+    /**
+     * Returns the second screen title line, {@code TITLE02I} at {@code app/cpy-bms/COUSR01.CPY:48}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getTitle02() {
+        return title02;
+    }
+
+    /**
+     * Sets the second screen title line, {@code TITLE02I} at {@code app/cpy-bms/COUSR01.CPY:48}.
+     *
+     * @param title02 the presented value, stored verbatim; {@code null} and the empty string are retained
+     *                as distinct states and are neither trimmed nor coerced
+     */
+    public void setTitle02(String title02) {
+        this.title02 = title02;
+    }
+
+    /**
+     * Returns the screen time stamp as presented, {@code CURTIMEI} at
+     * {@code app/cpy-bms/COUSR01.CPY:54}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getCurrentTime() {
+        return currentTime;
+    }
+
+    /**
+     * Sets the screen time stamp as presented, {@code CURTIMEI} at {@code app/cpy-bms/COUSR01.CPY:54}.
+     * The accepted width is 8 on this map; the sign-on map declares 9, which is why the two are not shared.
+     *
+     * @param currentTime the presented value, stored verbatim and never reformatted or parsed here;
+     *                    {@code null} and the empty string are retained as distinct states
+     */
+    public void setCurrentTime(String currentTime) {
+        this.currentTime = currentTime;
+    }
+
+    /**
+     * Returns the operator-supplied first name, {@code FNAMEI} at {@code app/cpy-bms/COUSR01.CPY:60}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getFirstName() {
+        return firstName;
+    }
+
+    /**
+     * Sets the operator-supplied first name, {@code FNAMEI} at {@code app/cpy-bms/COUSR01.CPY:60}. This is
+     * the first field the source validates, at {@code app/cbl/COUSR01C.cbl:118}.
+     *
+     * @param firstName the presented value, stored verbatim and never case-folded here; {@code null} and
+     *                  the empty string are retained as distinct states
+     */
+    public void setFirstName(String firstName) {
+        this.firstName = firstName;
+    }
+
+    /**
+     * Returns the operator-supplied last name, {@code LNAMEI} at {@code app/cpy-bms/COUSR01.CPY:66}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getLastName() {
+        return lastName;
+    }
+
+    /**
+     * Sets the operator-supplied last name, {@code LNAMEI} at {@code app/cpy-bms/COUSR01.CPY:66}. This is
+     * the second field the source validates, at {@code app/cbl/COUSR01C.cbl:124}.
+     *
+     * @param lastName the presented value, stored verbatim and never case-folded here; {@code null} and the
+     *                 empty string are retained as distinct states
+     */
+    public void setLastName(String lastName) {
+        this.lastName = lastName;
+    }
+
+    /**
+     * Returns the operator-supplied user identifier, {@code USERIDI} at
+     * {@code app/cpy-bms/COUSR01.CPY:72}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getUserId() {
+        return userId;
+    }
+
+    /**
+     * Sets the operator-supplied user identifier, {@code USERIDI} at
+     * {@code app/cpy-bms/COUSR01.CPY:72}. This is the third field the source validates, at
+     * {@code app/cbl/COUSR01C.cbl:130}, and its width matches the {@code USRSEC} cluster key length.
+     *
+     * @param userId the presented value, stored verbatim and never case-folded here; {@code null} and the
+     *               empty string are retained as distinct states
+     */
+    public void setUserId(String userId) {
+        this.userId = userId;
+    }
+
+    /**
+     * Sets the presented plaintext password, {@code PASSWDI} at {@code app/cpy-bms/COUSR01.CPY:78}. This is
+     * the fourth field the source validates, at {@code app/cbl/COUSR01C.cbl:136}.
+     *
+     * <p>This setter is the credential's <strong>only</strong> public accessor: there is deliberately no
+     * matching getter, and the field is annotated write-only for JSON, so the value can be bound inbound
+     * but can never be serialized, logged or read back out through this class.
+     *
+     * @param password the presented plaintext value, stored verbatim and never hashed, trimmed or
+     *                 case-folded here; {@code null} and the empty string are retained as distinct states
+     *                 so that the source's blank-versus-invalid distinction survives
+     */
+    public void setPassword(String password) {
+        this.password = password;
+    }
+
+    /**
+     * Returns the operator-supplied user type as a raw one-character code, {@code USRTYPEI} at
+     * {@code app/cpy-bms/COUSR01.CPY:84}. A value outside {@code 'A'} and {@code 'U'} is carried rather
+     * than rejected, so the service can report it with the source's own message.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getUserType() {
+        return userType;
+    }
+
+    /**
+     * Sets the operator-supplied user type, {@code USRTYPEI} at {@code app/cpy-bms/COUSR01.CPY:84}. This is
+     * the fifth field the source validates, at {@code app/cbl/COUSR01C.cbl:142}.
+     *
+     * @param userType the presented one-character code, stored verbatim and neither mapped to an enum nor
+     *                 case-folded here; {@code null} and the empty string are retained as distinct states
+     */
+    public void setUserType(String userType) {
+        this.userType = userType;
+    }
+
+    /**
+     * Returns the screen error-message area, {@code ERRMSGI} at {@code app/cpy-bms/COUSR01.CPY:90}.
+     *
+     * @return the presented value exactly as bound, which may be {@code null} or empty
+     */
+    public String getErrorMessage() {
+        return errorMessage;
+    }
+
+    /**
+     * Sets the screen error-message area, {@code ERRMSGI} at {@code app/cpy-bms/COUSR01.CPY:90}.
+     *
+     * @param errorMessage the value, stored verbatim; {@code null} and the empty string are retained as
+     *                     distinct states and are neither trimmed nor coerced
+     */
+    public void setErrorMessage(String errorMessage) {
+        this.errorMessage = errorMessage;
+    }
+}

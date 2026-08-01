@@ -1,16 +1,13 @@
 # ******************************************************************
 # * File         : .gitattributes
 # * Application  : CardDemo
-# * Type         : Git path attributes
-# * Function     : Establishes deterministic line endings for the newly created
-# *                Java build tree while guaranteeing that the frozen legacy
-# *                corpus is never touched. The COBOL sources, copybooks, BMS
-# *                mapsets, JCL members and ASCII fixtures under app/ use CRLF
-# *                terminators and must remain byte-for-byte identical, because
-# *                app/ is simultaneously the parity oracle, the field-contract
-# *                source and the traceability anchor. A blanket `* text=auto`
-# *                would renormalise them and is therefore deliberately absent;
-# *                app/, samples/ and diagrams/ are pinned with -text below.
+# * Type         : Git path attributes (repository hygiene)
+# * Function     : Deterministic line-ending and binary handling for the
+# *                additively created Java build tree, plus absolute protection
+# *                of the frozen legacy corpus under app/. No attribute,
+# *                formatter or linter configuration previously existed anywhere
+# *                in this repository, so this convention is established rather
+# *                than inherited.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -28,39 +25,109 @@
 # * language governing permissions and limitations under the License
 # ******************************************************************
 
-# ---- New Java build tree: normalise to LF in the index and the worktree ----
-*.java      text eol=lf diff=java
-*.xml       text eol=lf
-*.yml       text eol=lf
-*.yaml      text eol=lf
-*.json      text eol=lf
-*.sql       text eol=lf
-*.properties text eol=lf
-*.sh        text eol=lf
-*.md        text eol=lf
-*.html      text eol=lf
-Dockerfile  text eol=lf
-.gitignore  text eol=lf
-.gitattributes text eol=lf
-.editorconfig  text eol=lf
-.dockerignore  text eol=lf
+# ==================================================================
+# PRECEDENCE AND SCOPE
+#
+# Git applies the LAST matching line for each attribute, so the blocks below
+# run general -> specific and the frozen-corpus block is last: nothing above it
+# can reach app/, samples/ or diagrams/.
+#
+# There is deliberately NO blanket `* text=auto` rule. app/ is simultaneously
+# the parity oracle, the field-contract source and the traceability anchor, so
+# it must stay byte-for-byte identical. It is predominantly LF, but five members
+# are CRLF-terminated - app/cbl/CBSTM03A.CBL, app/cbl/CBSTM03B.CBL,
+# app/cbl/COACTUPC.cbl, app/cpy/COSTM01.CPY and app/jcl/CREASTMT.JCL - and
+# samples/ holds six more. A blanket rule would renormalise all eleven on the
+# next commit, corrupting the reference of record and producing exactly the
+# sweeping diff CONTRIBUTING.md:33 asks contributors not to create. Every rule
+# here is therefore bound to an explicit pattern.
+#
+# These attributes govern content conversion only. They do NOT set the
+# executable bit: that is file mode, recorded on the files themselves (for
+# example mvnw and localstack-init/init-aws.sh).
+#
+# VERIFYING A CHANGE TO THIS FILE
+#   git check-attr text eol binary -- <path>   # what one path resolves to
+#   git ls-files --eol                         # index vs worktree vs attribute
+#   git diff -- app samples diagrams           # MUST stay empty
+#
+# FAILURE MODES TO AVOID
+#   Never run `git add --renormalize`, and never add a blanket `* text=auto`:
+#   either would rewrite the eleven CRLF members above and silently break the
+#   fixed-width record offsets that the migration is validated against.
+# ==================================================================
 
-# ---- Maven wrapper: the POSIX script must stay LF, the batch script CRLF ----
-mvnw        text eol=lf
-mvnw.cmd    text eol=crlf
+# ---- Java sources, build descriptors, resources and docs authored for the
+# ---- migration: normalised to LF in the index and checked out as LF.
+*.java          text eol=lf
+*.xml           text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+*.json          text eol=lf
+*.sql           text eol=lf
+*.properties    text eol=lf
+*.html          text eol=lf
+*.md            text eol=lf
 
-# ---- Binary artefacts ----
-*.jar       binary
-*.zip       binary
-*.png       binary
-*.jpg       binary
-*.jpeg      binary
-*.gif       binary
-*.pdf       binary
-*.PS        binary
+# ---- Unix launchers and shell scripts: LF, or the shell cannot execute them.
+# ---- mvnw is extensionless, so it needs a rule of its own.
+*.sh            text eol=lf
+mvnw            text eol=lf
 
-# ---- FROZEN LEGACY CORPUS: no conversion, no normalisation, ever ----
-# These rules are last so they win over every pattern above.
-app/**      -text
-samples/**  -text
-diagrams/** -text
+# ---- Container and repository-hygiene files that carry no usable extension.
+Dockerfile      text eol=lf
+.gitattributes  text eol=lf
+.gitignore      text eol=lf
+.dockerignore   text eol=lf
+.editorconfig   text eol=lf
+.env.example    text eol=lf
+
+# ---- Windows launchers keep CRLF, which cmd.exe requires for reliable
+# ---- parsing. This covers mvnw.cmd; a second literal rule for it would be a
+# ---- duplicate and could only drift out of step with this one.
+*.cmd           text eol=crlf
+*.bat           text eol=crlf
+
+# ---- Binary assets: never EOL-converted and never diffed as text.
+# ---- `binary` is Git's own built-in macro for `-text -diff`.
+*.zip           binary
+*.tar           binary
+*.gz            binary
+*.tgz           binary
+*.7z            binary
+*.jar           binary
+*.war           binary
+*.class         binary
+*.png           binary
+*.jpg           binary
+*.jpeg          binary
+*.gif           binary
+*.ico           binary
+*.pdf           binary
+*.woff          binary
+*.woff2         binary
+*.ttf           binary
+*.otf           binary
+*.eot           binary
+*.PS            binary
+
+# ==================================================================
+# FROZEN LEGACY CORPUS - LAST BLOCK, SO IT OVERRIDES EVERY RULE ABOVE
+#
+# app/ holds the COBOL programs, copybooks, BMS mapsets, JCL members, PROC and
+# CTL members, the CICS CSD, the VSAM catalogue listing and the data fixtures.
+# samples/ holds the z/OS compile templates, the build procedures and two
+# binary runtime archives. diagrams/ holds the legacy illustrations. All three
+# are read-only reference material and must survive both checkout and commit
+# byte-for-byte, so Git is told to perform no text detection, no EOL conversion
+# and no diff-time transformation on them.
+# ==================================================================
+app/**          -text
+samples/**      -text
+diagrams/**     -text
+
+# ---- The EBCDIC datasets are fixed-width records with NO line terminators at
+# ---- all, so Git's NUL-byte heuristic would misclassify most of them as text.
+# ---- They are marked binary explicitly and last, because the `*.PS` pattern
+# ---- above does not match AWS.M2.CARDDEMO.DALYTRAN.PS.INIT.
+app/data/EBCDIC/**  binary
