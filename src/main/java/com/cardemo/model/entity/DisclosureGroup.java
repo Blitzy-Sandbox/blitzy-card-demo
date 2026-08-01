@@ -80,9 +80,9 @@ import com.cardemo.model.key.DisclosureGroupId;
  *   <li>the seed fixture {@code app/data/ASCII/discgrp.txt}, in which every one of the 51 rows measures
  *       exactly 50 characters;</li>
  *   <li>fixture row {@code app/data/ASCII/discgrp.txt:L18}, which reads
- *       {@code DEFAULT   01000100150{0000000000000000000000000000} and decomposes as {@code DEFAULT} plus three
- *       blanks (10) + {@code 01} (2) + {@code 0001} (4) = the 16-byte key, then {@code 00150{} (6) for the rate,
- *       then 28 filler characters.</li>
+ *       <code>DEFAULT   01000100150&#123;0000000000000000000000000000</code> and decomposes as
+ *       {@code DEFAULT} plus three blanks (10) + {@code 01} (2) + {@code 0001} (4) = the 16-byte key, then
+ *       <code>00150&#123;</code> (6) for the rate, then 28 filler characters.</li>
  * </ol>
  * <p>{@code FILLER} is never modelled. It carries no data; it exists only to pad the record out to the
  * catalogued 50 bytes, and its 28-byte width is recorded here rather than in a field. Citing {@code :L896}
@@ -93,7 +93,7 @@ import com.cardemo.model.key.DisclosureGroupId;
  * <p>{@code DIS-INT-RATE PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9} is four integer digits plus two
  * decimals, so the column is {@code NUMERIC(6,2)} and the mapping declares {@code precision = 6, scale = 2}.
  * This is the only {@code NUMERIC(6,2)} column in the schema. Fixture row {@code :L18} confirms the width
- * independently: the rate occupies six characters, {@code 00150{}, and no more.</p>
+ * independently: the rate occupies six characters, <code>00150&#123;</code>, and no more.</p>
  * <p>Three distinct decimal tiers exist across this package and <strong>must never be collapsed into one</strong>:</p>
  * <pre>
  * COBOL picture   SQL column      fields

@@ -1,13 +1,21 @@
 # ******************************************************************
 # * File         : .gitignore
 # * Application  : CardDemo
-# * Type         : Git exclusion rules
-# * Function     : Keeps build output, IDE state, local secrets and container
-# *                volumes out of version control. No legacy equivalent exists;
-# *                per the repository survey no ignore configuration was present
-# *                anywhere, so this convention is established rather than
-# *                inherited. NOTHING under app/ is ever ignored - the COBOL
-# *                corpus is the frozen reference of record.
+# * Type         : Git exclusion rules (repository hygiene)
+# * Function     : Keeps locally generated build output, editor state,
+# *                runtime scratch and local secrets out of version
+# *                control, while leaving every migration deliverable -
+# *                and the whole frozen legacy corpus under app/ -
+# *                fully visible. No ignore, formatter or linter
+# *                configuration previously existed anywhere in this
+# *                repository, so this convention is ESTABLISHED rather
+# *                than inherited.
+# * Derived from : CONTRIBUTING.md:33-34 (focus on the specific change;
+# *                ensure local tests pass) and README.md:209-275,
+# *                whose Application Inventory and Application Screens
+# *                tables document the legacy transaction, program and
+# *                JCL corpus as deliberate, permanently tracked
+# *                content.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -25,101 +33,254 @@
 # * language governing permissions and limitations under the License
 # ******************************************************************
 
-# ---- Maven build output ----
-target/
-!.mvn/wrapper/maven-wrapper.properties
-.mvn/wrapper/maven-wrapper.jar
-.mvn/.develocity/
-build/
-out/
-dependency-reduced-pom.xml
-release.properties
-pom.xml.versionsBackup
-pom.xml.releaseBackup
-pom.xml.next
-pom.xml.tag
+# ==================================================================
+# WHAT THIS FILE DOES
+#   Git consults this file to decide which UNTRACKED paths to hide. It
+#   has no effect on a path that is already tracked: once a file is in
+#   the index Git keeps reporting it, whatever the rules here say. That
+#   asymmetry is why the audit below passes --no-index. Without that
+#   flag `git check-ignore` consults the index and answers "not
+#   ignored" for a tracked file that a rule really would have hidden,
+#   turning a genuine defect into a false pass.
+#
+#   One further quirk of that command decides how the audit must be
+#   written. Plain `git check-ignore` lists only paths that really are
+#   excluded, but `-v` reports the last pattern to match a path even
+#   when that pattern is a `!` negation - so `-v` prints a line for
+#   .env.example, which is NOT ignored. Use the plain form to sweep
+#   (nothing should print) and `-v` only to ask why one specific path
+#   resolved as it did.
+#
+# SCOPE AND PRECEDENCE
+#   Git applies the LAST matching pattern, so a `!` negation must come
+#   after the rule it re-includes. Every negation below is live - it
+#   rescues a path that an earlier pattern in the same block genuinely
+#   matches. There are no defensive negations for paths nothing
+#   matches: a negation that rescues nothing is dead weight that later
+#   reads as protection it does not provide.
+#
+#   A directory rule and a wildcard rule are not interchangeable.
+#   `.vscode/` would stop Git descending into the directory at all, so
+#   no `!` inside it could ever take effect; `.vscode/*` keeps the
+#   descent and lets the negations work. The same care drives the
+#   leading slash on /target/, /out/, /logs/ and /blitzy/: anchored to
+#   the repository root, those rules cannot reach a same-named
+#   directory deeper in the tree. Only the credential rules are left
+#   unanchored on purpose, for the reason given beside them.
+#
+#   Two different tests decide whether a rule belongs here. A rule for
+#   generated output must name something this project's own toolchain
+#   demonstrably produces, or it is dead. A rule that prevents a
+#   secret, editor or operating-system file from being committed is a
+#   preventive control: its whole value is that it fires before the
+#   accident, so it is retained even though nothing matches it today.
+#
+# WHAT MUST NEVER BE IGNORED
+#   app/**            the frozen COBOL corpus - 148 tracked files that
+#                     serve at once as the parity oracle, the
+#                     field-contract source and the traceability anchor
+#   samples/**        legacy z/OS build tooling, including two tracked
+#                     binary runtime archives under samples/m2
+#   diagrams/**       legacy architecture illustrations
+#   src/**            Java sources, resources, Flyway migrations, the
+#                     validation JSON and the test fixtures and
+#                     parity baselines under src/test/resources
+#   docs/**, DECISION_LOG.md, TRACEABILITY_MATRIX.md   evidence
+#   observability/**, localstack-init/**, Dockerfile,
+#   docker-compose.yml, .github/**, .mvn/wrapper/**, pom.xml, mvnw,
+#   mvnw.cmd, .env.example                             deliverables
+#
+#   No glob below matches a content format this repository tracks -
+#   there is no *.txt, *.json, *.sql, *.html or *.zip rule - and no
+#   bare `build/` or `data/` either. Thirteen tracked .txt files are
+#   fixed-width parity fixtures, three tracked .json files are
+#   application resources, two tracked .zip files are the legacy
+#   runtime archives, and `data` is a real path component of app/data,
+#   so any of those patterns would silently hide shipped content. The
+#   extension globs that do appear cover only build output, runtime
+#   files, private key material and editor state, none of which this
+#   repository has ever tracked.
+#
+# WHAT IS DELIBERATELY NOT LISTED
+#   Build reports. Every report this build emits already lands under
+#   target/. pom.xml pins the JaCoCo execution data and HTML report and
+#   the OWASP report to ${project.build.directory}; Surefire and
+#   Failsafe default there; .github/workflows/build.yml uploads exactly
+#   target/site/jacoco/**, target/carddemo-*.jar and
+#   target/dependency-check/**. Restating those paths at the root would
+#   duplicate one rule and could only drift out of step with it.
+#
+#   Container state. docker-compose.yml declares NAMED volumes -
+#   postgres-data, localstack-data, prometheus-data, grafana-data - so
+#   Docker holds that data outside the repository, and its only bind
+#   mounts are read-only mounts of tracked files INTO the containers.
+#   No compose run writes into the working tree.
+#
+#   A wrapper jar. .mvn/wrapper/maven-wrapper.properties sets
+#   distributionType=only-script, so no maven-wrapper.jar is ever
+#   fetched into .mvn/wrapper and no rule is needed to hide one.
+#
+#   Other language stacks. This is a single-module Maven project with
+#   no Gradle, Node, Terraform, Kubernetes or front-end build, and the
+#   AWS CLI virtualenv the setup guide provisions lives outside the
+#   repository. Personal tooling is environment-specific and belongs in
+#   a global excludes file (`git config core.excludesFile`), not here.
+#
+# HOW TO VERIFY A CHANGE TO THIS FILE
+#   git ls-files | git check-ignore --stdin --no-index
+#                                        the sweep; MUST print nothing
+#   git check-ignore --no-index -v -- PATH   which rule matched a path
+#   git check-ignore --no-index -q -- PATH   exit 0 ignored, 1 visible
+#   git status --porcelain --ignored=matching   what is hidden right now
+#   git diff -- app samples diagrams            MUST stay empty
+#
+# FAILURE MODES TO AVOID
+#   Never add a glob for a format this repository tracks, and never add
+#   a bare directory name that can match at arbitrary depth. `data/`
+#   would hide app/data and `*.zip` would hide the two runtime archives
+#   under samples/m2. Both failures are silent: Git reports nothing,
+#   the files simply stop reaching a fresh clone. Re-run the --no-index
+#   sweep above after any edit to this file - it is the only check that
+#   catches this class of mistake.
+# ==================================================================
 
-# ---- Compiled / packaged artefacts ----
+# ---- Maven build output. This is the one build directory, and it
+# ---- covers the packaged jar, the compiled classes and every
+# ---- generated report. Anchored, because pom.xml declares no
+# ---- <modules>: the build is single-module, so /target/ is complete,
+# ---- and an unanchored target/ would additionally reach a directory
+# ---- of that name anywhere below - src/test/resources/target/
+# ---- included, which is protected fixture space. Should this ever
+# ---- become a multi-module build, add one anchored rule per module
+# ---- rather than dropping the leading slash.
+/target/
+
+# ---- A stray class file left beside a source by an ad-hoc `javac`
+# ---- invocation, which lands outside target/ and is never wanted.
 *.class
-*.jar
-*.war
-*.ear
-*.nar
-*.zip
-*.tar
-*.tar.gz
-*.tgz
-!.mvn/wrapper/*.jar
 
-# ---- Test, coverage and scan reports ----
-surefire-reports/
-failsafe-reports/
-jacoco.exec
-jacoco-it.exec
-jacoco-merged.exec
-dependency-check-report.*
-dependency-check/
-*.hprof
+# ---- IntelliJ IDEA's own compiler output, written to the project root
+# ---- when the IDE builds in place instead of delegating to Maven.
+/out/
+
+# ---- JVM fatal-error, replay and heap-dump files. The JVM writes
+# ---- these into the working directory, so the build directory above
+# ---- does not cover them. MAVEN_OPTS caps the heap at 1 GB on a small
+# ---- host, which makes a heap dump a realistic outcome of a big run.
 hs_err_pid*
 replay_pid*
+*.hprof
 
-# ---- Logs ----
-logs/
+# ---- Application logs written by a local run. Anchored, because a
+# ---- nested logs directory would belong to whatever produced it.
+/logs/
 *.log
-!localstack-init/*.log.example
 
-# ---- IDE and editor state ----
+# ---- Process-id file written by Spring Boot's ApplicationPidFileWriter.
+*.pid
+
+# ---- Local scratch: platform screenshots and screen recordings, and
+# ---- the ad-hoc validation scripts that must never reach a commit.
+/blitzy/
+blitzy_adhoc_test_*
+
+# ---- Local environment overrides. `.env.*` also matches the template
+# ---- .env.example, which .env.example itself declares must stay
+# ---- tracked ("Copy it to .env, which is git-ignored"), so the
+# ---- negation that follows is required rather than defensive. The
+# ---- JWT signing key is environment-indirected with no committed
+# ---- default, so a developer's real values live only in .env.
+.env
+.env.*
+!.env.example
+
+# ---- Private key material and credential stores. Public certificate
+# ---- formats are deliberately absent - *.crt, *.cer, *.pub and
+# ---- *.truststore carry no private key, so a public test certificate
+# ---- added later stays visible. id_rsa and id_ed25519 are matched
+# ---- exactly, not as id_rsa*, so the .pub half is not hidden too.
+# ---- These three are the one place where an unanchored directory or
+# ---- basename rule is wanted: a leaked credential is a hazard at any
+# ---- depth, so .aws/, secrets/ and credentials deliberately match
+# ---- throughout the tree. No deliverable carries any of those names.
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_ed25519
+.aws/
+credentials
+secrets/
+
+# ---- IntelliJ IDEA project state, all of it user-local here.
 .idea/
 *.iml
 *.ipr
 *.iws
-.vscode/
-.settings/
+
+# ---- VS Code. Only user-local state is hidden: the wildcard form is
+# ---- required so Git still descends into the directory and the three
+# ---- shareable team files below survive. settings.json stays ignored
+# ---- because it carries per-developer preferences.
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# ---- Eclipse and Spring Tool Suite workspace metadata.
 .classpath
 .project
+.settings/
 .factorypath
 .apt_generated/
-nbproject/private/
+
+# ---- Editor swap and backup files, and the residue `git merge` and
+# ---- `git apply` leave behind on a conflict.
 *.swp
 *.swo
 *~
+*.bak
+*.orig
+*.rej
 
-# ---- OS noise ----
+# ---- Operating-system metadata. macOS first, then Windows.
 .DS_Store
-.DS_Store?
 ._*
 .Spotlight-V100
 .Trashes
 Thumbs.db
 desktop.ini
 
-# ---- Local secrets and environment overrides (never committed) ----
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.jks
-*.keystore
-*.truststore
-secrets/
-credentials
-
-# ---- Container / infrastructure local state ----
-.localstack/
-volume/
-localstack-volume/
-postgres-data/
-prometheus-data/
-grafana-data/
-
-# ---- Python virtual environments (tooling only, never application code) ----
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-
-# ---- Blitzy scratch space ----
-blitzy/
-blitzy_adhoc_test_*
+# ==================================================================
+# THE FROZEN LEGACY CORPUS IS PROTECTED BY OMISSION, NOT BY NEGATION
+#
+# app/, samples/ and diagrams/ are read-only reference material. app/
+# holds the COBOL programs, copybooks, BMS mapsets, JCL, PROC and CTL
+# members, the CICS CSD, the VSAM catalogue listing and the fixed-width
+# data fixtures; samples/ holds the z/OS compile templates, the build
+# procedures and two binary runtime archives; diagrams/ holds the
+# legacy illustrations. Every one of those files must survive
+# byte-for-byte, and all of them must remain visible.
+#
+# Unlike .gitattributes and .editorconfig, which close with an explicit
+# override block, this file protects those trees by containing no rule
+# that can reach them. A `!app/**` line would be indistinguishable from
+# real protection while doing nothing at all: a negation only takes
+# effect against an earlier pattern that matches, and no pattern above
+# matches anything under app/. Adding one would be dead weight of
+# exactly the kind that misleads the next reader.
+#
+# The guarantee is therefore asserted by test rather than by rule, and
+# the assertion is the sweep given above:
+#
+#   git ls-files | git check-ignore --stdin --no-index
+#
+# It walks every tracked path in the repository and must print nothing.
+# Any line of output names a file this configuration would hide from a
+# fresh clone, and is a defect in this file. Do not add -v to the
+# sweep: it also reports `!` negation matches, so it prints a line for
+# .env.example even though .env.example is correctly visible.
+# ==================================================================

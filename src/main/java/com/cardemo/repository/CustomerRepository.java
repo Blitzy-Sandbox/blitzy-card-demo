@@ -396,7 +396,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * Reads one customer row and holds a write lock on it for the remainder of the enclosing
      * transaction — the Java form of {@code EXEC CICS READ ... UPDATE}.
      *
-     * <h2>Purpose</h2>
+     * <h4>Purpose</h4>
      * <p>
      * This is the direct counterpart of the customer read-for-update at
      * {@code app/cbl/COACTUPC.cbl:L3921-L3930}, which names {@code LIT-CUSTFILENAME}, specifies
@@ -417,7 +417,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * responsibility and is deliberately absent from here.
      * </p>
      *
-     * <h2>Inputs</h2>
+     * <h4>Inputs</h4>
      * <p>
      * {@code customerId} is the nine-digit customer identifier, the record prefix key
      * ({@code app/cpy/CVCUS01Y.cpy:L5}, {@code CUST-ID PIC 9(09)}; {@code KEYS(9 0)} at
@@ -430,7 +430,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * body.
      * </p>
      *
-     * <h2>Outputs</h2>
+     * <h4>Outputs</h4>
      * <p>
      * A populated {@link Optional} holding the fully-initialised {@code Customer} when the row
      * exists, or {@link Optional#empty()} when it does not. Emptiness is a control path, not a
@@ -440,7 +440,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * since the predicate is an equality test on the primary key.
      * </p>
      *
-     * <h2>Side effects</h2>
+     * <h4>Side effects</h4>
      * <p>
      * A pessimistic write lock is acquired on the matched row and is held until the enclosing
      * transaction commits or rolls back. Nothing is written, no state is mutated and no log
@@ -471,7 +471,7 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
      * logic.
      * </p>
      *
-     * <h2>Failure modes</h2>
+     * <h4>Failure modes</h4>
      * <ul>
      *   <li><strong>No enclosing transaction.</strong> A pessimistic lock cannot be taken outside
      *       one, and the failure is loud rather than silent: the call raises

@@ -445,13 +445,14 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * the previous online value. That is the source's behaviour and it must not be "fixed" - and the
      * never-reset counter itself must never be hosted in Java as mutable state on a bean.
      *
+     * <p><strong>Implementation note.</strong> A derived query rather than an annotated one: Spring Data
+     * applies the {@code First} keyword as a query limit, whereas a {@code @Query} would ignore it and
+     * could return every row. Only {@code Transaction#getTransactionId()} is intended to be consumed
+     * from the result; nothing else is read from it and, in particular, nothing is logged from it.</p>
+     *
      * @return the row with the greatest {@code transactionId} in descending lexical order, limited to a
      *         single row; {@code Optional#empty()} when the table holds no rows, which the caller must
      *         treat as the numeric value zero so that the first generated identifier is {@code 1}
-     * @implNote A derived query rather than an annotated one: Spring Data applies the {@code First}
-     *         keyword as a query limit, whereas a {@code @Query} would ignore it and could return every
-     *         row. Only {@code Transaction#getTransactionId()} is intended to be consumed from the
-     *         result; nothing else is read from it and, in particular, nothing is logged from it.
      */
     Optional<Transaction> findFirstByOrderByTransactionIdDesc();
 
@@ -562,6 +563,11 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * in {@code app/cpy/CVTRA07Y.cpy:L58} - all belong to the report processor. None of it is
      * reproduced, or reproducible, here.
      *
+     * <p><strong>Implementation note.</strong> The query text is a text block, which is a compile-time
+     * constant, so the whole statement is fixed at compile time and both bounds arrive strictly as named
+     * bind parameters. There is no concatenation and no native-SQL query mode, so neither bound can
+     * influence the structure of the statement.</p>
+     *
      * @param startDateInclusive the inclusive lower bound, the first ten characters of a processing
      *        timestamp as text, in the same form the legacy sort symbol supplies at
      *        {@code app/proc/TRANREPT.prc:L41} ({@code PARM-START-DATE,C'2022-01-01'}); compared
@@ -574,10 +580,6 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         <strong>empty list</strong> when nothing matches, which is the ordinary no-data outcome and
      *         never an error - a bound pair in the wrong order simply yields no rows, exactly as the
      *         legacy {@code INCLUDE COND} does
-     * @implNote The query text is a text block, which is a compile-time constant, so the whole statement
-     *         is fixed at compile time and both bounds arrive strictly as named bind parameters. There
-     *         is no concatenation and no native-SQL query mode, so neither bound can influence the
-     *         structure of the statement.
      */
     @Query("""
             select t
