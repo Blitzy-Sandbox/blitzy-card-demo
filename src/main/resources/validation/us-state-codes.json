@@ -1,0 +1,297 @@
+{
+  "_metadata": {
+    "file": "src/main/resources/validation/us-state-codes.json",
+    "application": "CardDemo",
+    "artefactType": "Validation lookup data resource (classpath JSON)",
+    "function": [
+      "Externalises the fourth of the five 88-level lookup tables declared in the",
+      "frozen COBOL copybook app/cpy/CSLKPCDY.cpy as classpath reference data.",
+      "The table is the set of United States state, district and territory codes",
+      "accepted when validating the state portion of a customer address."
+    ],
+    "notice": [
+      "Copyright Amazon.com, Inc. or its affiliates.",
+      "All Rights Reserved.",
+      "Licensed under the Apache License, Version 2.0 (the \"License\").",
+      "You may not use this file except in compliance with the License.",
+      "You may obtain a copy of the License at",
+      "http://www.apache.org/licenses/LICENSE-2.0",
+      "Unless required by applicable law or agreed to in writing,",
+      "software distributed under the License is distributed on an",
+      "\"AS IS\" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,",
+      "either express or implied. See the License for the specific",
+      "language governing permissions and limitations under the License"
+    ],
+    "provenance": {
+      "sourceCopybook": "app/cpy/CSLKPCDY.cpy",
+      "sourceCopybookHeader": "Lookup code repository",
+      "sourceCopybookRole": [
+        "The COBOL corpus under app/ is frozen and read-only. It is simultaneously",
+        "the parity oracle, the field-contract source and the traceability anchor",
+        "for this migration, so it is never edited, moved or reformatted."
+      ],
+      "anchorCommit": "7756d895ffeb65f7ea72aaa609e356d9899afcec",
+      "anchorCommitShort": "7756d89",
+      "parentDataItem": "01 US-STATE-CODE-TO-EDIT PIC X(2)",
+      "parentDataItemLine": 1012,
+      "parentDataItemNote": [
+        "The single condition name below is an 88-level on this one two-character",
+        "parent item, so every value is exactly two characters of PIC X data.",
+        "The source line separates the name from PIC by two spaces rather than one:",
+        "a cosmetic legacy irregularity, severity Low, preserved uncorrected in the",
+        "frozen corpus because it has no effect on the field contract."
+      ],
+      "transcription": [
+        "Every value is transcribed verbatim from the frozen COBOL corpus, in source",
+        "order, with no value added, removed, sorted, deduplicated, re-cased or",
+        "reformatted. A value that differs from the copybook is a parity break, not",
+        "a correction: the copybook is the sole authority."
+      ],
+      "extractionMethod": [
+        "Comment-skipping literal extraction: within the inclusive line range, a",
+        "line whose first non-blank character is '*' is a COBOL comment and is",
+        "skipped; every remaining single-quoted literal is collected in source",
+        "order. Two properties of this table make fixed-column slicing unsafe, so",
+        "it is not used. First, the continuation lines are indented with one space",
+        "followed by two horizontal tabs, an indentation unique to this table among",
+        "the five - the area-code tables use two tabs with no leading space and the",
+        "state-and-zip table uses spaces alone. Second, the 88-level clause line",
+        "carries no value at all, unlike the area-code tables whose clause line",
+        "carries the first value; the first value here is on the following line.",
+        "Assuming otherwise drops the first value and shifts every index, which is",
+        "a Blocker. Extraction is verified against a whole-file total of 1276",
+        "literals across all five tables, being 490 + 410 + 80 + 56 + 240."
+      ],
+      "statementTerminator": [
+        "The final source line reads 'VI'. - the trailing period closes the COBOL",
+        "statement and is not part of the value."
+      ],
+      "interiorComment": [
+        "None. No comment line falls inside the value range, so no line is skipped",
+        "within it. Two comment lines bound the table and neither is data: the one",
+        "immediately above the parent item at app/cpy/CSLKPCDY.cpy:L1011, and the",
+        "one introducing the following state-and-zip table at L1070, whose subject",
+        "is the sibling resource state-zip-prefixes.json rather than this one."
+      ],
+      "networkSources": [
+        "None. Unlike the area-code tables, the copybook cites no external registry",
+        "for this table, so there is nothing to reference even historically. No",
+        "postal-service list, no ISO 3166-2:US list and no other external source",
+        "was consulted. No value is fetched, refreshed or reconciled over the",
+        "network at build time or run time, and this resource performs no outbound",
+        "access of any kind."
+      ],
+      "observedLegacyDefect": {
+        "locator": "app/cpy/CSLKPCDY.cpy:L1011",
+        "severity": "Low",
+        "observation": [
+          "The comment line immediately above the parent data item describes",
+          "phone area codes. It is stale: it was left behind when the state",
+          "table was appended after the three area-code tables, and it does",
+          "not describe this table."
+        ],
+        "disposition": [
+          "Preserved, not corrected. The corpus is frozen and the comment has",
+          "no runtime effect. It is recorded here as evidence only; its text",
+          "is deliberately not carried into this resource, neither as data nor",
+          "as a description of this table."
+        ]
+      }
+    },
+    "sourceTables": [
+      {
+        "conditionName": "VALID-US-STATE-CODE",
+        "jsonMember": "VALID-US-STATE-CODE",
+        "declaredAtLine": 1013,
+        "sourceLineRange": "L1013-L1069",
+        "valueLineRange": "L1014-L1069",
+        "elementCount": 56,
+        "summary": [
+          "The complete set of state codes accepted by the legacy validation.",
+          "The declaration line and the first value line differ because the",
+          "88-level clause line carries no value, which is why both ranges are",
+          "recorded above.",
+          "Deliberately NOT in ascending code order: the sequence is",
+          "alphabetical by full state name, then the District of Columbia, then",
+          "five territories, so index 0 'AL' is immediately followed by index 1",
+          "'AK'. That ordering is source ordering and is preserved.",
+          "Composition is explanatory commentary and not a validation rule: 50",
+          "states, the District of Columbia and 5 territories. The rule the",
+          "consumer applies is membership in this array, nothing else."
+        ]
+      }
+    ],
+    "invariants": [
+      "The element count is exactly 56; any other count is a Blocker.",
+      "Every element is a JSON string of exactly two uppercase ASCII letters -",
+      "never a number, because the source field is PIC X(2) character data.",
+      "No element is null, empty, whitespace-padded, lower-cased or duplicated.",
+      "The order is source order. Sorting or deduplicating the array is a Medium",
+      "parity break: membership would survive but ordering would not, and",
+      "ordering is part of the transcription contract. The adjacent pairs AL->AK,",
+      "IN->IA, ME->MD, MS->MO, NE->NV->NH, NY->NC->ND, VT->VA, WA->WV->WI->WY and",
+      "WY->DC->AS hold only because the source orders by full state name; sorting",
+      "by code would destroy every one of them.",
+      "This table appears in exactly one resource. It is never merged with,",
+      "derived from, or reconciled against the other two validation resources,",
+      "and it is never duplicated as generated Java constants.",
+      "Cross-resource property, observed and intentional in the source: the",
+      "sibling resource state-zip-prefixes.json holds 240 four-character",
+      "state-and-zip combinations whose first two characters yield 62 distinct",
+      "prefixes. All 56 codes here are a subset of those 62. The 6 extra prefixes",
+      "are AA, AE and AP, which are military and diplomatic mail designations,",
+      "and FM, MH and PW, which are Freely Associated States; 56 + 6 = 62. Those",
+      "6 are valid zip-prefix combinations but are deliberately NOT accepted",
+      "state codes. Adding any of them here, or removing any of them from the",
+      "sibling, is a Blocker: it silently alters which addresses validate."
+    ],
+    "consumer": {
+      "consumerClass": "com.cardemo.service.shared.ValidationLookupService",
+      "metadataHandling": [
+        "This _metadata member is documentation, NOT data. The consuming service",
+        "ignores it explicitly and deliberately by its well-known name; it is never",
+        "bound as a lookup table and never participates in validation."
+      ],
+      "bindingContract": [
+        "Read as UTF-8 from the classpath and bound with plain, explicitly typed",
+        "Jackson binding to string collections. No polymorphic type handling and no",
+        "default typing are used or required, and this resource carries no type",
+        "hint of any kind, so it cannot drive insecure deserialisation."
+      ],
+      "exposure": [
+        "Loaded once at startup into immutable collections, so no caller can mutate",
+        "shared lookup state. A 56-element set held immutably needs no index",
+        "structure of any kind."
+      ]
+    },
+    "documentation": {
+      "whatItDoes": [
+        "Supplies the single table that the legacy 88-level condition name",
+        "VALID-US-STATE-CODE expressed in COBOL. A membership test against this",
+        "array replaces evaluating that condition name, and is what decides",
+        "whether the state portion of a customer address is accepted."
+      ],
+      "howToBuildAndTest": [
+        "No build step: this is a static classpath resource copied verbatim into",
+        "target/classes by the standard resources phase, with no property",
+        "filtering. Build with 'mvn -B clean compile' and run the unit suite with",
+        "'mvn -B clean test'. The assertions for this resource live under",
+        "src/test/java/com/cardemo/unit/ and cover the element count of 56, the",
+        "first and last values AL and VI, the interior index checkpoints 14 'IA',",
+        "28 'NH' and 42 'TX', the preserved non-sorted adjacencies, and the",
+        "subset relationship against the sibling zip-prefix resource."
+      ],
+      "configurationAndDefaults": [
+        "No configuration and no defaults: the content is fixed reference data and",
+        "there is no property, profile or environment variable that alters it.",
+        "The resource path itself is the only contract with the consumer.",
+        "Encoding is UTF-8 with LF line endings and two-space indentation, per the",
+        "repository .editorconfig."
+      ],
+      "commonFailureModesAndTroubleshooting": [
+        "Resource not found on the classpath: the consumer must fail fast and",
+        "loudly rather than degrade to an empty table, because an empty table",
+        "would silently reject every customer address. Confirm the file is",
+        "present under target/classes/validation/ after a build.",
+        "Malformed content: the consumer must wrap the parse failure with this",
+        "resource path and preserve the root cause. Re-validate the file with a",
+        "strict JSON parser.",
+        "Unexpected element count: compare against the count of 56 published in",
+        "sourceTables above. A mismatch means the resource was truncated or",
+        "edited, and it is a Blocker - re-derive it from app/cpy/CSLKPCDY.cpy.",
+        "A state code rejected that the legacy system accepted: verify the value",
+        "against the copybook line range, never against any external list. The",
+        "usual cause is an extractor that sliced fixed columns, split on the",
+        "horizontal tabs, or treated the 88-level clause line as carrying the",
+        "first value and so lost 'AL'.",
+        "Ordering reported as wrong because the array is not alphabetical by",
+        "code: that is expected and correct. Do not sort it.",
+        "A privacy note for the consumer rather than for this file: a state code",
+        "is a fragment of a customer address, so the value being looked up must",
+        "never be written to a log line."
+      ]
+    },
+    "designRationale": [
+      "This table is data, not code. Generating it as Java constants would put",
+      "reference data into a compilation unit, make the count harder to audit and",
+      "add source that no compiler check makes safer - and across the five tables",
+      "of this copybook it would run to well over a thousand lines. Externalising",
+      "it as a classpath resource keeps the membership exactly auditable against",
+      "the copybook, keeps the count visible for verification, and is the",
+      "justified tradeoff recorded here."
+    ],
+    "notAvailable": [
+      "Any documented rationale in the source for why AA, AE, AP, FM, MH and PW",
+      "are valid zip-prefix combinations yet are not accepted state codes:",
+      "Not available. The copybook declares both sets and documents no rule, and",
+      "no postal or territorial specification exists anywhere in this repository,",
+      "so no behaviour is inferred from the difference and the asymmetry is",
+      "reproduced rather than reconciled. To resolve it, what is needed is an",
+      "authoritative statement of the rule from the system owner, or a postal",
+      "specification admitted into the repository as a reference artefact.",
+      "A lookup latency or throughput objective:",
+      "Not available. The legacy source publishes no service level of any kind,",
+      "so none is invented here; the performance gate records a measured baseline",
+      "rather than a target. To set one, what is needed is a stated objective",
+      "from the system owner, which no artefact in this repository supplies."
+    ]
+  },
+  "VALID-US-STATE-CODE": [
+    "AL",
+    "AK",
+    "AZ",
+    "AR",
+    "CA",
+    "CO",
+    "CT",
+    "DE",
+    "FL",
+    "GA",
+    "HI",
+    "ID",
+    "IL",
+    "IN",
+    "IA",
+    "KS",
+    "KY",
+    "LA",
+    "ME",
+    "MD",
+    "MA",
+    "MI",
+    "MN",
+    "MS",
+    "MO",
+    "MT",
+    "NE",
+    "NV",
+    "NH",
+    "NJ",
+    "NM",
+    "NY",
+    "NC",
+    "ND",
+    "OH",
+    "OK",
+    "OR",
+    "PA",
+    "RI",
+    "SC",
+    "SD",
+    "TN",
+    "TX",
+    "UT",
+    "VT",
+    "VA",
+    "WA",
+    "WV",
+    "WI",
+    "WY",
+    "DC",
+    "AS",
+    "GU",
+    "MP",
+    "PR",
+    "VI"
+  ]
+}
