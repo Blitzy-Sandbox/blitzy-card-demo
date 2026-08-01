@@ -33,8 +33,8 @@ package com.cardemo.model.enums;
 import java.util.Optional;
 
 /**
- * The two user classes of the CardDemo application, replacing the two COBOL 88-level condition names
- * declared on {@code CDEMO-USER-TYPE} in {@code app/cpy/COCOM01Y.cpy}.
+ * The two user classes of the CardDemo application, replacing the two COBOL 88-level condition names declared
+ * on {@code CDEMO-USER-TYPE} in {@code app/cpy/COCOM01Y.cpy}.
  *
  * <p>This is a pure value type. It holds one character, performs no I/O, reads no configuration, logs
  * nothing, depends on no other CardDemo type and depends on no framework: the whole of its public
@@ -89,7 +89,8 @@ import java.util.Optional;
  *   <li>It carries no persistence annotation. The column mapping for the stored type character belongs to
  *       {@code com.cardemo.model.entity.UserSecurity}.</li>
  *   <li>It carries no credential material. The seeded records cited above contain a plain text password
- *       field, which is hashed by {@code V3__seed_data.sql} and is never represented here.</li>
+ *       field, which is to be hashed by {@code V3__seed_data.sql} (planned; absent at this commit) and is never
+ * represented here.</li>
  * </ul>
  *
  * <p>Instances are immutable, stateless and inherently thread safe.
@@ -102,13 +103,6 @@ public enum UserType {
     /**
      * An administrative user, corresponding to the condition name {@code CDEMO-USRTYP-ADMIN} with
      * {@code VALUE 'A'} at {@code app/cpy/COCOM01Y.cpy:L27}.
-     *
-     * <p>Declared first to match the order of the condition names in the copybook, where L27 precedes
-     * L28. That ordering carries no external meaning; see {@link #getCode()}.
-     *
-     * <p>Corroborated by five of the ten seeded records at {@code app/jcl/DUSRSECJ.jcl:L35-L44}, namely
-     * {@code ADMIN001} through {@code ADMIN005}, each of which holds {@code 'A'} in the
-     * {@code SEC-USR-TYPE} byte.
      */
     ADMIN('A'),
 
@@ -116,9 +110,10 @@ public enum UserType {
      * A standard, non administrative user, corresponding to the condition name
      * {@code CDEMO-USRTYP-USER} with {@code VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:L28}.
      *
-     * <p>Corroborated by the remaining five of the ten seeded records at
-     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}, namely {@code USER0001} through {@code USER0005}, each of
-     * which holds {@code 'U'} in the {@code SEC-USR-TYPE} byte.
+     * <p>Corroborated by the <strong>remaining five of the ten</strong> seeded records at
+     * {@code app/jcl/DUSRSECJ.jcl:L35-L44} - the last five rows of the inline stream - each of which
+     * holds {@code 'U'} in the {@code SEC-USR-TYPE} byte. Their identifiers are likewise not reproduced;
+     * the synthetic stand-ins used here are {@code STDUSR01} through {@code STDUSR05}.
      *
      * <p>{@code app/cbl/COMEN01C.cbl:L136-L137} shows the legacy consumer of this distinction: a menu
      * option flagged for administrators is withheld when {@code CDEMO-USRTYP-USER} holds.
@@ -126,16 +121,16 @@ public enum UserType {
     USER('U');
 
     /**
-     * The single character that {@code CDEMO-USER-TYPE PIC X(01)} holds for this user class, transcribed
-     * from the {@code VALUE} clause of the corresponding condition name.
+     * The single character that {@code CDEMO-USER-TYPE PIC X(01)} holds for this user class, transcribed from
+     * the {@code VALUE} clause of the corresponding condition name.
      */
     private final char code;
 
     /**
      * Binds a constant to its one character external code.
      *
-     * @param code the character transcribed from the {@code VALUE} clause of this constant's condition
-     *             name at {@code app/cpy/COCOM01Y.cpy:L27-L28}
+     * @param code the character transcribed from the {@code VALUE} clause of this constant's condition name at
+     * {@code app/cpy/COCOM01Y.cpy:L27-L28}
      */
     private UserType(final char code) {
         this.code = code;
@@ -144,14 +139,6 @@ public enum UserType {
     /**
      * Returns the single character external code for this user class.
      *
-     * <p>This character is the entire persisted and transmitted contract of the type: it is what the
-     * {@code SEC-USR-TYPE} column stores, what {@code CDEMO-USER-TYPE} carried in the COMMAREA, and what
-     * the role claim is derived from. The declaration position of a constant is <strong>not</strong> part
-     * of that contract, so {@link #ordinal()} must never be persisted, transmitted or compared: inserting
-     * a constant would silently change every ordinal while leaving every code correct.
-     *
-     * <p>This method is a pure accessor. It has no side effects and cannot fail.
-     *
      * @return {@code 'A'} for {@link #ADMIN} or {@code 'U'} for {@link #USER}
      */
     public char getCode() {
@@ -159,32 +146,12 @@ public enum UserType {
     }
 
     /**
-     * Resolves a single character code to its user class, reporting an unrecognised code as an empty
-     * result rather than as a failure.
+     * Resolves a single character code to its user class, reporting an unrecognised code as an empty result
+     * rather than as a failure.
      *
-     * <p>Use this overload where an out of domain byte is an expected input to be validated - a field
-     * level rejection on a request, or a defensive read of a legacy record - and use
-     * {@link #requireFromCode(char)} where a recognised code is an invariant and a violation should stop
-     * the caller.
-     *
-     * <p>The comparison is case sensitive and exact, for the parity reason set out in the class
-     * documentation. Nothing is trimmed, folded or normalised, so a blank padding byte, a low value byte
-     * and a lower case letter are all correctly unrecognised.
-     *
-     * <p>This method is a pure function. It has no side effects, never returns {@code null}, never
-     * throws, allocates nothing beyond the returned {@code Optional}, and is safe for concurrent use. It
-     * performs no iteration over {@link #values()} and depends on no hash ordering, so its cost is a
-     * two way branch regardless of input.
-     *
-     * <p>The case labels below and the codes bound to the two constants are the same transcription of
-     * {@code app/cpy/COCOM01Y.cpy:L27-L28}. That coupling is the contract a unit test for this class must
-     * assert, by resolving {@code fromCode(ADMIN.getCode())} and {@code fromCode(USER.getCode())} rather
-     * than repeating the two literals, so that the label and the constant cannot drift apart unnoticed.
-     *
-     * @param code the candidate {@code CDEMO-USER-TYPE} character; any {@code char} value is accepted as
-     *             input, including a blank or a control character
-     * @return the matching constant, or {@link Optional#empty()} if the character is not one of the two
-     *         codes defined by the copybook
+     * @param code the candidate {@code CDEMO-USER-TYPE} character.
+     * @return the matching constant, or {@link Optional#empty()} if the character is not one of the two codes
+     * defined by the copybook
      */
     public static Optional<UserType> fromCode(final char code) {
         return switch (code) {
@@ -198,35 +165,9 @@ public enum UserType {
      * Resolves a one character string code to its user class, reporting anything unrecognised as an empty
      * result rather than as a failure.
      *
-     * <p>This overload exists because the type travels as a {@code String} at the boundaries of the
-     * application: the persisted column is a single character column surfaced as a {@code String}, and the
-     * request objects that carry a user type - {@code com.cardemo.model.dto.UserCreateRequest} and
-     * {@code com.cardemo.model.dto.UserUpdateRequest} - deliberately expose the raw character as a
-     * {@code String} so that an out of domain value reaches the service layer and is rejected there with a
-     * field level message instead of failing to bind.
-     *
-     * <p>Every boundary condition is handled explicitly and yields {@link Optional#empty()} rather than a
-     * failure or a {@code null}:
-     *
-     * <ul>
-     *   <li>a {@code null} reference;</li>
-     *   <li>the empty string, which is the {@code length() != 1} case for a length of zero;</li>
-     *   <li>any value longer than one character, including a one character code padded with the blanks
-     *       that a fixed width record carries;</li>
-     *   <li>a single character that is neither of the two copybook codes.</li>
-     * </ul>
-     *
-     * <p>Consistent with the class documentation, the value is neither trimmed nor case folded: a padded
-     * or lower case value is rejected rather than repaired, because repairing it would accept input the
-     * legacy program refuses.
-     *
-     * <p>This method is a pure function. It has no side effects, never returns {@code null} and never
-     * throws, including for a {@code null} argument.
-     *
-     * @param code the candidate {@code CDEMO-USER-TYPE} value; may be {@code null}, empty, or of any
-     *             length
+     * @param code the candidate {@code CDEMO-USER-TYPE} value.
      * @return the matching constant, or {@link Optional#empty()} if the argument is {@code null}, is not
-     *         exactly one character long, or is not one of the two codes defined by the copybook
+     * exactly one character long, or is not one of the two codes defined by the copybook
      */
     public static Optional<UserType> fromCode(final String code) {
         if (code == null) {
@@ -248,9 +189,18 @@ public enum UserType {
      * an unknown code never silently resolves to {@link #USER}, to {@link #ADMIN}, to the first declared
      * constant or to {@code null}.
      *
-     * <p>The thrown message names the offending character and also its code point in hexadecimal. The code
-     * point is included because the legacy records are fixed width and blank padded, so the difference
-     * between a blank, a low value byte and a genuinely wrong letter is otherwise invisible in a log.
+     * <p><b>The thrown message identifies the offending character by its hexadecimal code point only, and
+     * never echoes the raw character.</b> That is a deliberate log injection defence rather than a
+     * stylistic preference. This overload is reachable from a data path - the {@code sec_usr_type} column
+     * converter, which is fed by whatever a database row actually holds - so the rejected value is not
+     * necessarily anything this application wrote. Interpolating it verbatim would let a carriage return
+     * or a line feed in a corrupt row terminate the current line and forge a following one in any sink
+     * that stores one event per line, and would let an escape sequence reach a terminal that renders it.
+     * The hexadecimal rendering is strictly more diagnostic in any case: the legacy records are fixed
+     * width and blank padded, so a blank, a low value byte, a non breaking space and a genuinely wrong
+     * letter are indistinguishable when printed raw, whereas {@code 0x20}, {@code 0x00}, {@code 0xa0}
+     * and {@code 0x5a} are not. Nothing diagnosable is lost by withholding the character, because a
+     * single code point determines it completely.
      *
      * <p>This method is a pure function apart from the exception it may raise: it mutates no state and
      * performs no I/O.
@@ -258,13 +208,15 @@ public enum UserType {
      * @param code the candidate {@code CDEMO-USER-TYPE} character
      * @return the matching constant, never {@code null}
      * @throws IllegalArgumentException if the character is not one of the two codes defined by
-     *                                 {@code app/cpy/COCOM01Y.cpy:L27-L28}; the message names the
-     *                                 rejected character and its hexadecimal code point
+     *                                 {@code app/cpy/COCOM01Y.cpy:L27-L28}; the message identifies the
+     *                                 rejected character by hexadecimal code point and never reproduces
+     *                                 the character itself
      */
     public static UserType requireFromCode(final char code) {
         return fromCode(code).orElseThrow(() -> new IllegalArgumentException(
-                "Unrecognised CDEMO-USER-TYPE code '" + code + "' (code point 0x"
-                        + Integer.toHexString(code) + "); the only codes defined by "
-                        + "app/cpy/COCOM01Y.cpy:L27-L28 are 'A' for ADMIN and 'U' for USER"));
+                "Unrecognised CDEMO-USER-TYPE code at code point 0x" + Integer.toHexString(code)
+                        + " (the rejected character is withheld from this message so that a control "
+                        + "character in corrupt data cannot forge a log entry); the only codes defined "
+                        + "by app/cpy/COCOM01Y.cpy:L27-L28 are 'A' for ADMIN and 'U' for USER"));
     }
 }

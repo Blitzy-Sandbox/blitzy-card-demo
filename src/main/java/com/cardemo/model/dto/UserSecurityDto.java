@@ -27,21 +27,24 @@ package com.cardemo.model.dto;
 import java.util.List;
 
 /**
- * Immutable user-list response payload for the administrator-only user administration surface, projecting
- * the {@code USRSEC} security file onto JSON.
+ * Immutable user-list response payload for the administrator-only user administration surface, projecting the
+ * {@code USRSEC} security file onto JSON.
  *
- * <p><b>What this type does.</b> The legacy user list is CICS transaction {@code CU00} running
- * {@code app/cbl/COUSR00C.cbl}, which paints one screen of user records at a time onto the mapset whose
- * generated symbolic map is {@code app/cpy-bms/COUSR00.CPY}. That symbolic map is the field contract
- * reproduced here. It declares <b>59</b> input fields, verified by direct inspection at commit
- * {@code 7756d89}, and the arithmetic is {@code 8 + 50 + 1 = 59}: eight preamble fields at
- * {@code app/cpy-bms/COUSR00.CPY}:24, :30, :36, :42, :48, :54, :60 and :66; then ten rows of five fields
- * each, spanning :72 through :366; then one trailer field at :372. This type carries those values and
- * nothing more - it applies no filtering, no paging arithmetic, no mapping and no comparison, every one
- * of which belongs to the service layer.
+ * <p>The legacy user list is CICS transaction {@code CU00} running {@code app/cbl/COUSR00C.cbl}, which paints
+ * one screen of user records at a time onto the mapset whose generated symbolic map is
+ * {@code app/cpy-bms/COUSR00.CPY}. That symbolic map is the field contract reproduced here. It declares
+ * <b>59</b> input fields, verified by direct inspection at commit {@code 7756d89}, and the arithmetic is
+ * {@code 8 + 50 + 1 = 59}: eight preamble fields at {@code app/cpy-bms/COUSR00.CPY}:24, :30, :36, :42, :48,
+ * :54, :60 and :66; then ten rows of five fields each, spanning :72 through :366; then one trailer field at
+ * :372. This type carries those values and nothing more - it applies no filtering, no paging arithmetic, no
+ * mapping and no comparison, every one of which belongs to the service layer.
  *
- * <p><b>This payload carries no password and no hash.</b> That is the single most important property of
- * this type, and it is a property of the source at least as much as it is a policy of the target:
+ * <p>There is therefore deliberately no component here capable of holding a credential or a digest - not even a
+ * permanently {@code null} placeholder added "for symmetry" with the create and update requests. A BCrypt
+ * digest is recognisable by the version-tagged prefix it writes ahead of its cost factor; no value of that
+ * shape can arise from any component declared below, because no component is ever populated from the credential
+ * column. The structured logging configuration masks credentials and digests profile-invariantly as a second
+ * line of defence, but the primary defence is this one: never carrying them in the first place.
  *
  * <ul>
  *   <li>{@code app/cpy-bms/COUSR00.CPY} - the map this type is derived from - declares no password field
@@ -66,9 +69,10 @@ import java.util.List;
  * even a permanently {@code null} placeholder added "for symmetry" with the create and update requests.
  * A BCrypt digest is recognisable by the version-tagged prefix it writes ahead of its cost factor; no
  * value of that shape can arise from any component declared below, because no component is ever populated
- * from the credential column. The structured logging configuration masks credentials and digests
- * profile-invariantly as a second line of defence, but the primary defence is this one: never carrying
- * them in the first place.
+ * from the credential column. A structured logging configuration that masked credentials and digests
+ * would be a second line of defence, but no {@code logback-spring.xml} exists under
+ * {@code src/main/resources} yet, so this is the only defence rather than the first of two: never
+ * carrying them in the first place.
  *
  * <p><b>Seed data provenance.</b> The ten seeded users are held in no fixture under
  * {@code app/data/ASCII}; they exist only as inline {@code SYSUT1 DD *} card images inside
@@ -133,11 +137,13 @@ import java.util.List;
  * <p><b>Findings and severities.</b> Classified per the project's output standard:
  *
  * <ul>
- *   <li><b>Medium</b> - corpus census correction. The migration plan's prose states 460 input fields
- *       across the seventeen symbolic maps in {@code app/cpy-bms}, while a direct count of the maps
- *       totals <b>441</b> (and the plan's own per-map table sums to 440, differing from its prose). The
- *       count for this map is unaffected and independently verified at <b>59</b>, so the correction
- *       carries no build or behavioural impact and is recorded for inventory accuracy only.</li>
+ *   <li><b>Medium, closed</b> - corpus census correction. Prior-generation plan prose stated 460 input
+ *       fields across the seventeen symbolic maps in {@code app/cpy-bms}, while a direct count of the
+ *       maps totals <b>441</b> (and that prose's own per-map table summed to 440, differing from its
+ *       own text). The count for this map is unaffected and independently verified at <b>59</b>, so the
+ *       correction carried no build or behavioural impact. It is closed rather than outstanding:
+ *       {@code docs/technical-specifications.md} publishes 441 and records the supersession in its
+ *       section 0.2.2.1 corrections table, verified on 1 August 2026.</li>
  *   <li><b>Low</b> - the fourteen bytes of slack between the populated fields and the declared record
  *       size of the security cluster are not modelled, because no source field occupies them.</li>
  * </ul>
@@ -151,17 +157,30 @@ import java.util.List;
  * credential before comparison and a locale-sensitive conversion would change authentication outcomes.
  *
  * <p><b>Direction and validation.</b> This is an outbound projection, so it carries no inbound bean
- * validation constraints that the read paths would never exercise. The only checks applied are the
- * structural invariants of the row collection, described on the canonical constructor.
+ * validation annotation: a declarative constraint here would be evaluated by a validator the read paths
+ * never invoke, which is documentation masquerading as enforcement. What it does carry is
+ * <b>constructor-enforced field widths</b>, applied to every textual component of the projection and of
+ * every row. Width is a property of the source field rather than of the direction of travel - a value the
+ * 3270 field could not have held did not come from that field - and enforcing it in the constructor means
+ * no instance of this type can exist in an out-of-contract shape, on any path, with or without a
+ * validator. The structural invariants of the row collection are enforced in the same place.
  *
- * <p><b>Error modes.</b> The canonical constructor is the only member that rejects input. It throws
- * {@link IllegalArgumentException} when {@code rows} is {@code null}, when {@code rows} contains a
- * {@code null} element, or when {@code rows} holds more than {@link #PAGE_SIZE} elements. Each message
- * names the offending component and, where applicable, the offending index, but never the offending
- * value, because every row value is either directly identifying or screen-control state. No other member
- * throws, no exception is swallowed anywhere in this type, and every accessor is total: it returns the
- * value it was constructed with, and {@link #rows()} returns an empty list rather than {@code null} when
- * the page carries no rows.
+ * <p>Width is the <em>only</em> property enforced. The page number is not parsed, the user type is not
+ * checked against its two-value domain, the selector is not restricted to the markers the screen uses, and
+ * no component is required to be present. Nothing is trimmed, padded, upper-cased or lower-cased, so a
+ * value at or under its declared width is stored byte-exactly and an over-wide value is refused rather
+ * than clipped - silent truncation of an identifier or a name is an undetectable data change, and is the
+ * single failure this guard exists to make impossible.
+ *
+ * <p><b>Error modes.</b> The canonical constructors of this type and of {@link UserRow} are the only
+ * members that reject input. They throw {@link IllegalArgumentException} when {@code rows} is
+ * {@code null}, when {@code rows} contains a {@code null} element, when {@code rows} holds more than
+ * {@link #PAGE_SIZE} elements, or when any textual component is wider than the map field it transcribes.
+ * Each message names the offending component and, as applicable, the offending index or the offending
+ * length together with the source {@code PICTURE} clause - but never the offending value, because every
+ * value here is either directly identifying or screen-control state. No other member throws, no exception
+ * is swallowed anywhere in this type, and every accessor is total: it returns the value it was constructed
+ * with, and {@link #rows()} returns an empty list rather than {@code null} when the page carries no rows.
  *
  * <p><b>Build, test and configuration.</b> This type has no configuration of its own and no runtime
  * dependency beyond {@code java.util.List}; its only default is {@link #PAGE_SIZE}. It is compiled by
@@ -217,71 +236,163 @@ public record UserSecurityDto(
         String errorMessage) {
 
     /**
-     * The number of user rows one page of this projection carries: ten.
-     *
-     * <p>Fixed by {@code app/cbl/COUSR00C.cbl}:57, which declares
-     * {@code 02 USER-REC OCCURS 10 TIMES.} in the screen work area, and corroborated by the symbolic map
-     * {@code app/cpy-bms/COUSR00.CPY}, whose ten row groups run from :72 through :366. This is the upper
-     * bound the canonical constructor enforces on {@link #rows()}. The page sizes of the sibling list
-     * transactions are deliberately not declared here.
+     * The number of user rows one page of this projection carries: ten, from
+     * {@code USER-REC OCCURS 10 TIMES} at {@code app/cbl/COUSR00C.cbl:57}.
      */
     public static final int PAGE_SIZE = 10;
 
     /**
-     * The number of preamble fields the symbolic map declares ahead of the row groups: eight.
-     *
-     * <p>The six recurring header fields at {@code app/cpy-bms/COUSR00.CPY}:24, :30, :36, :42, :48 and
-     * :54, followed by the page number at :60 and the search key at :66.
+     * The number of preamble fields the symbolic map declares ahead of the row groups: eight,
+     * {@code app/cpy-bms/COUSR00.CPY:24} through :66.
      */
     public static final int PREAMBLE_FIELD_COUNT = 8;
 
     /**
-     * The number of fields each row group declares: five.
-     *
-     * <p>Selector, user identifier, given name, family name and user type, in that order, as modelled by
-     * {@link UserRow}.
+     * The number of fields each row group declares: five, the ten groups spanning
+     * {@code app/cpy-bms/COUSR00.CPY:72-366}.
      */
     public static final int ROW_FIELD_COUNT = 5;
 
     /**
-     * The number of trailer fields the symbolic map declares after the row groups: one.
-     *
-     * <p>The error message line {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COUSR00.CPY}:372.
+     * The number of trailer fields the symbolic map declares after the row groups: one, {@code ERRMSGI} at
+     * {@code app/cpy-bms/COUSR00.CPY:372}.
      */
     public static final int TRAILER_FIELD_COUNT = 1;
 
     /**
-     * The total number of input fields the symbolic map declares: {@code 8 + 50 + 1 = 59}.
-     *
-     * <p>Derived from the three counts above rather than written as a literal, so the arithmetic that
-     * proves the field contract is visible in the source and cannot drift from its parts. The figure is
-     * independently verified against {@code app/cpy-bms/COUSR00.CPY} at commit {@code 7756d89}.
+     * The total number of input fields {@code app/cpy-bms/COUSR00.CPY} declares: {@code 8 + 50 + 1 = 59}.
      */
     public static final int MAP_FIELD_COUNT =
             PREAMBLE_FIELD_COUNT + (PAGE_SIZE * ROW_FIELD_COUNT) + TRAILER_FIELD_COUNT;
 
     /**
+     * Declared width of {@code TRNNAMEI}, {@code PIC X(4)} at {@code app/cpy-bms/COUSR00.CPY}:24.
+     */
+    public static final int TRANSACTION_NAME_WIDTH = 4;
+
+    /**
+     * Declared width of {@code TITLE01I} and {@code TITLE02I}, {@code PIC X(40)} at
+     * {@code app/cpy-bms/COUSR00.CPY}:30 and :48.
+     */
+    public static final int TITLE_WIDTH = 40;
+
+    /**
+     * Declared width of {@code CURDATEI}, {@code PIC X(8)} at {@code app/cpy-bms/COUSR00.CPY}:36.
+     */
+    public static final int DATE_WIDTH = 8;
+
+    /**
+     * Declared width of {@code PGMNAMEI}, {@code PIC X(8)} at {@code app/cpy-bms/COUSR00.CPY}:42.
+     */
+    public static final int PROGRAM_NAME_WIDTH = 8;
+
+    /**
+     * Declared width of {@code CURTIMEI} on this map, {@code PIC X(8)} at
+     * {@code app/cpy-bms/COUSR00.CPY}:54.
+     *
+     * <p>Sixteen of the seventeen symbolic maps agree on eight; {@code app/cpy-bms/COSGN00.CPY}:54 alone
+     * declares nine. That disagreement is why the header fields are declared inline on each projection
+     * instead of being hoisted into a shared header type.
+     */
+    public static final int TIME_WIDTH = 8;
+
+    /**
+     * Declared width of {@code PAGENUMI}, {@code PIC X(8)} at {@code app/cpy-bms/COUSR00.CPY}:60.
+     *
+     * <p>Eight, not the three of the card list's {@code PAGENOI}. The two maps disagree, so the width is
+     * declared per map rather than shared.
+     */
+    public static final int PAGE_NUMBER_WIDTH = 8;
+
+    /**
+     * Declared width of {@code USRIDINI} and of every {@code USRIDnnI}, {@code PIC X(8)}.
+     *
+     * <p>Corroborated three ways: the map fields at {@code app/cpy-bms/COUSR00.CPY}:66 and :78 onwards,
+     * {@code SEC-USR-ID PIC X(08)} of {@code app/cpy/CSUSR01Y.cpy}, and the cluster key length declared
+     * as {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl}:65.
+     */
+    public static final int USER_ID_WIDTH = 8;
+
+    /**
+     * Declared width of {@code ERRMSGI}, {@code PIC X(78)} at {@code app/cpy-bms/COUSR00.CPY}:372.
+     *
+     * <p>Seventy-eight, which is neither the seventy-nine nor the eighty a reader might assume from the
+     * terminal line length. The card-detail map declares eighty for its own error line, so this width too
+     * is per map.
+     */
+    public static final int ERROR_MESSAGE_WIDTH = 78;
+
+    /**
+     * Declared width of every row selector {@code SEL000nI}, {@code PIC X(1)}.
+     */
+    public static final int SELECTION_FLAG_WIDTH = 1;
+
+    /**
+     * Declared width of every {@code FNAMEnnI} and {@code LNAMEnnI}, {@code PIC X(20)}.
+     *
+     * <p>Matching {@code SEC-USR-FNAME PIC X(20)} and {@code SEC-USR-LNAME PIC X(20)} of
+     * {@code app/cpy/CSUSR01Y.cpy}.
+     */
+    public static final int NAME_WIDTH = 20;
+
+    /**
+     * Declared width of every {@code UTYPEnnI}, {@code PIC X(1)}.
+     *
+     * <p>Matching {@code SEC-USR-TYPE PIC X(01)} of {@code app/cpy/CSUSR01Y.cpy}. The width is enforced;
+     * the <em>domain</em> is not, because a stored code outside {@code A} and {@code U} must surface as
+     * data rather than as a serialisation failure.
+     */
+    public static final int USER_TYPE_WIDTH = 1;
+
+    /**
+     * Rejects a value wider than the fixed-width map field it transcribes.
+     *
+     * <p>Width is a property of the source field, so it is enforced on every projection regardless of
+     * direction: a value the 3270 field could not have held did not come from that field, and carrying it
+     * would put a byte count on the wire that no legacy consumer, report line or fixed-width writer can
+     * accept. The alternative - silently truncating - is the outcome this guard exists to make impossible,
+     * because a clipped identifier or name is an undetectable data change.
+     *
+     * <p>{@code null} passes untouched, because absence is a legitimate state of a screen field. So does
+     * every value at or under the declared width, including the empty string, a run of spaces and a
+     * low-values marker: this guard bounds length and nothing else. Nothing is trimmed, padded,
+     * upper-cased or lower-cased, and the failure message names the component and quotes the source
+     * {@code PICTURE} clause but never the offending value, because every value on this projection is
+     * either directly identifying or screen-control state.
+     *
+     * @param value     the value to check, or {@code null} when the field was absent
+     * @param maxLength the declared width of the source field
+     * @param fieldName the component name to name in the failure message
+     * @param picClause the source {@code PICTURE} clause to quote in the failure message
+     * @throws IllegalArgumentException if {@code value} is non-{@code null} and longer than
+     *                                  {@code maxLength}
+     */
+    private static void requireWidthWithinLimit(final String value, final int maxLength,
+            final String fieldName, final String picClause) {
+        if (value != null && value.length() > maxLength) {
+            throw new IllegalArgumentException(fieldName + " must be at most " + maxLength
+                    + " characters because the source field is " + picClause + ", but was "
+                    + value.length() + " characters long");
+        }
+    }
+
+    /**
      * Validates the row collection and stores it as an unmodifiable defensive copy.
      *
-     * <p>The row list is copied on construction, so a later mutation of the list handed in cannot be
-     * observed through this instance, and {@link #rows()} exposes only an unmodifiable copy. Row order is
-     * preserved exactly as supplied, which is what makes row position meaningful: the rows are positional
-     * one through ten, matching the ten row groups of the symbolic map, and no hash-ordered structure is
-     * involved at any point.
-     *
-     * <p>An empty row list is a valid and meaningful state - it means the page matched no user - and is
-     * deliberately distinct from a {@code null} list, which is rejected rather than silently coerced to
-     * empty. Every other component is carried exactly as supplied, including {@code null}, because
-     * absent, empty and marked are three distinct states of a screen field.
-     *
-     * @throws IllegalArgumentException if {@code rows} is {@code null}, if {@code rows} contains a
-     *                                  {@code null} element, or if {@code rows} holds more than
-     *                                  {@link #PAGE_SIZE} elements. The message names the component and,
-     *                                  for a {@code null} element, its index; it never names a value,
-     *                                  because every row value is either directly identifying or
-     *                                  screen-control state
+     * @throws IllegalArgumentException if {@code rows} is {@code null}, if {@code rows} contains a {@code null}
+     * element, or if {@code rows} holds more than {@link #PAGE_SIZE} elements.
      */
     public UserSecurityDto {
+        requireWidthWithinLimit(transactionName, TRANSACTION_NAME_WIDTH, "transactionName", "PIC X(4)");
+        requireWidthWithinLimit(title01, TITLE_WIDTH, "title01", "PIC X(40)");
+        requireWidthWithinLimit(currentDate, DATE_WIDTH, "currentDate", "PIC X(8)");
+        requireWidthWithinLimit(programName, PROGRAM_NAME_WIDTH, "programName", "PIC X(8)");
+        requireWidthWithinLimit(title02, TITLE_WIDTH, "title02", "PIC X(40)");
+        requireWidthWithinLimit(currentTime, TIME_WIDTH, "currentTime", "PIC X(8)");
+        requireWidthWithinLimit(pageNumber, PAGE_NUMBER_WIDTH, "pageNumber", "PIC X(8)");
+        requireWidthWithinLimit(userIdInput, USER_ID_WIDTH, "userIdInput", "PIC X(8)");
+        requireWidthWithinLimit(errorMessage, ERROR_MESSAGE_WIDTH, "errorMessage", "PIC X(78)");
+
         if (rows == null) {
             throw new IllegalArgumentException(
                     "rows must not be null; supply an empty list to represent a page that matched no user");
@@ -309,14 +420,7 @@ public record UserSecurityDto(
     /**
      * Returns the page's user rows in positional order, row one first.
      *
-     * <p>The backing list is never exposed. The canonical constructor already stored an immutable copy,
-     * and {@link List#copyOf(java.util.Collection)} is applied again here so the defensive copy holds on
-     * access as well as on construction; because the stored list is already unmodifiable this second call
-     * does not produce a further copy, so the guarantee costs nothing. Every mutating operation on the
-     * returned list throws {@link UnsupportedOperationException}.
-     *
-     * @return an unmodifiable, order-preserving copy of the page's rows, never {@code null}; an empty
-     *         list means the page matched no user
+     * @return an unmodifiable, order-preserving copy of the page's rows, never {@code null}.
      */
     @Override
     public List<UserRow> rows() {
@@ -325,14 +429,6 @@ public record UserSecurityDto(
 
     /**
      * Returns a diagnostic rendering that discloses nothing about any user.
-     *
-     * <p>Overridden deliberately. The rendering a record generates for itself would expand every
-     * component, and so would publish the search key together with the given name, family name and
-     * identifier of all ten rows - straight into any log line, exception message or debugger frame that
-     * happened to interpolate this object. Only {@code programName} is emitted, which names the screen
-     * that produced the response and cannot identify a person. No name, no identifier, no page content
-     * and nothing credential-adjacent appears, and there is no numeric or date formatting in the result,
-     * so the output cannot vary with the platform locale.
      *
      * @return the type name and the originating program name only, never any user data
      */
@@ -344,76 +440,16 @@ public record UserSecurityDto(
     /**
      * One row of the user list: the five fields the symbolic map declares per row group.
      *
-     * <p>{@code app/cpy-bms/COUSR00.CPY} declares ten identical row groups, each of five input fields in
-     * the fixed order selector, user identifier, given name, family name, user type, with widths
-     * {@code PIC X(1)}, {@code PIC X(8)}, {@code PIC X(20)}, {@code PIC X(20)} and {@code PIC X(1)}
-     * respectively. Ten groups of five accounts for fifty of the map's fifty-nine fields. The row type is
-     * nested here, and used by {@link UserSecurityDto} alone, because the five-per-row shape it shares
-     * with the transaction-list projection is a structural coincidence: the field names differ entirely
-     * and so do the widths, so a shared row abstraction would assert a contract that neither map has.
-     *
-     * <p>The generated field names follow the pattern {@code SEL000nI}, {@code USRIDnnI},
-     * {@code FNAMEnnI}, {@code LNAMEnnI} and {@code UTYPEnnI}. Note that the selector's pattern breaks at
-     * the last row: rows one through nine are {@code SEL0001I} through {@code SEL0009I}, while row ten is
-     * {@code SEL0010I} rather than a five-digit form.
-     *
-     * <table>
-     *   <caption>Row group line numbers in {@code app/cpy-bms/COUSR00.CPY}</caption>
-     *   <tr>
-     *     <th scope="col">Row</th><th scope="col">selector</th><th scope="col">user identifier</th>
-     *     <th scope="col">given name</th><th scope="col">family name</th><th scope="col">user type</th>
-     *   </tr>
-     *   <tr><td>1</td><td>:72</td><td>:78</td><td>:84</td><td>:90</td><td>:96</td></tr>
-     *   <tr><td>2</td><td>:102</td><td>:108</td><td>:114</td><td>:120</td><td>:126</td></tr>
-     *   <tr><td>3</td><td>:132</td><td>:138</td><td>:144</td><td>:150</td><td>:156</td></tr>
-     *   <tr><td>4</td><td>:162</td><td>:168</td><td>:174</td><td>:180</td><td>:186</td></tr>
-     *   <tr><td>5</td><td>:192</td><td>:198</td><td>:204</td><td>:210</td><td>:216</td></tr>
-     *   <tr><td>6</td><td>:222</td><td>:228</td><td>:234</td><td>:240</td><td>:246</td></tr>
-     *   <tr><td>7</td><td>:252</td><td>:258</td><td>:264</td><td>:270</td><td>:276</td></tr>
-     *   <tr><td>8</td><td>:282</td><td>:288</td><td>:294</td><td>:300</td><td>:306</td></tr>
-     *   <tr><td>9</td><td>:312</td><td>:318</td><td>:324</td><td>:330</td><td>:336</td></tr>
-     *   <tr><td>10</td><td>:342</td><td>:348</td><td>:354</td><td>:360</td><td>:366</td></tr>
-     * </table>
-     *
-     * <p><b>No credential field appears on a row.</b> The quintuple above is the whole of the row group;
-     * {@code app/cpy-bms/COUSR00.CPY} declares no password field anywhere, and neither does the sibling
-     * delete map {@code app/cpy-bms/COUSR03.CPY}. Only the add and update maps do, at
-     * {@code app/cpy-bms/COUSR01.CPY}:78 and {@code app/cpy-bms/COUSR02.CPY}:78. Nothing on this row is
-     * derived from the credential column of {@code app/cpy/CSUSR01Y.cpy}, nor from the BCrypt digest
-     * column that replaces it in the migrated schema.
-     *
-     * <p><b>User type is the raw one-character code.</b> {@code UTYPEnnI} is {@code PIC X(1)} and is
-     * carried as a {@code String}, never bound to the {@code UserType} enum whose two constants derive
-     * from {@code app/cpy/COCOM01Y.cpy}:27-28. A stored value outside that domain must surface as data
-     * rather than as a serialisation failure, so the code is carried verbatim.
-     *
-     * <p><b>Null, blank and marked are three distinct states.</b> Every component may be {@code null},
-     * meaning the field was absent from the response; an empty string means the field was present and
-     * empty; and a value of spaces or low-values means the legacy screen marked it. No component is
-     * trimmed or case-folded on ingest, and no component is coerced between {@code null} and empty. This
-     * type is an outbound projection, so it applies no width or domain validation that the read paths
-     * would never exercise.
-     *
-     * <p><b>Error modes.</b> None. No member of this type validates, rejects or throws; every accessor
-     * returns exactly the value the row was constructed with.
-     *
-     * @param selectionFlag the row selection marker the operator may set, {@code SEL000nI PIC X(1)}, at
-     *                      the selector line of the row's group in the table above; screen-control state
-     *                      carrying no user data, and may be {@code null} when absent
-     * @param userId        the eight-character user identifier, {@code USRIDnnI PIC X(8)}, matching the
-     *                      {@code USRSEC} cluster key length of eight declared at
-     *                      {@code app/jcl/DUSRSECJ.jcl}:65; may be {@code null} when the row is unused
-     * @param firstName     the user's given name, {@code FNAMEnnI PIC X(20)}, projected from
-     *                      {@code SEC-USR-FNAME PIC X(20)} of {@code app/cpy/CSUSR01Y.cpy}; may be
-     *                      {@code null} when the row is unused
-     * @param lastName      the user's family name, {@code LNAMEnnI PIC X(20)}, projected from
-     *                      {@code SEC-USR-LNAME PIC X(20)} of {@code app/cpy/CSUSR01Y.cpy}; may be
-     *                      {@code null} when the row is unused
-     * @param userType      the raw one-character user type code, {@code UTYPEnnI PIC X(1)}, projected
-     *                      from {@code SEC-USR-TYPE PIC X(01)} of {@code app/cpy/CSUSR01Y.cpy}; the
-     *                      seeded data uses {@code A} for an administrator and {@code U} for a standard
-     *                      user, but any stored value is carried rather than rejected, and it may be
-     *                      {@code null} when the row is unused
+     * @param selectionFlag the row selection marker the operator may set, {@code SEL000nI PIC X(1)}, the
+     * first field of each row group in {@code app/cpy-bms/COUSR00.CPY}
+     * @param userId the eight-character user identifier, {@code USRIDnnI PIC X(8)}, matching the {@code USRSEC}
+     * cluster key length of eight declared at {@code app/jcl/DUSRSECJ.jcl}:65.
+     * @param firstName the user's given name, {@code FNAMEnnI PIC X(20)}, projected from
+     * {@code SEC-USR-FNAME PIC X(20)} of {@code app/cpy/CSUSR01Y.cpy}.
+     * @param lastName the user's family name, {@code LNAMEnnI PIC X(20)}, projected from
+     * {@code SEC-USR-LNAME PIC X(20)} of {@code app/cpy/CSUSR01Y.cpy}.
+     * @param userType the raw one-character user type code, {@code UTYPEnnI PIC X(1)}, projected from
+     * {@code SEC-USR-TYPE PIC X(01)} of {@code app/cpy/CSUSR01Y.cpy}.
      */
     public record UserRow(
             String selectionFlag,
@@ -423,21 +459,208 @@ public record UserSecurityDto(
             String userType) {
 
         /**
-         * Returns a diagnostic rendering that discloses nothing about the user.
+         * Rejects any component wider than the row field it transcribes.
          *
-         * <p>Overridden for the same reason as {@link UserSecurityDto#toString()}: the rendering a record
-         * generates for itself would publish the user's identifier, given name and family name. Every
-         * component of a row is either directly identifying - the identifier and the two names - or
-         * screen-control state of no diagnostic value, namely the selector and the one-character type, so
-         * no component is emitted at all and only the type name is returned. The row's position within
-         * the page, which is the one detail a reader might legitimately want, is a property of the
-         * enclosing list rather than of the row.
+         * <p>Five checks, one per component, each quoting its own {@code PICTURE} clause so that a failure
+         * identifies the field without a lookup. A {@code null} passes every check, and so does every
+         * value at or under the declared width; nothing is trimmed, padded or case-folded, and no domain
+         * is imposed on either the selector or the type code.
+         *
+         * @throws IllegalArgumentException if any component is longer than its declared width. The message
+         *                                  names the component, its length and its source
+         *                                  {@code PICTURE} clause, and never the value itself
+         */
+        public UserRow {
+            requireWidthWithinLimit(selectionFlag, SELECTION_FLAG_WIDTH, "selectionFlag", "PIC X(1)");
+            requireWidthWithinLimit(userId, USER_ID_WIDTH, "userId", "PIC X(8)");
+            requireWidthWithinLimit(firstName, NAME_WIDTH, "firstName", "PIC X(20)");
+            requireWidthWithinLimit(lastName, NAME_WIDTH, "lastName", "PIC X(20)");
+            requireWidthWithinLimit(userType, USER_TYPE_WIDTH, "userType", "PIC X(1)");
+        }
+
+        /**
+         * Returns a diagnostic rendering that discloses nothing about the user.
          *
          * @return the type name only, never any user data
          */
         @Override
         public String toString() {
             return "UserSecurityDto.UserRow";
+        }
+    }
+
+    /**
+     * The user-delete screen: all eleven input fields of {@code app/cpy-bms/COUSR03.CPY}, in map order.
+     *
+     * <p><strong>Why this type exists.</strong> The user-administration read surface is two screens, not
+     * one. CICS transaction {@code CU00} running {@code app/cbl/COUSR00C.cbl} paints the ten-row list this
+     * enclosing type projects; CICS transaction {@code CU03} running {@code app/cbl/COUSR03C.cbl} paints a
+     * single user for confirmation before deletion, onto the mapset whose generated symbolic map is
+     * {@code app/cpy-bms/COUSR03.CPY}. That second map declares eleven input fields and none of them was
+     * represented, so the read-confirm-delete chain had no wire contract at all. This record is that
+     * contract.
+     *
+     * <p><strong>Eleven fields, counted directly.</strong> The input group is {@code 01 COUSR3AI} at
+     * {@code app/cpy-bms/COUSR03.CPY}:17, redefined for output as {@code 01 COUSR3AO} at :85. Between them
+     * sit exactly eleven {@code 02}-level input fields, at :24, :30, :36, :42, :48, :54, :60, :66, :72, :78
+     * and :84. The arithmetic is {@code 6 + 4 + 1 = 11}: the six recurring header fields, then the single
+     * user's four detail fields, then the error line.
+     *
+     * <p><strong>One user, not a row.</strong> The four detail fields are the same four the list carries per
+     * row - identifier, given name, family name, type - but this map is <em>not</em> a one-row list and
+     * {@link UserRow} is deliberately not reused for it. The names differ: the list generates
+     * {@code USRIDnnI}, {@code FNAMEnnI}, {@code LNAMEnnI} and {@code UTYPEnnI} against this map's
+     * {@code USRIDINI}, {@code FNAMEI}, {@code LNAMEI} and {@code USRTYPEI}. And the shapes differ: a list
+     * row carries a selection marker, because ten rows need one selected, whereas this screen has no
+     * selector at all - the user being deleted is the one the operator keyed in. Reusing the row type would
+     * have introduced a selector this map does not declare, which is precisely the kind of invented field
+     * that a field-contract projection must not carry.
+     *
+     * <p><strong>The widths are shared with the list because the two maps declare the same clauses.</strong>
+     * Every constant this record validates against is the enclosing type's, and that reuse is a verified
+     * identity rather than an assumption: {@code TRNNAMEI} is {@code PIC X(4)}, {@code TITLE01I} and
+     * {@code TITLE02I} are {@code PIC X(40)}, {@code CURDATEI}, {@code PGMNAMEI}, {@code CURTIMEI} and
+     * {@code USRIDINI} are {@code PIC X(8)}, {@code FNAMEI} and {@code LNAMEI} are {@code PIC X(20)},
+     * {@code USRTYPEI} is {@code PIC X(1)} and {@code ERRMSGI} is {@code PIC X(78)} - the same eleven
+     * clauses the corresponding {@code app/cpy-bms/COUSR00.CPY} fields declare. Had any width differed, it
+     * would have been declared here instead of reused.
+     *
+     * <p><strong>No credential field.</strong> {@code app/cpy-bms/COUSR03.CPY} declares no password field
+     * anywhere across its eleven fields, which is one of the two corroborations that the read-side maps
+     * never carried one. Nothing here is derived from the credential column of
+     * {@code app/cpy/CSUSR01Y.cpy} nor from the BCrypt digest column that replaces it.
+     *
+     * <p><strong>No self-delete guard.</strong> {@code app/cbl/COUSR03C.cbl} never compares the target
+     * identifier against the signed-on identifier, so an administrator can delete their own record. That is
+     * a preserved legacy behaviour, not an oversight: parity is the contract, and this projection therefore
+     * declares no field, flag or invariant that would express such a guard. Adding one would be a
+     * behaviour change.
+     *
+     * <p><strong>Null, blank and marked are three distinct states</strong>, and <strong>width is enforced
+     * while domain is not</strong> - both exactly as described on {@link UserRow}, and enforced by the same
+     * guard.
+     *
+     * <p><strong>Rendering is suppressed.</strong> Three of the eleven components identify a person
+     * directly, so {@code toString} emits only the originating program name, for the same reason
+     * {@link UserSecurityDto#toString()} does.
+     *
+     * @param transactionName the four-character transaction identifier, {@code TRNNAMEI PIC X(4)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:24; may be {@code null} when absent
+     * @param title01         the first title line of the screen header, {@code TITLE01I PIC X(40)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:30; may be {@code null} when absent
+     * @param currentDate     the header date as the screen rendered it, {@code CURDATEI PIC X(8)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:36; may be {@code null} when absent
+     * @param programName     the eight-character name of the program that painted the screen,
+     *                        {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COUSR03.CPY}:42; may be
+     *                        {@code null} when absent
+     * @param title02         the second title line of the screen header, {@code TITLE02I PIC X(40)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:48; may be {@code null} when absent
+     * @param currentTime     the header time as the screen rendered it, {@code CURTIMEI PIC X(8)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:54 - eight characters here, against the nine
+     *                        of {@code app/cpy-bms/COSGN00.CPY}:54; may be {@code null} when absent
+     * @param userIdInput     the eight-character identifier of the user being confirmed for deletion,
+     *                        {@code USRIDINI PIC X(8)} at {@code app/cpy-bms/COUSR03.CPY}:60, matching the
+     *                        {@code USRSEC} cluster key length declared at {@code app/jcl/DUSRSECJ.jcl}:65;
+     *                        may be {@code null} before the operator has keyed one
+     * @param firstName       the user's given name as read back for confirmation, {@code FNAMEI PIC X(20)}
+     *                        at {@code app/cpy-bms/COUSR03.CPY}:66, projected from
+     *                        {@code SEC-USR-FNAME PIC X(20)}; may be {@code null} when no user was read
+     * @param lastName        the user's family name as read back for confirmation,
+     *                        {@code LNAMEI PIC X(20)} at {@code app/cpy-bms/COUSR03.CPY}:72, projected from
+     *                        {@code SEC-USR-LNAME PIC X(20)}; may be {@code null} when no user was read
+     * @param userType        the raw one-character user type code, {@code USRTYPEI PIC X(1)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:78, projected from
+     *                        {@code SEC-USR-TYPE PIC X(01)}; carried verbatim rather than bound to an
+     *                        enumeration, and may be {@code null} when no user was read
+     * @param errorMessage    the screen's error message line, {@code ERRMSGI PIC X(78)} at
+     *                        {@code app/cpy-bms/COUSR03.CPY}:84; may be {@code null} when the request
+     *                        succeeded
+     */
+    public record UserDeleteScreen(
+            String transactionName,
+            String title01,
+            String currentDate,
+            String programName,
+            String title02,
+            String currentTime,
+            String userIdInput,
+            String firstName,
+            String lastName,
+            String userType,
+            String errorMessage) {
+
+        /**
+         * The number of recurring header fields this map declares ahead of the user detail: six.
+         *
+         * <p>{@code TRNNAMEI}, {@code TITLE01I}, {@code CURDATEI}, {@code PGMNAMEI}, {@code TITLE02I} and
+         * {@code CURTIMEI}, at {@code app/cpy-bms/COUSR03.CPY}:24, :30, :36, :42, :48 and :54.
+         */
+        public static final int HEADER_FIELD_COUNT = 6;
+
+        /**
+         * The number of fields describing the single user being confirmed: four.
+         *
+         * <p>{@code USRIDINI}, {@code FNAMEI}, {@code LNAMEI} and {@code USRTYPEI}, at
+         * {@code app/cpy-bms/COUSR03.CPY}:60, :66, :72 and :78. Four rather than the list's five, because
+         * this screen declares no selection marker.
+         */
+        public static final int DETAIL_FIELD_COUNT = 4;
+
+        /**
+         * The total number of input fields this map declares: {@code 6 + 4 + 1 = 11}.
+         *
+         * <p>Derived from its parts rather than written as a literal, so the arithmetic that proves the
+         * field contract is visible in the source. Verified by direct count against
+         * {@code app/cpy-bms/COUSR03.CPY} at commit {@code 7756d89}.
+         *
+         * <p>This constant shadows {@link UserSecurityDto#MAP_FIELD_COUNT} within this record. The two are
+         * different facts about different maps - eleven fields on {@code app/cpy-bms/COUSR03.CPY} against
+         * fifty-nine on {@code app/cpy-bms/COUSR00.CPY} - so the enclosing figure must always be referenced
+         * as {@code UserSecurityDto.MAP_FIELD_COUNT}.
+         */
+        public static final int MAP_FIELD_COUNT = HEADER_FIELD_COUNT + DETAIL_FIELD_COUNT + 1;
+
+        /**
+         * Rejects any component wider than the map field it transcribes.
+         *
+         * <p>Eleven checks against the enclosing type's width constants, each quoting its own
+         * {@code PICTURE} clause. A {@code null} passes, nothing is truncated, and no domain is imposed on
+         * the type code.
+         *
+         * @throws IllegalArgumentException if any component is longer than its declared width. The message
+         *                                  names the component, its length and its source
+         *                                  {@code PICTURE} clause, and never the value itself
+         */
+        public UserDeleteScreen {
+            requireWidthWithinLimit(transactionName, TRANSACTION_NAME_WIDTH, "transactionName", "PIC X(4)");
+            requireWidthWithinLimit(title01, TITLE_WIDTH, "title01", "PIC X(40)");
+            requireWidthWithinLimit(currentDate, DATE_WIDTH, "currentDate", "PIC X(8)");
+            requireWidthWithinLimit(programName, PROGRAM_NAME_WIDTH, "programName", "PIC X(8)");
+            requireWidthWithinLimit(title02, TITLE_WIDTH, "title02", "PIC X(40)");
+            requireWidthWithinLimit(currentTime, TIME_WIDTH, "currentTime", "PIC X(8)");
+            requireWidthWithinLimit(userIdInput, USER_ID_WIDTH, "userIdInput", "PIC X(8)");
+            requireWidthWithinLimit(firstName, NAME_WIDTH, "firstName", "PIC X(20)");
+            requireWidthWithinLimit(lastName, NAME_WIDTH, "lastName", "PIC X(20)");
+            requireWidthWithinLimit(userType, USER_TYPE_WIDTH, "userType", "PIC X(1)");
+            requireWidthWithinLimit(errorMessage, ERROR_MESSAGE_WIDTH, "errorMessage", "PIC X(78)");
+        }
+
+        /**
+         * Returns a diagnostic rendering that discloses nothing about the user.
+         *
+         * <p>Overridden for the same reason as {@link UserSecurityDto#toString()} and
+         * {@link UserRow#toString()}: the rendering a record generates for itself would publish the
+         * identifier, given name and family name of the user about to be deleted - straight into any log
+         * line, exception message or debugger frame that interpolated the object, and on precisely the code
+         * path where a failure is most likely to be logged. Only {@code programName} is emitted, which
+         * names the screen and cannot identify a person. There is no numeric or date formatting in the
+         * result, so the output cannot vary with the platform locale.
+         *
+         * @return the type name and the originating program name only, never any user data
+         */
+        @Override
+        public String toString() {
+            return "UserSecurityDto.UserDeleteScreen[programName=" + programName + "]";
         }
     }
 }

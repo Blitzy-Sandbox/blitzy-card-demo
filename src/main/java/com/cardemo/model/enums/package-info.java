@@ -30,145 +30,69 @@
  */
 
 /**
- * Typed replacements for the COBOL condition names, file status values and batch reject literals of the
- * frozen CardDemo corpus.
+ * Typed replacements for the COBOL literals and 88-level condition names that the frozen CardDemo corpus tests
+ * by value: user class, file status, transaction source and reject reason.
  *
- * <p>The banner above names every legacy artefact this package derives from, each pinned to commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} (short {@code 7756d89}), which is the traceability
- * anchor for the whole migration. Note the file name casing in those citations: {@code CBSTM03A.CBL} and
- * {@code CBSTM03B.CBL} are the only two members of {@code app/cbl} carrying an uppercase extension, the
- * other 26 of the 28 using a lowercase one, so a case sensitive lookup that assumes the lowercase form for
- * either of those two finds nothing. The same trap applies to {@code app/jcl}, where
- * {@code CREASTMT.JCL} is the one member of 29 with an uppercase extension.
- *
- * <h2>What it does</h2>
- *
- * <p>This package holds exactly four enum types, and they are typed replacements for three distinct and
- * unrelated COBOL idioms rather than four variations on one theme:
- *
- * <ol>
- *   <li><strong>88-level condition names</strong> attached to a one-character {@code PIC X(01)} field,
- *       which is how the legacy corpus expresses a closed set of permitted values. {@link UserType} comes
- *       from this idiom.</li>
- *   <li><strong>The universal {@code FILE STATUS} guard idiom</strong>, repeated after every {@code OPEN},
- *       {@code READ}, {@code WRITE}, {@code REWRITE} and {@code CLOSE} in every batch program.
- *       {@link FileStatus} comes from this idiom.</li>
- *   <li><strong>Inline literals</strong> assigned by {@code MOVE} into a working-storage or record field.
- *       {@link TransactionSource} and {@link RejectCode} come from this idiom, and for both of them the
- *       literal text itself is part of the observable contract, not an implementation detail.</li>
- * </ol>
- *
- * <p>All four types are pure data holders. They carry only their own constants and accessors, perform no
- * I/O, hold no collaborators, open no transaction, emit no log record and have <strong>zero framework
- * coupling</strong>: nothing from Spring, Jakarta Persistence, Jakarta Validation, Jackson or any AWS SDK
- * appears in any of them. Their only compile dependencies are a handful of {@code java.util} types.
- *
- * <p><strong>Architectural boundary, stated so it can be enforced.</strong> No type in this package may
- * import from {@code com.cardemo.exception}, {@code com.cardemo.repository}, {@code com.cardemo.service},
- * {@code com.cardemo.controller}, {@code com.cardemo.batch}, {@code com.cardemo.security},
- * {@code com.cardemo.config} or {@code com.cardemo.observability}. Dependencies point
- * <strong>inward toward this package</strong> and never outward, which makes it a foundational leaf of the
- * dependency graph and free of cycles by construction. The package also references nothing else inside
- * {@code com.cardemo.model}: there is no dependency on the entity, key or DTO packages, so these four
- * types can be compiled and unit tested entirely on their own.
- *
- * <h3>{@link UserType} - two constants, from two 88-levels</h3>
- *
- * <p>Exactly <strong>two</strong> constants, {@code A} for an administrator and {@code U} for a standard
- * user. They come from the two condition names declared at {@code app/cpy/COCOM01Y.cpy:L26-L28}, which
- * read {@code 10 CDEMO-USER-TYPE PIC X(01).}, then {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'.}, then
- * {@code 88 CDEMO-USRTYP-USER VALUE 'U'.}
- *
- * <p>Corroborated independently by the seed data: {@code app/jcl/DUSRSECJ.jcl:L35-L44} carries ten inline
- * user records fed through {@code IEBGENER}, five of type {@code A} and five of type {@code U}, with
- * <strong>no other value anywhere in the seed set</strong>. Two 88-levels and a ten-row census agreeing is
- * why two constants may be treated as settled fact rather than inference.
- *
- * <p>This enum exposes only the one-character code. It performs no authorisation and maps to no role:
- * translating a user type into a granted authority is the job of {@code com.cardemo.security}, and this
- * enum deliberately does <strong>not</strong> import Spring Security. Keeping the authority names out of a
- * model type is a least-privilege boundary, not a stylistic preference.
- *
- * <h3>{@link FileStatus} - six status families plus one accepted secondary success</h3>
- *
- * <p>Covers the six status families the migration recognises, {@code '00'}, {@code '10'}, {@code '22'},
- * {@code '23'}, {@code '35'} and the {@code '9x'} I/O error family, <strong>plus</strong> the accepted
- * secondary success {@code '04'}, giving seven constants in total. It also owns the four-character
- * {@code IO-STATUS-04} rendering used by the legacy diagnostic display.
- *
- * <p>The declarations are at {@code app/cbl/CBTRN02C.cbl:L131-L144}. Two details there are load bearing.
- * The rendering field is a group of {@code 05 IO-STATUS-0401 PIC 9} followed by
- * {@code 05 IO-STATUS-0403 PIC 999} at {@code :L138-L140}, so it is one digit plus three digits and
- * therefore <strong>exactly four characters</strong> wide. And the end-of-file condition name at
- * {@code :L144} is {@code 88 APPL-EOF VALUE 16} - <strong>sixteen</strong>, not twelve, which is easy to
- * misread because the neighbouring failure path moves 12 into the same field.
- *
- * <p>The rendering itself is at {@code app/cbl/CBTRN02C.cbl:L714-L727} and has two branches. When the
- * status is not numeric or its first byte is {@code '9'}, the first byte is copied through and the second
- * is widened from a binary field into three digits. Otherwise the field is set to four zeros and the two
- * status characters are placed at positions three and four, so status {@code '23'} renders {@code 0023}.
- * Both branches then display the same fixed prefix.
- *
- * <p>This enum <strong>classifies but does not decide</strong>. It answers which family a status belongs
- * to and how it renders; it never chooses an exception, a control path or an exit code. Translating a
- * status into a typed exception belongs to {@code com.cardemo.service.shared.FileStatusMapper}, which is
- * why this package holds no reference to any exception type.
- *
- * <p>Three call sites in the corpus treat a not-found or secondary status as <strong>success</strong>
- * rather than as an error, and any status mapper built on this enum has to know about all three:
+ * <p><strong>What it does.</strong> Four enumerations, and nothing else besides this file. Each one closes a
+ * set that the source leaves open as bare literals, so a value outside the set becomes unrepresentable rather
+ * than merely unusual.
  *
  * <ul>
- *   <li>{@code app/cbl/CBTRN02C.cbl:L481} - the transaction category balance upsert accepts
- *       {@code '00' OR '23'}, because a missing row is the create branch of an upsert rather than a
- *       failure.</li>
- *   <li>{@code app/cbl/CBACT04C.cbl:L422} and {@code :L436} - the interest rate lookup accepts
- *       {@code '00' OR '23'}, and on {@code '23'} substitutes the literal default group identifier and
- *       retries. The retry accepts success only, so a missing default row does abend the job.</li>
- *   <li>{@code app/cbl/CBSTM03A.CBL:L736} and {@code :L748} - the statement file service accepts
- *       {@code '00' OR '04'} at both its open and its read site.</li>
+ *   <li>{@link UserType} - two constants, {@code 'A'} and {@code 'U'}, from the two 88-levels declared on
+ *       {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy:L26-L28}. It drives role-based
+ *       authorisation and the main-menu eligibility gate.</li>
+ *   <li>{@link FileStatus} - the six exact statuses the batch corpus tests, {@code '00'}, {@code '04'},
+ *       {@code '10'}, {@code '22'}, {@code '23'} and {@code '35'}, plus the {@code '9x'} family, together with
+ *       the four-character {@code IO-STATUS-04} rendering of {@code 9910-DISPLAY-IO-STATUS} at
+ *       {@code app/cbl/CBTRN02C.cbl:L714-L727}.</li>
+ *   <li>{@link TransactionSource} - two constants, the only {@code TRAN-SOURCE} literals assigned anywhere in
+ *       the corpus: {@code System} at {@code app/cbl/CBACT04C.cbl:L484} and {@code POS TERM} at
+ *       {@code app/cbl/COBIL00C.cbl:L222}.</li>
+ *   <li>{@link RejectCode} - exactly five constants, 100, 101, 102, 103 and 109, each carrying the verbatim
+ *       description literal the posting program moves into the reject trailer.</li>
  * </ul>
  *
- * <p>The {@code '35'} constant is on a different evidential footing from the other six and is documented
- * as such under "Not available" below. It is <strong>specification-derived</strong>, not corpus-derived.
+ * <p>Three package-wide invariants matter more than the individual constants. First, mapping a file status onto
+ * an outcome is <strong>not context-free</strong>: {@code '23'} is an accepted control path at
+ * {@code app/cbl/CBTRN02C.cbl:481} and {@code app/cbl/CBACT04C.cbl:422}, and {@code '04'} is accepted as
+ * success at every file-service call site from {@code app/cbl/CBSTM03A.CBL:736} onwards, so a caller must
+ * classify with its call site in mind. Second, a reject code is a business outcome and is never thrown; only an
+ * unrecognised status abends, with code 999 and process return code 12
+ * ({@code app/cbl/CBTRN02C.cbl:707-711}). Third, {@link TransactionSource} deliberately does <strong>not</strong>
+ * type the persisted column: {@code TRAN-SOURCE} is {@code PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8} and
+ * holds free text, so the entity keeps a {@code String} and this enumeration names only the two values the
+ * corpus writes.
  *
- * <h3>{@link TransactionSource} - two constants, and why it is not the column type</h3>
+ * <p>Every constant is immutable, every lookup is a total function returning {@code Optional} or throwing a
+ * documented exception, and nothing here performs I/O, reads configuration or logs.
  *
- * <p>Exactly <strong>two</strong> constants, taken from the only two literal assignments to the source
- * field in the entire corpus: {@code 'System'} at {@code app/cbl/CBACT04C.cbl:L484}, used for the
- * synthetic interest transactions the batch job generates, and {@code 'POS TERM'} at
- * {@code app/cbl/COBIL00C.cbl:L222}, used for an online bill payment.
+ * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root compiles
+ * this package under {@code -Xlint:all -Werror} and enforces the project coverage floor at {@code verify}.
+ * Unit tests live in {@code src/test/java/com/cardemo/unit/model} and assert the exact constant sets, the
+ * verbatim reject literals, the four-character status rendering including its {@code NNNN} form, and the
+ * round-trip behaviour of every lookup.
  *
- * <p>The underlying field is {@code 05 TRAN-SOURCE PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8}. Summing
- * the field widths that precede it in the same record - a 16-character identifier, a 2-character type code
- * and a 4-digit category code - places it at <strong>offsets 23 to 32</strong> of the 350-byte transaction
- * image. Emitting the value at any other width breaks the fixed-width record geometry, so both constants
- * expose a right-padded ten-character form as well as their raw text.
+ * <p><strong>Key configuration and defaults.</strong> Nothing in this package is configurable, by design: every
+ * value is a parity contract read from the frozen corpus, so a property that could change one would be a defect
+ * surface. Widths are published as constants rather than literals - the four-character reason code, the
+ * seventy-six-character description, their eighty-character trailer and the four-hundred-and-thirty-byte reject
+ * record - and are derived from one another where the source derives them.
  *
- * <p><strong>This enum is deliberately not the persisted column type, and that is the single most
- * important thing to understand about it.</strong> A whitespace-tolerant census,
- * {@code grep -rnE "TO +TRAN-SOURCE" app/cbl/}, returns exactly four assignment sites. Two are the
- * literals above. The other two are pass-throughs of arbitrary text that the program never inspects:
- * {@code app/cbl/COTRN02C.cbl:L454} moves an operator-typed screen field straight through from the BMS
- * map, and {@code app/cbl/CBTRN02C.cbl:L428} moves the value straight through from the staging record.
- * The column's real domain is therefore open, and the fixture proves it: the value {@code OPERATOR}
- * occupies offsets 23 to 32 in <strong>50 of the 300</strong> records of
- * {@code app/data/ASCII/dailytran.txt}, the remaining 250 carrying {@code POS TERM}. {@code OPERATOR} is
- * <strong>data, not a constant</strong>, and must never be added here.
- *
- * <h3>{@link RejectCode} - five constants, verbatim descriptions, business outcomes</h3>
- *
- * <p>Exactly <strong>five</strong> constants - 100, 101, 102, 103 and 109 - each paired with its verbatim
- * legacy description, all five drawn from {@code app/cbl/CBTRN02C.cbl}:
+ * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
- *   <li>{@code :L385-L387} - 100, {@code INVALID CARD NUMBER FOUND}, on a failed cross-reference
- *       lookup.</li>
- *   <li>{@code :L397-L399} - 101, {@code ACCOUNT RECORD NOT FOUND}, on a failed account lookup.</li>
- *   <li>{@code :L410-L412} - 102, {@code OVERLIMIT TRANSACTION}.</li>
- *   <li>{@code :L417-L419} - 103, {@code TRANSACTION RECEIVED AFTER ACCT EXPIRATION}. The abbreviation
- *       {@code ACCT} is in the source and must not be expanded.</li>
- *   <li>{@code :L556-L558} - 109, {@code ACCOUNT RECORD NOT FOUND}. The text is byte-identical to 101's;
- *       that duplication is present in the source and is preserved rather than de-duplicated.</li>
+ *   <li>A working batch path abends on a missing row - {@code '23'} was mapped to an exception unconditionally.
+ *       Three sites accept it, or {@code '04'}, as success.</li>
+ *   <li>Reject output no longer matches the parity baseline - a description literal was re-cased, re-worded or
+ *       repunctuated. The five literals are transcribed character for character.</li>
+ *   <li>Two reject records appear for one input record - the over-limit and expiry tests were guarded apart.
+ *       They are sequential and unguarded, so 103 overwrites 102 and one record is written.</li>
+ *   <li>Reject code 109 never appears in a reject file - it cannot. It is assigned on an already-validated
+ *       path and cleared on the next iteration, and it exists only for fidelity.</li>
+ *   <li>A log line's status differs from the legacy job log - the {@code '9x'} family renders its second byte
+ *       as three expanded digits, not as the raw character.</li>
+ *   <li>An unexpected source value fails to bind - the persisted column is free text. Bind the raw
+ *       {@code String} and resolve it through the lookup, which returns empty rather than throwing.</li>
  * </ul>
  *
  * <p><strong>Reject codes are business outcomes, never exceptions.</strong> They are assigned into a
@@ -226,9 +150,12 @@
  *       different toolchain.</li>
  *   <li><strong>Warnings are errors.</strong> The compiler is configured with {@code -Xlint:all} and
  *       {@code -Werror}, and additionally with {@code failOnWarning}, {@code showWarnings} and
- *       {@code showDeprecation}. An unused import, a raw type, an unchecked cast, a call to a deprecated
- *       API, a {@code switch} fall-through or a missing {@code serialVersionUID} on a serializable type is
- *       a <strong>hard build failure</strong>, not a warning to triage later. This is precisely why this
+ *       {@code showDeprecation}. A raw type, an unchecked cast, a call to a deprecated API, a
+ *       {@code switch} fall-through or a missing {@code serialVersionUID} on a serializable type is
+ *       a <strong>hard build failure</strong>, not a warning to triage later. An <em>unused import</em> is
+ *       not in that set: {@code javac} 25.0.3 publishes no lint key for one, as {@code javac --help-lint}
+ *       shows, and no Checkstyle or Error Prone analyser is in the pinned dependency set, so Rule 1
+ *       Clause B's prohibition on unused imports and dead code is review-enforced. This is precisely why this
  *       file carries zero imports and zero annotations: there is no nullability annotation available to
  *       use, since no JSR-305 and no JSpecify artefact is declared anywhere in {@code pom.xml}, and
  *       reaching for a framework annotation instead would risk a deprecation that the build treats as
@@ -241,9 +168,12 @@
  * <h3>Test</h3>
  *
  * <ul>
- *   <li><strong>Location.</strong> Unit tests for these four types live in the sibling test tree at
- *       {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package. This package
- *       stays free of test scaffolding.</li>
+ *   <li><strong>Location, and what exists today.</strong> Unit tests for these types live in the sibling
+ *       test tree at {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package,
+ *       which stays free of test scaffolding. Measured 1 August 2026, <strong>three of the four</strong>
+ *       types have a test class - {@code FileStatusTest}, {@code RejectCodeTest} and {@code UserTypeTest}.
+ *       A test class for {@link TransactionSource} is <strong>not available</strong>; the assertions listed
+ *       below for that type are consequently obligations rather than existing coverage.</li>
  *   <li><strong>Coverage gate.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor
  *       on the merged bundle at the {@code verify} phase with {@code haltOnFailure}, and there are
  *       <strong>no exclusions</strong> for this package. Coverage must come from meaningful assertions; the
@@ -262,7 +192,8 @@
  *             source lines, including the {@code ACCT} abbreviation in 103 and the intentional textual
  *             duplication between 101 and 109.</li>
  *         <li>Both {@link TransactionSource} literals, and their ten-character right-padded forms, since
- *             the padded form is what reaches the fixed-width boundary.</li>
+ *             the padded form is what reaches the fixed-width boundary. <strong>Planned, not present</strong>
+ *             - no {@code TransactionSourceTest} exists yet, so nothing asserts this today.</li>
  *         <li>{@link UserType} having <em>exactly two</em> constants, asserted on the length of the
  *             constant array rather than on individual lookups, so a third constant fails the test.</li>
  *         <li><em>Both</em> branches of the four-character {@link FileStatus} rendering, each asserted to
@@ -275,10 +206,13 @@
  *       machine and CI. The types are immutable and therefore safe to share across threads.</li>
  * </ul>
  *
- * <h3>Toolchain actually present in this environment</h3>
+ * <h3>Toolchain actually present in this environment, measured 1 August 2026</h3>
  *
- * <p>Measured rather than assumed, so the statement can be relied on: {@code java} and {@code javac}
- * report OpenJDK <strong>25.0.3</strong>, {@code mvn} reports Apache Maven <strong>3.9.11</strong>, and
+ * <p>Measured rather than assumed, on <strong>1 August 2026</strong> in this container after
+ * {@code source /etc/profile.d/10-carddemo-toolchain.sh}, so the statement can be relied on as a reading
+ * of that date rather than as a requirement: {@code java} and {@code javac}
+ * report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache Maven
+ * <strong>3.9.11</strong> from the pinned wrapper distribution, and
  * <strong>Docker Engine 29.7.0 with {@code docker compose} v5.3.1 is available</strong> and is what
  * provisions PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana for the integration tiers. The host
  * toolchain is activated by sourcing {@code /etc/profile.d/10-carddemo-toolchain.sh}. Where a host JDK is
@@ -462,7 +396,8 @@
  *       The ten seed users at {@code app/jcl/DUSRSECJ.jcl:L35-L44} do share one plaintext credential in the
  *       legacy inline data, and that value is <strong>deliberately not reproduced anywhere in
  *       {@code src/}</strong>, here included; the seeded credentials are stored only as BCrypt hashes,
- *       written by {@code V3__seed_data.sql}. Nothing in this package needs masking because nothing
+ *       to be written by {@code V3__seed_data.sql} (planned; absent at this commit). Nothing in this package needs
+ * masking because nothing
  *       sensitive is present, and nothing sensitive may be added.</li>
  *   <li><strong>Least privilege.</strong> {@link UserType} exposes only the one-character code and performs
  *       no authorisation. Granted authorities are derived in {@code com.cardemo.security}, so a model type
@@ -499,4 +434,5 @@
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
+
 package com.cardemo.model.enums;

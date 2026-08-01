@@ -25,6 +25,9 @@
  */
 package com.cardemo.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import java.util.Objects;
 
 import jakarta.persistence.Column;
@@ -36,14 +39,13 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * Card entity: the relational replacement for the VSAM KSDS cluster
- * {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}.
+ * Card entity: the relational replacement for the VSAM KSDS cluster {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}.
  *
- * <p><b>Purpose.</b> A pure data holder mapping the 150-byte {@code CARD-RECORD} declared in
- * {@code app/cpy/CVACT02Y.cpy} onto the {@code card} table. It carries no business logic, performs
- * no I/O, emits no log record and holds no reference to any service, repository or DTO. Reading
- * and writing are the responsibility of {@code com.cardemo.repository.CardRepository}; validation
- * of business meaning is the responsibility of the service layer.</p>
+ * <p>A pure data holder mapping the 150-byte {@code CARD-RECORD} declared in {@code app/cpy/CVACT02Y.cpy} onto
+ * the {@code card} table. It carries no business logic, performs no I/O, emits no log record and holds no
+ * reference to any service, repository or DTO. Reading and writing are the responsibility of
+ * {@code com.cardemo.repository.CardRepository}; validation of business meaning is the responsibility of the
+ * service layer.
  *
  * <p><b>Physical provenance (evidence, Rule 1 clause F1).</b> The base cluster is defined at
  * {@code app/catlg/LISTCAT.txt:L200} and its attributes reported at {@code :L202}, which gives
@@ -136,14 +138,22 @@ import org.hibernate.type.SqlTypes;
  * dependency: {@code hibernate-core} is already a compile-scope transitive of
  * {@code spring-boot-starter-data-jpa}.</p>
  *
- * <p><b>Required schema - "Not available" disclosure (Rule 1 clause F4).</b>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} was <b>Not available</b> when this
- * entity was authored: the migration directory had no planned children at that point. The field
- * table above is therefore the <b>normative column contract</b>, and {@code V1} must converge upon
- * it rather than the reverse. This matters because {@code spring.jpa.hibernate.ddl-auto: validate}
- * is set in every profile, so any divergence in column name, type, precision or nullability fails
- * application-context startup outright rather than degrading quietly. What is needed from
- * {@code V1__create_schema.sql} is exactly:</p>
+ * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
+ * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
+ * It declares {@code CREATE TABLE card} with 7 columns whose names are identical, as a
+ * set, to the 7 {@code @Column(name = ...)} declarations below, verified by direct comparison.
+ * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
+ * This matters because {@code spring.jpa.hibernate.ddl-auto: validate} is the mandated setting, so any
+ * divergence in column name, type, precision or nullability would fail application-context startup
+ * outright rather than degrading quietly.
+ * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
+ * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
+ * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
+ * rather than an observed one.</p>
+ *
+ * <p>What {@code V1__create_schema.sql} declares for this table, and what this mapping asserts, is
+ * exactly:</p>
  *
  * <pre>
  *   CREATE TABLE card (
@@ -169,12 +179,14 @@ import org.hibernate.type.SqlTypes;
  * {@code ./mvnw -B clean compile} and run the unit suite with {@code ./mvnw -B clean test}; the
  * build compiles under {@code -Xlint:all -Werror} with {@code failOnWarning}, so a warning here is
  * a build failure. The unit tests covering this entity live in
- * {@code src/test/java/com/cardemo/unit/model}; they assert the 150-byte arithmetic, the key length
+ * {@code src/test/java/com/cardemo/unit/model}; they are to assert the 150-byte arithmetic, the key length
  * of 16, that {@code cvvCode} and {@code expiraionDate} are text, that a leading-zero card
  * verification value round-trips unchanged, and that {@code toString()} discloses neither the card
- * number nor the verification value. Schema agreement is exercised by the repository integration
- * tier against a Testcontainers PostgreSQL 16 instance, which requires a reachable container
- * runtime.</p>
+ * number nor the verification value. Schema agreement is to be exercised by the repository integration
+ * tier against a Testcontainers PostgreSQL 16 instance, which requires a reachable container runtime.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code CardTest} exists and
+ * {@code src/test/java/com/cardemo/integration} does not exist, so both sentences state the coverage
+ * owed rather than coverage that runs.</p>
  *
  * <p><b>Key configuration and defaults.</b> This class has none of its own: it reads no property
  * and holds no static mutable state. Its behaviour depends only on
@@ -197,65 +209,87 @@ import org.hibernate.type.SqlTypes;
  * {@code NOT NULL} but blank is a legitimate value in a fixed-width record, and {@code @NotBlank}
  * or {@code @NotEmpty} would reject rows the legacy system accepts. No {@code @Lob}, no fetch or
  * cascade declaration, and no association of any kind.</p>
+ *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson, and on this
+ * entity that is the single most consequential control in the file. {@link JsonIgnoreType} removes any
+ * property whose declared type is this class from an enclosing object's JSON, and {@link JsonAutoDetect}
+ * with every visibility set to {@code NONE} switches off bean introspection entirely, so no getter, no
+ * setter, no field and no creator is discoverable. An entity is a bean with public accessors, so without
+ * the barrier the default behaviour of returning this type from a controller, or holding a field of it on
+ * a response object, is to publish the full card number, the card verification value, the embossed name
+ * and the expiry date - a cardholder data disclosure, not merely an over-broad response. With the barrier
+ * in place Jackson finds no properties and its default {@code FAIL_ON_EMPTY_BEANS} setting turns that
+ * mistake into a loud failure at the first request rather than a silent breach. Nothing legitimate is
+ * lost: outbound representations are built by {@code com.cardemo.model.dto.CardDto}, which is the type
+ * designed to cross the boundary, inbound JSON targets {@code com.cardemo.model.dto.CardUpdateRequest},
+ * and persistence is unaffected because Hibernate reads and writes the annotated fields reflectively and
+ * never consults Jackson visibility.</p>
  */
 @Entity
 @Table(name = "card")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class Card {
 
     /**
-     * Width of {@code CARD-NUM}, {@code PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}, and the
-     * cluster key length reported as {@code KEYLEN 16} at {@code app/catlg/LISTCAT.txt:L202}.
+     * Width of {@code CARD-NUM}, {@code PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}, and the cluster key
+     * length reported as {@code KEYLEN 16} at {@code app/catlg/LISTCAT.txt:L202}.
      */
     private static final int CARD_NUMBER_WIDTH = 16;
 
-    /** Width of {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}. */
+    /**
+     * Width of {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
+     */
     private static final int CVV_CODE_WIDTH = 3;
 
-    /** Width of {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}. */
+    /**
+     * Width of {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}.
+     */
     private static final int EMBOSSED_NAME_WIDTH = 50;
 
     /**
-     * Width of {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)} at
-     * {@code app/cpy/CVACT02Y.cpy:L9}. The misspelling is the copybook's own.
+     * Width of {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)} at {@code app/cpy/CVACT02Y.cpy:L9}. The
+     * misspelling is the copybook's own.
      */
     private static final int EXPIRAION_DATE_WIDTH = 10;
 
-    /** Width of {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)} at {@code app/cpy/CVACT02Y.cpy:L10}. */
+    /**
+     * Width of {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)} at {@code app/cpy/CVACT02Y.cpy:L10}.
+     */
     private static final int ACTIVE_STATUS_WIDTH = 1;
 
     /**
-     * Digit count of {@code CARD-ACCT-ID}, {@code PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6},
-     * carried through as the {@code NUMERIC(11)} precision. It equals the alternate index key
-     * length of 11 reported at {@code app/catlg/LISTCAT.txt:L281}, which is the corroboration that
-     * the field really is 11 digits wide.
+     * Digit count of {@code CARD-ACCT-ID}, {@code PIC 9(11)} at {@code app/cpy/CVACT02Y.cpy:L6}, carried
+     * through as the {@code NUMERIC(11)} precision. It equals the alternate index key length of 11 reported at
+     * {@code app/catlg/LISTCAT.txt:L281}, which is the corroboration that the field really is 11 digits wide.
      */
     private static final int ACCOUNT_ID_PRECISION = 11;
 
     /**
-     * Scale of {@code CARD-ACCT-ID}. The picture clause declares no {@code V} and no decimal
-     * positions, so the account identifier is a whole number and the scale is zero. It is stated
-     * explicitly rather than left to the annotation default so the mapping reads unambiguously.
+     * Scale of {@code CARD-ACCT-ID}. The picture clause declares no {@code V} and no decimal positions, so the
+     * account identifier is a whole number and the scale is zero. It is stated explicitly rather than left to
+     * the annotation default so the mapping reads unambiguously.
      */
     private static final int ACCOUNT_ID_SCALE = 0;
 
     /**
      * Largest value representable by {@code CARD-ACCT-ID}, {@code PIC 9(11)} at
-     * {@code app/cpy/CVACT02Y.cpy:L6}. The picture clause is unsigned, so the representable range
-     * is 0 through 99999999999 inclusive, which is also the range of {@code NUMERIC(11)}. Written
-     * as eleven grouped nines so it can be counted against {@link #ACCOUNT_ID_PRECISION} by eye.
+     * {@code app/cpy/CVACT02Y.cpy:L6}. The picture clause is unsigned, so the representable range is 0 through
+     * 99999999999 inclusive, which is also the range of {@code NUMERIC(11)}. Written as eleven grouped nines so
+     * it can be counted against {@link #ACCOUNT_ID_PRECISION} by eye.
      */
     private static final long MAX_ACCOUNT_ID = 99_999_999_999L;
 
     /**
      * Card number: {@code CARD-NUM}, {@code PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}.
      *
-     * <p>This is the primary key, matching the cluster key length of 16 reported at
-     * {@code app/catlg/LISTCAT.txt:L202} with {@code RKP 0} at {@code :L203}, that is, the key
-     * begins at the first byte of the record. Mapped as text rather than a number because the
-     * picture clause is {@code X(16)}, not {@code 9(16)}: leading zeros are significant, as row 1
-     * of {@code app/data/ASCII/carddata.txt} shows with {@code 0500024453765740}.</p>
-     *
-     * <p><b>This value is sensitive and is never rendered by {@code toString()}.</b></p>
+     * <p>The primary key, and text rather than a number because the picture clause is {@code X(16)}: leading
+     * zeros are significant. This value is sensitive and is never rendered by {@link #toString()}.
      */
     @Id
     @JdbcTypeCode(SqlTypes.CHAR)
@@ -290,7 +324,8 @@ public class Card {
      * where this field begins immediately after the 16-byte card number. The alternate index is
      * not an entity and has no class of its own. It becomes two things: the derived finder in
      * {@code com.cardemo.repository.CardRepository}, and a <b>non-unique</b> B-tree index on
-     * {@code card_acct_id} created by {@code V2__create_indexes.sql}. Non-unique is not a
+     * {@code card_acct_id} to be created by {@code V2__create_indexes.sql} (planned; that migration does not exist at
+     * this commit and {@code V1} declares no index). Non-unique is not a
      * relaxation but the catalogued fact: {@code app/catlg/LISTCAT.txt:L285} declares the
      * alternate index {@code NONUNIQKEY}, consistent with one account legitimately holding many
      * cards.</p>
@@ -311,23 +346,12 @@ public class Card {
     private Long accountId;
 
     /**
-     * Card verification value: {@code CARD-CVV-CD}, {@code PIC 9(03)} at
-     * {@code app/cpy/CVACT02Y.cpy:L7}.
+     * Card verification value: {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
      *
-     * <p><b>Medium-severity mapping decision: a numeric picture clause deliberately mapped to
-     * text.</b> A census of all 50 rows of {@code app/data/ASCII/carddata.txt} at bytes 28-30
-     * finds 8 rows whose value begins with a zero, the distinct set being 003, 021, 028, 031, 033,
-     * 045, 067 and 075. Held as a number, {@code 003} would re-emit as {@code 3} and the fixture
-     * round-trip would no longer be byte-exact. The value is never an arithmetic operand anywhere
-     * in the legacy corpus, so nothing is lost by holding it as text and the leading zero is
-     * preserved. Contrast {@code accountId} above, which stays numeric for the reasons given
-     * there.</p>
-     *
-     * <p>No format validation is applied: there is no digit pattern, no length-equality
-     * requirement and no normalisation, only the fixed-width bound that {@code CHAR(3)} enforces
-     * in any case. Constraining the format here would reject values the legacy system loads.</p>
-     *
-     * <p><b>This value is sensitive and is never rendered by {@code toString()}.</b></p>
+     * <p>A numeric picture clause deliberately mapped to {@code CHAR(3)}: some stored values begin with a zero,
+     * which a numeric type would drop on re-emission, and the value is never an arithmetic operand anywhere in
+     * the corpus. {@code accountId} takes the opposite decision for the opposite reason. This value is
+     * sensitive and is never rendered by {@link #toString()}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_cvv_cd", nullable = false, length = CVV_CODE_WIDTH)
@@ -336,12 +360,6 @@ public class Card {
     /**
      * Name embossed on the card: {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at
      * {@code app/cpy/CVACT02Y.cpy:L8}.
-     *
-     * <p>Row 1 of {@code app/data/ASCII/carddata.txt} holds {@code Aniya Von} blank-padded to the
-     * full 50 bytes, which is why the column is {@code CHAR(50)}: the padding is part of the
-     * record image, and {@code CHAR} reproduces it on read.</p>
-     *
-     * <p><b>This value is personal data and is never rendered by {@code toString()}.</b></p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_embossed_name", nullable = false, length = EMBOSSED_NAME_WIDTH)
@@ -350,60 +368,21 @@ public class Card {
     /**
      * Card expiry date, held as text: {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)} at
      * {@code app/cpy/CVACT02Y.cpy:L9}.
-     *
-     * <p><b>High-severity note: the misspelling is deliberate provenance.</b> The copybook field
-     * is spelled {@code CARD-EXPIRAION-DATE}, without the {@code T} of EXPIRATION, and the same
-     * misspelling appears in {@code app/cpy/CVACT01Y.cpy:L11} as {@code ACCT-EXPIRAION-DATE}. It
-     * is therefore a spelling used across the corpus and part of the field contract rather than a
-     * transcription error in this file. The property is {@code expiraionDate} and the column is
-     * {@code card_expiraion_date}. Renaming either to {@code expirationDate} would break the
-     * documented mapping and the column contract; do not "correct" it.</p>
-     *
-     * <p><b>Text, not a date.</b> The picture clause is {@code X(10)}, and row 1 of
-     * {@code app/data/ASCII/carddata.txt} holds the dash-separated value {@code 2023-03-09} at
-     * bytes 81-90. The column stays {@code CHAR(10)} and the property stays a {@code String}:
-     * there is no {@code java.time.LocalDate}, no temporal annotation and no format validation
-     * here. Keeping it textual is what allows blank and legacy-invalid values to load and
-     * round-trip byte-exactly; parsing and validating the value is the job of the date validation
-     * service, which is the Java replacement for {@code app/cbl/CSUTLDTC.cbl}.</p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_expiraion_date", nullable = false, length = EXPIRAION_DATE_WIDTH)
     private String expiraionDate;
 
     /**
-     * Active status flag: {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)} at
-     * {@code app/cpy/CVACT02Y.cpy:L10}.
-     *
-     * <p>A single character. Every one of the 50 rows of {@code app/data/ASCII/carddata.txt}
-     * carries {@code Y}, so the fixture exercises only the active case; the column is not
-     * constrained to an enumeration here because the copybook declares none, and inventing one
-     * would reject values the legacy file could hold.</p>
+     * Active status flag: {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)} at {@code app/cpy/CVACT02Y.cpy:L10}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "card_active_status", nullable = false, length = ACTIVE_STATUS_WIDTH)
     private String activeStatus;
 
     /**
-     * Optimistic locking version. This column has no counterpart in
-     * {@code app/cpy/CVACT02Y.cpy}; it is added by the migration.
-     *
-     * <p><b>Necessary but not sufficient.</b> This is the store-level guard only: it detects that
-     * some concurrent transaction changed the row, and causes the second writer's flush to fail.
-     * It does not reproduce the legacy change-detection semantics. The card update path mirrors
-     * the account update pattern, whose COBOL analogue is paragraph
-     * {@code 9700-CHECK-CHANGE-IN-REC} at {@code app/cbl/COACTUPC.cbl:L4109-L4193}, and that
-     * paragraph compares individual business field values against a snapshot captured when the
-     * screen was first populated. The two guarantees differ: a concurrent write that set a field
-     * back to its original value passes the legacy check but fails a version check. Reproducing
-     * the legacy behaviour therefore additionally requires an explicit field-by-field comparison
-     * in the service layer against a snapshot carried on the request, because the target is
-     * stateless and cannot hold that snapshot between requests. Both layers are required; neither
-     * substitutes for the other.</p>
-     *
-     * <p>The value is managed by the persistence provider, which assigns it on insert and
-     * increments it on update. It is consequently not a constructor parameter, and it is
-     * {@code null} on a newly constructed, not-yet-persisted instance.</p>
+     * Optimistic locking version. This column has no counterpart in {@code app/cpy/CVACT02Y.cpy}; it is added
+     * by the migration.
      */
     @Version
     @Column(name = "version", nullable = false)
@@ -411,12 +390,6 @@ public class Card {
 
     /**
      * No-argument constructor required by the JPA specification.
-     *
-     * <p>Visible to the persistence provider and to subclasses only. It leaves every property
-     * {@code null}; the provider populates the fields directly by reflection, which is why it does
-     * not route through the validating setters. Application code must use
-     * {@link #Card(String, Long, String, String, String, String)} so that the {@code NOT NULL} and
-     * fixed-width contracts are checked at construction time.</p>
      */
     protected Card() {
         // Intentionally empty: JPA instantiates the entity and then populates fields reflectively.
@@ -425,34 +398,14 @@ public class Card {
     /**
      * Creates a fully populated card record from the six columns of {@code CARD-RECORD}.
      *
-     * <p>The {@code version} column is deliberately not a parameter: it has no counterpart in
-     * {@code app/cpy/CVACT02Y.cpy} and is assigned by the persistence provider, so a caller
-     * creating a new card has no meaningful value to supply. Use {@link #setVersion(Long)} only
-     * when reattaching a detached instance whose version is already known.</p>
-     *
-     * <p>Every argument is validated: {@code null} is rejected because every column is
-     * {@code NOT NULL}, text longer than its column is rejected because the record is fixed width,
-     * and the account identifier is range-checked against {@code PIC 9(11)}. Text shorter than its
-     * column, including blank, is accepted: blank is a legitimate value in a fixed-width record
-     * and {@code CHAR(n)} pads it on read.</p>
-     *
-     * @param cardNumber    {@code CARD-NUM}, {@code PIC X(16)}; at most 16 characters, not
-     *                      {@code null}
-     * @param accountId     {@code CARD-ACCT-ID}, {@code PIC 9(11)}; 0 through 99999999999
-     *                      inclusive, not {@code null}
-     * @param cvvCode       {@code CARD-CVV-CD}, {@code PIC 9(03)}; at most 3 characters, not
-     *                      {@code null}
-     * @param embossedName  {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}; at most 50 characters,
-     *                      not {@code null}
-     * @param expiraionDate {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}; at most 10 characters,
-     *                      not {@code null}. The parameter name carries the copybook's own
-     *                      misspelling by design
-     * @param activeStatus  {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)}; at most 1 character, not
-     *                      {@code null}
-     * @throws IllegalArgumentException if any argument is {@code null}, if any text argument is
-     *                                  wider than its column, or if {@code accountId} falls
-     *                                  outside the range representable by {@code PIC 9(11)}. The
-     *                                  message names the offending property
+     * @param cardNumber {@code CARD-NUM}, {@code PIC X(16)}.
+     * @param accountId {@code CARD-ACCT-ID}, {@code PIC 9(11)}.
+     * @param cvvCode {@code CARD-CVV-CD}, {@code PIC 9(03)}.
+     * @param embossedName {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}.
+     * @param expiraionDate {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}.
+     * @param activeStatus {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)}.
+     * @throws IllegalArgumentException if any argument is {@code null}, if any text argument is wider than its
+     * column, or if {@code accountId} falls outside the range representable by {@code PIC 9(11)}.
      */
     public Card(String cardNumber,
                 Long accountId,
@@ -460,8 +413,7 @@ public class Card {
                 String embossedName,
                 String expiraionDate,
                 String activeStatus) {
-        // Fields are assigned directly, and every check is a private static helper, so this
-        // constructor invokes no overridable method and cannot leak a partially built instance.
+        // Direct field assignment through private static checks only, so no overridable method runs here.
         this.cardNumber = checkWidth(cardNumber, "cardNumber", "CARD-NUM", CARD_NUMBER_WIDTH);
         this.accountId = checkAccountId(accountId);
         this.cvvCode = checkWidth(cvvCode, "cvvCode", "CARD-CVV-CD", CVV_CODE_WIDTH);
@@ -478,10 +430,6 @@ public class Card {
     /**
      * Returns the card number, {@code CARD-NUM}, {@code PIC X(16)}, which is the primary key.
      *
-     * <p>Callers are reminded that this is sensitive data: it is excluded from
-     * {@link #toString()} by design, so anything that logs or serialises the returned value takes
-     * on that responsibility itself.</p>
-     *
      * @return the 16-character card number, never {@code null} on a persisted instance
      */
     public String getCardNumber() {
@@ -491,12 +439,8 @@ public class Card {
     /**
      * Replaces the card number, {@code CARD-NUM}, {@code PIC X(16)}.
      *
-     * <p>This is the primary key, so changing it on an already-persisted instance changes identity
-     * and is not something the update paths do; it exists for construction and test support.</p>
-     *
      * @param cardNumber the card number; at most 16 characters, not {@code null}
-     * @throws IllegalArgumentException if {@code cardNumber} is {@code null} or longer than 16
-     *                                  characters
+     * @throws IllegalArgumentException if {@code cardNumber} is {@code null} or longer than 16 characters
      */
     public void setCardNumber(String cardNumber) {
         this.cardNumber = checkWidth(cardNumber, "cardNumber", "CARD-NUM", CARD_NUMBER_WIDTH);
@@ -504,10 +448,6 @@ public class Card {
 
     /**
      * Returns the owning account identifier, {@code CARD-ACCT-ID}, {@code PIC 9(11)}.
-     *
-     * <p>This accessor name is load-bearing: it is what makes the derived finder
-     * {@code findByAccountId} on {@code com.cardemo.repository.CardRepository} resolve. Do not
-     * rename it.</p>
      *
      * @return the account identifier, never {@code null} on a persisted instance
      */
@@ -519,19 +459,16 @@ public class Card {
      * Replaces the owning account identifier, {@code CARD-ACCT-ID}, {@code PIC 9(11)}.
      *
      * @param accountId the account identifier; 0 through 99999999999 inclusive, not {@code null}
-     * @throws IllegalArgumentException if {@code accountId} is {@code null} or outside the range
-     *                                  representable by {@code PIC 9(11)}
+     * @throws IllegalArgumentException if {@code accountId} is {@code null} or outside the range representable
+     * by {@code PIC 9(11)}
      */
     public void setAccountId(Long accountId) {
         this.accountId = checkAccountId(accountId);
     }
 
     /**
-     * Returns the card verification value, {@code CARD-CVV-CD}, {@code PIC 9(03)}, held as text so
-     * that a leading zero survives.
-     *
-     * <p>Callers are reminded that this is sensitive data: it is excluded from
-     * {@link #toString()} by design.</p>
+     * Returns the card verification value, {@code CARD-CVV-CD}, {@code PIC 9(03)}, held as text so that a
+     * leading zero survives.
      *
      * @return the verification value, never {@code null} on a persisted instance
      */
@@ -542,12 +479,8 @@ public class Card {
     /**
      * Replaces the card verification value, {@code CARD-CVV-CD}, {@code PIC 9(03)}.
      *
-     * <p>No format validation is performed and no normalisation is applied, so a leading zero is
-     * stored exactly as supplied.</p>
-     *
      * @param cvvCode the verification value; at most 3 characters, not {@code null}
-     * @throws IllegalArgumentException if {@code cvvCode} is {@code null} or longer than 3
-     *                                  characters
+     * @throws IllegalArgumentException if {@code cvvCode} is {@code null} or longer than 3 characters
      */
     public void setCvvCode(String cvvCode) {
         this.cvvCode = checkWidth(cvvCode, "cvvCode", "CARD-CVV-CD", CVV_CODE_WIDTH);
@@ -555,10 +488,6 @@ public class Card {
 
     /**
      * Returns the embossed name, {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}.
-     *
-     * <p>Read from a {@code CHAR(50)} column, the value is blank-padded to the full 50 characters,
-     * reproducing the fixed-width record image. Callers are reminded that this is personal data
-     * and is excluded from {@link #toString()} by design.</p>
      *
      * @return the embossed name, never {@code null} on a persisted instance
      */
@@ -570,8 +499,7 @@ public class Card {
      * Replaces the embossed name, {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}.
      *
      * @param embossedName the embossed name; at most 50 characters, not {@code null}
-     * @throws IllegalArgumentException if {@code embossedName} is {@code null} or longer than 50
-     *                                  characters
+     * @throws IllegalArgumentException if {@code embossedName} is {@code null} or longer than 50 characters
      */
     public void setEmbossedName(String embossedName) {
         this.embossedName =
@@ -580,9 +508,6 @@ public class Card {
 
     /**
      * Returns the expiry date as text, {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}.
-     *
-     * <p>The name carries the copybook's own misspelling by design; see the field documentation.
-     * The value is not parsed here and may be blank or legacy-invalid.</p>
      *
      * @return the 10-character expiry date text, never {@code null} on a persisted instance
      */
@@ -593,12 +518,8 @@ public class Card {
     /**
      * Replaces the expiry date text, {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}.
      *
-     * <p>No date parsing or format validation is performed, so blank and legacy-invalid values are
-     * accepted exactly as the legacy file holds them.</p>
-     *
      * @param expiraionDate the expiry date text; at most 10 characters, not {@code null}
-     * @throws IllegalArgumentException if {@code expiraionDate} is {@code null} or longer than 10
-     *                                  characters
+     * @throws IllegalArgumentException if {@code expiraionDate} is {@code null} or longer than 10 characters
      */
     public void setExpiraionDate(String expiraionDate) {
         this.expiraionDate = checkWidth(expiraionDate,
@@ -620,8 +541,7 @@ public class Card {
      * Replaces the active status flag, {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)}.
      *
      * @param activeStatus the status flag; at most 1 character, not {@code null}
-     * @throws IllegalArgumentException if {@code activeStatus} is {@code null} or longer than 1
-     *                                  character
+     * @throws IllegalArgumentException if {@code activeStatus} is {@code null} or longer than 1 character
      */
     public void setActiveStatus(String activeStatus) {
         this.activeStatus =
@@ -640,12 +560,6 @@ public class Card {
     /**
      * Replaces the optimistic locking version.
      *
-     * <p>{@code null} is accepted here, unlike the mapped data columns, because a transient
-     * instance legitimately has no version yet and because reattaching a detached instance
-     * sometimes requires restoring the value the caller holds. The persistence provider normally
-     * owns this field and writes it reflectively; setting it by hand overrides the store-level
-     * concurrency guard, so callers should have a specific reason to do so.</p>
-     *
      * @param version the version to carry, or {@code null} for a transient instance
      */
     public void setVersion(Long version) {
@@ -654,13 +568,6 @@ public class Card {
 
     /**
      * Compares two cards by primary key only.
-     *
-     * <p>{@code cardNumber} is the whole identity of the row, which is why no other property takes
-     * part: two instances describing the same card must compare equal even if one of them has
-     * unsaved edits, and comparing mutable business fields would break the contract with
-     * {@link #hashCode()} as soon as one of them changed. The test is {@code instanceof} rather
-     * than an exact class comparison so that a lazily initialised provider proxy still compares
-     * equal to the instance it stands for.</p>
      *
      * @param other the object to compare against, possibly {@code null}
      * @return {@code true} if {@code other} is a card with the same card number
@@ -679,11 +586,6 @@ public class Card {
     /**
      * Returns a hash derived from the primary key only, consistently with {@link #equals(Object)}.
      *
-     * <p>Because {@link #Card(String, Long, String, String, String, String)} rejects a
-     * {@code null} card number, any instance created through the public constructor has a stable
-     * hash for its whole lifetime. An instance created reflectively by the persistence provider is
-     * populated before it becomes reachable by application code.</p>
-     *
      * @return the hash of the card number
      */
     @Override
@@ -694,50 +596,53 @@ public class Card {
     /**
      * Returns a diagnostic rendering that deliberately discloses no sensitive value.
      *
-     * <p><b>This method must never be widened.</b> It renders only {@code accountId},
-     * {@code activeStatus}, {@code expiraionDate} and {@code version}. The card number, the card
-     * verification value and the embossed name are all excluded: the first two are payment
-     * credentials and the third is personal data, and {@code toString()} is the single most likely
-     * route by which an entity leaks into a log line, an exception message or a stack trace.
-     * Masking rules in {@code logback-spring.xml} are a backstop; never emitting the value in the
-     * first place is the primary defence. For the same reason this class provides no alternative
-     * rendering method and no partial-display or masking helper - presentation-layer masking
-     * belongs to the DTO layer.</p>
+     * <p><b>This method must never be widened.</b> It renders only {@code accountId} and
+     * {@code version}. The card number, the card verification value and the embossed name were
+     * already excluded, the first two as payment credentials and the third as personal data, and
+     * {@code expiraionDate} and {@code activeStatus} are now excluded as well.</p>
+     *
+     * <p>The expiry date was removed because it is cardholder data in its own right: paired with a
+     * card number it completes the data set a card-not-present transaction needs, so a log estate
+     * that holds expiry dates is one compromise away from being useful to an attacker who obtains
+     * numbers elsewhere. Its correlation value here is nil, since it identifies no row. The active
+     * status was removed under the same least-privilege reasoning that governs the rest of this
+     * package: it is account state that a reader should obtain from the row, where the access is
+     * authorised and audited, rather than recover from a log line.</p>
+     *
+     * <p>{@code toString()} is the single most likely route by which an entity leaks into a log
+     * line, an exception message or a stack trace, because it is invoked implicitly - by string
+     * concatenation, by a logging placeholder, by a debugger and by an APM agent capturing local
+     * variables - on paths no reviewer sees. Masking rules in {@code logback-spring.xml} are a
+     * backstop; never emitting the value in the first place is the primary defence. For the same
+     * reason this class provides no alternative rendering method and no partial-display or masking
+     * helper - presentation-layer masking belongs to the DTO layer.</p>
+     *
+     * <p>What remains is the minimum that makes a log line useful. {@code accountId} is a surrogate
+     * key with no payment or personal content, and it is the only identifier on this entity that can
+     * be rendered at all: the primary key is the card number, which is precisely the value that must
+     * never appear. A reader who needs to know which card is therefore directed to the account and
+     * to the row, which is the correct place for that lookup to be authorised.</p>
      *
      * <p>The rendering uses plain concatenation rather than a formatter, so it depends on no
      * default locale and is byte-identical on every machine.</p>
      *
-     * @return a rendering safe to place in a log record
+     * @return a rendering safe to place in a log record, never containing a card number, a card
+     *         verification value, an embossed name or an expiry date
      */
     @Override
     public String toString() {
-        return "Card{accountId=" + accountId
-                + ", activeStatus=" + activeStatus
-                + ", expiraionDate=" + expiraionDate
-                + ", version=" + version
-                + "}";
+        return "Card{accountId=" + accountId + ", version=" + version + "}";
     }
 
     /**
      * Validates one fixed-width text column and returns the value unchanged.
      *
-     * <p>Rejects {@code null}, because every column on this table is {@code NOT NULL}, and rejects
-     * a value wider than the column, because the record is fixed width and the database would
-     * otherwise fail the insert with a message that names neither the COBOL field nor the Java
-     * property. Shorter values, blank included, are accepted unchanged: blank is legitimate in a
-     * fixed-width record, and no trimming, padding, case folding or format check is applied, so
-     * the value round-trips byte for byte.</p>
-     *
-     * <p>Declared {@code private static} so that the constructor can call it without invoking an
-     * overridable method, which would otherwise publish a partially initialised instance.</p>
-     *
-     * @param value      the candidate value
-     * @param property   the Java property name, used in the failure message
+     * @param value the candidate value
+     * @param property the Java property name, used in the failure message
      * @param cobolField the originating COBOL field name, used in the failure message
-     * @param width      the column width in characters
+     * @param width the column width in characters
      * @return {@code value}, unchanged
-     * @throws IllegalArgumentException if {@code value} is {@code null} or wider than
-     *                                  {@code width}
+     * @throws IllegalArgumentException if {@code value} is {@code null} or wider than {@code width}
      */
     private static String checkWidth(String value, String property, String cobolField, int width) {
         if (value == null) {
@@ -756,17 +661,9 @@ public class Card {
     /**
      * Validates the account identifier and returns it unchanged.
      *
-     * <p>Rejects {@code null} because the column is {@code NOT NULL}, and rejects any value
-     * outside 0 through 99999999999 inclusive, which is the range representable by the unsigned
-     * {@code PIC 9(11)} of {@code CARD-ACCT-ID} and equally by {@code NUMERIC(11)}. Catching it
-     * here names the property; letting it reach the database would not.</p>
-     *
-     * <p>Declared {@code private static} for the same reason as {@link #checkWidth}.</p>
-     *
      * @param value the candidate account identifier
      * @return {@code value}, unchanged
-     * @throws IllegalArgumentException if {@code value} is {@code null} or outside the
-     *                                  representable range
+     * @throws IllegalArgumentException if {@code value} is {@code null} or outside the representable range
      */
     private static Long checkAccountId(Long value) {
         if (value == null) {

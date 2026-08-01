@@ -87,11 +87,18 @@ services:
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
-      # Bucket / queue names created by the init hook.
-      CARDDEMO_BATCH_INPUT_BUCKET: ${CARDDEMO_BATCH_INPUT_BUCKET:-carddemo-batch-input}
-      CARDDEMO_BATCH_OUTPUT_BUCKET: ${CARDDEMO_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
-      CARDDEMO_STATEMENTS_BUCKET: ${CARDDEMO_STATEMENTS_BUCKET:-carddemo-statements}
-      CARDDEMO_REPORT_QUEUE: ${CARDDEMO_REPORT_QUEUE:-carddemo-report-jobs.fifo}
+      # Bucket, queue and topic names created by the init hook. Each
+      # name carries the service it addresses - CARDDEMO_S3_*,
+      # CARDDEMO_SQS_*, CARDDEMO_SNS_* - and is spelled identically in
+      # .env.example and in localstack-init/init-aws.sh, which reads
+      # them from the container environment. Every resource the hook
+      # provisions is forwarded here: a name left out would be settable
+      # in .env yet silently ignored by the hook.
+      CARDDEMO_S3_BATCH_INPUT_BUCKET: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:-carddemo-batch-input}
+      CARDDEMO_S3_BATCH_OUTPUT_BUCKET: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:-carddemo-batch-output}
+      CARDDEMO_S3_STATEMENTS_BUCKET: ${CARDDEMO_S3_STATEMENTS_BUCKET:-carddemo-statements}
+      CARDDEMO_SQS_REPORT_QUEUE: ${CARDDEMO_SQS_REPORT_QUEUE:-carddemo-report-jobs.fifo}
+      CARDDEMO_SNS_NOTIFICATION_TOPIC: ${CARDDEMO_SNS_NOTIFICATION_TOPIC:-carddemo-notifications}
     ports:
       - "${LOCALSTACK_PORT:-4566}:4566"
     volumes:

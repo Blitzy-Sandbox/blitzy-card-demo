@@ -25,6 +25,7 @@
  */
 package com.cardemo.service.menu;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -40,8 +41,8 @@ import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.enums.UserType;
 
 /**
- * The main menu of the CardDemo application: the Java replacement for CICS transaction {@code CM00} and
- * the program it fronts, {@code app/cbl/COMEN01C.cbl}.
+ * The main menu of the CardDemo application: the Java replacement for CICS transaction {@code CM00} and the
+ * program it fronts, {@code app/cbl/COMEN01C.cbl}.
  *
  * <p>Every legacy claim below cites a path and a line or line range in the frozen corpus, and all of
  * them are keyed to the traceability anchor commit
@@ -74,8 +75,10 @@ import com.cardemo.model.enums.UserType;
  * Java tree. This bean does not re-transcribe it; see section 6.</p>
  *
  * <p><strong>Side effects: none.</strong> No I/O, no persistence, no messaging, no HTTP, no mutation of
- * any injected or static state. The bean is immutable after construction and therefore thread safe. The
- * only observable effect other than the returned value is log output, at {@code DEBUG} level only.</p>
+ * any injected or static state. The bean is immutable after construction and therefore thread safe - its
+ * two fields are an unmodifiable option table and a {@link java.time.Clock}, both immutable, and the clock
+ * is read for the header furniture only. The only observable effect other than the returned value is log
+ * output, at {@code DEBUG} level only.</p>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -100,15 +103,25 @@ import com.cardemo.model.enums.UserType;
  * no queue and no cloud emulator, so it is exercised most cheaply by a plain constructor call in a unit
  * test - no Spring context required. Unit tests belong in {@code src/test/java/com/cardemo/unit/service}
  * and, because the two retained parity branches described in section 5 cannot fire against the frozen
- * table, they must use the package-private test seam {@link #MainMenuService(List)}.</p>
+ * table, they must use the package-private test seam {@link #MainMenuService(Clock, List)}. That seam is
+ * also how the header furniture is made assertable: it takes the {@link java.time.Clock} the header date
+ * and time are read from, so a test supplies a fixed clock rather than racing the wall clock.</p>
  *
  * <h2>3. Key configuration and defaults</h2>
  *
- * <p><strong>There is none.</strong> This bean reads no property, no environment variable, no profile
- * and no classpath resource. The option table is a compile-time constant, the option count is fixed at
- * ten by {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at {@code app/cpy/COMEN02Y.cpy:21}, and every
- * emitted literal is transcribed byte for byte from the source. Nothing here is tunable, so nothing
- * here can be misconfigured.</p>
+ * <p><strong>There is none.</strong> This bean reads no property, no profile and no classpath resource.
+ * The option table is a compile-time constant, the option count is fixed at ten by
+ * {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at {@code app/cpy/COMEN02Y.cpy:21}, and every emitted
+ * literal is transcribed byte for byte from the source. Nothing here is tunable, so nothing here can be
+ * misconfigured.</p>
+ *
+ * <p>There is exactly one environmental dependence, and it is required for parity rather than
+ * configurable: {@link #MainMenuService()} supplies {@link java.time.Clock#systemDefaultZone()}, whose
+ * zone comes from the process default, because {@code FUNCTION CURRENT-DATE} at
+ * {@code app/cbl/COMEN01C.cbl:214} returns <em>local</em> date and time. It affects only the header
+ * diagnostics of {@link #populateHeaderInfo()}, never a returned value or a persisted one. Change it for
+ * the process - by the platform time zone or {@code user.timezone} - not for this bean; there is no
+ * property here that overrides it.</p>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -148,6 +161,19 @@ import com.cardemo.model.enums.UserType;
  *     <td>{@code IllegalArgumentException} naming {@code menuOptions}</td>
  *     <td>Only reachable through the package-private test seam. The supplied table was null, held a null
  *         element, or held more entries than the ten {@code app/cpy/COMEN02Y.cpy:21} populates.</td>
+ *   </tr>
+ *   <tr>
+ *     <td>{@code IllegalArgumentException} with message {@code clock must not be null}</td>
+ *     <td>Only reachable through the package-private test seam, which requires an explicit clock. The
+ *         production constructor cannot raise it; it supplies
+ *         {@link java.time.Clock#systemDefaultZone()} itself.</td>
+ *   </tr>
+ *   <tr>
+ *     <td>A header diagnostic whose {@code date=} or {@code time=} differs from what a test expected</td>
+ *     <td>The test constructed the bean through {@link #MainMenuService()} and is therefore racing the
+ *         wall clock. Construct it through the seam with a fixed clock instead; the unit tier's
+ *         {@code FixedClockProvider} supplies one. A rendering that is off by whole hours instead is a
+ *         zone difference, not a clock defect - see section 3.</td>
  *   </tr>
  * </table>
  *
@@ -296,192 +322,139 @@ import com.cardemo.model.enums.UserType;
 public class MainMenuService {
 
     /**
-     * Structured logger for this bean. The legacy program had no instrumentation of any kind, so every
-     * log statement here is new capability rather than a translation; all of them use parameterised
-     * placeholders and none of them concatenates.
+     * Structured logger for this bean. Every statement uses parameterised placeholders rather than
+     * concatenation, so no option value is interpolated into a log line eagerly.
      */
     private static final Logger LOG = LoggerFactory.getLogger(MainMenuService.class);
 
     /**
      * {@code WS-PGMNAME PIC X(08) VALUE 'COMEN01C'} at {@code app/cbl/COMEN01C.cbl:36}.
-     *
-     * <p>The source moved it into the screen header at {@code :219} and into
-     * {@code CDEMO-FROM-PROGRAM} at {@code :148}. The header field is screen furniture and the COMMAREA
-     * field has no equivalent, so this constant is provenance and header diagnostics only: it is never
-     * stamped into a returned value.</p>
      */
     static final String PROGRAM_NAME = "COMEN01C";
 
     /**
      * {@code WS-TRANID PIC X(04) VALUE 'CM00'} at {@code app/cbl/COMEN01C.cbl:37}, the CICS transaction
      * identifier that {@code app/csd/CARDDEMO.CSD:399-400} binds to {@link #PROGRAM_NAME}.
-     *
-     * <p>The source moved it into the screen header at {@code :218}, into {@code CDEMO-FROM-TRANID} at
-     * {@code :147} and into {@code EXEC CICS RETURN TRANSID} at {@code :108}. Only the first has any
-     * counterpart, and that one is header diagnostics.</p>
      */
     static final String TRANSACTION_ID = "CM00";
 
     /**
      * {@code 'COSGN00C'}, the sign-on program the menu returns to.
-     *
-     * <p>The literal appears three times in the source: at {@code app/cbl/COMEN01C.cbl:83} when no
-     * COMMAREA was passed, at {@code :97} when the operator pressed PF3, and as the default of
-     * {@code RETURN-TO-SIGNON-SCREEN} at {@code :173}. Carried out as an inert route label; see
-     * {@link #returnToSignonScreen()}.</p>
      */
     static final String SIGN_ON_PROGRAM = "COSGN00C";
 
     /**
-     * The rejection text for an unusable option, byte exact from {@code app/cbl/COMEN01C.cbl:131}:
-     * thirty-seven characters, three trailing full stops and no trailing space.
-     *
-     * <p>Package-private so that a same-package unit test can assert the literal without duplicating
-     * it, which is what makes the byte-level assertion meaningful.</p>
+     * The rejection text for an unusable option, byte exact from {@code app/cbl/COMEN01C.cbl:131}: thirty-seven
+     * characters, three trailing full stops and no trailing space.
      */
     static final String INVALID_OPTION_MESSAGE = "Please enter a valid option number...";
 
     /**
      * The rejection text for an administrator-only option selected by a standard user, byte exact from
-     * {@code app/cbl/COMEN01C.cbl:140}: thirty-three characters, and <strong>the trailing space is
-     * inside the literal</strong>, after the three full stops. It is not trimmed.
+     * {@code app/cbl/COMEN01C.cbl:140}: thirty-three characters, and <strong>the trailing space is inside the
+     * literal</strong>, after the three full stops. It is not trimmed.
      */
     static final String ADMIN_ONLY_MESSAGE = "No access - Admin Only option... ";
 
     /**
      * The opening fragment of the placeholder notice, {@code 'This option '} at
-     * {@code app/cbl/COMEN01C.cbl:159}, transferred {@code DELIMITED BY SIZE}. Its trailing space is the
-     * only separator in the assembled message.
+     * {@code app/cbl/COMEN01C.cbl:159}, transferred {@code DELIMITED BY SIZE}. Its trailing space is the only
+     * separator in the assembled message.
      */
     static final String COMING_SOON_PREFIX = "This option ";
 
     /**
      * The closing fragment of the placeholder notice, {@code 'is coming soon ...'} at
-     * {@code app/cbl/COMEN01C.cbl:162}, transferred {@code DELIMITED BY SIZE}. It carries no leading
-     * space, which is why the assembled message has none; see {@link #truncateAtFirstSpace(String)}.
+     * {@code app/cbl/COMEN01C.cbl:162}, transferred {@code DELIMITED BY SIZE}. It carries no leading space,
+     * which is why the assembled message has none; see {@link #truncateAtFirstSpace(String)}.
      */
     static final String COMING_SOON_SUFFIX = "is coming soon ...";
 
     /**
-     * The literal {@code '. '} that separates the option number from its caption on a rendered menu
-     * line, transferred {@code DELIMITED BY SIZE} at {@code app/cbl/COMEN01C.cbl:244}. Two characters, a
-     * full stop and a space.
+     * The literal {@code '. '} that separates the option number from its caption on a rendered menu line,
+     * transferred {@code DELIMITED BY SIZE} at {@code app/cbl/COMEN01C.cbl:244}. Two characters, a full stop
+     * and a space.
      */
     static final String OPTION_NUMBER_SEPARATOR = ". ";
 
     /**
      * The five-character placeholder marker of the guard
-     * {@code IF CDEMO-MENU-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'} at
-     * {@code app/cbl/COMEN01C.cbl:146}. The comparison is on the first five bytes of the eight-byte
-     * program name, not on the whole name, and it is case sensitive.
+     * {@code IF CDEMO-MENU-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'} at {@code app/cbl/COMEN01C.cbl:146}. The
+     * comparison is on the first five bytes of the eight-byte program name, not on the whole name, and it is
+     * case sensitive.
      */
     static final String PLACEHOLDER_PROGRAM_PREFIX = "DUMMY";
 
     /**
      * The administrator-only gate byte, {@code 'A'}, from the test
-     * {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'} at {@code app/cbl/COMEN01C.cbl:137}. It is the
-     * same one-byte domain as {@code CDEMO-USRTYP-ADMIN VALUE 'A'} at {@code app/cpy/COCOM01Y.cpy:27},
-     * and the comparison is exact: no case folding occurs anywhere in the source or here.
+     * {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'} at {@code app/cbl/COMEN01C.cbl:137}. It is the same
+     * one-byte domain as {@code CDEMO-USRTYP-ADMIN VALUE 'A'} at {@code app/cpy/COCOM01Y.cpy:27}, and the
+     * comparison is exact: no case folding occurs anywhere in the source or here.
      */
     static final char ADMIN_ONLY_OPTION_CODE = 'A';
 
     /**
      * The declared width of the option input field, {@code OPTIONI PIC X(2)} at
-     * {@code app/cpy-bms/COMEN01.CPY:132}, which is also the width of {@code WS-OPTION-X PIC X(02) JUST
-     * RIGHT} at {@code app/cbl/COMEN01C.cbl:45} and of {@code WS-OPTION PIC 9(02)} at {@code :46}.
-     *
-     * <p>Two bytes is a hard ceiling in the source, because a 3270 field cannot deliver more characters
-     * than it declares. See {@link #processEnterKey(String, UserType)} for how an over-long value is
-     * treated.</p>
+     * {@code app/cpy-bms/COMEN01.CPY:132}, which is also the width of {@code WS-OPTION-X PIC X(02) JUST RIGHT}
+     * at {@code app/cbl/COMEN01C.cbl:45} and of {@code WS-OPTION PIC 9(02)} at {@code :46}.
      */
     static final int OPTION_INPUT_LENGTH = 2;
 
     /**
-     * The identifier reported as the offending input on every rejection this bean raises, chosen to
-     * match the source field name {@code OPTIONI} of {@code app/cpy-bms/COMEN01.CPY:132} in lower case.
-     *
-     * <p>It is a developer-chosen constant and never request data, which is what keeps rejected input
-     * out of logs.</p>
+     * The identifier reported as the offending input on every rejection this bean raises, chosen to match the
+     * source field name {@code OPTIONI} of {@code app/cpy-bms/COMEN01.CPY:132} in lower case.
      */
     private static final String OPTION_FIELD_NAME = "option";
 
     /**
-     * {@code CCDA-TITLE01 PIC X(40)} of {@code app/cpy/COTTL01Y.cpy:18-19}, moved into the screen header
-     * at {@code app/cbl/COMEN01C.cbl:216}. Carried at its declared forty-character width, leading and
-     * trailing padding included, because the padding is what centred it on the 3270 screen.
+     * {@code CCDA-TITLE01 PIC X(40)} of {@code app/cpy/COTTL01Y.cpy:18-19}, moved into the screen header at
+     * {@code app/cbl/COMEN01C.cbl:216}. Carried at its declared forty-character width, leading and trailing
+     * padding included, because the padding is what centred it on the 3270 screen.
      */
     private static final String SCREEN_TITLE_01 = "      AWS Mainframe Modernization       ";
 
     /**
-     * {@code CCDA-TITLE02 PIC X(40)} of {@code app/cpy/COTTL01Y.cpy:20-22}, moved into the screen header
-     * at {@code app/cbl/COMEN01C.cbl:217}.
-     *
-     * <p>The live literal is the one on line 22. Line 21 of that copybook is a comment line carrying the
-     * withdrawn variant {@code '  Credit Card Demo Application (CCDA)   '}, which is recorded here and
-     * used nowhere.</p>
+     * {@code CCDA-TITLE02 PIC X(40)} of {@code app/cpy/COTTL01Y.cpy:20-22}, moved into the screen header at
+     * {@code app/cbl/COMEN01C.cbl:217}.
      */
     private static final String SCREEN_TITLE_02 = "              CardDemo                  ";
 
     /**
-     * Renders the header date exactly as {@code WS-CURDATE-MM-DD-YY} does.
-     *
-     * <p>{@code app/cpy/CSDAT01Y.cpy} declares that group as {@code WS-CURDATE-MM PIC 9(02)}, a
-     * {@code FILLER PIC X(01) VALUE '/'}, {@code WS-CURDATE-DD PIC 9(02)}, a second
-     * {@code FILLER VALUE '/'} and {@code WS-CURDATE-YY PIC 9(02)} - eight bytes, which is exactly the
-     * width of {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY:36}. <strong>The separator is
-     * an oblique stroke, not a hyphen</strong>; {@code MM-DD-YY} is the COBOL data name, not the rendered
-     * form. The two-digit year reproduces {@code MOVE WS-CURDATE-YEAR(3:2)} at
-     * {@code app/cbl/COMEN01C.cbl:223}, since the reduced {@code yy} pattern yields the same two
-     * characters as positions three and four of the four-digit year.</p>
-     *
-     * <p>{@code Locale.ROOT} is passed so that the digits cannot vary with the platform default locale.
-     * {@code DateTimeFormatter} is immutable and thread safe, so holding it in a constant introduces no
-     * shared mutable state.</p>
+     * Renders the header date exactly as {@code WS-CURDATE-MM-DD-YY} does. {@code CURDATEI PIC X(8)} at
+     * {@code app/cpy-bms/COMEN01.CPY:36}.
      */
     private static final DateTimeFormatter HEADER_DATE_FORMAT =
             DateTimeFormatter.ofPattern("MM/dd/yy", Locale.ROOT);
 
     /**
-     * Renders the header time exactly as {@code WS-CURTIME-HH-MM-SS} does:
-     * {@code WS-CURTIME-HH PIC 9(02)}, {@code FILLER VALUE ':'}, {@code WS-CURTIME-MM PIC 9(02)},
-     * {@code FILLER VALUE ':'}, {@code WS-CURTIME-SS PIC 9(02)} in {@code app/cpy/CSDAT01Y.cpy} - eight
-     * bytes, matching {@code CURTIMEI PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY:54}.
-     *
-     * <p>The hour is twenty-four hour because {@code WS-CURTIME-HOURS} is taken straight from
-     * {@code FUNCTION CURRENT-DATE} with no meridiem field anywhere in the group. {@code Locale.ROOT} is
-     * passed for the same reason as on {@link #HEADER_DATE_FORMAT}.</p>
+     * Renders the header time exactly as {@code WS-CURTIME-HH-MM-SS} does: {@code WS-CURTIME-HH PIC 9(02)},
+     * {@code FILLER VALUE ':'}, {@code WS-CURTIME-MM PIC 9(02)}, {@code FILLER VALUE ':'},
+     * {@code WS-CURTIME-SS PIC 9(02)} in {@code app/cpy/CSDAT01Y.cpy} - eight bytes, matching
+     * {@code CURTIMEI PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY:54}.
      */
     private static final DateTimeFormatter HEADER_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);
 
     /**
-     * The ten main-menu options of {@code CDEMO-MENU-OPTIONS-DATA} at
-     * {@code app/cpy/COMEN02Y.cpy:25-84}, in copybook order, as the production table.
-     *
-     * <p><strong>Referenced, not re-transcribed.</strong> The single byte-exact transcription of that
-     * table in the Java tree is {@code MenuResponse.MAIN_MENU_OPTIONS}, whose ten entries carry the
-     * captions at their declared {@code CDEMO-MENU-OPT-NAME PIC X(35)} width with the blank padding of
-     * the {@code VALUE} literals intact, the eight-character program names of
-     * {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)}, and the gate byte of
-     * {@code CDEMO-MENU-OPT-USRTYPE PIC X(01)}. A second copy here would duplicate ten literals that
-     * Rule 1 Clause C forbids duplicating, and could drift from the first without any test noticing.
-     * Decision log entry: <em>single option-table transcription</em>.</p>
-     *
-     * <p>Exactly ten entries, never twelve. {@code CDEMO-MENU-OPT OCCURS 12 TIMES} at
-     * {@code app/cpy/COMEN02Y.cpy:88} redefines a populated area of ten 46-byte entries with a
-     * twelve-entry overlay, so subscripts 11 and 12 address unrelated {@code WORKING-STORAGE} and their
-     * contents are <strong>not available</strong>. The bound that matters is
-     * {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at {@code :21}, which is what both loops in the
-     * program compare against - {@code app/cbl/COMEN01C.cbl:128} and {@code :239}.</p>
-     *
-     * <p>Immutable, as are its elements, so it is a genuine constant rather than shared mutable state.
-     * Option 8 carries the live caption of {@code app/cpy/COMEN02Y.cpy:70}, {@code 'Transaction Add'},
-     * and not the commented-out {@code 'Transaction Add (Admin Only)       '} of the line above it;
-     * because the live entry's gate byte is {@code 'U'} like the other nine, <strong>no
-     * administrator-only restriction applies to it</strong>.</p>
+     * The ten main-menu options of {@code CDEMO-MENU-OPTIONS-DATA} at {@code app/cpy/COMEN02Y.cpy:25-84}, in
+     * copybook order, as the production table.
      */
     private static final List<MenuResponse.MainMenuOption> CANONICAL_MENU_OPTIONS =
             MenuResponse.MAIN_MENU_OPTIONS;
+
+    /**
+     * The clock the header furniture is read from, standing in for
+     * {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} at {@code app/cbl/COMEN01C.cbl:214}.
+     *
+     * <p>{@code FUNCTION CURRENT-DATE} returns the <em>local</em> date and time of the system the program
+     * runs on, so a clock in the system default zone is the parity-preserving default - see
+     * {@link #MainMenuService()}. It is held as an injected collaborator rather than read through a static
+     * {@code now()} call so that the dependence on the ambient zone is explicit at one place instead of
+     * implicit at the point of use, and so that the header rendering of {@link #populateHeaderInfo()} is
+     * deterministic under test. Immutable, never null, and never reassigned; a {@code Clock} is itself
+     * immutable and thread safe, so sharing this bean between request threads remains safe.</p>
+     */
+    private final Clock clock;
 
     /**
      * The option table this instance resolves selections against: the analogue of
@@ -495,34 +468,52 @@ public class MainMenuService {
     private final List<MenuResponse.MainMenuOption> menuOptions;
 
     /**
-     * Creates the bean over the ten canonical options of {@code app/cpy/COMEN02Y.cpy:25-84}.
+     * Creates the production bean: the ten canonical options of {@code app/cpy/COMEN02Y.cpy:25-84} and a
+     * clock in the system default zone.
      *
-     * <p>This is the constructor Spring uses. The bean has <strong>no collaborators</strong>: the source
-     * program performs no I/O - its complete {@code EXEC CICS} verb inventory is {@code RETURN},
-     * {@code XCTL}, {@code SEND} and {@code RECEIVE} - so there is no repository, no file-status mapper
-     * and no other service to inject. Because no constructor here is annotated for injection and a
-     * no-argument constructor exists, the container deterministically selects this one.</p>
+     * <p>This is the constructor Spring uses. It takes <strong>no argument</strong> because the bean has
+     * <strong>nothing to inject</strong>: the source program performs no I/O - its complete
+     * {@code EXEC CICS} verb inventory is {@code RETURN}, {@code XCTL}, {@code SEND} and {@code RECEIVE} -
+     * so there is no repository, no file-status mapper and no other service to contribute, and its option
+     * table is a compile-time constant rather than configuration. Because no constructor here is annotated
+     * for injection and a no-argument constructor exists, the container deterministically selects this
+     * one, and the bean can never fail to wire for want of a contributed dependency.</p>
+     *
+     * <p><strong>The one collaborator is defaulted here rather than contributed.</strong>
+     * {@link Clock#systemDefaultZone()} is chosen, not {@link Clock#systemUTC()}, because
+     * {@code FUNCTION CURRENT-DATE} at {@code app/cbl/COMEN01C.cbl:214} returns the local date and time of
+     * the system the program runs on. Reading it in any other zone would render a header the source could
+     * not have rendered, so the system default zone is the parity-preserving choice; deployments that need
+     * a different zone set it for the process rather than for this bean.</p>
      *
      * <p>Side effects: none. It performs no I/O and calls no overridable instance method, so no
      * partially initialised reference can escape.</p>
      */
     public MainMenuService() {
-        this.menuOptions = CANONICAL_MENU_OPTIONS;
+        this(Clock.systemDefaultZone(), CANONICAL_MENU_OPTIONS);
     }
 
     /**
-     * Test seam. Creates the bean over a caller-supplied option table.
+     * Test seam. Creates the bean over a caller-supplied clock and option table.
      *
-     * <p><strong>This constructor exists solely so that unit tests can cover the two parity branches the
-     * frozen table cannot reach, and production never uses it.</strong> It is package-private for that
-     * reason and is not dead code: all ten entries of {@code app/cpy/COMEN02Y.cpy:25-84} carry the gate
-     * byte {@code 'U'} and no program name in that table begins {@code DUMMY}, so the
-     * administrator-only rejection of {@code app/cbl/COMEN01C.cbl:136-143} and the placeholder notice of
-     * {@code :157-164} are unreachable against the canonical data. Both are real, reachable code that
-     * must keep working, Rule 1 Clause B forbids untracked dead code rather than tracked parity code,
-     * and no coverage exclusion is permitted - so a same-package test supplies a table containing an
-     * {@code 'A'}-gated entry and an entry whose program name begins {@code DUMMY}, and exercises them
-     * through this seam.</p>
+     * <p><strong>This constructor exists solely so that unit tests can reach what production cannot, and
+     * production never uses it.</strong> It is package-private for that reason and is not dead code:</p>
+     *
+     * <ul>
+     *   <li><strong>The two retained parity branches.</strong> All ten entries of
+     *       {@code app/cpy/COMEN02Y.cpy:25-84} carry the gate byte {@code 'U'} and no program name in that
+     *       table begins {@code DUMMY}, so the administrator-only rejection of
+     *       {@code app/cbl/COMEN01C.cbl:136-143} and the placeholder notice of {@code :157-164} are
+     *       unreachable against the canonical data. Both are real, reachable code that must keep working,
+     *       Rule 1 Clause B forbids untracked dead code rather than tracked parity code, and no coverage
+     *       exclusion is permitted - so a same-package test supplies a table containing an
+     *       {@code 'A'}-gated entry and an entry whose program name begins {@code DUMMY}, and exercises
+     *       them through this seam.</li>
+     *   <li><strong>A fixed clock,</strong> which makes the header furniture of
+     *       {@link #populateHeaderInfo()} assertable instead of varying with wall-clock time. The unit
+     *       tier's {@code FixedClockProvider} fixture supplies one; a moving clock would make the rendered
+     *       date and time unassertable and would cluster failures on second, day and month boundaries.</li>
+     * </ul>
      *
      * <p>Validation is deliberate and immediate, and every message names the offending argument. The
      * upper bound is the ten options {@code app/cpy/COMEN02Y.cpy:21} populates, which is also the bound
@@ -531,16 +522,23 @@ public class MainMenuService {
      * nothing, in which case every selection is rejected by the option validation.</p>
      *
      * <p>Side effects: none. The supplied list is copied, so a later mutation by the caller cannot reach
-     * this instance.</p>
+     * this instance. Nothing is logged and the clock is not read during construction.</p>
      *
+     * @param clock       the clock the header date and time are read from; must not be null. Production
+     *                    passes {@link Clock#systemDefaultZone()} through {@link #MainMenuService()},
+     *                    because {@code FUNCTION CURRENT-DATE} at {@code app/cbl/COMEN01C.cbl:214} reads
+     *                    local time; a test passes a fixed clock
      * @param menuOptions the option table to resolve selections against, in menu order; must not be
      *                    null, must not contain a null element, and must hold no more than the ten
      *                    entries {@code app/cpy/COMEN02Y.cpy:21} populates
-     * @throws IllegalArgumentException if {@code menuOptions} is null, contains a null element, or holds
-     *                                  more than ten entries
+     * @throws IllegalArgumentException if {@code clock} is null, or if {@code menuOptions} is null,
+     *                                  contains a null element, or holds more than ten entries
      */
-    MainMenuService(final List<MenuResponse.MainMenuOption> menuOptions) {
+    MainMenuService(final Clock clock, final List<MenuResponse.MainMenuOption> menuOptions) {
 
+        if (clock == null) {
+            throw new IllegalArgumentException("clock must not be null");
+        }
         if (menuOptions == null) {
             throw new IllegalArgumentException("menuOptions must not be null; supply an empty list to "
                     + "represent a menu offering no options");
@@ -567,6 +565,7 @@ public class MainMenuService {
             defensiveCopy.add(option);
         }
 
+        this.clock = clock;
         this.menuOptions = List.copyOf(defensiveCopy);
     }
 
@@ -584,17 +583,15 @@ public class MainMenuService {
      *
      * <p>Side effects: none. No I/O, no persistence, no messaging, no mutation of this bean or of any
      * static state. Repeated calls with the same argument return equal values, except that the header
-     * diagnostics logged at {@code DEBUG} level carry the current time.</p>
+     * diagnostics logged at {@code DEBUG} level carry the date and time read from the injected
+     * {@link Clock} - which is why that clock is a constructor argument rather than an ambient
+     * {@code now()} call, and why those diagnostics are reproducible under a fixed clock.</p>
      *
      * @param userType the signed-on user's class, resolved upstream from the role claim that replaces
-     *                 {@code CDEMO-USER-TYPE PIC X(01)} of {@code app/cpy/COCOM01Y.cpy:26}; must not be
-     *                 null
-     * @return the menu screen for {@code userType}: for {@code UserType.ADMIN} all ten options of
-     *         {@code app/cpy/COMEN02Y.cpy:25-84}, and for {@code UserType.USER} those ten less any entry
-     *         gated to administrators - which is also all ten against the frozen table, in which every
-     *         entry carries {@code 'U'}. Never null
-     * @throws IllegalArgumentException if {@code userType} is null, which means the caller reached this
-     *                                  bean without a resolved identity
+     * {@code CDEMO-USER-TYPE PIC X(01)} of {@code app/cpy/COCOM01Y.cpy:26}.
+     * @return the menu screen for {@code userType}.
+     * @throws IllegalArgumentException if {@code userType} is null, which means the caller reached this bean
+     * without a resolved identity
      */
     public MainMenuScreen getMainMenu(final UserType userType) {
 
@@ -608,36 +605,15 @@ public class MainMenuService {
     }
 
     /**
-     * Resolves the option an operator typed into either a navigation target or the legacy placeholder
-     * notice, and rejects an option that is unusable or forbidden.
+     * Resolves the option an operator typed into either a navigation target or the legacy placeholder notice,
+     * and rejects an option that is unusable or forbidden.
      *
-     * <p>Counterpart of the re-entry branch of {@code MAIN-PARA} at {@code app/cbl/COMEN01C.cbl:92-95},
-     * which performed {@code RECEIVE-MENU-SCREEN} and then, for the Enter key, {@code PROCESS-ENTER-KEY}.
-     * The two other branches of that {@code EVALUATE EIBAID} have no counterpart: PF3 at {@code :96-98}
-     * becomes the client navigating to {@link MainMenuScreen#signOnTarget()}, and the invalid-key branch
-     * at {@code :99-102} cannot occur because HTTP has no attention identifier.</p>
-     *
-     * <p><strong>Three outcomes, and only two of them are errors.</strong> The source paints the
-     * placeholder notice green - {@code MOVE DFHGREEN TO ERRMSGC} at {@code :158} - while the two
-     * rejections are painted as errors, which is the evidence that the notice is informational. So the
-     * notice is returned and the rejections are thrown.</p>
-     *
-     * <p>Side effects: none. No I/O, no persistence, no messaging, no state mutation. In particular the
-     * eight-character target program name is <strong>inert data</strong>: nothing here loads a class,
-     * looks up a bean by name, or executes a process.</p>
-     *
-     * @param optionInput the option exactly as received, which the source read into
-     *                    {@code OPTIONI PIC X(2)} of {@code app/cpy-bms/COMEN01.CPY:132}. May be null or
-     *                    blank, both of which normalise to the rejected value {@code "00"}; may carry
-     *                    leading or trailing spaces within the declared two-byte width
-     * @param userType    the signed-on user's class; must not be null
-     * @return the resolved selection: for a real target, the option and its route with an empty message;
-     *         for a placeholder target, the option with the byte-exact "coming soon" notice. Never null
-     * @throws ValidationException      with the byte-exact message of {@code app/cbl/COMEN01C.cbl:131}
-     *                                  when the option is non-numeric, greater than the option count,
-     *                                  zero, or too long for the two-byte field; and with the byte-exact
-     *                                  message of {@code :140} when a standard user selects an
-     *                                  administrator-only option
+     * @param optionInput the option exactly as received, which the source read into {@code OPTIONI PIC X(2)} of
+     * {@code app/cpy-bms/COMEN01.CPY:132}.
+     * @param userType the signed-on user's class.
+     * @return the resolved selection: for a real target, the option and its route with an empty message.
+     * @throws ValidationException with the byte-exact message of {@code app/cbl/COMEN01C.cbl:131} when the
+     * option is non-numeric, greater than the option count, zero, or too long for the two-byte field.
      * @throws IllegalArgumentException if {@code userType} is null
      */
     public MenuSelection selectOption(final String optionInput, final UserType userType) {
@@ -651,44 +627,13 @@ public class MainMenuService {
         return processEnterKey(receivedOption, resolvedUserType);
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // The seven paragraphs of app/cbl/COMEN01C.cbl, one private method each, never consolidated.
-    // ------------------------------------------------------------------------------------------------
-
     /**
-     * {@code MAIN-PARA} of {@code app/cbl/COMEN01C.cbl:75}, lines 75 to 110: establishes the request
-     * context that the rest of the transaction runs in.
-     *
-     * <p>Retained one to one. What the source does, statement by statement, and what each becomes:</p>
-     *
-     * <ul>
-     *   <li>{@code :77 SET ERR-FLG-OFF TO TRUE} and {@code :79-80 MOVE SPACES TO WS-MESSAGE / ERRMSGO OF
-     *       COMEN1AO}. {@code WS-ERR-FLG} at {@code :40-42} and {@code WS-MESSAGE} at {@code :38} are
-     *       {@code WORKING-STORAGE}, which survived between pseudo-conversational tasks and therefore
-     *       had to be reset on every entry. Their Java counterparts are method-local, so they are fresh
-     *       on every call and no reset statement is needed - the guarantee is stronger, not weaker.</li>
-     *   <li>{@code :82-84 IF EIBCALEN = 0 / MOVE 'COSGN00C' TO CDEMO-FROM-PROGRAM / PERFORM
-     *       RETURN-TO-SIGNON-SCREEN}. A zero COMMAREA length meant the transaction had been started with
-     *       no established context, and the source sent the terminal back to sign-on. The stateless
-     *       counterpart of "no established context" is an unresolved identity, which the security filter
-     *       chain rejects before this bean is reached; so reaching it with a null user type is a wiring
-     *       defect and {@link #requireResolvedUserType(UserType)} reports it as one. The route the
-     *       source would have taken is still published, on {@link MainMenuScreen#signOnTarget()}.</li>
-     *   <li>{@code :86 MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA}. No counterpart: the COMMAREA
-     *       of {@code app/cpy/COCOM01Y.cpy:19} is replaced by JWT claims, of which this bean receives
-     *       exactly one - the resolved user type.</li>
-     *   <li>{@code :87-104} the re-entry test and the {@code EVALUATE EIBAID} dispatch. Split across the
-     *       two public operations, as each of them documents; there is no attention identifier in
-     *       HTTP.</li>
-     *   <li>{@code :107-110 EXEC CICS RETURN TRANSID(WS-TRANID) COMMAREA(CARDDEMO-COMMAREA)}. No
-     *       counterpart: returning to the terminal with a next-transaction identifier and a saved
-     *       COMMAREA is the pseudo-conversational mechanism itself, and a stateless response replaces
-     *       it.</li>
-     * </ul>
+     * {@code MAIN-PARA} of {@code app/cbl/COMEN01C.cbl:75}, lines 75 to 110: establishes the request context
+     * that the rest of the transaction runs in.
      *
      * @param userType the user class supplied by the caller, which may be null
-     * @return the same value, once it is known to be resolved, so that callers use the validated
-     *         reference rather than the argument
+     * @return the same value, once it is known to be resolved, so that callers use the validated reference
+     * rather than the argument
      * @throws IllegalArgumentException if {@code userType} is null
      */
     private UserType mainPara(final UserType userType) {
@@ -702,8 +647,8 @@ public class MainMenuService {
     }
 
     /**
-     * {@code PROCESS-ENTER-KEY} of {@code app/cbl/COMEN01C.cbl:115}, lines 115 to 165: normalises the
-     * typed option, validates it, applies the eligibility gate, and resolves the selection.
+     * {@code PROCESS-ENTER-KEY} of {@code app/cbl/COMEN01C.cbl:115}, lines 115 to 165: normalises the typed
+     * option, validates it, applies the eligibility gate, and resolves the selection.
      *
      * <p><strong>Normalisation, {@code :117-124}.</strong> The source scans {@code OPTIONI} backwards
      * from its last byte for the last non-space, moves that prefix into
@@ -758,7 +703,7 @@ public class MainMenuService {
      * <p><strong>Retained although it cannot fire.</strong> All ten entries of
      * {@code app/cpy/COMEN02Y.cpy:25-84} carry {@code 'U'}, so no selection can satisfy the second
      * conjunct against the frozen table. The branch is nonetheless real, reachable code and is kept
-     * verbatim, with the test seam {@link #MainMenuService(List)} covering it. Decision log entry:
+     * verbatim, with the test seam {@link #MainMenuService(Clock, List)} covering it. Decision log entry:
      * <em>retained user-type gate</em>.</p>
      *
      * <p><strong>Dispatch and the placeholder guard, {@code :145-165}.</strong> {@code :145 IF NOT
@@ -837,8 +782,10 @@ public class MainMenuService {
         // thrown exception carries the same message to the caller.
         final int menuOptionCount = this.menuOptions.size();
         if (!numeric || selectedOptionNumber > menuOptionCount || selectedOptionNumber == 0) {
-            // The short-circuit that replaces the source's fall-through into the gate subscript; see the
-            // Medium-severity deviation documented on this method.
+            // Throwing here replaces the source's fall-through into the gate subscript at :136-137, which
+            // would subscript CDEMO-MENU-OPT-USRTYPE with the value that just failed. Java is memory safe,
+            // so that overread cannot be reproduced; both paths reach SEND-MENU-SCREEN, so the operator
+            // sees the same message either way.
             throw ValidationException.invalidField(OPTION_FIELD_NAME, INVALID_OPTION_MESSAGE);
         }
 
@@ -890,24 +837,6 @@ public class MainMenuService {
      * {@code RETURN-TO-SIGNON-SCREEN} of {@code app/cbl/COMEN01C.cbl:170}, lines 170 to 177: resolves the
      * program the menu hands control back to.
      *
-     * <p>Retained one to one. The source reads
-     * {@code IF CDEMO-TO-PROGRAM = LOW-VALUES OR SPACES / MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM / END-IF}
-     * at {@code :172-174}, then {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM)} at {@code :175-177}.</p>
-     *
-     * <p>Two parts have no counterpart, and the reason is the same for both.
-     * {@code CDEMO-TO-PROGRAM PIC X(08)} of {@code app/cpy/COCOM01Y.cpy:24} is routing state carried in
-     * the COMMAREA, which a stateless request does not have; so the test at {@code :172} is always
-     * satisfied and the default at {@code :173} always applies. The conditional therefore collapses to
-     * its default rather than being kept as a branch that could never take its other arm, which would be
-     * untracked dead code. Decision log entry: <em>sign-on route resolution</em>. And
-     * {@code EXEC CICS XCTL} has no counterpart at all: <strong>the client navigates</strong>. The
-     * resolved program name is published as inert data on {@link MainMenuScreen#signOnTarget()}, and
-     * nothing here loads a class or looks up a bean by that name.</p>
-     *
-     * <p>The same literal appears twice more in the source, at {@code :83} on the no-COMMAREA path and at
-     * {@code :97} on the PF3 path, both of which perform this paragraph; the single constant
-     * {@link #SIGN_ON_PROGRAM} stands for all three occurrences.</p>
-     *
      * @return {@code "COSGN00C"}, never null
      */
     private String returnToSignonScreen() {
@@ -915,36 +844,8 @@ public class MainMenuService {
     }
 
     /**
-     * {@code SEND-MENU-SCREEN} of {@code app/cbl/COMEN01C.cbl:182}, lines 182 to 194: composes the menu
-     * the operator sees.
-     *
-     * <p>Retained one to one, and in the source's own order:
-     * {@code PERFORM POPULATE-HEADER-INFO} at {@code :184}, {@code PERFORM BUILD-MENU-OPTIONS} at
-     * {@code :185}, {@code MOVE WS-MESSAGE TO ERRMSGO OF COMEN1AO} at {@code :187}, then
-     * {@code EXEC CICS SEND MAP('COMEN1A') MAPSET('COMEN01') FROM(COMEN1AO) ERASE} at
-     * {@code :189-194}.</p>
-     *
-     * <p>The {@code SEND} has no counterpart: no map is transmitted and no screen is erased. A controller
-     * serialises the returned {@link MainMenuScreen} instead. Neither does {@code :187} carry one on this
-     * path: {@code WS-MESSAGE} was cleared at {@code :79} before the send, and the three message-bearing
-     * outcomes of the transaction are carried elsewhere - two on the thrown
-     * {@code ValidationException} and one on {@link MenuSelection#message()} - so
-     * {@link MainMenuScreen} deliberately has no message component to leave permanently empty.</p>
-     *
-     * <p><strong>Deviation, severity Medium - the displayed list is filtered.</strong>
-     * {@code BUILD-MENU-OPTIONS} at {@code :238-239} loops to {@code CDEMO-MENU-OPT-COUNT} with no
-     * eligibility test, so the legacy screen showed a standard user an administrator-only option and
-     * refused it only when it was selected. Rule 1 Clause D requires least privilege, so an entry gated
-     * to administrators is withheld from a standard user here as well as refused on selection.
-     * <strong>Against the frozen table this changes nothing</strong>: every one of the ten entries of
-     * {@code app/cpy/COMEN02Y.cpy:25-84} carries {@code 'U'}, so nothing is ever withheld and the rendered
-     * lines are byte identical to the legacy screen. The selection gate at {@code :136-137} is retained
-     * unchanged and still evaluates against the whole table, so withholding an option never turns a
-     * refusal into a silent success. Decision log entry: <em>menu display filter</em>.</p>
-     *
-     * <p>Withholding an option cannot renumber the rest, because {@code :243} renders
-     * {@code CDEMO-MENU-OPT-NUM(WS-IDX)} - the number stored in the table entry - and never the loop
-     * index.</p>
+     * {@code SEND-MENU-SCREEN} of {@code app/cbl/COMEN01C.cbl:182}, lines 182 to 194: composes the menu the
+     * operator sees.
      *
      * @param userType the resolved user class, never null
      * @return the composed screen, never null
@@ -972,28 +873,11 @@ public class MainMenuService {
     }
 
     /**
-     * {@code RECEIVE-MENU-SCREEN} of {@code app/cbl/COMEN01C.cbl:199}, lines 199 to 207: takes the option
-     * the operator typed.
-     *
-     * <p>Retained one to one. The source is a single statement,
-     * {@code EXEC CICS RECEIVE MAP('COMEN1A') MAPSET('COMEN01') INTO(COMEN1AI) RESP(WS-RESP-CD)
-     * RESP2(WS-REAS-CD)} at {@code :201-207}. In the Java target the request has already been bound
-     * before this bean is entered, so what remains of the paragraph is the one thing the map guaranteed:
-     * the input field always exists. {@code OPTIONI PIC X(2)} of {@code app/cpy-bms/COMEN01.CPY:132} is
-     * part of the terminal input area and holds spaces when the operator types nothing, so an absent
-     * value is spaces and never absent. A null argument is therefore mapped to the empty string, which
-     * the normalisation in {@link #processEnterKey(String, UserType)} then space fills to the declared
-     * two-byte width. That is what makes it impossible for a null option to raise a
-     * {@code NullPointerException} anywhere downstream.</p>
-     *
-     * <p><strong>An absent guard, preserved.</strong> The response codes are captured into
-     * {@code WS-RESP-CD} and {@code WS-REAS-CD}, declared at {@code :43-44}, and <strong>nothing anywhere
-     * in the program ever tests either of them</strong>: the {@code RECEIVE} is completely unguarded. No
-     * guard is added here, because adding one would introduce a rejection the source does not have.
-     * Decision log entry: <em>unguarded RECEIVE</em>.</p>
+     * {@code RECEIVE-MENU-SCREEN} of {@code app/cbl/COMEN01C.cbl:199}, lines 199 to 207: takes the option the
+     * operator typed.
      *
      * @param optionInput the option exactly as received, which may be null
-     * @return the option as the terminal input area would have held it: never null, possibly empty
+     * @return the option as the terminal input area would have held it.
      */
     private String receiveMenuScreen(final String optionInput) {
         return optionInput == null ? "" : optionInput;
@@ -1025,18 +909,29 @@ public class MainMenuService {
      * <p>The rendered date and time are byte exact. The separators are an oblique stroke and a colon, as
      * the {@code FILLER} items of {@code app/cpy/CSDAT01Y.cpy} declare - {@code MM-DD-YY} and
      * {@code HH-MM-SS} are the COBOL data names, not the rendered forms - and each renders to the eight
-     * characters its screen field declares. The clock is the system clock, which is exactly what
-     * {@code FUNCTION CURRENT-DATE} reads; the two formatters pass {@code Locale.ROOT} so that neither
+     * characters its screen field declares. The two formatters pass {@code Locale.ROOT} so that neither
      * the digits nor the separators can vary with the platform default locale.</p>
+     *
+     * <p><strong>The time source is the injected {@link Clock}, never an ambient {@code now()}.</strong>
+     * {@code FUNCTION CURRENT-DATE} at {@code :214} reads the local date and time of the system the program
+     * runs on, so production supplies {@link Clock#systemDefaultZone()} and the rendering is byte for byte
+     * what the source would have produced. Taking the clock as a collaborator rather than calling
+     * {@code LocalDateTime.now()} is what makes this paragraph deterministic: a test drives it from a fixed
+     * clock and asserts the eight rendered characters of each field, which is impossible against the wall
+     * clock and would otherwise fail intermittently on second, day and month boundaries. It also puts the
+     * dependence on the ambient zone in one declared place - the field - instead of leaving it implicit
+     * here. Rule 1 Clause A, determinism and measurable behaviour.</p>
      *
      * <p>Side effects: log output only. Nothing is stored and nothing is returned.</p>
      */
     private void populateHeaderInfo() {
 
-        // :214 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA. One reading of the clock feeds both fields,
-        // exactly as the single intrinsic call fed both groups, so the date and the time can never
-        // straddle midnight relative to one another.
-        final LocalDateTime headerTimestamp = LocalDateTime.now();
+        // :214 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA. One reading of the injected clock feeds both
+        // fields, exactly as the single intrinsic call fed both groups, so the date and the time can never
+        // straddle midnight relative to one another. Read through this.clock rather than LocalDateTime.now()
+        // so the rendering is deterministic under test; the clock's zone carries the local-time semantics
+        // of FUNCTION CURRENT-DATE.
+        final LocalDateTime headerTimestamp = LocalDateTime.now(this.clock);
 
         // :221-225 WS-CURDATE-MM-DD-YY and :227-231 WS-CURTIME-HH-MM-SS. Formatted unconditionally rather
         // than behind an isDebugEnabled test: two formatter calls are negligible beside an HTTP round
@@ -1051,43 +946,11 @@ public class MainMenuService {
     }
 
     /**
-     * {@code BUILD-MENU-OPTIONS} of {@code app/cbl/COMEN01C.cbl:236}, lines 236 to 277: renders one
-     * display line per option.
+     * {@code BUILD-MENU-OPTIONS} of {@code app/cbl/COMEN01C.cbl:236}, lines 236 to 277: renders one display
+     * line per option.
      *
-     * <p>Retained one to one. The source loops
-     * {@code PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL WS-IDX &gt; CDEMO-MENU-OPT-COUNT} at
-     * {@code :238-239}, blanks {@code WS-MENU-OPT-TXT PIC X(40)} at {@code :241}, and assembles the line
-     * at {@code :243-246} from {@code CDEMO-MENU-OPT-NUM(WS-IDX)}, the literal {@code '. '} and
-     * {@code CDEMO-MENU-OPT-NAME(WS-IDX)} - <strong>all three {@code DELIMITED BY SIZE}</strong>.</p>
-     *
-     * <p>So the caption is transferred <strong>whole</strong> here, at its full
-     * {@code PIC X(35)} width, padding included: two digits plus two characters plus thirty-five is
-     * thirty-nine, laid into the forty-byte buffer whose fortieth byte the blanking at {@code :241}
-     * leaves as a space. Option one renders as {@code 01. Account View} followed by the caption's own
-     * padding, and note the leading zero - the number field is {@code PIC 9(02)}, so it is zero padded
-     * and never {@code 1.} - while option ten renders as {@code 10. Bill Payment}. This is the deliberate
-     * counterpart of {@code :161}, where the very same caption field is transferred
-     * {@code DELIMITED BY SPACE} and truncated; neither behaviour is generalised to the other site.
-     * Decision log entry: <em>DELIMITED BY SPACE versus SIZE</em>.</p>
-     *
-     * <p>The loop bound is the option count, never the {@code OCCURS 12} capacity of
-     * {@code app/cpy/COMEN02Y.cpy:88}. Here the bound is the size of the list supplied, which is the
-     * count for an ungated request and fewer only when {@link #sendMenuScreen(UserType)} withheld an
-     * entry.</p>
-     *
-     * <p>The {@code EVALUATE WS-IDX} at {@code :248-275}, which moved each assembled line into one of
-     * the twelve screen slots {@code OPTN001O} through {@code OPTN012O}, has <strong>no
-     * counterpart</strong>: the BMS layer is consumed as a field contract and is not reimplemented as a
-     * user interface, so there are no numbered slots to move anything into and the lines are returned as
-     * an ordered list instead. Its {@code WHEN 11} and {@code WHEN 12} arms, and its
-     * {@code WHEN OTHER CONTINUE} arm, therefore have nothing to translate - they are not claimed to have
-     * been translated - and the ten screen slot widths of {@code OPTN001I} through {@code OPTN010I},
-     * {@code PIC X(40)} at {@code app/cpy-bms/COMEN01.CPY:60} onwards, survive as the width of each
-     * returned line.</p>
-     *
-     * @param options the options to render, in menu order; never null and never holding a null element
-     * @return one line per option, each exactly forty characters wide, in the order supplied; immutable
-     *         and never null
+     * @param options the options to render, in menu order.
+     * @return one line per option, each exactly forty characters wide, in the order supplied.
      */
     private List<String> buildMenuOptions(final List<MenuResponse.MainMenuOption> options) {
 
@@ -1123,21 +986,10 @@ public class MainMenuService {
         return List.copyOf(optionLines);
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // Helpers. None of these is a paragraph counterpart; the seven-to-seven map in the class
-    // documentation is complete without them.
-    // ------------------------------------------------------------------------------------------------
-
     /**
-     * Rejects an unresolved identity. <strong>Not a paragraph counterpart</strong>: it is the Java
-     * expression of the precondition that {@code IF EIBCALEN = 0} at {@code app/cbl/COMEN01C.cbl:82}
-     * tested, extracted so that both public operations state it once and identically.
-     *
-     * <p>An {@code IllegalArgumentException} rather than a {@code ValidationException} because this is not
-     * operator input: the user class is resolved upstream from a JWT role claim, so a null here means the
-     * caller is mis-wired. That matches the convention the surrounding tree already uses - the option
-     * payload type reports its own null arguments the same way, and the
-     * {@code com.cardemo.exception} hierarchy is reserved for domain outcomes.</p>
+     * Rejects an unresolved identity. <strong>Not a paragraph counterpart</strong>: it is the Java expression
+     * of the precondition that {@code IF EIBCALEN = 0} at {@code app/cbl/COMEN01C.cbl:82} tested, extracted so
+     * that both public operations state it once and identically.
      *
      * @param userType the value to check, which may be null
      * @throws IllegalArgumentException if {@code userType} is null
@@ -1151,15 +1003,11 @@ public class MainMenuService {
     }
 
     /**
-     * Reports whether an option is gated to administrators. <strong>Not a paragraph counterpart</strong>:
-     * it is the second conjunct of {@code app/cbl/COMEN01C.cbl:137},
-     * {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'}, named once so that the selection gate and the
-     * display filter can never drift apart.
+     * Reports whether an option is gated to administrators. <strong>Not a paragraph counterpart</strong>: it is
+     * the second conjunct of {@code app/cbl/COMEN01C.cbl:137}, {@code CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'},
+     * named once so that the selection gate and the display filter can never drift apart.
      *
-     * <p>The comparison is on the exact byte. No case folding is performed, because the source performs
-     * none: accepting {@code 'a'} would gate an option the source would have let through.</p>
-     *
-     * @param option the option whose gate byte is to be tested; never null
+     * @param option the option whose gate byte is to be tested.
      * @return true when the option's gate byte is exactly {@code 'A'}
      */
     private static boolean isAdminOnlyOption(final MenuResponse.MainMenuOption option) {
@@ -1167,27 +1015,11 @@ public class MainMenuService {
     }
 
     /**
-     * Reports whether a normalised option is two decimal digits. <strong>Not a paragraph
-     * counterpart</strong>: it is the {@code WS-OPTION IS NOT NUMERIC} test of
-     * {@code app/cbl/COMEN01C.cbl:127}, expressed positively.
+     * Reports whether a normalised option is two decimal digits. <strong>Not a paragraph counterpart</strong>:
+     * it is the {@code WS-OPTION IS NOT NUMERIC} test of {@code app/cbl/COMEN01C.cbl:127}, expressed
+     * positively.
      *
-     * <p>{@code WS-OPTION} is {@code PIC 9(02)} at {@code :46}. Moving a non-digit byte into a numeric
-     * display item leaves the byte in place, and the class test is what detects it; after the
-     * {@code INSPECT} at {@code :123} has turned every space into {@code '0'}, the only way to fail is a
-     * character that is neither a space nor a digit - a sign, a letter, a stroke. Only the ASCII digits
-     * count, so a digit from another numeral system is correctly rejected rather than parsed.</p>
-     *
-     * <p>The length guard makes this a total function over any string rather than a partial one over the
-     * normalised field. Its sole production caller cannot trip it, because the normalisation immediately
-     * above it always yields exactly two characters, so the guard is defensive completeness and not a
-     * parity branch of the source; it is what keeps the answer correct if this predicate is ever asked
-     * about something else. It is therefore the one line in this file that no caller can currently
-     * reach, and it is recorded rather than deleted: without it an empty argument would answer
-     * {@code true} and the parse that follows would fail instead of the option being rejected. Rule 1
-     * Clause B forbids <em>untracked</em> unreachable code, so this is tracked - decision log entry:
-     * <em>numeric predicate length guard</em>, severity Low.</p>
-     *
-     * @param normalisedOption the two-character normalised option; never null
+     * @param normalisedOption the two-character normalised option.
      * @return true when every character is an ASCII digit and the length is exactly two
      */
     private static boolean isTwoDigitNumber(final String normalisedOption) {
@@ -1205,24 +1037,12 @@ public class MainMenuService {
     }
 
     /**
-     * Truncates a caption at its first space, reproducing COBOL {@code DELIMITED BY SPACE}.
-     * <strong>Not a paragraph counterpart</strong>: it is the middle transfer of the {@code STRING}
-     * statement at {@code app/cbl/COMEN01C.cbl:159-163}.
-     *
-     * <p>{@code DELIMITED BY SPACE} stops the transfer at the first occurrence of the delimiter and
-     * transfers nothing further, so a caption such as {@code 'Account View'} contributes only
-     * {@code Account} and the assembled notice reads {@code This option Accountis coming soon ...} - the
-     * single space before the caption comes from the trailing space inside
-     * {@link #COMING_SOON_PREFIX}, and there is no space at all before {@code is}, because
-     * {@link #COMING_SOON_SUFFIX} has no leading one. A caption beginning with a space contributes the
-     * empty string. A caption containing no space at all is transferred whole, which is what COBOL does
-     * when the delimiter is absent from the sending field.</p>
-     *
-     * <p>This is a pure function of its argument: no state, no side effect, cannot fail.</p>
+     * Truncates a caption at its first space, reproducing COBOL {@code DELIMITED BY SPACE}. <strong>Not a
+     * paragraph counterpart</strong>: it is the middle transfer of the {@code STRING} statement at
+     * {@code app/cbl/COMEN01C.cbl:159-163}.
      *
      * @param optionName the caption to truncate; never null
-     * @return the caption up to but excluding its first space, or the whole caption when it holds none;
-     *         never null, possibly empty
+     * @return the caption up to but excluding its first space, or the whole caption when it holds none.
      */
     private static String truncateAtFirstSpace(final String optionName) {
         final int firstSpace = optionName.indexOf(' ');
@@ -1230,19 +1050,11 @@ public class MainMenuService {
     }
 
     /**
-     * Space fills a caption to its declared width. <strong>Not a paragraph counterpart</strong>: it makes
-     * the {@code DELIMITED BY SIZE} transfer at {@code app/cbl/COMEN01C.cbl:245} exact for any caption.
-     *
-     * <p>{@code CDEMO-MENU-OPT-NAME} is {@code PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90}, and a
-     * {@code DELIMITED BY SIZE} transfer moves all thirty-five bytes whatever they contain. The ten
-     * canonical captions are already exactly that long, their {@code VALUE} literals being blank padded
-     * in the copybook, so for them this returns its argument unchanged. It exists so that a shorter
-     * caption still occupies the declared width, which is what a fixed-width field guarantees. A longer
-     * caption is returned unchanged and is then trimmed to the forty-byte slot by the caller, exactly as
-     * {@code STRING} stops when its receiving field is full.</p>
+     * Space fills a caption to its declared width. <strong>Not a paragraph counterpart</strong>: it makes the
+     * {@code DELIMITED BY SIZE} transfer at {@code app/cbl/COMEN01C.cbl:245} exact for any caption.
      *
      * @param optionName the caption to pad; never null
-     * @return the caption at no less than its declared thirty-five-character width; never null
+     * @return the caption at no less than its declared thirty-five-character width.
      */
     private static String padOptionName(final String optionName) {
 
@@ -1254,62 +1066,18 @@ public class MainMenuService {
         return padded.toString();
     }
 
-    // ------------------------------------------------------------------------------------------------
-    // The two values this bean publishes. Both are nested records, hence implicitly static and final,
-    // with final components: there is no mutable state anywhere in this file, static or otherwise.
-    // ------------------------------------------------------------------------------------------------
-
     /**
      * What {@code SEND-MENU-SCREEN} of {@code app/cbl/COMEN01C.cbl:182} composed, carried out as a value
      * instead of transmitted as a 3270 map.
      *
-     * <p>The source filled the {@code COMEN1AO} output map and issued
-     * {@code EXEC CICS SEND MAP('COMEN1A') MAPSET('COMEN01') FROM(COMEN1AO) ERASE} at {@code :189-194}.
-     * The BMS layer is not reimplemented - it is consumed as a field contract only - so this record
-     * carries the three parts of that map which survive the move to a stateless HTTP surface, and a
-     * controller serialises it.</p>
-     *
-     * <p>The parts of {@code COMEN1AO} that are deliberately <strong>absent</strong>, each because it has
-     * no counterpart rather than because it was overlooked:</p>
-     *
-     * <ul>
-     *   <li>the six header fields {@code TRNNAMEO}, {@code TITLE01O}, {@code CURDATEO},
-     *       {@code PGMNAMEO}, {@code TITLE02O} and {@code CURTIMEO}, declared at
-     *       {@code app/cpy-bms/COMEN01.CPY:24-54} and filled by {@code POPULATE-HEADER-INFO}. They are
-     *       screen furniture: a fixed application title, the transaction and program identifiers of the
-     *       running CICS task, and the clock. {@link #populateHeaderInfo()} records where each one goes
-     *       instead;</li>
-     *   <li>{@code ERRMSGO}, moved from {@code WS-MESSAGE} at {@code :187}. On every path that reaches
-     *       the send it is blank, because {@code :79} cleared it and the three message-bearing outcomes
-     *       are carried elsewhere - two on a thrown {@code ValidationException} and one on
-     *       {@link MenuSelection#message()}. A component that could only ever be empty would be
-     *       misleading, so there is none;</li>
-     *   <li>the twelve screen slots {@code OPTN001O} to {@code OPTN012O} as <em>slots</em>. Their
-     *       contents are here, in {@link #optionLabels()}; the fixed twelve-position addressing is not,
-     *       for the reason {@link #buildMenuOptions(java.util.List)} gives.</li>
-     * </ul>
-     *
-     * <p>Immutable and thread safe. Being a record it has value equality over its three components, its
-     * accessors are pure, and the canonical constructor copies the label list, so no caller can alter an
-     * instance after it is built. Side effects: none, on construction or on any accessor. No I/O, no
-     * persistence, no messaging.</p>
-     *
-     * @param menu         the options this user may select, in the copybook order of
-     *                     {@code app/cpy/COMEN02Y.cpy:25-84}, already reduced by the least-privilege
-     *                     filter of {@link #sendMenuScreen(UserType)}. Carries each option's number,
-     *                     caption, eight-character target program name and user-type byte, together with
-     *                     the count that is the analogue of {@code CDEMO-MENU-OPT-COUNT}. Never null,
-     *                     and never longer than the ten options that copybook populates
+     * @param menu the options this user may select, in the copybook order of
+     * {@code app/cpy/COMEN02Y.cpy:25-84}, already reduced by the least-privilege filter of
+     * {@link #sendMenuScreen(UserType)}.
      * @param optionLabels the rendered menu lines exactly as {@code BUILD-MENU-OPTIONS} composed them at
-     *                     {@code :242-246} - a zero-padded two-digit number, a full stop, a space, then
-     *                     the caption at its declared width - each padded to the forty characters of
-     *                     {@code OPTN001I PIC X(40)}. One entry per option of {@link #menu()}, in the
-     *                     same order. Unmodifiable; never null, never holding a null element
-     * @param signOnTarget the program the operator leaves the menu by, which
-     *                     {@code RETURN-TO-SIGNON-SCREEN} resolved at {@code :172-174} and reached
-     *                     through {@code EXEC CICS XCTL}. <strong>Inert data</strong>: it is a route
-     *                     label for the client to navigate by, and nothing in this bean loads a class,
-     *                     looks up a bean by name or starts a process from it. Never null or blank
+     * {@code :242-246} - a zero-padded two-digit number, a full stop, a space, then the caption at its declared
+     * width - each padded to the forty characters of {@code OPTN001I PIC X(40)}.
+     * @param signOnTarget the program the operator leaves the menu by, which {@code RETURN-TO-SIGNON-SCREEN}
+     * resolved at {@code :172-174} and reached through {@code EXEC CICS XCTL}.
      */
     public record MainMenuScreen(
             MenuResponse<MenuResponse.MainMenuOption> menu,
@@ -1317,22 +1085,15 @@ public class MainMenuService {
             String signOnTarget) {
 
         /**
-         * Validates the three parts, proves they agree with one another, and takes a defensive copy of
-         * the labels.
+         * Validates the three parts, proves they agree with one another, and takes a defensive copy of the
+         * labels.
          *
-         * <p>Every rejection below reports a programming error in the caller, not a rejected user input:
-         * the option payload and the labels are built from one list by
-         * {@link MainMenuService#sendMenuScreen(UserType)}, so they cannot disagree unless a future
-         * caller assembles an instance by hand. That is exactly why the agreement is asserted here -
-         * a screen whose labels did not match its options would render a menu no service composed.</p>
-         *
-         * @param menu         the option payload; must not be null
-         * @param optionLabels the rendered lines; must not be null, must hold no null element, and must
-         *                     hold exactly one entry per option of {@code menu}
+         * @param menu the option payload; must not be null
+         * @param optionLabels the rendered lines; must not be null, must hold no null element, and must hold
+         * exactly one entry per option of {@code menu}
          * @param signOnTarget the sign-on route label; must not be null or blank
-         * @throws IllegalArgumentException if any part is null, if a label is null, if the label count
-         *                                  differs from the option count, or if the sign-on target is
-         *                                  blank; the message names the offending part
+         * @throws IllegalArgumentException if any part is null, if a label is null, if the label count differs
+         * from the option count, or if the sign-on target is blank.
          */
         public MainMenuScreen {
 
@@ -1370,54 +1131,20 @@ public class MainMenuService {
     }
 
     /**
-     * The outcome of a selection that {@code PROCESS-ENTER-KEY} of {@code app/cbl/COMEN01C.cbl:115}
-     * accepted: which option was chosen, where it leads, and the notice the source displayed when it led
-     * nowhere yet.
+     * The outcome of a selection that {@code PROCESS-ENTER-KEY} of {@code app/cbl/COMEN01C.cbl:115} accepted:
+     * which option was chosen, where it leads, and the notice the source displayed when it led nowhere yet.
      *
-     * <p>The paragraph has three outcomes and only two of them are errors. Those two - the bounds
-     * rejection at {@code :127-134} and the administrator-only gate at {@code :136-143} - are thrown as
-     * {@code ValidationException}, so they never reach this record. The third, the placeholder notice
-     * assembled at {@code :157-163}, is returned on {@link #message()}, because {@code :158} paints it
-     * with {@code MOVE DFHGREEN TO ERRMSGC} where the other two are painted as errors. Colour is the
-     * source's own evidence that the notice is informational.</p>
-     *
-     * <p><strong>The two states, and the invariant that separates them.</strong> A selection is either a
-     * real navigation - {@link #placeholder()} false, {@link #message()} empty - or the placeholder
-     * notice, with {@link #placeholder()} true and a non-empty {@link #message()}. Never both, never
-     * neither, and the canonical constructor refuses any other combination. That refusal is deliberate:
-     * under CICS {@code EXEC CICS XCTL} at {@code :152-155} transferred control and never returned, so
-     * {@code :157-164} was unreachable whenever a real target resolved. A Java call returns, so the
-     * suppression has to be written out - {@link MainMenuService#processEnterKey(String, UserType)}
-     * returns before assembling the notice - and this invariant makes the highest-risk mistake in the
-     * translation, answering "coming soon" for every valid selection, structurally impossible rather than
-     * merely avoided. Decision log entry: <em>XCTL fall-through guard</em>.</p>
-     *
-     * <p>Immutable and thread safe. Being a record it has value equality over its five components and its
-     * accessors are pure. Side effects: none, on construction or on any accessor.</p>
-     *
-     * @param optionNumber  the selected option's own number, {@code CDEMO-MENU-OPT-NUM PIC 9(02)} of
-     *                      {@code app/cpy/COMEN02Y.cpy:89}, as stored in the table entry and not the
-     *                      subscript that reached it. Between 1 and 99: the source rejects
-     *                      {@code WS-OPTION = ZEROS} at {@code :133} and the field holds two digits
-     * @param optionName    the selected option's caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} of
-     *                      {@code app/cpy/COMEN02Y.cpy:90}, at its declared width. Never null
-     * @param targetProgram the eight-character program name held in
-     *                      {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} of {@code app/cpy/COMEN02Y.cpy:91},
-     *                      which {@code :153} passed to {@code EXEC CICS XCTL PROGRAM(...)}.
-     *                      <strong>Inert data</strong>: the client navigates by it, and nothing in this
-     *                      bean resolves it into code - no class loading, no reflection, no bean lookup
-     *                      by name, no process execution. Never null or blank
-     * @param placeholder   whether the target is one of the placeholders the source detected with
-     *                      {@code IF CDEMO-MENU-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'} at
-     *                      {@code :146}, comparing the first five characters only. Always false against
-     *                      the frozen table, in which all ten entries name a real program; the branch is
-     *                      retained because the comparison is real, reachable code. Decision log entry:
-     *                      <em>DUMMY guard always true</em>
-     * @param message       the placeholder notice of {@code :159-163} when {@code placeholder} is true,
-     *                      and the empty string when it is false. Byte-exact, including the
-     *                      {@code DELIMITED BY SPACE} truncation of the caption at its first space and
-     *                      the absence of any separator before {@code is} - option 1 yields
-     *                      {@code This option Accountis coming soon ...}. Never null
+     * @param optionNumber the selected option's own number, {@code CDEMO-MENU-OPT-NUM PIC 9(02)} of
+     * {@code app/cpy/COMEN02Y.cpy:89}, as stored in the table entry and not the subscript that reached it.
+     * @param optionName the selected option's caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} of
+     * {@code app/cpy/COMEN02Y.cpy:90}, at its declared width.
+     * @param targetProgram the eight-character program name held in {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} of
+     * {@code app/cpy/COMEN02Y.cpy:91}, which {@code :153} passed to {@code EXEC CICS XCTL PROGRAM(...)}.
+     * @param placeholder whether the target is one of the placeholders the source detected with
+     * {@code IF CDEMO-MENU-OPT-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'} at {@code :146}, comparing the first five
+     * characters only.
+     * @param message the placeholder notice of {@code :159-163} when {@code placeholder} is true, and the empty
+     * string when it is false.
      */
     public record MenuSelection(
             int optionNumber,
@@ -1429,20 +1156,14 @@ public class MainMenuService {
         /**
          * Validates the five parts and enforces the placeholder invariant.
          *
-         * <p>Every rejection below reports a programming error in the caller, not a rejected user input:
-         * the only production construction sites are the two returns of
-         * {@link MainMenuService#processEnterKey(String, UserType)}, both of which draw their values from
-         * a table entry the bounds check has already proved exists.</p>
-         *
-         * @param optionNumber  the option's stored number; must be between 1 and 99 inclusive
-         * @param optionName    the option's caption; must not be null
+         * @param optionNumber the option's stored number.
+         * @param optionName the option's caption; must not be null
          * @param targetProgram the target program name; must not be null or blank
-         * @param placeholder   whether the target is a {@code DUMMY} placeholder
-         * @param message       the placeholder notice; must not be null, must be empty when
-         *                      {@code placeholder} is false, and must be non-empty when it is true
-         * @throws IllegalArgumentException if the option number is out of range, if a reference part is
-         *                                  null, if the target program is blank, or if the message and the
-         *                                  placeholder flag disagree; the message names the offending part
+         * @param placeholder whether the target is a {@code DUMMY} placeholder
+         * @param message the placeholder notice; must not be null, must be empty when {@code placeholder} is
+         * false, and must be non-empty when it is true
+         * @throws IllegalArgumentException if the option number is out of range, if a reference part is null,
+         * if the target program is blank, or if the message and the placeholder flag disagree.
          */
         public MenuSelection {
 

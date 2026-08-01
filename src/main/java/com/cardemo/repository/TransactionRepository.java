@@ -37,7 +37,6 @@
  */
 package com.cardemo.repository;
 
-import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Pageable;
@@ -50,13 +49,16 @@ import org.springframework.stereotype.Repository;
 import com.cardemo.model.entity.Transaction;
 
 /**
- * Persistence access to the posted transaction master.
+ * Persistence access to the posted transaction master: the relational replacement for the VSAM access verbs
+ * issued against the keyed cluster {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}, known to the online region as
+ * CICS file {@code TRANSACT}.
  *
- * <h2>What it does</h2>
- * Replaces the VSAM access verbs issued against the keyed cluster
- * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} - {@code READ}, {@code WRITE}, {@code STARTBR},
- * {@code READNEXT}, {@code READPREV} and {@code ENDBR} - with a Spring Data JPA repository over
- * {@link Transaction}. Four access paths existed in the legacy corpus and all four are reproduced here:
+ * <p>Four legacy access paths are reproduced. The keyed read and the keyed write are inherited from
+ * {@code JpaRepository} as {@code findById} and {@code save} and are deliberately not redeclared. The
+ * descending maximum-key browse used for identifier generation is
+ * {@link #findFirstByOrderByTransactionIdDesc()}. The forward and backward online browse is served by the three
+ * {@code Slice}-returning methods, and the processing-date range scan standing in for the alternate index by
+ * {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)}.
  *
  * <ol>
  *   <li>a keyed read by transaction identifier, served by the inherited {@code findById};</li>
@@ -66,7 +68,11 @@ import com.cardemo.model.entity.Transaction;
  *   <li>a forward and backward browse of the keyed cluster, served by the three
  *       {@code Slice}-returning methods below, plus a processing-date range scan standing in for the
  *       alternate index, served by
- *       {@link #findByProcessingDateRangeOrderByCardNumberAsc(String, String)}.</li>
+ *       {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)}.
+ *       Its lower bound is <strong>inclusive</strong> and its upper bound <strong>exclusive</strong>, both
+ *       compared against the bare {@code procTs} property so the plain B-tree serves the predicate. The
+ *       source's inclusive end date is converted to that exclusive bound by the <em>calling service</em>,
+ *       not here: deriving it would be text manipulation, and this interface performs none.</li>
  * </ol>
  *
  * <p>Everything else stays out. This interface parses no text, generates no timestamp, performs no
@@ -130,9 +136,10 @@ import com.cardemo.model.entity.Transaction;
  * <p><strong>Remediation, applied here:</strong> this file cites <em>both</em>
  * {@code app/jcl/TRANFILE.jcl} and {@code app/jcl/TRANIDX.jcl} as the IDCAMS provisioning sources for
  * its alternate index, in the banner above and on
- * {@link #findByProcessingDateRangeOrderByCardNumberAsc(String, String)} below. Correspondingly the card
+ * {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)} below.
+ * Correspondingly the card
  * repository must cite {@code app/jcl/CARDFILE.jcl} and must <em>not</em> cite
- * {@code app/jcl/TRANIDX.jcl}. Recorded as Medium in {@code DECISION_LOG.md}.
+ * {@code app/jcl/TRANIDX.jcl}. Recorded as Medium in the planned {@code DECISION_LOG.md}.
  *
  * <h3>Medium - discrepancy #9: AXRKP is zero-based, DFSORT offsets are one-based</h3>
  * <strong>Severity Medium.</strong> The folder requirements mix zero-based {@code AXRKP} values with
@@ -148,7 +155,7 @@ import com.cardemo.model.entity.Transaction;
  * The two figures differ by exactly one because they count from different origins, and both are
  * consistent: {@code KEYLEN 26} at {@code :L3674} matches the width of {@code TRAN-PROC-TS} exactly, and
  * the DFSORT symbol {@code TRAN-PROC-DT,305,10,CH} at {@code app/proc/TRANREPT.prc:L40} uses one-based
- * numbering and lands on the same byte. Recorded as Medium in {@code DECISION_LOG.md}.
+ * numbering and lands on the same byte. Recorded as Medium in the planned {@code DECISION_LOG.md}.
  *
  * <p>The identification is unambiguous. Only two 26-byte fields exist in the record -
  * {@code TRAN-ORIG-TS} at bytes 279-304 and {@code TRAN-PROC-TS} at bytes 305-330, declared at
@@ -249,14 +256,14 @@ import com.cardemo.model.entity.Transaction;
  *
  * <h2>How to build, run and test</h2>
  * <pre>
- *   mvn -B clean compile   compiles this interface under -Xlint:all -Werror on Java 25
- *   mvn -B clean test      runs the unit tier
- *   mvn -B clean verify    adds the coverage floor and the dependency vulnerability scan
- *   docker compose up -d   brings up PostgreSQL 16 so Flyway and schema validation have a target
+ *   ./mvnw -B clean compile  compiles this interface under -Xlint:all -Werror on Java 25
+ *   ./mvnw -B clean test     runs the unit tier
+ *   ./mvnw -B clean verify   adds the coverage floor and the dependency vulnerability scan
+ *   docker compose up -d     brings up PostgreSQL 16 so Flyway and schema validation have a target
  * </pre>
  *
- * The integration tier for this interface lives in
- * {@code src/test/java/com/cardemo/integration/repository} and runs against a Testcontainers-managed
+ * The integration tier for this interface belongs in
+ * {@code src/test/java/com/cardemo/integration/repository} and is to run against a Testcontainers-managed
  * PostgreSQL 16. It must cover: an empty table yielding an empty top-one lookup and therefore a first
  * identifier of {@code 1}; a populated table yielding the true maximum key; a duplicate insert
  * surfacing as a duplicate-record failure; the lexical range finder returning <em>several</em> rows for
@@ -297,9 +304,24 @@ import com.cardemo.model.entity.Transaction;
  *   <li><em>The range finder returns nothing for a date that exists</em> - the bounds were passed as
  *       something other than ten-character text, or a temporal type was converted to a string in a
  *       different format. The comparison is lexical over the first ten characters; see
- *       {@link #findByProcessingDateRangeOrderByCardNumberAsc(String, String)}.</li>
+ *       {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)}.</li>
+ *   <li><em>The range finder excludes rows on the end date itself</em> - the caller passed the source's
+ *       <em>inclusive</em> end date straight through as the exclusive upper bound. The bound must be
+ *       advanced past the last value the range admits before the call; the two are not
+ *       interchangeable, and the conversion belongs to the calling service.</li>
+ *   <li><em>{@code EXPLAIN} shows a sequential scan on the range finder</em> - a function was
+ *       reintroduced around {@code tran_proc_ts} in the predicate, which makes it non-sargable and
+ *       defeats the plain B-tree that {@code V2__create_indexes.sql} creates on that column. Both
+ *       bounds must reference the bare property; see the sargability section on
+ *       {@link #findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(String, String, Pageable)}.
+ *       The remedy is never a second, functional index: the migration is fixed at three.</li>
  *   <li><em>The range finder returns one row where several were expected</em> - the return type was
  *       narrowed to {@code Optional}. The alternate key is {@code NONUNIQKEY}.</li>
+ *   <li><em>The report job exhausts the heap on a wide date range</em> - the caller ignored
+ *       {@code Slice#hasNext()} and requested an unbounded page, or an earlier revision of this
+ *       interface returning a plain {@code List} is still on the classpath. The range finder is
+ *       chunked by a caller-supplied {@link Pageable} precisely because the source streamed one record
+ *       at a time.</li>
  *   <li><em>A page repeats its last row, or skips one</em> - an inclusive paged finder was used where
  *       an exclusive one was required, or the reverse. The three paged methods below are not
  *       interchangeable and each documents the source path it reproduces.</li>
@@ -311,12 +333,16 @@ import com.cardemo.model.entity.Transaction;
  * Stated plainly rather than assumed, with what is needed in each case.
  *
  * <ul>
- *   <li><strong>Not available:</strong> {@code src/main/resources/db/migration/V1__create_schema.sql},
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} did not exist when this interface
- *       was written. <em>What is needed:</em> those three Flyway migration files. Because
- *       {@code ddl-auto: validate} is set in every profile, the following constitute the
- *       <strong>normative contract the migrations must satisfy</strong>, and a mismatch fails context
- *       startup rather than degrading gracefully - the table name {@code transaction} (written
+ *   <li><strong>Not available:</strong> {@code V2__create_indexes.sql} and
+ *       {@code V3__seed_data.sql}. Measured 1 August 2026,
+ *       {@code src/main/resources/db/migration/V1__create_schema.sql} <strong>is present</strong> and
+ *       declares {@code CREATE TABLE "transaction"} with a {@code version BIGINT} column
+ *       and the three foreign keys {@code fk04_transaction_card},
+ *       {@code fk05_transaction_type} and {@code fk06_transaction_category}. <em>What is needed:</em>
+ *       the two remaining Flyway migration files. Because {@code ddl-auto: validate} is mandated in
+ *       every planned profile, the following is <strong>what V1 declares and what this interface is
+ *       typed over</strong>, and a mismatch would fail context startup rather than degrading
+ *       gracefully - the table name {@code transaction} (written
  *       {@code "transaction"} only where a quoted identifier is required in SQL), the primary key
  *       {@code tran_id CHAR(16)}, the columns {@code tran_amt NUMERIC(11,2)},
  *       {@code tran_card_num CHAR(16)}, {@code tran_orig_ts CHAR(26)} and
@@ -343,42 +369,17 @@ import com.cardemo.model.entity.Transaction;
 @Repository
 public interface TransactionRepository extends JpaRepository<Transaction, String> {
 
-    /*
-     * ------------------------------------------------------------------------------------------------
-     * Inherited operations - documented here, deliberately NOT redeclared
-     * ------------------------------------------------------------------------------------------------
-     *
-     * findById(String transactionId) -> Optional<Transaction>
-     *     Replaces the keyed read. app/cbl/COTRN01C.cbl:L269-L273 issues
-     *     EXEC CICS READ DATASET(WS-TRANSACT-FILE) ... RIDFLD(TRAN-ID), the single-record retrieval
-     *     behind the online transaction-detail screen; the same verb repositions the browse of
-     *     app/cbl/COTRN00C.cbl. Callers pass the zero-padded sixteen-character identifier.
-     *     An absent row arrives as an empty Optional - never as an exception - which is what lets the
-     *     service layer decide between the not-found path and the two accepted-status control paths
-     *     that the legacy corpus treats as success. Redeclaring it would add nothing and would
-     *     duplicate a contract JpaRepository already states.
-     *
-     * save(Transaction entity) -> Transaction
-     *     Replaces the keyed write: EXEC CICS WRITE in app/cbl/COTRN02C.cbl (transaction add) and
-     *     app/cbl/COBIL00C.cbl:L233 (bill payment), and the batch WRITE of
-     *     app/cbl/CBTRN02C.cbl 2900-WRITE-TRANSACTION-FILE at :L562, performed from the posting
-     *     routine at :L442.
-     *     A primary-key collision surfaces as a duplicate-key violation, which the service layer
-     *     translates to com.cardemo.exception.DuplicateRecordException preserving the root cause.
-     *     That outcome is INTENDED, not defensive: it is the designed failure mode of the preserved
-     *     identifier-generation race described on findFirstByOrderByTransactionIdDesc() below, and of
-     *     a combine run replaying an interest date parameter. It must never be swallowed, retried
-     *     away, or turned into a silent insert-or-update.
-     * ------------------------------------------------------------------------------------------------
-     */
-
     /**
-     * Returns the single row bearing the highest transaction identifier, or an empty result when the
-     * table is empty.
+     * Returns the single row bearing the highest transaction identifier, or an empty result when the table is
+     * empty.
      *
-     * <p>This is the replacement for the descending maximum-key browse that the legacy corpus uses to
-     * generate the next transaction identifier. Two programs perform it identically.
-     * {@code app/cbl/COTRN02C.cbl:L444-L451} reads:
+     * <p>Replaces the {@code STARTBR} on {@code HIGH-VALUES} followed by {@code READPREV} and {@code ENDBR}
+     * that generates the next identifier at {@code app/cbl/COTRN02C.cbl:L444-L449} and
+     * {@code app/cbl/COBIL00C.cbl:L212-L217}. Callers add one to the returned identifier and default an empty
+     * result to zero, so the first identifier issued against an empty table is 1
+     * ({@code app/cbl/COBIL00C.cbl:L487-L488}). The algorithm is racy under concurrency exactly as the legacy
+     * browse was; that is preserved for parity, and a collision is expected to surface from the primary key
+     * rather than be pre-empted by a sequence or a retry.
      *
      * <pre>
      *   444:  MOVE HIGH-VALUES TO TRAN-ID
@@ -433,7 +434,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      * and break the field-level comparison against the legacy baseline, which is the acceptance
      * contract; a retry would mask the very collision the source lets fail; a lock would change the
      * concurrency behaviour of a path whose behaviour is being reproduced. Recorded as a deliberate
-     * decision in {@code DECISION_LOG.md}.
+     * decision in the planned {@code DECISION_LOG.md}.
      *
      * <h4>Interaction with interest generation - source behaviour, not a defect</h4>
      * {@code app/cbl/CBACT04C.cbl} builds its identifiers differently. At {@code :L474} it increments
@@ -457,140 +458,149 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
     Optional<Transaction> findFirstByOrderByTransactionIdDesc();
 
     /**
-     * Returns every transaction whose processing timestamp begins with a date inside an inclusive
-     * ten-character range, ordered by card number ascending.
+     * The processing-date range scan standing in for the alternate index: lower bound
+     * <strong>inclusive</strong>, upper bound <strong>exclusive</strong>, both compared against the bare
+     * {@code procTs} property so a plain B-tree can serve the predicate.
      *
-     * <p>This is <strong>the package's third and final alternate-key finder</strong>, and the only one
-     * declared in this file. It replaces the alternate index
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX}, whose key is {@code KEYLEN 26} at
-     * <strong>{@code AXRKP 304} (zero-based) = record byte 305 (one-based)</strong> - the first byte of
-     * {@code TRAN-PROC-TS X(26)}, which occupies bytes 305-330.
+     * <p><strong>The caller owns the bound conversion.</strong> The source specifies an inclusive range
+     * at both ends, so a caller holding an inclusive end date must advance it past the last value the
+     * range admits before calling, and must not pass the inclusive date here - that would silently drop
+     * every row on the last day of the range. That conversion is deliberately <em>not</em> offered on
+     * this interface: it is text manipulation, and this interface performs none, which is also why no
+     * member here is {@code default} or {@code static}.
      *
-     * <h4>Evidence</h4>
-     * <ul>
-     *   <li>{@code app/catlg/LISTCAT.txt:L3674-L3678} - the DATA-component attribute lines of the
-     *       alternate index: {@code KEYLEN 26} at {@code :L3674}, {@code RKP 5} at {@code :L3675},
-     *       {@code AXRKP 304} at {@code :L3676} and {@code SPANNED  NONUNIQKEY} at {@code :L3678}. The
-     *       index itself is named at {@code :L3672} and its PATH block sits at {@code :L3663}.</li>
-     *   <li>{@code app/jcl/TRANFILE.jcl:L82-L84} - IDCAMS {@code DEFINE ALTERNATEINDEX} with
-     *       {@code KEYS(26 304)}, {@code NONUNIQUEKEY} at {@code :L85}, PATH at {@code :L99-L101}.</li>
-     *   <li>{@code app/jcl/TRANIDX.jcl:L25-L27} - the same {@code KEYS(26 304)} declared a second time,
-     *       {@code NONUNIQUEKEY} at {@code :L28}, PATH at {@code :L42-L44}. Citing this member here is
-     *       the remediation for discrepancy #7; see the class documentation.</li>
-     *   <li>{@code app/proc/TRANREPT.prc:STEP05R} - the consuming sort step, whose {@code SYMNAMES} at
-     *       {@code :L40} declares {@code TRAN-PROC-DT,305,10,CH} and whose {@code SYSIN} at
-     *       {@code :L44-L46} reads
-     *       {@code SORT FIELDS=(TRAN-CARD-NUM,A)} followed by
-     *       {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}.</li>
-     * </ul>
+     * <h4>Medium - RESOLVED: the predicate is sargable, and was measured</h4>
+     * <strong>Severity Medium, resolved.</strong> The earlier revision of this finder wrote both bounds
+     * as {@code substring(t.procTs, 1, 10)}. Wrapping the indexed column in a function makes the
+     * predicate non-sargable, and a plain B-tree cannot serve it. That was not a theoretical concern; it
+     * was measured on PostgreSQL 16.10 against this exact table with 200,000 rows spread over 400
+     * distinct processing dates and the single plain non-unique B-tree that
+     * {@code V2__create_indexes.sql} specifies:
      *
-     * <h4>Blocker - the comparison is LEXICAL over CHAR(26), never temporal</h4>
-     * <strong>Severity Blocker.</strong> {@code TRAN-PROC-TS} is {@code PIC X(26)} at
-     * {@code app/cpy/CVTRA05Y.cpy:L17} - character data. The property is a {@code String}, the column is
-     * {@code CHAR(26)}, the bounds are {@code String}, and the comparison is a string comparison. This
-     * file names no temporal type anywhere.
-     *
-     * <p>That is transcription, not preference. {@code app/cbl/CBTRN03C.cbl} declares
-     * {@code WS-START-DATE PIC X(10)} at {@code :L123} and {@code WS-END-DATE PIC X(10)} at
-     * {@code :L125}, then re-applies the sort step's filter inside the processor at {@code :L173-L174}:
+     * <p>Both plans below were taken on the statement Hibernate actually emits, not on a hand-written
+     * approximation of it - the text was lifted from {@code hibernate.show_sql} output and replayed
+     * through {@code PREPARE} with {@code varchar} parameters:
      *
      * <pre>
-     *   173:  IF TRAN-PROC-TS (1:10) &gt;= WS-START-DATE
-     *   174:     AND TRAN-PROC-TS (1:10) &lt;= WS-END-DATE
+     *   BEFORE  ... where substring(t1_0.tran_proc_ts from 1 for 10)&gt;=$1
+     *               and substring(t1_0.tran_proc_ts from 1 for 10)&lt;=$2
+     *           Parallel Seq Scan on transaction t1_0
+     *             Filter: ((SUBSTRING(tran_proc_ts FROM 1 FOR 10) &gt;= '2022-03-01'::text) AND ...)
+     *             Rows Removed by Filter: 66167 per worker   Buffers: shared hit=9636
+     *           Unchanged with enable_seqscan = off: the planner had no index-based alternative at all.
+     *
+     *   AFTER   ... where t1_0.tran_proc_ts&gt;=$1 and t1_0.tran_proc_ts&lt;$2
+     *           Index Scan using ix_transaction_proc_ts on transaction t1_0
+     *             Index Cond: ((tran_proc_ts &gt;= '2022-03-01'::bpchar) AND (tran_proc_ts &lt; '2022-03-04'::bpchar))
+     *             Buffers: shared hit=1505
+     *
+     *   Same 1500 rows from both forms; zero row-level disagreements over the whole table.
+     *   9636 -&gt; 1505 shared buffers, a factor of 6.4 on this projection. Narrowing the select list to
+     *   the key alone turns it into a Bitmap Index Scan at 552 buffers, a factor of 17.5, because the
+     *   heap no longer has to be visited for every matched row.
      * </pre>
      *
-     * <p>Both operands are alphanumeric, so COBOL compares them character by character in the native
-     * collating sequence. The reference modification {@code (1:10)} takes the first ten characters,
-     * which is why the query applies {@code substring(t.procTs, 1, 10)} - JPQL {@code substring} is
-     * one-based, so {@code (1, 10)} is the same ten characters. Both bounds are
-     * <strong>inclusive</strong>, matching {@code GE} and {@code LE} in the {@code INCLUDE COND} above
-     * and {@code &gt;=} and {@code &lt;=} in the processor.
+     * <p>Two details of that plan are load-bearing. First, the parameters were bound as {@code varchar} -
+     * which is what the PostgreSQL JDBC driver sends for a {@code String} by default - and PostgreSQL
+     * still coerced them to {@code bpchar} and used the index, so no {@code stringtype} connection
+     * setting and no explicit cast is required. Second, the index is the plain
+     * {@code (tran_proc_ts)} B-tree already justified by the catalogued alternate index; <strong>no
+     * functional index was added</strong>, because {@code V2__create_indexes.sql} is fixed at exactly
+     * three non-unique indexes, one per alternate index in {@code app/catlg/LISTCAT.txt}.
      *
-     * <p>A temporal conversion would be actively wrong here rather than merely unidiomatic: the column
-     * carries at least three mutually incompatible producer formats, and in the reference fixture
-     * {@code app/data/ASCII/dailytran.txt} it is twenty-six spaces in every row - a value no date parser
-     * accepts. A blank value simply falls outside any real date range under lexical comparison, because
-     * a space collates below a digit, so it is excluded from the result exactly as it is by the legacy
-     * filter.
+     * <h4>Why a half-open range is exactly equivalent to the inclusive ten-character comparison</h4>
+     * Let {@code s} be a stored value, {@code p = substr(s, 1, 10)} its ten-character prefix, {@code a}
+     * the inclusive lower bound and {@code b} the inclusive upper bound, all compared lexically.
      *
-     * <h4>High - the key is NONUNIQKEY, so this returns a collection and never an Optional</h4>
-     * <strong>Severity High</strong> if narrowed. {@code app/catlg/LISTCAT.txt:L3678} declares the
-     * alternate index {@code NONUNIQKEY} in so many words, and the fixture bears it out - all three
-     * hundred staged rows share a single processing-timestamp value. Returning an {@code Optional} would
-     * silently drop rows, or fail outright on the second one. The backing index in
-     * {@code V2__create_indexes.sql} must likewise be <strong>non-unique</strong>, and it is the only
-     * index this table gets.
+     * <ul>
+     *   <li><strong>Lower bound.</strong> {@code p >= a} if and only if {@code s >= a}. If the two differ
+     *       at some position within the first ten characters the same comparison decides both; if they
+     *       agree throughout, {@code s} is {@code a} followed by more characters and so is the greater.
+     *       The bound therefore needs no adjustment at all: the bare column is compared against the
+     *       ten-character value unchanged.</li>
+     *   <li><strong>Upper bound.</strong> {@code p <= b} if and only if {@code s < U}, where {@code U} is
+     *       the <em>immediate lexical successor</em> of {@code b} - {@code b} with its final character
+     *       replaced by the next code point. When {@code p < b} the two differ inside the first ten
+     *       characters, so {@code s < b < U}. When {@code p == b}, {@code s} agrees with {@code U} on the
+     *       first nine characters and is smaller at the tenth, so {@code s < U}. Conversely a prefix
+     *       above {@code b} is at or above {@code U} at the position where it first exceeds it. An
+     *       inclusive upper bound on the bare column would be wrong here: it would drop every row whose
+     *       timestamp carries a time-of-day, which is nearly all of them.</li>
+     * </ul>
      *
-     * <h4>Least privilege: this finder is batch-only</h4>
-     * The alternate index has <strong>no CICS definition</strong>. {@code app/csd/CARDDEMO.CSD} contains
-     * exactly eight {@code DEFINE FILE} entries, and the only two that name an {@code AIX.PATH} dataset
-     * are {@code CARDAIX} at {@code :L13-L14} and {@code CXACAIX} at {@code :L63-L65}. The transaction
-     * entry at {@code :L76-L77} names the base cluster
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} only, so no online program could ever reach this access
-     * path. It is consumed exclusively by the report and combine jobs and <strong>must not be exposed
-     * through any controller</strong>. Recorded as discrepancy #10, severity Low, in
-     * {@code DECISION_LOG.md}.
+     * <p>The equivalence was not left as an argument. It was checked exhaustively on PostgreSQL 16.10 in
+     * the deployed collation, over two rounds whose cross products total 417 stored values against 47
+     * upper bounds - <strong>16,086 pairs</strong> - comparing {@code substr(v,1,10) <= b} against
+     * {@code v < U}, and {@code substr(v,1,10) >= a} against {@code v >= a}, with <strong>zero
+     * disagreements on either bound in either round</strong>. The stored values covered all three
+     * producer formats listed on the inclusive method, the twenty-six-blank value, day, month and year
+     * rollovers, and adversarial suffixes - ISO 8601 {@code T}, a lowercase {@code t}, tildes and the
+     * highest Latin-1 code point - that a future producer could introduce. The bounds covered dates
+     * ending in {@code 9} (where the successor is {@code ':'} rather than a digit), the last day of a
+     * month and of a year, a non-date bound and a bound with a trailing blank.
      *
-     * <h4>Ordering</h4>
-     * The primary ordering is {@code cardNumber} ascending, reproducing
-     * {@code SORT FIELDS=(TRAN-CARD-NUM,A)} at {@code app/proc/TRANREPT.prc:L44}. That ordering is not
-     * incidental - the report processor's control break fires on the card number at
-     * {@code app/cbl/CBTRN03C.cbl:L181} comparing {@code WS-CURR-CARD-NUM} (declared {@code X(16)} at
-     * {@code :L137}) against {@code TRAN-CARD-NUM}, so records for one card must arrive contiguously or
-     * the break fires repeatedly.
+     * <p>Two alternatives were measured against the same matrix and rejected on the evidence.
+     * A <em>calendar</em> next-day bound is equally exact for well-formed dates - and is what the review
+     * suggested - but it requires parsing the bound, which introduces a failure mode the source does not
+     * have, since {@code WS-END-DATE} is {@code PIC X(10)} and the legacy comparison accepts any ten
+     * characters. Padding the inclusive bound with sixteen {@code '9'} characters and keeping the
+     * comparison inclusive agreed on the first round but produced <strong>ten disagreements</strong> on
+     * the adversarial round, because any suffix character collating above {@code '9'} defeats it - the
+     * ISO 8601 {@code T}, the tilde and the Latin-1 cases each broke it. The lexical successor is immune
+     * because it differs from the data at the tenth character, before any suffix is reached.
      *
-     * <p>{@code transactionId} ascending is appended as a tie-breaker. The legacy deck sorts on the card
-     * number alone and specifies no {@code OPTION EQUALS}, which means DFSORT leaves the relative order
-     * of equal-keyed records <em>unspecified</em>; pinning it to the primary key therefore cannot
-     * contradict the source, and it makes the result a total order so that a parity comparison against a
-     * baseline is reproducible run to run.
+     * <h4>Collation</h4>
+     * The comparison is delegated to the database collation, exactly as the previous {@code substring}
+     * form was - this change neither adds nor removes that exposure, and no {@code COLLATE} clause is
+     * introduced, since an expression collation different from the column's would make the index
+     * unusable and put us straight back where we started. The measurements above were taken in the
+     * deployed collation ({@code en_US.utf8}, libc provider, per {@code docker-compose.yml}), and the
+     * exhaustive matrix is the standing regression against it: a deployment that changes the collation
+     * must re-run it rather than assume it still holds.
      *
-     * <h4>Performance tradeoff, stated rather than hidden</h4>
-     * A predicate over {@code substring(tran_proc_ts, 1, 10)} is not served directly by a plain B-tree
-     * index on {@code tran_proc_ts}. That cost is accepted deliberately: faithfulness to the source's
-     * ten-character comparison governs, a bare-column range would require the caller to synthesise an
-     * upper-bound sentinel and so introduce a divergence risk for no behavioural gain, and this is a
-     * batch path over a bounded backup generation - {@code app/proc/TRANREPT.prc:L21-L31} unloads the
-     * cluster to {@code TRANSACT.BKUP(+1)} before the range is ever applied. Adding a second, functional
-     * index for this table is explicitly out of scope: {@code V2__create_indexes.sql} creates exactly
-     * three non-unique indexes across the whole schema.
+     * <h4>Why {@code Slice} and not {@code List}</h4>
+     * The legacy report never held the range in storage. {@code app/proc/TRANREPT.prc:STEP01R} unloads
+     * the cluster to {@code TRANSACT.BKUP(+1)}, {@code STEP05R} sorts and filters it, and
+     * {@code app/cbl/CBTRN03C.cbl:L170-L172} then reads the result one record at a time in a
+     * {@code PERFORM UNTIL END-OF-FILE} loop with exactly one record live. A {@code List} return would
+     * invert that, materialising an entire date range into the heap, and would do it silently: the
+     * shipped fixture is three hundred rows, so every test would pass. {@code Slice} restores
+     * caller-controlled fetching and {@code Slice#hasNext()} is the natural loop condition. It is
+     * deliberately {@code Slice} and not {@code Page}: the source issues no count, and a report driven by
+     * a sequential read has no use for a total.
      *
-     * <h4>What this method does not do</h4>
-     * It returns rows and nothing more. The twenty-lines-per-page pagination
-     * ({@code app/cbl/CBTRN03C.cbl:L131-L132}, {@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20}), the
-     * page and account and grand totals, and the preserved quirk whereby the control break fires on the
-     * <em>card number</em> while the emitted label reads {@code 'Account Total'} - a literal that lives
-     * in {@code app/cpy/CVTRA07Y.cpy:L58} - all belong to the report processor. None of it is
-     * reproduced, or reproducible, here.
+     * <p>Chunked reads are stable here because the ordering is a <strong>total</strong> order - card
+     * number then primary key, as the Ordering section on the inclusive method explains - so no row can
+     * be skipped or repeated across a chunk boundary. Had the ordering stopped at the card number, ties
+     * would be free to reshuffle between chunks and the control break could fire twice for one card.
      *
      * <p><strong>Implementation note.</strong> The query text is a text block, which is a compile-time
      * constant, so the whole statement is fixed at compile time and both bounds arrive strictly as named
      * bind parameters. There is no concatenation and no native-SQL query mode, so neither bound can
-     * influence the structure of the statement.</p>
+     * influence the structure of the statement. The {@code order by} lives inside the query rather than
+     * in the {@link Pageable} for the same reason: it is part of the contract, not a caller choice.</p>
      *
-     * @param startDateInclusive the inclusive lower bound, the first ten characters of a processing
-     *        timestamp as text, in the same form the legacy sort symbol supplies at
-     *        {@code app/proc/TRANREPT.prc:L41} ({@code PARM-START-DATE,C'2022-01-01'}); compared
-     *        lexically, so it must be exactly the ten-character prefix and must not be a formatted
-     *        temporal value of any other shape; must not be {@code null}
-     * @param endDateInclusive the inclusive upper bound, in the same ten-character form as
-     *        {@code app/proc/TRANREPT.prc:L42} ({@code PARM-END-DATE,C'2022-07-06'}); must not be
+     * @param startDateInclusive the inclusive lower bound, the ten-character prefix of a processing
+     *        timestamp; must not be {@code null}
+     * @param endBoundExclusive the <strong>exclusive</strong> upper bound, derived by the caller from
+     *        the source's inclusive end date; rows equal to or above it are excluded; must not be
      *        {@code null}
-     * @return every matching row ordered by card number ascending then identifier ascending; an
-     *         <strong>empty list</strong> when nothing matches, which is the ordinary no-data outcome and
-     *         never an error - a bound pair in the wrong order simply yields no rows, exactly as the
-     *         legacy {@code INCLUDE COND} does
+     * @param pageable the chunk size and offset; pass an unsorted {@link Pageable}; must not be
+     *        {@code null}
+     * @return one chunk of matching rows ordered by card number ascending then identifier ascending;
+     *         empty when nothing matches, which is never an error
      */
     @Query("""
             select t
             from Transaction t
-            where substring(t.procTs, 1, 10) >= :startDateInclusive
-              and substring(t.procTs, 1, 10) <= :endDateInclusive
+            where t.procTs >= :startDateInclusive
+              and t.procTs < :endBoundExclusive
             order by t.cardNumber asc, t.transactionId asc
             """)
-    List<Transaction> findByProcessingDateRangeOrderByCardNumberAsc(
+    Slice<Transaction> findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc(
             @Param("startDateInclusive") String startDateInclusive,
-            @Param("endDateInclusive") String endDateInclusive);
+            @Param("endBoundExclusive") String endBoundExclusive,
+            Pageable pageable);
 
     /*
      * ------------------------------------------------------------------------------------------------
@@ -611,7 +621,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *         :L351  PERFORM UNTIL WS-IDX <= 0 OR ...                       (backward, fill down to 1)
      *     Corroborated on the presentation side by app/cpy-bms/COTRN00.CPY, which generates ten row
      *     groups TRNID01 through TRNID10 across 110 TRNID-matching lines, the first quintuple being
-     *     TRNIDINL / TRNIDINF / TRNIDINA / TRNIDINI at :L61-L66. Recorded as Low in DECISION_LOG.md.
+     *     TRNIDINL / TRNIDINF / TRNIDINA / TRNIDINI at :L61-L66. Recorded as Low in the planned DECISION_LOG.md.
      *
      *     The three parity page sizes across the application are card list 7
      *     (app/cbl/COCRDLIC.cbl:L177-L178, WS-MAX-SCREEN-LINES ... VALUE 7), transaction list 10 and
@@ -652,81 +662,52 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      */
 
     /**
-     * Reads one page forward from a starting identifier <strong>inclusive</strong>, in ascending key
-     * order.
+     * Reads one page forward from a starting identifier <strong>inclusive</strong>, in ascending key order.
      *
-     * <p>Reproduces path (a) above: the initial display of the online transaction list and the
-     * search-by-identifier path. {@code app/cbl/COTRN00C.cbl:L206-L210} positions the browse at
-     * {@code LOW-VALUES} when the search field is blank, or at the entered identifier when one was
-     * supplied and passed the numeric edit; because the attention identifier is {@code DFHENTER} the
-     * test at {@code :L285} is false, no record is skipped, and the positioned record is the first row
-     * of the page. Hence inclusive.
+     * <p>Serves the initial display of the online transaction list and the search-by-identifier path.
+     * {@code app/cbl/COTRN00C.cbl:L206-L210} positions the browse at
+     * {@code LOW-VALUES} when the search field is blank, or at the entered identifier when one was supplied and
+     * passed the numeric edit; because the attention identifier is {@code DFHENTER} the test at {@code :L285}
+     * is false, no record is skipped, and the positioned record is the first row of the page. Hence inclusive.
      *
-     * <p>For the blank-search case the caller supplies the lowest bound of the identifier domain, which
-     * is the {@code LOW-VALUES} equivalent for a zero-padded {@code CHAR(16)} key; every real identifier
-     * is greater than or equal to it, so the page starts at the true beginning of the cluster.
-     *
-     * @param startTransactionIdInclusive the identifier to start at, included in the result when it
-     *        exists; the zero-padded sixteen-character form; must not be {@code null}
-     * @param pageable the page size, bound from {@code carddemo.pagination.*} configuration - ten for
-     *        this list. Pass an <strong>unsorted</strong> {@code Pageable} such as
-     *        {@code Pageable.ofSize(pageSize)}: the ordering is part of this method's contract, not the
-     *        caller's, and a sort supplied here would only be appended after it. Must not be
-     *        {@code null}
-     * @return the page of rows ordered by identifier ascending; empty when nothing is at or beyond the
-     *         bound. {@code Slice#hasNext()} carries the next-page indication that the source keeps in
-     *         {@code CDEMO-CT00-NEXT-PAGE-FLG}
+     * @param startTransactionIdInclusive the identifier to start at, included in the result when it exists.
+     * @param pageable the page size, bound from {@code carddemo.pagination.*} configuration - ten for this
+     * list.
+     * @return the page of rows ordered by identifier ascending.
      */
     Slice<Transaction> findByTransactionIdGreaterThanEqualOrderByTransactionIdAsc(
             String startTransactionIdInclusive, Pageable pageable);
 
     /**
-     * Reads the next page forward, strictly <strong>after</strong> a given identifier, in ascending key
-     * order.
+     * Reads the next page forward, strictly <strong>after</strong> a given identifier, in ascending key order.
      *
-     * <p>Reproduces path (b) above: the {@code PF8} page-forward request.
+     * <p>Serves the {@code PF8} page-forward request.
      * {@code app/cbl/COTRN00C.cbl:L259-L262} positions the browse at {@code CDEMO-CT00-TRNID-LAST} - the
-     * identifier of the tenth and last row of the page just displayed, captured at {@code :L437-L439} -
-     * and {@code :L285-L287} then performs one extra {@code READNEXT} which consumes that positioned
-     * record. The rows the user sees therefore begin strictly after it, which is what the exclusive
-     * bound expresses. The source guards the request with the next-page flag at {@code :L267},
-     * responding {@code 'You are already at the bottom of the page...'} when it is not set; the
-     * equivalent guard is {@code Slice#hasNext()} on the previously returned page.
+     * identifier of the tenth and last row of the page just displayed, captured at {@code :L437-L439} - and
+     * {@code :L285-L287} then performs one extra {@code READNEXT} which consumes that positioned record.
      *
-     * @param afterTransactionIdExclusive the last identifier already displayed; excluded from the
-     *        result; must not be {@code null}
-     * @param pageable the page size, bound from configuration; pass an unsorted {@code Pageable}; must
-     *        not be {@code null}
-     * @return the next page of rows ordered by identifier ascending; empty when the previous page was
-     *         the last one
+     * @param afterTransactionIdExclusive the last identifier already displayed.
+     * @param pageable the page size, bound from configuration.
+     * @return the next page of rows ordered by identifier ascending.
      */
     Slice<Transaction> findByTransactionIdGreaterThanOrderByTransactionIdAsc(
             String afterTransactionIdExclusive, Pageable pageable);
 
     /**
-     * Reads the previous page, strictly <strong>before</strong> a given identifier, in descending key
-     * order.
+     * Reads the previous page, strictly <strong>before</strong> a given identifier, in descending key order.
      *
-     * <p>Reproduces path (c) above: the {@code PF7} page-backward request.
-     * {@code app/cbl/COTRN00C.cbl:L236-L239} positions the browse at {@code CDEMO-CT00-TRNID-FIRST} -
-     * the identifier of the first row of the page just displayed, captured at {@code :L391-L393} - and
-     * {@code :L339-L341} then performs one extra {@code READPREV} which consumes that positioned record,
-     * so the rows returned lie strictly before it. The source fills its screen array from index ten down
-     * to one ({@code :L349} and {@code :L351}), which is why the rows arrive here in descending order:
-     * the caller reverses them for display, exactly as the descending fill does.
+     * <p>Serves the {@code PF7} page-backward request.
+     * {@code app/cbl/COTRN00C.cbl:L236-L239} positions the browse at {@code CDEMO-CT00-TRNID-FIRST} - the
+     * identifier of the first row of the page just displayed, captured at {@code :L391-L393} - and
+     * {@code :L339-L341} then performs one extra {@code READPREV} which consumes that positioned record, so the
+     * rows returned lie strictly before it. The source fills its screen array from index ten down to one
+     * ({@code :L349} and {@code :L351}), which is why the rows arrive here in descending order: the caller
+     * reverses them for display, exactly as the descending fill does.
      *
-     * <p>The source guards this request too, at {@code :L245}, responding
-     * {@code 'You are already at the top of the page...'} when the page number is not greater than one;
-     * and {@code STARTBR-TRANSACT-FILE} itself answers a {@code DFHRESP(NOTFND)} with
-     * {@code 'You are at the top of the page...'}. Both correspond to an empty result here, which is an
-     * ordinary boundary outcome and never an error.
-     *
-     * @param beforeTransactionIdExclusive the first identifier already displayed; excluded from the
-     *        result; must not be {@code null}
-     * @param pageable the page size, bound from configuration; pass an unsorted {@code Pageable}; must
-     *        not be {@code null}
+     * @param beforeTransactionIdExclusive the first identifier already displayed.
+     * @param pageable the page size, bound from configuration.
      * @return the previous page of rows ordered by identifier <strong>descending</strong>, matching the
-     *         source's backward fill; empty when the caller is already at the beginning of the cluster
+     * source's backward fill.
      */
     Slice<Transaction> findByTransactionIdLessThanOrderByTransactionIdDesc(
             String beforeTransactionIdExclusive, Pageable pageable);

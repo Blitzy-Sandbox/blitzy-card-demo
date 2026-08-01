@@ -24,17 +24,17 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import jakarta.validation.constraints.Size;
 
 /**
- * Inbound request payload for transaction-report submission: the stateless Java replacement for the
- * BMS conversation of CICS transaction {@code CR00}, program {@code app/cbl/CORPT00C.cbl}.
+ * Inbound request payload for transaction-report submission: the stateless Java replacement for the BMS
+ * conversation of CICS transaction {@code CR00}, program {@code app/cbl/CORPT00C.cbl}.
  *
- * <p><strong>Purpose.</strong> This type is a pure, immutable data holder. It transports the screen
- * fields of the report-submission map from an HTTP client to {@code ReportSubmissionService} and
- * nothing more. It performs no date assembly, no date validation, no range computation, no period
- * derivation, no queue-message construction and no mapping; all of that behaviour belongs to the
- * service, in keeping with the separation-of-concerns requirement.</p>
+ * <p>This type is a pure, immutable data holder. It transports the screen fields of the report-submission map
+ * from an HTTP client to {@code ReportSubmissionService} and nothing more. It performs no date assembly, no
+ * date validation, no range computation, no period derivation, no queue-message construction and no mapping;
+ * all of that behaviour belongs to the service, in keeping with the separation-of-concerns requirement.
  *
  * <h2>Field contract: exactly 17 fields</h2>
  *
@@ -97,8 +97,8 @@ import jakarta.validation.constraints.Size;
  *       year-month-day value. Because {@code app/cpy/CSDAT01Y.cpy:20-23} declares that value as a
  *       redefinition of the same year, month and day subfields, the moves at {@code :232-234} emit
  *       the <strong>last day of the current month</strong>. The monthly period is therefore a full
- *       calendar month, first day through last day. See <em>Findings</em> below: the plan prose
- *       describes this as month-to-date, which the source does not support.</li>
+ *       calendar month, first day through last day. See <em>Findings</em> below: prior-generation plan
+ *       prose described this as month-to-date, which the source does not support.</li>
  *   <li><strong>Yearly</strong> ({@code app/cbl/CORPT00C.cbl:239-255}) - the first through the last
  *       day of the current year, built from the literals {@code '01'}/{@code '01'} and
  *       {@code '12'}/{@code '31'}.</li>
@@ -316,7 +316,8 @@ import jakarta.validation.constraints.Size;
  * temporal type or a {@code java.time} import; adding a constraint the source does not perform, of
  * which a start-before-end assertion is the most tempting; collapsing the six date components or the
  * three selectors; normalising a value on ingest, which breaks the echoed confirmation character;
- * and leaving an unused import, which fails the build outright rather than warning.</p>
+ * and leaving an unused import, which Clause B forbids even though {@code javac} 25.0.3 publishes no lint
+ * key that would catch it, so it is review-enforced.</p>
  *
  * <p>The file header follows the source-banner convention that is universal in the legacy corpus - a
  * rule of asterisks, the component identification lines, a second rule, then the copyright and the
@@ -326,33 +327,75 @@ import jakarta.validation.constraints.Size;
  * inherit, so layout follows the {@code .editorconfig} established for the Java tree: UTF-8, LF line
  * endings, four-space indentation, a trailing newline and a 120-column limit.</p>
  *
+ * <h2>Diagnostic rendering and unrecognised properties</h2>
+ *
+ * <p>Every one of the seventeen components is caller-controlled text that this type deliberately
+ * carries without normalisation, which makes both of the following necessary rather than
+ * precautionary.</p>
+ *
+ * <p><strong>{@link #toString()} is overridden.</strong> A record's implicit rendering emits every
+ * component, so interpolating an instance into a log record, a stack trace or a diagnostic message
+ * would copy seventeen unvalidated caller-supplied strings into it verbatim - among them a
+ * seventy-eight-character message line whose entire content the caller chooses, and a confirmation
+ * character that {@code app/cbl/CORPT00C.cbl:464-494} treats as an open domain. That is a
+ * log-forging path: a caller who submits a value containing a line break and a plausible log prefix
+ * writes a fabricated record. The override emits only the transaction name and the program name, and
+ * the six custom-range components are additionally omitted because together they identify a
+ * reporting window over a customer's transactions.</p>
+ *
+ * <p><strong>{@link #rejectUnrecognisedProperty} refuses anything the map does not declare.</strong>
+ * The declarative alternative is inert: Jackson consults a type-level unknown-property setting only
+ * while the mapper still has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, the framework disables it
+ * by default, and this repository contains no {@code application*.yml} that could re-enable it -
+ * {@code src/main/resources} holds one migration and three validation resources and nothing else.
+ * Silently discarding a property matters specifically here because the three period selectors are
+ * mutually exclusive raw characters evaluated in a fixed order at {@code :213}, {@code :239} and
+ * {@code :256}: a caller who misspells one would have the request bound with no period selected,
+ * which the source reports as its own distinct error rather than as a rejected payload.</p>
+ *
  * <h2>Findings</h2>
  *
  * <p>Recorded here because the surrounding plan prose and the source disagree, and the source is the
- * authority. None of the three affects the code of this type.</p>
+ * authority. Neither of the first two affects the code of this type; the last two were defects in it
+ * and have been remediated.</p>
  *
  * <ul>
- *   <li><strong>Medium - monthly period described as month-to-date.</strong> The plan states that
- *       the monthly end date is the current year, month and day. The source computes the last day of
+ *   <li><strong>Medium, closed - monthly period described as month-to-date.</strong> Prior-generation
+ *       plan prose stated that the monthly end date is the current year, month and day. The source
+ *       computes the last day of
  *       the current month, as traced above through {@code app/cbl/CORPT00C.cbl:223-234} and
  *       {@code app/cpy/CSDAT01Y.cpy:20-23}; the December rollover confirms it, since month 13
  *       becomes January of the following year and one day less is the 31st of December. The prose
  *       error is explainable: the moves at {@code :232-234} name the current-date subfields, which
  *       look like today, but {@code :223-230} has already overwritten them in place. It is also the
- *       reading consistent with the yearly period being a full calendar year. <em>Remediation</em>:
- *       the service must implement the arithmetic at {@code :223-234} rather than the prose
- *       description. No impact here, since this type performs no date arithmetic.</li>
- *   <li><strong>Medium - symbolic-map field census.</strong> The plan prose totals 460 input fields
- *       across the seventeen symbolic maps; counting the input groups directly gives
- *       <strong>441</strong>. The plan's own per-map table sums to 440, because it records one map
+ *       reading consistent with the yearly period being a full calendar year. The specification has been
+ *       corrected and now describes a full calendar month. <em>Remediation still owed by the service
+ *       layer</em>: {@code ReportSubmissionService} must implement the arithmetic at {@code :223-234}
+ *       rather than the prose description; that bean is <strong>not available</strong> - it has not been
+ *       authored - so the obligation is recorded here. No impact on this type, which performs no date
+ *       arithmetic.</li>
+ *   <li><strong>Medium, closed - symbolic-map field census.</strong> Prior-generation plan prose totalled
+ *       460 input fields across the seventeen symbolic maps; counting the input groups directly gives
+ *       <strong>441</strong>. That prose's own per-map table summed to 440, because it recorded one map
  *       as having 36 input fields where that copybook declares 37. This map is unaffected: its count
- *       is 17 both in the table and on disk, which is the figure implemented here.
- *       <em>Remediation</em>: correct the corpus total in the evidence artefacts to 441.</li>
- *   <li><strong>Medium - job-deck card count.</strong> The plan describes eighteen card images;
- *       {@code app/cbl/CORPT00C.cbl:80-127} declares <strong>seventeen</strong> - fourteen plain
- *       eighty-byte literals plus three named multi-part groups, each summing to eighty bytes.
- *       <em>Remediation</em>: correct the count where the deck is described. No impact here, since
- *       this type carries no card array.</li>
+ *       is 17 both in the table and on disk, which is the figure implemented here. The corpus total now
+ *       reads 441 in {@code docs/technical-specifications.md}, verified on 1 August 2026.</li>
+ *   <li><strong>Medium, closed - job-deck card count.</strong> Prior-generation plan prose described
+ *       eighteen card images; {@code app/cbl/CORPT00C.cbl:80-127} declares <strong>seventeen</strong> -
+ *       fourteen plain eighty-byte literals plus three named multi-part groups, each summing to eighty
+ *       bytes, counted directly from {@code 01 JOB-DATA.} at {@code :81-125}. The specification no longer
+ *       states a card count at all - it describes the deck as a run of eighty-byte literal constants - so
+ *       nothing there now contradicts the seventeen counted here. No impact on this type, which carries no
+ *       card array.</li>
+ *   <li><strong>High, resolved - implicit rendering of seventeen untrusted strings.</strong> The
+ *       record's generated rendering emitted every component, including the caller-controlled
+ *       seventy-eight-character message line and the six custom-range components, into any log
+ *       record or diagnostic message that interpolated an instance. <em>Remediation applied</em>:
+ *       {@link #toString()} renders only the transaction name and the program name.</li>
+ *   <li><strong>Medium, resolved - unrecognised properties silently discarded.</strong> A misspelled
+ *       or invented property was dropped during binding, so a request that selected no period at all
+ *       bound successfully. <em>Remediation applied</em>: {@link #rejectUnrecognisedProperty} refuses
+ *       unconditionally, independently of mapper configuration.</li>
  * </ul>
  *
  * @param transactionName {@code TRNNAMEI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:24} -
@@ -375,34 +418,27 @@ import jakarta.validation.constraints.Size;
  *        independent raw character, not a boolean and not an enum constant; blank, selected and
  *        invalid are three distinct states.
  * @param yearlySelected {@code YEARLYI}, {@code PIC X(1)}, {@code app/cpy-bms/CORPT00.CPY:66} - the
- *        yearly-period selector, evaluated second at {@code app/cbl/CORPT00C.cbl:239}.
+ * yearly-period selector, evaluated second at {@code app/cbl/CORPT00C.cbl:239}.
  * @param customSelected {@code CUSTOMI}, {@code PIC X(1)}, {@code app/cpy-bms/CORPT00.CPY:72} - the
- *        custom-range selector, evaluated third at {@code app/cbl/CORPT00C.cbl:256}. When set, the
- *        six components below apply.
- * @param startDateMonth {@code SDTMMI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:78} - the
- *        start-date month, the <strong>first</strong> custom component in source order and hence the
- *        first emptiness test at {@code app/cbl/CORPT00C.cbl:259-265}. Text; a blank value stays
- *        blank and is never coerced to {@code "00"}.
- * @param startDateDay {@code SDTDDI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:84} - the
- *        start-date day, the second custom component, tested at {@code app/cbl/CORPT00C.cbl:266-272}.
- * @param startDateYear {@code SDTYYYYI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:90} - the
- *        start-date year, the third custom component, tested at
- *        {@code app/cbl/CORPT00C.cbl:273-279}.
- * @param endDateMonth {@code EDTMMI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:96} - the
- *        end-date month, the fourth custom component, tested at
- *        {@code app/cbl/CORPT00C.cbl:280-286}.
- * @param endDateDay {@code EDTDDI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:102} - the
- *        end-date day, the fifth custom component, tested at {@code app/cbl/CORPT00C.cbl:287-293}.
- * @param endDateYear {@code EDTYYYYI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:108} - the
- *        end-date year, the sixth and last custom component, tested at
- *        {@code app/cbl/CORPT00C.cbl:294-300}.
- * @param confirmation {@code CONFIRMI}, {@code PIC X(1)}, {@code app/cpy-bms/CORPT00.CPY:114} - the
- *        four-state confirmation character driving the handshake at
- *        {@code app/cbl/CORPT00C.cbl:464-494}. Carried byte-identically, because the invalid branch
- *        quotes it back to the caller.
- * @param errorMessage {@code ERRMSGI}, {@code PIC X(78)}, {@code app/cpy-bms/CORPT00.CPY:120} - the
- *        screen message line, the transport for the source literals including the queue-write
- *        failure text at {@code app/cbl/CORPT00C.cbl:531-532}.
+ * custom-range selector, evaluated third at {@code app/cbl/CORPT00C.cbl:256}.
+ * @param startDateMonth {@code SDTMMI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:78} - the start-date
+ * month, the <strong>first</strong> custom component in source order and hence the first emptiness test at
+ * {@code app/cbl/CORPT00C.cbl:259-265}.
+ * @param startDateDay {@code SDTDDI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:84} - the start-date
+ * day, the second custom component, tested at {@code app/cbl/CORPT00C.cbl:266-272}.
+ * @param startDateYear {@code SDTYYYYI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:90} - the start-date
+ * year, the third custom component, tested at {@code app/cbl/CORPT00C.cbl:273-279}.
+ * @param endDateMonth {@code EDTMMI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:96} - the end-date
+ * month, the fourth custom component, tested at {@code app/cbl/CORPT00C.cbl:280-286}.
+ * @param endDateDay {@code EDTDDI}, {@code PIC X(2)}, {@code app/cpy-bms/CORPT00.CPY:102} - the end-date day,
+ * the fifth custom component, tested at {@code app/cbl/CORPT00C.cbl:287-293}.
+ * @param endDateYear {@code EDTYYYYI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:108} - the end-date
+ * year, the sixth and last custom component, tested at {@code app/cbl/CORPT00C.cbl:294-300}.
+ * @param confirmation {@code CONFIRMI}, {@code PIC X(1)}, {@code app/cpy-bms/CORPT00.CPY:114} - the four-state
+ * confirmation character driving the handshake at {@code app/cbl/CORPT00C.cbl:464-494}.
+ * @param errorMessage {@code ERRMSGI}, {@code PIC X(78)}, {@code app/cpy-bms/CORPT00.CPY:120} - the screen
+ * message line, the transport for the source literals including the queue-write failure text at
+ * {@code app/cbl/CORPT00C.cbl:531-532}.
  */
 public record ReportRequest(
 
@@ -460,4 +496,148 @@ public record ReportRequest(
 
         // 17. ERRMSGI   PIC X(78)   app/cpy-bms/CORPT00.CPY:120  screen message transport
         @Size(max = 78) String errorMessage) {
+
+    /**
+     * Renders this payload for a log or a diagnostic without disclosing a value and without allowing a
+     * submitted byte to reach the output.
+     *
+     * <p><strong>This override replaces the compiler-generated rendering, and the replacement is the
+     * control.</strong> A record's generated {@code toString} emits every component verbatim, so the
+     * generated form of this type emitted all seventeen untrusted members - including
+     * {@code errorMessage}, a seventy-eight character free-text field that exists on this inbound payload
+     * only because the BMS input group declares every field it declares outbound. Every one of those
+     * members is bound from an untrusted request body, and the generated rendering reached a log through
+     * the ordinary interpolation path that any parameterised log statement, exception message, debugger
+     * evaluation or telemetry capture takes. A carriage return and line feed inside any member therefore
+     * terminated the current log line and let the caller compose the next one, and an escape sequence
+     * reached whatever terminal rendered the file. The date components make this materially worse than a
+     * single field would: nine of the seventeen members are attacker-chosen text that a report submission
+     * legitimately varies on every call, so the forging opportunity recurs rather than being incidental.
+     * </p>
+     *
+     * <p><strong>No submitted character appears in the output at all.</strong> That is a stronger
+     * guarantee than escaping, and a much easier one to verify: escaping has to be correct for every
+     * character in every encoding, whereas a rendering built only from fixed literals, decimal lengths and
+     * hexadecimal digits cannot carry a control character by construction. Free-text members are reduced
+     * to their shape by {@link #shapeOf(String)}, and the four single-character closed-domain codes - the
+     * three period selectors and the confirmation gate - are reduced to their code points by
+     * {@link #codePointOf(String)}, which is the same treatment the user-type code receives and for the
+     * same reason.</p>
+     *
+     * <p>What survives is what actually diagnoses a fault. The three selectors decide which of the three
+     * period branches at {@code app/cbl/CORPT00C.cbl:213}, {@code :239} and {@code :256} the service takes,
+     * and their code points distinguish a blank from a low-value byte where printing the character could
+     * not. The six custom-range components are reported by width, which is what catches the fixed-width
+     * error that actually occurs - a two-character month arriving with one character, or a year with
+     * three - without disclosing the range a caller asked for. The six screen header and title members are
+     * omitted entirely rather than rendered as shapes, because they are presentation constants on the
+     * legacy map and carry no diagnostic signal.</p>
+     *
+     * @return a rendering containing no submitted character, safe to write to any log sink
+     */
+    @Override
+    public String toString() {
+        return "ReportRequest[monthly=" + codePointOf(monthlySelected)
+                + ", yearly=" + codePointOf(yearlySelected)
+                + ", custom=" + codePointOf(customSelected)
+                + ", startDate=" + shapeOf(startDateMonth) + "/" + shapeOf(startDateDay)
+                + "/" + shapeOf(startDateYear)
+                + ", endDate=" + shapeOf(endDateMonth) + "/" + shapeOf(endDateDay)
+                + "/" + shapeOf(endDateYear)
+                + ", confirmation=" + codePointOf(confirmation)
+                + ", errorMessage=" + shapeOf(errorMessage)
+                + ", header=<6 presentation members omitted>]";
+    }
+
+    /**
+     * Describes a member by its shape rather than by its value.
+     *
+     * <p>The three states the source distinguishes stay distinguishable - absent, empty and populated -
+     * because {@code null}, the empty string and a blank-padded value mean three different things
+     * throughout this corpus, and the custom-range validation at {@code app/cbl/CORPT00C.cbl:259-300}
+     * depends on telling them apart. A populated member is reported as a character count, which is a
+     * non-negative decimal integer and therefore cannot carry a control character, an escape sequence or
+     * any fragment of the value itself.
+     *
+     * @param value the submitted member, which may be {@code null}
+     * @return {@code absent}, {@code empty}, or a character count; never any part of {@code value}
+     */
+    private static String shapeOf(String value) {
+        if (value == null) {
+            return "absent";
+        }
+        if (value.isEmpty()) {
+            return "empty";
+        }
+        return value.length() + (value.length() == 1 ? " char" : " chars");
+    }
+
+    /**
+     * Describes a single-character closed-domain code by its code point.
+     *
+     * <p>Applied to the three period selectors and the confirmation gate. For the selectors the code point
+     * is the whole of the information, because the source tests each one for presence and nothing else.
+     * For the gate the domain is four states - blank, affirmative, negative and anything else - so the code
+     * point distinguishes a blank from a low-value byte, which is precisely the distinction that printing
+     * the character cannot make. {@code Integer.toHexString} emits only hexadecimal digits and is locale
+     * independent, so the rendering is identical on every host and can carry nothing executable.
+     *
+     * <p>A value wider than one character cannot have arrived from the source map, whose fields here are
+     * {@code PIC X(1)}, and is therefore reported by shape instead. That also bounds the output: this
+     * method never renders more than one code point however long the submitted value is.
+     *
+     * @param value the submitted member, which may be {@code null}
+     * @return {@code absent}, a {@code 0x}-prefixed code point, or a shape for an over-width value
+     */
+    private static String codePointOf(String value) {
+        if (value == null) {
+            return "absent";
+        }
+        if (value.length() != 1) {
+            return shapeOf(value);
+        }
+        return "0x" + Integer.toHexString(value.charAt(0));
+    }
+
+    /**
+     * Rejects any JSON property that is not one of the seventeen screen fields declared by
+     * {@code app/cpy-bms/CORPT00.CPY}, so that a request carrying an unexpected property fails
+     * loudly instead of being bound with that property silently discarded.
+     *
+     * <p>The failure mode this closes is specific to this payload. The three period selectors at
+     * {@code app/cpy-bms/CORPT00.CPY:60}, {@code :66} and {@code :72} are mutually exclusive raw
+     * characters that {@code app/cbl/CORPT00C.cbl} evaluates in a fixed order at {@code :213},
+     * {@code :239} and {@code :256}. A caller who misspells the selector property would, under a
+     * mapper that discards unknown properties, have the request bound with no period selected at all
+     * - a state the source reports through its own message rather than one it refuses - so the
+     * caller would receive a business error describing a screen they believe they filled in.</p>
+     *
+     * <p>The guard is local rather than declarative because the declarative alternative is inert
+     * here, for the reasons set out in this type's class documentation: the framework disables
+     * failure on unknown properties by default and this repository contains no
+     * {@code application*.yml} that could re-enable it. Rejecting unconditionally makes the
+     * behaviour independent of mapper configuration.</p>
+     *
+     * <p>Neither the offending property name nor its value is reproduced in the thrown message.
+     * Both are untrusted input, and copying either into a message that reaches a log record would
+     * let a caller forge log content - the same hazard {@link #toString()} exists to close. The
+     * message instead names this type, its field count and its source map, which is what a caller
+     * needs in order to correct the payload. Nothing is stored: this type is immutable, and the
+     * method exists only to fail.</p>
+     *
+     * @param name  the unrecognised property name supplied by the caller, deliberately neither
+     *              stored nor reproduced in the thrown message
+     * @param value the unrecognised property value supplied by the caller, deliberately neither
+     *              stored nor reproduced in the thrown message
+     * @throws IllegalArgumentException always, because an unrecognised property is never acceptable
+     *                                 on this request
+     */
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(String name, Object value) {
+        throw new IllegalArgumentException(
+                "ReportRequest accepts only the 17 fields declared by "
+                        + "app/cpy-bms/CORPT00.CPY, and the request contained a property that is "
+                        + "not one of them. The offending name and value are withheld because they "
+                        + "are untrusted input.");
+    }
 }

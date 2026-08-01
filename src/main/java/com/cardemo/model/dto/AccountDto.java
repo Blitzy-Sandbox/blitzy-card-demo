@@ -31,14 +31,13 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * Immutable account-view response payload: the Java replacement for the CICS
- * {@code EXEC CICS SEND MAP} conversation of screen {@code CACTVWA}, transaction {@code CAVW}.
+ * Immutable account-view response payload: the Java replacement for the CICS {@code EXEC CICS SEND MAP}
+ * conversation of screen {@code CACTVWA}, transaction {@code CAVW}.
  *
- * <p><strong>Purpose.</strong> This record transports, verbatim, the 37 screen fields that
- * {@code COACTVWC} populates for the account-view screen. It is an outbound payload only: the
- * REST layer serialises it to JSON in place of writing a 3270 map. Every component is declared
- * in the exact order the symbolic map declares it, because field order is part of the migrated
- * contract and not an implementation detail.</p>
+ * <p>This record transports, verbatim, the 37 screen fields that {@code COACTVWC} populates for the
+ * account-view screen. It is an outbound payload only: the REST layer serialises it to JSON in place of writing
+ * a 3270 map. Every component is declared in the exact order the symbolic map declares it, because field order
+ * is part of the migrated contract and not an implementation detail.
  *
  * <p><strong>Provenance.</strong> Field names, types and lengths are taken from the generated
  * symbolic map {@code app/cpy-bms/COACTVW.CPY}, group {@code 01 CACTVWAI.} (line 17) up to
@@ -49,16 +48,18 @@ import java.util.Optional;
  * clause and its line number, so the mapping is verifiable by inspection rather than by
  * assertion.</p>
  *
- * <p><strong>Verified field census, and a specification defect (severity: Medium).</strong>
- * The body of the technical specification states that {@code COACTVW} carries 36 input fields.
- * That figure is wrong. A count of the {@code 02 <name>I PIC} declarations lying strictly
- * inside the {@code 01 CACTVWAI.} group yields <strong>37</strong>, and all 37 are declared
- * here. The corpus-wide census is likewise 441 input fields across the seventeen symbolic maps,
- * not the 460 the specification body states. Remediation: this class implements the verified
- * count of 37, exposed as {@link #FIELD_COUNT} so the figure is machine-checkable; both
- * corrections are recorded in the repository-root decision log, which is the artefact for
- * cross-cutting findings. Impact is confined to documentation accuracy, hence Medium rather
- * than High: no runtime behaviour depends on the erroneous figure.</p>
+ * <p><strong>Verified field census, and a superseded prior figure (severity: Medium, closed).</strong>
+ * Prior-generation plan prose stated that {@code COACTVW} carries 36 input fields. That figure is
+ * wrong. A count of the {@code 02 <name>I PIC} declarations lying strictly inside the
+ * {@code 01 CACTVWAI.} group yields <strong>37</strong>, and all 37 are declared here. The corpus-wide
+ * census is likewise 441 input fields across the seventeen symbolic maps, not the 460 the prior prose
+ * stated. This class implements the verified count of 37, exposed as {@link #FIELD_COUNT} so the figure
+ * is machine-checkable. Nothing remains outstanding against the specification:
+ * {@code docs/technical-specifications.md} publishes 37 for this map and 441 corpus-wide, and lists both
+ * supersessions in its section 0.2.2.1 corrections table, verified on 1 August 2026. The repository-root
+ * decision log the plan nominates for cross-cutting findings is <strong>not available</strong> and has
+ * not been authored, so that corrections table is the register of record. Impact is confined to
+ * documentation accuracy, hence Medium rather than High: no runtime behaviour depends on the figure.</p>
  *
  * <p><strong>Distinction: {@code ACCTSIDI} is numeric on this map and on no other.</strong>
  * {@code app/cpy-bms/COACTVW.CPY:60} declares {@code 02 ACCTSIDI PIC 99999999999} - an
@@ -131,6 +132,12 @@ import java.util.Optional;
  *       ({@code app/cbl/COACTVWC.cbl:518}) - two bytes are dropped.</li>
  * </ul>
  *
+ * <p>The width enforcement described below therefore uses the <em>map</em> width for all three, not
+ * the record width. Accepting ten characters of postal code or fifteen of telephone number would
+ * accept a value this screen never displayed, and the payload is compared against what the screen
+ * produced. Truncation is not performed here either: an over-width value is rejected rather than cut
+ * down, because the caller assembling this payload is the one that must apply the legacy move.</p>
+ *
  * <p>Two further transformations are worth stating because the component values are not raw
  * record contents. The social security number is re-formatted, not copied: a raw
  * {@code MOVE CUST-SSN} is commented out at {@code app/cbl/COACTVWC.cbl:495} and replaced by a
@@ -199,20 +206,36 @@ import java.util.Optional;
  * emit every component, so relying on the default would leak all six groups on the first
  * logged payload. The override emits only the account identifier, the account status and the
  * program name. No validation or exception message produced by this class ever quotes a field
- * value; messages name the field only. Log masking is configured centrally as a second line of
- * defence, but the primary defence is never emitting the values in the first place. Consistent
+ * value; messages name the field only. Never emitting the values is the <em>only</em> defence
+ * this payload has, not merely the primary one: a central masking configuration would be a
+ * second line of defence, but no {@code logback-spring.xml} exists under
+ * {@code src/main/resources} at present, so there is nothing behind the override to catch what
+ * it might miss. That absence is what makes the override load-bearing rather than belt-and-braces,
+ * and it is why the omission is asserted by test rather than left to review. Consistent
  * with least privilege, this payload carries no password and no password hash - the account-view
  * map declares no such field - and it must not acquire one.</p>
  *
- * <p><strong>Error modes.</strong> Construction cannot fail: every component is a nullable
- * {@code String} and no argument is rejected, because absence is a legitimate state of a screen
- * field. Nothing in this class throws during normal operation. The only failure surface is
- * {@link #toAmount(String, String)}, which throws {@code IllegalArgumentException} when the
- * supplied text cannot denote an account amount; it names the offending field, never its value,
- * and preserves the underlying {@code NumberFormatException} as the cause so the root cause is
- * not swallowed. This class deliberately does not implement {@code Serializable}: it needs no
- * Java-native serialisation, and given the protected data it carries, exposing it to native
- * deserialisation would add risk for no benefit.</p>
+ * <p><strong>Width enforcement (severity of the gap it closes: High).</strong> Every component
+ * documents the PIC clause it derives from, but for a time none of those widths was enforced: the
+ * record's implicit constructor accepted any string, so an instance could carry an
+ * {@code addressStateCode} of seven characters or an {@code errorMessage} of two hundred and still
+ * serialise cleanly, describing a screen state {@code app/cpy-bms/COACTVW.CPY} cannot represent.
+ * Since the symbolic map is the migrated contract, all 37 widths are now checked in the canonical
+ * constructor, which is the single point every instance passes through. The check rejects and never
+ * repairs: no trimming, no padding, no case folding and no coercion, because each of those would
+ * alter a value the parity comparison reads byte for byte. Absence remains legitimate - see the
+ * three-state paragraph above - so {@code null}, empty, blank and {@code LOW-VALUES} all pass, and
+ * only over-width fails, because only over-width is impossible on the source screen.</p>
+ *
+ * <p><strong>Error modes.</strong> Two failure surfaces exist, both throwing
+ * {@code IllegalArgumentException} and neither ever quoting a field value. Construction fails when a
+ * component exceeds the width its screen field declares; the message names the component and quotes
+ * the COBOL field, PIC clause and source locator so the width can be verified without leaving the
+ * stack trace. {@link #toAmount(String, String)} fails when the supplied text cannot denote an
+ * account amount, and preserves the underlying {@code NumberFormatException} as the cause so the
+ * root cause is not swallowed. Nothing else in this class throws. This class deliberately does not
+ * implement {@code Serializable}: it needs no Java-native serialisation, and given the protected
+ * data it carries, exposing it to native deserialisation would add risk for no benefit.</p>
  *
  * <p><strong>Configuration, build and troubleshooting.</strong> This record has no
  * configuration of its own and no defaults to tune; it holds no state beyond its components and
@@ -228,162 +251,157 @@ import java.util.Optional;
  * the dash-separated form byte for byte.</p>
  *
  * @param transactionName the screen header transaction identifier. {@code TRNNAMEI PIC X(4)} at
- *                        {@code app/cpy-bms/COACTVW.CPY:24}, populated from
- *                        {@code LIT-THISTRANID} at {@code app/cbl/COACTVWC.cbl:438}. May be
- *                        {@code null}.
- * @param title01 the first screen title line. {@code TITLE01I PIC X(40)} at
- *                {@code app/cpy-bms/COACTVW.CPY:30}, populated from {@code CCDA-TITLE01} at
- *                {@code app/cbl/COACTVWC.cbl:436}. May be {@code null}.
+ *                        {@code app/cpy-bms/COACTVW.CPY:24}, populated from {@code LIT-THISTRANID} at
+ *                        {@code app/cbl/COACTVWC.cbl:438}. May be {@code null}; rejected if wider than the declaration
+ *                        cited.
+ * @param title01 the first screen title line. {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COACTVW.CPY:30},
+ *                populated from {@code CCDA-TITLE01} at {@code app/cbl/COACTVWC.cbl:436}. May be {@code null}; rejected
+ *                if wider than the declaration cited.
  * @param currentDate the header date rendered {@code mm/dd/yy}. {@code CURDATEI PIC X(8)} at
- *                    {@code app/cpy-bms/COACTVW.CPY:36}, populated from
- *                    {@code WS-CURDATE-MM-DD-YY} at {@code app/cbl/COACTVWC.cbl:447}. May be
- *                    {@code null}.
- * @param programName the screen header program name. {@code PGMNAMEI PIC X(8)} at
- *                    {@code app/cpy-bms/COACTVW.CPY:42}, populated from {@code LIT-THISPGM} at
- *                    {@code app/cbl/COACTVWC.cbl:439}. May be {@code null}.
- * @param title02 the second screen title line. {@code TITLE02I PIC X(40)} at
- *                {@code app/cpy-bms/COACTVW.CPY:48}, populated from {@code CCDA-TITLE02} at
- *                {@code app/cbl/COACTVWC.cbl:437}. May be {@code null}.
+ *                    {@code app/cpy-bms/COACTVW.CPY:36}, populated from {@code WS-CURDATE-MM-DD-YY} at
+ *                    {@code app/cbl/COACTVWC.cbl:447}. May be {@code null}; rejected if wider than the declaration
+ *                    cited.
+ * @param programName the screen header program name. {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COACTVW.CPY:42},
+ *                    populated from {@code LIT-THISPGM} at {@code app/cbl/COACTVWC.cbl:439}. May be {@code null};
+ *                    rejected if wider than the declaration cited.
+ * @param title02 the second screen title line. {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COACTVW.CPY:48},
+ *                populated from {@code CCDA-TITLE02} at {@code app/cbl/COACTVWC.cbl:437}. May be {@code null}; rejected
+ *                if wider than the declaration cited.
  * @param currentTime the header time rendered {@code hh:mm:ss}. {@code CURTIMEI PIC X(8)} at
  *                    {@code app/cpy-bms/COACTVW.CPY:54} - eight bytes on this map, nine at
- *                    {@code app/cpy-bms/COSGN00.CPY:54} - populated from
- *                    {@code WS-CURTIME-HH-MM-SS} at {@code app/cbl/COACTVWC.cbl:453}. May be
- *                    {@code null}.
- * @param accountId the eleven-character account identifier, zero-padded and carried as text so
- *                  that leading zeros, {@code LOW-VALUES} and the {@code '*'} marker all
- *                  survive. {@code ACCTSIDI PIC 99999999999} at
- *                  {@code app/cpy-bms/COACTVW.CPY:60} - the corpus's sole numeric declaration
- *                  of this field - keyed on {@code ACCT-ID PIC 9(11)} at
- *                  {@code app/cpy/CVACT01Y.cpy:5}. May be {@code null}.
+ *                    {@code app/cpy-bms/COSGN00.CPY:54} - populated from {@code WS-CURTIME-HH-MM-SS} at
+ *                    {@code app/cbl/COACTVWC.cbl:453}. May be {@code null}; rejected if wider than the declaration
+ *                    cited.
+ * @param accountId the eleven-character account identifier, zero-padded and carried as text so that leading zeros,
+ *                  {@code LOW-VALUES} and the {@code '*'} marker all survive. {@code ACCTSIDI PIC 99999999999} at
+ *                  {@code app/cpy-bms/COACTVW.CPY:60} - the corpus's sole numeric declaration of this field - keyed on
+ *                  {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:5}. May be {@code null}; rejected if wider
+ *                  than the declaration cited.
  * @param accountStatus the single-character active status. {@code ACSTTUSI PIC X(1)} at
  *                      {@code app/cpy-bms/COACTVW.CPY:66}, from {@code ACCT-ACTIVE-STATUS} at
- *                      {@code app/cbl/COACTVWC.cbl:473}. May be {@code null}.
+ *                      {@code app/cbl/COACTVWC.cbl:473}. May be {@code null}; rejected if wider than the declaration
+ *                      cited.
  * @param openDate the account open date as dash-separated text. {@code ADTOPENI PIC X(10)} at
- *                 {@code app/cpy-bms/COACTVW.CPY:72}, from {@code ACCT-OPEN-DATE} at
- *                 {@code app/cbl/COACTVWC.cbl:487}. May be {@code null}.
+ *                 {@code app/cpy-bms/COACTVW.CPY:72}, from {@code ACCT-OPEN-DATE} at {@code app/cbl/COACTVWC.cbl:487}.
+ *                 May be {@code null}; rejected if wider than the declaration cited.
  * @param creditLimit the credit limit as display text. {@code ACRDLIMI PIC X(15)} at
- *                    {@code app/cpy-bms/COACTVW.CPY:78}, from
- *                    {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at
- *                    {@code app/cbl/COACTVWC.cbl:477}. May be {@code null}.
- * @param expiryDate the account expiry date as dash-separated text. {@code AEXPDTI PIC X(10)}
- *                   at {@code app/cpy-bms/COACTVW.CPY:84}, from
- *                   {@code ACCT-EXPIRAION-DATE} at {@code app/cbl/COACTVWC.cbl:488}; the
- *                   misspelling of that copybook field is part of the field contract and is not
- *                   corrected. May be {@code null}.
+ *                    {@code app/cpy-bms/COACTVW.CPY:78}, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at
+ *                    {@code app/cbl/COACTVWC.cbl:477}. May be {@code null}; rejected if wider than the declaration
+ *                    cited.
+ * @param expiryDate the account expiry date as dash-separated text. {@code AEXPDTI PIC X(10)} at
+ *                   {@code app/cpy-bms/COACTVW.CPY:84}, from {@code ACCT-EXPIRAION-DATE} at
+ *                   {@code app/cbl/COACTVWC.cbl:488}; the misspelling of that copybook field is part of the field
+ *                   contract and is not corrected. May be {@code null}; rejected if wider than the declaration cited.
  * @param cashCreditLimit the cash credit limit as display text. {@code ACSHLIMI PIC X(15)} at
- *                        {@code app/cpy-bms/COACTVW.CPY:90}, from
- *                        {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99} at
- *                        {@code app/cbl/COACTVWC.cbl:479}. May be {@code null}.
- * @param reissueDate the card reissue date as dash-separated text. {@code AREISDTI PIC X(10)}
- *                    at {@code app/cpy-bms/COACTVW.CPY:96}, from {@code ACCT-REISSUE-DATE} at
- *                    {@code app/cbl/COACTVWC.cbl:489}. May be {@code null}.
+ *                        {@code app/cpy-bms/COACTVW.CPY:90}, from {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99} at
+ *                        {@code app/cbl/COACTVWC.cbl:479}. May be {@code null}; rejected if wider than the declaration
+ *                        cited.
+ * @param reissueDate the card reissue date as dash-separated text. {@code AREISDTI PIC X(10)} at
+ *                    {@code app/cpy-bms/COACTVW.CPY:96}, from {@code ACCT-REISSUE-DATE} at
+ *                    {@code app/cbl/COACTVWC.cbl:489}. May be {@code null}; rejected if wider than the declaration
+ *                    cited.
  * @param currentBalance the current balance as display text. {@code ACURBALI PIC X(15)} at
  *                       {@code app/cpy-bms/COACTVW.CPY:102} - fifteen bytes here and at
- *                       {@code app/cpy-bms/COACTUP.CPY:138}, against
- *                       {@code CURBALI PIC X(14)} at {@code app/cpy-bms/COBIL00.CPY:66} - from
- *                       {@code ACCT-CURR-BAL PIC S9(10)V99} at
- *                       {@code app/cbl/COACTVWC.cbl:475}. May be {@code null}.
- * @param currentCycleCredit the current cycle credit as display text.
- *                           {@code ACRCYCRI PIC X(15)} at
- *                           {@code app/cpy-bms/COACTVW.CPY:108}, from
- *                           {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99} at
- *                           {@code app/cbl/COACTVWC.cbl:482}. May be {@code null}.
+ *                       {@code app/cpy-bms/COACTUP.CPY:138}, against {@code CURBALI PIC X(14)} at
+ *                       {@code app/cpy-bms/COBIL00.CPY:66} - from {@code ACCT-CURR-BAL PIC S9(10)V99} at
+ *                       {@code app/cbl/COACTVWC.cbl:475}. May be {@code null}; rejected if wider than the declaration
+ *                       cited.
+ * @param currentCycleCredit the current cycle credit as display text. {@code ACRCYCRI PIC X(15)} at
+ *                           {@code app/cpy-bms/COACTVW.CPY:108}, from {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99} at
+ *                           {@code app/cbl/COACTVWC.cbl:482}. May be {@code null}; rejected if wider than the
+ *                           declaration cited.
  * @param accountGroupId the disclosure group identifier. {@code AADDGRPI PIC X(10)} at
  *                       {@code app/cpy-bms/COACTVW.CPY:114}, from {@code ACCT-GROUP-ID} at
- *                       {@code app/cbl/COACTVWC.cbl:490}. May be {@code null}.
- * @param currentCycleDebit the current cycle debit as display text, which legitimately carries
- *                          negative amounts and is never normalised to an absolute value.
- *                          {@code ACRCYDBI PIC X(15)} at
- *                          {@code app/cpy-bms/COACTVW.CPY:120}, from
- *                          {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at
- *                          {@code app/cbl/COACTVWC.cbl:485}. May be {@code null}.
+ *                       {@code app/cbl/COACTVWC.cbl:490}. May be {@code null}; rejected if wider than the declaration
+ *                       cited.
+ * @param currentCycleDebit the current cycle debit as display text, which legitimately carries negative amounts and is
+ *                          never normalised to an absolute value. {@code ACRCYDBI PIC X(15)} at
+ *                          {@code app/cpy-bms/COACTVW.CPY:120}, from {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at
+ *                          {@code app/cbl/COACTVWC.cbl:485}. May be {@code null}; rejected if wider than the
+ *                          declaration cited.
  * @param customerId the nine-character customer identifier. {@code ACSTNUMI PIC X(9)} at
  *                   {@code app/cpy-bms/COACTVW.CPY:126}, from {@code CUST-ID PIC 9(09)} at
- *                   {@code app/cbl/COACTVWC.cbl:494}. May be {@code null}.
- * @param customerSsn the dash-formatted social security number - protected data, never
- *                    emitted. {@code ACSTSSNI PIC X(12)} at
- *                    {@code app/cpy-bms/COACTVW.CPY:132}, assembled by the {@code STRING} of
- *                    {@code CUST-SSN PIC 9(09)} at {@code app/cbl/COACTVWC.cbl:496} to
- *                    line 504 into eleven characters. May be {@code null}.
- * @param customerDateOfBirth the date of birth as dash-separated text - protected data, never
- *                            emitted. {@code ACSTDOBI PIC X(10)} at
- *                            {@code app/cpy-bms/COACTVW.CPY:138}, from
- *                            {@code CUST-DOB-YYYY-MM-DD} at
- *                            {@code app/cbl/COACTVWC.cbl:507}. May be {@code null}.
- * @param customerFicoScore the FICO credit score. {@code ACSTFCOI PIC X(3)} at
- *                          {@code app/cpy-bms/COACTVW.CPY:144}, from
- *                          {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at
- *                          {@code app/cbl/COACTVWC.cbl:505}. May be {@code null}.
- * @param customerFirstName the customer first name - protected data, never emitted.
- *                          {@code ACSFNAMI PIC X(25)} at
- *                          {@code app/cpy-bms/COACTVW.CPY:150}, from
- *                          {@code CUST-FIRST-NAME} at {@code app/cbl/COACTVWC.cbl:508}. May be
- *                          {@code null}.
- * @param customerMiddleName the customer middle name - protected data, never emitted.
- *                           {@code ACSMNAMI PIC X(25)} at
- *                           {@code app/cpy-bms/COACTVW.CPY:156}, from
- *                           {@code CUST-MIDDLE-NAME} at {@code app/cbl/COACTVWC.cbl:509}. May
- *                           be {@code null}.
- * @param customerLastName the customer last name - protected data, never emitted.
- *                         {@code ACSLNAMI PIC X(25)} at
+ *                   {@code app/cbl/COACTVWC.cbl:494}. May be {@code null}; rejected if wider than the declaration
+ *                   cited.
+ * @param customerSsn the dash-formatted social security number - protected data, never emitted.
+ *                    {@code ACSTSSNI PIC X(12)} at {@code app/cpy-bms/COACTVW.CPY:132}, assembled by the {@code STRING}
+ *                    of {@code CUST-SSN PIC 9(09)} at {@code app/cbl/COACTVWC.cbl:496} to line 504 into eleven
+ *                    characters. May be {@code null}; rejected if wider than the declaration cited.
+ * @param customerDateOfBirth the date of birth as dash-separated text - protected data, never emitted.
+ *                            {@code ACSTDOBI PIC X(10)} at {@code app/cpy-bms/COACTVW.CPY:138}, from
+ *                            {@code CUST-DOB-YYYY-MM-DD} at {@code app/cbl/COACTVWC.cbl:507}. May be {@code null};
+ *                            rejected if wider than the declaration cited.
+ * @param customerFicoScore the FICO credit score. {@code ACSTFCOI PIC X(3)} at {@code app/cpy-bms/COACTVW.CPY:144},
+ *                          from {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at {@code app/cbl/COACTVWC.cbl:505}. May be
+ *                          {@code null}; rejected if wider than the declaration cited.
+ * @param customerFirstName the customer first name - protected data, never emitted. {@code ACSFNAMI PIC X(25)} at
+ *                          {@code app/cpy-bms/COACTVW.CPY:150}, from {@code CUST-FIRST-NAME} at
+ *                          {@code app/cbl/COACTVWC.cbl:508}. May be {@code null}; rejected if wider than the
+ *                          declaration cited.
+ * @param customerMiddleName the customer middle name - protected data, never emitted. {@code ACSMNAMI PIC X(25)} at
+ *                           {@code app/cpy-bms/COACTVW.CPY:156}, from {@code CUST-MIDDLE-NAME} at
+ *                           {@code app/cbl/COACTVWC.cbl:509}. May be {@code null}; rejected if wider than the
+ *                           declaration cited.
+ * @param customerLastName the customer last name - protected data, never emitted. {@code ACSLNAMI PIC X(25)} at
  *                         {@code app/cpy-bms/COACTVW.CPY:162}, from {@code CUST-LAST-NAME} at
- *                         {@code app/cbl/COACTVWC.cbl:510}. May be {@code null}.
- * @param addressLine1 the first address line. {@code ACSADL1I PIC X(50)} at
- *                     {@code app/cpy-bms/COACTVW.CPY:168}, from {@code CUST-ADDR-LINE-1} at
- *                     {@code app/cbl/COACTVWC.cbl:511}. May be {@code null}.
- * @param addressStateCode the two-character state code, which the map declares between the two
- *                         address lines rather than after them. {@code ACSSTTEI PIC X(2)} at
- *                         {@code app/cpy-bms/COACTVW.CPY:174}, from
- *                         {@code CUST-ADDR-STATE-CD PIC X(02)} at
- *                         {@code app/cbl/COACTVWC.cbl:514}. May be {@code null}.
- * @param addressLine2 the second address line. {@code ACSADL2I PIC X(50)} at
- *                     {@code app/cpy-bms/COACTVW.CPY:180}, from {@code CUST-ADDR-LINE-2} at
- *                     {@code app/cbl/COACTVWC.cbl:512}. May be {@code null}.
- * @param addressZip the postal code, five bytes on this map, into which the ten-byte
- *                   {@code CUST-ADDR-ZIP PIC X(10)} is truncated by the legacy move.
- *                   {@code ACSZIPCI PIC X(5)} at {@code app/cpy-bms/COACTVW.CPY:186}, from
- *                   {@code app/cbl/COACTVWC.cbl:515}. May be {@code null}.
- * @param addressCity the city, which the map declares after the postal code and which is in
- *                    fact address line 3. {@code ACSCITYI PIC X(50)} at
- *                    {@code app/cpy-bms/COACTVW.CPY:192}, from {@code CUST-ADDR-LINE-3} at
- *                    {@code app/cbl/COACTVWC.cbl:513}. May be {@code null}.
+ *                         {@code app/cbl/COACTVWC.cbl:510}. May be {@code null}; rejected if wider than the declaration
+ *                         cited.
+ * @param addressLine1 the first address line. {@code ACSADL1I PIC X(50)} at {@code app/cpy-bms/COACTVW.CPY:168}, from
+ *                     {@code CUST-ADDR-LINE-1} at {@code app/cbl/COACTVWC.cbl:511}. May be {@code null}; rejected if
+ *                     wider than the declaration cited.
+ * @param addressStateCode the two-character state code, which the map declares between the two address lines rather
+ *                         than after them. {@code ACSSTTEI PIC X(2)} at {@code app/cpy-bms/COACTVW.CPY:174}, from
+ *                         {@code CUST-ADDR-STATE-CD PIC X(02)} at {@code app/cbl/COACTVWC.cbl:514}. May be
+ *                         {@code null}; rejected if wider than the declaration cited.
+ * @param addressLine2 the second address line. {@code ACSADL2I PIC X(50)} at {@code app/cpy-bms/COACTVW.CPY:180}, from
+ *                     {@code CUST-ADDR-LINE-2} at {@code app/cbl/COACTVWC.cbl:512}. May be {@code null}; rejected if
+ *                     wider than the declaration cited.
+ * @param addressZip the postal code, five bytes on this map, into which the ten-byte {@code CUST-ADDR-ZIP PIC X(10)} is
+ *                   truncated by the legacy move. {@code ACSZIPCI PIC X(5)} at {@code app/cpy-bms/COACTVW.CPY:186},
+ *                   from {@code app/cbl/COACTVWC.cbl:515}. May be {@code null}; rejected if wider than the declaration
+ *                   cited.
+ * @param addressCity the city, which the map declares after the postal code and which is in fact address line 3.
+ *                    {@code ACSCITYI PIC X(50)} at {@code app/cpy-bms/COACTVW.CPY:192}, from {@code CUST-ADDR-LINE-3}
+ *                    at {@code app/cbl/COACTVWC.cbl:513}. May be {@code null}; rejected if wider than the declaration
+ *                    cited.
  * @param addressCountryCode the three-character country code. {@code ACSCTRYI PIC X(3)} at
- *                           {@code app/cpy-bms/COACTVW.CPY:198}, from
- *                           {@code CUST-ADDR-COUNTRY-CD PIC X(03)} at
- *                           {@code app/cbl/COACTVWC.cbl:516}. May be {@code null}.
- * @param phoneNumber1 the first telephone number as a whole formatted value, thirteen bytes on
- *                     this map, into which the fifteen-byte {@code CUST-PHONE-NUM-1 PIC X(15)}
- *                     is truncated - protected data, never emitted.
+ *                           {@code app/cpy-bms/COACTVW.CPY:198}, from {@code CUST-ADDR-COUNTRY-CD PIC X(03)} at
+ *                           {@code app/cbl/COACTVWC.cbl:516}. May be {@code null}; rejected if wider than the
+ *                           declaration cited.
+ * @param phoneNumber1 the first telephone number as a whole formatted value, thirteen bytes on this map, into which the
+ *                     fifteen-byte {@code CUST-PHONE-NUM-1 PIC X(15)} is truncated - protected data, never emitted.
  *                     {@code ACSPHN1I PIC X(13)} at {@code app/cpy-bms/COACTVW.CPY:204}, from
- *                     {@code app/cbl/COACTVWC.cbl:517}. May be {@code null}.
- * @param governmentIssuedId the government-issued identifier, which the map declares between
- *                           the two telephone numbers - protected data, never emitted.
- *                           {@code ACSGOVTI PIC X(20)} at
- *                           {@code app/cpy-bms/COACTVW.CPY:210}, from
- *                           {@code CUST-GOVT-ISSUED-ID} at
- *                           {@code app/cbl/COACTVWC.cbl:519}. May be {@code null}.
- * @param phoneNumber2 the second telephone number as a whole formatted value, thirteen bytes on
- *                     this map, into which the fifteen-byte {@code CUST-PHONE-NUM-2 PIC X(15)}
- *                     is truncated - protected data, never emitted.
+ *                     {@code app/cbl/COACTVWC.cbl:517}. May be {@code null}; rejected if wider than the declaration
+ *                     cited.
+ * @param governmentIssuedId the government-issued identifier, which the map declares between the two telephone numbers
+ *                           - protected data, never emitted. {@code ACSGOVTI PIC X(20)} at
+ *                           {@code app/cpy-bms/COACTVW.CPY:210}, from {@code CUST-GOVT-ISSUED-ID} at
+ *                           {@code app/cbl/COACTVWC.cbl:519}. May be {@code null}; rejected if wider than the
+ *                           declaration cited.
+ * @param phoneNumber2 the second telephone number as a whole formatted value, thirteen bytes on this map, into which
+ *                     the fifteen-byte {@code CUST-PHONE-NUM-2 PIC X(15)} is truncated - protected data, never emitted.
  *                     {@code ACSPHN2I PIC X(13)} at {@code app/cpy-bms/COACTVW.CPY:216}, from
- *                     {@code app/cbl/COACTVWC.cbl:518}. May be {@code null}.
- * @param eftAccountId the electronic funds transfer account identifier - protected data, never
- *                     emitted. {@code ACSEFTCI PIC X(10)} at
- *                     {@code app/cpy-bms/COACTVW.CPY:222}, from
- *                     {@code CUST-EFT-ACCOUNT-ID} at {@code app/cbl/COACTVWC.cbl:520}. May be
- *                     {@code null}.
- * @param primaryCardHolderIndicator the primary card holder indicator, a raw one-character code
- *                                   with no enumerated counterpart.
- *                                   {@code ACSPFLGI PIC X(1)} at
- *                                   {@code app/cpy-bms/COACTVW.CPY:228}, from
- *                                   {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)} at
- *                                   {@code app/cbl/COACTVWC.cbl:521}. May be {@code null}.
+ *                     {@code app/cbl/COACTVWC.cbl:518}. May be {@code null}; rejected if wider than the declaration
+ *                     cited.
+ * @param eftAccountId the electronic funds transfer account identifier - protected data, never emitted.
+ *                     {@code ACSEFTCI PIC X(10)} at {@code app/cpy-bms/COACTVW.CPY:222}, from
+ *                     {@code CUST-EFT-ACCOUNT-ID} at {@code app/cbl/COACTVWC.cbl:520}. May be {@code null}; rejected if
+ *                     wider than the declaration cited.
+ * @param primaryCardHolderIndicator the primary card holder indicator, a raw one-character code with no enumerated
+ *                                   counterpart. {@code ACSPFLGI PIC X(1)} at {@code app/cpy-bms/COACTVW.CPY:228}, from
+ *                                   {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)} at {@code app/cbl/COACTVWC.cbl:521}. May
+ *                                   be {@code null}; rejected if wider than the declaration cited.
  * @param informationMessage the screen information message. {@code INFOMSGI PIC X(45)} at
  *                           {@code app/cpy-bms/COACTVW.CPY:234}, from {@code WS-INFO-MSG} at
- *                           {@code app/cbl/COACTVWC.cbl:534}. May be {@code null}.
- * @param errorMessage the screen error message. {@code ERRMSGI PIC X(78)} at
- *                     {@code app/cpy-bms/COACTVW.CPY:240}, from {@code WS-RETURN-MSG} at
- *                     {@code app/cbl/COACTVWC.cbl:532}. May be {@code null}.
+ *                           {@code app/cbl/COACTVWC.cbl:534}. May be {@code null}; rejected if wider than the
+ *                           declaration cited.
+ * @param errorMessage the screen error message. {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COACTVW.CPY:240}, from
+ *                     {@code WS-RETURN-MSG} at {@code app/cbl/COACTVWC.cbl:532}. May be {@code null}; rejected if wider
+ *                     than the declaration cited.
+ * @see #AccountDto(String, String, String, String, String, String, String, String, String, String, String, String,
+ *      String, String, String, String, String, String, String, String, String, String, String, String, String,
+ *      String, String, String, String, String, String, String, String, String, String, String, String) for the width
+ *      enforcement every component is subject to
  */
 public record AccountDto(
         String transactionName,
@@ -425,116 +443,324 @@ public record AccountDto(
         String errorMessage) {
 
     /**
-     * The number of screen fields this payload declares, and therefore the number of components
-     * on this record.
-     *
-     * <p>The figure is the verified count of the {@code 02 <name>I PIC} declarations lying
-     * strictly inside the {@code 01 CACTVWAI.} group of {@code app/cpy-bms/COACTVW.CPY}, which
-     * begins at line 17 and ends where {@code 01 CACTVWAO REDEFINES CACTVWAI.} begins at
-     * line 241. It is exposed so that the count is machine-checkable, and so that the
-     * Medium-severity specification defect described on this class - a stated figure of 36 -
-     * cannot be reintroduced silently by a later edit.</p>
+     * The number of screen fields this payload declares, and therefore the number of components on this record: a
+     * census of the {@code 02 ...I PIC} declarations inside the {@code 01 CACTVWAI} input group at
+     * {@code app/cpy-bms/COACTVW.CPY:17-240}.
      */
     public static final int FIELD_COUNT = 37;
 
     /**
-     * The declared width, in bytes, of every monetary field on this map: {@code PIC X(15)}.
-     *
-     * <p>The width belongs to this map alone. The bill-payment map declares its current balance
-     * as {@code CURBALI PIC X(14)} at {@code app/cpy-bms/COBIL00.CPY:66} - a different name and
-     * a different width - so neither this constant nor {@link #toAmount(String, String)} may be
-     * promoted to a cross-map utility.</p>
+     * The declared width, in bytes, of every monetary field on this map: {@code PIC X(15)}, as at
+     * {@code ACRDLIMI}, {@code app/cpy-bms/COACTVW.CPY:78}.
      */
     public static final int MONEY_DISPLAY_LENGTH = 15;
 
     /**
-     * The decimal scale of every account amount: two fractional digits, taken from the
-     * {@code V99} of {@code PIC S9(10)V99} in {@code app/cpy/CVACT01Y.cpy}.
+     * The decimal scale of every account amount: two fractional digits, taken from the {@code V99} of
+     * {@code PIC S9(10)V99} in {@code app/cpy/CVACT01Y.cpy}.
      */
     public static final int MONEY_SCALE = 2;
 
     /**
-     * The greatest number of significant digits an account amount may carry: ten integer digits
-     * plus two fractional digits from {@code PIC S9(10)V99}, which is the {@code NUMERIC(12,2)}
-     * column width in the relational target.
+     * The greatest number of significant digits an account amount may carry: ten integer digits plus two
+     * fractional digits from {@code PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy}, which is the
+     * {@code NUMERIC(12,2)} column width in the
+     * relational target.
      */
     public static final int MONEY_PRECISION = 12;
 
     /**
      * The rounding mode for every monetary conversion.
-     *
-     * <p>Banker's rounding is applied uniformly so that a converted amount does not depend on
-     * the order in which conversions happen, and so that repeated conversion of the same
-     * display text is idempotent.</p>
      */
     public static final RoundingMode MONEY_ROUNDING = RoundingMode.HALF_EVEN;
 
+    /** {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COACTVW.CPY:24}. */
+    public static final int TRANSACTION_NAME_LENGTH = 4;
+
+    /**
+     * {@code TITLE01I} at {@code app/cpy-bms/COACTVW.CPY:30} and {@code TITLE02I} at {@code :48}, both
+     * {@code PIC X(40)}. The two title lines share one constant because they share one declared width on
+     * this map, not by convention.
+     */
+    public static final int TITLE_LENGTH = 40;
+
+    /** {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COACTVW.CPY:36}. */
+    public static final int CURRENT_DATE_LENGTH = 8;
+
+    /** {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COACTVW.CPY:42}. */
+    public static final int PROGRAM_NAME_LENGTH = 8;
+
+    /**
+     * {@code CURTIMEI PIC X(8)} at {@code app/cpy-bms/COACTVW.CPY:54}.
+     *
+     * <p>Declared separately from {@link #CURRENT_DATE_LENGTH} and {@link #PROGRAM_NAME_LENGTH} even though
+     * all three are eight bytes, because the widths coincide rather than derive from one another. The census
+     * behind that caution: the header time is {@code X(8)} on sixteen of the seventeen symbolic maps and
+     * {@code X(9)} on {@code app/cpy-bms/COSGN00.CPY:54}, so a shared cross-map constant would be wrong on
+     * exactly one map.</p>
+     */
+    public static final int CURRENT_TIME_LENGTH = 8;
+
+    /**
+     * {@code ACCTSIDI PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60} - eleven digit positions.
+     *
+     * <p>This is the corpus's sole numeric declaration of the field. The component remains text so that
+     * leading zeros, {@code LOW-VALUES} and the {@code '*'} marker survive; the width is the digit count.</p>
+     */
+    public static final int ACCOUNT_ID_LENGTH = 11;
+
+    /** {@code ACSTTUSI PIC X(1)} at {@code app/cpy-bms/COACTVW.CPY:66}. */
+    public static final int ACCOUNT_STATUS_LENGTH = 1;
+
+    /**
+     * The width of every dash-separated date on this map: {@code PIC X(10)}.
+     *
+     * <p>Shared by {@code ADTOPENI} at {@code app/cpy-bms/COACTVW.CPY:72}, {@code AEXPDTI} at {@code :84},
+     * {@code AREISDTI} at {@code :96} and {@code ACSTDOBI} at {@code :138}, all four of which carry the same
+     * {@code yyyy-mm-dd} form drawn from a {@code PIC X(10)} record field.</p>
+     */
+    public static final int DATE_TEXT_LENGTH = 10;
+
+    /** {@code AADDGRPI PIC X(10)} at {@code app/cpy-bms/COACTVW.CPY:114}, from {@code ACCT-GROUP-ID}. */
+    public static final int ACCOUNT_GROUP_ID_LENGTH = 10;
+
+    /** {@code ACSTNUMI PIC X(9)} at {@code app/cpy-bms/COACTVW.CPY:126}. */
+    public static final int CUSTOMER_ID_LENGTH = 9;
+
+    /**
+     * {@code ACSTSSNI PIC X(12)} at {@code app/cpy-bms/COACTVW.CPY:132}.
+     *
+     * <p>The map declares twelve bytes; the {@code STRING} at {@code app/cbl/COACTVWC.cbl:496-504} assembles
+     * eleven. Twelve is the contract, because it is what the field can hold.</p>
+     */
+    public static final int SSN_DISPLAY_LENGTH = 12;
+
+    /** {@code ACSTFCOI PIC X(3)} at {@code app/cpy-bms/COACTVW.CPY:144}. */
+    public static final int FICO_SCORE_LENGTH = 3;
+
+    /**
+     * The width of every customer name component: {@code PIC X(25)}.
+     *
+     * <p>Shared by {@code ACSFNAMI} at {@code app/cpy-bms/COACTVW.CPY:150}, {@code ACSMNAMI} at {@code :156}
+     * and {@code ACSLNAMI} at {@code :162}, matching {@code app/cpy/CVCUS01Y.cpy:3-5}.</p>
+     */
+    public static final int NAME_LENGTH = 25;
+
+    /**
+     * The width of every address line on this map: {@code PIC X(50)}.
+     *
+     * <p>Shared by {@code ACSADL1I} at {@code app/cpy-bms/COACTVW.CPY:168}, {@code ACSADL2I} at {@code :180}
+     * and {@code ACSCITYI} at {@code :192}. The third is address line 3 despite its name, as the component
+     * documentation records.</p>
+     */
+    public static final int ADDRESS_LINE_LENGTH = 50;
+
+    /** {@code ACSSTTEI PIC X(2)} at {@code app/cpy-bms/COACTVW.CPY:174}, from {@code CUST-ADDR-STATE-CD}. */
+    public static final int STATE_CODE_LENGTH = 2;
+
+    /**
+     * {@code ACSZIPCI PIC X(5)} at {@code app/cpy-bms/COACTVW.CPY:186}.
+     *
+     * <p>Five bytes, into which the legacy move truncates the ten-byte {@code CUST-ADDR-ZIP PIC X(10)} of
+     * {@code app/cpy/CVCUS01Y.cpy:11}. The narrower map width is the contract for this payload; widening it
+     * to ten would accept a value the screen could not display.</p>
+     */
+    public static final int ZIP_LENGTH = 5;
+
+    /** {@code ACSCTRYI PIC X(3)} at {@code app/cpy-bms/COACTVW.CPY:198}, from {@code CUST-ADDR-COUNTRY-CD}. */
+    public static final int COUNTRY_CODE_LENGTH = 3;
+
+    /**
+     * The width of both telephone numbers on this map: {@code PIC X(13)}.
+     *
+     * <p>{@code ACSPHN1I} at {@code app/cpy-bms/COACTVW.CPY:204} and {@code ACSPHN2I} at {@code :216}.
+     * Thirteen bytes, into which the fifteen-byte {@code CUST-PHONE-NUM-1 PIC X(15)} of
+     * {@code app/cpy/CVCUS01Y.cpy:12-13} is truncated - the two trailing filler bytes of the record field are
+     * lost. The account-update map decomposes the same data into three components instead, which is why no
+     * telephone width is shared across the two maps.</p>
+     */
+    public static final int PHONE_NUMBER_LENGTH = 13;
+
+    /** {@code ACSGOVTI PIC X(20)} at {@code app/cpy-bms/COACTVW.CPY:210}. */
+    public static final int GOVERNMENT_ID_LENGTH = 20;
+
+    /** {@code ACSEFTCI PIC X(10)} at {@code app/cpy-bms/COACTVW.CPY:222}. */
+    public static final int EFT_ACCOUNT_ID_LENGTH = 10;
+
+    /** {@code ACSPFLGI PIC X(1)} at {@code app/cpy-bms/COACTVW.CPY:228}. */
+    public static final int CARD_HOLDER_INDICATOR_LENGTH = 1;
+
+    /**
+     * {@code INFOMSGI PIC X(45)} at {@code app/cpy-bms/COACTVW.CPY:234}.
+     *
+     * <p>Forty-five bytes on this map. The card-detail map declares its information message as
+     * {@code X(40)} and the card-list map as {@code X(45)}, so this width is map-specific and must not be
+     * promoted to a shared constant.</p>
+     */
+    public static final int INFORMATION_MESSAGE_LENGTH = 45;
+
+    /**
+     * {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COACTVW.CPY:240}.
+     *
+     * <p>Seventy-eight bytes on this map, against {@code X(80)} on {@code app/cpy-bms/COCRDSL.CPY:102}, for
+     * the same reason.</p>
+     */
+    public static final int ERROR_MESSAGE_LENGTH = 78;
+
     /**
      * The character a {@code LOW-VALUES} screen field decodes to: a binary zero.
-     *
-     * <p>{@code app/cbl/COACTVWC.cbl:466} moves {@code LOW-VALUES} into the account identifier
-     * field when the account filter is blank, so a component may legitimately arrive as binary
-     * zeros rather than as blanks or as {@code null}. Binary zeros are not whitespace, so they
-     * are not removed by stripping and have to be neutralised explicitly before a numeric
-     * conversion can recognise the field as empty.</p>
      */
     private static final char LOW_VALUE = '\u0000';
 
     /**
+     * Enforces the declared width of every component, rejecting a value the screen field could not hold.
+     *
+     * <p><strong>Why a canonical constructor is required at all.</strong> Each component's width is fixed by
+     * the symbolic map, and every component documents its own PIC clause, but until this constructor existed
+     * none of those widths was enforced. A record's implicit constructor accepts any string, so a caller
+     * could build an {@code AccountDto} whose {@code errorMessage} ran to two hundred characters or whose
+     * {@code addressStateCode} held seven, and the payload would serialise cleanly while describing a screen
+     * state {@code app/cpy-bms/COACTVW.CPY} cannot represent. The map is the migrated contract, so it is
+     * enforced here, once, at the only point through which every instance passes - including instances
+     * produced by deserialisation and by {@code withers} in any future revision.</p>
+     *
+     * <p><strong>What the guard does not do.</strong> It rejects; it never repairs. There is no trimming, no
+     * padding to the declared width, no case folding, no numeric coercion and no substitution of a default,
+     * because each of those would alter a value that the parity comparison reads byte for byte. The
+     * account-view screen is a display surface built by {@code 1200-SETUP-SCREEN-VARS}
+     * ({@code app/cbl/COACTVWC.cbl:460}) from unedited record fields, so a component either fits the field it
+     * came from or did not come from it.</p>
+     *
+     * <p><strong>Absence is not a violation.</strong> {@code null} passes, the empty string passes, blanks
+     * pass and {@code LOW-VALUES} passes - see {@link #LOW_VALUE} for why the last of these is a real state
+     * on this map rather than a theoretical one. The source distinguishes all four, its screen-attribute
+     * template {@code app/cpy/CSSETATY.cpy} models a blank field as a third state alongside valid and
+     * invalid, and collapsing any of them into another would erase a distinction the consuming service reads.
+     * Only over-width is an error, because only over-width is impossible.</p>
+     *
+     * <p><strong>Widths are compared in characters.</strong> Every declaration involved is
+     * {@code PIC X(n)} or, for the account identifier, {@code PIC 9(11)}, which are single-byte character
+     * positions on the host, so one character is one position. No component carries a numeric type, so no
+     * precision or scale check belongs here; monetary text is converted on demand by
+     * {@link #toAmount(String, String)}, which applies the {@code PIC S9(10)V99} precision ceiling at the
+     * point of conversion rather than at construction.</p>
+     *
+     * @throws IllegalArgumentException if any component is longer than the width
+     *         {@code app/cpy-bms/COACTVW.CPY} declares for its screen field. The message names the component
+     *         and quotes the declaration, and never reproduces the offending value, because this payload
+     *         carries a social security number, a date of birth, both telephone numbers, a government-issued
+     *         identifier, an electronic funds transfer account identifier and three customer names.
+     */
+    public AccountDto {
+        requireWidthWithinLimit(transactionName, TRANSACTION_NAME_LENGTH, "transactionName",
+                "TRNNAMEI PIC X(4) at app/cpy-bms/COACTVW.CPY:24");
+        requireWidthWithinLimit(title01, TITLE_LENGTH, "title01", "TITLE01I PIC X(40) at app/cpy-bms/COACTVW.CPY:30");
+        requireWidthWithinLimit(currentDate, CURRENT_DATE_LENGTH, "currentDate",
+                "CURDATEI PIC X(8) at app/cpy-bms/COACTVW.CPY:36");
+        requireWidthWithinLimit(programName, PROGRAM_NAME_LENGTH, "programName",
+                "PGMNAMEI PIC X(8) at app/cpy-bms/COACTVW.CPY:42");
+        requireWidthWithinLimit(title02, TITLE_LENGTH, "title02", "TITLE02I PIC X(40) at app/cpy-bms/COACTVW.CPY:48");
+        requireWidthWithinLimit(currentTime, CURRENT_TIME_LENGTH, "currentTime",
+                "CURTIMEI PIC X(8) at app/cpy-bms/COACTVW.CPY:54");
+        requireWidthWithinLimit(accountId, ACCOUNT_ID_LENGTH, "accountId",
+                "ACCTSIDI PIC 99999999999 at app/cpy-bms/COACTVW.CPY:60");
+        requireWidthWithinLimit(accountStatus, ACCOUNT_STATUS_LENGTH, "accountStatus",
+                "ACSTTUSI PIC X(1) at app/cpy-bms/COACTVW.CPY:66");
+        requireWidthWithinLimit(openDate, DATE_TEXT_LENGTH, "openDate",
+                "ADTOPENI PIC X(10) at app/cpy-bms/COACTVW.CPY:72");
+        requireWidthWithinLimit(creditLimit, MONEY_DISPLAY_LENGTH, "creditLimit",
+                "ACRDLIMI PIC X(15) at app/cpy-bms/COACTVW.CPY:78");
+        requireWidthWithinLimit(expiryDate, DATE_TEXT_LENGTH, "expiryDate",
+                "AEXPDTI PIC X(10) at app/cpy-bms/COACTVW.CPY:84");
+        requireWidthWithinLimit(cashCreditLimit, MONEY_DISPLAY_LENGTH, "cashCreditLimit",
+                "ACSHLIMI PIC X(15) at app/cpy-bms/COACTVW.CPY:90");
+        requireWidthWithinLimit(reissueDate, DATE_TEXT_LENGTH, "reissueDate",
+                "AREISDTI PIC X(10) at app/cpy-bms/COACTVW.CPY:96");
+        requireWidthWithinLimit(currentBalance, MONEY_DISPLAY_LENGTH, "currentBalance",
+                "ACURBALI PIC X(15) at app/cpy-bms/COACTVW.CPY:102");
+        requireWidthWithinLimit(currentCycleCredit, MONEY_DISPLAY_LENGTH, "currentCycleCredit",
+                "ACRCYCRI PIC X(15) at app/cpy-bms/COACTVW.CPY:108");
+        requireWidthWithinLimit(accountGroupId, ACCOUNT_GROUP_ID_LENGTH, "accountGroupId",
+                "AADDGRPI PIC X(10) at app/cpy-bms/COACTVW.CPY:114");
+        requireWidthWithinLimit(currentCycleDebit, MONEY_DISPLAY_LENGTH, "currentCycleDebit",
+                "ACRCYDBI PIC X(15) at app/cpy-bms/COACTVW.CPY:120");
+        requireWidthWithinLimit(customerId, CUSTOMER_ID_LENGTH, "customerId",
+                "ACSTNUMI PIC X(9) at app/cpy-bms/COACTVW.CPY:126");
+        requireWidthWithinLimit(customerSsn, SSN_DISPLAY_LENGTH, "customerSsn",
+                "ACSTSSNI PIC X(12) at app/cpy-bms/COACTVW.CPY:132");
+        requireWidthWithinLimit(customerDateOfBirth, DATE_TEXT_LENGTH, "customerDateOfBirth",
+                "ACSTDOBI PIC X(10) at app/cpy-bms/COACTVW.CPY:138");
+        requireWidthWithinLimit(customerFicoScore, FICO_SCORE_LENGTH, "customerFicoScore",
+                "ACSTFCOI PIC X(3) at app/cpy-bms/COACTVW.CPY:144");
+        requireWidthWithinLimit(customerFirstName, NAME_LENGTH, "customerFirstName",
+                "ACSFNAMI PIC X(25) at app/cpy-bms/COACTVW.CPY:150");
+        requireWidthWithinLimit(customerMiddleName, NAME_LENGTH, "customerMiddleName",
+                "ACSMNAMI PIC X(25) at app/cpy-bms/COACTVW.CPY:156");
+        requireWidthWithinLimit(customerLastName, NAME_LENGTH, "customerLastName",
+                "ACSLNAMI PIC X(25) at app/cpy-bms/COACTVW.CPY:162");
+        requireWidthWithinLimit(addressLine1, ADDRESS_LINE_LENGTH, "addressLine1",
+                "ACSADL1I PIC X(50) at app/cpy-bms/COACTVW.CPY:168");
+        requireWidthWithinLimit(addressStateCode, STATE_CODE_LENGTH, "addressStateCode",
+                "ACSSTTEI PIC X(2) at app/cpy-bms/COACTVW.CPY:174");
+        requireWidthWithinLimit(addressLine2, ADDRESS_LINE_LENGTH, "addressLine2",
+                "ACSADL2I PIC X(50) at app/cpy-bms/COACTVW.CPY:180");
+        requireWidthWithinLimit(addressZip, ZIP_LENGTH, "addressZip",
+                "ACSZIPCI PIC X(5) at app/cpy-bms/COACTVW.CPY:186");
+        requireWidthWithinLimit(addressCity, ADDRESS_LINE_LENGTH, "addressCity",
+                "ACSCITYI PIC X(50) at app/cpy-bms/COACTVW.CPY:192");
+        requireWidthWithinLimit(addressCountryCode, COUNTRY_CODE_LENGTH, "addressCountryCode",
+                "ACSCTRYI PIC X(3) at app/cpy-bms/COACTVW.CPY:198");
+        requireWidthWithinLimit(phoneNumber1, PHONE_NUMBER_LENGTH, "phoneNumber1",
+                "ACSPHN1I PIC X(13) at app/cpy-bms/COACTVW.CPY:204");
+        requireWidthWithinLimit(governmentIssuedId, GOVERNMENT_ID_LENGTH, "governmentIssuedId",
+                "ACSGOVTI PIC X(20) at app/cpy-bms/COACTVW.CPY:210");
+        requireWidthWithinLimit(phoneNumber2, PHONE_NUMBER_LENGTH, "phoneNumber2",
+                "ACSPHN2I PIC X(13) at app/cpy-bms/COACTVW.CPY:216");
+        requireWidthWithinLimit(eftAccountId, EFT_ACCOUNT_ID_LENGTH, "eftAccountId",
+                "ACSEFTCI PIC X(10) at app/cpy-bms/COACTVW.CPY:222");
+        requireWidthWithinLimit(primaryCardHolderIndicator, CARD_HOLDER_INDICATOR_LENGTH, "primaryCardHolderIndicator",
+                "ACSPFLGI PIC X(1) at app/cpy-bms/COACTVW.CPY:228");
+        requireWidthWithinLimit(informationMessage, INFORMATION_MESSAGE_LENGTH, "informationMessage",
+                "INFOMSGI PIC X(45) at app/cpy-bms/COACTVW.CPY:234");
+        requireWidthWithinLimit(errorMessage, ERROR_MESSAGE_LENGTH, "errorMessage",
+                "ERRMSGI PIC X(78) at app/cpy-bms/COACTVW.CPY:240");
+    }
+
+    /**
+     * Rejects a component value wider than the screen field it is declared from.
+     *
+     * @param value         the component value as supplied; {@code null}, empty, blank and
+     *                      {@code LOW-VALUES} are all accepted, because the source distinguishes them and
+     *                      none of them can overflow a field
+     * @param maxLength     the width the symbolic map declares, in character positions
+     * @param componentName the name of the record component being checked, used to identify the offending
+     *                      field in the diagnostic message
+     * @param provenance    the COBOL field name, PIC clause and source locator, quoted in the diagnostic
+     *                      message so that a reader can verify the width without leaving the stack trace
+     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}; the offending
+     *         value is deliberately never reproduced, because several components on this payload are
+     *         protected data
+     */
+    private static void requireWidthWithinLimit(String value, int maxLength, String componentName,
+            String provenance) {
+        if (value != null && value.length() > maxLength) {
+            throw new IllegalArgumentException(String.format(Locale.ROOT,
+                    "Component %s holds %d characters, but the symbolic map declares %s, so a value this "
+                            + "long cannot have come from that screen field. The offending value is not "
+                            + "reproduced because this payload carries protected data.",
+                    componentName, value.length(), provenance));
+        }
+    }
+
+    /**
      * Converts one of this payload's five monetary display fields into an arithmetic value.
      *
-     * <p>This is the sanctioned way to obtain a number from a monetary component, and it is
-     * deliberately <em>not</em> applied when the record is constructed. The components keep the
-     * display text exactly as the screen produced it, and the caller converts only where it
-     * actually needs to compute; that division is what keeps this record a pure transport type
-     * and keeps the payload byte-comparable against the legacy baseline.</p>
-     *
-     * <p>Absence is returned, not signalled. A {@code null} argument, an argument of blanks and
-     * an argument of binary zeros - the {@code LOW-VALUES} state described on
-     * {@link #LOW_VALUE} - all yield an empty result, because for the purpose of arithmetic each
-     * of the three means "no amount". The three states stay distinguishable on the record
-     * itself; only this conversion collapses them, and only for that narrow purpose.</p>
-     *
-     * <p>Parsing is locale-independent by construction. The text is handed to
-     * {@code new BigDecimal(String)}, whose grammar is fixed by specification;
-     * {@code java.text.NumberFormat} is deliberately avoided because it honours the platform
-     * default locale and would therefore accept a comma decimal separator on some hosts and
-     * reject it on others. Diagnostic messages are rendered with {@code Locale.ROOT} for the
-     * same reason, so that a failure reads identically on every machine. Grouping separators and
-     * currency symbols are rejected rather than tolerated: the account-view screen is populated
-     * by a move from an unedited {@code PIC S9(10)V99} field, so it never produces them, and the
-     * currency-tolerant conversion belongs to the transaction-add input path instead.</p>
-     *
-     * <p>The result is scaled to {@value #MONEY_SCALE} fractional digits using
-     * {@link #MONEY_ROUNDING} and is rejected if it needs more than
-     * {@value #MONEY_PRECISION} significant digits, which is the ceiling the underlying
-     * {@code PIC S9(10)V99} field imposes. Negative amounts are returned as negative values and
-     * are never normalised to an absolute value: the current cycle debit legitimately
-     * accumulates negative amounts, and the over-limit arithmetic of the posting path depends on
-     * that sign surviving.</p>
-     *
-     * <p>Compare two results with {@code BigDecimal.compareTo} and never with
-     * {@code BigDecimal.equals}, because {@code equals} also compares scale and would report two
-     * equal amounts as different.</p>
-     *
-     * @param displayText the monetary display text taken from one of this record's five monetary
-     *                    components; may be {@code null}, blank or binary zeros, each of which
-     *                    is treated as an absent amount
-     * @param fieldName   the name of the component being converted, used to identify the
-     *                    offending field in a diagnostic message without ever quoting its value;
-     *                    must be neither {@code null} nor blank
-     * @return the amount scaled to {@value #MONEY_SCALE} fractional digits, or an empty result
-     *         when the field carries no value
-     * @throws IllegalArgumentException if {@code fieldName} is {@code null} or blank; if
-     *                                  {@code displayText} is longer than the
-     *                                  {@value #MONEY_DISPLAY_LENGTH} bytes this map declares
-     *                                  and so cannot have come from it; if the text does not
-     *                                  denote a decimal number, in which case the originating
-     *                                  {@code NumberFormatException} is preserved as the cause;
-     *                                  or if the amount needs more than
-     *                                  {@value #MONEY_PRECISION} significant digits. The message
-     *                                  names the field and never reproduces its value, because
-     *                                  several fields on this payload are protected data.
+     * @param displayText the monetary display text taken from one of this record's five monetary components.
+     * @param fieldName the name of the component being converted, used to identify the offending field in a
+     * diagnostic message without ever quoting its value.
+     * @return the amount scaled to {@value #MONEY_SCALE} fractional digits, or an empty result when the field
+     * carries no value
+     * @throws IllegalArgumentException if {@code fieldName} is {@code null} or blank.
      */
     public static Optional<BigDecimal> toAmount(String displayText, String fieldName) {
         if (fieldName == null || fieldName.isBlank()) {
@@ -577,21 +803,8 @@ public record AccountDto(
     /**
      * Returns a diagnostic rendering that deliberately omits every protected field.
      *
-     * <p>This override exists for a security reason and not a cosmetic one. A record's generated
-     * {@code toString} emits every component, so leaving it in place would put the social
-     * security number, the date of birth, both telephone numbers, the government-issued
-     * identifier, the electronic funds transfer account identifier and all three customer names
-     * into any log line, stack trace or error page that rendered this payload. Central log
-     * masking is configured as a second line of defence, but the defence that matters is never
-     * emitting the values at all.</p>
-     *
-     * <p>Only the account identifier, the account status and the program name are rendered, and
-     * the rendering states plainly that fields were withheld so that a reader does not mistake
-     * it for a complete dump.</p>
-     *
-     * @return a rendering containing only the account identifier, the account status and the
-     *         program name, any of which may read {@code null} when its screen field was not
-     *         populated
+     * @return a rendering containing only the account identifier, the account status and the program name, any
+     * of which may read {@code null} when its screen field was not populated
      */
     @Override
     public String toString() {

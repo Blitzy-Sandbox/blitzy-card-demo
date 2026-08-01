@@ -308,7 +308,8 @@ import java.util.Optional;
  *       outright rather than degrading, which is the intended behaviour.</li>
  *   <li><strong>{@code spring.jpa.open-in-view: false}.</strong> Results are returned fully
  *       initialised; nothing is lazily dereferenced outside a transaction.</li>
- *   <li><strong>No index on {@code customer}.</strong> {@code V2__create_indexes.sql} creates
+ *   <li><strong>No index on {@code customer}.</strong> {@code V2__create_indexes.sql} (planned; absent at this
+ *       commit) is to create
  *       exactly three non-unique indexes — on the card account identifier, the cross-reference
  *       account identifier and the transaction processing timestamp — reproducing the three VSAM
  *       alternate indexes. The customer cluster has no alternate index in
@@ -333,7 +334,7 @@ import java.util.Optional;
  *       are supplied through {@code carddemo.pagination.*}. No listing screen reads the customer
  *       master, so no page size applies to this interface at all.</li>
  *   <li><strong>Connection-pool tuning is out of scope</strong> and is recorded as residual risk
- *       in {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Stating it plainly is the
+ *       in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Stating it plainly is the
  *       honest discharge of Rule 1 Clause A's requirement to justify performance tradeoffs rather
  *       than to make undocumented ones.</li>
  * </ul>
@@ -357,11 +358,14 @@ import java.util.Optional;
  * disclosed rather than guessed at.
  * </p>
  * <ol>
- *   <li><strong>Not available:</strong> the three Flyway migrations
- *       {@code V1__create_schema.sql}, {@code V2__create_indexes.sql} and
- *       {@code V3__seed_data.sql}. What is needed: those three files under
- *       {@code src/main/resources/db/migration}. Because {@code ddl-auto: validate} is set in
- *       every profile, the mapping asserted by {@code com.cardemo.model.entity.Customer} — table
+ *   <li><strong>Not available:</strong> two of the three Flyway migrations,
+ *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}. Measured 1 August 2026,
+ *       {@code V1__create_schema.sql} <strong>is present</strong> and declares
+ *       {@code CREATE TABLE customer} with {@code ck_customer_ssn_numeric}.
+ *       What is needed: those two remaining files under
+ *       {@code src/main/resources/db/migration}. Because {@code ddl-auto: validate} is mandated in
+ *       every planned profile, the mapping asserted by {@code com.cardemo.model.entity.Customer},
+ *       which is also what {@code V1} declares — table
  *       {@code customer}; {@code cust_id NUMERIC(9)} as primary key; the fixed-width character
  *       columns for names, address lines, state, country, postal code, telephone numbers,
  *       national identifier, government identifier, {@code cust_dob_yyyy_mm_dd CHAR(10)},
@@ -393,116 +397,11 @@ import java.util.Optional;
 public interface CustomerRepository extends JpaRepository<Customer, Long> {
 
     /**
-     * Reads one customer row and holds a write lock on it for the remainder of the enclosing
-     * transaction — the Java form of {@code EXEC CICS READ ... UPDATE}.
+     * Reads one customer row and holds a write lock on it for the remainder of the enclosing transaction — the
+     * Java form of {@code EXEC CICS READ ... UPDATE}.
      *
-     * <h4>Purpose</h4>
-     * <p>
-     * This is the direct counterpart of the customer read-for-update at
-     * {@code app/cbl/COACTUPC.cbl:L3921-L3930}, which names {@code LIT-CUSTFILENAME}, specifies
-     * {@code UPDATE}, and reads {@code INTO CUSTOMER-RECORD} keyed by the customer identifier
-     * moved into the record identification field at {@code :L3919}. It exists so that
-     * {@code com.cardemo.service.account.AccountUpdateService} can execute the field-by-field
-     * snapshot comparison of {@code 9700-CHECK-CHANGE-IN-REC} ({@code :L4109}, performed from
-     * {@code :L3947-L3948}) against the live row and then rewrite it, with no window between the
-     * two in which another transaction could interpose a write. A plain {@code findById} would
-     * leave exactly that window open, and the {@code @Version} column alone cannot close it —
-     * it reports that a change happened, not which values differ from the ones the operator was
-     * shown.
-     * </p>
-     * <p>
-     * The lock is the store-level layer of the two-layer scheme described on this interface.
-     * The business-level layer — the value comparison, with its three-substring dates, its
-     * asymmetric case folding and its differing date-of-birth offsets — is the service's
-     * responsibility and is deliberately absent from here.
-     * </p>
-     *
-     * <h4>Inputs</h4>
-     * <p>
-     * {@code customerId} is the nine-digit customer identifier, the record prefix key
-     * ({@code app/cpy/CVCUS01Y.cpy:L5}, {@code CUST-ID PIC 9(09)}; {@code KEYS(9 0)} at
-     * {@code app/jcl/CUSTFILE.jcl:L50}; {@code KEYLEN 9} with {@code RKP 0} at
-     * {@code app/catlg/LISTCAT.txt:L632-L633}). It is bound as the named JPQL parameter
-     * {@code :customerId} and is never concatenated into the query text. A {@code null}
-     * argument matches no row and yields an empty result rather than an error, because JPQL
-     * equality against {@code null} is never true — the boundary case is therefore handled
-     * explicitly by the query semantics and needs no guard clause in an interface that has no
-     * body.
-     * </p>
-     *
-     * <h4>Outputs</h4>
-     * <p>
-     * A populated {@link Optional} holding the fully-initialised {@code Customer} when the row
-     * exists, or {@link Optional#empty()} when it does not. Emptiness is a control path, not a
-     * failure: it corresponds to {@code DFHRESP(NOTFND)} and FILE STATUS {@code '23'}, which the
-     * caller renders as {@code com.cardemo.exception.RecordNotFoundException} through
-     * {@code com.cardemo.service.shared.FileStatusMapper}. At most one row can ever be returned,
-     * since the predicate is an equality test on the primary key.
-     * </p>
-     *
-     * <h4>Side effects</h4>
-     * <p>
-     * A pessimistic write lock is acquired on the matched row and is held until the enclosing
-     * transaction commits or rolls back. Nothing is written, no state is mutated and no log
-     * record is produced by this method itself. The lock is the whole point: it is what makes the
-     * subsequent comparison-then-rewrite sequence atomic, mirroring the CICS record lock the
-     * source held between its {@code READ ... UPDATE} and its {@code REWRITE}.
-     * </p>
-     * <p>
-     * <strong>The emitted SQL is dialect-specific and is worth knowing before reading a log.</strong>
-     * On PostgreSQL, Hibernate renders {@code PESSIMISTIC_WRITE} as
-     * {@code select ... where cust_id=? for no key update} — <em>not</em> {@code for update}.
-     * {@code FOR NO KEY UPDATE} is the weaker of the two exclusive row locks: it still conflicts
-     * with a concurrent {@code UPDATE}, {@code DELETE} or another pessimistic-write acquisition of
-     * the same row, which is exactly the guarantee this method exists to provide, while allowing
-     * an insert elsewhere that merely references the row by foreign key to proceed instead of
-     * blocking. Anyone grepping a query log for the literal {@code for update} will therefore find
-     * nothing and may wrongly conclude that no lock was taken. Note also that the identifier
-     * travels as a JDBC bind marker — the value never appears in the statement text, which is the
-     * end-to-end confirmation that nothing is interpolated into the query.
-     * </p>
-     * <p>
-     * This method does <strong>not</strong> start, join or commit a transaction. The unit of work
-     * is owned by the calling service through a single
-     * {@code @Transactional(rollbackFor = Exception.class)} method that spans both the account
-     * and the customer write, which is precisely what reproduces the source's asymmetric
-     * rollback ({@code app/cbl/COACTUPC.cbl:L4079-L4080} with no backout, versus
-     * {@code :L4098-L4102} with an explicit {@code SYNCPOINT ROLLBACK}) without any conditional
-     * logic.
-     * </p>
-     *
-     * <h4>Failure modes</h4>
-     * <ul>
-     *   <li><strong>No enclosing transaction.</strong> A pessimistic lock cannot be taken outside
-     *       one, and the failure is loud rather than silent: the call raises
-     *       {@code org.springframework.dao.InvalidDataAccessApiUsageException} with the message
-     *       "Query requires transaction be in progress, but no transaction is known to be in
-     *       progress". It does <em>not</em> quietly degrade to an unlocked read. Callers must
-     *       therefore be transactional — an unlocked read here would be a correctness defect, not
-     *       a performance choice, because the comparison and the rewrite would no longer be
-     *       atomic with respect to one another.</li>
-     *   <li><strong>Lock acquisition fails, times out or deadlocks.</strong> Spring translates
-     *       the provider failure into its {@code DataAccessException} hierarchy — typically a
-     *       pessimistic-locking or lock-timeout subtype — with the root cause preserved. This is
-     *       the Java equivalent of the non-{@code NORMAL} response at
-     *       {@code app/cbl/COACTUPC.cbl:L3934}, which drives the {@code ELSE} branch at
-     *       {@code :L3936-L3942}: that branch sets the input-error flag at {@code :L3937}, sets
-     *       {@code COULD-NOT-LOCK-CUST-FOR-UPDATE} at {@code :L3939} ({@code :L519-L520}) and
-     *       branches to the write-processing exit at {@code :L3941}. The service must keep that
-     *       outcome distinguishable from an account-lock failure, from a data-changed outcome and
-     *       from a locked-but-update-failed outcome, exactly as the four 88-levels at
-     *       {@code :L517-L524} keep them apart.</li>
-     *   <li><strong>Row absent.</strong> Not a failure — an empty {@code Optional}, as above.</li>
-     *   <li><strong>Stale row detected later.</strong> Raised at flush time by the
-     *       {@code @Version} column as an optimistic-locking failure, and surfaced as
-     *       {@code com.cardemo.exception.ConcurrentUpdateException} alongside the business-level
-     *       data-changed outcome of {@code :L521-L522}.</li>
-     * </ul>
-     *
-     * @param customerId the nine-digit customer identifier to read and lock; a {@code null}
-     *                   value matches no row
-     * @return the locked customer row, or {@link Optional#empty()} if no row bears that
-     *         identifier
+     * @param customerId the nine-digit customer identifier to read and lock.
+     * @return the locked customer row, or {@link Optional#empty()} if no row bears that identifier
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from Customer c where c.customerId = :customerId")

@@ -26,24 +26,25 @@
 package com.cardemo.model.dto;
 
 import com.cardemo.model.enums.UserType;
-import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.Size;
 
 /**
  * The live business payload of the CICS communication area, projected as an immutable value.
  *
- * <p>The source is {@code 01 CARDDEMO-COMMAREA.} at {@code app/cpy/COCOM01Y.cpy:L19}, whose own header
- * comment at {@code app/cpy/COCOM01Y.cpy:L2} describes it as the "Communication area for CardDemo
- * application programs". In the legacy system that structure was the sole carrier of state between
- * pseudo-conversational turns: it was declared in the LINKAGE SECTION, handed to every program reached by
- * {@code EXEC CICS XCTL}, and returned to the terminal on {@code RETURN TRANSID ... COMMAREA}.
+ * <p>The source is {@code 01 CARDDEMO-COMMAREA.} at {@code app/cpy/COCOM01Y.cpy:L19}, whose own header comment
+ * at {@code app/cpy/COCOM01Y.cpy:L2} describes it as the "Communication area for CardDemo application
+ * programs". In the legacy system that structure was the sole carrier of state between pseudo-conversational
+ * turns: it was declared in the LINKAGE SECTION, handed to every program reached by {@code EXEC CICS XCTL}, and
+ * returned to the terminal on {@code RETURN TRANSID ... COMMAREA}.
  *
- * <p><strong>This type is deliberately not that carrier.</strong> The target holds no server-side session
- * state, so only the fields that carry <em>business</em> identity survive the translation. The fields whose
- * sole purpose was to carry <em>conversation</em> state have nothing left to carry and are omitted outright
- * rather than retained as unused members. Nine of the seventeen declarations are projected here; the eight
- * that are not are enumerated below with the reason for each, so that a reader comparing this file against
- * the copybook side by side can see that nothing was lost by accident.
+ * <p>The target holds no server-side session state, so only the fields that carry <em>business</em> identity
+ * survive the translation. Nine of the sixteen elementary declarations are projected here. The other seven have
+ * nothing left to carry and are omitted outright rather than retained as unused members: the four routing
+ * fields {@code CDEMO-FROM-TRANID}, {@code CDEMO-FROM-PROGRAM}, {@code CDEMO-TO-TRANID} and
+ * {@code CDEMO-TO-PROGRAM} at {@code app/cpy/COCOM01Y.cpy:L21-L24}, whose work the request URL now does; the
+ * enter-versus-re-enter flag {@code CDEMO-PGM-CONTEXT} at L29, which collapses into stateless request handling;
+ * and the screen-state fields {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET} at L43-L44, which have no
+ * counterpart because no screen state survives a response.
  *
  * <h2>Verified source layout</h2>
  *
@@ -157,6 +158,27 @@ import jakarta.validation.constraints.Size;
  * and again on the component, because a reader who consults only {@code COCOM01Y} will otherwise read the
  * {@code String} as a mistake.
  *
+ * <h2>The same reasoning applies to the other two numeric-PIC fields</h2>
+ *
+ * <p><strong>High, resolved.</strong> {@code customerId} and {@code accountId} were previously typed
+ * {@code Long}, on the reasoning that a {@code PIC 9(n)} field is "genuinely numeric". That reasoning was
+ * wrong for the same reason it was rejected for {@code cardNumber} one section above, and the
+ * inconsistency between the three was itself the tell. A {@code PIC 9(n)} DISPLAY item is an n-byte
+ * zoned-decimal field: {@code CDEMO-CUST-ID PIC 9(09)} occupies nine bytes and
+ * {@code CDEMO-ACCT-ID PIC 9(11)} occupies eleven, and the seeded images are {@code 000000001}
+ * ({@code app/data/ASCII/custdata.txt:1}) and {@code 00000000001}
+ * ({@code app/data/ASCII/acctdata.txt:1}). An integral type renders those as {@code 1} and {@code 1},
+ * discarding eight and ten significant leading zeros respectively, so a value read into this payload
+ * could not be written back into the fixed-width record it came from.
+ *
+ * <p>Both are therefore {@code String}, bounded by {@link #CUSTOMER_ID_LENGTH} and
+ * {@link #ACCOUNT_ID_LENGTH}. Two further facts settle it: neither value is ever an operand - nothing in
+ * the corpus adds to an identifier or compares one by magnitude, it is only matched and moved - and every
+ * other payload type in this package that carries an account identifier already declares it
+ * {@code String} at width 11. The persisted entities do type these columns numerically, which is correct
+ * for a store and irrelevant for a wire format; the single conversion belongs at the one boundary that
+ * crosses between the two, not smeared across every payload.
+ *
  * <h2>Security posture</h2>
  *
  * <p>{@code cardNumber} is on the never-emit list, and the three customer name components are personally
@@ -168,8 +190,9 @@ import jakarta.validation.constraints.Size;
  * as a length, and no name field in any form. No alternative full rendering and no masking helper is
  * provided, so there is no second path to the same disclosure.
  *
- * <p>The logging configuration masks card numbers profile-invariantly, but that is a second line of
- * defence. The primary defence is never emitting them.
+ * <p>A central masking rule would be a second line of defence, but no {@code logback-spring.xml}
+ * exists under {@code src/main/resources} yet, so there is nothing behind this omission to catch what
+ * it misses. Never emitting the card number is therefore the only defence, not the first of two.
  *
  * <p>This type carries no credential material of any kind: the COMMAREA declares no password and no hash,
  * so there is none to omit. It exposes exactly the nine fields the copybook declares as live and not one
@@ -178,8 +201,11 @@ import jakarta.validation.constraints.Size;
  * <h2>Validation stance</h2>
  *
  * <p>Each component carries at most one constraint, and that constraint states the width the copybook
- * declares: {@code @Size(max = ...)} for a {@code PIC X(n)} field and {@code @Digits(integer = n,
- * fraction = 0)} for a {@code PIC 9(n)} field. Nothing stricter is invented. There is no
+ * declares, as {@code @Size(max = ...)}. Every component is a {@code String}, including the three the
+ * copybook declares {@code PIC 9(n)}: a {@code PIC 9(n)} DISPLAY item is an n-byte zoned-decimal field
+ * rather than an integer, so its width is a character count and {@code @Size} is the constraint that
+ * states it. A {@code @Digits} bound would describe a numeric type this record deliberately does not
+ * use. Nothing stricter is invented. There is no
  * {@code @NotNull} anywhere, because absence is a legitimate state for every one of these fields - a
  * COMMAREA reaching a program before an account had been selected simply had no account identifier in
  * it. There is no digits-only {@code @Pattern} on {@code cardNumber}, because the record layout it is
@@ -222,8 +248,8 @@ import jakarta.validation.constraints.Size;
  * </ul>
  *
  * <p>Instances are immutable and inherently thread safe, subject only to the caller not mutating an
- * argument after construction - which cannot happen here, because every component is either a
- * {@code String} or a {@code Long} and both are themselves immutable.
+ * argument after construction - which cannot happen here, because every component is a {@code String}
+ * and {@code String} is itself immutable.
  *
  * <h2>Error modes</h2>
  *
@@ -247,11 +273,16 @@ import jakarta.validation.constraints.Size;
  *                           round trip instead of failing to bind. Use {@link #resolvedUserType()} for
  *                           the typed view. Exactly one character when present; {@code null} when absent.
  * @param customerId         {@code CDEMO-CUST-ID}, {@code PIC 9(09)}, at
- *                           {@code app/cpy/COCOM01Y.cpy:L33}. Typed {@code Long} because the source PIC
- *                           is genuinely numeric and this value is used as a number: it is the key of the
- *                           customer record, and the persisted customer entity types it {@code Long} too,
- *                           so agreeing with it avoids a conversion at every hand-off. Nine digits fit a
- *                           {@code Long} with room to spare. {@code null} when no customer is in context.
+ *                           {@code app/cpy/COCOM01Y.cpy:L33}. Typed {@code String}, <em>not</em> a
+ *                           numeric type, for exactly the reason given for {@code cardNumber} below: a
+ *                           {@code PIC 9(09)} DISPLAY item is a nine-byte zoned-decimal field whose
+ *                           seeded image is {@code 000000001}
+ *                           ({@code app/data/ASCII/custdata.txt:1}), and an integral type renders that
+ *                           as {@code 1}, silently discarding eight significant leading zeros. The
+ *                           value is an identifier, never an operand: nothing adds to it or compares it
+ *                           by magnitude, so numeric typing buys nothing and costs the byte image.
+ *                           {@code null} when no customer is in context; blank and low-values are
+ *                           carried as themselves.
  * @param customerFirstName  {@code CDEMO-CUST-FNAME}, {@code PIC X(25)}, at
  *                           {@code app/cpy/COCOM01Y.cpy:L34}. Personally identifying: never rendered by
  *                           {@link #toString()}.
@@ -263,10 +294,15 @@ import jakarta.validation.constraints.Size;
  *                           {@code app/cpy/COCOM01Y.cpy:L36}. Personally identifying: never rendered by
  *                           {@link #toString()}.
  * @param accountId          {@code CDEMO-ACCT-ID}, {@code PIC 9(11)}, at
- *                           {@code app/cpy/COCOM01Y.cpy:L38}. Typed {@code Long} for the same reasons as
- *                           {@code customerId}, and matching the persisted account entity. Eleven digits
- *                           overflow a 32-bit {@code int}, so {@code int} is not an option here.
- *                           {@code null} when no account has been selected.
+ *                           {@code app/cpy/COCOM01Y.cpy:L38}. Typed {@code String} for the same reasons
+ *                           as {@code customerId}. The seeded image is the eleven-byte
+ *                           {@code 00000000001} ({@code app/data/ASCII/acctdata.txt:1}), and every other
+ *                           payload type in this package that carries an account identifier declares it
+ *                           {@code String} at width 11, so this agrees with them rather than forcing a
+ *                           re-pad at each boundary. The persisted entity types the column numerically,
+ *                           which is correct there and irrelevant here: the entity is the store, this is
+ *                           the wire, and the conversion belongs at the one place that crosses between
+ *                           them. {@code null} when no account has been selected.
  * @param accountStatus      {@code CDEMO-ACCT-STATUS}, {@code PIC X(01)}, at
  *                           {@code app/cpy/COCOM01Y.cpy:L39}. The one-character active status carried
  *                           alongside the account identifier. Not modelled as an enumeration: unlike the
@@ -290,8 +326,8 @@ public record CommArea(
         @Size(max = USER_TYPE_LENGTH)
         String userType,
 
-        @Digits(integer = CUSTOMER_ID_DIGITS, fraction = 0)
-        Long customerId,
+        @Size(max = CUSTOMER_ID_LENGTH)
+        String customerId,
 
         @Size(max = CUSTOMER_NAME_MAX_LENGTH)
         String customerFirstName,
@@ -302,8 +338,8 @@ public record CommArea(
         @Size(max = CUSTOMER_NAME_MAX_LENGTH)
         String customerLastName,
 
-        @Digits(integer = ACCOUNT_ID_DIGITS, fraction = 0)
-        Long accountId,
+        @Size(max = ACCOUNT_ID_LENGTH)
+        String accountId,
 
         @Size(max = ACCOUNT_STATUS_LENGTH)
         String accountStatus,
@@ -312,49 +348,38 @@ public record CommArea(
         String cardNumber) {
 
     /**
-     * Declared width of {@code userId}: {@code CDEMO-USER-ID PIC X(08)} at
-     * {@code app/cpy/COCOM01Y.cpy:L25}.
+     * Declared width of {@code userId}: {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:L25}.
      */
     public static final int USER_ID_MAX_LENGTH = 8;
 
     /**
      * Declared width of {@code userType}: {@code CDEMO-USER-TYPE PIC X(01)} at
      * {@code app/cpy/COCOM01Y.cpy:L26}.
-     *
-     * <p>One byte, which is why the component is a one-character {@code String} rather than a longer
-     * code. The constraint is expressed as a maximum rather than as an exact length so that an absent
-     * value stays absent: a minimum would additionally reject the empty string, a rejection the source
-     * never makes because a fixed-width field cannot be empty. The exactly-one-character part of the
-     * contract is enforced where it matters, in {@link #resolvedUserType()}, which resolves nothing for a
-     * value that is not exactly one character long.</p>
      */
     public static final int USER_TYPE_LENGTH = 1;
 
     /**
-     * Declared digit count of {@code customerId}: {@code CDEMO-CUST-ID PIC 9(09)} at
-     * {@code app/cpy/COCOM01Y.cpy:L33}. Nine digits, no decimal places.
+     * Declared width of {@code customerId}: {@code CDEMO-CUST-ID PIC 9(09)} at
+     * {@code app/cpy/COCOM01Y.cpy:L33}. Nine character positions.
+     *
+     * <p>A {@code PIC 9(09)} DISPLAY item is a nine-<em>byte</em> zoned-decimal field, not a nine-digit
+     * integer, so nine is a character width here and the component is a {@code String}. See the
+     * {@code @param customerId} note on this record for why that distinction is load-bearing.</p>
      */
-    public static final int CUSTOMER_ID_DIGITS = 9;
+    public static final int CUSTOMER_ID_LENGTH = 9;
 
     /**
      * Declared width of each customer name component: {@code CDEMO-CUST-FNAME PIC X(25)} at
      * {@code app/cpy/COCOM01Y.cpy:L34}, {@code CDEMO-CUST-MNAME PIC X(25)} at L35 and
      * {@code CDEMO-CUST-LNAME PIC X(25)} at L36.
-     *
-     * <p>One constant serves all three because the copybook declares all three at the same width. They
-     * are not given three separate constants of equal value, which would suggest the widths could drift
-     * apart independently when the source says they cannot.</p>
      */
     public static final int CUSTOMER_NAME_MAX_LENGTH = 25;
 
     /**
      * Declared digit count of {@code accountId}: {@code CDEMO-ACCT-ID PIC 9(11)} at
      * {@code app/cpy/COCOM01Y.cpy:L38}. Eleven digits, no decimal places.
-     *
-     * <p>Eleven digits exceed the range of a 32-bit signed integer, whose maximum is ten digits. This is
-     * the reason the component is a {@code Long}, and the reason that choice is not negotiable.</p>
      */
-    public static final int ACCOUNT_ID_DIGITS = 11;
+    public static final int ACCOUNT_ID_LENGTH = 11;
 
     /**
      * Declared width of {@code accountStatus}: {@code CDEMO-ACCT-STATUS PIC X(01)} at
@@ -365,58 +390,15 @@ public record CommArea(
     /**
      * Declared width of {@code cardNumber}: {@code CDEMO-CARD-NUM PIC 9(16)} at
      * {@code app/cpy/COCOM01Y.cpy:L41}, sixteen positions.
-     *
-     * <p>The same sixteen positions are declared alphanumerically as {@code CARD-NUM PIC X(16)} at
-     * {@code app/cpy/CVACT02Y.cpy:L5}. The two copybooks disagree about the type but agree exactly about
-     * the width, so this single constant is correct for both readings.</p>
      */
     public static final int CARD_NUMBER_MAX_LENGTH = 16;
 
     /**
-     * Returns the typed view of {@code userType}, or {@code null} when the raw value is not one of the
-     * two codes the copybook defines.
-     *
-     * <p>This accessor exists because the source itself types this field: {@code CDEMO-USER-TYPE} carries
-     * the two condition names {@code CDEMO-USRTYP-ADMIN VALUE 'A'} at
-     * {@code app/cpy/COCOM01Y.cpy:L27} and {@code CDEMO-USRTYP-USER VALUE 'U'} at L28, and
-     * {@code UserType} is the transcription of exactly those two. The typed view is therefore derived
-     * from the source rather than invented on top of it. The raw one-character value remains available
-     * from {@link #userType()} and is what serialises, so this accessor adds a reading of the field
-     * without replacing it.
-     *
-     * <p><strong>It returns {@code null} rather than throwing for anything it cannot resolve.</strong>
-     * That is the whole point of it: a stored value outside the domain must round-trip through this type
-     * intact, and a throwing accessor would make an object holding such a value impossible to inspect,
-     * log or serialise. {@code null} is returned, explicitly and by design, in every one of these cases:
-     *
-     * <ul>
-     *   <li>{@link #userType()} is {@code null}, that is the field was absent;</li>
-     *   <li>it is the empty string;</li>
-     *   <li>it is longer than one character, including a one-character code carried with the blank
-     *       padding of a fixed-width record;</li>
-     *   <li>it is exactly one character but is neither {@code 'A'} nor {@code 'U'} - a blank, a low value
-     *       byte, a digit, or a lower-case {@code 'a'} or {@code 'u'}.</li>
-     * </ul>
-     *
-     * <p>The last case is deliberate and is parity behaviour, not strictness: the resolution is case
-     * sensitive because {@code app/cbl/COSGN00C.cbl:L227} moves the stored type byte into
-     * {@code CDEMO-USER-TYPE} unfolded - {@code MOVE SEC-USR-TYPE TO CDEMO-USER-TYPE}, with no
-     * {@code FUNCTION UPPER-CASE} applied - and {@code app/cbl/COSGN00C.cbl:L230} then tests
-     * {@code IF CDEMO-USRTYP-ADMIN}, which compares the byte against {@code 'A'} exactly. A lower-case
-     * byte satisfies neither condition name in the legacy program and must satisfy neither here.
-     *
-     * <p>Nothing is trimmed or folded before resolution, consistent with this type performing no
-     * normalisation anywhere. A caller that wants to accept padded input must decide that for itself,
-     * because deciding it here would accept input the legacy program refuses.
-     *
-     * <p>This method is a pure function: it has no side effects, performs no I/O, allocates nothing
-     * beyond what the delegate does, never throws, and is safe for concurrent use. It is not a component
-     * accessor, so it takes no part in {@link #equals(Object)}, {@link #hashCode()} or
-     * {@link #toString()}; two instances agreeing on the raw {@code userType} necessarily agree here too.
+     * Returns the typed view of {@code userType}, or {@code null} when the raw value is not one of the two
+     * codes the copybook defines.
      *
      * @return {@code UserType.ADMIN} when the raw value is {@code "A"}, {@code UserType.USER} when it is
-     *         {@code "U"}, and {@code null} in every other case, including when the raw value is
-     *         {@code null}
+     * {@code "U"}, and {@code null} in every other case, including when the raw value is {@code null}
      */
     public UserType resolvedUserType() {
         return UserType.fromCode(this.userType).orElse(null);
@@ -424,26 +406,6 @@ public record CommArea(
 
     /**
      * Returns a diagnostic rendering that discloses neither the card number nor any customer name.
-     *
-     * <p>Only {@code userId}, {@code userType} and {@code accountStatus} are reported: an identity and a
-     * pair of one-character control values, which is what a log line needs in order to be useful and no
-     * more. Overriding is mandatory rather than cosmetic, because the {@code toString()} a record would
-     * otherwise inherit prints every component and would therefore print {@code cardNumber} and all three
-     * name fields.
-     *
-     * <p>Nothing is emitted in place of the omitted values - not a masked form of the card number, not a
-     * digit count, not a first-and-last-four fragment, and no indication of whether a name is present.
-     * The four sensitive components are simply absent from the output, so this rendering discloses nothing
-     * whatsoever about them. {@code customerId} and {@code accountId} are omitted as well: they are not
-     * sensitive in themselves, but they are not needed to identify a request either, and the narrower
-     * output is the safer default.
-     *
-     * <p>No alternative full or verbose rendering is provided anywhere on this type, so there is no
-     * second route to the disclosure this method avoids.
-     *
-     * <p>The output is assembled by plain concatenation and contains no formatted, parsed or case-folded
-     * value, so it is byte-identical on every platform regardless of the default locale, charset or time
-     * zone.
      *
      * @return a rendering of this projection containing no card number and no personally identifying name
      */

@@ -28,76 +28,36 @@ package com.cardemo.model.dto;
 
 import java.math.BigDecimal;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.Digits;
-import jakarta.validation.constraints.Max;
-import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 
 /**
- * Account-update request payload: the stateless replacement for the CICS
- * pseudo-conversation driven by {@code app/cbl/COACTUPC.cbl}, the 4,236-line
- * account-update program.
+ * Account-update request payload: the stateless replacement for the CICS pseudo-conversation driven by
+ * {@code app/cbl/COACTUPC.cbl}, the 4,236-line account-update program.
  *
- * <p>The object has exactly three top-level parts:</p>
- * <ul>
- *   <li>the <strong>54 screen fields</strong> of the symbolic map
- *       {@code app/cpy-bms/COACTUP.CPY}, in that copybook's declaration order;</li>
- *   <li>{@code oldDetails} &mdash; the snapshot group {@code ACUP-OLD-DETAILS}
- *       declared at {@code app/cbl/COACTUPC.cbl:669};</li>
- *   <li>{@code newDetails} &mdash; the edited group {@code ACUP-NEW-DETAILS}
- *       declared at {@code app/cbl/COACTUPC.cbl:757}.</li>
- * </ul>
+ * <p>The payload carries <strong>both</strong> the edited values and the snapshot the user was shown, because
+ * {@code 9700-CHECK-CHANGE-IN-REC} accepts a write only when the live record still matches that snapshot field
+ * by field. A version counter cannot express the same guarantee — it reports that some row changed, not which
+ * business values differ from the user's view — and a stateless server cannot hold the snapshot between
+ * requests, so it travels in the request body.
  *
- * <h2>Why the request carries a snapshot</h2>
- * <p>The target is stateless: no server-side session, no COMMAREA, no screen
- * state retained between requests. The COBOL program nevertheless detects
- * change by comparing against a snapshot captured when the screen was first
- * populated. With no session, that snapshot has nowhere to live on the server,
- * so the request body must carry it. Both detail groups therefore travel with
- * every request.</p>
+ * <p>Two properties of the comparison are load-bearing and must not be tidied. The snapshot dates are compact
+ * {@code PIC X(08)} values with no separators, while the live record holds them dash-separated, so the source
+ * compares them component by component at different offsets on each side; a whole-string comparison would
+ * report a change on every request and make the endpoint permanently unusable. And the case handling is
+ * deliberately asymmetric — the account group identifier is compared lower-cased, the customer name and
+ * address group upper-cased, and the postal code, telephone numbers, national identifier, funds account,
+ * holder indicator and credit score with no case function at all.
  *
- * <h2>Blocker &mdash; the date-of-birth offset asymmetry</h2>
- * <p><strong>Severity: Blocker.</strong> {@code 9700-CHECK-CHANGE-IN-REC}
- * occupies {@code app/cbl/COACTUPC.cbl:4109-4193} and is invoked at
- * {@code :3947-3948}. At {@code :4174-4179} it reads, verbatim:</p>
- * <pre>
- * AND CUST-DOB-YYYY-MM-DD (1:4) EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (1:4)
- * AND CUST-DOB-YYYY-MM-DD (6:2) EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (5:2)
- * AND CUST-DOB-YYYY-MM-DD (9:2) EQUAL ACUP-OLD-CUST-DOB-YYYY-MM-DD (7:2)
- * </pre>
- * <p>The two sides use <strong>different offsets</strong>:</p>
- * <ul>
- *   <li>the live customer field {@code CUST-DOB-YYYY-MM-DD} is
- *       {@code PIC X(10)} and dash-separated
- *       ({@code app/cpy/CVCUS01Y.cpy:19}), so its year, month and day sit at
- *       <strong>1 / 6 / 9</strong>;</li>
- *   <li>the snapshot field {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD} is
- *       {@code PIC X(08)} &mdash; compact, no separators, despite the
- *       dash-implying name ({@code app/cbl/COACTUPC.cbl:746}, parts at
- *       {@code :749-751}) &mdash; so its year, month and day sit at
- *       <strong>1 / 5 / 7</strong>. The NEW side mirrors this exactly:
- *       {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD PIC X(08)} at {@code :837} with
- *       parts at {@code :840-842}.</li>
- * </ul>
- * <p>Consequently the snapshot date of birth is stored here in its
- * <strong>compact eight-character {@code yyyymmdd} form on both groups</strong>,
- * and each group exposes 4/2/2 component views
- * ({@code dateOfBirthYear()}, {@code dateOfBirthMonth()},
- * {@code dateOfBirthDay()}) so the service can compare component-wise without
- * substring arithmetic scattered across the codebase. The live, dash-separated
- * ten-character form is never stored into these fields, and the two forms are
- * never compared as whole strings.</p>
- * <p><strong>Failure mode.</strong> A naive whole-string comparison, or storing
- * the dash-separated form in the snapshot, reports a change on every single
- * request, because {@code 2020-01-15} can never equal {@code 20200115}. The
- * change-detection guard then fires unconditionally, every update is rejected
- * with {@code Record changed by some one else. Please review}
- * ({@code app/cbl/COACTUPC.cbl:521-522}), and the account-update endpoint
- * becomes permanently unusable. To make that misuse loud rather than silently
- * wrong, the compact-date component views reject a backing value longer than
- * eight characters with an {@code IllegalArgumentException} that names the
- * field and never echoes the value.</p>
+ * <p>This class validates and normalises nothing on ingest: no trimming, no case folding, no padding and no
+ * default. Every field width comes from {@code app/cpy-bms/COACTUP.CPY}, widths that differ between the edited
+ * group and the snapshot group stay different, and preserved source misspellings stay misspelled. Bean
+ * validation cascades into the edited group only, since the snapshot is evidence of what was displayed rather
+ * than input to be judged. The comparison itself, and every outcome it produces, belong to the consuming
+ * service.
  *
  * <h2>The two comparison regimes</h2>
  * <p><strong>Severity: Medium</strong> &mdash; the specification describes one
@@ -143,24 +103,36 @@ import jakarta.validation.constraints.Size;
  *       {@code 9700} compares them as three substrings against the live
  *       dash-separated {@code PIC X(10)} values of
  *       {@code app/cpy/CVACT01Y.cpy:10-12};</li>
- *   <li>(iii) each telephone number carries both representations &mdash; the
- *       whole fifteen-character formatted value and the area, prefix and line
- *       parts &mdash; because {@code 9700} compares the whole {@code X(15)} at
- *       {@code app/cbl/COACTUPC.cbl:4169-4170} while {@code 1205} compares the
- *       parts one at a time at {@code :1748-1753}. The layout is fixed by the
- *       REDEFINES at {@code app/cbl/COACTUPC.cbl:723-731}, whose fillers place a
- *       single byte before the area code, one between area code and prefix, one
- *       between prefix and line number, and two at the end; the literal
- *       separators are not declared there, but every populated value in
+ *   <li>(iii) each telephone number is carried on the side the source actually
+ *       assigns, and the other reading is derived &mdash; and the two groups take
+ *       <em>opposite</em> sides. {@code oldDetails} stores the whole fifteen-byte
+ *       value, because {@code 9000-READ-DATA} assigns it whole by
+ *       {@code MOVE CUST-PHONE-NUM-1} at {@code app/cbl/COACTUPC.cbl:3876} and
+ *       never assigns a part, and {@code 9700} compares it whole at
+ *       {@code :4169-4170}. {@code newDetails} stores the three parts, because
+ *       {@code 1100-RECEIVE-MAP} assigns only parts at {@code :1359-1396} and
+ *       never assigns the whole, {@code 1205} compares the parts one at a time at
+ *       {@code :1748-1753}, {@code 3000-SEND-MAP} returns them individually at
+ *       {@code :2939-2944}, and the punctuated record value is assembled only at
+ *       write time by {@code STRING} at {@code :4027-4041}. The layout is fixed by
+ *       the REDEFINES at {@code app/cbl/COACTUPC.cbl:723-731} and {@code :811-819},
+ *       whose fillers place a single byte before the area code, one between area
+ *       code and prefix, one between prefix and line number, and two at the end.
+ *       The filler content differs by group for the same reason: on the OLD side
+ *       the separators arrive with the record, and every populated value in
  *       {@code app/data/ASCII/custdata.txt} resolves them &mdash; all 100
  *       telephone values across the 50 customer records read exactly
- *       {@code (NNN)NNN-NNNN} followed by two spaces. Both representations are
- *       still carried, because a blank or partially supplied number has no
- *       formatted equivalent to derive from and vice versa, and normalising
- *       either way would destroy one of the two regimes;</li>
- *   <li>(iv) each money field carries both the {@code X(12)} display text and a
- *       {@code BigDecimal}, so the snapshot round-trips the displayed
- *       representation and not merely the value;</li>
+ *       {@code (NNN)NNN-NNNN} followed by two spaces &mdash; whereas on the NEW
+ *       side {@code INITIALIZE ACUP-NEW-DETAILS} at {@code :1047} leaves them as
+ *       spaces and nothing assigns them afterwards. Carrying both readings as
+ *       independently writable properties, which an earlier revision of this class
+ *       did, describes a byte state that cannot exist: a REDEFINES is one storage
+ *       cell, so the whole and its parts can never disagree;</li>
+ *   <li>(iv) each money field is carried once, as the {@code X(12)} display text
+ *       the source stores, with the {@code S9(10)V99} numeric REDEFINES exposed as
+ *       a derived view. The text is what round-trips, so the snapshot preserves the
+ *       displayed representation and not merely the value, and the numeric reading
+ *       cannot be made to contradict it;</li>
  *   <li>(v) the account group identifier is stored raw and untransformed,
  *       because one regime upper-cases it and the other lower-cases it, so only
  *       the raw value serves both;</li>
@@ -185,24 +157,42 @@ import jakarta.validation.constraints.Size;
  * is meaningful only because the NEW parts are contiguous.</p>
  *
  * <h2>Validation</h2>
- * <p>{@code oldDetails} carries <strong>no validation annotation at all</strong>.
- * The entire OLD group contains zero {@code 88}-level condition names
- * ({@code app/cbl/COACTUPC.cbl:669-756}); it is a purely passive snapshot.
- * Constraining it would reject a snapshot the source accepted unconditionally
- * and would make a previously saved record unresubmittable. The field is
- * therefore also not marked for cascading validation.</p>
- * <p>{@code newDetails} carries the constraints and is marked
- * {@code @Valid} so they cascade. The only range in the source is
+ * <p><strong>Both groups carry width contracts and both are marked {@code @Valid}
+ * so they cascade.</strong> The OLD group contains zero {@code 88}-level condition
+ * names ({@code app/cbl/COACTUPC.cbl:669-756}), so it carries no <em>domain</em>
+ * rule, but that is not the same as carrying no constraint: every member has a
+ * {@code PIC} clause, and a {@code PIC} clause is itself a width contract. A
+ * three-character value cannot be placed in
+ * {@code ACUP-OLD-CUST-ADDR-STATE-CD PIC X(02)} at {@code :719}, so enforcing that
+ * width can only reject a snapshot the source was physically unable to produce.</p>
+ * <p>The trust relationship also inverts under statelessness, which is the decisive
+ * reason. In the source the OLD group is filled by the program itself &mdash;
+ * {@code 9000-READ-DATA} does {@code INITIALIZE ACUP-OLD-DETAILS} at {@code :3610}
+ * and then populates it from the record it has just read &mdash; so it is trusted by
+ * construction. Here the identical group arrives from the client, and it is the
+ * operand that {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares the
+ * live record against. An unconstrained snapshot is therefore an unconstrained
+ * concurrency guard, which is exactly the reverse of the source's position.</p>
+ * <p>The cascade deliberately does <strong>not</strong> import the NEW group's
+ * domain rule. {@code 88 FICO-RANGE-IS-VALID} is declared on the NEW side only, so
+ * {@link OldDetails} has no {@code ficoScoreIsInValidRange()} twin.</p>
+ * <p>{@code newDetails} additionally carries the source's one range rule. The only
+ * range in the source is
  * {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850}
  * ({@code app/cbl/COACTUPC.cbl:848-849}), declared on the NEW side only, and it
  * is enforced on the NEW side only. Note precisely which member that
  * {@code 88} level qualifies: it sits on the NUMERIC REDEFINES
  * {@code ACUP-NEW-CUST-FICO-SCORE} PIC 9(03) at {@code :846-847}, not on the
- * text member {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) at {@code :845}. The
- * range constraint is therefore carried by {@code newDetails.ficoScoreValue}
- * and the text member carries only its width contract &mdash; the same
- * text-plus-numeric split the five money members use, and for the same reason
- * given in consequence (iv) above. Everything else is an exact width contract
+ * text member {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) at {@code :845}, which
+ * is the member the screen is moved into unvalidated at {@code :1283}.</p>
+ * <p>The range is therefore <strong>not</strong> expressed as a bean constraint. It
+ * is exposed as {@link NewDetails#ficoScoreIsInValidRange()}, a predicate over the
+ * numeric reading, and the stored text member carries only its width contract. That
+ * split is deliberate: the source stores whatever three characters were typed and
+ * then emits its own message, so turning the range into a bean constraint would
+ * substitute a framework rejection for the source's message and collapse the
+ * three-state {@code app/cpy/CSSETATY.cpy} error model into a binary one. Everything
+ * else is an exact width contract
  * taken from the declared PIC clause. No stricter validation is invented: there
  * is no pattern the source lacks, no {@code @NotNull} where the source tolerates
  * blank, no enum binding and no coercion. Account status and the primary card
@@ -307,7 +297,7 @@ import jakarta.validation.constraints.Size;
  *       source, as is {@code ACCT-EXPIRAION-DATE} at
  *       {@code app/cpy/CVACT01Y.cpy:11} (sic, both). The misspelling is
  *       preserved in every citation; the Java member is named
- *       {@code expirationDate}.</li>
+ *       {@code expiraionDate}.</li>
  * </ul>
  *
  * <h2>Security</h2>
@@ -323,19 +313,24 @@ import jakarta.validation.constraints.Size;
  * because insecure deserialization is a flagged risky pattern and this is the
  * object least suited to it. And no credential or hash member exists, because
  * the account-update map declares none and least privilege forbids adding one.
- * Log-level masking is a second line of defence, not the first: the first is
- * never emitting these values at all.</p>
+ * A log-level masking rule would be a second line of defence, but no
+ * {@code logback-spring.xml} exists under {@code src/main/resources} yet, so
+ * never emitting these values is the only defence, not the first of two.</p>
  *
  * <h2>Consuming this payload</h2>
  * <p><strong>Binding.</strong> The payload arrives as JSON on the request body and is bound member by
- * member. Every readable property is also settable, so the object round-trips through a plain
- * serializer without depending on any framework leniency setting. The compact-date and credit-score
- * component views are derived accessors rather than properties, so they never appear in the wire
- * format. The High-severity finding below records why that invariant is load-bearing.</p>
- * <p><strong>Validation.</strong> Constraints cascade into {@code newDetails} only, because the edited
- * group is the only one the COBOL program constrains; {@code oldDetails} is a passive snapshot and
- * carries none. Validation is triggered by the consuming controller parameter, and cascades through
- * the annotation declared on the {@code newDetails} member.</p>
+ * member. The outer type and both nested groups are immutable: every instance field is {@code final},
+ * no setter exists, and each type is built by a single all-arguments {@code @JsonCreator} constructor
+ * whose every parameter carries an explicit {@code @JsonProperty} name. Binding therefore completes
+ * before validation, and no value can change between validation and the snapshot comparison. Every
+ * readable property round-trips through a plain serializer without depending on any framework leniency
+ * setting. The compact-date, money, telephone-component and credit-score views are derived accessors
+ * rather than properties, so they never appear in the wire format. The High-severity findings below
+ * record why both invariants are load-bearing.</p>
+ * <p><strong>Validation.</strong> Constraints cascade into <em>both</em> nested groups: each of
+ * {@code oldDetails} and {@code newDetails} is marked {@code @Valid} and each member carries the width
+ * contract of its declared PIC clause. Only the range rule is asymmetric, because only the NEW group
+ * declares one. Validation is triggered by the consuming controller parameter.</p>
  * <p><strong>Comparison.</strong> Both regimes described above belong to the consuming service, not to
  * this class; the payload's only job is to make both expressible. Any case function the service
  * applies must pass {@code Locale.ROOT}, because a Turkish-locale upper-case maps {@code i} to a
@@ -346,11 +341,28 @@ import jakarta.validation.constraints.Size;
  * COBOL field. The credit-score range 300 through 850 applies to the numeric member of
  * {@code newDetails} alone.</p>
  * <p><strong>Build and verification.</strong> The class compiles under {@code -Xlint:all -Werror} with
- * documentation checked by {@code -Xdoclint:all}, so an unused import or an unbalanced tag fails the
- * build. Behavioural cover belongs to the model unit tests under
- * {@code src/test/java/com/cardemo/unit/model}, whose mandatory regression asserts that the snapshot
+ * {@code failOnWarning}, so a raw type, an unchecked cast or a deprecated call fails the build. Two
+ * prohibitions are <em>not</em> mechanically enforced and are stated here so they are not mistaken for
+ * gates. <strong>Not available:</strong> documentation well-formedness is not checked by the build - no
+ * {@code maven-javadoc-plugin} is declared in {@code pom.xml} and {@code -Xdoclint} appears nowhere in it,
+ * so an unbalanced tag in this comment would fail nothing; making that a gate would require adding a
+ * pinned {@code maven-javadoc-plugin} execution configured with {@code -Xdoclint:all}. Until then the
+ * check is manual, and it does work. Run it in two steps, because this type imports
+ * {@code jakarta.validation} and so needs the resolved dependency classpath:
+ * {@code ./mvnw -o -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt}, then
+ * {@code javadoc -Xdoclint:all -quiet -d target/jd -classpath "$(cat target/cp.txt)"
+ * -sourcepath src/main/java src/main/java/com/cardemo/model/dto/AccountUpdateRequest.java}. That pair
+ * exited 0 with zero errors and zero warnings on {@code javadoc} 25.0.3 on 1 August 2026.
+ * <strong>Not available:</strong> an unused-import check -
+ * {@code javac} 25.0.3 publishes no lint key for one, as {@code javac --help-lint} shows, and no
+ * Checkstyle or Error Prone analyser is in the pinned dependency set. Both are therefore enforced by
+ * review. Behavioural cover belongs to the model unit tests under
+ * {@code src/test/java/com/cardemo/unit/model}, whose mandatory regression must assert that the snapshot
  * component offsets 1/5/7 yield the same year, month and day as offsets 1/6/9 taken from the
- * dash-separated live form.</p>
+ * dash-separated live form. <strong>Not available, measured 1 August 2026:</strong> no
+ * {@code AccountUpdateRequestTest} exists and this type is not referenced anywhere under
+ * {@code src/test/java}, so that regression - the single most important assertion this type needs - is
+ * owed and is asserted nowhere.</p>
  *
  * <h2>Error modes</h2>
  * <ul>
@@ -385,43 +397,72 @@ import jakarta.validation.constraints.Size;
  *       on both groups, component views expose the 1/5/7 slices, and a backing
  *       value longer than eight characters is rejected outright rather than
  *       sliced into a separator fragment.</li>
- *   <li><strong>High &mdash; a read-only derived property broke JSON
- *       round-tripping.</strong> An earlier revision of this class exposed the
- *       numeric credit score as a computed getter with no matching setter. A
- *       serializer emits such a getter as a property but cannot bind it back, so
- *       a client that returned the representation it had just been given was
- *       rejected with a framework error instead of the source's own message. That
- *       is fatal here specifically, because the whole reason this payload carries
- *       a snapshot is that the client must send it back. Relying on a framework
- *       default that silently discards unknown properties was rejected as an
- *       environment-specific assumption. Remediation: the numeric reading is a
- *       stored, settable member carrying the range constraint, which also proved
- *       the more faithful model &mdash; see the note on
- *       {@code 88 FICO-RANGE-IS-VALID} below. The general invariant now holds and
- *       is asserted: every property this class exposes for reading is also
- *       settable, so any payload it produces can be sent back to it unchanged.
- *       The range constraint sits on the numeric member because
+ *   <li><strong>High &mdash; a REDEFINES overlay was exposed as two independently
+ *       writable properties.</strong> An earlier revision of this class carried
+ *       both readings of every overlay as stored members: the {@code X(12)} text
+ *       and the {@code S9(10)V99} number for each of the five money fields, the
+ *       {@code X(15)} whole and the three components for each telephone number,
+ *       and the {@code X(03)} text plus the {@code 9(03)} number for the credit
+ *       score. A caller could then submit a text and a number that disagreed,
+ *       which is a byte state that cannot exist in the source, because a
+ *       REDEFINES names one storage cell and not two members. Remediation: each
+ *       overlay now carries exactly one stored member &mdash; the side the source
+ *       actually assigns &mdash; and the other reading is a derived accessor
+ *       deliberately not named as a bean property, so the serializer neither
+ *       emits it nor binds it. Round-tripping is preserved, which was the
+ *       objection an earlier revision raised against this shape: the payload this
+ *       class produces contains exactly the stored members, so it can be sent
+ *       back unchanged. The stored side differs by group where the source
+ *       differs &mdash; see consequence (iii) above &mdash; and an unrecognised
+ *       property, including a derived view submitted as though it were a member,
+ *       is rejected rather than silently discarded, because relying on a
+ *       framework default that discards unknown properties was rejected as an
+ *       environment-specific assumption. The credit-score range is exposed as a
+ *       predicate rather than a constraint because
  *       {@code app/cbl/COACTUPC.cbl:848-849} declares the {@code 88} level on the
  *       {@code PIC 9(03)} REDEFINES at {@code :846-847} rather than on the
- *       {@code PIC X(03)} text member at {@code :845}; constraining the text
- *       member would have applied a range the source does not declare there.</li>
- *   <li><strong>Medium &mdash; a second comparison paragraph, undocumented in the
- *       specification.</strong> The specification describes one comparison
- *       paragraph; there are two, and they normalise the same fields
- *       differently. {@code 1205-COMPARE-OLD-NEW}
+ *       {@code PIC X(03)} text member at {@code :845}, which is the member the
+ *       screen is moved into unvalidated at {@code :1283}.</li>
+ *   <li><strong>High &mdash; the payload was mutable after validation.</strong> An
+ *       earlier revision of this class exposed 139 setters across the outer type
+ *       and the two nested groups. A snapshot guard that can be rewritten between
+ *       validation and comparison is not a guard, and on this payload the window
+ *       spans the concurrency check that {@code 9700-CHECK-CHANGE-IN-REC}
+ *       performs. Remediation: every field is {@code final}, no setter remains,
+ *       and each type is constructed once by an all-arguments
+ *       {@code @JsonCreator}.</li>
+ *   <li><strong>High &mdash; the snapshot group was unvalidated.</strong> An
+ *       earlier revision left {@code oldDetails} without a cascade and without a
+ *       single width contract, on the argument that the OLD group declares no
+ *       {@code 88} level. The argument does not hold: a {@code PIC} clause is
+ *       itself a contract, and under statelessness the group arrives from the
+ *       client rather than from {@code 9000-READ-DATA}. Remediation: the cascade
+ *       and the per-member widths described under Validation above.</li>
+ *   <li><strong>Medium, closed &mdash; a second comparison paragraph, absent
+ *       from prior-generation plan prose.</strong> That prose described one
+ *       comparison paragraph; there are two, and they normalise the same fields
+ *       differently. The current {@code docs/technical-specifications.md} states
+ *       that there are two with different jobs, verified on 1 August 2026, so the
+ *       gap is closed at the specification layer. {@code 1205-COMPARE-OLD-NEW}
  *       ({@code app/cbl/COACTUPC.cbl:1681-1777}) asks whether the user changed
  *       anything, comparing NEW against OLD; {@code 9700-CHECK-CHANGE-IN-REC}
  *       ({@code :4109-4193}) asks whether someone else changed the record,
  *       comparing the live record against the OLD snapshot. Remediation: this
- *       payload carries both representations of every field the two regimes read
- *       differently &mdash; text and decimal for money, whole and parts for the
- *       telephone numbers, compact and component for the dates &mdash; and it
- *       normalises nothing, so neither regime has to reconstruct what the other
- *       would have destroyed. The finding belongs in the root decision log at
- *       Medium; no document is created in this package.</li>
- *   <li><strong>Medium &mdash; the input-field census is overstated.</strong> The
- *       specification reports 460 input fields across the seventeen symbolic maps
- *       and 36 for the account-view map. Counting the generated input fields of
+ *       payload makes both representations of every such field <em>readable</em>
+ *       &mdash; text and decimal for money, whole and parts for the telephone
+ *       numbers, compact and component for the dates &mdash; by storing the side
+ *       the source assigns and deriving the other, and it normalises nothing, so
+ *       neither regime has to reconstruct what the other would have destroyed.
+ *       Deriving rather than duplicating is what keeps the two readings from
+ *       disagreeing; see the High-severity overlay finding above. The root
+ *       {@code DECISION_LOG.md} the plan nominates for such findings is <strong>not
+ *       available</strong> &mdash; it has not been authored &mdash; so this docstring and the
+ *       specification's section 0.2.2.1 corrections table carry the finding at Medium, and no
+ *       document is created in this package.</li>
+ *   <li><strong>Medium, closed &mdash; the input-field census was
+ *       overstated.</strong> Prior-generation plan prose reported 460 input fields
+ *       across the seventeen symbolic maps and 36 for the account-view map; the
+ *       specification now publishes 441 and 37. Counting the generated input fields of
  *       every map under {@code app/cpy-bms} at this commit yields
  *       <strong>441</strong> in total and <strong>37</strong> for
  *       {@code app/cpy-bms/COACTVW.CPY}. The figure for this map is unaffected:
@@ -439,23 +480,31 @@ import jakarta.validation.constraints.Size;
  *       and marked sic; none is corrected, because parity is the contract.</li>
  * </ul>
  *
- * <p><strong>Not available.</strong> One fact this class would otherwise assert
- * from example data cannot be: there is <strong>no populated date-of-birth
- * example anywhere in the ASCII fixtures</strong>. All 50 customer records in
- * {@code app/data/ASCII/custdata.txt} carry ten zero characters in the
- * {@code CUST-DOB-YYYY-MM-DD} field, so the fixtures neither confirm nor refute
- * the dash-separated live form. That form is established structurally instead,
- * and the structural evidence is conclusive: the field is {@code PIC X(10)} at
- * {@code app/cpy/CVCUS01Y.cpy:19}, and {@code 9700-CHECK-CHANGE-IN-REC} reads it
- * at offsets 1, 6 and 9 ({@code app/cbl/COACTUPC.cbl:4174-4179}), which are the
- * year, month and day positions of a ten-character value only when separator
- * bytes occupy positions 5 and 8. To close the gap by example rather than by
- * construction, what is needed is either a customer fixture with a populated date
- * of birth, or the screen-to-record MOVE statements that assemble the live value
- * from the three input components. Neither exists in the corpus at commit
- * {@code 7756d89}. No value is invented here: the compact snapshot form is stored
- * exactly as its eight-character declaration requires, and the dash-separated
- * live form is never stored by this class at all.</p>
+ * <p><strong>The dash-separated live form is confirmed by example, not merely by
+ * construction.</strong> Every one of the 50 customer records in
+ * {@code app/data/ASCII/custdata.txt} carries a populated, distinct
+ * {@code YYYY-MM-DD} value in {@code CUST-DOB-YYYY-MM-DD}. The field is
+ * {@code PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:19}, and summing the preceding
+ * leaf pictures of that copybook places it at bytes 309 through 318 of the
+ * 500-byte record, so it must be read position-aware rather than by scanning for
+ * a pattern. Read that way, line 1 (customer {@code 000000001}) holds
+ * {@code 1961-06-08} and line 50 (customer {@code 000000050}) holds
+ * {@code 1960-12-01}; all 50 values are distinct, none is zero or blank, every
+ * one carries a hyphen at positions 5 and 8, and the year components span 1960
+ * to 2001.</p>
+ *
+ * <p>That example evidence and the structural evidence agree, which is what makes
+ * the offset asymmetry this class implements safe to rely on. Structurally,
+ * {@code 9700-CHECK-CHANGE-IN-REC} reads the live value at offsets 1, 6 and 9
+ * ({@code app/cbl/COACTUPC.cbl:4174-4179}) — the year, month and day positions of
+ * a ten-character value only when separator bytes occupy positions 5 and 8, which
+ * the fixture rows above independently show they do. The snapshot side carries the
+ * same date <em>without</em> separators and is therefore read at offsets 1, 5 and
+ * 7. Comparing the two whole strings would report a change on every request; the
+ * comparison is component-wise for exactly that reason. No value is invented here:
+ * the compact snapshot form is stored exactly as its eight-character declaration
+ * requires, and the dash-separated live form is never stored by this class at
+ * all.</p>
 
  *
  * <h2>Design notes</h2>
@@ -479,72 +528,116 @@ import jakarta.validation.constraints.Size;
 public class AccountUpdateRequest {
 
     /**
-     * Declared width of every compact snapshot date, from
-     * {@code PIC X(08)} at {@code app/cbl/COACTUPC.cbl:684}, {@code :690},
-     * {@code :696} and {@code :746}.
+     * Declared width of every compact snapshot date, from {@code PIC X(08)} at
+     * {@code app/cbl/COACTUPC.cbl:684}, {@code :690}, {@code :696} and {@code :746}.
      */
     private static final int COMPACT_DATE_LENGTH = 8;
 
-    /** Zero-based start of the year component, COBOL reference-modifier offset 1. */
+    /**
+     * Zero-based start of the year component, COBOL reference-modifier offset 1, per the snapshot comparison at
+     * {@code app/cbl/COACTUPC.cbl:669-756}.
+     */
     private static final int DATE_YEAR_BEGIN = 0;
 
-    /** Zero-based end of the year component; the year is {@code PIC X(4)}. */
+    /**
+     * Zero-based end of the year component; the year is {@code PIC X(4)}.
+     */
     private static final int DATE_YEAR_END = 4;
 
-    /** Zero-based start of the month component, COBOL reference-modifier offset 5. */
+    /**
+     * Zero-based start of the month component, COBOL reference-modifier offset 5, per the snapshot comparison at
+     * {@code app/cbl/COACTUPC.cbl:669-756}.
+     */
     private static final int DATE_MONTH_BEGIN = 4;
 
-    /** Zero-based end of the month component; the month is {@code PIC X(2)}. */
+    /**
+     * Zero-based end of the month component; the month is {@code PIC X(2)}.
+     */
     private static final int DATE_MONTH_END = 6;
 
-    /** Zero-based start of the day component, COBOL reference-modifier offset 7. */
+    /**
+     * Zero-based start of the day component, COBOL reference-modifier offset 7, per the snapshot comparison at
+     * {@code app/cbl/COACTUPC.cbl:669-756}.
+     */
     private static final int DATE_DAY_BEGIN = 6;
 
-    /** Zero-based end of the day component; the day is {@code PIC X(2)}. */
+    /**
+     * Zero-based end of the day component; the day is {@code PIC X(2)}.
+     */
     private static final int DATE_DAY_END = 8;
 
-    /** Lowest credit score {@code 88 FICO-RANGE-IS-VALID} accepts. */
+    /**
+     * Lowest credit score {@code 88 FICO-RANGE-IS-VALID} accepts, declared at
+     * {@code app/cbl/COACTUPC.cbl:848} and tested at {@code app/cbl/COACTUPC.cbl:2515}.
+     */
     private static final int FICO_SCORE_MINIMUM = 300;
 
-    /** Highest credit score {@code 88 FICO-RANGE-IS-VALID} accepts. */
+    /**
+     * Highest credit score {@code 88 FICO-RANGE-IS-VALID} accepts, declared at
+     * {@code app/cbl/COACTUPC.cbl:848} and tested at {@code app/cbl/COACTUPC.cbl:2515}.
+     */
     private static final int FICO_SCORE_MAXIMUM = 850;
 
+    /** Digits after the decimal point in {@code PIC S9(10)V99}: the {@code V99} of the clause. */
+    private static final int AMOUNT_SCALE = 2;
+
+    /** Declared byte length of the snapshot money members, {@code PIC X(12)} / {@code PIC S9(10)V99}. */
+    private static final int AMOUNT_LENGTH = 12;
+
+    /** Declared byte length of the snapshot credit-score members, {@code PIC X(03)} / {@code PIC 9(03)}. */
+    private static final int FICO_SCORE_LENGTH = 3;
+
+    /** Declared byte length of the snapshot telephone members, {@code PIC X(15)}. */
+    private static final int PHONE_LENGTH = 15;
+
+    /** Zero-based start of the area code inside the telephone overlay; COBOL offset 2, after one filler byte. */
+    private static final int PHONE_AREA_CODE_BEGIN = 1;
+
+    /** Zero-based end of the area code; the part is {@code PIC X(3)}. */
+    private static final int PHONE_AREA_CODE_END = 4;
+
+    /** Zero-based start of the exchange prefix inside the telephone overlay; COBOL offset 6. */
+    private static final int PHONE_PREFIX_BEGIN = 5;
+
+    /** Zero-based end of the exchange prefix; the part is {@code PIC X(3)}. */
+    private static final int PHONE_PREFIX_END = 8;
+
+    /** Zero-based start of the line number inside the telephone overlay; COBOL offset 10. */
+    private static final int PHONE_LINE_NUMBER_BEGIN = 9;
+
+    /** Zero-based end of the line number; the part is {@code PIC X(4)}. */
+    private static final int PHONE_LINE_NUMBER_END = 13;
+
+    /** Zoned-decimal overpunch for a positive final digit of zero. */
+    private static final char OVERPUNCH_POSITIVE_ZERO = '{';
+
+    /** Zoned-decimal overpunch for a negative final digit of zero. */
+    private static final char OVERPUNCH_NEGATIVE_ZERO = '}';
+
+    /** Lowest zoned-decimal overpunch letter carrying a positive sign; {@code A} through {@code I} are 1 to 9. */
+    private static final char OVERPUNCH_POSITIVE_FIRST = 'A';
+
+    /** Highest zoned-decimal overpunch letter carrying a positive sign. */
+    private static final char OVERPUNCH_POSITIVE_LAST = 'I';
+
+    /** Lowest zoned-decimal overpunch letter carrying a negative sign; {@code J} through {@code R} are 1 to 9. */
+    private static final char OVERPUNCH_NEGATIVE_FIRST = 'J';
+
+    /** Highest zoned-decimal overpunch letter carrying a negative sign. */
+    private static final char OVERPUNCH_NEGATIVE_LAST = 'R';
+
     /**
-     * Extracts one component of a compact eight-character snapshot date without
-     * modifying, trimming or case-folding the stored value.
+     * Extracts one component of a compact eight-character snapshot date without modifying, trimming or
+     * case-folding the stored value.
      *
-     * <p>The snapshot dates are declared {@code PIC X(08)} and hold
-     * {@code yyyymmdd} with no separators, so their year, month and day sit at
-     * COBOL offsets 1, 5 and 7 &mdash; not at 1, 6 and 9 where the live
-     * dash-separated {@code PIC X(10)} values keep theirs. See the Blocker
-     * section of this class's documentation.</p>
-     *
-     * <p>The method is total with respect to the absent and blank states so that
-     * the tri-state described in this class's documentation survives: a
-     * {@code null} backing value yields {@code null}, and a backing value too
-     * short to reach the requested component yields the empty string. Nothing is
-     * fabricated and nothing is padded.</p>
-     *
-     * <p>A backing value <em>longer</em> than eight characters is rejected
-     * rather than sliced, because that is exactly the mistake of storing the
-     * live dash-separated form into the compact snapshot field: slicing
-     * {@code 2020-01-15} at offset 5 would silently yield a fragment containing
-     * a separator, the change-detection guard would then fire on every request,
-     * and the endpoint would become permanently unusable. Failing loudly is the
-     * only behaviour that cannot be mistaken for correct.</p>
-     *
-     * @param compactDate the stored eight-character value; may be {@code null}
-     * @param beginIndex  zero-based, inclusive start of the component
-     * @param endIndex    zero-based, exclusive end of the component
-     * @param fieldName   name of the member being read, used in the failure
-     *                    message; the offending value is deliberately never
-     *                    included because this object carries personally
-     *                    identifiable data
-     * @return the requested component, {@code null} when the backing value is
-     *         absent, or the empty string when the backing value does not reach
-     *         the component
-     * @throws IllegalArgumentException when the backing value is longer than the
-     *         declared eight characters and therefore is not the compact form
+     * @param compactDate the stored eight-character value.
+     * @param beginIndex zero-based, inclusive start of the component
+     * @param endIndex zero-based, exclusive end of the component
+     * @param fieldName name of the member being read, used in the failure message.
+     * @return the requested component, {@code null} when the backing value is absent, or the empty string when
+     * the backing value does not reach the component
+     * @throws IllegalArgumentException when the backing value is longer than the declared eight characters and
+     * therefore is not the compact form
      */
     private static String compactDatePart(final String compactDate, final int beginIndex,
             final int endIndex, final String fieldName) {
@@ -565,6 +658,224 @@ public class AccountUpdateRequest {
         return compactDate.substring(beginIndex, Math.min(endIndex, compactDate.length()));
     }
 
+    /**
+     * Reads a snapshot money member through its {@code PIC S9(10)V99} REDEFINES view.
+     *
+     * <p>A REDEFINES is not a second field. {@code ACUP-OLD-CURR-BAL PIC X(12)} at
+     * {@code app/cbl/COACTUPC.cbl:675} and {@code ACUP-OLD-CURR-BAL-N PIC S9(10)V99} at
+     * {@code :676-677} name the <em>same twelve bytes</em>, and every money member of both
+     * snapshot groups is declared that way. This method therefore interprets the stored text
+     * rather than consulting a parallel member: there is no parallel member to consult, because
+     * a state in which the text and the number disagree cannot exist in the source and must not
+     * be constructible here.</p>
+     *
+     * <p><strong>Why the bytes are zoned decimal.</strong> The OLD group is filled by
+     * {@code MOVE ACCT-CURR-BAL TO ACUP-OLD-CURR-BAL-N} at {@code app/cbl/COACTUPC.cbl:3821},
+     * and the NEW group by {@code COMPUTE ACUP-NEW-CURR-BAL-N = FUNCTION NUMVAL-C(...)} at
+     * {@code :1107}. Both write through the <em>signed numeric</em> view of a
+     * {@code DISPLAY}-usage field, so the twelve bytes carry eleven leading digits followed by a
+     * trailing overpunch character that encodes both the final digit and the sign. That is the
+     * same encoding the seed fixtures use: {@code app/data/ASCII/acctdata.txt:1} records
+     * {@code 00000001940&#123;} for a balance of {@code +194.00}.</p>
+     *
+     * <p>The decode table is the standard one: <code>&#123;</code> is {@code +0},
+     * {@code A} through {@code I} are {@code +1} to {@code +9}, <code>&#125;</code> is
+     * {@code -0}, and {@code J} through {@code R} are {@code -1} to {@code -9}. A plain digit in
+     * the final position is read as unsigned, which is what an unsigned {@code MOVE} leaves
+     * there.</p>
+     *
+     * <p>The method is total: it never throws and never mutates. Any image that is not a
+     * zoned-decimal number of the declared length &mdash; absent, blank, low-values, or the raw
+     * free-text a caller might mistakenly send &mdash; yields {@code null}, so the absent, blank
+     * and invalid states all still reach the service and still receive the source's own distinct
+     * messages rather than a framework error. Rejecting them here would collapse the three-state
+     * model of {@code app/cpy/CSSETATY.cpy:17-27} into one.</p>
+     *
+     * @param image the stored twelve-character member; may be {@code null}
+     * @return the amount at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+     *         not a zoned-decimal image of the declared length
+     */
+    private static BigDecimal zonedDecimalAmount(final String image) {
+        if (image == null || image.length() != AMOUNT_LENGTH) {
+            return null;
+        }
+        final char sign = image.charAt(AMOUNT_LENGTH - 1);
+        final boolean negative = sign == OVERPUNCH_NEGATIVE_ZERO
+                || (sign >= OVERPUNCH_NEGATIVE_FIRST && sign <= OVERPUNCH_NEGATIVE_LAST);
+        final char finalDigit;
+        if (sign >= '0' && sign <= '9') {
+            finalDigit = sign;
+        } else if (sign == OVERPUNCH_POSITIVE_ZERO || sign == OVERPUNCH_NEGATIVE_ZERO) {
+            finalDigit = '0';
+        } else if (sign >= OVERPUNCH_POSITIVE_FIRST && sign <= OVERPUNCH_POSITIVE_LAST) {
+            finalDigit = (char) ('1' + (sign - OVERPUNCH_POSITIVE_FIRST));
+        } else if (sign >= OVERPUNCH_NEGATIVE_FIRST && sign <= OVERPUNCH_NEGATIVE_LAST) {
+            finalDigit = (char) ('1' + (sign - OVERPUNCH_NEGATIVE_FIRST));
+        } else {
+            return null;
+        }
+        final StringBuilder digits = new StringBuilder(AMOUNT_LENGTH);
+        for (int index = 0; index < AMOUNT_LENGTH - 1; index++) {
+            final char current = image.charAt(index);
+            if (current < '0' || current > '9') {
+                return null;
+            }
+            digits.append(current);
+        }
+        digits.append(finalDigit);
+        final BigDecimal magnitude = new BigDecimal(digits.toString()).movePointLeft(AMOUNT_SCALE);
+        return negative ? magnitude.negate() : magnitude;
+    }
+
+    /**
+     * Reads one component of a snapshot telephone member through its REDEFINES view.
+     *
+     * <p>{@code ACUP-OLD-CUST-PHONE-NUM-1 PIC X(15)} at {@code app/cbl/COACTUPC.cbl:722} is
+     * redefined at {@code :723-731} as {@code FILLER X(1)}, area code {@code X(3)},
+     * {@code FILLER X(1)}, prefix {@code X(3)}, {@code FILLER X(1)}, line number {@code X(4)},
+     * {@code FILLER X(2)} &mdash; fifteen bytes in total, holding the punctuated
+     * {@code (nnn)nnn-nnnn} rendering. The three filler bytes are the parentheses and the hyphen,
+     * which is why the components sit at COBOL offsets 2, 6 and 10 rather than 1, 4 and 7.</p>
+     *
+     * <p>As with the money members these are views over one storage cell, not independent
+     * members, so they are derived here instead of being carried as separate JSON properties. A
+     * caller cannot submit an area code that contradicts the number it is part of, because in the
+     * source no such state exists.</p>
+     *
+     * @param phoneNumber the stored fifteen-character member; may be {@code null}
+     * @param beginIndex  zero-based, inclusive start of the component
+     * @param endIndex    zero-based, exclusive end of the component
+     * @param fieldName   name of the member being read, used in the failure message; the offending
+     *                    value is deliberately never included because this object carries
+     *                    personally identifiable data
+     * @return the requested component, {@code null} when the stored member is absent, or the empty
+     *         string when the stored member does not reach the component
+     * @throws IllegalArgumentException when the stored member is longer than the declared fifteen
+     *         characters and therefore is not the punctuated form the overlay describes
+     */
+    private static String phoneNumberPart(final String phoneNumber, final int beginIndex,
+            final int endIndex, final String fieldName) {
+        if (phoneNumber == null) {
+            return null;
+        }
+        if (phoneNumber.length() > PHONE_LENGTH) {
+            throw new IllegalArgumentException(fieldName
+                    + " must hold at most " + PHONE_LENGTH
+                    + " characters, because app/cbl/COACTUPC.cbl declares the snapshot telephone"
+                    + " member as PIC X(15) whose REDEFINES places the area code, prefix and line"
+                    + " number at offsets 2, 6 and 10; those offsets cannot be applied to a longer"
+                    + " value. The offending value is not echoed because this request carries"
+                    + " personally identifiable data.");
+        }
+        if (phoneNumber.length() <= beginIndex) {
+            return "";
+        }
+        return phoneNumber.substring(beginIndex, Math.min(endIndex, phoneNumber.length()));
+    }
+
+    /**
+     * Assembles the fifteen-byte telephone overlay image from its three component parts.
+     *
+     * <p>This is the inverse of {@link #phoneNumberPart(String, int, int, String)} and exists because the
+     * two snapshot groups store opposite ends of the same overlay. {@code ACUP-OLD-CUST-PHONE-NUM-1} is
+     * assigned as a whole, by {@code MOVE CUST-PHONE-NUM-1} at {@code app/cbl/COACTUPC.cbl:3876}, and its
+     * parts are never assigned; {@code ACUP-NEW-CUST-PHONE-NUM-1A}, {@code -1B} and {@code -1C} are assigned
+     * individually from the screen at {@code :1359-1375}, and their whole is never assigned. Each group
+     * therefore stores what the source stores and derives the other reading, which is the only arrangement
+     * in which a caller cannot submit a whole that contradicts its own parts.</p>
+     *
+     * <p>Each part is placed at the offset its {@code FILLER}-separated overlay assigns it
+     * ({@code app/cbl/COACTUPC.cbl:811-819}) and padded on the right to its declared width, which is what
+     * {@code MOVE} to a fixed-width alphanumeric item does. The three separator positions and the two
+     * trailing positions are emitted as spaces, because {@code INITIALIZE ACUP-NEW-DETAILS} at {@code :1047}
+     * sets them to spaces and nothing assigns them afterwards. An absent part contributes its own width in
+     * spaces for the same reason.</p>
+     *
+     * @param areaCode   the three-character area code component; may be {@code null}
+     * @param prefix     the three-character exchange prefix component; may be {@code null}
+     * @param lineNumber the four-character line number component; may be {@code null}
+     * @param fieldName  name of the whole being assembled, used in the failure message; the offending value
+     *                   is deliberately never included because this object carries personally identifiable
+     *                   data
+     * @return the fifteen-character overlay image
+     * @throws IllegalArgumentException when any part is longer than its declared width and therefore cannot
+     *         be placed at the offset the overlay assigns it
+     */
+    private static String overlayTelephoneImage(final String areaCode, final String prefix,
+            final String lineNumber, final String fieldName) {
+        final StringBuilder image = new StringBuilder(PHONE_LENGTH);
+        image.append(' ');
+        appendOverlayPart(image, areaCode, PHONE_AREA_CODE_END - PHONE_AREA_CODE_BEGIN, fieldName);
+        image.append(' ');
+        appendOverlayPart(image, prefix, PHONE_PREFIX_END - PHONE_PREFIX_BEGIN, fieldName);
+        image.append(' ');
+        appendOverlayPart(image, lineNumber, PHONE_LINE_NUMBER_END - PHONE_LINE_NUMBER_BEGIN, fieldName);
+        image.append("  ");
+        return image.toString();
+    }
+
+    /**
+     * Appends one component of a telephone overlay, right-padded with spaces to its declared width.
+     *
+     * @param image     the overlay image being assembled
+     * @param part      the component value; may be {@code null}, in which case its width is emitted as
+     *                  spaces
+     * @param width     the component's declared {@code PIC X(n)} width
+     * @param fieldName name of the whole being assembled, used in the failure message
+     * @throws IllegalArgumentException when the component is longer than its declared width
+     */
+    private static void appendOverlayPart(final StringBuilder image, final String part, final int width,
+            final String fieldName) {
+        final String value = part == null ? "" : part;
+        if (value.length() > width) {
+            throw new IllegalArgumentException(fieldName
+                    + " cannot be assembled, because one of its components holds " + value.length()
+                    + " characters where app/cbl/COACTUPC.cbl:811-819 declares " + width
+                    + "; the overlay has no room for it at the offset the REDEFINES assigns."
+                    + " The offending value is not echoed because this request carries personally"
+                    + " identifiable data.");
+        }
+        image.append(value);
+        image.append(" ".repeat(width - value.length()));
+    }
+
+    /**
+     * Reads a snapshot credit score through its {@code PIC 9(03)} REDEFINES view.
+     *
+     * <p>{@code ACUP-OLD-CUST-FICO-SCORE-X PIC X(03)} at {@code app/cbl/COACTUPC.cbl:754} and
+     * {@code ACUP-OLD-CUST-FICO-SCORE PIC 9(03)} at {@code :755-756} are the same three bytes;
+     * the NEW group repeats the pair at {@code :845} and {@code :846-847}. The clause is
+     * <em>unsigned</em>, so unlike the money members there is no overpunch: the numeric reading is
+     * three decimal digits or nothing.</p>
+     *
+     * <p>Both readings are genuinely used by the source, which is why the view exists rather than
+     * being left implicit. {@code 1205-COMPARE-OLD-NEW} compares the <em>text</em> members at
+     * {@code app/cbl/COACTUPC.cbl:1767-1768}, while {@code 9700-CHECK-CHANGE-IN-REC} compares the
+     * live record against the <em>numeric</em> member at {@code :4186}. One storage cell, two
+     * readings, two paragraphs.</p>
+     *
+     * <p>The method is total and never throws. The NEW group's member is raw screen input, moved
+     * unvalidated by {@code MOVE ACSTFCOI OF CACTUPAI TO ACUP-NEW-CUST-FICO-SCORE-X} at
+     * {@code :1283}, so a non-numeric value is a state the source accepts into storage and then
+     * reports through its own message. Returning {@code null} preserves that; throwing would
+     * replace the source's message with a framework error.</p>
+     *
+     * @param image the stored three-character member; may be {@code null}
+     * @return the score, or {@code null} when the stored member is not three decimal digits
+     */
+    private static Integer unsignedDisplayScore(final String image) {
+        if (image == null || image.length() != FICO_SCORE_LENGTH) {
+            return null;
+        }
+        for (int index = 0; index < FICO_SCORE_LENGTH; index++) {
+            final char current = image.charAt(index);
+            if (current < '0' || current > '9') {
+                return null;
+            }
+        }
+        return Integer.valueOf(image);
+    }
+
     // ----------------------------------------------------------------
     // Screen fields, in the declaration order of app/cpy-bms/COACTUP.CPY.
     // All 54 of them, including the three ordering quirks the map declares:
@@ -574,13 +885,13 @@ public class AccountUpdateRequest {
     // ----------------------------------------------------------------
 
     /**
-     * {@code TRNNAMEI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:24}. Transaction identifier echoed into the
-     * screen header.
+     * {@code TRNNAMEI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:24}. Transaction identifier echoed into
+     * the screen header.
      */
     @Size(max = 4,
             message = "transactionName must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:24)")
-    private String transactionName;
+    private final String transactionName;
 
     /**
      * {@code TITLE01I} PIC X(40) &mdash; {@code app/cpy-bms/COACTUP.CPY:30}. First header title line.
@@ -588,24 +899,25 @@ public class AccountUpdateRequest {
     @Size(max = 40,
             message = "title01 must not exceed its declared width of 40 characters"
                     + " (app/cpy-bms/COACTUP.CPY:30)")
-    private String title01;
+    private final String title01;
 
     /**
-     * {@code CURDATEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:36}. Header date as rendered on the screen.
+     * {@code CURDATEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:36}. Header date as rendered on the
+     * screen.
      */
     @Size(max = 8,
             message = "currentDate must not exceed its declared width of 8 characters"
                     + " (app/cpy-bms/COACTUP.CPY:36)")
-    private String currentDate;
+    private final String currentDate;
 
     /**
-     * {@code PGMNAMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:42}. Name of the program that produced the
-     * screen.
+     * {@code PGMNAMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:42}. Name of the program that produced
+     * the screen.
      */
     @Size(max = 8,
             message = "programName must not exceed its declared width of 8 characters"
                     + " (app/cpy-bms/COACTUP.CPY:42)")
-    private String programName;
+    private final String programName;
 
     /**
      * {@code TITLE02I} PIC X(40) &mdash; {@code app/cpy-bms/COACTUP.CPY:48}. Second header title line.
@@ -613,16 +925,16 @@ public class AccountUpdateRequest {
     @Size(max = 40,
             message = "title02 must not exceed its declared width of 40 characters"
                     + " (app/cpy-bms/COACTUP.CPY:48)")
-    private String title02;
+    private final String title02;
 
     /**
-     * {@code CURTIMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:54}. Header time as rendered on the screen.
-     * Eight characters here; the sign-on map declares nine at {@code app/cpy-bms/COSGN00.CPY:54}.
+     * {@code CURTIMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:54}. Header time as rendered on the
+     * screen. Eight characters here; the sign-on map declares nine at {@code app/cpy-bms/COSGN00.CPY:54}.
      */
     @Size(max = 8,
             message = "currentTime must not exceed its declared width of 8 characters"
                     + " (app/cpy-bms/COACTUP.CPY:54)")
-    private String currentTime;
+    private final String currentTime;
 
     /**
      * {@code ACCTSIDI} PIC X(11) &mdash; {@code app/cpy-bms/COACTUP.CPY:60}. Account identifier. Text here; the
@@ -631,7 +943,7 @@ public class AccountUpdateRequest {
     @Size(max = 11,
             message = "accountId must not exceed its declared width of 11 characters"
                     + " (app/cpy-bms/COACTUP.CPY:60)")
-    private String accountId;
+    private final String accountId;
 
     /**
      * {@code ACSTTUSI} PIC X(1) &mdash; {@code app/cpy-bms/COACTUP.CPY:66}. Account active status, a raw
@@ -640,7 +952,7 @@ public class AccountUpdateRequest {
     @Size(max = 1,
             message = "accountStatus must not exceed its declared width of 1 character"
                     + " (app/cpy-bms/COACTUP.CPY:66)")
-    private String accountStatus;
+    private final String accountStatus;
 
     /**
      * {@code OPNYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:72}. Year component of the account open
@@ -649,7 +961,7 @@ public class AccountUpdateRequest {
     @Size(max = 4,
             message = "openDateYear must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:72)")
-    private String openDateYear;
+    private final String openDateYear;
 
     /**
      * {@code OPNMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:78}. Month component of the account open
@@ -658,15 +970,16 @@ public class AccountUpdateRequest {
     @Size(max = 2,
             message = "openDateMonth must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:78)")
-    private String openDateMonth;
+    private final String openDateMonth;
 
     /**
-     * {@code OPNDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:84}. Day component of the account open date.
+     * {@code OPNDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:84}. Day component of the account open
+     * date.
      */
     @Size(max = 2,
             message = "openDateDay must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:84)")
-    private String openDateDay;
+    private final String openDateDay;
 
     /**
      * {@code ACRDLIMI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:90}. Credit limit as displayed. Fifteen
@@ -675,25 +988,25 @@ public class AccountUpdateRequest {
     @Size(max = 15,
             message = "creditLimit must not exceed its declared width of 15 characters"
                     + " (app/cpy-bms/COACTUP.CPY:90)")
-    private String creditLimit;
+    private final String creditLimit;
 
     /**
-     * {@code EXPYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:96}. Year component of the account expiry
-     * date.
+     * {@code EXPYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:96}. Year component of the account
+     * expiry date.
      */
     @Size(max = 4,
             message = "expiryDateYear must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:96)")
-    private String expiryDateYear;
+    private final String expiryDateYear;
 
     /**
-     * {@code EXPMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:102}. Month component of the account expiry
-     * date.
+     * {@code EXPMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:102}. Month component of the account
+     * expiry date.
      */
     @Size(max = 2,
             message = "expiryDateMonth must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:102)")
-    private String expiryDateMonth;
+    private final String expiryDateMonth;
 
     /**
      * {@code EXPDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:108}. Day component of the account expiry
@@ -702,7 +1015,7 @@ public class AccountUpdateRequest {
     @Size(max = 2,
             message = "expiryDateDay must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:108)")
-    private String expiryDateDay;
+    private final String expiryDateDay;
 
     /**
      * {@code ACSHLIMI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:114}. Cash credit limit as displayed.
@@ -710,34 +1023,34 @@ public class AccountUpdateRequest {
     @Size(max = 15,
             message = "cashCreditLimit must not exceed its declared width of 15 characters"
                     + " (app/cpy-bms/COACTUP.CPY:114)")
-    private String cashCreditLimit;
+    private final String cashCreditLimit;
 
     /**
-     * {@code RISYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:120}. Year component of the account reissue
-     * date.
+     * {@code RISYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:120}. Year component of the account
+     * reissue date.
      */
     @Size(max = 4,
             message = "reissueDateYear must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:120)")
-    private String reissueDateYear;
+    private final String reissueDateYear;
 
     /**
-     * {@code RISMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:126}. Month component of the account reissue
-     * date.
+     * {@code RISMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:126}. Month component of the account
+     * reissue date.
      */
     @Size(max = 2,
             message = "reissueDateMonth must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:126)")
-    private String reissueDateMonth;
+    private final String reissueDateMonth;
 
     /**
-     * {@code RISDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:132}. Day component of the account reissue
-     * date.
+     * {@code RISDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:132}. Day component of the account
+     * reissue date.
      */
     @Size(max = 2,
             message = "reissueDateDay must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:132)")
-    private String reissueDateDay;
+    private final String reissueDateDay;
 
     /**
      * {@code ACURBALI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:138}. Current balance as displayed.
@@ -745,34 +1058,35 @@ public class AccountUpdateRequest {
     @Size(max = 15,
             message = "currentBalance must not exceed its declared width of 15 characters"
                     + " (app/cpy-bms/COACTUP.CPY:138)")
-    private String currentBalance;
+    private final String currentBalance;
 
     /**
-     * {@code ACRCYCRI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:144}. Current cycle credit as displayed.
+     * {@code ACRCYCRI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:144}. Current cycle credit as
+     * displayed.
      */
     @Size(max = 15,
             message = "currentCycleCredit must not exceed its declared width of 15 characters"
                     + " (app/cpy-bms/COACTUP.CPY:144)")
-    private String currentCycleCredit;
+    private final String currentCycleCredit;
 
     /**
-     * {@code AADDGRPI} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:150}. Account group identifier, carried raw
-     * because the two comparison regimes case-fold it in opposite directions, upper at {@code
-     * app/cbl/COACTUPC.cbl:1697-1700} and lower at {@code :4139-4140}.
+     * {@code AADDGRPI} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:150}. Account group identifier, carried
+     * raw because the two comparison regimes case-fold it in opposite directions, upper at
+     * {@code app/cbl/COACTUPC.cbl:1697-1700} and lower at {@code :4139-4140}.
      */
     @Size(max = 10,
             message = "accountGroupId must not exceed its declared width of 10 characters"
                     + " (app/cpy-bms/COACTUP.CPY:150)")
-    private String accountGroupId;
+    private final String accountGroupId;
 
     /**
-     * {@code ACRCYDBI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:156}. Current cycle debit as displayed. The
-     * source lets this accumulator hold negative amounts, so no sign normalisation is applied.
+     * {@code ACRCYDBI} PIC X(15) &mdash; {@code app/cpy-bms/COACTUP.CPY:156}. Current cycle debit as displayed.
+     * The source lets this accumulator hold negative amounts, so no sign normalisation is applied.
      */
     @Size(max = 15,
             message = "currentCycleDebit must not exceed its declared width of 15 characters"
                     + " (app/cpy-bms/COACTUP.CPY:156)")
-    private String currentCycleDebit;
+    private final String currentCycleDebit;
 
     /**
      * {@code ACSTNUMI} PIC X(9) &mdash; {@code app/cpy-bms/COACTUP.CPY:162}. Customer identifier.
@@ -780,7 +1094,7 @@ public class AccountUpdateRequest {
     @Size(max = 9,
             message = "customerId must not exceed its declared width of 9 characters"
                     + " (app/cpy-bms/COACTUP.CPY:162)")
-    private String customerId;
+    private final String customerId;
 
     /**
      * {@code ACTSSN1I} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:168}. First part of the social security
@@ -789,7 +1103,7 @@ public class AccountUpdateRequest {
     @Size(max = 3,
             message = "customerSsnPart1 must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:168)")
-    private String customerSsnPart1;
+    private final String customerSsnPart1;
 
     /**
      * {@code ACTSSN2I} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:174}. Second part of the social security
@@ -798,7 +1112,7 @@ public class AccountUpdateRequest {
     @Size(max = 2,
             message = "customerSsnPart2 must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:174)")
-    private String customerSsnPart2;
+    private final String customerSsnPart2;
 
     /**
      * {@code ACTSSN3I} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:180}. Third part of the social security
@@ -807,25 +1121,25 @@ public class AccountUpdateRequest {
     @Size(max = 4,
             message = "customerSsnPart3 must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:180)")
-    private String customerSsnPart3;
+    private final String customerSsnPart3;
 
     /**
-     * {@code DOBYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:186}. Year component of the date of birth.
-     * Blank or a single asterisk here becomes {@code LOW-VALUES} at {@code app/cbl/COACTUPC.cbl:1258}.
+     * {@code DOBYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:186}. Year component of the date of
+     * birth. Blank or a single asterisk here becomes {@code LOW-VALUES} at {@code app/cbl/COACTUPC.cbl:1258}.
      */
     @Size(max = 4,
             message = "dateOfBirthYear must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:186)")
-    private String dateOfBirthYear;
+    private final String dateOfBirthYear;
 
     /**
-     * {@code DOBMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:192}. Month component of the date of birth.
-     * Blank or a single asterisk here becomes {@code LOW-VALUES} at {@code app/cbl/COACTUPC.cbl:1265}.
+     * {@code DOBMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:192}. Month component of the date of
+     * birth. Blank or a single asterisk here becomes {@code LOW-VALUES} at {@code app/cbl/COACTUPC.cbl:1265}.
      */
     @Size(max = 2,
             message = "dateOfBirthMonth must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:192)")
-    private String dateOfBirthMonth;
+    private final String dateOfBirthMonth;
 
     /**
      * {@code DOBDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:198}. Day component of the date of birth.
@@ -834,7 +1148,7 @@ public class AccountUpdateRequest {
     @Size(max = 2,
             message = "dateOfBirthDay must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:198)")
-    private String dateOfBirthDay;
+    private final String dateOfBirthDay;
 
     /**
      * {@code ACSTFCOI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:204}. Credit score as keyed. Blank or a
@@ -843,7 +1157,7 @@ public class AccountUpdateRequest {
     @Size(max = 3,
             message = "customerFicoScore must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:204)")
-    private String customerFicoScore;
+    private final String customerFicoScore;
 
     /**
      * {@code ACSFNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:210}. Customer first name.
@@ -851,7 +1165,7 @@ public class AccountUpdateRequest {
     @Size(max = 25,
             message = "customerFirstName must not exceed its declared width of 25 characters"
                     + " (app/cpy-bms/COACTUP.CPY:210)")
-    private String customerFirstName;
+    private final String customerFirstName;
 
     /**
      * {@code ACSMNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:216}. Customer middle name.
@@ -859,7 +1173,7 @@ public class AccountUpdateRequest {
     @Size(max = 25,
             message = "customerMiddleName must not exceed its declared width of 25 characters"
                     + " (app/cpy-bms/COACTUP.CPY:216)")
-    private String customerMiddleName;
+    private final String customerMiddleName;
 
     /**
      * {@code ACSLNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:222}. Customer last name.
@@ -867,7 +1181,7 @@ public class AccountUpdateRequest {
     @Size(max = 25,
             message = "customerLastName must not exceed its declared width of 25 characters"
                     + " (app/cpy-bms/COACTUP.CPY:222)")
-    private String customerLastName;
+    private final String customerLastName;
 
     /**
      * {@code ACSADL1I} PIC X(50) &mdash; {@code app/cpy-bms/COACTUP.CPY:228}. First address line.
@@ -875,7 +1189,7 @@ public class AccountUpdateRequest {
     @Size(max = 50,
             message = "addressLine1 must not exceed its declared width of 50 characters"
                     + " (app/cpy-bms/COACTUP.CPY:228)")
-    private String addressLine1;
+    private final String addressLine1;
 
     /**
      * {@code ACSSTTEI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:234}. State code. The source declares it
@@ -884,7 +1198,7 @@ public class AccountUpdateRequest {
     @Size(max = 2,
             message = "addressStateCode must not exceed its declared width of 2 characters"
                     + " (app/cpy-bms/COACTUP.CPY:234)")
-    private String addressStateCode;
+    private final String addressStateCode;
 
     /**
      * {@code ACSADL2I} PIC X(50) &mdash; {@code app/cpy-bms/COACTUP.CPY:240}. Second address line.
@@ -892,27 +1206,27 @@ public class AccountUpdateRequest {
     @Size(max = 50,
             message = "addressLine2 must not exceed its declared width of 50 characters"
                     + " (app/cpy-bms/COACTUP.CPY:240)")
-    private String addressLine2;
+    private final String addressLine2;
 
     /**
-     * {@code ACSZIPCI} PIC X(5) &mdash; {@code app/cpy-bms/COACTUP.CPY:246}. Postal code. Five characters on the
-     * screen against the ten-character snapshot form at {@code app/cbl/COACTUPC.cbl:721} and the record form at
-     * {@code app/cpy/CVCUS01Y.cpy:14}.
+     * {@code ACSZIPCI} PIC X(5) &mdash; {@code app/cpy-bms/COACTUP.CPY:246}. Postal code. Five characters on
+     * the screen against the ten-character snapshot form at {@code app/cbl/COACTUPC.cbl:721} and the record
+     * form at {@code app/cpy/CVCUS01Y.cpy:14}.
      */
     @Size(max = 5,
             message = "addressZip must not exceed its declared width of 5 characters"
                     + " (app/cpy-bms/COACTUP.CPY:246)")
-    private String addressZip;
+    private final String addressZip;
 
     /**
-     * {@code ACSCITYI} PIC X(50) &mdash; {@code app/cpy-bms/COACTUP.CPY:252}. City, declared after the postal code
-     * in the source and kept in that order. It corresponds to the third address line of the snapshot groups, {@code
-     * ACUP-OLD-CUST-ADDR-LINE-3} at {@code app/cbl/COACTUPC.cbl:718}.
+     * {@code ACSCITYI} PIC X(50) &mdash; {@code app/cpy-bms/COACTUP.CPY:252}. City, declared after the postal
+     * code in the source and kept in that order. It corresponds to the third address line of the snapshot
+     * groups, {@code ACUP-OLD-CUST-ADDR-LINE-3} at {@code app/cbl/COACTUPC.cbl:718}.
      */
     @Size(max = 50,
             message = "addressCity must not exceed its declared width of 50 characters"
                     + " (app/cpy-bms/COACTUP.CPY:252)")
-    private String addressCity;
+    private final String addressCity;
 
     /**
      * {@code ACSCTRYI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:258}. Country code.
@@ -920,7 +1234,7 @@ public class AccountUpdateRequest {
     @Size(max = 3,
             message = "addressCountryCode must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:258)")
-    private String addressCountryCode;
+    private final String addressCountryCode;
 
     /**
      * {@code ACSPH1AI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:264}. Area code of the first telephone
@@ -929,15 +1243,16 @@ public class AccountUpdateRequest {
     @Size(max = 3,
             message = "phone1AreaCode must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:264)")
-    private String phone1AreaCode;
+    private final String phone1AreaCode;
 
     /**
-     * {@code ACSPH1BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:270}. Prefix of the first telephone number.
+     * {@code ACSPH1BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:270}. Prefix of the first telephone
+     * number.
      */
     @Size(max = 3,
             message = "phone1Prefix must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:270)")
-    private String phone1Prefix;
+    private final String phone1Prefix;
 
     /**
      * {@code ACSPH1CI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:276}. Line number of the first telephone
@@ -946,7 +1261,7 @@ public class AccountUpdateRequest {
     @Size(max = 4,
             message = "phone1LineNumber must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:276)")
-    private String phone1LineNumber;
+    private final String phone1LineNumber;
 
     /**
      * {@code ACSGOVTI} PIC X(20) &mdash; {@code app/cpy-bms/COACTUP.CPY:282}. Government-issued identifier. The
@@ -955,7 +1270,7 @@ public class AccountUpdateRequest {
     @Size(max = 20,
             message = "governmentIssuedId must not exceed its declared width of 20 characters"
                     + " (app/cpy-bms/COACTUP.CPY:282)")
-    private String governmentIssuedId;
+    private final String governmentIssuedId;
 
     /**
      * {@code ACSPH2AI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:288}. Area code of the second telephone
@@ -964,44 +1279,45 @@ public class AccountUpdateRequest {
     @Size(max = 3,
             message = "phone2AreaCode must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:288)")
-    private String phone2AreaCode;
+    private final String phone2AreaCode;
 
     /**
-     * {@code ACSPH2BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:294}. Prefix of the second telephone number.
+     * {@code ACSPH2BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:294}. Prefix of the second telephone
+     * number.
      */
     @Size(max = 3,
             message = "phone2Prefix must not exceed its declared width of 3 characters"
                     + " (app/cpy-bms/COACTUP.CPY:294)")
-    private String phone2Prefix;
+    private final String phone2Prefix;
 
     /**
-     * {@code ACSPH2CI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:300}. Line number of the second telephone
-     * number.
+     * {@code ACSPH2CI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:300}. Line number of the second
+     * telephone number.
      */
     @Size(max = 4,
             message = "phone2LineNumber must not exceed its declared width of 4 characters"
                     + " (app/cpy-bms/COACTUP.CPY:300)")
-    private String phone2LineNumber;
+    private final String phone2LineNumber;
 
     /**
      * {@code ACSEFTCI} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:306}. Electronic funds transfer account
-     * identifier, edited by {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'} at {@code
-     * app/cbl/COACTUPC.cbl:1648}.
+     * identifier, edited by {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'} at
+     * {@code app/cbl/COACTUPC.cbl:1648}.
      */
     @Size(max = 10,
             message = "eftAccountId must not exceed its declared width of 10 characters"
                     + " (app/cpy-bms/COACTUP.CPY:306)")
-    private String eftAccountId;
+    private final String eftAccountId;
 
     /**
-     * {@code ACSPFLGI} PIC X(1) &mdash; {@code app/cpy-bms/COACTUP.CPY:312}. Primary card holder indicator, a raw
-     * one-character code edited by {@code 1220-EDIT-YESNO} under the label {@code 'Primary Card Holder'} at {@code
-     * app/cbl/COACTUPC.cbl:1657}.
+     * {@code ACSPFLGI} PIC X(1) &mdash; {@code app/cpy-bms/COACTUP.CPY:312}. Primary card holder indicator, a
+     * raw one-character code edited by {@code 1220-EDIT-YESNO} under the label {@code 'Primary Card Holder'} at
+     * {@code app/cbl/COACTUPC.cbl:1657}.
      */
     @Size(max = 1,
             message = "primaryCardHolderIndicator must not exceed its declared width of 1 character"
                     + " (app/cpy-bms/COACTUP.CPY:312)")
-    private String primaryCardHolderIndicator;
+    private final String primaryCardHolderIndicator;
 
     /**
      * {@code INFOMSGI} PIC X(45) &mdash; {@code app/cpy-bms/COACTUP.CPY:318}. Informational message line, the
@@ -1010,17 +1326,17 @@ public class AccountUpdateRequest {
     @Size(max = 45,
             message = "informationMessage must not exceed its declared width of 45 characters"
                     + " (app/cpy-bms/COACTUP.CPY:318)")
-    private String informationMessage;
+    private final String informationMessage;
 
     /**
-     * {@code ERRMSGI} PIC X(78) &mdash; {@code app/cpy-bms/COACTUP.CPY:324}. Error message line, the carrier for
-     * literals such as {@code 'Record changed by some one else. Please review'} ({@code
-     * app/cbl/COACTUPC.cbl:521-522}).
+     * {@code ERRMSGI} PIC X(78) &mdash; {@code app/cpy-bms/COACTUP.CPY:324}. Error message line, the carrier
+     * for literals such as {@code 'Record changed by some one else. Please review'}
+     * ({@code app/cbl/COACTUPC.cbl:521-522}).
      */
     @Size(max = 78,
             message = "errorMessage must not exceed its declared width of 78 characters"
                     + " (app/cpy-bms/COACTUP.CPY:324)")
-    private String errorMessage;
+    private final String errorMessage;
 
     /**
      * {@code FKEYSI} PIC X(21) &mdash; {@code app/cpy-bms/COACTUP.CPY:330}. Function key legend line.
@@ -1028,7 +1344,7 @@ public class AccountUpdateRequest {
     @Size(max = 21,
             message = "functionKeys must not exceed its declared width of 21 characters"
                     + " (app/cpy-bms/COACTUP.CPY:330)")
-    private String functionKeys;
+    private final String functionKeys;
 
     /**
      * {@code FKEY05I} PIC X(7) &mdash; {@code app/cpy-bms/COACTUP.CPY:336}. Legend for the fifth function key.
@@ -1036,1176 +1352,688 @@ public class AccountUpdateRequest {
     @Size(max = 7,
             message = "functionKey05 must not exceed its declared width of 7 characters"
                     + " (app/cpy-bms/COACTUP.CPY:336)")
-    private String functionKey05;
+    private final String functionKey05;
 
     /**
-     * {@code FKEY12I} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:342}. Legend for the twelfth function key.
+     * {@code FKEY12I} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:342}. Legend for the twelfth function
+     * key.
      */
     @Size(max = 10,
             message = "functionKey12 must not exceed its declared width of 10 characters"
                     + " (app/cpy-bms/COACTUP.CPY:342)")
-    private String functionKey12;
+    private final String functionKey12;
 
     /**
      * Snapshot of the record as the screen was first populated:
      * {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669-756}.
      *
-     * <p>Deliberately <strong>not</strong> marked for cascading validation. The
-     * OLD group declares zero {@code 88}-level condition names, so it is a
-     * purely passive snapshot; constraining it would reject a snapshot the
-     * source accepted unconditionally and would make a previously saved record
-     * unresubmittable.</p>
-     */
-    private OldDetails oldDetails;
-
-    /**
-     * The edited values: {@code ACUP-NEW-DETAILS} at
-     * {@code app/cbl/COACTUPC.cbl:757-849}.
-     *
-     * <p>Marked {@code @Valid} so the declared width contracts and the
-     * 300 through 850 credit-score range of
-     * {@code 88 FICO-RANGE-IS-VALID} ({@code app/cbl/COACTUPC.cbl:848-849})
-     * cascade into the nested group.</p>
+     * <p>Marked {@code @Valid} so the declared width contracts of every member
+     * are enforced. An earlier revision of this class deliberately omitted the
+     * cascade, reasoning that the OLD group declares zero {@code 88}-level
+     * condition names and is therefore a purely passive snapshot. That
+     * reasoning does not survive inspection, on two counts.</p>
+     * <ul>
+     *   <li><strong>A {@code PIC} clause is itself a constraint.</strong> The
+     *       absence of an {@code 88}-level says only that no <em>domain</em>
+     *       rule is declared; every member still carries a fixed width that the
+     *       COBOL runtime enforces absolutely.
+     *       {@code ACUP-OLD-CUST-ADDR-STATE-CD PIC X(02)} at
+     *       {@code app/cbl/COACTUPC.cbl:719} cannot hold three characters, let
+     *       alone seven. Enforcing the width therefore cannot reject anything
+     *       the source accepted; it can only reject what the source could not
+     *       physically have produced.</li>
+     *   <li><strong>The trust relationship is inverted by statelessness.</strong>
+     *       In the source this group is never input: {@code 9000-READ-DATA}
+     *       issues {@code INITIALIZE ACUP-OLD-DETAILS} at
+     *       {@code app/cbl/COACTUPC.cbl:3610} and then fills it member by member
+     *       from the record the program itself just read, so it is trusted by
+     *       construction. Here the same group arrives in the request body from
+     *       the client, and it is the operand the concurrency guard of
+     *       {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares
+     *       against the live record. An unconstrained, client-supplied
+     *       comparison operand is precisely the input that must be validated
+     *       before it is trusted.</li>
+     * </ul>
+     * <p>The cascade does not, however, import the NEW group's domain rule. The
+     * single range in the source, {@code 88 FICO-RANGE-IS-VALID VALUES 300
+     * THROUGH 850} at {@code app/cbl/COACTUPC.cbl:848-849}, is declared on the
+     * NEW group's credit score and on nothing else, so this group carries no
+     * counterpart to it and {@link NewDetails#ficoScoreIsInValidRange()} has no
+     * {@link OldDetails} twin. Widths are enforced; domains are not invented.</p>
      */
     @Valid
-    private NewDetails newDetails;
+    private final OldDetails oldDetails;
 
     /**
-     * Creates an empty request. JSON binding populates the members through the
-     * accessors below; nothing is defaulted, so an absent member stays absent.
+     * The edited values: {@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:757-849}.
      */
-    public AccountUpdateRequest() {
-        // Intentionally empty: no member may be defaulted, because absent,
-        // blank and low-values are three distinguishable states here.
-    }
+    @Valid
+    private final NewDetails newDetails;
 
-    // ----------------------------------------------------------------
-    // Accessors for the screen fields, in the same order as the
-    // declarations above.
-    // ----------------------------------------------------------------
+    /**
+     * Creates an empty request. JSON binding populates the members through the accessors below; nothing is
+     * defaulted, so an absent member stays absent.
+     */
+    @JsonCreator
+    public AccountUpdateRequest(
+            @JsonProperty("transactionName") final String transactionName,
+            @JsonProperty("title01") final String title01,
+            @JsonProperty("currentDate") final String currentDate,
+            @JsonProperty("programName") final String programName,
+            @JsonProperty("title02") final String title02,
+            @JsonProperty("currentTime") final String currentTime,
+            @JsonProperty("accountId") final String accountId,
+            @JsonProperty("accountStatus") final String accountStatus,
+            @JsonProperty("openDateYear") final String openDateYear,
+            @JsonProperty("openDateMonth") final String openDateMonth,
+            @JsonProperty("openDateDay") final String openDateDay,
+            @JsonProperty("creditLimit") final String creditLimit,
+            @JsonProperty("expiryDateYear") final String expiryDateYear,
+            @JsonProperty("expiryDateMonth") final String expiryDateMonth,
+            @JsonProperty("expiryDateDay") final String expiryDateDay,
+            @JsonProperty("cashCreditLimit") final String cashCreditLimit,
+            @JsonProperty("reissueDateYear") final String reissueDateYear,
+            @JsonProperty("reissueDateMonth") final String reissueDateMonth,
+            @JsonProperty("reissueDateDay") final String reissueDateDay,
+            @JsonProperty("currentBalance") final String currentBalance,
+            @JsonProperty("currentCycleCredit") final String currentCycleCredit,
+            @JsonProperty("accountGroupId") final String accountGroupId,
+            @JsonProperty("currentCycleDebit") final String currentCycleDebit,
+            @JsonProperty("customerId") final String customerId,
+            @JsonProperty("customerSsnPart1") final String customerSsnPart1,
+            @JsonProperty("customerSsnPart2") final String customerSsnPart2,
+            @JsonProperty("customerSsnPart3") final String customerSsnPart3,
+            @JsonProperty("dateOfBirthYear") final String dateOfBirthYear,
+            @JsonProperty("dateOfBirthMonth") final String dateOfBirthMonth,
+            @JsonProperty("dateOfBirthDay") final String dateOfBirthDay,
+            @JsonProperty("customerFicoScore") final String customerFicoScore,
+            @JsonProperty("customerFirstName") final String customerFirstName,
+            @JsonProperty("customerMiddleName") final String customerMiddleName,
+            @JsonProperty("customerLastName") final String customerLastName,
+            @JsonProperty("addressLine1") final String addressLine1,
+            @JsonProperty("addressStateCode") final String addressStateCode,
+            @JsonProperty("addressLine2") final String addressLine2,
+            @JsonProperty("addressZip") final String addressZip,
+            @JsonProperty("addressCity") final String addressCity,
+            @JsonProperty("addressCountryCode") final String addressCountryCode,
+            @JsonProperty("phone1AreaCode") final String phone1AreaCode,
+            @JsonProperty("phone1Prefix") final String phone1Prefix,
+            @JsonProperty("phone1LineNumber") final String phone1LineNumber,
+            @JsonProperty("governmentIssuedId") final String governmentIssuedId,
+            @JsonProperty("phone2AreaCode") final String phone2AreaCode,
+            @JsonProperty("phone2Prefix") final String phone2Prefix,
+            @JsonProperty("phone2LineNumber") final String phone2LineNumber,
+            @JsonProperty("eftAccountId") final String eftAccountId,
+            @JsonProperty("primaryCardHolderIndicator") final String primaryCardHolderIndicator,
+            @JsonProperty("informationMessage") final String informationMessage,
+            @JsonProperty("errorMessage") final String errorMessage,
+            @JsonProperty("functionKeys") final String functionKeys,
+            @JsonProperty("functionKey05") final String functionKey05,
+            @JsonProperty("functionKey12") final String functionKey12,
+            @JsonProperty("oldDetails") final OldDetails oldDetails,
+            @JsonProperty("newDetails") final NewDetails newDetails) {
+        this.transactionName = transactionName;
+        this.title01 = title01;
+        this.currentDate = currentDate;
+        this.programName = programName;
+        this.title02 = title02;
+        this.currentTime = currentTime;
+        this.accountId = accountId;
+        this.accountStatus = accountStatus;
+        this.openDateYear = openDateYear;
+        this.openDateMonth = openDateMonth;
+        this.openDateDay = openDateDay;
+        this.creditLimit = creditLimit;
+        this.expiryDateYear = expiryDateYear;
+        this.expiryDateMonth = expiryDateMonth;
+        this.expiryDateDay = expiryDateDay;
+        this.cashCreditLimit = cashCreditLimit;
+        this.reissueDateYear = reissueDateYear;
+        this.reissueDateMonth = reissueDateMonth;
+        this.reissueDateDay = reissueDateDay;
+        this.currentBalance = currentBalance;
+        this.currentCycleCredit = currentCycleCredit;
+        this.accountGroupId = accountGroupId;
+        this.currentCycleDebit = currentCycleDebit;
+        this.customerId = customerId;
+        this.customerSsnPart1 = customerSsnPart1;
+        this.customerSsnPart2 = customerSsnPart2;
+        this.customerSsnPart3 = customerSsnPart3;
+        this.dateOfBirthYear = dateOfBirthYear;
+        this.dateOfBirthMonth = dateOfBirthMonth;
+        this.dateOfBirthDay = dateOfBirthDay;
+        this.customerFicoScore = customerFicoScore;
+        this.customerFirstName = customerFirstName;
+        this.customerMiddleName = customerMiddleName;
+        this.customerLastName = customerLastName;
+        this.addressLine1 = addressLine1;
+        this.addressStateCode = addressStateCode;
+        this.addressLine2 = addressLine2;
+        this.addressZip = addressZip;
+        this.addressCity = addressCity;
+        this.addressCountryCode = addressCountryCode;
+        this.phone1AreaCode = phone1AreaCode;
+        this.phone1Prefix = phone1Prefix;
+        this.phone1LineNumber = phone1LineNumber;
+        this.governmentIssuedId = governmentIssuedId;
+        this.phone2AreaCode = phone2AreaCode;
+        this.phone2Prefix = phone2Prefix;
+        this.phone2LineNumber = phone2LineNumber;
+        this.eftAccountId = eftAccountId;
+        this.primaryCardHolderIndicator = primaryCardHolderIndicator;
+        this.informationMessage = informationMessage;
+        this.errorMessage = errorMessage;
+        this.functionKeys = functionKeys;
+        this.functionKey05 = functionKey05;
+        this.functionKey12 = functionKey12;
+        this.oldDetails = oldDetails;
+        this.newDetails = newDetails;
+    }
 
     /**
      * Returns {@code TRNNAMEI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:24}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getTransactionName() {
         return transactionName;
     }
 
     /**
-     * Sets {@code TRNNAMEI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:24}.
-     *
-     * @param transactionName the value to store verbatim; {@code null} and the empty string are retained as the
-     *                        distinct states they are
-     */
-    public void setTransactionName(final String transactionName) {
-        this.transactionName = transactionName;
-    }
-
-    /**
      * Returns {@code TITLE01I}, PIC X(40) at {@code app/cpy-bms/COACTUP.CPY:30}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getTitle01() {
         return title01;
     }
 
     /**
-     * Sets {@code TITLE01I}, PIC X(40) at {@code app/cpy-bms/COACTUP.CPY:30}.
-     *
-     * @param title01 the value to store verbatim; {@code null} and the empty string are retained as the distinct
-     *                states they are
-     */
-    public void setTitle01(final String title01) {
-        this.title01 = title01;
-    }
-
-    /**
      * Returns {@code CURDATEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:36}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCurrentDate() {
         return currentDate;
     }
 
     /**
-     * Sets {@code CURDATEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:36}.
-     *
-     * @param currentDate the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setCurrentDate(final String currentDate) {
-        this.currentDate = currentDate;
-    }
-
-    /**
      * Returns {@code PGMNAMEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:42}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getProgramName() {
         return programName;
     }
 
     /**
-     * Sets {@code PGMNAMEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:42}.
-     *
-     * @param programName the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setProgramName(final String programName) {
-        this.programName = programName;
-    }
-
-    /**
      * Returns {@code TITLE02I}, PIC X(40) at {@code app/cpy-bms/COACTUP.CPY:48}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getTitle02() {
         return title02;
     }
 
     /**
-     * Sets {@code TITLE02I}, PIC X(40) at {@code app/cpy-bms/COACTUP.CPY:48}.
-     *
-     * @param title02 the value to store verbatim; {@code null} and the empty string are retained as the distinct
-     *                states they are
-     */
-    public void setTitle02(final String title02) {
-        this.title02 = title02;
-    }
-
-    /**
      * Returns {@code CURTIMEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:54}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCurrentTime() {
         return currentTime;
     }
 
     /**
-     * Sets {@code CURTIMEI}, PIC X(8) at {@code app/cpy-bms/COACTUP.CPY:54}.
-     *
-     * @param currentTime the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setCurrentTime(final String currentTime) {
-        this.currentTime = currentTime;
-    }
-
-    /**
      * Returns {@code ACCTSIDI}, PIC X(11) at {@code app/cpy-bms/COACTUP.CPY:60}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAccountId() {
         return accountId;
     }
 
     /**
-     * Sets {@code ACCTSIDI}, PIC X(11) at {@code app/cpy-bms/COACTUP.CPY:60}.
-     *
-     * @param accountId the value to store verbatim; {@code null} and the empty string are retained as the distinct
-     *                  states they are
-     */
-    public void setAccountId(final String accountId) {
-        this.accountId = accountId;
-    }
-
-    /**
      * Returns {@code ACSTTUSI}, PIC X(1) at {@code app/cpy-bms/COACTUP.CPY:66}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAccountStatus() {
         return accountStatus;
     }
 
     /**
-     * Sets {@code ACSTTUSI}, PIC X(1) at {@code app/cpy-bms/COACTUP.CPY:66}.
-     *
-     * @param accountStatus the value to store verbatim; {@code null} and the empty string are retained as the
-     *                      distinct states they are
-     */
-    public void setAccountStatus(final String accountStatus) {
-        this.accountStatus = accountStatus;
-    }
-
-    /**
      * Returns {@code OPNYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:72}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getOpenDateYear() {
         return openDateYear;
     }
 
     /**
-     * Sets {@code OPNYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:72}.
-     *
-     * @param openDateYear the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setOpenDateYear(final String openDateYear) {
-        this.openDateYear = openDateYear;
-    }
-
-    /**
      * Returns {@code OPNMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:78}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getOpenDateMonth() {
         return openDateMonth;
     }
 
     /**
-     * Sets {@code OPNMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:78}.
-     *
-     * @param openDateMonth the value to store verbatim; {@code null} and the empty string are retained as the
-     *                      distinct states they are
-     */
-    public void setOpenDateMonth(final String openDateMonth) {
-        this.openDateMonth = openDateMonth;
-    }
-
-    /**
      * Returns {@code OPNDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:84}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getOpenDateDay() {
         return openDateDay;
     }
 
     /**
-     * Sets {@code OPNDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:84}.
-     *
-     * @param openDateDay the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setOpenDateDay(final String openDateDay) {
-        this.openDateDay = openDateDay;
-    }
-
-    /**
      * Returns {@code ACRDLIMI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:90}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCreditLimit() {
         return creditLimit;
     }
 
     /**
-     * Sets {@code ACRDLIMI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:90}.
-     *
-     * @param creditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setCreditLimit(final String creditLimit) {
-        this.creditLimit = creditLimit;
-    }
-
-    /**
      * Returns {@code EXPYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:96}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getExpiryDateYear() {
         return expiryDateYear;
     }
 
     /**
-     * Sets {@code EXPYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:96}.
-     *
-     * @param expiryDateYear the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setExpiryDateYear(final String expiryDateYear) {
-        this.expiryDateYear = expiryDateYear;
-    }
-
-    /**
      * Returns {@code EXPMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:102}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getExpiryDateMonth() {
         return expiryDateMonth;
     }
 
     /**
-     * Sets {@code EXPMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:102}.
-     *
-     * @param expiryDateMonth the value to store verbatim; {@code null} and the empty string are retained as the
-     *                        distinct states they are
-     */
-    public void setExpiryDateMonth(final String expiryDateMonth) {
-        this.expiryDateMonth = expiryDateMonth;
-    }
-
-    /**
      * Returns {@code EXPDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:108}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getExpiryDateDay() {
         return expiryDateDay;
     }
 
     /**
-     * Sets {@code EXPDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:108}.
-     *
-     * @param expiryDateDay the value to store verbatim; {@code null} and the empty string are retained as the
-     *                      distinct states they are
-     */
-    public void setExpiryDateDay(final String expiryDateDay) {
-        this.expiryDateDay = expiryDateDay;
-    }
-
-    /**
      * Returns {@code ACSHLIMI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:114}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCashCreditLimit() {
         return cashCreditLimit;
     }
 
     /**
-     * Sets {@code ACSHLIMI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:114}.
-     *
-     * @param cashCreditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-     *                        distinct states they are
-     */
-    public void setCashCreditLimit(final String cashCreditLimit) {
-        this.cashCreditLimit = cashCreditLimit;
-    }
-
-    /**
      * Returns {@code RISYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:120}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getReissueDateYear() {
         return reissueDateYear;
     }
 
     /**
-     * Sets {@code RISYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:120}.
-     *
-     * @param reissueDateYear the value to store verbatim; {@code null} and the empty string are retained as the
-     *                        distinct states they are
-     */
-    public void setReissueDateYear(final String reissueDateYear) {
-        this.reissueDateYear = reissueDateYear;
-    }
-
-    /**
      * Returns {@code RISMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:126}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getReissueDateMonth() {
         return reissueDateMonth;
     }
 
     /**
-     * Sets {@code RISMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:126}.
-     *
-     * @param reissueDateMonth the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setReissueDateMonth(final String reissueDateMonth) {
-        this.reissueDateMonth = reissueDateMonth;
-    }
-
-    /**
      * Returns {@code RISDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:132}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getReissueDateDay() {
         return reissueDateDay;
     }
 
     /**
-     * Sets {@code RISDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:132}.
-     *
-     * @param reissueDateDay the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setReissueDateDay(final String reissueDateDay) {
-        this.reissueDateDay = reissueDateDay;
-    }
-
-    /**
      * Returns {@code ACURBALI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:138}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCurrentBalance() {
         return currentBalance;
     }
 
     /**
-     * Sets {@code ACURBALI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:138}.
-     *
-     * @param currentBalance the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setCurrentBalance(final String currentBalance) {
-        this.currentBalance = currentBalance;
-    }
-
-    /**
      * Returns {@code ACRCYCRI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:144}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCurrentCycleCredit() {
         return currentCycleCredit;
     }
 
     /**
-     * Sets {@code ACRCYCRI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:144}.
-     *
-     * @param currentCycleCredit the value to store verbatim; {@code null} and the empty string are retained as the
-     *                           distinct states they are
-     */
-    public void setCurrentCycleCredit(final String currentCycleCredit) {
-        this.currentCycleCredit = currentCycleCredit;
-    }
-
-    /**
      * Returns {@code AADDGRPI}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:150}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAccountGroupId() {
         return accountGroupId;
     }
 
     /**
-     * Sets {@code AADDGRPI}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:150}.
-     *
-     * @param accountGroupId the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setAccountGroupId(final String accountGroupId) {
-        this.accountGroupId = accountGroupId;
-    }
-
-    /**
      * Returns {@code ACRCYDBI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:156}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCurrentCycleDebit() {
         return currentCycleDebit;
     }
 
     /**
-     * Sets {@code ACRCYDBI}, PIC X(15) at {@code app/cpy-bms/COACTUP.CPY:156}.
-     *
-     * @param currentCycleDebit the value to store verbatim; {@code null} and the empty string are retained as the
-     *                          distinct states they are
-     */
-    public void setCurrentCycleDebit(final String currentCycleDebit) {
-        this.currentCycleDebit = currentCycleDebit;
-    }
-
-    /**
      * Returns {@code ACSTNUMI}, PIC X(9) at {@code app/cpy-bms/COACTUP.CPY:162}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerId() {
         return customerId;
     }
 
     /**
-     * Sets {@code ACSTNUMI}, PIC X(9) at {@code app/cpy-bms/COACTUP.CPY:162}.
-     *
-     * @param customerId the value to store verbatim; {@code null} and the empty string are retained as the distinct
-     *                   states they are
-     */
-    public void setCustomerId(final String customerId) {
-        this.customerId = customerId;
-    }
-
-    /**
      * Returns {@code ACTSSN1I}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:168}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerSsnPart1() {
         return customerSsnPart1;
     }
 
     /**
-     * Sets {@code ACTSSN1I}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:168}.
-     *
-     * @param customerSsnPart1 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setCustomerSsnPart1(final String customerSsnPart1) {
-        this.customerSsnPart1 = customerSsnPart1;
-    }
-
-    /**
      * Returns {@code ACTSSN2I}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:174}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerSsnPart2() {
         return customerSsnPart2;
     }
 
     /**
-     * Sets {@code ACTSSN2I}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:174}.
-     *
-     * @param customerSsnPart2 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setCustomerSsnPart2(final String customerSsnPart2) {
-        this.customerSsnPart2 = customerSsnPart2;
-    }
-
-    /**
      * Returns {@code ACTSSN3I}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:180}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerSsnPart3() {
         return customerSsnPart3;
     }
 
     /**
-     * Sets {@code ACTSSN3I}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:180}.
-     *
-     * @param customerSsnPart3 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setCustomerSsnPart3(final String customerSsnPart3) {
-        this.customerSsnPart3 = customerSsnPart3;
-    }
-
-    /**
      * Returns {@code DOBYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:186}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getDateOfBirthYear() {
         return dateOfBirthYear;
     }
 
     /**
-     * Sets {@code DOBYEARI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:186}.
-     *
-     * @param dateOfBirthYear the value to store verbatim; {@code null} and the empty string are retained as the
-     *                        distinct states they are
-     */
-    public void setDateOfBirthYear(final String dateOfBirthYear) {
-        this.dateOfBirthYear = dateOfBirthYear;
-    }
-
-    /**
      * Returns {@code DOBMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:192}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getDateOfBirthMonth() {
         return dateOfBirthMonth;
     }
 
     /**
-     * Sets {@code DOBMONI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:192}.
-     *
-     * @param dateOfBirthMonth the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setDateOfBirthMonth(final String dateOfBirthMonth) {
-        this.dateOfBirthMonth = dateOfBirthMonth;
-    }
-
-    /**
      * Returns {@code DOBDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:198}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getDateOfBirthDay() {
         return dateOfBirthDay;
     }
 
     /**
-     * Sets {@code DOBDAYI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:198}.
-     *
-     * @param dateOfBirthDay the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setDateOfBirthDay(final String dateOfBirthDay) {
-        this.dateOfBirthDay = dateOfBirthDay;
-    }
-
-    /**
      * Returns {@code ACSTFCOI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:204}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerFicoScore() {
         return customerFicoScore;
     }
 
     /**
-     * Sets {@code ACSTFCOI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:204}.
-     *
-     * @param customerFicoScore the value to store verbatim; {@code null} and the empty string are retained as the
-     *                          distinct states they are
-     */
-    public void setCustomerFicoScore(final String customerFicoScore) {
-        this.customerFicoScore = customerFicoScore;
-    }
-
-    /**
      * Returns {@code ACSFNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:210}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerFirstName() {
         return customerFirstName;
     }
 
     /**
-     * Sets {@code ACSFNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:210}.
-     *
-     * @param customerFirstName the value to store verbatim; {@code null} and the empty string are retained as the
-     *                          distinct states they are
-     */
-    public void setCustomerFirstName(final String customerFirstName) {
-        this.customerFirstName = customerFirstName;
-    }
-
-    /**
      * Returns {@code ACSMNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:216}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerMiddleName() {
         return customerMiddleName;
     }
 
     /**
-     * Sets {@code ACSMNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:216}.
-     *
-     * @param customerMiddleName the value to store verbatim; {@code null} and the empty string are retained as the
-     *                           distinct states they are
-     */
-    public void setCustomerMiddleName(final String customerMiddleName) {
-        this.customerMiddleName = customerMiddleName;
-    }
-
-    /**
      * Returns {@code ACSLNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:222}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getCustomerLastName() {
         return customerLastName;
     }
 
     /**
-     * Sets {@code ACSLNAMI}, PIC X(25) at {@code app/cpy-bms/COACTUP.CPY:222}.
-     *
-     * @param customerLastName the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setCustomerLastName(final String customerLastName) {
-        this.customerLastName = customerLastName;
-    }
-
-    /**
      * Returns {@code ACSADL1I}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:228}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressLine1() {
         return addressLine1;
     }
 
     /**
-     * Sets {@code ACSADL1I}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:228}.
-     *
-     * @param addressLine1 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setAddressLine1(final String addressLine1) {
-        this.addressLine1 = addressLine1;
-    }
-
-    /**
      * Returns {@code ACSSTTEI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:234}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressStateCode() {
         return addressStateCode;
     }
 
     /**
-     * Sets {@code ACSSTTEI}, PIC X(2) at {@code app/cpy-bms/COACTUP.CPY:234}.
-     *
-     * @param addressStateCode the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setAddressStateCode(final String addressStateCode) {
-        this.addressStateCode = addressStateCode;
-    }
-
-    /**
      * Returns {@code ACSADL2I}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:240}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressLine2() {
         return addressLine2;
     }
 
     /**
-     * Sets {@code ACSADL2I}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:240}.
-     *
-     * @param addressLine2 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setAddressLine2(final String addressLine2) {
-        this.addressLine2 = addressLine2;
-    }
-
-    /**
      * Returns {@code ACSZIPCI}, PIC X(5) at {@code app/cpy-bms/COACTUP.CPY:246}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressZip() {
         return addressZip;
     }
 
     /**
-     * Sets {@code ACSZIPCI}, PIC X(5) at {@code app/cpy-bms/COACTUP.CPY:246}.
-     *
-     * @param addressZip the value to store verbatim; {@code null} and the empty string are retained as the distinct
-     *                   states they are
-     */
-    public void setAddressZip(final String addressZip) {
-        this.addressZip = addressZip;
-    }
-
-    /**
      * Returns {@code ACSCITYI}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:252}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressCity() {
         return addressCity;
     }
 
     /**
-     * Sets {@code ACSCITYI}, PIC X(50) at {@code app/cpy-bms/COACTUP.CPY:252}.
-     *
-     * @param addressCity the value to store verbatim; {@code null} and the empty string are retained as the
-     *                    distinct states they are
-     */
-    public void setAddressCity(final String addressCity) {
-        this.addressCity = addressCity;
-    }
-
-    /**
      * Returns {@code ACSCTRYI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:258}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getAddressCountryCode() {
         return addressCountryCode;
     }
 
     /**
-     * Sets {@code ACSCTRYI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:258}.
-     *
-     * @param addressCountryCode the value to store verbatim; {@code null} and the empty string are retained as the
-     *                           distinct states they are
-     */
-    public void setAddressCountryCode(final String addressCountryCode) {
-        this.addressCountryCode = addressCountryCode;
-    }
-
-    /**
      * Returns {@code ACSPH1AI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:264}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone1AreaCode() {
         return phone1AreaCode;
     }
 
     /**
-     * Sets {@code ACSPH1AI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:264}.
-     *
-     * @param phone1AreaCode the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setPhone1AreaCode(final String phone1AreaCode) {
-        this.phone1AreaCode = phone1AreaCode;
-    }
-
-    /**
      * Returns {@code ACSPH1BI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:270}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone1Prefix() {
         return phone1Prefix;
     }
 
     /**
-     * Sets {@code ACSPH1BI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:270}.
-     *
-     * @param phone1Prefix the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setPhone1Prefix(final String phone1Prefix) {
-        this.phone1Prefix = phone1Prefix;
-    }
-
-    /**
      * Returns {@code ACSPH1CI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:276}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone1LineNumber() {
         return phone1LineNumber;
     }
 
     /**
-     * Sets {@code ACSPH1CI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:276}.
-     *
-     * @param phone1LineNumber the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setPhone1LineNumber(final String phone1LineNumber) {
-        this.phone1LineNumber = phone1LineNumber;
-    }
-
-    /**
      * Returns {@code ACSGOVTI}, PIC X(20) at {@code app/cpy-bms/COACTUP.CPY:282}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getGovernmentIssuedId() {
         return governmentIssuedId;
     }
 
     /**
-     * Sets {@code ACSGOVTI}, PIC X(20) at {@code app/cpy-bms/COACTUP.CPY:282}.
-     *
-     * @param governmentIssuedId the value to store verbatim; {@code null} and the empty string are retained as the
-     *                           distinct states they are
-     */
-    public void setGovernmentIssuedId(final String governmentIssuedId) {
-        this.governmentIssuedId = governmentIssuedId;
-    }
-
-    /**
      * Returns {@code ACSPH2AI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:288}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone2AreaCode() {
         return phone2AreaCode;
     }
 
     /**
-     * Sets {@code ACSPH2AI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:288}.
-     *
-     * @param phone2AreaCode the value to store verbatim; {@code null} and the empty string are retained as the
-     *                       distinct states they are
-     */
-    public void setPhone2AreaCode(final String phone2AreaCode) {
-        this.phone2AreaCode = phone2AreaCode;
-    }
-
-    /**
      * Returns {@code ACSPH2BI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:294}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone2Prefix() {
         return phone2Prefix;
     }
 
     /**
-     * Sets {@code ACSPH2BI}, PIC X(3) at {@code app/cpy-bms/COACTUP.CPY:294}.
-     *
-     * @param phone2Prefix the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setPhone2Prefix(final String phone2Prefix) {
-        this.phone2Prefix = phone2Prefix;
-    }
-
-    /**
      * Returns {@code ACSPH2CI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:300}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPhone2LineNumber() {
         return phone2LineNumber;
     }
 
     /**
-     * Sets {@code ACSPH2CI}, PIC X(4) at {@code app/cpy-bms/COACTUP.CPY:300}.
-     *
-     * @param phone2LineNumber the value to store verbatim; {@code null} and the empty string are retained as the
-     *                         distinct states they are
-     */
-    public void setPhone2LineNumber(final String phone2LineNumber) {
-        this.phone2LineNumber = phone2LineNumber;
-    }
-
-    /**
      * Returns {@code ACSEFTCI}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:306}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getEftAccountId() {
         return eftAccountId;
     }
 
     /**
-     * Sets {@code ACSEFTCI}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:306}.
-     *
-     * @param eftAccountId the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setEftAccountId(final String eftAccountId) {
-        this.eftAccountId = eftAccountId;
-    }
-
-    /**
      * Returns {@code ACSPFLGI}, PIC X(1) at {@code app/cpy-bms/COACTUP.CPY:312}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getPrimaryCardHolderIndicator() {
         return primaryCardHolderIndicator;
     }
 
     /**
-     * Sets {@code ACSPFLGI}, PIC X(1) at {@code app/cpy-bms/COACTUP.CPY:312}.
-     *
-     * @param primaryCardHolderIndicator the value to store verbatim; {@code null} and the empty string are retained
-     *                                   as the distinct states they are
-     */
-    public void setPrimaryCardHolderIndicator(final String primaryCardHolderIndicator) {
-        this.primaryCardHolderIndicator = primaryCardHolderIndicator;
-    }
-
-    /**
      * Returns {@code INFOMSGI}, PIC X(45) at {@code app/cpy-bms/COACTUP.CPY:318}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getInformationMessage() {
         return informationMessage;
     }
 
     /**
-     * Sets {@code INFOMSGI}, PIC X(45) at {@code app/cpy-bms/COACTUP.CPY:318}.
-     *
-     * @param informationMessage the value to store verbatim; {@code null} and the empty string are retained as the
-     *                           distinct states they are
-     */
-    public void setInformationMessage(final String informationMessage) {
-        this.informationMessage = informationMessage;
-    }
-
-    /**
      * Returns {@code ERRMSGI}, PIC X(78) at {@code app/cpy-bms/COACTUP.CPY:324}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getErrorMessage() {
         return errorMessage;
     }
 
     /**
-     * Sets {@code ERRMSGI}, PIC X(78) at {@code app/cpy-bms/COACTUP.CPY:324}.
-     *
-     * @param errorMessage the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setErrorMessage(final String errorMessage) {
-        this.errorMessage = errorMessage;
-    }
-
-    /**
      * Returns {@code FKEYSI}, PIC X(21) at {@code app/cpy-bms/COACTUP.CPY:330}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getFunctionKeys() {
         return functionKeys;
     }
 
     /**
-     * Sets {@code FKEYSI}, PIC X(21) at {@code app/cpy-bms/COACTUP.CPY:330}.
-     *
-     * @param functionKeys the value to store verbatim; {@code null} and the empty string are retained as the
-     *                     distinct states they are
-     */
-    public void setFunctionKeys(final String functionKeys) {
-        this.functionKeys = functionKeys;
-    }
-
-    /**
      * Returns {@code FKEY05I}, PIC X(7) at {@code app/cpy-bms/COACTUP.CPY:336}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getFunctionKey05() {
         return functionKey05;
     }
 
     /**
-     * Sets {@code FKEY05I}, PIC X(7) at {@code app/cpy-bms/COACTUP.CPY:336}.
-     *
-     * @param functionKey05 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                      distinct states they are
-     */
-    public void setFunctionKey05(final String functionKey05) {
-        this.functionKey05 = functionKey05;
-    }
-
-    /**
      * Returns {@code FKEY12I}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:342}.
      *
-     * @return the stored value exactly as received, with no trimming, case folding or padding applied; {@code null}
-     *         when absent
+     * @return the stored value exactly as received, with no trimming, case folding or padding applied.
      */
     public String getFunctionKey12() {
         return functionKey12;
     }
 
     /**
-     * Sets {@code FKEY12I}, PIC X(10) at {@code app/cpy-bms/COACTUP.CPY:342}.
-     *
-     * @param functionKey12 the value to store verbatim; {@code null} and the empty string are retained as the
-     *                      distinct states they are
-     */
-    public void setFunctionKey12(final String functionKey12) {
-        this.functionKey12 = functionKey12;
-    }
-
-    /**
      * Returns the snapshot of the record as the screen was first populated.
      *
-     * @return the {@code ACUP-OLD-DETAILS} group of
-     *         {@code app/cbl/COACTUPC.cbl:669}, or {@code null} when the caller
-     *         supplied none
+     * @return the {@code ACUP-OLD-DETAILS} group of {@code app/cbl/COACTUPC.cbl:669}, or {@code null} when the
+     * caller supplied none
      */
     public OldDetails getOldDetails() {
         return oldDetails;
     }
 
     /**
-     * Sets the snapshot of the record as the screen was first populated.
-     *
-     * @param oldDetails the {@code ACUP-OLD-DETAILS} group to store; retained
-     *                   verbatim and never validated, because the source group
-     *                   declares no condition names
-     */
-    public void setOldDetails(final OldDetails oldDetails) {
-        this.oldDetails = oldDetails;
-    }
-
-    /**
      * Returns the edited values.
      *
-     * @return the {@code ACUP-NEW-DETAILS} group of
-     *         {@code app/cbl/COACTUPC.cbl:757}, or {@code null} when the caller
-     *         supplied none
+     * @return the {@code ACUP-NEW-DETAILS} group of {@code app/cbl/COACTUPC.cbl:757}, or {@code null} when the
+     * caller supplied none
      */
     public NewDetails getNewDetails() {
         return newDetails;
-    }
-
-    /**
-     * Sets the edited values.
-     *
-     * @param newDetails the {@code ACUP-NEW-DETAILS} group to store; its
-     *                   declared width contracts and the credit-score range
-     *                   cascade from this member
-     */
-    public void setNewDetails(final NewDetails newDetails) {
-        this.newDetails = newDetails;
     }
 
     /**
@@ -2217,19 +2045,30 @@ public class AccountUpdateRequest {
      * {@code :670-708} and a customer block at {@code :709-756}, and both are
      * reproduced here in declaration order.</p>
      *
-     * <p><strong>This group carries no validation annotation whatsoever.</strong>
-     * A scan of {@code :669-756} finds zero {@code 88}-level condition names: it
-     * is a purely passive snapshot that the source accepts unconditionally.
-     * Constraining it would reject a snapshot the source accepted and would make
-     * a previously saved record unresubmittable, so the enclosing member is also
-     * not marked for cascading validation.</p>
+     * <p><strong>This group carries a width contract on every member and the
+     * enclosing field is marked {@code @Valid} so they cascade.</strong> A scan of
+     * {@code :669-756} finds zero {@code 88}-level condition names, so the group
+     * carries no <em>domain</em> rule &mdash; but every member has a {@code PIC}
+     * clause, and a {@code PIC} clause is a width contract in its own right. A
+     * value wider than the clause is one the source could not physically have
+     * produced, so rejecting it cannot reject a snapshot the source accepted.
+     * The trust relationship is also inverted here relative to the source: there
+     * {@code 9000-READ-DATA} fills this group itself, from the record it has just
+     * read ({@code INITIALIZE} at {@code :3610}); here the identical group arrives
+     * from the client and is the operand
+     * {@code 9700-CHECK-CHANGE-IN-REC} ({@code :4109-4193}) compares the live
+     * record against.</p>
      *
-     * <p>Two shapes distinguish this group from its NEW counterpart. The social
+     * <p>Three shapes distinguish this group from its NEW counterpart. The social
      * security number is one flat nine-character field here
      * ({@code ACUP-OLD-CUST-SSN-X PIC X(09)} at {@code :742}) where the NEW group
-     * decomposes it into three parts at {@code :830-833}. And the credit score
-     * range of {@code 88 FICO-RANGE-IS-VALID} at {@code :848-849} is declared on
-     * the NEW side only, so nothing here bounds it.</p>
+     * decomposes it into three parts at {@code :830-833}. Each telephone number is
+     * stored whole here, because {@code MOVE CUST-PHONE-NUM-1} at {@code :3876}
+     * assigns the whole and never a part, where the NEW group stores the three
+     * parts for the mirror-image reason; the components are exposed here as derived
+     * views. And the credit score range of {@code 88 FICO-RANGE-IS-VALID} at
+     * {@code :848-849} is declared on the NEW side only, so nothing here bounds it
+     * and this type has no {@code ficoScoreIsInValidRange()} twin.</p>
      *
      * <p>Every member is stored exactly as received. No trimming, case folding
      * or padding is applied, because {@code 1205-COMPARE-OLD-NEW} and
@@ -2240,1095 +2079,661 @@ public class AccountUpdateRequest {
 
         /**
          * {@code ACUP-OLD-ACCT-ID-X} PIC X(11) &mdash; {@code app/cbl/COACTUPC.cbl:671}. Account identifier. A
-         * {@code PIC 9(11)} REDEFINES overlays the same bytes at {@code app/cbl/COACTUPC.cbl:672-673}; that numeric
-         * reading is a view over this text and is interpreted by the service.
+         * {@code PIC 9(11)} REDEFINES overlays the same bytes at {@code app/cbl/COACTUPC.cbl:672-673}; that
+         * numeric reading is a view over this text and is interpreted by the service.
          */
-        private String accountId;
+        @Size(max = 11,
+                message = "OldDetails.accountId must not exceed its declared width of 11 characters"
+                        + " (ACUP-OLD-ACCT-ID-X, app/cbl/COACTUPC.cbl:671)")
+        private final String accountId;
 
         /**
-         * {@code ACUP-OLD-ACTIVE-STATUS} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:674}. Account active status,
-         * a raw one-character code. Compared with case folding on both sides at {@code
-         * app/cbl/COACTUPC.cbl:1685-1688} but plainly at {@code :4115}, so it is stored untransformed.
+         * {@code ACUP-OLD-ACTIVE-STATUS} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:674}. Account active
+         * status, a raw one-character code. Compared with case folding on both sides at
+         * {@code app/cbl/COACTUPC.cbl:1685-1688} but plainly at {@code :4115}, so it is stored untransformed.
          */
-        private String activeStatus;
+        @Size(max = 1,
+                message = "OldDetails.activeStatus must not exceed its declared width of 1 character"
+                        + " (ACUP-OLD-ACTIVE-STATUS, app/cbl/COACTUPC.cbl:674)")
+        private final String activeStatus;
 
         /**
          * {@code ACUP-OLD-CURR-BAL} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:675}. Current balance in its
          * displayed twelve-character form, which is what {@code 1205-COMPARE-OLD-NEW} compares.
          */
-        private String currentBalance;
-
-        /**
-         * {@code ACUP-OLD-CURR-BAL-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:676-677}. Current balance
-         * as the {@code PIC S9(10)V99} REDEFINES declares it, which is what {@code 9700-CHECK-CHANGE-IN-REC}
-         * compares.
-         */
-        private BigDecimal currentBalanceAmount;
+        @Size(max = 12,
+                message = "OldDetails.currentBalance must not exceed its declared width of 12 characters"
+                        + " (ACUP-OLD-CURR-BAL, app/cbl/COACTUPC.cbl:675)")
+        private final String currentBalance;
 
         /**
          * {@code ACUP-OLD-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:678}. Credit limit in its
          * displayed twelve-character form.
          */
-        private String creditLimit;
+        @Size(max = 12,
+                message = "OldDetails.creditLimit must not exceed its declared width of 12 characters"
+                        + " (ACUP-OLD-CREDIT-LIMIT, app/cbl/COACTUPC.cbl:678)")
+        private final String creditLimit;
 
         /**
-         * {@code ACUP-OLD-CREDIT-LIMIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:679-680}. Credit limit
-         * as the {@code PIC S9(10)V99} REDEFINES declares it.
+         * {@code ACUP-OLD-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:681}. Cash credit
+         * limit in its displayed twelve-character form.
          */
-        private BigDecimal creditLimitAmount;
+        @Size(max = 12,
+                message = "OldDetails.cashCreditLimit must not exceed its declared width of 12 characters"
+                        + " (ACUP-OLD-CASH-CREDIT-LIMIT, app/cbl/COACTUPC.cbl:681)")
+        private final String cashCreditLimit;
 
         /**
-         * {@code ACUP-OLD-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:681}. Cash credit limit
-         * in its displayed twelve-character form.
+         * {@code ACUP-OLD-OPEN-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:684}. Account open date in
+         * the compact {@code yyyymmdd} form, with year, month and day parts declared at
+         * {@code app/cbl/COACTUPC.cbl:687-689}. Compared whole at {@code :1692} and as three substrings against
+         * the live dash-separated {@code PIC X(10)} value at {@code :4127-4129}.
          */
-        private String cashCreditLimit;
+        @Size(max = 8,
+                message = "OldDetails.openDate must not exceed its declared width of 8 characters"
+                        + " (ACUP-OLD-OPEN-DATE, app/cbl/COACTUPC.cbl:684)")
+        private final String openDate;
 
         /**
-         * {@code ACUP-OLD-CASH-CREDIT-LIMIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:682-683}. Cash
-         * credit limit as the {@code PIC S9(10)V99} REDEFINES declares it.
+         * {@code ACUP-OLD-EXPIRAION-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:690}. Account expiry
+         * date in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:693-695}. The
+         * source member name is misspelled (sic) and the misspelling is preserved in this citation. Compared
+         * whole at {@code :1693} and as three substrings at {@code :4131-4133}.
          */
-        private BigDecimal cashCreditLimitAmount;
+        @Size(max = 8,
+                message = "OldDetails.expiraionDate must not exceed its declared width of 8 characters"
+                        + " (ACUP-OLD-EXPIRAION-DATE, app/cbl/COACTUPC.cbl:690)")
+        private final String expiraionDate;
 
         /**
-         * {@code ACUP-OLD-OPEN-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:684}. Account open date in the
-         * compact {@code yyyymmdd} form, with year, month and day parts declared at {@code
-         * app/cbl/COACTUPC.cbl:687-689}. Compared whole at {@code :1692} and as three substrings against the live
-         * dash-separated {@code PIC X(10)} value at {@code :4127-4129}.
+         * {@code ACUP-OLD-REISSUE-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:696}. Account reissue
+         * date in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:699-701}.
+         * Compared whole at {@code :1694} and as three substrings at {@code :4135-4137}.
          */
-        private String openDate;
+        @Size(max = 8,
+                message = "OldDetails.reissueDate must not exceed its declared width of 8 characters"
+                        + " (ACUP-OLD-REISSUE-DATE, app/cbl/COACTUPC.cbl:696)")
+        private final String reissueDate;
 
         /**
-         * {@code ACUP-OLD-EXPIRAION-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:690}. Account expiry date
-         * in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:693-695}. The source
-         * member name is misspelled (sic) and the misspelling is preserved in this citation. Compared whole at
-         * {@code :1693} and as three substrings at {@code :4131-4133}.
+         * {@code ACUP-OLD-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:702}. Current cycle
+         * credit in its displayed twelve-character form.
          */
-        private String expirationDate;
+        @Size(max = 12,
+                message = "OldDetails.currentCycleCredit must not exceed its declared width of 12 characters"
+                        + " (ACUP-OLD-CURR-CYC-CREDIT, app/cbl/COACTUPC.cbl:702)")
+        private final String currentCycleCredit;
 
         /**
-         * {@code ACUP-OLD-REISSUE-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:696}. Account reissue date in
-         * the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:699-701}. Compared whole at
-         * {@code :1694} and as three substrings at {@code :4135-4137}.
+         * {@code ACUP-OLD-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:705}. Current cycle
+         * debit in its displayed twelve-character form.
          */
-        private String reissueDate;
+        @Size(max = 12,
+                message = "OldDetails.currentCycleDebit must not exceed its declared width of 12 characters"
+                        + " (ACUP-OLD-CURR-CYC-DEBIT, app/cbl/COACTUPC.cbl:705)")
+        private final String currentCycleDebit;
 
         /**
-         * {@code ACUP-OLD-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:702}. Current cycle credit
-         * in its displayed twelve-character form.
+         * {@code ACUP-OLD-GROUP-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:708}. Account group
+         * identifier, stored raw. {@code 1205-COMPARE-OLD-NEW} compares it upper-cased and trimmed at
+         * {@code app/cbl/COACTUPC.cbl:1697-1700} while {@code 9700-CHECK-CHANGE-IN-REC} compares it lower-cased
+         * and untrimmed at {@code :4139-4140}; only the untransformed value serves both.
          */
-        private String currentCycleCredit;
-
-        /**
-         * {@code ACUP-OLD-CURR-CYC-CREDIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:703-704}. Current
-         * cycle credit as the {@code PIC S9(10)V99} REDEFINES declares it.
-         */
-        private BigDecimal currentCycleCreditAmount;
-
-        /**
-         * {@code ACUP-OLD-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:705}. Current cycle debit
-         * in its displayed twelve-character form.
-         */
-        private String currentCycleDebit;
-
-        /**
-         * {@code ACUP-OLD-CURR-CYC-DEBIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:706-707}. Current
-         * cycle debit as the {@code PIC S9(10)V99} REDEFINES declares it. The source lets this accumulator carry
-         * negative amounts, so no sign normalisation is applied here or anywhere on this path.
-         */
-        private BigDecimal currentCycleDebitAmount;
-
-        /**
-         * {@code ACUP-OLD-GROUP-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:708}. Account group identifier,
-         * stored raw. {@code 1205-COMPARE-OLD-NEW} compares it upper-cased and trimmed at {@code
-         * app/cbl/COACTUPC.cbl:1697-1700} while {@code 9700-CHECK-CHANGE-IN-REC} compares it lower-cased and
-         * untrimmed at {@code :4139-4140}; only the untransformed value serves both.
-         */
-        private String groupId;
+        @Size(max = 10,
+                message = "OldDetails.groupId must not exceed its declared width of 10 characters"
+                        + " (ACUP-OLD-GROUP-ID, app/cbl/COACTUPC.cbl:708)")
+        private final String groupId;
 
         /**
          * {@code ACUP-OLD-CUST-ID-X} PIC X(09) &mdash; {@code app/cbl/COACTUPC.cbl:710}. Customer identifier. A
          * {@code PIC 9(09)} REDEFINES overlays the same bytes at {@code app/cbl/COACTUPC.cbl:711-712}.
          */
-        private String customerId;
+        @Size(max = 9,
+                message = "OldDetails.customerId must not exceed its declared width of 9 characters"
+                        + " (ACUP-OLD-CUST-ID-X, app/cbl/COACTUPC.cbl:710)")
+        private final String customerId;
 
         /**
-         * {@code ACUP-OLD-CUST-FIRST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:713}. Customer first name.
+         * {@code ACUP-OLD-CUST-FIRST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:713}. Customer first
+         * name.
          */
-        private String firstName;
+        @Size(max = 25,
+                message = "OldDetails.firstName must not exceed its declared width of 25 characters"
+                        + " (ACUP-OLD-CUST-FIRST-NAME, app/cbl/COACTUPC.cbl:713)")
+        private final String firstName;
 
         /**
          * {@code ACUP-OLD-CUST-MIDDLE-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:714}. Customer middle
          * name.
          */
-        private String middleName;
+        @Size(max = 25,
+                message = "OldDetails.middleName must not exceed its declared width of 25 characters"
+                        + " (ACUP-OLD-CUST-MIDDLE-NAME, app/cbl/COACTUPC.cbl:714)")
+        private final String middleName;
 
         /**
-         * {@code ACUP-OLD-CUST-LAST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:715}. Customer last name.
+         * {@code ACUP-OLD-CUST-LAST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:715}. Customer last
+         * name.
          */
-        private String lastName;
+        @Size(max = 25,
+                message = "OldDetails.lastName must not exceed its declared width of 25 characters"
+                        + " (ACUP-OLD-CUST-LAST-NAME, app/cbl/COACTUPC.cbl:715)")
+        private final String lastName;
 
         /**
-         * {@code ACUP-OLD-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:716}. First address line.
+         * {@code ACUP-OLD-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:716}. First address
+         * line.
          */
-        private String addressLine1;
+        @Size(max = 50,
+                message = "OldDetails.addressLine1 must not exceed its declared width of 50 characters"
+                        + " (ACUP-OLD-CUST-ADDR-LINE-1, app/cbl/COACTUPC.cbl:716)")
+        private final String addressLine1;
 
         /**
          * {@code ACUP-OLD-CUST-ADDR-LINE-2} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:717}. Second address
          * line.
          */
-        private String addressLine2;
+        @Size(max = 50,
+                message = "OldDetails.addressLine2 must not exceed its declared width of 50 characters"
+                        + " (ACUP-OLD-CUST-ADDR-LINE-2, app/cbl/COACTUPC.cbl:717)")
+        private final String addressLine2;
 
         /**
-         * {@code ACUP-OLD-CUST-ADDR-LINE-3} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:718}. Third address line.
-         * It corresponds to the city field of the symbolic map, {@code ACSCITYI} at {@code
-         * app/cpy-bms/COACTUP.CPY:252}.
+         * {@code ACUP-OLD-CUST-ADDR-LINE-3} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:718}. Third address
+         * line. It corresponds to the city field of the symbolic map, {@code ACSCITYI} at
+         * {@code app/cpy-bms/COACTUP.CPY:252}.
          */
-        private String addressLine3;
+        @Size(max = 50,
+                message = "OldDetails.addressLine3 must not exceed its declared width of 50 characters"
+                        + " (ACUP-OLD-CUST-ADDR-LINE-3, app/cbl/COACTUPC.cbl:718)")
+        private final String addressLine3;
 
         /**
-         * {@code ACUP-OLD-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:719}. State code. Its
-         * consistency with the postal code is edited only when both fields are individually valid, so no
+         * {@code ACUP-OLD-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:719}. State code.
+         * Its consistency with the postal code is edited only when both fields are individually valid, so no
          * cross-field constraint is declared here.
          */
-        private String addressStateCode;
+        @Size(max = 2,
+                message = "OldDetails.addressStateCode must not exceed its declared width of 2 characters"
+                        + " (ACUP-OLD-CUST-ADDR-STATE-CD, app/cbl/COACTUPC.cbl:719)")
+        private final String addressStateCode;
 
         /**
-         * {@code ACUP-OLD-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:720}. Country code.
+         * {@code ACUP-OLD-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:720}. Country
+         * code.
          */
-        private String addressCountryCode;
+        @Size(max = 3,
+                message = "OldDetails.addressCountryCode must not exceed its declared width of 3 characters"
+                        + " (ACUP-OLD-CUST-ADDR-COUNTRY-CD, app/cbl/COACTUPC.cbl:720)")
+        private final String addressCountryCode;
 
         /**
          * {@code ACUP-OLD-CUST-ADDR-ZIP} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:721}. Postal code, ten
-         * characters here and on the customer record at {@code app/cpy/CVCUS01Y.cpy:14}, against five on the screen
-         * field {@code ACSZIPCI} at {@code app/cpy-bms/COACTUP.CPY:246}. Compared upper-cased and trimmed by {@code
-         * 1205-COMPARE-OLD-NEW} but with no case function at all at {@code app/cbl/COACTUPC.cbl:4168}.
+         * characters here and on the customer record at {@code app/cpy/CVCUS01Y.cpy:14}, against five on the
+         * screen field {@code ACSZIPCI} at {@code app/cpy-bms/COACTUP.CPY:246}. Compared upper-cased and
+         * trimmed by {@code 1205-COMPARE-OLD-NEW} but with no case function at all at
+         * {@code app/cbl/COACTUPC.cbl:4168}.
          */
-        private String addressZip;
+        @Size(max = 10,
+                message = "OldDetails.addressZip must not exceed its declared width of 10 characters"
+                        + " (ACUP-OLD-CUST-ADDR-ZIP, app/cbl/COACTUPC.cbl:721)")
+        private final String addressZip;
 
         /**
          * {@code ACUP-OLD-CUST-PHONE-NUM-1} PIC X(15) &mdash; {@code app/cbl/COACTUPC.cbl:722}. First telephone
          * number as the whole formatted fifteen-character value, which is what {@code 9700-CHECK-CHANGE-IN-REC}
-         * compares at {@code app/cbl/COACTUPC.cbl:4169}. The REDEFINES at {@code :723-731} interleaves three filler
-         * runs between the parts, so the whole value carries the punctuation and cannot be derived from the parts.
+         * compares at {@code app/cbl/COACTUPC.cbl:4169}. The REDEFINES at {@code :723-731} interleaves three
+         * filler runs between the parts, so the whole value carries the punctuation and cannot be derived from
+         * the parts.
          */
-        private String phoneNumber1;
+        @Size(max = 15,
+                message = "OldDetails.phoneNumber1 must not exceed its declared width of 15 characters"
+                        + " (ACUP-OLD-CUST-PHONE-NUM-1, app/cbl/COACTUPC.cbl:722)")
+        private final String phoneNumber1;
 
         /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-1A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:726}. Area code of the
-         * first telephone number, compared part by part by {@code 1205-COMPARE-OLD-NEW} at {@code
-         * app/cbl/COACTUPC.cbl:1748}.
+         * {@code ACUP-OLD-CUST-PHONE-NUM-2} PIC X(15) &mdash; {@code app/cbl/COACTUPC.cbl:732}. Second
+         * telephone number as the whole formatted fifteen-character value, compared whole at
+         * {@code app/cbl/COACTUPC.cbl:4170}, with the same filler-interleaved REDEFINES at {@code :733-741}.
+         * Edited by {@code 1260-EDIT-US-PHONE-NUM} under the label {@code 'Phone Number 2'} at {@code :1640}.
          */
-        private String phoneNumber1AreaCode;
+        @Size(max = 15,
+                message = "OldDetails.phoneNumber2 must not exceed its declared width of 15 characters"
+                        + " (ACUP-OLD-CUST-PHONE-NUM-2, app/cbl/COACTUPC.cbl:732)")
+        private final String phoneNumber2;
 
         /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-1B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:728}. Prefix of the first
-         * telephone number.
+         * {@code ACUP-OLD-CUST-SSN-X} PIC X(09) &mdash; {@code app/cbl/COACTUPC.cbl:742}. Social security
+         * number as one flat nine-character field. This is the OLD side of the declared asymmetry: the NEW side
+         * decomposes the same nine bytes into three parts at {@code app/cbl/COACTUPC.cbl:830-833}. A
+         * {@code PIC 9(09)} REDEFINES overlays these bytes at {@code :743-744}, and that numeric reading is
+         * what {@code 9700-CHECK-CHANGE-IN-REC} compares at {@code :4171}. Neither side is flattened or
+         * decomposed to match the other.
          */
-        private String phoneNumber1Prefix;
-
-        /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-1C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:730}. Line number of the
-         * first telephone number.
-         */
-        private String phoneNumber1LineNumber;
-
-        /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-2} PIC X(15) &mdash; {@code app/cbl/COACTUPC.cbl:732}. Second telephone
-         * number as the whole formatted fifteen-character value, compared whole at {@code
-         * app/cbl/COACTUPC.cbl:4170}, with the same filler-interleaved REDEFINES at {@code :733-741}. Edited by
-         * {@code 1260-EDIT-US-PHONE-NUM} under the label {@code 'Phone Number 2'} at {@code :1640}.
-         */
-        private String phoneNumber2;
-
-        /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-2A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:736}. Area code of the
-         * second telephone number, compared part by part at {@code app/cbl/COACTUPC.cbl:1751}.
-         */
-        private String phoneNumber2AreaCode;
-
-        /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-2B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:738}. Prefix of the
-         * second telephone number.
-         */
-        private String phoneNumber2Prefix;
-
-        /**
-         * {@code ACUP-OLD-CUST-PHONE-NUM-2C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:740}. Line number of the
-         * second telephone number.
-         */
-        private String phoneNumber2LineNumber;
-
-        /**
-         * {@code ACUP-OLD-CUST-SSN-X} PIC X(09) &mdash; {@code app/cbl/COACTUPC.cbl:742}. Social security number as
-         * one flat nine-character field. This is the OLD side of the declared asymmetry: the NEW side decomposes
-         * the same nine bytes into three parts at {@code app/cbl/COACTUPC.cbl:830-833}. A {@code PIC 9(09)}
-         * REDEFINES overlays these bytes at {@code :743-744}, and that numeric reading is what {@code
-         * 9700-CHECK-CHANGE-IN-REC} compares at {@code :4171}. Neither side is flattened or decomposed to match the
-         * other.
-         */
-        private String ssn;
+        @Size(max = 9,
+                message = "OldDetails.ssn must not exceed its declared width of 9 characters"
+                        + " (ACUP-OLD-CUST-SSN-X, app/cbl/COACTUPC.cbl:742)")
+        private final String ssn;
 
         /**
          * {@code ACUP-OLD-CUST-GOVT-ISSUED-ID} PIC X(20) &mdash; {@code app/cbl/COACTUPC.cbl:745}.
          * Government-issued identifier.
          */
-        private String governmentIssuedId;
+        @Size(max = 20,
+                message = "OldDetails.governmentIssuedId must not exceed its declared width of 20 characters"
+                        + " (ACUP-OLD-CUST-GOVT-ISSUED-ID, app/cbl/COACTUPC.cbl:745)")
+        private final String governmentIssuedId;
 
         /**
-         * {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:746}. Date of birth in
-         * the compact {@code yyyymmdd} form, with parts declared at {@code app/cbl/COACTUPC.cbl:749-751}. Despite
-         * the dash-implying name the field is eight characters and carries no separators, so its components sit at
-         * offsets 1, 5 and 7 while the live {@code PIC X(10)} value of {@code app/cpy/CVCUS01Y.cpy:19} keeps its
-         * own at 1, 6 and 9. This is the Blocker described in this file's class documentation; the dash-separated
-         * form must never be stored here.
+         * {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD PIC X(08)} at {@code app/cbl/COACTUPC.cbl:746}. Held compact, with
+         * no separators, which is why the comparison against the dash-separated live value runs component by
+         * component at different offsets on each side.
          */
-        private String dateOfBirth;
+        @Size(max = 8,
+                message = "OldDetails.dateOfBirth must not exceed its declared width of 8 characters"
+                        + " (ACUP-OLD-CUST-DOB-YYYY-MM-DD, app/cbl/COACTUPC.cbl:746)")
+        private final String dateOfBirth;
 
         /**
-         * {@code ACUP-OLD-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:752}. Electronic funds
-         * transfer account identifier. Compared plainly by both regimes, at {@code app/cbl/COACTUPC.cbl:1761-1762}
-         * and {@code :4181-4182}, and edited by {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'}
-         * at {@code :1648} with a declared length of ten at {@code :1651}.
+         * {@code ACUP-OLD-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:752}. Electronic
+         * funds transfer account identifier. Compared plainly by both regimes, at
+         * {@code app/cbl/COACTUPC.cbl:1761-1762} and {@code :4181-4182}, and edited by
+         * {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'} at {@code :1648} with a declared
+         * length of ten at {@code :1651}.
          */
-        private String eftAccountId;
+        @Size(max = 10,
+                message = "OldDetails.eftAccountId must not exceed its declared width of 10 characters"
+                        + " (ACUP-OLD-CUST-EFT-ACCOUNT-ID, app/cbl/COACTUPC.cbl:752)")
+        private final String eftAccountId;
 
         /**
          * {@code ACUP-OLD-CUST-PRI-HOLDER-IND} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:753}. Primary card
-         * holder indicator, a raw one-character code and never an enum. Edited by {@code 1220-EDIT-YESNO} under the
-         * label {@code 'Primary Card Holder'} at {@code app/cbl/COACTUPC.cbl:1657}.
+         * holder indicator, a raw one-character code and never an enum. Edited by {@code 1220-EDIT-YESNO} under
+         * the label {@code 'Primary Card Holder'} at {@code app/cbl/COACTUPC.cbl:1657}.
          */
-        private String primaryCardHolderIndicator;
+        @Size(max = 1,
+                message = "OldDetails.primaryCardHolderIndicator must not exceed its declared width of 1 character"
+                        + " (ACUP-OLD-CUST-PRI-HOLDER-IND, app/cbl/COACTUPC.cbl:753)")
+        private final String primaryCardHolderIndicator;
 
         /**
-         * {@code ACUP-OLD-CUST-FICO-SCORE-X} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:754}. Credit score as
-         * text, which is what {@code 1205-COMPARE-OLD-NEW} compares. A {@code PIC 9(03)} REDEFINES overlays the
-         * same bytes at {@code app/cbl/COACTUPC.cbl:755-756}, and that numeric reading is what {@code
-         * 9700-CHECK-CHANGE-IN-REC} compares at {@code :4186}.
+         * {@code ACUP-OLD-CUST-FICO-SCORE-X} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:754}. Credit score
+         * as text, which is what {@code 1205-COMPARE-OLD-NEW} compares. A {@code PIC 9(03)} REDEFINES overlays
+         * the same bytes at {@code app/cbl/COACTUPC.cbl:755-756}, and that numeric reading is what
+         * {@code 9700-CHECK-CHANGE-IN-REC} compares at {@code :4186}.
          */
-        private String ficoScore;
+        @Size(max = 3,
+                message = "OldDetails.ficoScore must not exceed its declared width of 3 characters"
+                        + " (ACUP-OLD-CUST-FICO-SCORE-X, app/cbl/COACTUPC.cbl:754)")
+        private final String ficoScore;
 
         /**
-         * Creates an empty group. JSON binding populates the members through
-         * the accessors below; nothing is defaulted, so an absent member stays
-         * absent and a blank member stays blank.
+         * Creates an empty group. JSON binding populates the members through the accessors below; nothing is
+         * defaulted, so an absent member stays absent and a blank member stays blank.
          */
-        public OldDetails() {
-            // Intentionally empty: absent, blank and low-values are three
-            // distinguishable states and none of them may be manufactured here.
+        @JsonCreator
+        public OldDetails(
+                @JsonProperty("accountId") final String accountId,
+                @JsonProperty("activeStatus") final String activeStatus,
+                @JsonProperty("currentBalance") final String currentBalance,
+                @JsonProperty("creditLimit") final String creditLimit,
+                @JsonProperty("cashCreditLimit") final String cashCreditLimit,
+                @JsonProperty("openDate") final String openDate,
+                @JsonProperty("expiraionDate") final String expiraionDate,
+                @JsonProperty("reissueDate") final String reissueDate,
+                @JsonProperty("currentCycleCredit") final String currentCycleCredit,
+                @JsonProperty("currentCycleDebit") final String currentCycleDebit,
+                @JsonProperty("groupId") final String groupId,
+                @JsonProperty("customerId") final String customerId,
+                @JsonProperty("firstName") final String firstName,
+                @JsonProperty("middleName") final String middleName,
+                @JsonProperty("lastName") final String lastName,
+                @JsonProperty("addressLine1") final String addressLine1,
+                @JsonProperty("addressLine2") final String addressLine2,
+                @JsonProperty("addressLine3") final String addressLine3,
+                @JsonProperty("addressStateCode") final String addressStateCode,
+                @JsonProperty("addressCountryCode") final String addressCountryCode,
+                @JsonProperty("addressZip") final String addressZip,
+                @JsonProperty("phoneNumber1") final String phoneNumber1,
+                @JsonProperty("phoneNumber2") final String phoneNumber2,
+                @JsonProperty("ssn") final String ssn,
+                @JsonProperty("governmentIssuedId") final String governmentIssuedId,
+                @JsonProperty("dateOfBirth") final String dateOfBirth,
+                @JsonProperty("eftAccountId") final String eftAccountId,
+                @JsonProperty("primaryCardHolderIndicator") final String primaryCardHolderIndicator,
+                @JsonProperty("ficoScore") final String ficoScore) {
+            this.accountId = accountId;
+            this.activeStatus = activeStatus;
+            this.currentBalance = currentBalance;
+            this.creditLimit = creditLimit;
+            this.cashCreditLimit = cashCreditLimit;
+            this.openDate = openDate;
+            this.expiraionDate = expiraionDate;
+            this.reissueDate = reissueDate;
+            this.currentCycleCredit = currentCycleCredit;
+            this.currentCycleDebit = currentCycleDebit;
+            this.groupId = groupId;
+            this.customerId = customerId;
+            this.firstName = firstName;
+            this.middleName = middleName;
+            this.lastName = lastName;
+            this.addressLine1 = addressLine1;
+            this.addressLine2 = addressLine2;
+            this.addressLine3 = addressLine3;
+            this.addressStateCode = addressStateCode;
+            this.addressCountryCode = addressCountryCode;
+            this.addressZip = addressZip;
+            this.phoneNumber1 = phoneNumber1;
+            this.phoneNumber2 = phoneNumber2;
+            this.ssn = ssn;
+            this.governmentIssuedId = governmentIssuedId;
+            this.dateOfBirth = dateOfBirth;
+            this.eftAccountId = eftAccountId;
+            this.primaryCardHolderIndicator = primaryCardHolderIndicator;
+            this.ficoScore = ficoScore;
         }
 
         /**
          * Returns {@code ACUP-OLD-ACCT-ID-X}, PIC X(11) at {@code app/cbl/COACTUPC.cbl:671}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAccountId() {
             return accountId;
         }
 
         /**
-         * Sets {@code ACUP-OLD-ACCT-ID-X}, PIC X(11) at {@code app/cbl/COACTUPC.cbl:671}.
-         *
-         * @param accountId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setAccountId(final String accountId) {
-            this.accountId = accountId;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-ACTIVE-STATUS}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:674}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getActiveStatus() {
             return activeStatus;
         }
 
         /**
-         * Sets {@code ACUP-OLD-ACTIVE-STATUS}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:674}.
-         *
-         * @param activeStatus the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setActiveStatus(final String activeStatus) {
-            this.activeStatus = activeStatus;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CURR-BAL}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:675}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentBalance() {
             return currentBalance;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CURR-BAL}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:675}.
-         *
-         * @param currentBalance the value to store verbatim; {@code null} and the empty string are retained as the
-         *                       distinct states they are
-         */
-        public void setCurrentBalance(final String currentBalance) {
-            this.currentBalance = currentBalance;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CURR-BAL-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:676-677}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentBalanceAmount() {
-            return currentBalanceAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CURR-BAL-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:676-677}.
-         *
-         * @param currentBalanceAmount the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setCurrentBalanceAmount(final BigDecimal currentBalanceAmount) {
-            this.currentBalanceAmount = currentBalanceAmount;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:678}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCreditLimit() {
             return creditLimit;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:678}.
-         *
-         * @param creditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setCreditLimit(final String creditLimit) {
-            this.creditLimit = creditLimit;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:679-680}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCreditLimitAmount() {
-            return creditLimitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:679-680}.
-         *
-         * @param creditLimitAmount the value to store verbatim; {@code null} and the empty string are retained as
-         *                          the distinct states they are
-         */
-        public void setCreditLimitAmount(final BigDecimal creditLimitAmount) {
-            this.creditLimitAmount = creditLimitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CASH-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:681}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCashCreditLimit() {
             return cashCreditLimit;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CASH-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:681}.
-         *
-         * @param cashCreditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-         *                        distinct states they are
-         */
-        public void setCashCreditLimit(final String cashCreditLimit) {
-            this.cashCreditLimit = cashCreditLimit;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CASH-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:682-683}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCashCreditLimitAmount() {
-            return cashCreditLimitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CASH-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:682-683}.
-         *
-         * @param cashCreditLimitAmount the value to store verbatim; {@code null} and the empty string are retained
-         *                              as the distinct states they are
-         */
-        public void setCashCreditLimitAmount(final BigDecimal cashCreditLimitAmount) {
-            this.cashCreditLimitAmount = cashCreditLimitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-OPEN-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:684}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getOpenDate() {
             return openDate;
         }
 
         /**
-         * Sets {@code ACUP-OLD-OPEN-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:684}.
-         *
-         * @param openDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setOpenDate(final String openDate) {
-            this.openDate = openDate;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-EXPIRAION-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:690}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
-        public String getExpirationDate() {
-            return expirationDate;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-EXPIRAION-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:690}.
-         *
-         * @param expirationDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                       distinct states they are
-         */
-        public void setExpirationDate(final String expirationDate) {
-            this.expirationDate = expirationDate;
+        public String getExpiraionDate() {
+            return expiraionDate;
         }
 
         /**
          * Returns {@code ACUP-OLD-REISSUE-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:696}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getReissueDate() {
             return reissueDate;
         }
 
         /**
-         * Sets {@code ACUP-OLD-REISSUE-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:696}.
-         *
-         * @param reissueDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setReissueDate(final String reissueDate) {
-            this.reissueDate = reissueDate;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CURR-CYC-CREDIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:702}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentCycleCredit() {
             return currentCycleCredit;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CURR-CYC-CREDIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:702}.
-         *
-         * @param currentCycleCredit the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setCurrentCycleCredit(final String currentCycleCredit) {
-            this.currentCycleCredit = currentCycleCredit;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CURR-CYC-CREDIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:703-704}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentCycleCreditAmount() {
-            return currentCycleCreditAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CURR-CYC-CREDIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:703-704}.
-         *
-         * @param currentCycleCreditAmount the value to store verbatim; {@code null} and the empty string are
-         *                                 retained as the distinct states they are
-         */
-        public void setCurrentCycleCreditAmount(final BigDecimal currentCycleCreditAmount) {
-            this.currentCycleCreditAmount = currentCycleCreditAmount;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CURR-CYC-DEBIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:705}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentCycleDebit() {
             return currentCycleDebit;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CURR-CYC-DEBIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:705}.
-         *
-         * @param currentCycleDebit the value to store verbatim; {@code null} and the empty string are retained as
-         *                          the distinct states they are
-         */
-        public void setCurrentCycleDebit(final String currentCycleDebit) {
-            this.currentCycleDebit = currentCycleDebit;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CURR-CYC-DEBIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:706-707}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentCycleDebitAmount() {
-            return currentCycleDebitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CURR-CYC-DEBIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:706-707}.
-         *
-         * @param currentCycleDebitAmount the value to store verbatim; {@code null} and the empty string are
-         *                                retained as the distinct states they are
-         */
-        public void setCurrentCycleDebitAmount(final BigDecimal currentCycleDebitAmount) {
-            this.currentCycleDebitAmount = currentCycleDebitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-GROUP-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:708}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getGroupId() {
             return groupId;
         }
 
         /**
-         * Sets {@code ACUP-OLD-GROUP-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:708}.
-         *
-         * @param groupId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                distinct states they are
-         */
-        public void setGroupId(final String groupId) {
-            this.groupId = groupId;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ID-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:710}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCustomerId() {
             return customerId;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ID-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:710}.
-         *
-         * @param customerId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setCustomerId(final String customerId) {
-            this.customerId = customerId;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-FIRST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:713}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getFirstName() {
             return firstName;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-FIRST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:713}.
-         *
-         * @param firstName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setFirstName(final String firstName) {
-            this.firstName = firstName;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-MIDDLE-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:714}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getMiddleName() {
             return middleName;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-MIDDLE-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:714}.
-         *
-         * @param middleName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setMiddleName(final String middleName) {
-            this.middleName = middleName;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-LAST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:715}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getLastName() {
             return lastName;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-LAST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:715}.
-         *
-         * @param lastName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setLastName(final String lastName) {
-            this.lastName = lastName;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-LINE-1}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:716}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine1() {
             return addressLine1;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-LINE-1}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:716}.
-         *
-         * @param addressLine1 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine1(final String addressLine1) {
-            this.addressLine1 = addressLine1;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-LINE-2}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:717}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine2() {
             return addressLine2;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-LINE-2}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:717}.
-         *
-         * @param addressLine2 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine2(final String addressLine2) {
-            this.addressLine2 = addressLine2;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-LINE-3}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:718}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine3() {
             return addressLine3;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-LINE-3}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:718}.
-         *
-         * @param addressLine3 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine3(final String addressLine3) {
-            this.addressLine3 = addressLine3;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-STATE-CD}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:719}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressStateCode() {
             return addressStateCode;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-STATE-CD}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:719}.
-         *
-         * @param addressStateCode the value to store verbatim; {@code null} and the empty string are retained as
-         *                         the distinct states they are
-         */
-        public void setAddressStateCode(final String addressStateCode) {
-            this.addressStateCode = addressStateCode;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-COUNTRY-CD}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:720}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressCountryCode() {
             return addressCountryCode;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-COUNTRY-CD}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:720}.
-         *
-         * @param addressCountryCode the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setAddressCountryCode(final String addressCountryCode) {
-            this.addressCountryCode = addressCountryCode;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-ADDR-ZIP}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:721}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressZip() {
             return addressZip;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-ADDR-ZIP}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:721}.
-         *
-         * @param addressZip the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setAddressZip(final String addressZip) {
-            this.addressZip = addressZip;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:722}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getPhoneNumber1() {
             return phoneNumber1;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-1}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:722}.
-         *
-         * @param phoneNumber1 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setPhoneNumber1(final String phoneNumber1) {
-            this.phoneNumber1 = phoneNumber1;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:726}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber1AreaCode() {
-            return phoneNumber1AreaCode;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-1A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:726}.
-         *
-         * @param phoneNumber1AreaCode the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setPhoneNumber1AreaCode(final String phoneNumber1AreaCode) {
-            this.phoneNumber1AreaCode = phoneNumber1AreaCode;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:728}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber1Prefix() {
-            return phoneNumber1Prefix;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-1B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:728}.
-         *
-         * @param phoneNumber1Prefix the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setPhoneNumber1Prefix(final String phoneNumber1Prefix) {
-            this.phoneNumber1Prefix = phoneNumber1Prefix;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:730}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber1LineNumber() {
-            return phoneNumber1LineNumber;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-1C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:730}.
-         *
-         * @param phoneNumber1LineNumber the value to store verbatim; {@code null} and the empty string are retained
-         *                               as the distinct states they are
-         */
-        public void setPhoneNumber1LineNumber(final String phoneNumber1LineNumber) {
-            this.phoneNumber1LineNumber = phoneNumber1LineNumber;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:732}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getPhoneNumber2() {
             return phoneNumber2;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-2}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:732}.
-         *
-         * @param phoneNumber2 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setPhoneNumber2(final String phoneNumber2) {
-            this.phoneNumber2 = phoneNumber2;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:736}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber2AreaCode() {
-            return phoneNumber2AreaCode;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-2A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:736}.
-         *
-         * @param phoneNumber2AreaCode the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setPhoneNumber2AreaCode(final String phoneNumber2AreaCode) {
-            this.phoneNumber2AreaCode = phoneNumber2AreaCode;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:738}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber2Prefix() {
-            return phoneNumber2Prefix;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-2B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:738}.
-         *
-         * @param phoneNumber2Prefix the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setPhoneNumber2Prefix(final String phoneNumber2Prefix) {
-            this.phoneNumber2Prefix = phoneNumber2Prefix;
-        }
-
-        /**
-         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:740}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber2LineNumber() {
-            return phoneNumber2LineNumber;
-        }
-
-        /**
-         * Sets {@code ACUP-OLD-CUST-PHONE-NUM-2C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:740}.
-         *
-         * @param phoneNumber2LineNumber the value to store verbatim; {@code null} and the empty string are retained
-         *                               as the distinct states they are
-         */
-        public void setPhoneNumber2LineNumber(final String phoneNumber2LineNumber) {
-            this.phoneNumber2LineNumber = phoneNumber2LineNumber;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-SSN-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:742}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getSsn() {
             return ssn;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-SSN-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:742}.
-         *
-         * @param ssn the value to store verbatim; {@code null} and the empty string are retained as the distinct
-         *            states they are
-         */
-        public void setSsn(final String ssn) {
-            this.ssn = ssn;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-GOVT-ISSUED-ID}, PIC X(20) at {@code app/cbl/COACTUPC.cbl:745}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getGovernmentIssuedId() {
             return governmentIssuedId;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-GOVT-ISSUED-ID}, PIC X(20) at {@code app/cbl/COACTUPC.cbl:745}.
-         *
-         * @param governmentIssuedId the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setGovernmentIssuedId(final String governmentIssuedId) {
-            this.governmentIssuedId = governmentIssuedId;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:746}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getDateOfBirth() {
             return dateOfBirth;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:746}.
-         *
-         * @param dateOfBirth the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setDateOfBirth(final String dateOfBirth) {
-            this.dateOfBirth = dateOfBirth;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-EFT-ACCOUNT-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:752}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getEftAccountId() {
             return eftAccountId;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-EFT-ACCOUNT-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:752}.
-         *
-         * @param eftAccountId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setEftAccountId(final String eftAccountId) {
-            this.eftAccountId = eftAccountId;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-PRI-HOLDER-IND}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:753}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getPrimaryCardHolderIndicator() {
             return primaryCardHolderIndicator;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-PRI-HOLDER-IND}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:753}.
-         *
-         * @param primaryCardHolderIndicator the value to store verbatim; {@code null} and the empty string are
-         *                                   retained as the distinct states they are
-         */
-        public void setPrimaryCardHolderIndicator(final String primaryCardHolderIndicator) {
-            this.primaryCardHolderIndicator = primaryCardHolderIndicator;
-        }
-
-        /**
          * Returns {@code ACUP-OLD-CUST-FICO-SCORE-X}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:754}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getFicoScore() {
             return ficoScore;
         }
 
         /**
-         * Sets {@code ACUP-OLD-CUST-FICO-SCORE-X}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:754}.
-         *
-         * @param ficoScore the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setFicoScore(final String ficoScore) {
-            this.ficoScore = ficoScore;
-        }
-
-        /**
          * Returns the year component of the account open date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:687-689}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:687-689}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * @return the year component, {@code null} when {@code openDate} is absent, or the empty string when
+         * the stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateYear() {
             return compactDatePart(openDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -3337,16 +2742,14 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the account open date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:687-689}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:687-689}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * @return the month component, {@code null} when {@code openDate} is absent, or the empty string when
+         * the stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateMonth() {
             return compactDatePart(openDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -3355,16 +2758,14 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the day component of the account open date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:687-689}.
-         *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:687-689}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
          * @return the day component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateDay() {
             return compactDatePart(openDate, DATE_DAY_BEGIN, DATE_DAY_END,
@@ -3373,70 +2774,66 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the year component of the account expiry date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:693-695}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:693-695}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the year component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateYear() {
-            return compactDatePart(expirationDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
-                    "OldDetails.expirationDate");
+        public String expiraionDateYear() {
+            return compactDatePart(expiraionDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
+                    "OldDetails.expiraionDate");
         }
 
         /**
          * Returns the month component of the account expiry date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:693-695}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:693-695}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the month component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateMonth() {
-            return compactDatePart(expirationDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
-                    "OldDetails.expirationDate");
+        public String expiraionDateMonth() {
+            return compactDatePart(expiraionDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
+                    "OldDetails.expiraionDate");
         }
 
         /**
          * Returns the day component of the account expiry date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:693-695}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:693-695}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the day component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateDay() {
-            return compactDatePart(expirationDate, DATE_DAY_BEGIN, DATE_DAY_END,
-                    "OldDetails.expirationDate");
+        public String expiraionDateDay() {
+            return compactDatePart(expiraionDate, DATE_DAY_BEGIN, DATE_DAY_END,
+                    "OldDetails.expiraionDate");
         }
 
         /**
          * Returns the year component of the account reissue date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:699-701}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:699-701}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code reissueDate} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the year component, {@code null} when {@code reissueDate} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateYear() {
             return compactDatePart(reissueDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -3445,16 +2842,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the account reissue date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:699-701}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:699-701}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code reissueDate} is absent, or the empty string when
-         *         the stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the month component, {@code null} when {@code reissueDate} is absent, or the empty string
+         * when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateMonth() {
             return compactDatePart(reissueDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -3463,16 +2859,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the day component of the account reissue date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:699-701}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:699-701}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code reissueDate} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the day component, {@code null} when {@code reissueDate} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateDay() {
             return compactDatePart(reissueDate, DATE_DAY_BEGIN, DATE_DAY_END,
@@ -3480,16 +2875,16 @@ public class AccountUpdateRequest {
         }
 
         /**
-         * Returns the year component of the date of birth, taken from COBOL offset 1 of the compact eight-character
-         * value, matching the {@code PIC X(4)} part declared at {@code app/cbl/COACTUPC.cbl:749-751}.
+         * Returns the year component of the date of birth, taken from COBOL offset 1 of the compact
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:749-751}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code dateOfBirth} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the year component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthYear() {
             return compactDatePart(dateOfBirth, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -3498,16 +2893,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the date of birth, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:749-751}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:749-751}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
-         *         the stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the month component, {@code null} when {@code dateOfBirth} is absent, or the empty string
+         * when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthMonth() {
             return compactDatePart(dateOfBirth, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -3515,74 +2909,285 @@ public class AccountUpdateRequest {
         }
 
         /**
-         * Returns the day component of the date of birth, taken from COBOL offset 7 of the compact eight-character
-         * value, matching the {@code PIC X(2)} part declared at {@code app/cbl/COACTUPC.cbl:749-751}.
+         * Returns the day component of the date of birth, taken from COBOL offset 7 of the compact
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:749-751}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code dateOfBirth} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the day component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthDay() {
             return compactDatePart(dateOfBirth, DATE_DAY_BEGIN, DATE_DAY_END,
                     "OldDetails.dateOfBirth");
         }
 
+        /**
+         * Returns {@code ACUP-OLD-CURR-BAL-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentBalance()} declared at {@code app/cbl/COACTUPC.cbl:676-677}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-OLD-CURR-BAL} at {@code app/cbl/COACTUPC.cbl:675}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current balance at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal currentBalanceAmount() {
+            return zonedDecimalAmount(currentBalance);
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CREDIT-LIMIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCreditLimit()} declared at {@code app/cbl/COACTUPC.cbl:679-680}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-OLD-CREDIT-LIMIT} at {@code app/cbl/COACTUPC.cbl:678}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the credit limit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal creditLimitAmount() {
+            return zonedDecimalAmount(creditLimit);
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CASH-CREDIT-LIMIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCashCreditLimit()} declared at {@code app/cbl/COACTUPC.cbl:682-683}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-OLD-CASH-CREDIT-LIMIT} at {@code app/cbl/COACTUPC.cbl:681}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the cash credit limit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal cashCreditLimitAmount() {
+            return zonedDecimalAmount(cashCreditLimit);
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CURR-CYC-CREDIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentCycleCredit()} declared at {@code app/cbl/COACTUPC.cbl:703-704}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-OLD-CURR-CYC-CREDIT} at {@code app/cbl/COACTUPC.cbl:702}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current cycle credit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal currentCycleCreditAmount() {
+            return zonedDecimalAmount(currentCycleCredit);
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CURR-CYC-DEBIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentCycleDebit()} declared at {@code app/cbl/COACTUPC.cbl:706-707}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-OLD-CURR-CYC-DEBIT} at {@code app/cbl/COACTUPC.cbl:705}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current cycle debit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal currentCycleDebitAmount() {
+            return zonedDecimalAmount(currentCycleDebit);
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1A}, the area code component of
+         * {@link #getPhoneNumber1()}, declared at {@code app/cbl/COACTUPC.cbl:726}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the area code, {@code null} when {@code phoneNumber1} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber1} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber1AreaCode() {
+            return phoneNumberPart(phoneNumber1, PHONE_AREA_CODE_BEGIN, PHONE_AREA_CODE_END,
+                    "OldDetails.phoneNumber1");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1B}, the exchange prefix component of
+         * {@link #getPhoneNumber1()}, declared at {@code app/cbl/COACTUPC.cbl:728}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the exchange prefix, {@code null} when {@code phoneNumber1} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber1} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber1Prefix() {
+            return phoneNumberPart(phoneNumber1, PHONE_PREFIX_BEGIN, PHONE_PREFIX_END,
+                    "OldDetails.phoneNumber1");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-1C}, the line number component of
+         * {@link #getPhoneNumber1()}, declared at {@code app/cbl/COACTUPC.cbl:730}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the line number, {@code null} when {@code phoneNumber1} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber1} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber1LineNumber() {
+            return phoneNumberPart(phoneNumber1, PHONE_LINE_NUMBER_BEGIN, PHONE_LINE_NUMBER_END,
+                    "OldDetails.phoneNumber1");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2A}, the area code component of
+         * {@link #getPhoneNumber2()}, declared at {@code app/cbl/COACTUPC.cbl:736}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the area code, {@code null} when {@code phoneNumber2} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber2} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber2AreaCode() {
+            return phoneNumberPart(phoneNumber2, PHONE_AREA_CODE_BEGIN, PHONE_AREA_CODE_END,
+                    "OldDetails.phoneNumber2");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2B}, the exchange prefix component of
+         * {@link #getPhoneNumber2()}, declared at {@code app/cbl/COACTUPC.cbl:738}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the exchange prefix, {@code null} when {@code phoneNumber2} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber2} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber2Prefix() {
+            return phoneNumberPart(phoneNumber2, PHONE_PREFIX_BEGIN, PHONE_PREFIX_END,
+                    "OldDetails.phoneNumber2");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-PHONE-NUM-2C}, the line number component of
+         * {@link #getPhoneNumber2()}, declared at {@code app/cbl/COACTUPC.cbl:740}.
+         *
+         * <p>This is a derived view, not a stored member: it slices the fifteen bytes of the telephone
+         * overlay and is deliberately not named as a bean property, so JSON binding never invokes it.</p>
+         *
+         * @return the line number, {@code null} when {@code phoneNumber2} is absent, or the empty string
+         *         when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code phoneNumber2} is longer than the declared
+         *         fifteen characters and therefore is not the punctuated form the overlay describes
+         */
+        public String phoneNumber2LineNumber() {
+            return phoneNumberPart(phoneNumber2, PHONE_LINE_NUMBER_BEGIN, PHONE_LINE_NUMBER_END,
+                    "OldDetails.phoneNumber2");
+        }
+
+        /**
+         * Returns {@code ACUP-OLD-CUST-FICO-SCORE}, the {@code PIC 9(03)} REDEFINES view over
+         * {@link #getFicoScore()} declared at {@code app/cbl/COACTUPC.cbl:755-756}.
+         *
+         * <p>This is a derived view, not a stored member: it reads the three bytes held by
+         * {@code ACUP-OLD-CUST-FICO-SCORE-X} at {@code app/cbl/COACTUPC.cbl:754}, and it is
+         * deliberately not named as a bean property, so JSON binding never invokes it. The source needs both
+         * readings of the one cell: the text at {@code :1767-1768} and the number at {@code :4186}.</p>
+         *
+         * @return the credit score, or {@code null} when the stored member is not three decimal digits
+         */
+        public Integer ficoScoreValue() {
+            return unsignedDisplayScore(ficoScore);
+        }
+
+        /**
+         * Rejects any JSON property this type does not declare.
+         *
+         * <p>The guard is local rather than declarative because the declarative alternative does not hold.
+         * Jackson's type-level unknown-property setting is consulted only while the object mapper still has
+         * failure on unknown properties enabled, the framework disables that by default, and no profile in
+         * this repository re-enables it; a type-level annotation would therefore be inert here, which is
+         * worse than absent because it would read as protection that is not in force.</p>
+         *
+         * <p>The guard is also what makes the overlay canonicalisation enforceable rather than advisory. The
+         * numeric and component readings of the snapshot members are derived views, not properties; without
+         * this method a caller could still send {@code currentBalanceAmount} or {@code ficoScoreValue} and
+         * have it silently discarded, which looks like acceptance. Rejection says plainly that one storage
+         * cell has one wire representation.</p>
+         *
+         * <p>Neither the offending property name nor its value is reproduced in the thrown message. Both are
+         * untrusted input, and copying either into a message that reaches a log record would let a caller
+         * forge log content; on this payload the same rule keeps a rejected social security number, date of
+         * birth or government-issued identifier out of the logs. Nothing is stored: this type is immutable,
+         * and the method exists only to fail.</p>
+         *
+         * @param name  the unrecognised property name supplied by the caller, deliberately neither stored nor
+         *              reproduced in the thrown message
+         * @param value the unrecognised property value supplied by the caller, deliberately neither stored nor
+         *              reproduced in the thrown message
+         * @throws IllegalArgumentException always, because an unrecognised property is never acceptable here
+         */
+        @JsonAnySetter
+        void rejectUnrecognisedProperty(String name, Object value) {
+            throw new IllegalArgumentException(
+                    "OldDetails accepts only the 29 properties declared by "
+                            + "app/cbl/COACTUPC.cbl:669-756 for the ACUP-OLD-DETAILS snapshot group, "
+                            + "and the payload contained a property that is not "
+                            + "one of them. Numeric and component readings of a snapshot member are "
+                            + "derived views rather than properties, because the source redefines one "
+                            + "storage cell instead of declaring two. The offending name and value are "
+                            + "withheld because they are untrusted input.");
+        }
+
     }
 
     /**
-     * The edited group {@code ACUP-NEW-DETAILS}, declared at
-     * {@code app/cbl/COACTUPC.cbl:757-849}: the values the user supplied.
-     *
-     * <p>The group is split in the source into an account block at
-     * {@code :758-796} and a customer block at {@code :797-849}, and both are
-     * reproduced here in declaration order. The layout mirrors
-     * {@code OldDetails} with one declared difference: the social security
-     * number is three parts of three, two and four characters beneath a group
-     * item ({@code :830-833}), whereas the OLD side keeps one flat nine-character
-     * field ({@code :742}). That asymmetry is modelled exactly as declared.</p>
-     *
-     * <p>This group carries the width contracts and the one range the source
-     * declares, {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at
-     * {@code :848-849} &mdash; the only {@code 88}-level condition name in the
-     * whole group, and the reason the credit-score bound appears here and
-     * nowhere else. No stricter validation is added: there is no pattern the
-     * source lacks, nothing is required that the source lets be blank, and no
-     * one-character code is bound to an enum.</p>
-     *
-     * <p>Members that the screen may blank keep their three-state character.
-     * When a screen field holds {@code '*'} or spaces the source moves
-     * {@code LOW-VALUES} into the corresponding member here &mdash; the social
-     * security number parts at {@code :1235}, {@code :1242} and {@code :1249},
-     * the date-of-birth parts at {@code :1258}, {@code :1265} and {@code :1272},
-     * and the credit score at {@code :1281} &mdash; so absent, blank and
-     * low-values remain distinguishable and are never coerced into one
-     * another.</p>
+     * The edited group {@code ACUP-NEW-DETAILS}, declared at {@code app/cbl/COACTUPC.cbl:757-849}: the values
+     * the user supplied.
      */
     public static final class NewDetails {
 
         /**
          * {@code ACUP-NEW-ACCT-ID-X} PIC X(11) &mdash; {@code app/cbl/COACTUPC.cbl:759}. Account identifier. A
-         * {@code PIC 9(11)} REDEFINES overlays the same bytes at {@code app/cbl/COACTUPC.cbl:760-761}; that numeric
-         * reading is a view over this text and is interpreted by the service.
+         * {@code PIC 9(11)} REDEFINES overlays the same bytes at {@code app/cbl/COACTUPC.cbl:760-761}; that
+         * numeric reading is a view over this text and is interpreted by the service.
          */
         @Size(max = 11,
                 message = "accountId must not exceed its declared width of 11 characters"
                         + " (app/cbl/COACTUPC.cbl:759)")
-        private String accountId;
+        private final String accountId;
 
         /**
-         * {@code ACUP-NEW-ACTIVE-STATUS} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:762}. Account active status,
-         * a raw one-character code. Compared with case folding on both sides at {@code
-         * app/cbl/COACTUPC.cbl:1685-1688} but plainly at {@code :4115}, so it is stored untransformed.
+         * {@code ACUP-NEW-ACTIVE-STATUS} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:762}. Account active
+         * status, a raw one-character code. Compared with case folding on both sides at
+         * {@code app/cbl/COACTUPC.cbl:1685-1688} but plainly at {@code :4115}, so it is stored untransformed.
          */
         @Size(max = 1,
                 message = "activeStatus must not exceed its declared width of 1 character"
                         + " (app/cbl/COACTUPC.cbl:762)")
-        private String activeStatus;
+        private final String activeStatus;
 
         /**
          * {@code ACUP-NEW-CURR-BAL} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:763}. Current balance in its
@@ -3591,17 +3196,7 @@ public class AccountUpdateRequest {
         @Size(max = 12,
                 message = "currentBalance must not exceed its declared width of 12 characters"
                         + " (app/cbl/COACTUPC.cbl:763)")
-        private String currentBalance;
-
-        /**
-         * {@code ACUP-NEW-CURR-BAL-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:764-765}. Current balance
-         * as the {@code PIC S9(10)V99} REDEFINES declares it, which is what {@code 9700-CHECK-CHANGE-IN-REC}
-         * compares.
-         */
-        @Digits(integer = 10, fraction = 2,
-                message = "currentBalanceAmount must fit the PIC S9(10)V99 contract of"
-                        + " app/cbl/COACTUPC.cbl:764-765: at most 10 integer digits and 2 decimals")
-        private BigDecimal currentBalanceAmount;
+        private final String currentBalance;
 
         /**
          * {@code ACUP-NEW-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:766}. Credit limit in its
@@ -3610,114 +3205,77 @@ public class AccountUpdateRequest {
         @Size(max = 12,
                 message = "creditLimit must not exceed its declared width of 12 characters"
                         + " (app/cbl/COACTUPC.cbl:766)")
-        private String creditLimit;
+        private final String creditLimit;
 
         /**
-         * {@code ACUP-NEW-CREDIT-LIMIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:767-768}. Credit limit
-         * as the {@code PIC S9(10)V99} REDEFINES declares it.
-         */
-        @Digits(integer = 10, fraction = 2,
-                message = "creditLimitAmount must fit the PIC S9(10)V99 contract of"
-                        + " app/cbl/COACTUPC.cbl:767-768: at most 10 integer digits and 2 decimals")
-        private BigDecimal creditLimitAmount;
-
-        /**
-         * {@code ACUP-NEW-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:769}. Cash credit limit
-         * in its displayed twelve-character form.
+         * {@code ACUP-NEW-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:769}. Cash credit
+         * limit in its displayed twelve-character form.
          */
         @Size(max = 12,
                 message = "cashCreditLimit must not exceed its declared width of 12 characters"
                         + " (app/cbl/COACTUPC.cbl:769)")
-        private String cashCreditLimit;
+        private final String cashCreditLimit;
 
         /**
-         * {@code ACUP-NEW-CASH-CREDIT-LIMIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:770-771}. Cash
-         * credit limit as the {@code PIC S9(10)V99} REDEFINES declares it.
-         */
-        @Digits(integer = 10, fraction = 2,
-                message = "cashCreditLimitAmount must fit the PIC S9(10)V99 contract of"
-                        + " app/cbl/COACTUPC.cbl:770-771: at most 10 integer digits and 2 decimals")
-        private BigDecimal cashCreditLimitAmount;
-
-        /**
-         * {@code ACUP-NEW-OPEN-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:772}. Account open date in the
-         * compact {@code yyyymmdd} form, with year, month and day parts declared at {@code
-         * app/cbl/COACTUPC.cbl:775-777}. Compared whole at {@code :1692} and as three substrings against the live
-         * dash-separated {@code PIC X(10)} value at {@code :4127-4129}.
+         * {@code ACUP-NEW-OPEN-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:772}. Account open date in
+         * the compact {@code yyyymmdd} form, with year, month and day parts declared at
+         * {@code app/cbl/COACTUPC.cbl:775-777}. Compared whole at {@code :1692} and as three substrings against
+         * the live dash-separated {@code PIC X(10)} value at {@code :4127-4129}.
          */
         @Size(max = 8,
                 message = "openDate must not exceed its declared width of 8 characters"
                         + " (app/cbl/COACTUPC.cbl:772)")
-        private String openDate;
+        private final String openDate;
 
         /**
-         * {@code ACUP-NEW-EXPIRAION-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:778}. Account expiry date
-         * in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:781-783}. The source
-         * member name is misspelled (sic) and the misspelling is preserved in this citation. Compared whole at
-         * {@code :1693} and as three substrings at {@code :4131-4133}.
+         * {@code ACUP-NEW-EXPIRAION-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:778}. Account expiry
+         * date in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:781-783}. The
+         * source member name is misspelled (sic) and the misspelling is preserved in this citation. Compared
+         * whole at {@code :1693} and as three substrings at {@code :4131-4133}.
          */
         @Size(max = 8,
-                message = "expirationDate must not exceed its declared width of 8 characters"
+                message = "expiraionDate must not exceed its declared width of 8 characters"
                         + " (app/cbl/COACTUPC.cbl:778)")
-        private String expirationDate;
+        private final String expiraionDate;
 
         /**
-         * {@code ACUP-NEW-REISSUE-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:784}. Account reissue date in
-         * the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:787-789}. Compared whole at
-         * {@code :1694} and as three substrings at {@code :4135-4137}.
+         * {@code ACUP-NEW-REISSUE-DATE} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:784}. Account reissue
+         * date in the compact {@code yyyymmdd} form, with parts at {@code app/cbl/COACTUPC.cbl:787-789}.
+         * Compared whole at {@code :1694} and as three substrings at {@code :4135-4137}.
          */
         @Size(max = 8,
                 message = "reissueDate must not exceed its declared width of 8 characters"
                         + " (app/cbl/COACTUPC.cbl:784)")
-        private String reissueDate;
+        private final String reissueDate;
 
         /**
-         * {@code ACUP-NEW-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:790}. Current cycle credit
-         * in its displayed twelve-character form.
+         * {@code ACUP-NEW-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:790}. Current cycle
+         * credit in its displayed twelve-character form.
          */
         @Size(max = 12,
                 message = "currentCycleCredit must not exceed its declared width of 12 characters"
                         + " (app/cbl/COACTUPC.cbl:790)")
-        private String currentCycleCredit;
+        private final String currentCycleCredit;
 
         /**
-         * {@code ACUP-NEW-CURR-CYC-CREDIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:791-792}. Current
-         * cycle credit as the {@code PIC S9(10)V99} REDEFINES declares it.
-         */
-        @Digits(integer = 10, fraction = 2,
-                message = "currentCycleCreditAmount must fit the PIC S9(10)V99 contract of"
-                        + " app/cbl/COACTUPC.cbl:791-792: at most 10 integer digits and 2 decimals")
-        private BigDecimal currentCycleCreditAmount;
-
-        /**
-         * {@code ACUP-NEW-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:793}. Current cycle debit
-         * in its displayed twelve-character form.
+         * {@code ACUP-NEW-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:793}. Current cycle
+         * debit in its displayed twelve-character form.
          */
         @Size(max = 12,
                 message = "currentCycleDebit must not exceed its declared width of 12 characters"
                         + " (app/cbl/COACTUPC.cbl:793)")
-        private String currentCycleDebit;
+        private final String currentCycleDebit;
 
         /**
-         * {@code ACUP-NEW-CURR-CYC-DEBIT-N} PIC S9(10)V99 &mdash; {@code app/cbl/COACTUPC.cbl:794-795}. Current
-         * cycle debit as the {@code PIC S9(10)V99} REDEFINES declares it. The source lets this accumulator carry
-         * negative amounts, so no sign normalisation is applied here or anywhere on this path.
-         */
-        @Digits(integer = 10, fraction = 2,
-                message = "currentCycleDebitAmount must fit the PIC S9(10)V99 contract of"
-                        + " app/cbl/COACTUPC.cbl:794-795: at most 10 integer digits and 2 decimals")
-        private BigDecimal currentCycleDebitAmount;
-
-        /**
-         * {@code ACUP-NEW-GROUP-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:796}. Account group identifier,
-         * stored raw. {@code 1205-COMPARE-OLD-NEW} compares it upper-cased and trimmed at {@code
-         * app/cbl/COACTUPC.cbl:1697-1700} while {@code 9700-CHECK-CHANGE-IN-REC} compares it lower-cased and
-         * untrimmed at {@code :4139-4140}; only the untransformed value serves both.
+         * {@code ACUP-NEW-GROUP-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:796}. Account group
+         * identifier, stored raw. {@code 1205-COMPARE-OLD-NEW} compares it upper-cased and trimmed at
+         * {@code app/cbl/COACTUPC.cbl:1697-1700} while {@code 9700-CHECK-CHANGE-IN-REC} compares it lower-cased
+         * and untrimmed at {@code :4139-4140}; only the untransformed value serves both.
          */
         @Size(max = 10,
                 message = "groupId must not exceed its declared width of 10 characters"
                         + " (app/cbl/COACTUPC.cbl:796)")
-        private String groupId;
+        private final String groupId;
 
         /**
          * {@code ACUP-NEW-CUST-ID-X} PIC X(09) &mdash; {@code app/cbl/COACTUPC.cbl:798}. Customer identifier. A
@@ -3726,15 +3284,16 @@ public class AccountUpdateRequest {
         @Size(max = 9,
                 message = "customerId must not exceed its declared width of 9 characters"
                         + " (app/cbl/COACTUPC.cbl:798)")
-        private String customerId;
+        private final String customerId;
 
         /**
-         * {@code ACUP-NEW-CUST-FIRST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:801}. Customer first name.
+         * {@code ACUP-NEW-CUST-FIRST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:801}. Customer first
+         * name.
          */
         @Size(max = 25,
                 message = "firstName must not exceed its declared width of 25 characters"
                         + " (app/cbl/COACTUPC.cbl:801)")
-        private String firstName;
+        private final String firstName;
 
         /**
          * {@code ACUP-NEW-CUST-MIDDLE-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:802}. Customer middle
@@ -3743,23 +3302,25 @@ public class AccountUpdateRequest {
         @Size(max = 25,
                 message = "middleName must not exceed its declared width of 25 characters"
                         + " (app/cbl/COACTUPC.cbl:802)")
-        private String middleName;
+        private final String middleName;
 
         /**
-         * {@code ACUP-NEW-CUST-LAST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:803}. Customer last name.
+         * {@code ACUP-NEW-CUST-LAST-NAME} PIC X(25) &mdash; {@code app/cbl/COACTUPC.cbl:803}. Customer last
+         * name.
          */
         @Size(max = 25,
                 message = "lastName must not exceed its declared width of 25 characters"
                         + " (app/cbl/COACTUPC.cbl:803)")
-        private String lastName;
+        private final String lastName;
 
         /**
-         * {@code ACUP-NEW-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:804}. First address line.
+         * {@code ACUP-NEW-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:804}. First address
+         * line.
          */
         @Size(max = 50,
                 message = "addressLine1 must not exceed its declared width of 50 characters"
                         + " (app/cbl/COACTUPC.cbl:804)")
-        private String addressLine1;
+        private final String addressLine1;
 
         /**
          * {@code ACUP-NEW-CUST-ADDR-LINE-2} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:805}. Second address
@@ -3768,157 +3329,190 @@ public class AccountUpdateRequest {
         @Size(max = 50,
                 message = "addressLine2 must not exceed its declared width of 50 characters"
                         + " (app/cbl/COACTUPC.cbl:805)")
-        private String addressLine2;
+        private final String addressLine2;
 
         /**
-         * {@code ACUP-NEW-CUST-ADDR-LINE-3} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:806}. Third address line.
-         * It corresponds to the city field of the symbolic map, {@code ACSCITYI} at {@code
-         * app/cpy-bms/COACTUP.CPY:252}.
+         * {@code ACUP-NEW-CUST-ADDR-LINE-3} PIC X(50) &mdash; {@code app/cbl/COACTUPC.cbl:806}. Third address
+         * line. It corresponds to the city field of the symbolic map, {@code ACSCITYI} at
+         * {@code app/cpy-bms/COACTUP.CPY:252}.
          */
         @Size(max = 50,
                 message = "addressLine3 must not exceed its declared width of 50 characters"
                         + " (app/cbl/COACTUPC.cbl:806)")
-        private String addressLine3;
+        private final String addressLine3;
 
         /**
-         * {@code ACUP-NEW-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:807}. State code. Its
-         * consistency with the postal code is edited only when both fields are individually valid, so no
+         * {@code ACUP-NEW-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:807}. State code.
+         * Its consistency with the postal code is edited only when both fields are individually valid, so no
          * cross-field constraint is declared here.
          */
         @Size(max = 2,
                 message = "addressStateCode must not exceed its declared width of 2 characters"
                         + " (app/cbl/COACTUPC.cbl:807)")
-        private String addressStateCode;
+        private final String addressStateCode;
 
         /**
-         * {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:808}. Country code.
+         * {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:808}. Country
+         * code.
          */
         @Size(max = 3,
                 message = "addressCountryCode must not exceed its declared width of 3 characters"
                         + " (app/cbl/COACTUPC.cbl:808)")
-        private String addressCountryCode;
+        private final String addressCountryCode;
 
         /**
          * {@code ACUP-NEW-CUST-ADDR-ZIP} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:809}. Postal code, ten
-         * characters here and on the customer record at {@code app/cpy/CVCUS01Y.cpy:14}, against five on the screen
-         * field {@code ACSZIPCI} at {@code app/cpy-bms/COACTUP.CPY:246}. Compared upper-cased and trimmed by {@code
-         * 1205-COMPARE-OLD-NEW} but with no case function at all at {@code app/cbl/COACTUPC.cbl:4168}.
+         * characters here and on the customer record at {@code app/cpy/CVCUS01Y.cpy:14}, against five on the
+         * screen field {@code ACSZIPCI} at {@code app/cpy-bms/COACTUP.CPY:246}. Compared upper-cased and
+         * trimmed by {@code 1205-COMPARE-OLD-NEW} but with no case function at all at
+         * {@code app/cbl/COACTUPC.cbl:4168}.
          */
         @Size(max = 10,
                 message = "addressZip must not exceed its declared width of 10 characters"
                         + " (app/cbl/COACTUPC.cbl:809)")
-        private String addressZip;
+        private final String addressZip;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-1} PIC X(15) &mdash; {@code app/cbl/COACTUPC.cbl:810}. First telephone
-         * number as the whole formatted fifteen-character value, which is what {@code 9700-CHECK-CHANGE-IN-REC}
-         * compares at {@code app/cbl/COACTUPC.cbl:4169}. The REDEFINES at {@code :811-819} interleaves three filler
-         * runs between the parts, so the whole value carries the punctuation and cannot be derived from the parts.
-         */
-        @Size(max = 15,
-                message = "phoneNumber1 must not exceed its declared width of 15 characters"
-                        + " (app/cbl/COACTUPC.cbl:810)")
-        private String phoneNumber1;
-
-        /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-1A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:814}. Area code of the
-         * first telephone number, compared part by part by {@code 1205-COMPARE-OLD-NEW} at {@code
-         * app/cbl/COACTUPC.cbl:1748}.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-1A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:814}. The area code of
+         * telephone number 1.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1361} for this one and {@code :1359-1375} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-1} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1748-1750}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2939-2941}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4027-4033}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 3,
-                message = "phoneNumber1AreaCode must not exceed its declared width of 3 characters"
-                        + " (app/cbl/COACTUPC.cbl:814)")
-        private String phoneNumber1AreaCode;
+                message = "NewDetails.phoneNumber1AreaCode must not exceed its declared width of 3 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-1A, app/cbl/COACTUPC.cbl:814)")
+        private final String phoneNumber1AreaCode;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-1B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:816}. Prefix of the first
-         * telephone number.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-1B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:816}. The exchange prefix of
+         * telephone number 1.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1368} for this one and {@code :1359-1375} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-1} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1748-1750}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2939-2941}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4027-4033}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 3,
-                message = "phoneNumber1Prefix must not exceed its declared width of 3 characters"
-                        + " (app/cbl/COACTUPC.cbl:816)")
-        private String phoneNumber1Prefix;
+                message = "NewDetails.phoneNumber1Prefix must not exceed its declared width of 3 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-1B, app/cbl/COACTUPC.cbl:816)")
+        private final String phoneNumber1Prefix;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-1C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:818}. Line number of the
-         * first telephone number.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-1C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:818}. The line number of
+         * telephone number 1.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1375} for this one and {@code :1359-1375} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-1} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1748-1750}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2939-2941}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4027-4033}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 4,
-                message = "phoneNumber1LineNumber must not exceed its declared width of 4 characters"
-                        + " (app/cbl/COACTUPC.cbl:818)")
-        private String phoneNumber1LineNumber;
+                message = "NewDetails.phoneNumber1LineNumber must not exceed its declared width of 4 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-1C, app/cbl/COACTUPC.cbl:818)")
+        private final String phoneNumber1LineNumber;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-2} PIC X(15) &mdash; {@code app/cbl/COACTUPC.cbl:820}. Second telephone
-         * number as the whole formatted fifteen-character value, compared whole at {@code
-         * app/cbl/COACTUPC.cbl:4170}, with the same filler-interleaved REDEFINES at {@code :821-829}. Edited by
-         * {@code 1260-EDIT-US-PHONE-NUM} under the label {@code 'Phone Number 2'} at {@code :1640}.
-         */
-        @Size(max = 15,
-                message = "phoneNumber2 must not exceed its declared width of 15 characters"
-                        + " (app/cbl/COACTUPC.cbl:820)")
-        private String phoneNumber2;
-
-        /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-2A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:824}. Area code of the
-         * second telephone number, compared part by part at {@code app/cbl/COACTUPC.cbl:1751}.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-2A} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:824}. The area code of
+         * telephone number 2.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1382} for this one and {@code :1380-1396} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-2} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1751-1753}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2942-2944}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4035-4041}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 3,
-                message = "phoneNumber2AreaCode must not exceed its declared width of 3 characters"
-                        + " (app/cbl/COACTUPC.cbl:824)")
-        private String phoneNumber2AreaCode;
+                message = "NewDetails.phoneNumber2AreaCode must not exceed its declared width of 3 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-2A, app/cbl/COACTUPC.cbl:824)")
+        private final String phoneNumber2AreaCode;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-2B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:826}. Prefix of the
-         * second telephone number.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-2B} PIC X(3) &mdash; {@code app/cbl/COACTUPC.cbl:826}. The exchange prefix of
+         * telephone number 2.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1389} for this one and {@code :1380-1396} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-2} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1751-1753}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2942-2944}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4035-4041}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 3,
-                message = "phoneNumber2Prefix must not exceed its declared width of 3 characters"
-                        + " (app/cbl/COACTUPC.cbl:826)")
-        private String phoneNumber2Prefix;
+                message = "NewDetails.phoneNumber2Prefix must not exceed its declared width of 3 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-2B, app/cbl/COACTUPC.cbl:826)")
+        private final String phoneNumber2Prefix;
 
         /**
-         * {@code ACUP-NEW-CUST-PHONE-NUM-2C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:828}. Line number of the
-         * second telephone number.
+         * {@code ACUP-NEW-CUST-PHONE-NUM-2C} PIC X(4) &mdash; {@code app/cbl/COACTUPC.cbl:828}. The line number of
+         * telephone number 2.
+         *
+         * <p>This part is a stored member and the fifteen-byte whole is the derived view, which is the opposite of
+         * {@link OldDetails}. The asymmetry belongs to the source, not to the model: {@code 1100-RECEIVE-MAP} assigns
+         * only the parts, at {@code app/cbl/COACTUPC.cbl:1396} for this one and {@code :1380-1396} for the number as a
+         * whole, and never assigns {@code ACUP-NEW-CUST-PHONE-NUM-2} itself; {@code 1205-COMPARE-OLD-NEW} compares the
+         * parts one at a time at {@code :1751-1753}; {@code 3000-SEND-MAP} returns them to the screen individually at
+         * {@code :2942-2944}; and the punctuated value that reaches the record is assembled only at write time by
+         * {@code STRING} at {@code :4035-4041}. Carrying the whole instead would name a byte image this group never
+         * holds.</p>
          */
         @Size(max = 4,
-                message = "phoneNumber2LineNumber must not exceed its declared width of 4 characters"
-                        + " (app/cbl/COACTUPC.cbl:828)")
-        private String phoneNumber2LineNumber;
+                message = "NewDetails.phoneNumber2LineNumber must not exceed its declared width of 4 characters"
+                        + " (ACUP-NEW-CUST-PHONE-NUM-2C, app/cbl/COACTUPC.cbl:828)")
+        private final String phoneNumber2LineNumber;
 
         /**
-         * {@code ACUP-NEW-CUST-SSN-1} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:831}. First part of the social
-         * security number. This is the NEW side of the declared asymmetry: the OLD side keeps one flat
+         * {@code ACUP-NEW-CUST-SSN-1} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:831}. First part of the
+         * social security number. This is the NEW side of the declared asymmetry: the OLD side keeps one flat
          * nine-character field at {@code app/cbl/COACTUPC.cbl:742}. Blank or a single asterisk on the screen
          * becomes LOW-VALUES here, at {@code :1235}.
          */
         @Size(max = 3,
                 message = "ssnPart1 must not exceed its declared width of 3 characters"
                         + " (app/cbl/COACTUPC.cbl:831)")
-        private String ssnPart1;
+        private final String ssnPart1;
 
         /**
-         * {@code ACUP-NEW-CUST-SSN-2} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:832}. Second part of the social
-         * security number. Blank or a single asterisk on the screen becomes LOW-VALUES here, at {@code
-         * app/cbl/COACTUPC.cbl:1242}.
+         * {@code ACUP-NEW-CUST-SSN-2} PIC X(02) &mdash; {@code app/cbl/COACTUPC.cbl:832}. Second part of the
+         * social security number. Blank or a single asterisk on the screen becomes LOW-VALUES here, at
+         * {@code app/cbl/COACTUPC.cbl:1242}.
          */
         @Size(max = 2,
                 message = "ssnPart2 must not exceed its declared width of 2 characters"
                         + " (app/cbl/COACTUPC.cbl:832)")
-        private String ssnPart2;
+        private final String ssnPart2;
 
         /**
-         * {@code ACUP-NEW-CUST-SSN-3} PIC X(04) &mdash; {@code app/cbl/COACTUPC.cbl:833}. Third part of the social
-         * security number. Blank or a single asterisk on the screen becomes LOW-VALUES here, at {@code
-         * app/cbl/COACTUPC.cbl:1249}. The three parts sit beneath the group item {@code ACUP-NEW-CUST-SSN-X} at
-         * {@code :830} with a {@code PIC 9(09)} REDEFINES over them at {@code :834-835}; {@code
-         * 1205-COMPARE-OLD-NEW} compares that whole group at {@code :1754}, which is meaningful only because the
-         * parts are contiguous.
+         * {@code ACUP-NEW-CUST-SSN-3} PIC X(04) &mdash; {@code app/cbl/COACTUPC.cbl:833}. Third part of the
+         * social security number. Blank or a single asterisk on the screen becomes LOW-VALUES here, at
+         * {@code app/cbl/COACTUPC.cbl:1249}. The three parts sit beneath the group item
+         * {@code ACUP-NEW-CUST-SSN-X} at {@code :830} with a {@code PIC 9(09)} REDEFINES over them at
+         * {@code :834-835}; {@code 1205-COMPARE-OLD-NEW} compares that whole group at {@code :1754}, which is
+         * meaningful only because the parts are contiguous.
          */
         @Size(max = 4,
                 message = "ssnPart3 must not exceed its declared width of 4 characters"
                         + " (app/cbl/COACTUPC.cbl:833)")
-        private String ssnPart3;
+        private final String ssnPart3;
 
         /**
          * {@code ACUP-NEW-CUST-GOVT-ISSUED-ID} PIC X(20) &mdash; {@code app/cbl/COACTUPC.cbl:836}.
@@ -3927,941 +3521,579 @@ public class AccountUpdateRequest {
         @Size(max = 20,
                 message = "governmentIssuedId must not exceed its declared width of 20 characters"
                         + " (app/cbl/COACTUPC.cbl:836)")
-        private String governmentIssuedId;
+        private final String governmentIssuedId;
 
         /**
-         * {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD} PIC X(08) &mdash; {@code app/cbl/COACTUPC.cbl:837}. Date of birth in
-         * the compact {@code yyyymmdd} form, with parts declared at {@code app/cbl/COACTUPC.cbl:840-842}. Despite
-         * the dash-implying name the field is eight characters and carries no separators, so its components sit at
-         * offsets 1, 5 and 7 while the live {@code PIC X(10)} value of {@code app/cpy/CVCUS01Y.cpy:19} keeps its
-         * own at 1, 6 and 9. This is the Blocker described in this file's class documentation; the dash-separated
-         * form must never be stored here.
+         * {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD PIC X(08)} at {@code app/cbl/COACTUPC.cbl:837}.
          */
         @Size(max = 8,
                 message = "dateOfBirth must not exceed its declared width of 8 characters"
                         + " (app/cbl/COACTUPC.cbl:837)")
-        private String dateOfBirth;
+        private final String dateOfBirth;
 
         /**
-         * {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:843}. Electronic funds
-         * transfer account identifier. Compared plainly by both regimes, at {@code app/cbl/COACTUPC.cbl:1761-1762}
-         * and {@code :4181-4182}, and edited by {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'}
-         * at {@code :1648} with a declared length of ten at {@code :1651}.
+         * {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code app/cbl/COACTUPC.cbl:843}. Electronic
+         * funds transfer account identifier. Compared plainly by both regimes, at
+         * {@code app/cbl/COACTUPC.cbl:1761-1762} and {@code :4181-4182}, and edited by
+         * {@code 1245-EDIT-NUM-REQD} under the label {@code 'EFT Account Id'} at {@code :1648} with a declared
+         * length of ten at {@code :1651}.
          */
         @Size(max = 10,
                 message = "eftAccountId must not exceed its declared width of 10 characters"
                         + " (app/cbl/COACTUPC.cbl:843)")
-        private String eftAccountId;
+        private final String eftAccountId;
 
         /**
          * {@code ACUP-NEW-CUST-PRI-HOLDER-IND} PIC X(01) &mdash; {@code app/cbl/COACTUPC.cbl:844}. Primary card
-         * holder indicator, a raw one-character code and never an enum. Edited by {@code 1220-EDIT-YESNO} under the
-         * label {@code 'Primary Card Holder'} at {@code app/cbl/COACTUPC.cbl:1657}.
+         * holder indicator, a raw one-character code and never an enum. Edited by {@code 1220-EDIT-YESNO} under
+         * the label {@code 'Primary Card Holder'} at {@code app/cbl/COACTUPC.cbl:1657}.
          */
         @Size(max = 1,
                 message = "primaryCardHolderIndicator must not exceed its declared width of 1 character"
                         + " (app/cbl/COACTUPC.cbl:844)")
-        private String primaryCardHolderIndicator;
+        private final String primaryCardHolderIndicator;
 
         /**
-         * {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:845}. Credit score as
-         * text, which is what {@code 1205-COMPARE-OLD-NEW} compares. A {@code PIC 9(03)} REDEFINES overlays the
-         * same bytes at {@code app/cbl/COACTUPC.cbl:846-847}, and that numeric reading is what {@code
-         * 9700-CHECK-CHANGE-IN-REC} compares at {@code :4186}.
+         * {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) &mdash; {@code app/cbl/COACTUPC.cbl:845}. Credit score
+         * as text, which is what {@code 1205-COMPARE-OLD-NEW} compares. A {@code PIC 9(03)} REDEFINES overlays
+         * the same bytes at {@code app/cbl/COACTUPC.cbl:846-847}, and that numeric reading is what
+         * {@code 9700-CHECK-CHANGE-IN-REC} compares at {@code :4186}.
          */
         @Size(max = 3,
                 message = "ficoScore must not exceed its declared width of 3 characters"
                         + " (app/cbl/COACTUPC.cbl:845)")
-        private String ficoScore;
+        private final String ficoScore;
 
         /**
-         * {@code ACUP-NEW-CUST-FICO-SCORE} PIC 9(03) &mdash; {@code app/cbl/COACTUPC.cbl:846-847}. The credit score
-         * as the {@code PIC 9(03)} REDEFINES declares it, carried alongside the text member for exactly the reason
-         * the money members carry both representations: {@code 1205-COMPARE-OLD-NEW} compares the TEXT member
-         * {@code ACUP-NEW-CUST-FICO-SCORE-X} at {@code :1767-1768}, while {@code 9700-CHECK-CHANGE-IN-REC} compares
-         * this NUMERIC member at {@code :4186}. Neither reading is derivable from the other once a non-numeric or
-         * blank value has been entered, so both are stored.
+         * Creates an immutable {@code ACUP-NEW-DETAILS} edited group from the bound JSON payload.
          *
-         * <p>{@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850} at {@code app/cbl/COACTUPC.cbl:848-849} is
-         * declared on THIS numeric member, not on the text member, so the range constraint is applied here and
-         * nowhere else. It is declared on the NEW side only and therefore enforced on the NEW side only; the OLD
-         * snapshot group carries no constraint of any kind.</p>
+         * <p>The group is declared at {@code app/cbl/COACTUPC.cbl:757} and is populated in the source by
+         * {@code INITIALIZE ACUP-NEW-DETAILS} at {@code :1047} followed by the guarded moves of
+         * {@code 1100-RECEIVE-MAP}. Every member is assigned once here and never again.</p>
          *
-         * <p>A {@code null} value means the score was not supplied. A range constraint treats {@code null} as
-         * valid, so the absent and blank cases still reach the service and still receive the source's own distinct
-         * blank and not-valid messages rather than a framework error &mdash; the three-state model of
-         * {@code app/cpy/CSSETATY.cpy} is preserved.</p>
+         * @param accountId {@code ACUP-NEW-ACCT-ID-X} PIC X(11) at {@code app/cbl/COACTUPC.cbl:759}; retained exactly
+         *                  as received, with no trimming, padding, case folding or null/blank coercion
+         * @param activeStatus {@code ACUP-NEW-ACTIVE-STATUS} PIC X(01) at {@code app/cbl/COACTUPC.cbl:762}; retained
+         *                     exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param currentBalance {@code ACUP-NEW-CURR-BAL} PIC X(12) at {@code app/cbl/COACTUPC.cbl:763}; retained
+         *                       exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param creditLimit {@code ACUP-NEW-CREDIT-LIMIT} PIC X(12) at {@code app/cbl/COACTUPC.cbl:766}; retained
+         *                    exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param cashCreditLimit {@code ACUP-NEW-CASH-CREDIT-LIMIT} PIC X(12) at {@code app/cbl/COACTUPC.cbl:769};
+         *                        retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                        coercion
+         * @param openDate {@code ACUP-NEW-OPEN-DATE} PIC X(08) at {@code app/cbl/COACTUPC.cbl:772}; retained exactly
+         *                 as received, with no trimming, padding, case folding or null/blank coercion
+         * @param expiraionDate {@code ACUP-NEW-EXPIRAION-DATE} PIC X(08) at {@code app/cbl/COACTUPC.cbl:778}; retained
+         *                      exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param reissueDate {@code ACUP-NEW-REISSUE-DATE} PIC X(08) at {@code app/cbl/COACTUPC.cbl:784}; retained
+         *                    exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param currentCycleCredit {@code ACUP-NEW-CURR-CYC-CREDIT} PIC X(12) at {@code app/cbl/COACTUPC.cbl:790};
+         *                           retained exactly as received, with no trimming, padding, case folding or
+         *                           null/blank coercion
+         * @param currentCycleDebit {@code ACUP-NEW-CURR-CYC-DEBIT} PIC X(12) at {@code app/cbl/COACTUPC.cbl:793};
+         *                          retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                          coercion
+         * @param groupId {@code ACUP-NEW-GROUP-ID} PIC X(10) at {@code app/cbl/COACTUPC.cbl:796}; retained exactly as
+         *                received, with no trimming, padding, case folding or null/blank coercion
+         * @param customerId {@code ACUP-NEW-CUST-ID-X} PIC X(09) at {@code app/cbl/COACTUPC.cbl:798}; retained exactly
+         *                   as received, with no trimming, padding, case folding or null/blank coercion
+         * @param firstName {@code ACUP-NEW-CUST-FIRST-NAME} PIC X(25) at {@code app/cbl/COACTUPC.cbl:801}; retained
+         *                  exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param middleName {@code ACUP-NEW-CUST-MIDDLE-NAME} PIC X(25) at {@code app/cbl/COACTUPC.cbl:802}; retained
+         *                   exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param lastName {@code ACUP-NEW-CUST-LAST-NAME} PIC X(25) at {@code app/cbl/COACTUPC.cbl:803}; retained
+         *                 exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param addressLine1 {@code ACUP-NEW-CUST-ADDR-LINE-1} PIC X(50) at {@code app/cbl/COACTUPC.cbl:804};
+         *                     retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                     coercion
+         * @param addressLine2 {@code ACUP-NEW-CUST-ADDR-LINE-2} PIC X(50) at {@code app/cbl/COACTUPC.cbl:805};
+         *                     retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                     coercion
+         * @param addressLine3 {@code ACUP-NEW-CUST-ADDR-LINE-3} PIC X(50) at {@code app/cbl/COACTUPC.cbl:806};
+         *                     retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                     coercion
+         * @param addressStateCode {@code ACUP-NEW-CUST-ADDR-STATE-CD} PIC X(02) at {@code app/cbl/COACTUPC.cbl:807};
+         *                         retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                         coercion
+         * @param addressCountryCode {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD} PIC X(03) at {@code
+         *                           app/cbl/COACTUPC.cbl:808}; retained exactly as received, with no trimming,
+         *                           padding, case folding or null/blank coercion
+         * @param addressZip {@code ACUP-NEW-CUST-ADDR-ZIP} PIC X(10) at {@code app/cbl/COACTUPC.cbl:809}; retained
+         *                   exactly as received, with no trimming, padding, case folding or null/blank coercion
+         * @param phoneNumber1AreaCode {@code ACUP-NEW-CUST-PHONE-NUM-1A} PIC X(3) at
+         *                             {@code app/cbl/COACTUPC.cbl:814}; retained exactly as received, with no
+         *                             trimming, padding, case folding or null/blank coercion
+         * @param phoneNumber1Prefix {@code ACUP-NEW-CUST-PHONE-NUM-1B} PIC X(3) at
+         *                           {@code app/cbl/COACTUPC.cbl:816}; retained exactly as received, with no trimming,
+         *                           padding, case folding or null/blank coercion
+         * @param phoneNumber1LineNumber {@code ACUP-NEW-CUST-PHONE-NUM-1C} PIC X(4) at
+         *                               {@code app/cbl/COACTUPC.cbl:818}; retained exactly as received, with no
+         *                               trimming, padding, case folding or null/blank coercion
+         * @param phoneNumber2AreaCode {@code ACUP-NEW-CUST-PHONE-NUM-2A} PIC X(3) at
+         *                             {@code app/cbl/COACTUPC.cbl:824}; retained exactly as received, with no
+         *                             trimming, padding, case folding or null/blank coercion
+         * @param phoneNumber2Prefix {@code ACUP-NEW-CUST-PHONE-NUM-2B} PIC X(3) at
+         *                           {@code app/cbl/COACTUPC.cbl:826}; retained exactly as received, with no trimming,
+         *                           padding, case folding or null/blank coercion
+         * @param phoneNumber2LineNumber {@code ACUP-NEW-CUST-PHONE-NUM-2C} PIC X(4) at
+         *                               {@code app/cbl/COACTUPC.cbl:828}; retained exactly as received, with no
+         *                               trimming, padding, case folding or null/blank coercion
+         * @param ssnPart1 {@code ACUP-NEW-CUST-SSN-1} PIC X(03) at {@code app/cbl/COACTUPC.cbl:831}; retained exactly
+         *                 as received, with no trimming, padding, case folding or null/blank coercion
+         * @param ssnPart2 {@code ACUP-NEW-CUST-SSN-2} PIC X(02) at {@code app/cbl/COACTUPC.cbl:832}; retained exactly
+         *                 as received, with no trimming, padding, case folding or null/blank coercion
+         * @param ssnPart3 {@code ACUP-NEW-CUST-SSN-3} PIC X(04) at {@code app/cbl/COACTUPC.cbl:833}; retained exactly
+         *                 as received, with no trimming, padding, case folding or null/blank coercion
+         * @param governmentIssuedId {@code ACUP-NEW-CUST-GOVT-ISSUED-ID} PIC X(20) at {@code
+         *                           app/cbl/COACTUPC.cbl:836}; retained exactly as received, with no trimming,
+         *                           padding, case folding or null/blank coercion
+         * @param dateOfBirth {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD} PIC X(08) at {@code app/cbl/COACTUPC.cbl:837};
+         *                    retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                    coercion
+         * @param eftAccountId {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID} PIC X(10) at {@code app/cbl/COACTUPC.cbl:843};
+         *                     retained exactly as received, with no trimming, padding, case folding or null/blank
+         *                     coercion
+         * @param primaryCardHolderIndicator {@code ACUP-NEW-CUST-PRI-HOLDER-IND} PIC X(01) at {@code
+         *                                   app/cbl/COACTUPC.cbl:844}; retained exactly as received, with no trimming,
+         *                                   padding, case folding or null/blank coercion
+         * @param ficoScore {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) at {@code app/cbl/COACTUPC.cbl:845}; retained
+         *                  exactly as received, with no trimming, padding, case folding or null/blank coercion
          */
-        @Min(value = FICO_SCORE_MINIMUM,
-                message = "ficoScoreValue must not be below 300, the lower bound"
-                        + " of 88 FICO-RANGE-IS-VALID at app/cbl/COACTUPC.cbl:848-849")
-        @Max(value = FICO_SCORE_MAXIMUM,
-                message = "ficoScoreValue must not be above 850, the upper bound"
-                        + " of 88 FICO-RANGE-IS-VALID at app/cbl/COACTUPC.cbl:848-849")
-        private Integer ficoScoreValue;
-
-        /**
-         * Creates an empty group. JSON binding populates the members through
-         * the accessors below; nothing is defaulted, so an absent member stays
-         * absent and a blank member stays blank.
-         */
-        public NewDetails() {
-            // Intentionally empty: absent, blank and low-values are three
-            // distinguishable states and none of them may be manufactured here.
+        @JsonCreator
+        public NewDetails(
+                @JsonProperty("accountId") final String accountId,
+                @JsonProperty("activeStatus") final String activeStatus,
+                @JsonProperty("currentBalance") final String currentBalance,
+                @JsonProperty("creditLimit") final String creditLimit,
+                @JsonProperty("cashCreditLimit") final String cashCreditLimit,
+                @JsonProperty("openDate") final String openDate,
+                @JsonProperty("expiraionDate") final String expiraionDate,
+                @JsonProperty("reissueDate") final String reissueDate,
+                @JsonProperty("currentCycleCredit") final String currentCycleCredit,
+                @JsonProperty("currentCycleDebit") final String currentCycleDebit,
+                @JsonProperty("groupId") final String groupId,
+                @JsonProperty("customerId") final String customerId,
+                @JsonProperty("firstName") final String firstName,
+                @JsonProperty("middleName") final String middleName,
+                @JsonProperty("lastName") final String lastName,
+                @JsonProperty("addressLine1") final String addressLine1,
+                @JsonProperty("addressLine2") final String addressLine2,
+                @JsonProperty("addressLine3") final String addressLine3,
+                @JsonProperty("addressStateCode") final String addressStateCode,
+                @JsonProperty("addressCountryCode") final String addressCountryCode,
+                @JsonProperty("addressZip") final String addressZip,
+                @JsonProperty("phoneNumber1AreaCode") final String phoneNumber1AreaCode,
+                @JsonProperty("phoneNumber1Prefix") final String phoneNumber1Prefix,
+                @JsonProperty("phoneNumber1LineNumber") final String phoneNumber1LineNumber,
+                @JsonProperty("phoneNumber2AreaCode") final String phoneNumber2AreaCode,
+                @JsonProperty("phoneNumber2Prefix") final String phoneNumber2Prefix,
+                @JsonProperty("phoneNumber2LineNumber") final String phoneNumber2LineNumber,
+                @JsonProperty("ssnPart1") final String ssnPart1,
+                @JsonProperty("ssnPart2") final String ssnPart2,
+                @JsonProperty("ssnPart3") final String ssnPart3,
+                @JsonProperty("governmentIssuedId") final String governmentIssuedId,
+                @JsonProperty("dateOfBirth") final String dateOfBirth,
+                @JsonProperty("eftAccountId") final String eftAccountId,
+                @JsonProperty("primaryCardHolderIndicator") final String primaryCardHolderIndicator,
+                @JsonProperty("ficoScore") final String ficoScore) {
+            this.accountId = accountId;
+            this.activeStatus = activeStatus;
+            this.currentBalance = currentBalance;
+            this.creditLimit = creditLimit;
+            this.cashCreditLimit = cashCreditLimit;
+            this.openDate = openDate;
+            this.expiraionDate = expiraionDate;
+            this.reissueDate = reissueDate;
+            this.currentCycleCredit = currentCycleCredit;
+            this.currentCycleDebit = currentCycleDebit;
+            this.groupId = groupId;
+            this.customerId = customerId;
+            this.firstName = firstName;
+            this.middleName = middleName;
+            this.lastName = lastName;
+            this.addressLine1 = addressLine1;
+            this.addressLine2 = addressLine2;
+            this.addressLine3 = addressLine3;
+            this.addressStateCode = addressStateCode;
+            this.addressCountryCode = addressCountryCode;
+            this.addressZip = addressZip;
+            this.phoneNumber1AreaCode = phoneNumber1AreaCode;
+            this.phoneNumber1Prefix = phoneNumber1Prefix;
+            this.phoneNumber1LineNumber = phoneNumber1LineNumber;
+            this.phoneNumber2AreaCode = phoneNumber2AreaCode;
+            this.phoneNumber2Prefix = phoneNumber2Prefix;
+            this.phoneNumber2LineNumber = phoneNumber2LineNumber;
+            this.ssnPart1 = ssnPart1;
+            this.ssnPart2 = ssnPart2;
+            this.ssnPart3 = ssnPart3;
+            this.governmentIssuedId = governmentIssuedId;
+            this.dateOfBirth = dateOfBirth;
+            this.eftAccountId = eftAccountId;
+            this.primaryCardHolderIndicator = primaryCardHolderIndicator;
+            this.ficoScore = ficoScore;
         }
 
         /**
          * Returns {@code ACUP-NEW-ACCT-ID-X}, PIC X(11) at {@code app/cbl/COACTUPC.cbl:759}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAccountId() {
             return accountId;
         }
 
         /**
-         * Sets {@code ACUP-NEW-ACCT-ID-X}, PIC X(11) at {@code app/cbl/COACTUPC.cbl:759}.
-         *
-         * @param accountId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setAccountId(final String accountId) {
-            this.accountId = accountId;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-ACTIVE-STATUS}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:762}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getActiveStatus() {
             return activeStatus;
         }
 
         /**
-         * Sets {@code ACUP-NEW-ACTIVE-STATUS}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:762}.
-         *
-         * @param activeStatus the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setActiveStatus(final String activeStatus) {
-            this.activeStatus = activeStatus;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CURR-BAL}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:763}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentBalance() {
             return currentBalance;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CURR-BAL}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:763}.
-         *
-         * @param currentBalance the value to store verbatim; {@code null} and the empty string are retained as the
-         *                       distinct states they are
-         */
-        public void setCurrentBalance(final String currentBalance) {
-            this.currentBalance = currentBalance;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CURR-BAL-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:764-765}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentBalanceAmount() {
-            return currentBalanceAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CURR-BAL-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:764-765}.
-         *
-         * @param currentBalanceAmount the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setCurrentBalanceAmount(final BigDecimal currentBalanceAmount) {
-            this.currentBalanceAmount = currentBalanceAmount;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:766}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCreditLimit() {
             return creditLimit;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:766}.
-         *
-         * @param creditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setCreditLimit(final String creditLimit) {
-            this.creditLimit = creditLimit;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:767-768}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCreditLimitAmount() {
-            return creditLimitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:767-768}.
-         *
-         * @param creditLimitAmount the value to store verbatim; {@code null} and the empty string are retained as
-         *                          the distinct states they are
-         */
-        public void setCreditLimitAmount(final BigDecimal creditLimitAmount) {
-            this.creditLimitAmount = creditLimitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CASH-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:769}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCashCreditLimit() {
             return cashCreditLimit;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CASH-CREDIT-LIMIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:769}.
-         *
-         * @param cashCreditLimit the value to store verbatim; {@code null} and the empty string are retained as the
-         *                        distinct states they are
-         */
-        public void setCashCreditLimit(final String cashCreditLimit) {
-            this.cashCreditLimit = cashCreditLimit;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CASH-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:770-771}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCashCreditLimitAmount() {
-            return cashCreditLimitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CASH-CREDIT-LIMIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:770-771}.
-         *
-         * @param cashCreditLimitAmount the value to store verbatim; {@code null} and the empty string are retained
-         *                              as the distinct states they are
-         */
-        public void setCashCreditLimitAmount(final BigDecimal cashCreditLimitAmount) {
-            this.cashCreditLimitAmount = cashCreditLimitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-OPEN-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:772}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getOpenDate() {
             return openDate;
         }
 
         /**
-         * Sets {@code ACUP-NEW-OPEN-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:772}.
-         *
-         * @param openDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setOpenDate(final String openDate) {
-            this.openDate = openDate;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-EXPIRAION-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:778}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
-        public String getExpirationDate() {
-            return expirationDate;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-EXPIRAION-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:778}.
-         *
-         * @param expirationDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                       distinct states they are
-         */
-        public void setExpirationDate(final String expirationDate) {
-            this.expirationDate = expirationDate;
+        public String getExpiraionDate() {
+            return expiraionDate;
         }
 
         /**
          * Returns {@code ACUP-NEW-REISSUE-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:784}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getReissueDate() {
             return reissueDate;
         }
 
         /**
-         * Sets {@code ACUP-NEW-REISSUE-DATE}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:784}.
-         *
-         * @param reissueDate the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setReissueDate(final String reissueDate) {
-            this.reissueDate = reissueDate;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CURR-CYC-CREDIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:790}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentCycleCredit() {
             return currentCycleCredit;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CURR-CYC-CREDIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:790}.
-         *
-         * @param currentCycleCredit the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setCurrentCycleCredit(final String currentCycleCredit) {
-            this.currentCycleCredit = currentCycleCredit;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CURR-CYC-CREDIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:791-792}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentCycleCreditAmount() {
-            return currentCycleCreditAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CURR-CYC-CREDIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:791-792}.
-         *
-         * @param currentCycleCreditAmount the value to store verbatim; {@code null} and the empty string are
-         *                                 retained as the distinct states they are
-         */
-        public void setCurrentCycleCreditAmount(final BigDecimal currentCycleCreditAmount) {
-            this.currentCycleCreditAmount = currentCycleCreditAmount;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CURR-CYC-DEBIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:793}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCurrentCycleDebit() {
             return currentCycleDebit;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CURR-CYC-DEBIT}, PIC X(12) at {@code app/cbl/COACTUPC.cbl:793}.
-         *
-         * @param currentCycleDebit the value to store verbatim; {@code null} and the empty string are retained as
-         *                          the distinct states they are
-         */
-        public void setCurrentCycleDebit(final String currentCycleDebit) {
-            this.currentCycleDebit = currentCycleDebit;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CURR-CYC-DEBIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:794-795}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public BigDecimal getCurrentCycleDebitAmount() {
-            return currentCycleDebitAmount;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CURR-CYC-DEBIT-N}, PIC S9(10)V99 at {@code app/cbl/COACTUPC.cbl:794-795}.
-         *
-         * @param currentCycleDebitAmount the value to store verbatim; {@code null} and the empty string are
-         *                                retained as the distinct states they are
-         */
-        public void setCurrentCycleDebitAmount(final BigDecimal currentCycleDebitAmount) {
-            this.currentCycleDebitAmount = currentCycleDebitAmount;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-GROUP-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:796}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getGroupId() {
             return groupId;
         }
 
         /**
-         * Sets {@code ACUP-NEW-GROUP-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:796}.
-         *
-         * @param groupId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                distinct states they are
-         */
-        public void setGroupId(final String groupId) {
-            this.groupId = groupId;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ID-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:798}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getCustomerId() {
             return customerId;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ID-X}, PIC X(09) at {@code app/cbl/COACTUPC.cbl:798}.
-         *
-         * @param customerId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setCustomerId(final String customerId) {
-            this.customerId = customerId;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-FIRST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:801}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getFirstName() {
             return firstName;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-FIRST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:801}.
-         *
-         * @param firstName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setFirstName(final String firstName) {
-            this.firstName = firstName;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-MIDDLE-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:802}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getMiddleName() {
             return middleName;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-MIDDLE-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:802}.
-         *
-         * @param middleName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setMiddleName(final String middleName) {
-            this.middleName = middleName;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-LAST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:803}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getLastName() {
             return lastName;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-LAST-NAME}, PIC X(25) at {@code app/cbl/COACTUPC.cbl:803}.
-         *
-         * @param lastName the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setLastName(final String lastName) {
-            this.lastName = lastName;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-LINE-1}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:804}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine1() {
             return addressLine1;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-LINE-1}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:804}.
-         *
-         * @param addressLine1 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine1(final String addressLine1) {
-            this.addressLine1 = addressLine1;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-LINE-2}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:805}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine2() {
             return addressLine2;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-LINE-2}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:805}.
-         *
-         * @param addressLine2 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine2(final String addressLine2) {
-            this.addressLine2 = addressLine2;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-LINE-3}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:806}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressLine3() {
             return addressLine3;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-LINE-3}, PIC X(50) at {@code app/cbl/COACTUPC.cbl:806}.
-         *
-         * @param addressLine3 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setAddressLine3(final String addressLine3) {
-            this.addressLine3 = addressLine3;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-STATE-CD}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:807}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressStateCode() {
             return addressStateCode;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-STATE-CD}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:807}.
-         *
-         * @param addressStateCode the value to store verbatim; {@code null} and the empty string are retained as
-         *                         the distinct states they are
-         */
-        public void setAddressStateCode(final String addressStateCode) {
-            this.addressStateCode = addressStateCode;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:808}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressCountryCode() {
             return addressCountryCode;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:808}.
-         *
-         * @param addressCountryCode the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setAddressCountryCode(final String addressCountryCode) {
-            this.addressCountryCode = addressCountryCode;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-ADDR-ZIP}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:809}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getAddressZip() {
             return addressZip;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-ADDR-ZIP}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:809}.
-         *
-         * @param addressZip the value to store verbatim; {@code null} and the empty string are retained as the
-         *                   distinct states they are
-         */
-        public void setAddressZip(final String addressZip) {
-            this.addressZip = addressZip;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CUST-PHONE-NUM-1}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:810}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber1() {
-            return phoneNumber1;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-1}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:810}.
-         *
-         * @param phoneNumber1 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setPhoneNumber1(final String phoneNumber1) {
-            this.phoneNumber1 = phoneNumber1;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-1A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:814}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber1AreaCode() {
             return phoneNumber1AreaCode;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-1A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:814}.
-         *
-         * @param phoneNumber1AreaCode the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setPhoneNumber1AreaCode(final String phoneNumber1AreaCode) {
-            this.phoneNumber1AreaCode = phoneNumber1AreaCode;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-1B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:816}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber1Prefix() {
             return phoneNumber1Prefix;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-1B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:816}.
-         *
-         * @param phoneNumber1Prefix the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setPhoneNumber1Prefix(final String phoneNumber1Prefix) {
-            this.phoneNumber1Prefix = phoneNumber1Prefix;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-1C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:818}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber1LineNumber() {
             return phoneNumber1LineNumber;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-1C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:818}.
-         *
-         * @param phoneNumber1LineNumber the value to store verbatim; {@code null} and the empty string are retained
-         *                               as the distinct states they are
-         */
-        public void setPhoneNumber1LineNumber(final String phoneNumber1LineNumber) {
-            this.phoneNumber1LineNumber = phoneNumber1LineNumber;
-        }
-
-        /**
-         * Returns {@code ACUP-NEW-CUST-PHONE-NUM-2}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:820}.
-         *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
-         */
-        public String getPhoneNumber2() {
-            return phoneNumber2;
-        }
-
-        /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-2}, PIC X(15) at {@code app/cbl/COACTUPC.cbl:820}.
-         *
-         * @param phoneNumber2 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setPhoneNumber2(final String phoneNumber2) {
-            this.phoneNumber2 = phoneNumber2;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-2A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:824}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber2AreaCode() {
             return phoneNumber2AreaCode;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-2A}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:824}.
-         *
-         * @param phoneNumber2AreaCode the value to store verbatim; {@code null} and the empty string are retained
-         *                             as the distinct states they are
-         */
-        public void setPhoneNumber2AreaCode(final String phoneNumber2AreaCode) {
-            this.phoneNumber2AreaCode = phoneNumber2AreaCode;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-2B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:826}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber2Prefix() {
             return phoneNumber2Prefix;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-2B}, PIC X(3) at {@code app/cbl/COACTUPC.cbl:826}.
-         *
-         * @param phoneNumber2Prefix the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setPhoneNumber2Prefix(final String phoneNumber2Prefix) {
-            this.phoneNumber2Prefix = phoneNumber2Prefix;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PHONE-NUM-2C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:828}.
          *
-         * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * @return the stored value exactly as received, with no trimming, case folding or padding applied;
+         *         {@code null} when absent
          */
         public String getPhoneNumber2LineNumber() {
             return phoneNumber2LineNumber;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PHONE-NUM-2C}, PIC X(4) at {@code app/cbl/COACTUPC.cbl:828}.
-         *
-         * @param phoneNumber2LineNumber the value to store verbatim; {@code null} and the empty string are retained
-         *                               as the distinct states they are
-         */
-        public void setPhoneNumber2LineNumber(final String phoneNumber2LineNumber) {
-            this.phoneNumber2LineNumber = phoneNumber2LineNumber;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-SSN-1}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:831}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getSsnPart1() {
             return ssnPart1;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-SSN-1}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:831}.
-         *
-         * @param ssnPart1 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setSsnPart1(final String ssnPart1) {
-            this.ssnPart1 = ssnPart1;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-SSN-2}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:832}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getSsnPart2() {
             return ssnPart2;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-SSN-2}, PIC X(02) at {@code app/cbl/COACTUPC.cbl:832}.
-         *
-         * @param ssnPart2 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setSsnPart2(final String ssnPart2) {
-            this.ssnPart2 = ssnPart2;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-SSN-3}, PIC X(04) at {@code app/cbl/COACTUPC.cbl:833}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getSsnPart3() {
             return ssnPart3;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-SSN-3}, PIC X(04) at {@code app/cbl/COACTUPC.cbl:833}.
-         *
-         * @param ssnPart3 the value to store verbatim; {@code null} and the empty string are retained as the
-         *                 distinct states they are
-         */
-        public void setSsnPart3(final String ssnPart3) {
-            this.ssnPart3 = ssnPart3;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-GOVT-ISSUED-ID}, PIC X(20) at {@code app/cbl/COACTUPC.cbl:836}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getGovernmentIssuedId() {
             return governmentIssuedId;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-GOVT-ISSUED-ID}, PIC X(20) at {@code app/cbl/COACTUPC.cbl:836}.
-         *
-         * @param governmentIssuedId the value to store verbatim; {@code null} and the empty string are retained as
-         *                           the distinct states they are
-         */
-        public void setGovernmentIssuedId(final String governmentIssuedId) {
-            this.governmentIssuedId = governmentIssuedId;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:837}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getDateOfBirth() {
             return dateOfBirth;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD}, PIC X(08) at {@code app/cbl/COACTUPC.cbl:837}.
-         *
-         * @param dateOfBirth the value to store verbatim; {@code null} and the empty string are retained as the
-         *                    distinct states they are
-         */
-        public void setDateOfBirth(final String dateOfBirth) {
-            this.dateOfBirth = dateOfBirth;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:843}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getEftAccountId() {
             return eftAccountId;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID}, PIC X(10) at {@code app/cbl/COACTUPC.cbl:843}.
-         *
-         * @param eftAccountId the value to store verbatim; {@code null} and the empty string are retained as the
-         *                     distinct states they are
-         */
-        public void setEftAccountId(final String eftAccountId) {
-            this.eftAccountId = eftAccountId;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-PRI-HOLDER-IND}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:844}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getPrimaryCardHolderIndicator() {
             return primaryCardHolderIndicator;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-PRI-HOLDER-IND}, PIC X(01) at {@code app/cbl/COACTUPC.cbl:844}.
-         *
-         * @param primaryCardHolderIndicator the value to store verbatim; {@code null} and the empty string are
-         *                                   retained as the distinct states they are
-         */
-        public void setPrimaryCardHolderIndicator(final String primaryCardHolderIndicator) {
-            this.primaryCardHolderIndicator = primaryCardHolderIndicator;
-        }
-
-        /**
          * Returns {@code ACUP-NEW-CUST-FICO-SCORE-X}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:845}.
          *
          * @return the stored value exactly as received, with no trimming, case folding, padding or rounding
-         *         applied; {@code null} when absent
+         * applied.
          */
         public String getFicoScore() {
             return ficoScore;
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-FICO-SCORE-X}, PIC X(03) at {@code app/cbl/COACTUPC.cbl:845}.
-         *
-         * @param ficoScore the value to store verbatim; {@code null} and the empty string are retained as the
-         *                  distinct states they are
-         */
-        public void setFicoScore(final String ficoScore) {
-            this.ficoScore = ficoScore;
-        }
-
-        /**
          * Returns the year component of the account open date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:775-777}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:775-777}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * @return the year component, {@code null} when {@code openDate} is absent, or the empty string when
+         * the stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateYear() {
             return compactDatePart(openDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -4870,16 +4102,14 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the account open date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:775-777}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:775-777}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * @return the month component, {@code null} when {@code openDate} is absent, or the empty string when
+         * the stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateMonth() {
             return compactDatePart(openDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -4888,16 +4118,14 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the day component of the account open date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:775-777}.
-         *
-         * This is a derived view, not a stored member: it slices {@code openDate} and is deliberately not named as
-         * a bean property, so JSON binding never invokes it.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:775-777}. This is a derived view, not a stored member: it slices
+         * {@code openDate} and is deliberately not named as a bean property, so JSON binding never invokes it.
          *
          * @return the day component, {@code null} when {@code openDate} is absent, or the empty string when the
-         *         stored value does not reach the component
+         * stored value does not reach the component
          * @throws IllegalArgumentException when {@code openDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * which means the dash-separated live form was stored into the compact snapshot field
          */
         public String openDateDay() {
             return compactDatePart(openDate, DATE_DAY_BEGIN, DATE_DAY_END,
@@ -4906,70 +4134,66 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the year component of the account expiry date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:781-783}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:781-783}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the year component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateYear() {
-            return compactDatePart(expirationDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
-                    "NewDetails.expirationDate");
+        public String expiraionDateYear() {
+            return compactDatePart(expiraionDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
+                    "NewDetails.expiraionDate");
         }
 
         /**
          * Returns the month component of the account expiry date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:781-783}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:781-783}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the month component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateMonth() {
-            return compactDatePart(expirationDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
-                    "NewDetails.expirationDate");
+        public String expiraionDateMonth() {
+            return compactDatePart(expiraionDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
+                    "NewDetails.expiraionDate");
         }
 
         /**
          * Returns the day component of the account expiry date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:781-783}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:781-783}. This is a derived view, not a stored member: it slices
+         * {@code expirationDate} and is deliberately not named as a bean property, so JSON binding never
+         * invokes it.
          *
-         * This is a derived view, not a stored member: it slices {@code expirationDate} and is deliberately not
-         * named as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code expirationDate} is absent, or the empty string when
-         *         the stored value does not reach the component
+         * @return the day component, {@code null} when {@code expirationDate} is absent, or the empty string
+         * when the stored value does not reach the component
          * @throws IllegalArgumentException when {@code expirationDate} is longer than the declared eight
-         *         characters, which means the dash-separated live form was stored into the compact snapshot field
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
-        public String expirationDateDay() {
-            return compactDatePart(expirationDate, DATE_DAY_BEGIN, DATE_DAY_END,
-                    "NewDetails.expirationDate");
+        public String expiraionDateDay() {
+            return compactDatePart(expiraionDate, DATE_DAY_BEGIN, DATE_DAY_END,
+                    "NewDetails.expiraionDate");
         }
 
         /**
          * Returns the year component of the account reissue date, taken from COBOL offset 1 of the compact
-         * eight-character value, matching the {@code PIC X(4)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:787-789}.
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:787-789}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code reissueDate} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the year component, {@code null} when {@code reissueDate} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateYear() {
             return compactDatePart(reissueDate, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -4978,16 +4202,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the account reissue date, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:787-789}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:787-789}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code reissueDate} is absent, or the empty string when
-         *         the stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the month component, {@code null} when {@code reissueDate} is absent, or the empty string
+         * when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateMonth() {
             return compactDatePart(reissueDate, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -4996,16 +4219,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the day component of the account reissue date, taken from COBOL offset 7 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:787-789}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:787-789}. This is a derived view, not a stored member: it slices
+         * {@code reissueDate} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code reissueDate} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code reissueDate} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the day component, {@code null} when {@code reissueDate} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code reissueDate} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String reissueDateDay() {
             return compactDatePart(reissueDate, DATE_DAY_BEGIN, DATE_DAY_END,
@@ -5013,16 +4235,16 @@ public class AccountUpdateRequest {
         }
 
         /**
-         * Returns the year component of the date of birth, taken from COBOL offset 1 of the compact eight-character
-         * value, matching the {@code PIC X(4)} part declared at {@code app/cbl/COACTUPC.cbl:840-842}.
+         * Returns the year component of the date of birth, taken from COBOL offset 1 of the compact
+         * eight-character value, matching the {@code PIC X(4)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:840-842}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the year component, {@code null} when {@code dateOfBirth} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the year component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthYear() {
             return compactDatePart(dateOfBirth, DATE_YEAR_BEGIN, DATE_YEAR_END,
@@ -5031,16 +4253,15 @@ public class AccountUpdateRequest {
 
         /**
          * Returns the month component of the date of birth, taken from COBOL offset 5 of the compact
-         * eight-character value, matching the {@code PIC X(2)} part declared at {@code
-         * app/cbl/COACTUPC.cbl:840-842}.
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:840-842}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the month component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
-         *         the stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the month component, {@code null} when {@code dateOfBirth} is absent, or the empty string
+         * when the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthMonth() {
             return compactDatePart(dateOfBirth, DATE_MONTH_BEGIN, DATE_MONTH_END,
@@ -5048,16 +4269,16 @@ public class AccountUpdateRequest {
         }
 
         /**
-         * Returns the day component of the date of birth, taken from COBOL offset 7 of the compact eight-character
-         * value, matching the {@code PIC X(2)} part declared at {@code app/cbl/COACTUPC.cbl:840-842}.
+         * Returns the day component of the date of birth, taken from COBOL offset 7 of the compact
+         * eight-character value, matching the {@code PIC X(2)} part declared at
+         * {@code app/cbl/COACTUPC.cbl:840-842}. This is a derived view, not a stored member: it slices
+         * {@code dateOfBirth} and is deliberately not named as a bean property, so JSON binding never invokes
+         * it.
          *
-         * This is a derived view, not a stored member: it slices {@code dateOfBirth} and is deliberately not named
-         * as a bean property, so JSON binding never invokes it.
-         *
-         * @return the day component, {@code null} when {@code dateOfBirth} is absent, or the empty string when the
-         *         stored value does not reach the component
-         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight characters,
-         *         which means the dash-separated live form was stored into the compact snapshot field
+         * @return the day component, {@code null} when {@code dateOfBirth} is absent, or the empty string when
+         * the stored value does not reach the component
+         * @throws IllegalArgumentException when {@code dateOfBirth} is longer than the declared eight
+         * characters, which means the dash-separated live form was stored into the compact snapshot field
          */
         public String dateOfBirthDay() {
             return compactDatePart(dateOfBirth, DATE_DAY_BEGIN, DATE_DAY_END,
@@ -5065,28 +4286,256 @@ public class AccountUpdateRequest {
         }
 
         /**
-         * Returns {@code ACUP-NEW-CUST-FICO-SCORE}, PIC 9(03) at {@code app/cbl/COACTUPC.cbl:846-847}, the numeric
-         * REDEFINES reading that {@code 9700-CHECK-CHANGE-IN-REC} compares at {@code :4186} and that
-         * {@code 88 FICO-RANGE-IS-VALID} at {@code :848-849} constrains to 300 through 850 inclusive.
+         * Returns {@code ACUP-NEW-CURR-BAL-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentBalance()} declared at {@code app/cbl/COACTUPC.cbl:764-765}.
          *
-         * @return the stored numeric credit score exactly as received, with no clamping or rounding applied;
-         *         {@code null} when the score was not supplied
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-NEW-CURR-BAL} at {@code app/cbl/COACTUPC.cbl:763}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current balance at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
          */
-        public Integer getFicoScoreValue() {
-            return ficoScoreValue;
+        public BigDecimal currentBalanceAmount() {
+            return zonedDecimalAmount(currentBalance);
         }
 
         /**
-         * Sets {@code ACUP-NEW-CUST-FICO-SCORE}, PIC 9(03) at {@code app/cbl/COACTUPC.cbl:846-847}.
+         * Returns {@code ACUP-NEW-CREDIT-LIMIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCreditLimit()} declared at {@code app/cbl/COACTUPC.cbl:767-768}.
          *
-         * @param ficoScoreValue the value to store verbatim; {@code null} is retained as the distinct absent state
-         *                       it is, and out-of-range values are reported by the declared range constraint rather
-         *                       than corrected here
+         * @param ficoScoreValue the value to store verbatim.
          */
-        public void setFicoScoreValue(final Integer ficoScoreValue) {
-            this.ficoScoreValue = ficoScoreValue;
+        public BigDecimal creditLimitAmount() {
+            return zonedDecimalAmount(creditLimit);
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CASH-CREDIT-LIMIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCashCreditLimit()} declared at {@code app/cbl/COACTUPC.cbl:770-771}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-NEW-CASH-CREDIT-LIMIT} at {@code app/cbl/COACTUPC.cbl:769}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the cash credit limit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal cashCreditLimitAmount() {
+            return zonedDecimalAmount(cashCreditLimit);
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CURR-CYC-CREDIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentCycleCredit()} declared at {@code app/cbl/COACTUPC.cbl:791-792}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-NEW-CURR-CYC-CREDIT} at {@code app/cbl/COACTUPC.cbl:790}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current cycle credit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal currentCycleCreditAmount() {
+            return zonedDecimalAmount(currentCycleCredit);
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CURR-CYC-DEBIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
+         * {@link #getCurrentCycleDebit()} declared at {@code app/cbl/COACTUPC.cbl:794-795}.
+         *
+         * <p>This is a derived view, not a stored member: it decodes the twelve bytes held by
+         * {@code ACUP-NEW-CURR-CYC-DEBIT} at {@code app/cbl/COACTUPC.cbl:793}, and it is deliberately not
+         * named as a bean property, so JSON binding never invokes it and no caller can submit a numeric
+         * reading that contradicts the text it redefines.</p>
+         *
+         * @return the current cycle debit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
+         */
+        public BigDecimal currentCycleDebitAmount() {
+            return zonedDecimalAmount(currentCycleDebit);
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CUST-PHONE-NUM-1}, the fifteen-byte whole that the three stored parts
+         * redefine, declared at {@code app/cbl/COACTUPC.cbl:810} and overlaid at {@code :811-819}.
+         *
+         * <p>This is a derived view, not a stored member, and it is deliberately not named as a bean
+         * property, so JSON binding never reads or writes it. The direction of derivation is the opposite
+         * of {@link OldDetails#phoneNumber1AreaCode()} and its siblings, and the asymmetry is the source's:
+         * on this group every statement that assigns telephone storage assigns a <em>part</em>
+         * ({@code app/cbl/COACTUPC.cbl:1359-1375} for this number), the parts are what
+         * {@code 1205-COMPARE-OLD-NEW} compares one at a time at {@code :1748-1750}, and the parts are what
+         * {@code 3000-SEND-MAP} returns to the screen at {@code :2939-2941}. The whole is referenced exactly
+         * twice in the entire program, at {@code :1633} and {@code :1641}, and only to carry fifteen bytes
+         * into {@code WS-EDIT-US-PHONE-NUM}, which is itself redefined into the same three parts at
+         * {@code app/cbl/COACTUPC.cbl:83-100} so that {@code 1260-EDIT-US-PHONE-NUM} can read them back
+         * out.</p>
+         *
+         * <p><strong>The filler bytes are spaces, not punctuation.</strong>
+         * {@code INITIALIZE ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:1047} sets all fifteen bytes to
+         * spaces, and no statement anywhere in the program assigns the three {@code FILLER} positions
+         * afterwards, so spaces are what the transport actually carries. The receiving overlay corroborates
+         * this directly: its three filler positions carry {@code VALUE '('}, {@code VALUE ')'} and
+         * {@code VALUE '-'} clauses that the author <em>commented out</em>, at
+         * {@code app/cbl/COACTUPC.cbl:86}, {@code :91} and {@code :96}, leaving the bytes unvalued. The
+         * punctuated
+         * {@code (nnn)nnn-nnnn} rendering is a different value, assembled only at write time by
+         * {@code STRING '(' ... ')' ... '-' ...} at {@code :4027-4033}; producing it here would describe a
+         * byte image this group never holds.</p>
+         *
+         * @return the fifteen-character overlay image assembled from the three stored parts, each padded to
+         *         its declared width, with the filler positions left as spaces; an absent part contributes
+         *         its own width in spaces, exactly as {@code INITIALIZE} leaves it
+         * @throws IllegalArgumentException when a stored part is longer than its declared width and so
+         *         cannot be placed at the offset the overlay assigns it
+         */
+        public String phoneNumber1() {
+            return overlayTelephoneImage(phoneNumber1AreaCode, phoneNumber1Prefix,
+                    phoneNumber1LineNumber, "NewDetails.phoneNumber1");
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CUST-PHONE-NUM-2}, the fifteen-byte whole that the three stored parts
+         * redefine, declared at {@code app/cbl/COACTUPC.cbl:820} and overlaid at {@code :821-829}.
+         *
+         * <p>The contract is that of {@link #phoneNumber1()} applied to the second number: the parts are
+         * assigned at {@code app/cbl/COACTUPC.cbl:1380-1396}, compared at {@code :1751-1753}, returned to
+         * the screen at {@code :2942-2944}, and assembled into the punctuated record value only at
+         * {@code :4035-4041}. The whole is referenced solely at {@code :1641}, as the transport into
+         * {@code WS-EDIT-US-PHONE-NUM}.</p>
+         *
+         * @return the fifteen-character overlay image assembled from the three stored parts, each padded to
+         *         its declared width, with the filler positions left as spaces; an absent part contributes
+         *         its own width in spaces, exactly as {@code INITIALIZE} leaves it
+         * @throws IllegalArgumentException when a stored part is longer than its declared width and so
+         *         cannot be placed at the offset the overlay assigns it
+         */
+        public String phoneNumber2() {
+            return overlayTelephoneImage(phoneNumber2AreaCode, phoneNumber2Prefix,
+                    phoneNumber2LineNumber, "NewDetails.phoneNumber2");
+        }
+
+        /**
+         * Returns {@code ACUP-NEW-CUST-FICO-SCORE}, the {@code PIC 9(03)} REDEFINES view over
+         * {@link #getFicoScore()} declared at {@code app/cbl/COACTUPC.cbl:846-847}.
+         *
+         * <p>This is a derived view, not a stored member: it reads the three bytes held by
+         * {@code ACUP-NEW-CUST-FICO-SCORE-X} at {@code app/cbl/COACTUPC.cbl:845}, and it is
+         * deliberately not named as a bean property, so JSON binding never invokes it. The source needs both
+         * readings of the one cell: the text at {@code :1767-1768} and the number at {@code :4186}.</p>
+         *
+         * @return the credit score, or {@code null} when the stored member is not three decimal digits
+         */
+        public Integer ficoScoreValue() {
+            return unsignedDisplayScore(ficoScore);
+        }
+
+        /**
+         * Reports whether the credit score satisfies {@code 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850},
+         * declared at {@code app/cbl/COACTUPC.cbl:848-849}.
+         *
+         * <p>The condition name is declared on the NEW group's numeric member and on no other member, so the
+         * range is a NEW-side rule and {@link OldDetails} deliberately has no counterpart to this method.
+         * It is expressed as a predicate rather than as a bean constraint because the source does not reject
+         * an out-of-range score at move time: {@code MOVE ACSTFCOI OF CACTUPAI TO}
+         * {@code ACUP-NEW-CUST-FICO-SCORE-X} at {@code :1283} stores whatever was typed, and the
+         * validation paragraph then tests this condition and emits the source's own message. A bean
+         * constraint would substitute a framework error for that message and would additionally collapse the
+         * absent and blank states, which {@code app/cpy/CSSETATY.cpy:17-27} renders distinctly.</p>
+         *
+         * @return {@code true} only when the stored member reads as a number between
+         *         {@value #FICO_SCORE_MINIMUM} and {@value #FICO_SCORE_MAXIMUM} inclusive;
+         *         {@code false} when it is absent, blank, non-numeric or out of range
+         */
+        public boolean ficoScoreIsInValidRange() {
+            final Integer score = ficoScoreValue();
+            return score != null
+                    && score.intValue() >= FICO_SCORE_MINIMUM
+                    && score.intValue() <= FICO_SCORE_MAXIMUM;
+        }
+
+        /**
+         * Rejects any JSON property this type does not declare.
+         *
+         * <p>The guard is local rather than declarative because the declarative alternative does not hold.
+         * Jackson's type-level unknown-property setting is consulted only while the object mapper still has
+         * failure on unknown properties enabled, the framework disables that by default, and no profile in
+         * this repository re-enables it; a type-level annotation would therefore be inert here, which is
+         * worse than absent because it would read as protection that is not in force.</p>
+         *
+         * <p>The guard is also what makes the overlay canonicalisation enforceable rather than advisory. The
+         * numeric and component readings of the snapshot members are derived views, not properties; without
+         * this method a caller could still send {@code currentBalanceAmount} or {@code ficoScoreValue} and
+         * have it silently discarded, which looks like acceptance. Rejection says plainly that one storage
+         * cell has one wire representation.</p>
+         *
+         * <p>Neither the offending property name nor its value is reproduced in the thrown message. Both are
+         * untrusted input, and copying either into a message that reaches a log record would let a caller
+         * forge log content; on this payload the same rule keeps a rejected social security number, date of
+         * birth or government-issued identifier out of the logs. Nothing is stored: this type is immutable,
+         * and the method exists only to fail.</p>
+         *
+         * @param name  the unrecognised property name supplied by the caller, deliberately neither stored nor
+         *              reproduced in the thrown message
+         * @param value the unrecognised property value supplied by the caller, deliberately neither stored nor
+         *              reproduced in the thrown message
+         * @throws IllegalArgumentException always, because an unrecognised property is never acceptable here
+         */
+        @JsonAnySetter
+        void rejectUnrecognisedProperty(String name, Object value) {
+            throw new IllegalArgumentException(
+                    "NewDetails accepts only the 35 properties declared by "
+                            + "app/cbl/COACTUPC.cbl:757-847 for the ACUP-NEW-DETAILS edited group, and "
+                            + "the payload contained a property that is not "
+                            + "one of them. Numeric and component readings of a snapshot member are "
+                            + "derived views rather than properties, because the source redefines one "
+                            + "storage cell instead of declaring two. The offending name and value are "
+                            + "withheld because they are untrusted input.");
         }
 
     }
 
+    /**
+     * Rejects any JSON property this type does not declare.
+     *
+     * <p>The guard is local rather than declarative because the declarative alternative does not hold.
+     * Jackson's type-level unknown-property setting is consulted only while the object mapper still has
+     * failure on unknown properties enabled, the framework disables that by default, and no profile in
+     * this repository re-enables it; a type-level annotation would therefore be inert here, which is
+     * worse than absent because it would read as protection that is not in force.</p>
+     *
+     * <p>The guard is also what makes the overlay canonicalisation enforceable rather than advisory. The
+     * numeric and component readings of the snapshot members are derived views, not properties; without
+     * this method a caller could still send {@code currentBalanceAmount} or {@code ficoScoreValue} and
+     * have it silently discarded, which looks like acceptance. Rejection says plainly that one storage
+     * cell has one wire representation.</p>
+     *
+     * <p>Neither the offending property name nor its value is reproduced in the thrown message. Both are
+     * untrusted input, and copying either into a message that reaches a log record would let a caller
+     * forge log content; on this payload the same rule keeps a rejected social security number, date of
+     * birth or government-issued identifier out of the logs. Nothing is stored: this type is immutable,
+     * and the method exists only to fail.</p>
+     *
+     * @param name  the unrecognised property name supplied by the caller, deliberately neither stored nor
+     *              reproduced in the thrown message
+     * @param value the unrecognised property value supplied by the caller, deliberately neither stored nor
+     *              reproduced in the thrown message
+     * @throws IllegalArgumentException always, because an unrecognised property is never acceptable here
+     */
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(String name, Object value) {
+        throw new IllegalArgumentException(
+                "AccountUpdateRequest accepts only the 56 properties declared by "
+                        + "app/cpy-bms/COACTUP.CPY for the 54 screen fields and "
+                        + "app/cbl/COACTUPC.cbl:669,757 for the two snapshot groups, and the payload "
+                        + "contained a property that is not "
+                        + "one of them. Numeric and component readings of a snapshot member are "
+                        + "derived views rather than properties, because the source redefines one "
+                        + "storage cell instead of declaring two. The offending name and value are "
+                        + "withheld because they are untrusted input.");
+    }
 }

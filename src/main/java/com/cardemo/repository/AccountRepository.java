@@ -354,7 +354,8 @@ import jakarta.persistence.LockModeType;
  *       that the decision is forced onto the caller instead of being hard-coded here. Remediation: callers must
  *       handle the empty case explicitly; there is no default.</dd>
  *   <dt><b>Medium &mdash; no secondary index exists on the account table, so no finder may imply one.</b></dt>
- *   <dd>{@code V2__create_indexes.sql} creates exactly three non-unique indexes, on {@code card.card_acct_id},
+ *   <dd>{@code V2__create_indexes.sql} (planned; absent at this commit) is to create exactly three non-unique
+ *       indexes, on {@code card.card_acct_id},
  *       {@code card_cross_reference.xref_acct_id} and the transaction table's {@code tran_proc_ts}, mirroring
  *       the three VSAM alternate indexes. <b>None is on {@code account}</b>, which is consistent with the
  *       catalogue: the account cluster has no alternate index. A finder on {@code groupId},
@@ -364,7 +365,7 @@ import jakarta.persistence.LockModeType;
  *   <dd>HikariCP is used at its defaults. Sizing it honestly requires a measured concurrency profile that the
  *       legacy system does not publish &mdash; the corpus asserts no service-level objective anywhere, so any
  *       pool figure invented here would be fabricated rather than derived. The item is disclosed as residual
- *       risk in {@code DECISION_LOG.md} and {@code docs/validation-gates.md} rather than silently absorbed.
+ *       risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md} rather than silently absorbed.
  *       Remediation: revisit once the performance-baseline gate has produced measured throughput and latency
  *       figures.</dd>
  * </dl>
@@ -376,11 +377,14 @@ import jakarta.persistence.LockModeType;
  *       criteria-API or predicate-builder helper, no mapper and no DAO wrapper. Spring Data
  *       generates the implementation from the signatures, so a hand-written one would be duplicate code with a
  *       second behaviour to keep in step.</li>
- *   <li><b>Every declared method has a named call site.</b> The rule that forbids dead code applies here at
- *       full strength with no exemption, because none of the migration's deliberately preserved no-op artefacts
- *       lives in this package. Accordingly the interface declares one method and not one more: an ordered-scan
- *       finder, a group or status finder and any projection were all considered and rejected for want of a
- *       caller.</li>
+ *   <li><b>Every declared method has a named consumer, though not yet a call site.</b> The rule that forbids
+ *       dead code applies here at full strength with no exemption, because none of the migration's deliberately
+ *       preserved no-op artefacts lives in this package. Accordingly the interface declares one method and not
+ *       one more: an ordered-scan finder, a group or status finder and any projection were all considered and
+ *       rejected for want of a consumer. <strong>Measured 1 August 2026</strong>, no file outside
+ *       {@code com.cardemo.repository} references this interface: the service and batch packages that are to
+ *       call it are <strong>not available</strong>, so the one declared method is justified by a named future
+ *       consumer rather than by an existing call site.</li>
  *   <li><b>Parameter binding only.</b> The one query is a constant string with a named parameter. No JPQL or SQL
  *       is assembled by concatenation anywhere in this file, and no native-SQL query is used at all, so
  *       there is no interpolation site for an injection to reach.</li>
@@ -413,21 +417,23 @@ import jakarta.persistence.LockModeType;
  *
  * <h2>How to build, run and test</h2>
  * <ul>
- *   <li><b>Build:</b> {@code mvn -B clean compile}. Compilation runs with {@code -Xlint:all -Werror} and
+ *   <li><b>Build:</b> {@code ./mvnw -B clean compile}. Compilation runs with {@code -Xlint:all -Werror} and
  *       {@code failOnWarning}, so any warning is a hard failure rather than advisory output.</li>
  *   <li><b>Run:</b> this interface is not independently runnable. Spring Data materialises a proxy for it during
  *       application-context refresh, so it participates in a run only as part of the Spring Boot application,
- *       started with {@code mvn -B spring-boot:run} or from the packaged JAR. Two preconditions fail fast at
- *       boot: a reachable PostgreSQL 16 instance carrying the {@code account} table exactly as contracted
- *       below, and the environment-indirected JWT signing key, which has no committed default.</li>
- *   <li><b>Test:</b> {@code mvn -B clean test} for the unit tier. The tests that matter for this type are
+ *       started with {@code ./mvnw -B spring-boot:run} or from the packaged JAR. <strong>Neither is possible at
+ *       this commit, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point and no
+ *       {@code application*.yml} profile exists, so no context can refresh. Two preconditions will fail fast at
+ *       boot once it can: a reachable PostgreSQL 16 instance carrying the {@code account} table exactly as
+ *       contracted below, and the environment-indirected JWT signing key, which has no committed default.</li>
+ *   <li><b>Test:</b> {@code ./mvnw -B clean test} for the unit tier. The tests that matter for this type are
  *       integration tests under {@code src/test/java/com/cardemo/integration/repository}, executed by
- *       {@code mvn -B clean verify} against a Testcontainers-managed PostgreSQL 16. They assert that the query
+ *       {@code ./mvnw -B clean verify} against a Testcontainers-managed PostgreSQL 16. They assert that the query
  *       below resolves against the mapped property, that the pessimistic lock is actually acquired, and that
  *       the read-for-update and {@code @Version} pair behaves as the High finding specifies. Those tests need a
  *       reachable container runtime; without one they cannot run and must be reported as blocked rather than
  *       recorded as passing.</li>
- *   <li><b>Verify:</b> {@code mvn -B clean verify} additionally enforces the line-coverage floor and the
+ *   <li><b>Verify:</b> {@code ./mvnw -B clean verify} additionally enforces the line-coverage floor and the
  *       dependency-vulnerability gate.</li>
  * </ul>
  *
@@ -473,13 +479,14 @@ import jakarta.persistence.LockModeType;
  *
  * <h2>Missing information disclosure</h2>
  * <p>
- * <b>Not available:</b> {@code src/main/resources/db/migration/V1__create_schema.sql},
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} did not exist when this interface was authored
- * &mdash; the {@code db/migration} directory was absent from the resource tree entirely &mdash; so the query and
- * the locking semantics below could not be reconciled against real DDL at authoring time. What is needed is
- * those three migration files. Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every
- * profile, a mismatch fails application-context startup rather than degrading gracefully, so the following
- * constitutes the <b>normative contract that {@code V1} must satisfy</b>: table {@code account} carrying the
+ * <b>Not available:</b> {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}. Measured
+ * 1 August 2026, {@code src/main/resources/db/migration/V1__create_schema.sql} <b>is present</b>
+ * and declares {@code CREATE TABLE account}, with {@code version BIGINT} and
+ * {@code ck_account_active_status}, so the query and the locking semantics below are reconciled
+ * against real DDL. What is needed is the two remaining migration files. Because
+ * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, a mismatch would fail
+ * application-context startup rather than degrading gracefully, so the following is <b>what {@code V1}
+ * declares and what this interface is typed over</b>: table {@code account} carrying the
  * twelve columns of the field contract above &mdash; <b>including the retained {@code acct_expiraion_date}
  * misspelling</b> &mdash; with {@code acct_id NUMERIC(11)} as primary key, the five money and cycle columns at
  * {@code NUMERIC(12,2)}, the six text columns at {@code CHAR}, a {@code version BIGINT} optimistic-lock column,
@@ -507,66 +514,17 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
      * Reads one account row under a pessimistic write lock, so that a caller can compare its business field
      * values against a client-supplied snapshot and rewrite it without an interleaved write.
      *
-     * <p><b>Purpose.</b> This is the Java form of {@code EXEC CICS READ ... UPDATE} issued at
-     * {@code app/cbl/COACTUPC.cbl:L3894}-{@code :L3906}, step 1 of the seven-step
-     * {@code 9600-WRITE-PROCESSING} sequence documented on this interface. It exists because no inherited
-     * signature expresses it: {@code findById} reads without a lock, which would let another writer change the
-     * row between the change-detection comparison and the rewrite and so defeat the very check the legacy
-     * program performs. A {@code @Version} column cannot substitute for it either &mdash; a version counter
-     * reports <em>that</em> a row changed, whereas the source reports <em>which field values</em> differ from
-     * what the operator was shown, and a concurrent write that restored a field to its original value passes
-     * the legacy check while failing a version check. Both layers are required.
+     * <p>This is the Java form of {@code EXEC CICS READ ... UPDATE} issued at
+     * {@code app/cbl/COACTUPC.cbl:L3894}-{@code :L3906}, the first step of {@code 9600-WRITE-PROCESSING}. It
+     * exists because no inherited signature expresses it: {@code findById} reads without a lock, which would
+     * let another writer change the row between the change-detection comparison and the rewrite and so defeat
+     * the very check the legacy program performs. A {@code @Version} column cannot substitute for it either,
+     * because a version counter reports that a row changed whereas the source reports which field values
+     * differ from what the operator was shown; both layers are required.
      *
-     * <p><b>Inputs.</b> {@code accountId} is the eleven-digit account key, {@code ACCT-ID PIC 9(11)} at
-     * {@code app/cpy/CVACT01Y.cpy:L5}, corresponding to the eleven-byte VSAM key at relative byte zero
-     * ({@code KEYLEN 11}, {@code RKP 0} at {@code app/catlg/LISTCAT.txt:L59}-{@code :L60};
-     * {@code KEYS(11 0)} at {@code app/jcl/ACCTFILE.jcl:L40}). It is bound as the named parameter
-     * {@code accountId} and is never concatenated into the query text. A {@code null} argument is a programming
-     * error rather than a business case: the provider rejects it, and the caller is expected to have validated
-     * the identifier before reaching persistence.
-     *
-     * <p><b>Output.</b> An {@link Optional} containing the single matching {@link Account}, or an empty
-     * {@link Optional} when no row carries that key. The result is fully initialised; {@link Account} declares
-     * no association, so nothing is left to lazy-load. At most one row can ever match because the predicate is
-     * on the primary key, which is also why no explicit ordering is required here.
-     *
-     * <p><b>Side effects.</b> One: it acquires a database write lock on the matched row for the remainder of
-     * the enclosing transaction, which blocks competing writers and can block competing readers depending on
-     * the isolation level in force. It performs no write, no arithmetic, no logging and no status translation.
-     * It does <em>not</em> begin a transaction; the caller must already be inside one, and that caller is
-     * {@code com.cardemo.service.account.AccountUpdateService}, whose
-     * {@code @Transactional(rollbackFor = Exception.class)} method spans both the account write and the customer
-     * write so that the source's asymmetric rollback behaviour at {@code :L4079}-{@code :L4080} and
-     * {@code :L4098}-{@code :L4102} is reproduced by scoping rather than by conditional logic.
-     *
-     * <p><b>Error modes.</b>
-     * <ul>
-     *   <li><b>Row absent</b> &mdash; an empty {@link Optional}, not an exception. The caller decides what that
-     *       means: online it becomes {@code com.cardemo.exception.RecordNotFoundException}, the typed
-     *       translation of {@code FILE STATUS} {@code '23'} and {@code DFHRESP(NOTFND)}.</li>
-     *   <li><b>Lock not obtainable</b> &mdash; the provider raises a pessimistic-lock or lock-timeout
-     *       exception. This is the counterpart of the legacy non-normal response at {@code :L3907}-{@code :L3916},
-     *       which sets an input-error flag together with the account-lock-failure flag
-     *       {@code COULD-NOT-LOCK-ACCT-FOR-UPDATE} ({@code :L517}-{@code :L518}) and additionally trips the
-     *       marker {@code ACUP-CHANGES-OKAYED-LOCK-ERROR} ({@code :L667}) by way of
-     *       {@code :L2607}-{@code :L2608}. It must surface as that distinct outcome and not be folded into a
-     *       generic conflict.</li>
-     *   <li><b>Called with no active transaction</b> &mdash; a pessimistic lock is meaningless outside one and
-     *       the provider rejects the call. Invoke it from the service's transactional method.</li>
-     *   <li><b>Business data changed since the snapshot</b> &mdash; detected by the caller after this read, not
-     *       by this method, and surfaced as {@code com.cardemo.exception.ConcurrentUpdateException}
-     *       corresponding to {@code DATA-WAS-CHANGED-BEFORE-UPDATE} ({@code :L521}-{@code :L522}).</li>
-     * </ul>
-     *
-     * <p><b>Why an explicit query rather than a derived one.</b> The predicate is written out so that the
-     * locking intent and the mapped property path are both visible at the declaration, and so that the method
-     * name is never parsed as a derived-query expression. The query text is a compile-time constant with a
-     * single named binding; it is not native SQL and contains no interpolation.
-     *
-     * @param accountId the eleven-digit account identifier, {@code ACCT-ID} at
-     *                  {@code app/cpy/CVACT01Y.cpy:L5}; must not be {@code null}
+     * @param accountId the eleven-digit account identifier, {@code ACCT-ID} at {@code app/cpy/CVACT01Y.cpy:L5}.
      * @return an {@link Optional} holding the locked {@link Account}, or an empty {@link Optional} when no row
-     *         carries that identifier
+     * carries that identifier
      */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from Account a where a.accountId = :accountId")

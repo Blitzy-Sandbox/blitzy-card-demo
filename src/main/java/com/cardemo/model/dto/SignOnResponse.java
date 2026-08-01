@@ -31,14 +31,17 @@ import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.validation.constraints.Size;
 
 /**
- * Sign-on response payload: the identity that a successful authentication establishes, together
- * with the bearer token that replaces the COMMAREA handshake of the legacy sign-on program.
+ * Sign-on response payload: the identity that a successful authentication establishes, together with the bearer
+ * token that replaces the COMMAREA handshake of {@code app/cbl/COSGN00C.cbl}.
  *
- * <h2>Provenance: no BMS symbolic map exists for this type - "Not available"</h2>
+ * <p>The two identity components are exactly the two COMMAREA fields the legacy program populated before
+ * transferring to a menu program, {@code CDEMO-USER-ID} and {@code CDEMO-USER-TYPE} at
+ * {@code app/cpy/COCOM01Y.cpy:25-26}. They travel here once, in the response body, and thereafter as claims on
+ * the token; no equivalent of the COMMAREA is carried between requests.
  *
- * <p><strong>Not available.</strong> There is no BMS symbolic map for a sign-on response, so this
- * type is a genuinely new artefact rather than the translation of a map. That is a statement of
- * evidence, not an omission, and the reason is visible in the source rather than merely assumed:</p>
+ * <p>The payload holds no credential material beyond the issued token itself: there is no component capable of
+ * carrying a password or a digest, and {@link #toString()} deliberately omits the token so that a response can
+ * be logged without leaking a bearer credential.
  *
  * <ul>
  *   <li>{@code app/cpy-bms/COSGN00.CPY} does contain an output group,
@@ -224,10 +227,10 @@ import jakarta.validation.constraints.Size;
  * <h2>Building and testing</h2>
  *
  * <p>This type needs no configuration and has no defaults beyond the null-preserving behaviour
- * described above. It compiles under {@code mvn -B clean compile} with {@code -Xlint:all -Werror}
+ * described above. It compiles under {@code ./mvnw -B clean compile} with {@code -Xlint:all -Werror}
  * and {@code failOnWarning}, so any warning it introduced would fail the build outright, and it is
  * exercised by the unit suite under {@code src/test/java/com/cardemo/unit/model} via
- * {@code mvn -B clean test}. Troubleshooting: if a token value is ever observed in a log line or in
+ * {@code ./mvnw -B clean test}. Troubleshooting: if a token value is ever observed in a log line or in
  * any diagnostic rendering of this object, {@link #toString()} has been removed, weakened or
  * bypassed by a custom serialiser - that override, and not the log masking, is the primary
  * defence.</p>
@@ -238,17 +241,10 @@ import jakarta.validation.constraints.Size;
  *               never rendered by {@link #toString()}, and is neither parsed, validated nor signed
  *               by this type. May be {@code null}, which means absent.
  * @param userId the authenticated user identifier, the value that becomes the token subject claim.
- *               Source {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:25},
- *               assigned by {@code app/cbl/COSGN00C.cbl:226}. Bounded at
- *               {@value #USER_ID_MAX_LENGTH} characters and transported exactly as supplied. May be
- *               {@code null}, which means absent.
- * @param userType the raw one-character user type code, preserved as a {@code String} rather than
- *               bound to an enum so that an out-of-domain value round-trips instead of failing to
- *               bind. Source {@code CDEMO-USER-TYPE PIC X(01)} at {@code app/cpy/COCOM01Y.cpy:26},
- *               whose two condition names at lines 27 and 28 define {@code 'A'} and {@code 'U'},
- *               assigned by {@code app/cbl/COSGN00C.cbl:227}. Exactly
- *               {@value #USER_TYPE_LENGTH} character when present; see {@link #resolvedUserType()}
- *               for the typed view. May be {@code null}, which means absent.
+ * {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:25}.
+ * @param userType the raw one-character user type code, preserved as a {@code String} rather than bound to an
+ * enum so that an out-of-domain value round-trips instead of failing to bind.
+ * {@code CDEMO-USER-TYPE PIC X(01)} at {@code app/cpy/COCOM01Y.cpy:26}.
  */
 public record SignOnResponse(
 
@@ -261,64 +257,22 @@ public record SignOnResponse(
         String userType) {
 
     /**
-     * Declared width of {@code userId}: {@code CDEMO-USER-ID PIC X(08)} at
-     * {@code app/cpy/COCOM01Y.cpy:25}.
-     *
-     * <p>Stated as a named constant so that the field contract is asserted at its point of use and
-     * cannot be silently widened or truncated. It is the width of the COBOL field, not a policy: no
-     * minimum length and no character-class restriction is derived from it, because the source
-     * imposes none.</p>
+     * Declared width of {@code userId}: {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:25}.
      */
     public static final int USER_ID_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code userType}: {@code CDEMO-USER-TYPE PIC X(01)} at
-     * {@code app/cpy/COCOM01Y.cpy:26}.
-     *
-     * <p>One byte, which is why the component is a single-character {@code String} and why
-     * {@link #resolvedUserType()} inspects exactly one character. The two values that byte may
-     * meaningfully take are fixed by the condition names at lines 27 and 28 of the same
-     * copybook.</p>
+     * Declared width of {@code userType}: {@code CDEMO-USER-TYPE PIC X(01)} at {@code app/cpy/COCOM01Y.cpy:26}.
      */
     public static final int USER_TYPE_LENGTH = 1;
 
     /**
-     * Returns the typed view of {@link #userType()}, or {@code null} when the raw code is not one of
-     * the two the copybook defines.
+     * Returns the typed view of {@link #userType()}, or {@code null} when the raw code is not one of the two
+     * the copybook defines.
      *
-     * <p>The typed form is offered because the source itself types this field: the condition names
-     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and {@code 88 CDEMO-USRTYP-USER VALUE 'U'} at
-     * {@code app/cpy/COCOM01Y.cpy:27-28} are exactly a two-constant enumeration, and
-     * {@code app/cbl/COSGN00C.cbl:230} tests the first of them to choose between the administrative
-     * and main menus. The raw component remains the wire contract; this accessor is a convenience
-     * over it and is excluded from JSON, so the serialised shape stays exactly {@code token},
-     * {@code userId} and {@code userType}.</p>
-     *
-     * <p><strong>Null contract.</strong> {@code null} is returned, and no exception is thrown, when
-     * the raw component is {@code null}, is empty, is longer than one character - including a
-     * one-character code padded with the blanks a fixed-width record carries - or is a single
-     * character other than {@code 'A'} or {@code 'U'}. Returning {@code null} rather than throwing
-     * is deliberate: an out-of-domain stored value must round-trip through this payload instead of
-     * making it unreadable. Callers must therefore treat the result as nullable and must not assume
-     * that a non-null {@link #userType()} implies a non-null result here.</p>
-     *
-     * <p>Resolution is <strong>case sensitive</strong>, which is parity behaviour rather than
-     * strictness. {@code app/cbl/COSGN00C.cbl:132} and {@code :135} apply {@code FUNCTION
-     * UPPER-CASE} to the entered user identifier and password only; line 227 then moves
-     * {@code SEC-USR-TYPE} into {@code CDEMO-USER-TYPE} unfolded, and line 230 compares that byte
-     * against {@code 'A'} exactly. A lower-case type byte satisfies neither condition name in the
-     * legacy program, so it must satisfy neither here. Nothing is trimmed, folded or normalised, so
-     * this method performs no locale-sensitive operation and cannot vary with the host's default
-     * locale.</p>
-     *
-     * <p>This method is a pure function: it has no side effects, performs no I/O, mutates nothing,
-     * never throws, and is safe for concurrent use. The mapping itself is delegated to
-     * {@code UserType}, so the {@code 'A'} and {@code 'U'} literals are transcribed from the
-     * copybook in exactly one place in the code base and cannot drift apart.</p>
-     *
-     * @return the matching {@code UserType} constant, or {@code null} if {@link #userType()} is
-     *         {@code null}, is not exactly one character long, or is not one of the two codes
-     *         defined at {@code app/cpy/COCOM01Y.cpy:27-28}
+     * @return the matching {@code UserType} constant, or {@code null} if {@link #userType()} is {@code null},
+     * is not exactly one character long, or is not one of the two codes defined at
+     * {@code app/cpy/COCOM01Y.cpy:27-28}
      */
     @JsonIgnore
     public UserType resolvedUserType() {
@@ -328,20 +282,8 @@ public record SignOnResponse(
     /**
      * Returns a diagnostic rendering that deliberately omits the token.
      *
-     * <p>Only {@code userId} and {@code userType} are reported. <strong>This override is mandatory
-     * rather than cosmetic:</strong> the {@code toString()} that a record would otherwise inherit
-     * prints every component, and would therefore print the bearer credential in
-     * {@link #token()}. Leaking a token into a log is equivalent to leaking a password, because it
-     * is directly replayable until it expires.</p>
-     *
-     * <p>Nothing is emitted in the token's place - not a truncation, not a masked prefix and not a
-     * length - so this rendering discloses nothing whatsoever about the issued token, not even
-     * whether one is present. The two fields that are reported are an opaque identifier and a
-     * one-character role code; neither is personally identifiable, which is a further reason the
-     * customer-name fields are absent from this type altogether.</p>
-     *
-     * @return a rendering of this response that contains no credential material and no personally
-     *         identifiable information
+     * @return a rendering of this response that contains no credential material and no personally identifiable
+     * information
      */
     @Override
     public String toString() {

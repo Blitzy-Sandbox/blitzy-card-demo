@@ -1,64 +1,50 @@
 # ******************************************************************
-# * File         : .gitattributes
-# * Application  : CardDemo
-# * Type         : Git path attributes (repository hygiene)
-# * Function     : Deterministic line-ending and binary handling for the
-# *                additively created Java build tree, plus absolute protection
-# *                of the frozen legacy corpus under app/. No attribute,
-# *                formatter or linter configuration previously existed anywhere
-# *                in this repository, so this convention is established rather
-# *                than inherited.
+# Program     : .gitattributes
+# Application : CardDemo
+# Type        : Git path attributes (repository hygiene)
+# Function    : Deterministic line-ending and binary handling for the
+#               additively created Java build tree, plus absolute
+#               protection of the frozen legacy corpus under app/.
+# Source      : app/cbl/CBSTM03A.CBL, app/cbl/CBSTM03B.CBL,
+#               app/cbl/COACTUPC.cbl, app/cpy/COSTM01.CPY,
+#               app/jcl/CREASTMT.JCL (the CRLF members that forbid a
+#               blanket rule) + app/data/EBCDIC/** @ 7756d89
 # ******************************************************************
-# * Copyright Amazon.com, Inc. or its affiliates.
-# * All Rights Reserved.
-# *
-# * Licensed under the Apache License, Version 2.0 (the "License").
-# * You may not use this file except in compliance with the License.
-# * You may obtain a copy of the License at
-# *
-# *    http://www.apache.org/licenses/LICENSE-2.0
-# *
-# * Unless required by applicable law or agreed to in writing,
-# * software distributed under the License is distributed on an
-# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
-# * either express or implied. See the License for the specific
-# * language governing permissions and limitations under the License
+# Copyright Amazon.com, Inc. or its affiliates.
+# All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License").
+# You may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# either express or implied. See the License for the specific
+# language governing permissions and limitations under the License
 # ******************************************************************
+#
+# Git applies the LAST matching line per attribute, so the blocks below
+# run general -> specific with the frozen-corpus block last: nothing
+# above it can reach app/, samples/ or diagrams/.
+#
+# There is deliberately NO blanket `* text=auto`. The frozen trees are
+# predominantly LF, but eleven members are CRLF-terminated - the five
+# under app/ named above plus six under samples/ - and a blanket rule
+# would renormalise all eleven on the next commit, corrupting the
+# reference of record and breaking the fixed-width record offsets the
+# migration is validated against. For the same reason, never run
+# `git add --renormalize`. Every rule here is bound to an explicit
+# pattern, and `git diff -- app samples diagrams` must stay empty.
+#
+# These attributes govern content conversion only; they do not set the
+# executable bit, which is file mode recorded on the files themselves.
+# To check one path: `git check-attr text eol binary -- <path>`.
 
-# ==================================================================
-# PRECEDENCE AND SCOPE
-#
-# Git applies the LAST matching line for each attribute, so the blocks below
-# run general -> specific and the frozen-corpus block is last: nothing above it
-# can reach app/, samples/ or diagrams/.
-#
-# There is deliberately NO blanket `* text=auto` rule. app/ is simultaneously
-# the parity oracle, the field-contract source and the traceability anchor, so
-# it must stay byte-for-byte identical. It is predominantly LF, but five members
-# are CRLF-terminated - app/cbl/CBSTM03A.CBL, app/cbl/CBSTM03B.CBL,
-# app/cbl/COACTUPC.cbl, app/cpy/COSTM01.CPY and app/jcl/CREASTMT.JCL - and
-# samples/ holds six more. A blanket rule would renormalise all eleven on the
-# next commit, corrupting the reference of record and producing exactly the
-# sweeping diff CONTRIBUTING.md:33 asks contributors not to create. Every rule
-# here is therefore bound to an explicit pattern.
-#
-# These attributes govern content conversion only. They do NOT set the
-# executable bit: that is file mode, recorded on the files themselves (for
-# example mvnw and localstack-init/init-aws.sh).
-#
-# VERIFYING A CHANGE TO THIS FILE
-#   git check-attr text eol binary -- <path>   # what one path resolves to
-#   git ls-files --eol                         # index vs worktree vs attribute
-#   git diff -- app samples diagrams           # MUST stay empty
-#
-# FAILURE MODES TO AVOID
-#   Never run `git add --renormalize`, and never add a blanket `* text=auto`:
-#   either would rewrite the eleven CRLF members above and silently break the
-#   fixed-width record offsets that the migration is validated against.
-# ==================================================================
-
-# ---- Java sources, build descriptors, resources and docs authored for the
-# ---- migration: normalised to LF in the index and checked out as LF.
+# Java sources, build descriptors, resources and docs: LF in the index,
+# checked out as LF.
 *.java          text eol=lf
 *.xml           text eol=lf
 *.yml           text eol=lf
@@ -69,12 +55,58 @@
 *.html          text eol=lf
 *.md            text eol=lf
 
+# ==================================================================
+# PRE-EXISTING DOCUMENTATION - NARROWS THE `*.md` RULE ABOVE
+#
+# README.md is not a migration artefact. It existed at the anchor commit
+# 7756d89 and it is the ONLY text file outside app/ and samples/ that is
+# CRLF-terminated there: 324 lines, 14639 bytes, blob
+# 0d7292ad44dd150b089e41d6a630eefe95857f6e. It is also the authoritative legacy
+# transaction, program and JCL inventory, so it is reference material first and
+# an edit target second.
+#
+# The `*.md text eol=lf` rule above matched it and stripped all 324 CR bytes,
+# producing a 324-line whole-file diff with ZERO content change - exactly the
+# sweeping, review-obscuring diff CONTRIBUTING.md:33 asks contributors not to
+# create, and a continuity break against the anchor for a file this checkpoint
+# was not scoped to reformat. `-text` restores byte-for-byte passthrough in both
+# directions, matching how the frozen corpus is protected. Diffs still render as
+# text; only EOL conversion is disabled.
+#
+# `-text` alone is sufficient, because Git ignores `eol` when `text` is unset.
+# `!eol` is added only so the inherited `*.md` value stops being reported at all,
+# and `git check-attr text eol -- README.md` answers `unset` and `unspecified`
+# rather than the misleading pair `unset` and `lf`.
+#
+# This is a NARROWING exemption, not a licence to reformat: appending the Java
+# build and run sections that the plan requires stays permitted, and any such
+# append must simply use CRLF to match the surrounding file.
+#
+# The other pre-existing Markdown files - CODE_OF_CONDUCT.md, CONTRIBUTING.md,
+# docs/index.md, docs/project-guide.md and docs/technical-specifications.md -
+# are all LF at the anchor, so `*.md text eol=lf` is a no-op for them and they
+# need no exemption. Re-check with the command below before adding any pattern.
+#
+#   git show 7756d89:<path> | file -        # LF or CRLF at the anchor?
+# ==================================================================
+README.md       -text !eol
+
 # ---- Unix launchers and shell scripts: LF, or the shell cannot execute them.
 # ---- mvnw is extensionless, so it needs a rule of its own.
 *.sh            text eol=lf
 mvnw            text eol=lf
 
-# ---- Container and repository-hygiene files that carry no usable extension.
+# ---- The Maven launcher's repository-controlled JVM options file. It carries no
+# ---- extension and is anchored with a slash, so this pattern resolves from the
+# ---- repository root only, never from a nested .mvn directory. Pinning the
+# ---- ending is functional rather than cosmetic: every line is handed to the JVM
+# ---- verbatim as a raw command-line option - bin/mvn reads it through
+# ---- `tr -s '\r\n' '  '` into MAVEN_OPTS and bin/mvn.cmd reads it with a
+# ---- `for /F` loop - so its exact bytes reach the launcher and must not depend
+# ---- on the checking-out platform or on a developer's core.autocrlf setting.
+.mvn/jvm.config text eol=lf
+
+# Container and repository-hygiene files with no usable extension.
 Dockerfile      text eol=lf
 .gitattributes  text eol=lf
 .gitignore      text eol=lf
@@ -82,14 +114,14 @@ Dockerfile      text eol=lf
 .editorconfig   text eol=lf
 .env.example    text eol=lf
 
-# ---- Windows launchers keep CRLF, which cmd.exe requires for reliable
-# ---- parsing. This covers mvnw.cmd; a second literal rule for it would be a
-# ---- duplicate and could only drift out of step with this one.
+# Windows launchers keep CRLF, which cmd.exe requires for reliable
+# parsing. This covers mvnw.cmd; a second literal rule for it could
+# only drift out of step with this one.
 *.cmd           text eol=crlf
 *.bat           text eol=crlf
 
-# ---- Binary assets: never EOL-converted and never diffed as text.
-# ---- `binary` is Git's own built-in macro for `-text -diff`.
+# Binary assets: never EOL-converted and never diffed as text.
+# `binary` is Git's own built-in macro for `-text -diff`.
 *.zip           binary
 *.tar           binary
 *.gz            binary
@@ -111,6 +143,22 @@ Dockerfile      text eol=lf
 *.eot           binary
 *.PS            binary
 
+# ---- Fixed-width test fixtures copied from app/data/ASCII/. These are the
+# ---- parity inputs, and their geometry is load-bearing: acctdata.txt is 50
+# ---- records of 300 bytes, custdata.txt 50 of 500, discgrp.txt 51 of 50,
+# ---- trancatg.txt 18 of 60 and trantype.txt 7 of 60, each terminated by a
+# ---- single LF. Without an explicit rule `git check-attr` reports text and eol
+# ---- as unspecified, so a clone made with core.autocrlf=true would add one CR
+# ---- per record and shift every offset a reader computes - silently, because
+# ---- the byte count still divides evenly by nothing the test asserts.
+# ----
+# ---- The pattern is PATH-SCOPED rather than a blanket `*.txt`, and it sits
+# ---- above the frozen-corpus block, so it can never reach app/catlg/LISTCAT.txt
+# ---- or any other .txt under app/. `src/test/resources/**/*.txt` matches files
+# ---- directly in that directory as well as in any sub-directory, so a fixture
+# ---- added under a nested baseline folder inherits the same guarantee.
+src/test/resources/**/*.txt  text eol=lf
+
 # ==================================================================
 # FROZEN LEGACY CORPUS - LAST BLOCK, SO IT OVERRIDES EVERY RULE ABOVE
 #
@@ -126,8 +174,8 @@ app/**          -text
 samples/**      -text
 diagrams/**     -text
 
-# ---- The EBCDIC datasets are fixed-width records with NO line terminators at
-# ---- all, so Git's NUL-byte heuristic would misclassify most of them as text.
-# ---- They are marked binary explicitly and last, because the `*.PS` pattern
-# ---- above does not match AWS.M2.CARDDEMO.DALYTRAN.PS.INIT.
+# The EBCDIC datasets are fixed-width records with no line terminators
+# at all, so Git's NUL-byte heuristic would misclassify most of them as
+# text. Marked binary explicitly and last, because the `*.PS` pattern
+# above does not match AWS.M2.CARDDEMO.DALYTRAN.PS.INIT.
 app/data/EBCDIC/**  binary

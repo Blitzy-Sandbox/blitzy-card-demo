@@ -32,24 +32,22 @@ import java.util.Locale;
 import java.util.Objects;
 
 /**
- * Immutable pagination metadata returned beside a page of rows, replacing the screen-resident page
- * state of the three legacy CardDemo list transactions.
+ * Immutable pagination metadata returned beside a page of rows, replacing the screen-resident page state of the
+ * three legacy CardDemo list transactions.
  *
- * <p><b>What this type does.</b> The legacy card list, transaction list and user list each kept
- * their paging state on the 3270 screen and in the pseudo-conversational COMMAREA, so the state
- * survived between terminal interactions on the server. Transformation rule 7 of the migration plan
- * replaces {@code RETURN TRANSID ... COMMAREA} with stateless REST plus JWT claims and forbids any
- * server-side session state. Paging state therefore splits in two: the inbound half travels as
- * request parameters, and the outbound half - the current page number, whether a further page
- * exists, the page size actually applied, and optionally the keyset boundaries of the page - is
- * carried by this type in the response body.</p>
+ * <p>The legacy card list, transaction list and user list each kept their paging state on the 3270 screen and
+ * in the pseudo-conversational COMMAREA, so the state survived between terminal interactions on the server.
+ * The target replaces {@code RETURN TRANSID ... COMMAREA} with stateless request handling and keeps no session
+ * state on the server, so paging state splits in two: the inbound
+ * half travels as request parameters, and the outbound half - the current page number, whether a further page
+ * exists, the page size actually applied, and optionally the keyset boundaries of the page - is carried by this
+ * type in the response body.
  *
- * <p><b>Inputs, outputs and side effects.</b> This is a pure data holder. It performs no comparison,
- * no normalisation, no mapping, no paging and no query, and it does not compute the next-page
- * indicator: the calling service determines that and supplies it. Every field is assigned once in
- * the constructor and never mutated afterwards, the row list is defensively copied on the way in and
- * exposed only as an unmodifiable view, and the class is {@code final}, so an instance is safe to
- * share across threads without further synchronisation. There are no side effects of any kind.</p>
+ * <p>This is a pure data holder. It performs no comparison, no normalisation, no mapping, no paging and no
+ * query, and it does not compute the next-page indicator: the calling service determines that and supplies it.
+ * Every field is assigned once in the constructor and never mutated afterwards, the row list is defensively
+ * copied on the way in and exposed only as an unmodifiable view, and the class is {@code final}, so an instance
+ * is safe to share across threads without further synchronisation. There are no side effects of any kind.
  *
  * <p><b>Error modes.</b> Nothing is thrown during normal operation. The constructors reject
  * structurally impossible arguments with {@code IllegalArgumentException} whose message names the
@@ -136,8 +134,8 @@ import java.util.Objects;
  * so iteration order can never vary between runs or between JVMs.</p>
  *
  * <p><b>Building, testing and troubleshooting.</b> This type is part of the single Maven module at
- * the repository root; build it with {@code mvn -B clean compile} and exercise it with
- * {@code mvn -B clean test}. The module compiles under {@code -Xlint:all} with {@code -Werror}, so
+ * the repository root; build it with {@code ./mvnw -B clean compile} and exercise it with
+ * {@code ./mvnw -B clean test}. The module compiles under {@code -Xlint:all} with {@code -Werror}, so
  * any compiler warning introduced here fails the build rather than being reported. Unit tests for
  * this type live under {@code src/test/java/com/cardemo/unit/model}. The defaults this type
  * publishes are the four constants below, namely the page sizes 7, 10 and 10 and the page-number
@@ -162,144 +160,78 @@ import java.util.Objects;
 public final class PageResponse<T> {
 
     /**
-     * Rows displayed per page by the card list, namely 7.
-     *
-     * <p>Source field {@code WS-MAX-SCREEN-LINES}, {@code PIC S9(4) COMP VALUE 7}, at
-     * {@code app/cbl/COCRDLIC.cbl}:177-178. Corroborated by the seven-row selection array in
-     * {@code app/cpy-bms/COCRDLI.CPY}.</p>
+     * Rows displayed per page by the card list, namely 7, from
+     * {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at {@code app/cbl/COCRDLIC.cbl:177-178}.
      */
     public static final int PAGE_SIZE_CARD_LIST = 7;
 
     /**
-     * Rows displayed per page by the transaction list, namely 10.
-     *
-     * <p>No single scalar constant declares this figure in the source; it is fixed by the extent of
-     * the screen row array, {@code TDESC01I} through {@code TDESC10I} in
-     * {@code app/cpy-bms/COTRN00.CPY}, which is exactly ten rows. The paging fields that accompany
-     * it are at {@code app/cbl/COTRN00C.cbl}:65-68.</p>
+     * Rows displayed per page by the transaction list, namely 10, from the row loop bound
+     * {@code UNTIL WS-IDX > 10} at {@code app/cbl/COTRN00C.cbl:290}.
      */
     public static final int PAGE_SIZE_TRANSACTION_LIST = 10;
 
     /**
-     * Rows displayed per page by the user list, namely 10.
-     *
-     * <p>Source field {@code USER-REC}, declared {@code 02 USER-REC OCCURS 10 TIMES.} at
-     * {@code app/cbl/COUSR00C.cbl}:57. Corroborated by the ten-row screen array
-     * {@code USRID01I} through {@code USRID10I} in {@code app/cpy-bms/COUSR00.CPY}.</p>
+     * Rows displayed per page by the user list, namely 10, from {@code USER-REC OCCURS 10 TIMES} at
+     * {@code app/cbl/COUSR00C.cbl:57}.
      */
     public static final int PAGE_SIZE_USER_LIST = 10;
 
     /**
      * The number of the first page, namely 1, because legacy page numbering is one-based.
-     *
-     * <p>Source field {@code WS-CA-SCREEN-NUM} {@code PIC 9(1)} with
-     * {@code 88 CA-FIRST-PAGE VALUE 1} at {@code app/cbl/COCRDLIC.cbl}:237-238.</p>
-     *
-     * <p>This is a page-number origin and <b>not</b> a page size; the only page sizes in the source
-     * are the three declared above.</p>
      */
     public static final int FIRST_PAGE_NUMBER = 1;
 
     /**
-     * The rows of this page, in the order supplied, held as an unmodifiable view over a private
-     * defensive copy. Never {@code null}; may be empty.
-     *
-     * <p>No direct source field: the legacy screens have no row collection, only a fixed screen
-     * array whose extent is the page size - seven entries for the card list
-     * ({@code app/cpy-bms/COCRDLI.CPY}), ten for the transaction list
-     * ({@code TDESC01I} through {@code TDESC10I} in {@code app/cpy-bms/COTRN00.CPY}) and ten for the
-     * user list ({@code 02 USER-REC OCCURS 10 TIMES.} at {@code app/cbl/COUSR00C.cbl}:57). A
-     * {@code List} replaces the fixed array because a JSON array has no fixed extent, and a
-     * {@code List} is used rather than any hash-ordered collection so that row order is
-     * deterministic.</p>
+     * The rows of this page, in the order supplied, held as an unmodifiable view over a private defensive copy.
+     * Never {@code null}; may be empty. The legacy counterpart is the fixed row table of whichever list map is
+     * being served: seven groups on {@code app/cpy-bms/COCRDLI.CPY}, ten on {@code app/cpy-bms/COTRN00.CPY} and
+     * ten on {@code app/cpy-bms/COUSR00.CPY}.
      */
     private final List<T> rows;
 
     /**
-     * The one-based number of this page.
-     *
-     * <p>Screen source fields, whose widths disagree: {@code PAGENOI} {@code PIC X(3)} at
-     * {@code app/cpy-bms/COCRDLI.CPY}:60, and {@code PAGENUMI} {@code PIC X(8)} at both
-     * {@code app/cpy-bms/COTRN00.CPY}:60 and {@code app/cpy-bms/COUSR00.CPY}:60. Program source
-     * fields, whose widths also disagree: {@code WS-CA-SCREEN-NUM} {@code PIC 9(1)} at
-     * {@code app/cbl/COCRDLIC.cbl}:237 and {@code CDEMO-CT00-PAGE-NUM} {@code PIC 9(08)} at
-     * {@code app/cbl/COTRN00C.cbl}:65. An {@code int} is exactly representable in every one of those
-     * widths. The one-based origin comes from {@code 88 CA-FIRST-PAGE VALUE 1} at
-     * {@code app/cbl/COCRDLIC.cbl}:238.</p>
+     * The one-based number of this page, carried on the screen as {@code PAGENOI PIC X(3)} at
+     * {@code app/cpy-bms/COCRDLI.CPY:60} and as {@code PAGENUMI PIC X(8)} at
+     * {@code app/cpy-bms/COTRN00.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:60}.
      */
     private final int pageNumber;
 
     /**
-     * The page size actually applied when this page was assembled, which is the maximum number of
-     * rows the page could have contained.
-     *
-     * <p>Source field {@code WS-MAX-SCREEN-LINES} {@code PIC S9(4) COMP VALUE 7} at
-     * {@code app/cbl/COCRDLIC.cbl}:177-178 for the card list; for the transaction and user lists the
-     * figure is not a scalar in the source but the extent of the screen row array, ten in both cases.
-     * The value is carried explicitly rather than inferred from the row count, because a final or
-     * empty page legitimately holds fewer rows than the size applied. See
-     * {@link #PAGE_SIZE_CARD_LIST}, {@link #PAGE_SIZE_TRANSACTION_LIST} and
-     * {@link #PAGE_SIZE_USER_LIST}.</p>
+     * The page size actually applied when this page was assembled, which is the maximum number of rows the page
+     * could have contained. It is one of the three parity sizes published above, never a client-chosen value.
      */
     private final int pageSize;
 
     /**
-     * Whether a further page exists after this one, as determined by the calling service.
-     *
-     * <p>Source fields, with mutually incompatible sentinels that are deliberately not reconciled:
-     * {@code WS-CA-NEXT-PAGE-IND} {@code PIC X(1)} at {@code app/cbl/COCRDLIC.cbl}:242-244, whose
-     * absent-page sentinel is {@code LOW-VALUES}; and {@code CDEMO-CT00-NEXT-PAGE-FLG}
-     * {@code PIC X(01) VALUE 'N'} at {@code app/cbl/COTRN00C.cbl}:66-68, whose absent-page sentinel
-     * is the literal {@code 'N'}. Modelled as a {@code boolean} so that <b>neither sentinel
-     * character is transported</b>; {@code true} means a further page exists, corresponding to
-     * {@code 'Y'} in both programs, and {@code false} means none does, corresponding to
-     * {@code LOW-VALUES} in one program and {@code 'N'} in the other.</p>
+     * Whether a further page exists after this one, as determined by the calling service. It replaces
+     * {@code WS-CA-NEXT-PAGE-IND PIC X(1)} at {@code app/cbl/COCRDLIC.cbl:242}, whose condition names at
+     * {@code app/cbl/COCRDLIC.cbl:243-244} distinguish {@code LOW-VALUES} from {@code 'Y'}.
      */
     private final boolean nextPageAvailable;
 
     /**
-     * The key of the first row of this page, or {@code null} when the page carries no boundary key.
-     *
-     * <p>Source fields, whose widths differ by list: {@code CDEMO-CT00-TRNID-FIRST}
-     * {@code PIC X(16)} at {@code app/cbl/COTRN00C.cbl}:63, {@code CDEMO-CU00-USRID-FIRST}
-     * {@code PIC X(08)} at {@code app/cbl/COUSR00C.cbl}:68, and {@code WS-CA-FIRST-CARDKEY} at
-     * {@code app/cbl/COCRDLIC.cbl}:233-235, itself composed of {@code WS-CA-FIRST-CARD-NUM}
-     * {@code PIC X(16)} and {@code WS-CA-FIRST-CARD-ACCT-ID} {@code PIC 9(11)}. Because the widths
-     * and compositions differ, the boundary is carried as an opaque {@code String} rather than a
-     * fixed-width field, and this type never parses or normalises it. Keyset boundaries are the
-     * faithful paging mechanism: the source browses by key rather than by offset. A {@code null}
-     * value is meaningful and expected for an empty page, or where the caller pages by number
-     * alone.</p>
+     * The key of the first row of this page, or {@code null} when the page carries no boundary key. It replaces
+     * {@code WS-CA-FIRST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl:233-235}, which the legacy program held across
+     * pseudo-conversational turns in order to reposition a backward browse.
      */
     private final String firstKey;
 
     /**
-     * The key of the last row of this page, or {@code null} when the page carries no boundary key.
-     *
-     * <p>Source fields, mirroring {@link #getFirstKey()}: {@code CDEMO-CT00-TRNID-LAST}
-     * {@code PIC X(16)} at {@code app/cbl/COTRN00C.cbl}:64, {@code CDEMO-CU00-USRID-LAST}
-     * {@code PIC X(08)} at {@code app/cbl/COUSR00C.cbl}:69, and {@code WS-CA-LAST-CARDKEY} at
-     * {@code app/cbl/COCRDLIC.cbl}:230-232, composed of {@code WS-CA-LAST-CARD-NUM}
-     * {@code PIC X(16)} and {@code WS-CA-LAST-CARD-ACCT-ID} {@code PIC 9(11)}. Carried as an opaque
-     * {@code String} for the same reason, and never parsed or normalised here.</p>
+     * The key of the last row of this page, or {@code null} when the page carries no boundary key. It replaces
+     * {@code WS-CA-LAST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl:230-232}, the forward-browse counterpart.
      */
     private final String lastKey;
 
     /**
      * Constructs a page that carries no keyset boundaries, for callers that page by number alone.
      *
-     * <p>Equivalent to the full constructor with both boundary keys absent. All validation described
-     * on {@link #PageResponse(List, int, int, boolean, String, String)} applies unchanged.</p>
-     *
-     * @param rows              the rows of this page in display order; must not be {@code null} and
-     *                          must not contain a {@code null} element, but may be empty
-     * @param pageNumber        the one-based number of this page; must be at least
-     *                          {@link #FIRST_PAGE_NUMBER}
-     * @param pageSize          the page size applied; must be at least 1 and must not be less than
-     *                          the number of rows supplied
+     * @param rows the rows of this page in display order.
+     * @param pageNumber the one-based number of this page.
+     * @param pageSize the page size applied; must be at least 1 and must not be less than the number of rows
+     * supplied
      * @param nextPageAvailable {@code true} when a further page exists after this one
-     * @throws IllegalArgumentException if any argument violates the conditions above; the message
-     *                                  names the offending field
+     * @throws IllegalArgumentException if any argument violates the conditions above.
      */
     public PageResponse(final List<T> rows, final int pageNumber, final int pageSize,
             final boolean nextPageAvailable) {
@@ -309,34 +241,17 @@ public final class PageResponse<T> {
     /**
      * Constructs a page together with the keyset boundaries the legacy programs used to page.
      *
-     * <p>The row list is defensively copied, so a later mutation of the list handed in cannot be
-     * observed through this instance, and {@link #getRows()} exposes only an unmodifiable view of
-     * that copy. Row order is preserved exactly as supplied.</p>
-     *
-     * <p>An empty page is a valid, meaningful state - it represents a list with no matching rows, or
-     * a page requested beyond the end of the data - and is deliberately distinct from a {@code null}
-     * row list, which is rejected rather than silently coerced to empty. Both boundary keys are
-     * genuinely optional and {@code null} is accepted for either; an empty page has no boundary key
-     * to report.</p>
-     *
-     * @param rows              the rows of this page in display order; must not be {@code null} and
-     *                          must not contain a {@code null} element, but may be empty
-     * @param pageNumber        the one-based number of this page; must be at least
-     *                          {@link #FIRST_PAGE_NUMBER}, the origin evidenced by
-     *                          {@code 88 CA-FIRST-PAGE VALUE 1} at
-     *                          {@code app/cbl/COCRDLIC.cbl}:238
-     * @param pageSize          the page size applied; must be at least 1 and must not be less than
-     *                          the number of rows supplied, because a page can never hold more rows
-     *                          than the size applied to it
-     * @param nextPageAvailable {@code true} when a further page exists after this one, as determined
-     *                          by the calling service; this type never computes it
-     * @param firstKey          the key of the first row, or {@code null} when none is reported
-     * @param lastKey           the key of the last row, or {@code null} when none is reported
-     * @throws IllegalArgumentException if {@code rows} is {@code null} or contains a {@code null}
-     *                                  element, if {@code pageNumber} is less than
-     *                                  {@link #FIRST_PAGE_NUMBER}, if {@code pageSize} is less than
-     *                                  1, or if more rows were supplied than {@code pageSize}
-     *                                  permits; the message names the offending field
+     * @param rows the rows of this page in display order.
+     * @param pageNumber the one-based number of this page.
+     * @param pageSize the page size applied; must be at least 1 and must not be less than the number of rows
+     * supplied, because a page can never hold more rows than the size applied to it
+     * @param nextPageAvailable {@code true} when a further page exists after this one, as determined by the
+     * calling service.
+     * @param firstKey the key of the first row, or {@code null} when none is reported
+     * @param lastKey the key of the last row, or {@code null} when none is reported
+     * @throws IllegalArgumentException if {@code rows} is {@code null} or contains a {@code null} element, if
+     * {@code pageNumber} is less than {@link #FIRST_PAGE_NUMBER}, if {@code pageSize} is less than 1, or if
+     * more rows were supplied than {@code pageSize} permits.
      */
     public PageResponse(final List<T> rows, final int pageNumber, final int pageSize,
             final boolean nextPageAvailable, final String firstKey, final String lastKey) {
@@ -382,10 +297,6 @@ public final class PageResponse<T> {
     /**
      * Returns the rows of this page in the order they were supplied.
      *
-     * <p>The returned list is an unmodifiable view over this instance's private copy, so every
-     * mutating operation on it throws {@code UnsupportedOperationException} and no caller can alter
-     * the page. The list is never {@code null}; an empty list means the page carries no rows.</p>
-     *
      * @return an unmodifiable, order-preserving view of this page's rows, never {@code null}
      */
     public List<T> getRows() {
@@ -404,9 +315,6 @@ public final class PageResponse<T> {
     /**
      * Returns the page size that was applied when this page was assembled.
      *
-     * <p>This is the maximum row count the page could have held, not the count it actually holds; a
-     * final or empty page holds fewer. For the row count, use {@code getRows().size()}.</p>
-     *
      * @return the page size applied, always at least 1
      */
     public int getPageSize() {
@@ -415,10 +323,6 @@ public final class PageResponse<T> {
 
     /**
      * Returns whether a further page exists after this one.
-     *
-     * <p>{@code true} corresponds to {@code 'Y'} in both legacy programs. {@code false} corresponds
-     * to {@code LOW-VALUES} in {@code app/cbl/COCRDLIC.cbl}:243 and to the literal {@code 'N'} in
-     * {@code app/cbl/COTRN00C.cbl}:68; neither sentinel character is transported here.</p>
      *
      * @return {@code true} when a further page exists, {@code false} when this is the last page
      */
@@ -447,13 +351,9 @@ public final class PageResponse<T> {
     /**
      * Compares this page with another for value equality across every field, rows included.
      *
-     * <p>Row comparison is order-sensitive because rows are held in a {@code List}, so two pages
-     * holding equal rows in a different order are not equal. The result is therefore deterministic
-     * and independent of any hash iteration order.</p>
-     *
      * @param other the object to compare with, which may be {@code null}
-     * @return {@code true} when {@code other} is a page with equal rows in the same order and equal
-     *         page number, page size, next-page indicator and boundary keys
+     * @return {@code true} when {@code other} is a page with equal rows in the same order and equal page
+     * number, page size, next-page indicator and boundary keys
      */
     @Override
     public boolean equals(final Object other) {
@@ -483,13 +383,6 @@ public final class PageResponse<T> {
 
     /**
      * Returns a diagnostic rendering of the page metadata only.
-     *
-     * <p>The rows and both boundary keys are deliberately omitted. For the card list the boundary
-     * keys are card numbers - {@code WS-CA-FIRST-CARD-NUM} and {@code WS-CA-LAST-CARD-NUM}, both
-     * {@code PIC X(16)}, at {@code app/cbl/COCRDLIC.cbl}:231 and 234 - which must never reach a log,
-     * and the rows may carry any payload the caller chose. Only the page number, the page size and
-     * the next-page indicator are emitted, none of which can identify a cardholder. Formatting uses
-     * {@code Locale.ROOT} so the output cannot vary with the platform locale.</p>
      *
      * @return a locale-independent, personally-identifiable-information-free summary of this page
      */

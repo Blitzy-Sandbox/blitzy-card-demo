@@ -38,9 +38,9 @@ import jakarta.persistence.Embeddable;
  * Composite primary key of the transaction category type table, reproducing the COBOL group
  * {@code TRAN-CAT-KEY} of {@code app/cpy/CVTRA04Y.cpy} field for field and in source order.
  *
- * <p>This is a pure value type. It carries the two key components of the {@code TRANCATG} VSAM KSDS
- * cluster and nothing else: it holds no business data, performs no I/O, reads no configuration and
- * depends on no other CardDemo type. It is consumed through {@code jakarta.persistence.EmbeddedId} by
+ * <p>This is a pure value type. It carries the two key components of the {@code TRANCATG} VSAM KSDS cluster and
+ * nothing else: it holds no business data, performs no I/O, reads no configuration and depends on no other
+ * CardDemo type. It is consumed through {@code jakarta.persistence.EmbeddedId} by
  * {@code com.cardemo.model.entity.TransactionCategory}.
  *
  * <p><strong>Source field contract.</strong> {@code app/cpy/CVTRA04Y.cpy} declares, verbatim:
@@ -223,9 +223,10 @@ import jakarta.persistence.Embeddable;
  * above.
  *
  * <p><strong>Build and test.</strong> This class is compiled by the root {@code pom.xml} for Java 25 with
- * {@code -Xlint:all -Werror}, so an unused import, a raw type or a missing {@code serialVersionUID} is a
- * build failure rather than a warning. Build with {@code mvn -B clean compile}, run the unit suite with
- * {@code mvn -B clean test} and gate coverage with {@code mvn -B verify}. The class introduces no
+ * {@code -Xlint:all -Werror}, so a raw type or a missing {@code serialVersionUID} is a build failure
+ * rather than a warning. An unused import is not - {@code javac} 25.0.3 publishes no lint key for one - so
+ * that prohibition is review-enforced. Build with {@code ./mvnw -B clean compile}, run the unit suite with
+ * {@code ./mvnw -B clean test} and gate coverage with {@code ./mvnw -B verify}. The class introduces no
  * dependency and uses no annotation processor; Lombok is deliberately absent.
  *
  * <p><strong>Common failure modes.</strong>
@@ -250,93 +251,65 @@ import jakarta.persistence.Embeddable;
 public class TransactionCategoryId implements Serializable {
 
     /**
-     * Explicit serialization version. It is declared rather than left to the compiler so that the
-     * serialized form of a composite identifier stays stable across builds. See the deserialization
-     * constraint documented on the class: this identifier is serializable for persistence provider use
-     * only and must never be reconstituted from untrusted bytes.
+     * Explicit serialization version. It is declared rather than left to the compiler so that the serialized
+     * form of a composite identifier stays stable across builds. See the deserialization constraint documented
+     * on the class: this identifier is serializable for persistence provider use only and must never be
+     * reconstituted from untrusted bytes.
      */
     private static final long serialVersionUID = 1L;
 
     /**
-     * Exact width, in characters, of {@code TRAN-TYPE-CD}, whose picture clause is {@code PIC X(02)}. The
-     * COBOL field is fixed width, so a value is neither widened nor trimmed on the way in or out.
+     * Exact width, in characters, of {@code TRAN-TYPE-CD}, whose picture clause is {@code PIC X(02)}. The COBOL
+     * field is fixed width, so a value is neither widened nor trimmed on the way in or out.
      */
     private static final int TRAN_TYPE_CD_LENGTH = 2;
 
     /**
-     * Inclusive lower bound of {@code TRAN-CAT-CD}. Its picture clause {@code PIC 9(04)} is unsigned, so
-     * zero is the smallest representable value and a negative category code cannot exist in the source.
+     * Inclusive lower bound of {@code TRAN-CAT-CD}. Its picture clause {@code PIC 9(04)} is unsigned, so zero
+     * is the smallest representable value and a negative category code cannot exist in the source.
      */
     private static final int TRAN_CAT_CD_MIN_VALUE = 0;
 
     /**
-     * Inclusive upper bound of {@code TRAN-CAT-CD}: the largest value four unsigned display digits can
-     * hold. The seed fixture uses {@code 0001} through {@code 0005}, comfortably inside this range.
+     * Inclusive upper bound of {@code TRAN-CAT-CD}: the largest value four unsigned display digits can hold.
+     * The seed fixture uses {@code 0001} through {@code 0005}, comfortably inside this range.
      */
     private static final int TRAN_CAT_CD_MAX_VALUE = 9999;
 
     /**
-     * First key component, from {@code TRAN-TYPE-CD PIC X(02)}, occupying bytes 1 to 2 of the record. It
-     * is declared first because the VSAM key byte layout is the browse order and this component leads it.
-     * The value is held exactly as supplied at its fixed width of {@code TRAN_TYPE_CD_LENGTH} characters:
-     * it is never trimmed, padded or case folded.
+     * First key component, from {@code TRAN-TYPE-CD PIC X(02)}, occupying bytes 1 to 2 of the record. It is
+     * declared first because the VSAM key byte layout is the browse order and this component leads it. The
+     * value is held exactly as supplied at its fixed width of {@code TRAN_TYPE_CD_LENGTH} characters: it is
+     * never trimmed, padded or case folded.
      */
     @Column(name = "tran_type_cd", nullable = false, length = TRAN_TYPE_CD_LENGTH)
     private String tranTypeCd;
 
     /**
-     * Second key component, from {@code TRAN-CAT-CD PIC 9(04)}, occupying bytes 3 to 6 of the record. It is
-     * an unsigned display integer used purely as an identifier, so it maps to {@link Integer}. It is not a
+     * Second key component, from {@code TRAN-CAT-CD PIC 9(04)}, occupying bytes 3 to 6 of the record. It is an
+     * unsigned display integer used purely as an identifier, so it maps to {@link Integer}. It is not a
      * monetary amount, and no {@code BigDecimal}, {@code float} or {@code double} appears anywhere in this
      * class.
-     *
-     * <p>{@code columnDefinition = "numeric(4)"} is load bearing rather than decorative, and it is the one
-     * attribute on this class that was added after the migration became available. The column must be
-     * {@code NUMERIC(4)} because {@code com.cardemo.model.entity.Transaction} pins its own
-     * {@code tran_cat_cd} to the {@code NUMERIC} JDBC type code, and PostgreSQL refuses a foreign key from
-     * a {@code NUMERIC} child column to an {@code INTEGER} parent column outright. Without this attribute
-     * the plain {@link Integer} mapping would expect {@code INTEGER} and schema validation would abort
-     * startup. See the corrected Medium finding in the class documentation for the measurement, and
-     * {@code DisclosureGroupId} for the same mechanism applied to its two character components. The
-     * attribute is pure {@code jakarta.persistence}, so the restriction of this class to the Jakarta
-     * Persistence API is preserved and no provider specific annotation is introduced.
      */
     @Column(name = "tran_cat_cd", nullable = false, columnDefinition = "numeric(4)")
     private Integer tranCatCd;
 
     /**
-     * No argument constructor required by Jakarta Persistence so that a provider can instantiate the
-     * identifier before populating its components reflectively.
-     *
-     * <p>It is {@code protected} rather than {@code public} because application code has no legitimate use
-     * for an unpopulated identifier and must use {@link #TransactionCategoryId(String, Integer)}, which
-     * validates both components. No component is defaulted here: a synthetic default would be
-     * indistinguishable from a real key and would defeat the validation the public constructor performs.
+     * No argument constructor required by Jakarta Persistence so that a provider can instantiate the identifier
+     * before populating its components reflectively.
      */
     protected TransactionCategoryId() {
-        // Intentionally empty. The persistence provider assigns both components by field reflection
-        // immediately after instantiation, so validating or defaulting anything here would either reject a
-        // legitimate provider created instance or fabricate a key value that was never read from the
-        // database. This is a required Jakarta Persistence hook, not an unfinished implementation.
+        // Intentionally empty: the provider assigns both components reflectively after instantiation, so a
+        // default or a check here would reject a legitimate provider-created instance.
     }
 
     /**
      * Creates a fully populated identifier from its two components, in COBOL declaration order.
      *
-     * <p>The parameter order mirrors {@code TRAN-CAT-KEY} in {@code app/cpy/CVTRA04Y.cpy} and therefore the
-     * VSAM key byte order. Both arguments are validated against their picture clauses before assignment, so
-     * a constructed instance is always a structurally valid 6 byte key. The constructor has no side effect
-     * beyond initialising the two components.
-     *
-     * @param tranTypeCd the transaction type code from {@code TRAN-TYPE-CD PIC X(02)}; must be non
-     *                   {@code null} and exactly 2 characters, matching the fixed width source field
-     * @param tranCatCd  the transaction category code from {@code TRAN-CAT-CD PIC 9(04)}; must be non
-     *                   {@code null} and between 0 and 9999 inclusive, the unsigned range of four display
-     *                   digits
-     * @throws IllegalArgumentException if either component is {@code null}, or lies outside the width or
-     *                                  range its picture clause permits; the message names the offending
-     *                                  component, quotes its source picture clause and reports the value
-     *                                  that was received
+     * @param tranTypeCd the transaction type code from {@code TRAN-TYPE-CD PIC X(02)}.
+     * @param tranCatCd the transaction category code from {@code TRAN-CAT-CD PIC 9(04)}.
+     * @throws IllegalArgumentException if either component is {@code null}, or lies outside the width or range
+     * its picture clause permits.
      */
     public TransactionCategoryId(final String tranTypeCd, final Integer tranCatCd) {
         this.tranTypeCd = requireValidTranTypeCd(tranTypeCd);
@@ -346,14 +319,8 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Validates a candidate transaction type code against its source picture clause {@code PIC X(02)}.
      *
-     * <p>The method is deliberately {@code static}: a constructor of a non final class must not invoke an
-     * overridable instance method, because a subclass override would observe a partially initialised
-     * instance, which the compiler's {@code this-escape} diagnostic reports and this build escalates to an
-     * error.
-     *
      * @param value the candidate value exactly as supplied by the caller, possibly {@code null}
-     * @return {@code value} unchanged when valid; it is never trimmed, padded or case folded, because the
-     *         source field is fixed width and any adjustment would change the key
+     * @return {@code value} unchanged when valid.
      * @throws IllegalArgumentException if {@code value} is {@code null} or is not exactly 2 characters long
      */
     private static String requireValidTranTypeCd(final String value) {
@@ -371,14 +338,10 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Validates a candidate transaction category code against its source picture clause {@code PIC 9(04)}.
      *
-     * <p>The method is {@code static} for the same reason as {@link #requireValidTranTypeCd(String)}: it is
-     * called from a constructor and must not be overridable.
-     *
      * @param value the candidate value exactly as supplied by the caller, possibly {@code null}
      * @return {@code value} unchanged when valid
-     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, which four unsigned
-     *                                  display digits cannot represent, or greater than 9999, which they
-     *                                  cannot hold
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, which four unsigned display
+     * digits cannot represent, or greater than 9999, which they cannot hold
      */
     private static Integer requireValidTranCatCd(final Integer value) {
         if (value == null) {
@@ -396,9 +359,8 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Returns the first key component, the transaction type code.
      *
-     * @return the value of {@code TRAN-TYPE-CD PIC X(02)} exactly as stored, at its fixed width of 2
-     *         characters and never trimmed or case folded; {@code null} only on an instance that a
-     *         persistence provider has created but not yet populated
+     * @return the value of {@code TRAN-TYPE-CD PIC X(02)} exactly as stored, at its fixed width of 2 characters
+     * and never trimmed or case folded.
      */
     public String getTranTypeCd() {
         return tranTypeCd;
@@ -407,9 +369,8 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Returns the second key component, the transaction category code.
      *
-     * @return the value of {@code TRAN-CAT-CD PIC 9(04)} as an unsigned identifier in the inclusive range 0
-     *         to 9999; {@code null} only on an instance that a persistence provider has created but not yet
-     *         populated
+     * @return the value of {@code TRAN-CAT-CD PIC 9(04)} as an unsigned identifier in the inclusive range 0 to
+     * 9999.
      */
     public Integer getTranCatCd() {
         return tranCatCd;
@@ -418,18 +379,9 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Compares this identifier with another object for value equality over both key components.
      *
-     * <p>The comparison requires the two runtime classes to be identical rather than merely assignable.
-     * That keeps the relation symmetric in the presence of any subclass, and it guarantees that this 6 byte
-     * two component key can never compare equal to a structurally similar but semantically different key
-     * such as {@code TransactionCategoryBalanceId}, even when both happen to hold the same type code and
-     * category code. A partially populated identifier is equal only to another identifier of this exact
-     * class that is unpopulated in exactly the same components, so an absent component never silently
-     * matches a present one.
-     *
      * @param other the object to compare with, possibly {@code null}
-     * @return {@code true} if {@code other} is a {@code TransactionCategoryId} whose transaction type code
-     *         and transaction category code are both equal to this identifier's; {@code false} otherwise,
-     *         including when {@code other} is {@code null} or of any other class
+     * @return {@code true} if {@code other} is a {@code TransactionCategoryId} whose transaction type code and
+     * transaction category code are both equal to this identifier's.
      */
     @Override
     public boolean equals(final Object other) {
@@ -448,14 +400,8 @@ public class TransactionCategoryId implements Serializable {
      * Returns a value based hash consistent with {@link #equals(Object)}, computed over both components in
      * COBOL declaration order.
      *
-     * <p>Jakarta Persistence depends on this hash being stable for the lifetime of an instance, because a
-     * provider uses the identifier as a key in its identity map and a hash that changed would strand the
-     * managed entity. Stability follows from the class having no mutator. The computation is a plain value
-     * hash with no allocation beyond the argument array, so it is cheap enough to be called on every map
-     * lookup.
-     *
      * @return a hash derived from the transaction type code and the transaction category code, equal for any
-     *         two identifiers that compare equal
+     * two identifiers that compare equal
      */
     @Override
     public int hashCode() {
@@ -465,15 +411,7 @@ public class TransactionCategoryId implements Serializable {
     /**
      * Returns a diagnostic rendering of the two key components.
      *
-     * <p>This is intended for developer diagnostics only and is deliberately not a log or wire format: no
-     * caller may parse it and it may change without notice. Both components are non sensitive identifiers,
-     * a transaction type code and a transaction category code, so nothing confidential is exposed. The
-     * rendering is plain concatenation with no locale sensitive formatting, so it cannot vary with the
-     * platform default locale, and it does not zero pad the category code, which is why it must not be used
-     * to build a fixed width key image.
-     *
-     * @return the simple class name followed by both components in COBOL declaration order, never
-     *         {@code null}
+     * @return the simple class name followed by both components in COBOL declaration order, never {@code null}
      */
     @Override
     public String toString() {

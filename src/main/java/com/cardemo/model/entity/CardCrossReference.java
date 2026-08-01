@@ -27,6 +27,9 @@
  */
 package com.cardemo.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -36,9 +39,11 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * The card to customer to account cross reference.
+ * Card to customer to account cross reference: the relational replacement for the VSAM KSDS cluster
+ * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}.
  *
- * <h2>What it does</h2>
+ * <p>The three fields of {@code app/cpy/CVACT03Y.cpy} populate 36 bytes of the 50-byte record slot reported at
+ * {@code app/catlg/LISTCAT.txt:L403}; the remaining 14 bytes are deliberate slack and are not modelled.
  *
  * <p>Each instance is one row of table {@code card_cross_reference} and one record of the legacy
  * VSAM KSDS cluster {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}, catalogued at
@@ -122,7 +127,7 @@ import org.hibernate.type.SqlTypes;
  * is no lazy proxy and therefore no possibility of an N+1 select - the strongest available reading of
  * Rule 1 clause A5. Referential integrity to {@code account} and {@code customer} is enforced instead
  * by two of the ten foreign keys created in {@code V1__create_schema.sql}, and read performance by the
- * two B-tree indexes created in {@code V2__create_indexes.sql}.
+ * two B-tree indexes to be created in {@code V2__create_indexes.sql} (planned; absent at this commit).
  *
  * <p><strong>High - the card number is never emitted.</strong> A primary account number is sensitive
  * data, so {@code toString()} reports only {@code customerId} and {@code accountId} and deliberately
@@ -177,7 +182,8 @@ import org.hibernate.type.SqlTypes;
  * eleven digit account identifier, that is {@code XREF-ACCT-ID}. The alternate index is not an entity
  * and has no counterpart in this class. It becomes two things elsewhere: a derived finder in
  * {@code com.cardemo.repository.CardCrossReferenceRepository}, and a non-unique B-tree index on
- * {@code xref_acct_id} created by {@code V2__create_indexes.sql}. Non-unique is not a judgement call -
+ * {@code xref_acct_id} to be created by {@code V2__create_indexes.sql} (planned; absent at this commit). Non-unique
+ * is not a judgement call -
  * {@code app/catlg/LISTCAT.txt:L488} declares the index {@code NONUNIQKEY}, because one account
  * legitimately maps to several cards. This is the second of the three alternate indexes in the
  * catalogue, which reports {@code AIX 3} at {@code :L3938}; the other two belong to {@code Card} and
@@ -195,13 +201,20 @@ import org.hibernate.type.SqlTypes;
  *
  * <h2>Not available: the schema migration</h2>
  *
- * <p><strong>Not available.</strong> {@code src/main/resources/db/migration/V1__create_schema.sql} did
- * not exist when this entity was authored, and neither did {@code V2__create_indexes.sql}; the
- * migration directory had no children at all. The field contract tabulated above is therefore the
- * <strong>normative column contract</strong>, and the migrations must converge upon it rather than the
- * reverse. Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile, any
- * divergence in column name, SQL type, precision or nullability fails application context startup
- * outright rather than surfacing later as bad data.
+ * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
+ * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
+ * It declares {@code CREATE TABLE card_cross_reference} with 3 columns whose names are identical, as a
+ * set, to the 3 {@code @Column(name = ...)} declarations below, verified by direct comparison.
+ * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
+ * {@code V2__create_indexes.sql} remains <strong>not available</strong>, so the alternate-index
+ * equivalent for this cluster is not yet created. Because {@code spring.jpa.hibernate.ddl-auto} is
+ * {@code validate} in every planned profile, any divergence in column name, SQL type, precision or
+ * nullability would fail application context startup outright rather than surfacing later as bad data.
+ * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
+ * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
+ * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
+ * rather than an observed one.</p>
  *
  * <p>What is needed, precisely:
  *
@@ -231,20 +244,26 @@ import org.hibernate.type.SqlTypes;
  * compiler runs with {@code -Xlint:all} and {@code -Werror} and with {@code failOnWarning}, so any
  * warning this file produces is a build failure.
  *
- * <p>To run: bring the backing services up with {@code docker compose up -d}, which starts
- * PostgreSQL 16 among the rest, then start the application with
- * {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local}. Flyway applies the migrations on
+ * <p>To run, once the application exists: bring the backing services up with
+ * {@code docker compose up -d}, which starts PostgreSQL 16 among the rest, then start the application with
+ * {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local}.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point
+ * and no {@code application*.yml} profile exists in this tree, so that command cannot start anything and
+ * the {@code local} profile it names has nothing to select. Treat it as the target invocation.
+ * Flyway applies the migrations on
  * startup and the entity is then validated against the resulting schema, so a first run against an
  * empty database is the quickest way to confirm that the column contract below and
  * {@code V1__create_schema.sql} agree. {@code JWT_SECRET} must be present in the environment; it is
  * deliberately environment indirected with no committed default, and the application refuses to start
  * without it.
  *
- * <p>The unit tests for this class live in {@code src/test/java/com/cardemo/unit/model} and assert the
- * behaviour that the annotations alone cannot: 36 populated bytes inside the 50 byte slot, a key length
+ * <p>The unit tests for this class belong in {@code src/test/java/com/cardemo/unit/model} and are to assert
+ * the behaviour that the annotations alone cannot: 36 populated bytes inside the 50 byte slot, a key length
  * of 16, that the 14 byte {@code FILLER} is unmapped, that no version column exists, that the account
  * property is reachable under the JavaBean name {@code accountId}, and that {@code toString()} does not
- * contain the card number. Per {@code CONTRIBUTING.md:L34} they must pass locally before a change to
+ * contain the card number. <strong>Not available, measured 1 August 2026:</strong> no
+ * {@code CardCrossReferenceTest} exists, so the preceding sentence states the coverage owed rather than
+ * coverage that runs. Per {@code CONTRIBUTING.md:L34} they must pass locally before a change to
  * this file is proposed, and per {@code CONTRIBUTING.md:L33} a change here should stay confined to the
  * field contract rather than reformatting surrounding code.
  *
@@ -277,97 +296,70 @@ import org.hibernate.type.SqlTypes;
  *       indistinguishable. Assign the card number before placing an instance in a hash based
  *       collection.</dd>
  * </dl>
+ *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing
+ * object's JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. An entity is
+ * a bean with public accessors, so without the barrier the default behaviour of returning this type from
+ * a controller, or holding a field of it on a response object, is to publish the primary account number
+ * that is this table's primary key. With the barrier in place Jackson finds no properties and its default
+ * {@code FAIL_ON_EMPTY_BEANS} setting turns that mistake into a loud failure at the first request rather
+ * than a silent disclosure. Nothing legitimate is lost: outbound representations are built by
+ * {@code com.cardemo.model.dto.CardDto} and {@code com.cardemo.model.dto.AccountDto}, and persistence is
+ * unaffected because Hibernate reads and writes the annotated fields reflectively and never consults
+ * Jackson visibility.</p>
  */
 @Entity
 @Table(name = "card_cross_reference")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class CardCrossReference {
+
+    /** Declared width of {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}. */
+    private static final int CARD_NUMBER_WIDTH = 16;
+
+    /**
+     * Inclusive lower bound of both numeric fields, {@code XREF-CUST-ID PIC 9(09)} at
+     * {@code app/cpy/CVACT03Y.cpy:L6} and {@code XREF-ACCT-ID PIC 9(11)} at {@code :L7}. Neither picture
+     * clause carries an {@code S}, so both are unsigned and zero is their floor; zero is accepted rather
+     * than treated as a sentinel.
+     */
+    private static final long MIN_IDENTIFIER = 0L;
+
+    /** Inclusive upper bound of {@code XREF-CUST-ID PIC 9(09)}: nine unsigned display digits. */
+    private static final long MAX_CUSTOMER_ID = 999_999_999L;
+
+    /** Inclusive upper bound of {@code XREF-ACCT-ID PIC 9(11)}: eleven unsigned display digits. */
+    private static final long MAX_ACCOUNT_ID = 99_999_999_999L;
 
     /**
      * The card number, and the primary key.
-     *
-     * <p>Source {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}. Mapped to
-     * {@code xref_card_num CHAR(16) NOT NULL}, occupying bytes 1 through 16 of the 36 byte record.
-     * This is the base cluster key: {@code app/catlg/LISTCAT.txt:L403} reports {@code KEYLEN 16} and
-     * {@code :L404} reports {@code RKP 0}, so the key is the leading 16 bytes of the record.
-     *
-     * <p>{@code CHAR} rather than a variable length type, because the source item is a fixed width
-     * alphanumeric field and the value is emitted back into fixed width records; {@code length} states
-     * the width portably and {@code columnDefinition} pins the exact SQL type that
-     * {@code V1__create_schema.sql} must declare.
-     *
-     * <p>The explicit JDBC type code is not decoration and must not be removed. A text valued attribute
-     * resolves by default to {@code VARCHAR}, whereas PostgreSQL reports a {@code CHAR} column as
-     * {@code bpchar} with JDBC type {@code CHAR}. With {@code ddl-auto} set to {@code validate} in every
-     * profile the mismatch is fatal at application startup, not at first use - the observed failure is
-     * "wrong column type encountered in column [xref_card_num] in table [card_cross_reference]; found
-     * [bpchar (Types#CHAR)], but expecting [char(16) (Types#VARCHAR)]". Declaring the code aligns the
-     * expectation with the column that {@code V1__create_schema.sql} is required to create, and keeps
-     * the blank padding semantics of {@code PIC X(16)} intact rather than silently switching the schema
-     * to a variable length type.
-     *
-     * <p>A blank but non-null value is accepted. The legacy record can carry spaces in this position
-     * and rejecting that would diverge from the source, so only null is refused. Sensitive: this value
-     * is never written to a log and never appears in {@code toString()}.
      */
     @Id
-    @Column(name = "xref_card_num", nullable = false, length = 16, columnDefinition = "CHAR(16)")
+    @Column(name = "xref_card_num", nullable = false, length = CARD_NUMBER_WIDTH, columnDefinition = "CHAR(16)")
     @JdbcTypeCode(SqlTypes.CHAR)
     private String cardNumber;
 
     /**
      * The customer identifier this card belongs to.
-     *
-     * <p>Source {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}. Mapped to
-     * {@code xref_cust_id NUMERIC(9) NOT NULL}, occupying bytes 17 through 25 of the record. It is the
-     * foreign key to {@code customer.cust_id}, whose own cluster {@code CUSTDATA} is catalogued with a
-     * key length of 9, which corroborates the width.
-     *
-     * <p>Held as a plain scalar rather than as a mapped relationship. The legacy account view chain
-     * reads the cross reference first and only then reads the customer record by key, so the read stays
-     * explicit here too; see the class documentation for the full reasoning.
-     *
-     * <p>Numeric although the ASCII fixture zero-pads it to {@code 000000050}: for a key, zero padding
-     * is a fixed width emission concern owned by the batch writers. Contrast the text valued
-     * {@code PIC 9(n)} fields elsewhere in this package whose leading zeros are significant data.
      */
     @Column(name = "xref_cust_id", nullable = false, columnDefinition = "NUMERIC(9)")
     private Long customerId;
 
     /**
      * The account identifier this card is attached to, and the alternate key of the legacy cluster.
-     *
-     * <p>Source {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. Mapped to
-     * {@code xref_acct_id NUMERIC(11) NOT NULL}, occupying bytes 26 through 36 of the record - which
-     * {@code app/catlg/LISTCAT.txt:L486} independently confirms by reporting {@code AXRKP 25}, the zero
-     * based offset of the alternate key, and {@code 16 + 9 = 25}. It is the foreign key to
-     * {@code account.acct_id}, whose {@code ACCTDATA} cluster is catalogued with a key length of 11.
-     *
-     * <p>Alternate index provenance: {@code app/catlg/LISTCAT.txt:L480} defines
-     * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX} and {@code :L482} reports {@code KEYLEN 11} - this
-     * field. The index is not modelled here. It becomes a derived finder
-     * {@code findByAccountId} in {@code com.cardemo.repository.CardCrossReferenceRepository} plus a
-     * <strong>non-unique</strong> B-tree index on {@code xref_acct_id} in
-     * {@code V2__create_indexes.sql}; non-unique because {@code :L488} declares the alternate index
-     * {@code NONUNIQKEY} and one account legitimately maps to several cards.
-     *
-     * <p>Blocker: the property name is load bearing. Spring Data resolves {@code findByAccountId}
-     * against the JavaBean property, so this field must stay named {@code accountId} and must stay a
-     * plain scalar. Renaming it after the COBOL item, or promoting it to a mapped relationship, breaks
-     * the finder at context startup.
      */
     @Column(name = "xref_acct_id", nullable = false, columnDefinition = "NUMERIC(11)")
     private Long accountId;
 
     /**
      * Creates an empty instance for the persistence provider.
-     *
-     * <p>Required by the JPA specification, which mandates a no-argument constructor that is
-     * {@code public} or {@code protected}. It is {@code protected} rather than {@code public} so that
-     * application code cannot build a cross reference with all three mandatory columns unset; the
-     * provider reaches it reflectively and then populates the fields directly, bypassing the setters.
-     *
-     * <p>Side effects: none. Error modes: none - the instance is left with all three fields null, which
-     * is a valid transient state and not a valid persistent one.
      */
     protected CardCrossReference() {
         // Intentionally empty. Field values are supplied reflectively by the persistence provider.
@@ -376,39 +368,29 @@ public class CardCrossReference {
     /**
      * Creates a fully populated cross reference.
      *
-     * <p>All three arguments are mandatory because all three columns are {@code NOT NULL}. Each is
-     * checked eagerly so that a mistake is reported at the point of construction rather than as an
-     * opaque constraint violation at flush time. The fields are assigned directly rather than through
-     * the setters: the setters are overridable instance methods, and calling one from a constructor
-     * would publish a partially initialised {@code this} reference, which the compiler rejects under
-     * {@code -Xlint:all -Werror}.
-     *
-     * @param cardNumber the 16 character card number, {@code XREF-CARD-NUM PIC X(16)}; may be blank but
-     *                   not null, and is the primary key
-     * @param customerId the 9 digit customer identifier, {@code XREF-CUST-ID PIC 9(09)}; must not be
-     *                   null
-     * @param accountId  the 11 digit account identifier, {@code XREF-ACCT-ID PIC 9(11)}; must not be
-     *                   null
-     * @throws IllegalArgumentException if any argument is null, naming the offending property, its
-     *                                  COBOL item and its column
+     * @param cardNumber the 16 character card number, {@code XREF-CARD-NUM PIC X(16)}.
+     * @param customerId the 9 digit customer identifier, {@code XREF-CUST-ID PIC 9(09)}.
+     * @param accountId the 11 digit account identifier, {@code XREF-ACCT-ID PIC 9(11)}.
+     * @throws IllegalArgumentException if any argument is null, naming the offending property, its COBOL item
+     * and its column
      */
     public CardCrossReference(String cardNumber, Long customerId, Long accountId) {
-        this.cardNumber = requireSupplied(cardNumber, "cardNumber", "XREF-CARD-NUM", "xref_card_num");
-        this.customerId = requireSupplied(customerId, "customerId", "XREF-CUST-ID", "xref_cust_id");
-        this.accountId = requireSupplied(accountId, "accountId", "XREF-ACCT-ID", "xref_acct_id");
+        this.cardNumber = requireWidth(
+                requireSupplied(cardNumber, "cardNumber", "XREF-CARD-NUM", "xref_card_num"),
+                "cardNumber", "XREF-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
+        this.customerId = requireRange(
+                requireSupplied(customerId, "customerId", "XREF-CUST-ID", "xref_cust_id"),
+                "customerId", "XREF-CUST-ID PIC 9(09)", MAX_CUSTOMER_ID);
+        this.accountId = requireRange(
+                requireSupplied(accountId, "accountId", "XREF-ACCT-ID", "xref_acct_id"),
+                "accountId", "XREF-ACCT-ID PIC 9(11)", MAX_ACCOUNT_ID);
     }
 
     /**
      * Returns the card number, which is the primary key.
      *
-     * <p>Source {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}.
-     *
-     * <p>Callers receive the value in full because the online detail and update flows need it. It is
-     * sensitive, so it must not be placed into a log record, an exception message or any diagnostic
-     * rendering; that is why this class provides no such rendering of its own.
-     *
      * @return the 16 character card number, never null on a persistent instance and possibly null on a
-     *         transient one created through the provider's no-argument constructor
+     * transient one created through the provider's no-argument constructor
      */
     public String getCardNumber() {
         return cardNumber;
@@ -417,27 +399,18 @@ public class CardCrossReference {
     /**
      * Replaces the card number.
      *
-     * <p>Source {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}. A blank but
-     * non-null value is accepted, matching the fixed width source record; only null is refused.
-     *
-     * <p>Side effects: this property is the primary key, so on an instance already managed by a
-     * persistence context a change here does not relocate the row - it identifies a different one.
-     * Changing the key of a persisted cross reference is a delete followed by an insert, exactly as it
-     * was for the underlying VSAM key, and must be performed as such.
-     *
-     * @param cardNumber the 16 character card number; may be blank but must not be null
+     * @param cardNumber the 16 character card number.
      * @throws IllegalArgumentException if {@code cardNumber} is null
+     * @throws IllegalArgumentException if {@code cardNumber} is null or longer than 16 characters
      */
     public void setCardNumber(String cardNumber) {
-        this.cardNumber = requireSupplied(cardNumber, "cardNumber", "XREF-CARD-NUM", "xref_card_num");
+        this.cardNumber = requireWidth(
+                requireSupplied(cardNumber, "cardNumber", "XREF-CARD-NUM", "xref_card_num"),
+                "cardNumber", "XREF-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
     }
 
     /**
      * Returns the customer identifier this card belongs to.
-     *
-     * <p>Source {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}. It is the foreign
-     * key to {@code customer.cust_id} and is returned as a scalar, never as a resolved customer, so no
-     * additional query is triggered by reading it.
      *
      * @return the 9 digit customer identifier, never null on a persistent instance
      */
@@ -448,25 +421,19 @@ public class CardCrossReference {
     /**
      * Replaces the customer identifier this card belongs to.
      *
-     * <p>Source {@code XREF-CUST-ID PIC 9(09)} at {@code app/cpy/CVACT03Y.cpy:L6}.
-     *
-     * <p>Side effects: the value is a foreign key to {@code customer.cust_id}. This method performs no
-     * existence check, exactly as the legacy program performed none; referential integrity is enforced
-     * by the database constraint created in {@code V1__create_schema.sql} and surfaces at flush time.
-     *
-     * @param customerId the 9 digit customer identifier; must not be null
+     * @param customerId the 9 digit customer identifier.
      * @throws IllegalArgumentException if {@code customerId} is null
+     * @throws IllegalArgumentException if {@code customerId} is null, negative, or greater than
+     *                                  999999999
      */
     public void setCustomerId(Long customerId) {
-        this.customerId = requireSupplied(customerId, "customerId", "XREF-CUST-ID", "xref_cust_id");
+        this.customerId = requireRange(
+                requireSupplied(customerId, "customerId", "XREF-CUST-ID", "xref_cust_id"),
+                "customerId", "XREF-CUST-ID PIC 9(09)", MAX_CUSTOMER_ID);
     }
 
     /**
      * Returns the account identifier this card is attached to.
-     *
-     * <p>Source {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. This accessor name
-     * is load bearing: the repository's derived finder {@code findByAccountId} is resolved against the
-     * JavaBean property that this method defines, so it must not be renamed.
      *
      * @return the 11 digit account identifier, never null on a persistent instance
      */
@@ -477,35 +444,19 @@ public class CardCrossReference {
     /**
      * Replaces the account identifier this card is attached to.
      *
-     * <p>Source {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}.
-     *
-     * <p>Side effects: the value is a foreign key to {@code account.acct_id} and is the alternate key of
-     * the legacy cluster, so changing it changes which rows the non-unique index on
-     * {@code xref_acct_id} groups together. No existence check is performed here; the database
-     * constraint created in {@code V1__create_schema.sql} enforces integrity at flush time.
-     *
-     * @param accountId the 11 digit account identifier; must not be null
+     * @param accountId the 11 digit account identifier.
      * @throws IllegalArgumentException if {@code accountId} is null
+     * @throws IllegalArgumentException if {@code accountId} is null, negative, or greater than
+     *                                  99999999999
      */
     public void setAccountId(Long accountId) {
-        this.accountId = requireSupplied(accountId, "accountId", "XREF-ACCT-ID", "xref_acct_id");
+        this.accountId = requireRange(
+                requireSupplied(accountId, "accountId", "XREF-ACCT-ID", "xref_acct_id"),
+                "accountId", "XREF-ACCT-ID PIC 9(11)", MAX_ACCOUNT_ID);
     }
 
     /**
      * Compares two cross references by primary key alone.
-     *
-     * <p>Identity is {@code cardNumber} and nothing else, because that is the primary key here and was
-     * the VSAM cluster key before it: two rows with the same card number are the same row, whatever
-     * their other column values happen to be at the moment of comparison. Including the two foreign
-     * keys would make an updated instance unequal to itself.
-     *
-     * <p>The type test uses a pattern rather than an exact class comparison so that a lazily created
-     * provider proxy compares equal to the instance it stands for. The class has no subclass - it is a
-     * leaf entity with no superclass and no mapped superclass - so no symmetry violation can arise.
-     *
-     * <p>Boundary condition: on a transient instance the key is still null, so two such instances
-     * compare equal to one another. That is an inherent consequence of key based identity; assign the
-     * card number before relying on equality or on a hash based collection.
      *
      * @param other the object to compare with, possibly null
      * @return {@code true} if {@code other} is a cross reference with an equal card number
@@ -524,11 +475,6 @@ public class CardCrossReference {
     /**
      * Returns a hash code derived from the primary key alone.
      *
-     * <p>Consistent with {@link #equals(Object)}: only {@code cardNumber} participates, so the hash of
-     * an instance never changes when a foreign key is reassigned and an instance already held in a hash
-     * based collection cannot become unreachable. A transient instance whose key is null hashes to
-     * zero.
-     *
      * @return the hash code of the card number, or zero when it has not been assigned
      */
     @Override
@@ -540,42 +486,39 @@ public class CardCrossReference {
      * Returns a diagnostic rendering that deliberately excludes the card number.
      *
      * <p>A primary account number is sensitive data and this class is reachable from log statements,
-     * exception messages and debugger output, so the card number is omitted here and only the two
-     * foreign keys are reported. Masking rules in {@code logback-spring.xml} are a backstop; not
-     * emitting the value at all is the primary defence, and it is the reason no alternative full or
-     * masked rendering exists on this class. The primary key is therefore not recoverable from this
-     * string - use {@link #getCardNumber()} deliberately when the value is genuinely required.
+     * exception messages and debugger output, so the card number is omitted here. Masking rules in
+     * {@code logback-spring.xml} are a backstop; not emitting the value at all is the primary defence,
+     * and it is the reason no alternative full or masked rendering exists on this class. The primary key
+     * is therefore not recoverable from this string - use {@link #getCardNumber()} deliberately when the
+     * value is genuinely required.
+     *
+     * <p><b>Only one identifier is rendered, not both.</b> The customer identifier was removed for a
+     * reason that is specific to this entity and easy to miss: the whole purpose of this table is to
+     * associate a card, an account and a customer, so a rendering that emits the account and the customer
+     * together reproduces the association itself. Anything that reads such a line - a log aggregator, a
+     * ticket attachment, a support transcript - acquires a customer-to-account linkage that it was never
+     * granted, without ever touching the database. The account identifier alone locates the row for
+     * anyone already authorised to read it, and discloses no linkage on its own.
      *
      * <p>The rendering is built by concatenation only, so it is byte for byte identical on every
      * machine: no locale sensitive or platform dependent formatting is involved.
      *
-     * @return a stable rendering containing the customer identifier and the account identifier only
+     * @return a stable rendering containing the account identifier only, never the card number and never
+     *         the customer identifier
      */
     @Override
     public String toString() {
-        return "CardCrossReference{customerId=" + customerId + ", accountId=" + accountId + "}";
+        return "CardCrossReference{accountId=" + accountId + "}";
     }
 
     /**
-     * Returns {@code value} when it is present, and otherwise reports precisely which column is at
-     * fault.
+     * Returns {@code value} when it is present, and otherwise reports precisely which column is at fault.
      *
-     * <p>A pure static function with no state of its own, shared by the all-argument constructor and by
-     * the three setters so that the null contract of the three {@code NOT NULL} columns is expressed
-     * exactly once. It is static, not an instance method, so that the constructor can call it without
-     * publishing a partially initialised {@code this} reference - which the compiler rejects under
-     * {@code -Xlint:all -Werror}.
-     *
-     * <p>{@code java.util.Objects.requireNonNull} is deliberately not used: it raises a
-     * {@code NullPointerException}, whereas a rejected argument is an illegal argument, and the message
-     * built here names the Java property, the originating COBOL item and the database column so that
-     * the failure is actionable without reading this file.
-     *
-     * @param <T>        the type of the value being checked
-     * @param value      the value supplied by the caller, possibly null
-     * @param property   the Java property name, used in the message
+     * @param <T> the type of the value being checked
+     * @param value the value supplied by the caller, possibly null
+     * @param property the Java property name, used in the message
      * @param cobolField the originating COBOL elementary item, used in the message
-     * @param column     the database column name, used in the message
+     * @param column the database column name, used in the message
      * @return {@code value}, unchanged, when it is not null
      * @throws IllegalArgumentException if {@code value} is null
      */
@@ -584,6 +527,68 @@ public class CardCrossReference {
             throw new IllegalArgumentException(
                     property + " (COBOL " + cobolField + ", column " + column
                             + ") must not be null: the column is NOT NULL in card_cross_reference");
+        }
+        return value;
+    }
+
+    /**
+     * Returns {@code value} when it fits the width of the COBOL field it comes from, and otherwise reports
+     * the offending property and the length received.
+     *
+     * <p>Applied on top of {@link #requireSupplied(Object, String, String, String)} rather than in place of
+     * it, so that a null and an over-wide value are reported as the different failures they are. Everything
+     * the picture clause admits is accepted, a value of only spaces included, and nothing is trimmed,
+     * padded or case folded: the cross-reference key must re-emit byte for byte.
+     *
+     * <p><strong>The message reports the received length and never the value.</strong>
+     * {@code XREF-CARD-NUM} is a card number, which {@link #toString()} already masks, and a validation
+     * message is exactly the kind of string that reaches a log.
+     *
+     * <p>Static for the same reason as {@link #requireSupplied(Object, String, String, String)}: a
+     * constructor of a class the JPA specification forbids making {@code final} must not call an
+     * overridable method, and {@code -Xlint:all -Werror} rejects it as {@code this-escape}.
+     *
+     * @param value      the value already known to be non-null
+     * @param property   the Java property name, used in the message
+     * @param cobolField the originating COBOL item and its picture clause, used in the message
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is longer than {@code width}
+     */
+    private static String requireWidth(String value, String property, String cobolField, int width) {
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (COBOL " + cobolField + ") must be at most "
+                    + width + " characters but was " + value.length());
+        }
+        return value;
+    }
+
+    /**
+     * Returns {@code value} when it fits the unsigned digit count of the COBOL field it comes from, and
+     * otherwise reports the offending property and the value received.
+     *
+     * <p>Neither picture clause carries an {@code S}, so a negative value is outside the domain the record
+     * can represent and is refused; zero is inside it and is accepted, being a legitimate identifier rather
+     * than a sentinel. <strong>No referential check happens here:</strong> whether a customer or account
+     * row actually exists for the identifier is a foreign-key and service-layer question, and this table is
+     * the cross-reference that answers it rather than a consumer of the answer.
+     *
+     * <p>The value is safe to name in the message: both identifiers are already present in
+     * {@link #toString()}, unlike the card number.
+     *
+     * <p>Static for the same reason as {@link #requireSupplied(Object, String, String, String)}.
+     *
+     * @param value      the value already known to be non-null
+     * @param property   the Java property name, used in the message
+     * @param cobolField the originating COBOL item and its picture clause, used in the message
+     * @param maximum    the largest value that digit count can hold
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is negative or greater than {@code maximum}
+     */
+    private static Long requireRange(Long value, String property, String cobolField, long maximum) {
+        if (value.longValue() < MIN_IDENTIFIER || value.longValue() > maximum) {
+            throw new IllegalArgumentException(property + " (COBOL " + cobolField + ") must be between "
+                    + MIN_IDENTIFIER + " and " + maximum + " inclusive but was " + value);
         }
         return value;
     }

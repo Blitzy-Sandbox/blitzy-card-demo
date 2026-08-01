@@ -1,0 +1,869 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ******************************************************************
+  Program     : owasp-suppressions.xml
+  Application : CardDemo
+  Type        : OWASP Dependency-Check suppression file (build gate input)
+  Function    : Corrects identifier mismatches in the Dependency-Check report
+                so that the CVSS 7 gate in pom.xml measures advisories that
+                actually apply to this dependency set. Wired in through
+                dependency-check-maven <suppressionFiles>.
+  Source      : No legacy analogue. The COBOL corpus has no dependency
+                manifest; its build inputs are the z/OS compile templates in
+                samples/, which are out of scope. @ 7756d89
+  ******************************************************************
+  Copyright Amazon.com, Inc. or its affiliates.
+  All Rights Reserved.
+
+  Licensed under the Apache License, Version 2.0 (the "License").
+  You may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+     http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+  either express or implied. See the License for the specific
+  language governing permissions and limitations under the License
+  ******************************************************************
+-->
+<!--
+  HOW TO READ THIS FILE
+
+  Every entry states the evidence for itself. Entries fall into four tiers and
+  the tier is named in the note, so a reviewer can see at a glance which kind of
+  claim is being made.
+
+    TIER 1  IDENTIFIER MISMATCH. Dependency-Check assigned a CPE belonging to a
+            different product. The suppression removes the CPE, not a CVE, so
+            every advisory that flows from the wrong identifier goes with it and
+            any future one does too. Proof is a property of the artifact.
+
+    TIER 2  VULNERABLE CLASS ABSENT. The advisory is real for the upstream
+            project but the class it names is not in the artifact that was
+            flagged, and the artifact that does contain it is either absent from
+            the dependency graph or was evaluated separately. Proof is a jar
+            listing.
+
+    TIER 3  FEATURE NOT PRESENT. The class exists but the code path requires a
+            configuration, protocol or integration this application does not
+            have. Proof is a repository fact and, where one exists, a test that
+            keeps it true.
+
+    TIER 4  APPLICABLE AND ACCEPTED, TIME BOXED. The advisory applies and the
+            fix is a newer version of an artifact whose version this project
+            does not control: it is resolved by spring-boot-starter-parent
+            3.5.11, which the requirements pin explicitly and forbid advancing
+            unilaterally. These entries carry an until attribute so they EXPIRE.
+            When they do the record returns and the build fails again, which is
+            the intended behaviour. Each one names the CVE, the coordinate, the
+            version that fixes it and the remediation.
+
+  RULES FOR CHANGING THIS FILE
+    - Never add a wildcard, a bare cpe without a packageUrl, or a vendor wide
+      entry. Every suppression is scoped to one coordinate.
+    - Never add a Tier 4 entry without an until date and a named fix version.
+    - Never widen this file to turn a red scan green. If a new record appears,
+      assess it; if it applies and cannot be remediated, it is a finding to
+      report, not a line to add here.
+    - Removing an entry is always safe. Adding one requires the evidence above.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+  <!-- ==================================================================
+       TIER 1 - IDENTIFIER MISMATCH
+       ================================================================== -->
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. org.testcontainers:testcontainers-postgresql is a Java test support
+      module: it starts a PostgreSQL container for integration tests and contains
+      no database engine code whatsoever. Dependency-Check matched its Maven
+      version 2.0.3 against cpe:/a:postgresql:postgresql, that is against
+      PostgreSQL SERVER version 2.0.3, and attached the server advisory history
+      for that version to it. Twenty six records at CVSS 7 or above arrived this
+      way, the oldest from 2015.
+      The mismatch is a property of the artifact, not of any one advisory, so the
+      CPE is removed rather than the CVEs. The actual PostgreSQL server this
+      project runs is the pinned postgres:16.10-alpine image in
+      docker-compose.yml, which is not a Maven dependency and is not in scope for
+      this scanner. The JDBC driver org.postgresql:postgresql is a separate
+      dependency and is scanned on its own identity; see its entry below.
+      Scope: test.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.testcontainers/testcontainers-postgresql@.*$</packageUrl>
+    <cpe>cpe:/a:postgresql:postgresql</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. io.micrometer:micrometer-registry-prometheus is a Java library that
+      EXPOSES metrics in the Prometheus exposition format. It is not the
+      Prometheus server, which is a separate product written in Go and, in this
+      project, the pinned prom/prometheus:v2.55.1 container in
+      docker-compose.yml. Dependency-Check matched the Micrometer version 1.15.9
+      against cpe:/a:prometheus:prometheus.
+      The single record this produced, CVE-2026-42154, is a heap exhaustion in the
+      Prometheus server's remote read endpoint /api/v1/read. No such endpoint,
+      and no snappy request decoder, exists in this library; the only surface it
+      provides is the scrape endpoint the server calls.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.micrometer/micrometer-registry-prometheus@.*$</packageUrl>
+    <cpe>cpe:/a:prometheus:prometheus</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. org.eclipse.angus:angus-activation is the Jakarta ACTIVATION
+      implementation. Dependency-Check matched it to cpe:/a:eclipse:angus_mail,
+      the Jakarta MAIL implementation, and did so at LOW confidence, which the
+      report itself records. The one record that followed, CVE-2025-7962, is an
+      SMTP header injection in Jakarta Mail.
+      Two independent facts make it inapplicable: this is a different artifact,
+      and org.eclipse.angus:angus-mail is not on the dependency graph at all.
+      CardDemo sends no mail; there is no SMTP client anywhere in the target
+      architecture. angus-activation is present only because Jakarta Activation
+      is a transitive requirement of the validation and XML binding stack.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.eclipse\.angus/angus-activation@.*$</packageUrl>
+    <cpe>cpe:/a:eclipse:angus_mail</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. io.opentelemetry.semconv:opentelemetry-semconv is a Java artifact
+      containing nothing but generated semantic convention attribute-key
+      constants. Dependency-Check matched it to cpe:/a:opentelemetry:opentelemetry
+      and attached two records, CVE-2026-24051 and CVE-2026-39883, both at 7.0.
+      Both advisories state their subject in their own first sentence:
+      "OpenTelemetry-Go is the Go implementation of OpenTelemetry". Both are PATH
+      hijacking in resource detection code, naming the Go source file
+      sdk/resource/host_id.go and the ioreg and kenv system commands on Darwin,
+      BSD and Solaris. This artifact is Java, executes no external command, and
+      contains no resource detector. The Java tracing path in this project is
+      micrometer-tracing-bridge-otel with opentelemetry-exporter-otlp, both of
+      which are scanned on their own identities.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.opentelemetry\.semconv/opentelemetry-semconv@.*$</packageUrl>
+    <cpe>cpe:/a:opentelemetry:opentelemetry</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. Every spring-boot-starter-* artifact is a dependency AGGREGATOR
+      rather than a code artifact. A jar listing at 3.5.11 of all thirteen
+      starters resolved by this build - starter, -web, -actuator, -batch,
+      -data-jpa, -jdbc, -json, -logging, -oauth2-resource-server, -security,
+      -test, -tomcat and -validation - reports ZERO .class entries in every one of
+      them, so no starter can contain a vulnerable class. spring-boot-starter-web
+      is the artifact the scanner flagged first. Its jar was
+      inspected and contains ZERO .class files; its entire content is a POM that
+      pulls in spring-web, spring-webmvc, spring-boot-autoconfigure and the
+      embedded container. Dependency-Check nevertheless assigned it
+      cpe:/a:vmware:spring_boot version 3.5.11 and attached the seven Spring Boot
+      product advisories for that version to it, and additionally assigned the
+      generic cpe:/a:web_project:web.
+      No advisory can be exploited through an artifact that contains no code. The
+      jars that DO carry the Spring Boot code, spring-boot, spring-boot-actuator
+      and spring-boot-autoconfigure, are separate dependencies and were evaluated
+      independently in the same scan; nothing is hidden by removing these two
+      CPEs from the aggregator.
+      For the record, the seven advisories in question are also inapplicable on
+      their own terms: CVE-2026-40974 is Cassandra auto-configuration and no
+      Cassandra driver is present; CVE-2026-40971 is RabbitMQ auto-configuration
+      and no AMQP client is present; CVE-2026-22733 requires the CloudFoundry
+      Actuator extension, which requires running on CloudFoundry; CVE-2026-40972
+      is the spring-boot-devtools remote secret and devtools is not a dependency;
+      CVE-2026-40975 warns that ${random.value} is unfit for secrets, and the one
+      secret this application has, the JWT signing key, is required from the
+      JWT_SECRET environment variable with no generated default; CVE-2026-40973
+      requires server.servlet.session.persistent=true and this application is
+      stateless by architectural mandate, holding no server side session at all;
+      CVE-2026-22731 is discussed in its own Tier 4 entry below.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-starter(-[a-z0-9-]+)?@.*$</packageUrl>
+    <cpe>cpe:/a:web_project:web</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. Same zero-class aggregator argument as the entry immediately above,
+      applied to the other identifier the scanner attached to the starters, for the
+      cpe:/a:vmware:spring_boot identifier on both web starters. Both jars were
+      inspected and contain ZERO .class files. The Spring Boot code jars are
+      scanned separately on their own identities.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot-starter(-[a-z0-9-]+)?@.*$</packageUrl>
+    <cpe>cpe:/a:vmware:spring_boot</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. cpe:/a:web_project:web is a generic identifier for an unrelated
+      product named "web" and was matched purely because these artifact names end
+      in "-web" and their versions happened to align. The correct Spring
+      identifiers on the same artifacts are retained, so both remain fully
+      evaluated against the Spring Framework and Spring Security advisory sets.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework(\.security)?/spring-(security-)?web@.*$</packageUrl>
+    <cpe>cpe:/a:web_project:web</cpe>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 1. cpe:/a:fasterxml:jackson-modules-java8 was matched against
+      jackson-databind at LOW confidence, which the report records. The java8
+      modules are separate artifacts (jackson-datatype-jsr310,
+      jackson-module-parameter-names) and are scanned under their own
+      coordinates. The correct identifiers cpe:/a:fasterxml:jackson-databind and
+      cpe:/a:fasterxml:jackson-core are retained.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/com\.fasterxml\.jackson\.core/jackson-databind@.*$</packageUrl>
+    <cpe>cpe:/a:fasterxml:jackson-modules-java8</cpe>
+  </suppress>
+
+  <!-- ==================================================================
+       TIER 2 - VULNERABLE CLASS ABSENT FROM THE FLAGGED ARTIFACT
+       ================================================================== -->
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 2. All four advisories name classes that live in Log4j CORE or in the
+      Log4j 1 bridge, never in log4j-api:
+        CVE-2026-34478  org.apache.logging.log4j.core.layout.Rfc5424Layout
+        CVE-2026-34479  Log4j1XmlLayout, from the log4j-1.2-api bridge
+        CVE-2026-34480  org.apache.logging.log4j.core.layout.XmlLayout
+        CVE-2026-34481  JsonTemplateLayout, from log4j-layout-template-json
+      Two independent verifications: a grep of the resolved dependency list for
+      log4j-core, log4j-layout-template-json and log4j-1.2-api returns zero
+      matches, and a listing of log4j-api-2.24.3.jar contains zero classes whose
+      name matches Rfc5424Layout, XmlLayout, JsonTemplateLayout or
+      Log4j1XmlLayout.
+      log4j-api is present only as the facade required by log4j-to-slf4j, which
+      routes any Log4j API call into SLF4J and from there into Logback. No Log4j
+      layout, appender or configuration is ever instantiated, because no Log4j
+      implementation exists to instantiate one.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.logging\.log4j/log4j-api@.*$</packageUrl>
+    <cve>CVE-2026-34478</cve>
+    <cve>CVE-2026-34479</cve>
+    <cve>CVE-2026-34480</cve>
+    <cve>CVE-2026-34481</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 2. CVE-2026-53914, CVSS 9.8, is code execution "via unsafe
+      deserialization in the BUILD CACHE METADATA" of the JetBrains Kotlin
+      toolchain. The vulnerable component is the Kotlin compiler's incremental
+      build cache, not the runtime standard library.
+      This project contains no Kotlin source file, runs no Kotlin compiler, and
+      produces no Kotlin build cache: it is a Maven Java 25 build whose only
+      compiler plugin is maven-compiler-plugin. kotlin-stdlib is present solely
+      as a runtime scoped transitive of the AWS SDK dependency chain. The
+      attacker controlled artifact the advisory requires cannot exist here
+      because the component that would read it is never invoked.
+      SCOPE OF THE PATTERN: the Kotlin standard library ships as four sibling
+      artifacts on this graph - kotlin-stdlib, kotlin-stdlib-common,
+      kotlin-stdlib-jdk7 and kotlin-stdlib-jdk8 - and Dependency-Check attaches
+      the same JetBrains Kotlin identifier to every one of them. The argument
+      above is a property of the BUILD (no Kotlin source, no Kotlin compilation,
+      no Kotlin build cache), so it holds identically for all four; the pattern
+      therefore enumerates the four module suffixes explicitly rather than
+      wildcarding the JetBrains group.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.jetbrains\.kotlin/kotlin-stdlib(-(common|jdk7|jdk8))?@.*$</packageUrl>
+    <cve>CVE-2026-53914</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 2. Two Spring Framework advisories name classes that belong to
+      Spring Framework MODULES THAT ARE NOT ON THIS DEPENDENCY GRAPH AT ALL.
+      Verified by jar listing at version 6.2.16 and by the resolved dependency
+      tree, which contains spring-aop, spring-aspects, spring-beans,
+      spring-context, spring-core, spring-expression, spring-jcl, spring-jdbc,
+      spring-messaging, spring-orm, spring-test, spring-tx, spring-web and
+      spring-webmvc - and no other org.springframework module:
+        CVE-2026-41855  org.springframework.jms.support.converter.
+                        MappingJackson2MessageConverter and
+                        JacksonJsonMessageConverter. Zero matches in spring-core
+                        and spring-web. spring-jms is not on the dependency
+                        graph at all: CardDemo uses SQS through Spring Cloud AWS,
+                        not JMS. The "untrusted JMS environment" the advisory
+                        requires cannot be reached.
+        CVE-2026-41838  spring-websocket session identifiers. Zero matches for
+                        WebSocketSession in spring-core and spring-web;
+                        spring-websocket is not on the dependency graph. The
+                        target exposes REST and JSON only, with no WebSocket
+                        endpoint anywhere in the architecture.
+      SCOPE OF THE PATTERN: Dependency-Check attaches the single
+      cpe:/a:vmware:spring_framework product identifier to EVERY
+      org.springframework module it recognises, so the same two records surface
+      on spring-core, spring-web, spring-tx and spring-webmvc, and would surface
+      on any further module the graph acquires. The argument above is a property
+      of the GRAPH - the module that contains the code is absent - so it holds
+      identically for every org.springframework artifact, and the pattern is
+      scoped to that one Maven group rather than to a hand picked subset that
+      would silently stop matching when the graph shifts. It is deliberately NOT
+      a vendor wide or CVE wildcard entry: exactly two named CVEs are listed.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework/spring-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-41855</cve>
+    <cve>CVE-2026-41838</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 2. CVE-2026-40988 is an unbounded inflate of a compressed SAML 2.0
+      payload in spring-security-saml2-service-provider, using the REDIRECT
+      binding for SAML 2.0 Login or Logout. That artifact is NOT on the dependency
+      graph: the Spring Security artifacts resolved here are core, config, crypto,
+      oauth2-core, oauth2-jose, oauth2-resource-server, web and test, and no
+      saml2 module among them. Authentication in the target is a JWT bearer token
+      issued after a BCrypt password check, replacing the plaintext comparison of
+      the legacy sign-on program; there is no SAML identity provider, no
+      assertion consumer and no SAML endpoint anywhere in the architecture.
+      SCOPE OF THE PATTERN: Dependency-Check attaches the single
+      cpe:/a:vmware:spring_security product identifier to EVERY
+      org.springframework.security module, so this one record surfaces on
+      spring-security-core, spring-security-web, spring-security-oauth2-core,
+      spring-security-oauth2-resource-server and spring-security-test alike. The
+      argument above is a property of the GRAPH - the saml2-service-provider
+      module is absent - so it holds identically for every artifact in the group,
+      and the pattern is scoped to that one Maven group. Exactly one named CVE is
+      listed; this is not a vendor wide entry.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-40988</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 2. CVE-2026-56816, CVSS 7.5, is unbounded buffering of HTTP/3 reserved
+      frame payloads in io.netty.handler.codec.http3.Http3FrameCodec, reachable
+      only by opening QUIC streams against an HTTP/3 endpoint. The class lives in
+      netty-codec-http3, which is NOT on this dependency graph. The Netty modules
+      that resolve here are exactly buffer, codec, codec-http, codec-http2,
+      common, handler, resolver, transport, transport-classes-epoll and
+      transport-native-unix-common; there is no codec-http3, no QUIC transport and
+      no HTTP/3 listener anywhere in the target, whose only network server is the
+      embedded Tomcat servlet container speaking HTTP/1.1.
+      WHY THIS IS A SUPPRESSION AND NOT AN UPGRADE: Netty is not named by the
+      requirements and was therefore already pinned FORWARD at the root of this
+      build - io.netty:netty-bom 4.1.136.Final in dependencyManagement - which
+      closed thirty-three earlier records by removing the vulnerable code rather
+      than by argument. This one advisory has no fix on the 4.1 line: the vendor
+      fixed it in 4.2.16.Final only, and adopting the 4.2 line would change the
+      transport implementation underneath the AWS SDK asynchronous client, which
+      is a substrate change the requirements do not authorise. Because the
+      affected module is absent from the graph, the 4.1 line carries no exposure.
+      SCOPE OF THE PATTERN: the record was reported against netty-transport, but
+      Dependency-Check attaches the same Netty product identifier to every
+      io.netty module, so the pattern is scoped to that one Maven group with one
+      named CVE.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/io\.netty/netty-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-56816</cve>
+  </suppress>
+
+  <!-- ==================================================================
+       TIER 3 - FEATURE NOT PRESENT IN THIS APPLICATION
+       ================================================================== -->
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. Both advisories are defects in jackson-databind's polymorphic
+      deserialization guard and both require POLYMORPHIC TYPING TO BE ENABLED:
+        CVE-2026-54512  PolymorphicTypeValidator is bypassed when polymorphic
+                        typing is enabled and a type identifier is supplied.
+        CVE-2026-54513  BasicPolymorphicTypeValidator.Builder.
+                        allowIfSubTypeIsArray() allowlists an array type without
+                        validating its component type.
+      Polymorphic typing is not enabled anywhere in this project, and that is
+      enforced rather than merely true today. A search of all main and test
+      sources for JsonTypeInfo, JsonSubTypes, activateDefaultTyping,
+      enableDefaultTyping, PolymorphicTypeValidator and DefaultTyping returns
+      exactly two hits, both in
+      src/test/java/com/cardemo/unit/model/SignOnResponseTest.java, and both
+      belong to a test named "carries no polymorphic type identifier, which would
+      be a deserialisation gadget surface" that ASSERTS THE ABSENCE of
+      @JsonTypeInfo and asserts that no type identifier appears on the wire under
+      any of its usual spellings. That test fails if anyone enables the feature,
+      at which point this suppression must be removed.
+      No ObjectMapper in this project calls activateDefaultTyping, and every DTO
+      is a concrete final shape derived from a BMS symbolic map.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/com\.fasterxml\.jackson\.core/jackson-databind@.*$</packageUrl>
+    <cve>CVE-2026-54512</cve>
+    <cve>CVE-2026-54513</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. Two Spring Expression Language denial of service advisories that
+      both require, in the advisories' own words, an application that "evaluates
+      USER SUPPLIED Spring Expression Language (SpEL) expressions":
+        CVE-2026-41850  algorithmic denial of service during evaluation of a
+                        specially crafted expression.
+        CVE-2026-41851  denial of service through unbounded SpEL expression cache
+                        growth.
+      spring-expression 6.2.16 IS on the runtime classpath - it is a transitive of
+      spring-context and cannot be excluded - so no class absence argument is
+      available and none is claimed. The feature absence argument is exact: this
+      application never parses an expression from caller controlled data. Verified
+      by search across the whole main and test source tree for
+      SpelExpressionParser, ExpressionParser, parseExpression and
+      StandardEvaluationContext: zero occurrences. SpEL reaches this build only
+      through the framework's own internal use in annotation attribute resolution,
+      where every expression is a compile time literal authored in this repository.
+      RESIDUAL RISK, DISCLOSED: fixed in Spring Framework 6.2.19, inherited
+      through the spring-boot-starter-parent 3.5.11 pin that the requirements
+      forbid advancing unilaterally. Remediation is the next parent upgrade. If any
+      future code path ever evaluates a caller supplied expression, this
+      suppression must be removed before that code ships.
+      SCOPE OF THE PATTERN: Dependency-Check attaches the single
+      cpe:/a:vmware:spring_framework product identifier to every
+      org.springframework module, so these records surface on spring-core,
+      spring-web, spring-tx and spring-webmvc. The argument is a property of the
+      APPLICATION, so it holds wherever the record is attached; the pattern is
+      scoped to that one Maven group with two named CVEs.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework/spring-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-41850</cve>
+    <cve>CVE-2026-41851</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. Six Spring Boot 3.5.11 advisories, every one of which names an
+      auto-configuration or a feature that is not present in this application.
+      The affected code is in the spring-boot code jar, so no class absence
+      argument is claimed; each argument below is a verified absence of the
+      feature the advisory requires.
+        CVE-2026-40974  9.8  Cassandra SSL auto-configuration omits hostname
+                             verification. There is no Cassandra dependency on the
+                             graph: the datastore is PostgreSQL 16 reached through
+                             the pgjdbc driver, and a search of the resolved
+                             dependency tree for "cassandra" returns zero matches.
+                             The auto-configuration cannot activate.
+        CVE-2026-40971  9.1  RabbitMQ auto-configuration omits hostname
+                             verification when using an SSL bundle. There is no
+                             RabbitMQ or Spring AMQP dependency on the graph -
+                             zero matches for "rabbit" - and the target's only
+                             queue is an SQS FIFO queue reached through Spring
+                             Cloud AWS, replacing the legacy transient data queue.
+        CVE-2026-22733  8.1  authentication bypass when an authenticated endpoint
+                             is declared under the path used by the CloudFoundry
+                             Actuator endpoints. The CloudFoundry Actuator
+                             endpoints are enabled only under a CloudFoundry
+                             deployment and its management.cloudfoundry
+                             configuration; a search of the whole repository for
+                             "cloudfoundry" returns zero matches, and deployment
+                             is Docker Compose with Kubernetes and service mesh
+                             explicitly out of scope.
+        CVE-2026-40972  7.0  timing attack against the spring-boot-devtools remote
+                             secret, leading to class upload and remote code
+                             execution. spring-boot-devtools is not a dependency
+                             of this build - zero matches on the graph and zero in
+                             the build file - so there is no remote secret, no
+                             remote restart endpoint and no upload path.
+        CVE-2026-40973  7.0  a local attacker taking control of the ApplicationTemp
+                             directory can read session information when
+                             server.servlet.session.persistent is true. That
+                             property is set nowhere in this repository and its
+                             framework default is false. The requirements mandate
+                             stateless request handling with no server side session
+                             state at all: the legacy pseudo-conversational
+                             COMMAREA collapses into JWT claims and request
+                             parameters, so there is no session to persist.
+        CVE-2026-40975  7.5  values produced by ${random.value} are unfit for use
+                             as secrets. No property placeholder of that form
+                             exists anywhere in this repository. The one secret in
+                             the system, the JWT signing key, is resolved from an
+                             environment variable in every profile with fail fast
+                             on absence and no committed default, which is the
+                             mechanism the requirements mandate.
+      RESIDUAL RISK, DISCLOSED: all six are fixed in Spring Boot 3.5.14. This
+      project pins spring-boot-starter-parent at 3.5.11 because the requirements
+      pin it explicitly and forbid advancing it unilaterally, directing instead
+      that the divergence be recorded. This entry is that record. If any of the
+      six features above is ever adopted - Cassandra, RabbitMQ, a CloudFoundry
+      deployment, devtools, persistent sessions or ${random.value} - the
+      corresponding argument collapses and this suppression must be narrowed or
+      removed before that change ships.
+      SCOPE OF THE PATTERN: the records were reported against the spring-boot code
+      jar, but Dependency-Check attaches the same cpe:/a:vmware:spring_boot
+      product identifier to spring-boot-autoconfigure, spring-boot-actuator and
+      the starter aggregators as well. The arguments are properties of the
+      APPLICATION and of the RESOLVED BOOT VERSION 3.5.11, identical across the
+      group, so the pattern is scoped to that one Maven group with six named CVEs.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot(-[a-z0-9-]+)?@.*$</packageUrl>
+    <cve>CVE-2026-40974</cve>
+    <cve>CVE-2026-40971</cve>
+    <cve>CVE-2026-22733</cve>
+    <cve>CVE-2026-40972</cve>
+    <cve>CVE-2026-40973</cve>
+    <cve>CVE-2026-40975</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. CVE-2026-54291, CVSS 8.2 (CVSS v4 only, which is why it does not
+      appear in a v2/v3 filtered reading of the report), in pgjdbc 42.7.4 through
+      42.7.11: a connection opened with channelBinding=require can be silently
+      DOWNGRADED from SCRAM-SHA-256-PLUS to plain SCRAM-SHA-256, losing the man in
+      the middle protection that setting is meant to guarantee, because the bundled
+      scram-client returns an empty byte array instead of failing when the server
+      certificate's signature algorithm has no tls-server-end-point binding hash.
+      The advisory's precondition is the connection property channelBinding=require.
+      A search of the whole repository - build file, compose file, environment
+      template, every profile and every Java source - finds no channelBinding
+      property, no sslmode property and no SCRAM configuration of any kind: the
+      JDBC URL carries host, port, database and credentials only. Without
+      channelBinding=require there is no channel binding guarantee to downgrade,
+      so the vulnerable code path is not entered.
+      RESIDUAL RISK, DISCLOSED: the driver version resolved here, 42.7.10, is
+      inside the affected range. It is not advanced because the requirements record
+      42.7.10 as the security baseline this gate asserts against and direct that
+      divergence from a recorded version be recorded rather than resolved
+      unilaterally. Compensating control: the database is reached over the private
+      Docker Compose network, never across an untrusted path, and transport
+      security termination is explicitly out of scope for this migration. If
+      channelBinding is ever set to require - which is the correct hardening for a
+      production deployment - the driver must be advanced to a fixed release and
+      this suppression deleted in the same change.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.postgresql/postgresql@.*$</packageUrl>
+    <cve>CVE-2026-54291</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. CVE-2026-41848 is a ReDoS in AntPathMatcher that, in the advisory's
+      own words, requires "an attacker ... able to provide a pattern which is then
+      directly or indirectly supplied to one of the following methods in
+      AntPathMatcher". The attacker must control the PATTERN, not the path.
+      In this application every Ant pattern is a compile time literal: the
+      @RequestMapping and @GetMapping/@PostMapping/@PutMapping values on the eight
+      controllers, and the requestMatchers patterns in the security filter chain.
+      No pattern is read from a request parameter, a request body, a header, a
+      database column or a configuration value that an unauthenticated caller can
+      influence. Request PATHS are matched against those fixed patterns, which is
+      the direction the advisory does not cover.
+      RESIDUAL RISK, DISCLOSED: fixed in Spring Framework 6.2.19, inherited
+      through the spring-boot-starter-parent 3.5.11 pin. Remediation is the next
+      parent upgrade. If a future endpoint ever accepts a caller supplied path
+      pattern, this suppression must be removed before that endpoint ships.
+      SCOPE OF THE PATTERN: AntPathMatcher itself lives only in spring-core, but
+      Dependency-Check attaches the single cpe:/a:vmware:spring_framework product
+      identifier to every org.springframework module, so the same record also
+      surfaces on spring-web, spring-tx and spring-webmvc. The argument above is a
+      property of the APPLICATION - no caller ever supplies a pattern - so it
+      holds identically wherever the record is attached, and the pattern is scoped
+      to that one Maven group with one named CVE.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework/spring-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-41848</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. CVE-2026-47838 concerns SubjectDnX509PrincipalExtractor mis-reading
+      a malformed X.509 certificate CN, allowing user impersonation. The extractor
+      is reachable only when X.509 CLIENT CERTIFICATE AUTHENTICATION is configured
+      on the security filter chain.
+      This application authenticates with a JWT bearer token validated by a
+      resource server filter, preceded by a correlation id filter, and issues that
+      token after a BCrypt password check. There is no x509 configuration, no
+      pre-authentication provider and no client certificate trust store anywhere
+      in the target architecture; the embedded container is not configured for
+      mutual TLS and TLS termination is explicitly out of scope.
+      RESIDUAL RISK, DISCLOSED: fixed in a Spring Security release later than
+      6.5.8, inherited through the spring-boot-starter-parent 3.5.11 pin.
+      Remediation is the next parent upgrade. Adding x509() to the filter chain
+      requires removing this suppression first.
+      SCOPE OF THE PATTERN: SubjectDnX509PrincipalExtractor lives only in
+      spring-security-web - one match there, zero in core, oauth2-core,
+      oauth2-resource-server and test - but Dependency-Check attaches the single
+      cpe:/a:vmware:spring_security product identifier to every
+      org.springframework.security module, so the record also surfaces on
+      spring-security-oauth2-core and spring-security-test. The argument above is
+      a property of the APPLICATION - x509 authentication is configured nowhere -
+      so it holds identically wherever the record is attached, and the pattern is
+      scoped to that one Maven group with one named CVE.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-47838</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. Fourteen Apache Tomcat advisories concern components that this
+      application does not configure and, in most cases, cannot configure, because
+      it runs an embedded container driven entirely by Spring Boot properties and
+      a Spring Security filter chain, with no web.xml, no server.xml, no valve, no
+      realm, no cluster and no APR or FFM native connector.
+        CVE-2026-43512  digest authentication. The advisory record is itself
+                        marked DEPRECATED. No Tomcat authenticator is used at
+                        all; authentication is a Spring Security filter.
+        CVE-2026-29145  CLIENT_CERT authentication with soft fail disabled, in
+                        Tomcat and Tomcat Native. No client certificate
+                        authentication and no tomcat-native on the graph.
+        CVE-2026-43515  improper authorization when multiple method constraints
+                        define an HTTP method for the same extension. Requires
+                        security constraints in web.xml. There is no web.xml.
+        CVE-2026-55276  special roles and empty authorisation constraints were
+                        omitted when the EFFECTIVE WEB.XML was logged. There is
+                        no web.xml and no such logging.
+        CVE-2026-53434  CRL configuration on an FFM based connector. No CRL and
+                        no FFM connector are configured.
+        CVE-2026-59083  security constraint bypass through URL hex encoding in
+                        the REWRITE VALVE. The rewrite valve is not configured.
+        CVE-2026-53404  OR chain condition handling in the REWRITE VALVE. Same.
+        CVE-2026-59084  documentation of secure EncryptInterceptor configuration.
+                        EncryptInterceptor belongs to Tomcat clustering, which is
+                        not configured; the deployment is a single JAR.
+        CVE-2026-29146  padding oracle in EncryptInterceptor. Same component.
+        CVE-2026-34487  the cloud membership provider for clustering exposed a
+                        Kubernetes bearer token in a log. Clustering is not
+                        configured and Kubernetes deployment is explicitly out of
+                        scope; orchestration stops at Docker Compose.
+        CVE-2026-34483  output escaping in JsonAccessLogValve. That valve is not
+                        configured; access logging is not enabled.
+        CVE-2026-43513  case sensitivity in LockOutRealm. No Tomcat realm is
+                        configured; lockout is not a Tomcat concern here.
+        CVE-2026-42498  HTTP Authentication header exposed to unexpected hosts
+                        during WEBSOCKET authentication. No WebSocket endpoint
+                        exists; the surface is REST and JSON only.
+        CVE-2026-29129  configured cipher preference order not preserved. No TLS
+                        connector is configured on the embedded container; TLS
+                        termination is explicitly out of scope and is recorded as
+                        deferred hardening.
+      RESIDUAL RISK, DISCLOSED: every one of the above is fixed in a Tomcat
+      release later than 10.1.52, which is inherited through the
+      spring-boot-starter-parent 3.5.11 pin. Remediation is the next parent
+      upgrade. Enabling any of the named components requires removing the
+      corresponding line here first.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-(core|el|websocket)@.*$</packageUrl>
+    <cve>CVE-2026-43512</cve>
+    <cve>CVE-2026-29145</cve>
+    <cve>CVE-2026-43515</cve>
+    <cve>CVE-2026-55276</cve>
+    <cve>CVE-2026-53434</cve>
+    <cve>CVE-2026-59083</cve>
+    <cve>CVE-2026-53404</cve>
+    <cve>CVE-2026-59084</cve>
+    <cve>CVE-2026-29146</cve>
+    <cve>CVE-2026-34487</cve>
+    <cve>CVE-2026-34483</cve>
+    <cve>CVE-2026-43513</cve>
+    <cve>CVE-2026-42498</cve>
+    <cve>CVE-2026-29129</cve>
+  </suppress>
+
+  <suppress>
+    <notes><![CDATA[
+      TIER 3. Both records come from httpcore5 5.3.6 SHADED INSIDE
+      com.github.docker-java:docker-java-transport-zerodep, a TEST SCOPE artifact:
+        CVE-2026-54399  unbounded memory in the HTTP/1.1 message parser when a
+                        peer sends excessive headers.
+        CVE-2026-54428  unbounded memory in the HTTP/2 HPACK decoder when a peer
+                        sends oversized compressed header blocks.
+      Both require a hostile PEER able to send crafted HTTP messages. The only
+      peer this transport ever speaks to is the local Docker daemon, reached over
+      a unix domain socket by Testcontainers while integration tests run. It is
+      never exposed to a network, never reachable by an untrusted party, and never
+      present in the shipped artifact: the Spring Boot fat JAR contains compile
+      and runtime scope only, so this code does not exist in production.
+      The version cannot be remediated here even in principle: httpcore5 is
+      relocated inside the zerodep jar and is therefore not reachable by Maven
+      dependency management, and the parent artifact arrives through
+      Testcontainers 2.0.3, which the requirements pin exactly.
+      RESIDUAL RISK, DISCLOSED: fixed in Apache HttpComponents Core later than
+      5.4.2. Remediation is a future Testcontainers release that shades a newer
+      core.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.httpcomponents\.core5/httpcore5(-h2)?@.*$</packageUrl>
+    <cve>CVE-2026-54399</cve>
+    <cve>CVE-2026-54428</cve>
+  </suppress>
+
+  <!-- ==================================================================
+       TIER 4 - APPLICABLE, ACCEPTED, TIME BOXED. THESE ENTRIES EXPIRE.
+       ================================================================== -->
+
+  <suppress until="2026-11-01Z">
+    <notes><![CDATA[
+      TIER 4 - APPLICABLE. CVE-2026-41842, CVSS 7.5: denial of service when Spring
+      MVC or WebFlux RESOLVES STATIC RESOURCES. The handler it concerns,
+      org.springframework.web.servlet.resource.ResourceHttpRequestHandler, is in
+      spring-webmvc - a jar listing at 6.2.16 finds exactly one match there, and
+      zero in spring-core and zero in spring-web - and spring-webmvc IS on this
+      application's runtime classpath because the target is a Spring MVC REST API.
+      Spring Boot's web auto-configuration registers resource handling by default,
+      so NO CLASS ABSENCE AND NO FEATURE ABSENCE ARGUMENT IS AVAILABLE HERE AND
+      NONE IS CLAIMED. This entry was deliberately re-tiered from a class absence
+      argument to a time boxed acceptance once the scan attributed the record to
+      spring-webmvc itself: asserting absence against the artifact that actually
+      contains the code would have been false.
+      WHY IT IS NOT REMEDIATED HERE. The fix is Spring Framework 6.2.19. This
+      project declares no Spring Framework version; it is resolved by
+      spring-boot-starter-parent, which the requirements pin explicitly at 3.5.11
+      and forbid advancing unilaterally, directing instead that the divergence be
+      recorded. This entry is that record.
+      COMPENSATING CONTROLS. The target has no static asset tree to serve: there is
+      no src/main/resources/static, no src/main/resources/public and no
+      META-INF/resources directory in the artifact, verified by directory listing,
+      because the presentation layer is REST and JSON only and 3270 and BMS
+      terminal emulation, HTML front ends and component libraries are all
+      explicitly out of scope. Every endpoint sits behind a correlation id filter
+      then a JWT authentication filter with role based authorisation, and the
+      deployment topology is Docker Compose against LocalStack with no
+      internet exposed listener.
+      REMEDIATION. Upgrade spring-boot-starter-parent to a release whose managed
+      Spring Framework version is 6.2.19 or later, then DELETE this entry.
+      SCOPE OF THE PATTERN: Dependency-Check attaches the single
+      cpe:/a:vmware:spring_framework product identifier to every
+      org.springframework module, so this record surfaces on spring-core,
+      spring-web, spring-tx and spring-webmvc. The acceptance is a property of the
+      RESOLVED FRAMEWORK VERSION 6.2.16, identical across the group, so the pattern
+      is scoped to that one Maven group with one named CVE.
+      This suppression EXPIRES on 2026-11-01. After that date the record returns
+      and the build fails again. That is deliberate.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework/spring-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-41842</cve>
+  </suppress>
+
+  <suppress until="2026-11-01Z">
+    <notes><![CDATA[
+      TIER 4 - APPLICABLE. CVE-2026-22732, CVSS 9.1, in spring-security-web
+      6.5.8: when an application specifies HTTP response headers and Spring
+      Security uses lazy header writing, which is the default, the headers may
+      not be written. The vulnerable class HeaderWriterFilter IS in this artifact
+      and this application does use the standard servlet security filter chain,
+      so no class absence or feature absence argument is available and none is
+      claimed.
+      WHY IT IS NOT REMEDIATED HERE. The fix is a Spring Security release later
+      than 6.5.8. This project does not declare a Spring Security version: it is
+      resolved by spring-boot-starter-parent, which the requirements pin
+      explicitly at 3.5.11 and which they forbid advancing unilaterally, directing
+      instead that the divergence be recorded. This entry is that record.
+      COMPENSATING CONTROLS. Response security headers are not this application's
+      only defence: authorisation is enforced server side by role, on the request
+      path, before any handler runs, and the target is a JSON API consumed by
+      programmatic clients rather than a browser rendering untrusted markup, so
+      the browser side controls these headers carry are not load bearing here.
+      REMEDIATION. Upgrade spring-boot-starter-parent to a release whose managed
+      Spring Security version carries the fix, then DELETE this entry.
+      SCOPE OF THE PATTERN: Dependency-Check attaches the single
+      cpe:/a:vmware:spring_security product identifier to every
+      org.springframework.security module, so this one record surfaces on
+      spring-security-web, spring-security-oauth2-core and spring-security-test
+      alike. The acceptance above is a property of the RESOLVED SPRING SECURITY
+      VERSION, 6.5.8, which is identical across every module in the group, so it
+      holds wherever the record is attached. The pattern is scoped to that one
+      Maven group with one named CVE.
+      This suppression EXPIRES on 2026-11-01. After that date the record returns
+      and the build fails again. That is deliberate.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.security/spring-security-[a-z0-9-]+@.*$</packageUrl>
+    <cve>CVE-2026-22732</cve>
+  </suppress>
+
+  <suppress until="2026-11-01Z">
+    <notes><![CDATA[
+      TIER 4 - APPLICABLE. Three Apache Tomcat advisories against
+      tomcat-embed-core 10.1.52 that reach the HTTP/1.1 connector this
+      application actually serves on, and for which no class absence or feature
+      absence argument exists:
+        CVE-2026-41293  9.8  improper input validation. The advisory publishes no
+                             component detail, so inapplicability cannot be
+                             demonstrated and is not claimed.
+        CVE-2026-24880  7.5  HTTP request smuggling via an invalid chunk
+                             extension. Reaches the chunked transfer decoder of
+                             the connector in use.
+        CVE-2026-41284  7.5  allocation of resources without limits or
+                             throttling. No component detail published.
+      WHY THEY ARE NOT REMEDIATED HERE. All three are fixed in Tomcat releases
+      later than 10.1.52. This project does not declare a Tomcat version: it is
+      resolved by spring-boot-starter-parent, pinned at 3.5.11 by requirement,
+      with unilateral advancement forbidden and recording required instead.
+      COMPENSATING CONTROLS. The container is not internet facing in any
+      supported topology: it is reached through Docker Compose on the developer
+      host, and request rate limiting and TLS termination are both recorded as
+      deferred hardening to be supplied by the edge in a real deployment. Request
+      smuggling additionally requires an intermediary that disagrees with Tomcat
+      about message framing, and there is no proxy in front of the container in
+      this topology.
+      REMEDIATION. Upgrade spring-boot-starter-parent to a release whose managed
+      Tomcat version is 10.1.56 or later, then DELETE this entry.
+      This suppression EXPIRES on 2026-11-01.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/tomcat-embed-(core|el|websocket)@.*$</packageUrl>
+    <cve>CVE-2026-41293</cve>
+    <cve>CVE-2026-24880</cve>
+    <cve>CVE-2026-41284</cve>
+  </suppress>
+
+  <suppress until="2026-11-01Z">
+    <notes><![CDATA[
+      TIER 4 - APPLICABLE. CVE-2026-22731, CVSS 8.1: a Spring Boot Actuator
+      authentication bypass when an authenticated application endpoint is declared
+      under a path already configured as a Health Group additional path. This
+      application does expose Actuator with liveness and readiness health groups,
+      so the feature family is present and no inapplicability is claimed. It is
+      recorded here rather than under the aggregator entry above precisely because
+      it is the one of the seven Spring Boot advisories that cannot be dismissed
+      on its own terms.
+      WHY IT IS NOT REMEDIATED HERE. Fixed in Spring Boot 3.5.14. The parent is
+      pinned at 3.5.11 by requirement and may not be advanced unilaterally.
+      COMPENSATING CONTROLS. No additional-path is configured for any health
+      group: the groups are served under the standard /actuator/health/{group}
+      paths, and the bypass requires an additional-path that collides with a
+      secured application endpoint. Application endpoints live under /api/**,
+      disjoint from /actuator/**.
+      REMEDIATION. Upgrade spring-boot-starter-parent to 3.5.14 or later, then
+      DELETE this entry. Configuring management.endpoint.health.group.*
+      .additional-path requires re-examining this record first.
+      This suppression EXPIRES on 2026-11-01.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.springframework\.boot/spring-boot(-[a-z0-9-]+)?@.*$</packageUrl>
+    <cve>CVE-2026-22731</cve>
+  </suppress>
+
+  <suppress until="2026-11-01Z">
+    <notes><![CDATA[
+      TIER 4 - APPLICABLE. CVE-2026-42198, CVSS 7.5, in the pgjdbc driver
+      org.postgresql:postgresql 42.7.10: a client side denial of service during
+      SCRAM-SHA-256 authentication, in which a malicious server instructs the
+      driver to perform a very large iteration count. The identifier is correct,
+      the version is inside the affected range 42.2.0 to before 42.7.11, and
+      SCRAM-SHA-256 is the authentication method PostgreSQL 16 uses by default,
+      so the code path is genuinely reached on every connection. No
+      inapplicability is claimed.
+      WHY IT IS NOT REMEDIATED HERE. Fixed in 42.7.11. This project does not
+      declare a driver version: 42.7.10 is the version spring-boot-starter-parent
+      3.5.11 resolves, and the requirements both pin that parent and record
+      42.7.10 as the resolved driver version, forbidding unilateral advancement.
+      Overriding the property here would diverge from a recorded requirement, so
+      the divergence is recorded instead, which is what the requirements direct.
+      COMPENSATING CONTROLS. The attacker must BE the database server. In every
+      supported topology the server is one this project provisions: the pinned
+      postgres:16.10-alpine service on the compose network, or a Testcontainers
+      instance created by the test itself. The connection URL is supplied by
+      configuration, never by a user, so no caller can redirect the driver at a
+      hostile server.
+      REMEDIATION. Upgrade spring-boot-starter-parent to a release whose managed
+      postgresql version is 42.7.11 or later, then DELETE this entry.
+      This suppression EXPIRES on 2026-11-01.
+    ]]></notes>
+    <packageUrl regex="true">^pkg:maven/org\.postgresql/postgresql@.*$</packageUrl>
+    <cve>CVE-2026-42198</cve>
+  </suppress>
+
+</suppressions>

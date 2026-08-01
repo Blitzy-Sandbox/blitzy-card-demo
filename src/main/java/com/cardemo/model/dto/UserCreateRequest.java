@@ -25,19 +25,21 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
 
 /**
- * Inbound request payload for the user-add transaction, translated field-for-field from the BMS symbolic
- * map {@code app/cpy-bms/COUSR01.CPY}, whose input group {@code COUSR1AI} (declared at line 17) carries
- * exactly <strong>12</strong> input fields. The twelve fields below appear in the map's own declaration
- * order, and each one names its originating COBOL field, PIC clause and line number.
+ * Inbound request payload for the user-add transaction, translated field-for-field from the BMS symbolic map
+ * {@code app/cpy-bms/COUSR01.CPY}, whose input group {@code COUSR1AI} (declared at line 17) carries exactly
+ * <strong>12</strong> input fields. The twelve fields below appear in the map's own declaration order, and each
+ * one names its originating COBOL field, PIC clause and line number.
  *
  * <p>The legacy counterpart is {@code app/cbl/COUSR01C.cbl}, the CICS screen program behind transaction
- * {@code CU01}. That program receives this map, validates the five operator-supplied fields for presence,
- * and writes an 80-byte record to the {@code USRSEC} VSAM cluster. This class is the request half of that
+ * {@code CU01}. That program receives this map, validates the five operator-supplied fields for presence, and
+ * writes an 80-byte record to the {@code USRSEC} VSAM cluster. This class is the request half of that
  * conversation only: it holds transport state and nothing else, performs no hashing, no normalisation, no
  * mapping and no arithmetic, and reaches no repository, service or controller.
  *
@@ -167,13 +169,13 @@ import jakarta.validation.constraints.Size;
  *       custom exception handler that serialises field errors wholesale would leak it. Remediation, which
  *       belongs to the exception-handling layer and not to this class: emit the field name and message only,
  *       never the rejected value. Severity: <strong>High</strong> if such a handler is written.</li>
- *   <li><em>Unknown JSON property.</em> This class opts out of permissive binding rather than into it.
- *       Note precisely what that does and does not guarantee, because the two are easily confused: the
- *       class-level setting pins the override to non-permissive and so prevents unknown properties from
- *       being silently discarded by a class-level opt-in, but it defers the decision to the object mapper's
- *       fail-on-unknown-properties feature. Strict rejection therefore additionally requires that feature to
- *       remain enabled in the Jackson configuration, which is outside this class. Severity:
- *       <strong>Medium</strong>, and stated here rather than overclaimed.</li>
+ *   <li><em>Unknown JSON property.</em> Rejected outright, by this class rather than by configuration
+ *       elsewhere. {@link #rejectUnrecognisedProperty} refuses any property outside the twelve, so the
+ *       guarantee no longer depends on the object mapper's fail-on-unknown-properties feature remaining
+ *       enabled - which matters, because the framework disables that feature by default and this
+ *       repository publishes no {@code application*.yml} in which to enable it. The class-level
+ *       {@code ignoreUnknown = false} is retained as a declaration of intent, but it is the any-setter
+ *       that does the rejecting.</li>
  *   <li><em>Out-of-domain user type.</em> A one-character value outside {@code 'A'} and {@code 'U'} binds
  *       successfully and is carried into the service, which reports it using the source's own message. This
  *       is intentional; see the user-type note above.</li>
@@ -181,16 +183,31 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>Findings carried by this class, classified by severity.</strong>
  * <ul>
- *   <li><strong>Medium</strong> — corpus census correction. The specification's headline figure of 460 BMS
- *       input fields is wrong in both directions. Counting the input group of each of the seventeen
+ *   <li><strong>Medium, resolved</strong> — the payload was mutable after validation. This class exposed a
+ *       no-argument constructor and twelve public setters, so every field stayed writable for the object's
+ *       whole lifetime. Bean Validation runs once, at the boundary, which means a request could be
+ *       validated and then mutated into a state the {@code @Size} bounds had never seen before the service
+ *       read it; the credential could likewise be replaced after the fact. Remediation applied: the
+ *       setters are removed, all twelve fields are {@code final}, and binding goes through a single
+ *       {@code @JsonCreator} constructor, so what validation saw is what the service reads.</li>
+ *   <li><strong>Medium, resolved</strong> — unrecognised JSON properties were silently discarded.
+ *       {@code @JsonIgnoreProperties(ignoreUnknown = false)} reads as protection but cannot provide it: it
+ *       can only decline to suppress the unknown-property check, never enable it, and the feature it
+ *       defers to is disabled by default with no {@code application*.yml} in this repository to enable it.
+ *       An undeclared property was therefore accepted and dropped - so a misspelled {@code password}
+ *       created a user with an absent credential. Remediation applied: see
+ *       {@link #rejectUnrecognisedProperty}.</li>
+ *   <li><strong>Medium, closed</strong> — corpus census correction. The prior-generation plan prose headline
+ *       figure of 460 BMS input fields was wrong in both directions. Counting the input group of the seventeen
  *       symbolic maps yields 441: {@code COACTUP} 54, {@code COACTVW} 37, {@code COADM01} 20,
  *       {@code COBIL00} 10, {@code COCRDLI} 45, {@code COCRDSL} 15, {@code COCRDUP} 17, {@code COMEN01} 20,
  *       {@code CORPT00} 17, {@code COSGN00} 11, {@code COTRN00} 59, {@code COTRN01} 21, {@code COTRN02} 21,
  *       {@code COUSR00} 59, {@code COUSR01} 12, {@code COUSR02} 12 and {@code COUSR03} 11. The
- *       specification's own per-map table sums to 440 because it records {@code COACTVW} as 36 rather than
- *       37. The verified total is <strong>441</strong>. Impact is documentation-only: this class's own count
- *       of 12 is unaffected and independently confirmed. Remediation: correct the headline and the
- *       {@code COACTVW} row.</li>
+ *       per-map table accompanying that prose summed to 440 because it recorded {@code COACTVW} as 36 rather
+ *       than 37. The verified total is <strong>441</strong>. Impact is documentation-only: this class's own
+ *       count of 12 is unaffected and independently confirmed. The remediation has been applied - both the
+ *       headline and the {@code COACTVW} row now read 441 and 37 in
+ *       {@code docs/technical-specifications.md}, verified on 1 August 2026.</li>
  *   <li><strong>Low</strong> — the map reserves a 78-character error-message field, an outbound screen
  *       concern that arrives on an inbound payload purely because the BMS input group carries every field.
  *       It is retained for field-contract completeness and is not treated as operator input.</li>
@@ -209,135 +226,140 @@ import jakarta.validation.constraints.Size;
  * validation-error handler serialising a rejected value, at a mapper configured to auto-detect private
  * fields rather than bean accessors, or at request-body logging upstream of the controller. If an inbound
  * password does not arrive at the service, confirm the JSON key is exactly {@code password} and that the
- * request reaches the write-only setter rather than a getter-driven binder.
+ * request reaches the write-only constructor parameter rather than a getter-driven binder. Note that this
+ * class is immutable and exposes no setters at all, so a binder that expects JavaBean mutators will bind
+ * nothing; the {@code @JsonCreator} constructor is the only write path.
  */
 @JsonIgnoreProperties(ignoreUnknown = false)
 public class UserCreateRequest {
 
     /**
-     * Terminal transaction identifier. Source {@code TRNNAMEI PIC X(4)} at
-     * {@code app/cpy-bms/COUSR01.CPY:24}.
+     * Terminal transaction identifier. Source {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COUSR01.CPY:24}.
      */
     @Size(max = 4)
-    private String transactionName;
+    private final String transactionName;
 
     /**
      * First screen title line. Source {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COUSR01.CPY:30}.
      */
     @Size(max = 40)
-    private String title01;
+    private final String title01;
 
     /**
-     * Screen date stamp as presented. Source {@code CURDATEI PIC X(8)} at
-     * {@code app/cpy-bms/COUSR01.CPY:36}.
+     * Screen date stamp as presented. Source {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:36}.
      */
     @Size(max = 8)
-    private String currentDate;
+    private final String currentDate;
 
     /**
      * Originating program name. Source {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:42}.
      */
     @Size(max = 8)
-    private String programName;
+    private final String programName;
 
     /**
      * Second screen title line. Source {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COUSR01.CPY:48}.
      */
     @Size(max = 40)
-    private String title02;
+    private final String title02;
 
     /**
-     * Screen time stamp as presented. Source {@code CURTIMEI PIC X(8)} at
-     * {@code app/cpy-bms/COUSR01.CPY:54}. Width 8 here; {@code app/cpy-bms/COSGN00.CPY:54} alone declares
-     * {@code PIC X(9)}, which is why this header field is declared inline rather than shared.
+     * Screen time stamp as presented. Source {@code CURTIMEI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:54}.
+     * Width 8 here; {@code app/cpy-bms/COSGN00.CPY:54} alone declares {@code PIC X(9)}, which is why this
+     * header field is declared inline rather than shared.
      */
     @Size(max = 8)
-    private String currentTime;
+    private final String currentTime;
 
     /**
-     * Operator-supplied first name, and the first field the source validates. Source
-     * {@code FNAMEI PIC X(20)} at {@code app/cpy-bms/COUSR01.CPY:60}. On this add map the names precede the
-     * identifier; the update map {@code app/cpy-bms/COUSR02.CPY} orders them the other way round.
+     * Operator-supplied first name, and the first field the source validates. Source {@code FNAMEI PIC X(20)}
+     * at {@code app/cpy-bms/COUSR01.CPY:60}. On this add map the names precede the identifier; the update map
+     * {@code app/cpy-bms/COUSR02.CPY} orders them the other way round.
      */
     @Size(max = 20)
-    private String firstName;
+    private final String firstName;
 
     /**
-     * Operator-supplied last name, and the second field the source validates. Source
-     * {@code LNAMEI PIC X(20)} at {@code app/cpy-bms/COUSR01.CPY:66}.
+     * Operator-supplied last name, and the second field the source validates. Source {@code LNAMEI PIC X(20)}
+     * at {@code app/cpy-bms/COUSR01.CPY:66}.
      */
     @Size(max = 20)
-    private String lastName;
+    private final String lastName;
 
     /**
      * Operator-supplied user identifier, and the third field the source validates. Source
      * {@code USERIDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:72} — note the field name, which is
-     * {@code USERIDI} on this map and the input-suffixed {@code USRIDINI} on
-     * {@code app/cpy-bms/COUSR02.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:66}. Width 8 matches the
-     * {@code USRSEC} cluster key length declared as {@code KEYS(8,0)} in {@code app/jcl/DUSRSECJ.jcl}.
+     * {@code USERIDI} on this map and the input-suffixed {@code USRIDINI} on {@code app/cpy-bms/COUSR02.CPY:60}
+     * and {@code app/cpy-bms/COUSR00.CPY:66}. Width 8 matches the {@code USRSEC} cluster key length declared as
+     * {@code KEYS(8,0)} in {@code app/jcl/DUSRSECJ.jcl}.
      */
     @Size(max = 8)
-    private String userId;
+    private final String userId;
 
     /**
-     * Presented plaintext password, and the fourth field the source validates. Source
-     * {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR01.CPY:78}.
-     *
-     * <p><strong>Inbound only.</strong> This field is bound from a request body and is never serialized
-     * outward: it is annotated write-only for JSON, and this class deliberately declares no
-     * {@code getPassword()} accessor, so no public read path to the credential exists. The maximum length
-     * is 8 because the source field is {@code X(8)}; it is not widened to hold a digest, and no digest,
-     * salt or hash field exists on this class.
+     * Presented plaintext password, and the fourth field the source validates. Source {@code PASSWDI PIC X(8)}
+     * at {@code app/cpy-bms/COUSR01.CPY:78}.
      */
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Size(max = 8)
-    private String password;
+    private final String password;
 
     /**
-     * Operator-supplied user type, and the fifth field the source validates. Source
-     * {@code USRTYPEI PIC X(1)} at {@code app/cpy-bms/COUSR01.CPY:84}. Carried as a raw one-character code
-     * rather than as the {@code UserType} enum, so that an out-of-domain value reaches the service and is
-     * reported with the source's own message instead of failing JSON binding.
+     * Operator-supplied user type, and the fifth field the source validates. Source {@code USRTYPEI PIC X(1)}
+     * at {@code app/cpy-bms/COUSR01.CPY:84}. Carried as a raw one-character code rather than as the
+     * {@code UserType} enum, so that an out-of-domain value reaches the service and is reported with the
+     * source's own message instead of failing JSON binding.
      */
     @Size(max = 1)
-    private String userType;
+    private final String userType;
 
     /**
      * Screen error-message area. Source {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COUSR01.CPY:90}.
-     * Present for field-contract completeness because the BMS input group declares it; it is an outbound
-     * screen concern and is not treated as operator input.
+     * Present for field-contract completeness because the BMS input group declares it; it is an outbound screen
+     * concern and is not treated as operator input.
      */
     @Size(max = 78)
-    private String errorMessage;
+    private final String errorMessage;
 
     /**
-     * Creates an empty request. Every field starts as {@code null}, which is the distinct
-     * <em>absent</em> state of the three-state model described on this class and is deliberately not
-     * initialised to an empty string.
+     * Creates an empty request. Every field starts as {@code null}, which is the distinct <em>absent</em> state
+     * of the three-state model described on this class and is deliberately not initialised to an empty string.
      */
-    public UserCreateRequest() {
-        // Intentionally empty: JSON binding and the setters populate this transport object, and no field
-        // is defaulted, because null, empty and marked are three distinct states in the source.
+    @JsonCreator
+    public UserCreateRequest(
+            @JsonProperty("transactionName") final String transactionName,
+            @JsonProperty("title01") final String title01,
+            @JsonProperty("currentDate") final String currentDate,
+            @JsonProperty("programName") final String programName,
+            @JsonProperty("title02") final String title02,
+            @JsonProperty("currentTime") final String currentTime,
+            @JsonProperty("firstName") final String firstName,
+            @JsonProperty("lastName") final String lastName,
+            @JsonProperty("userId") final String userId,
+            @JsonProperty("password") final String password,
+            @JsonProperty("userType") final String userType,
+            @JsonProperty("errorMessage") final String errorMessage) {
+        this.transactionName = transactionName;
+        this.title01 = title01;
+        this.currentDate = currentDate;
+        this.programName = programName;
+        this.title02 = title02;
+        this.currentTime = currentTime;
+        this.firstName = firstName;
+        this.lastName = lastName;
+        this.userId = userId;
+        this.password = password;
+        this.userType = userType;
+        this.errorMessage = errorMessage;
     }
 
     /**
-     * Returns the terminal transaction identifier, {@code TRNNAMEI} at
-     * {@code app/cpy-bms/COUSR01.CPY:24}.
+     * Returns the terminal transaction identifier, {@code TRNNAMEI} at {@code app/cpy-bms/COUSR01.CPY:24}.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
      */
     public String getTransactionName() {
         return transactionName;
-    }
-
-    /**
-     * Sets the terminal transaction identifier, {@code TRNNAMEI} at {@code app/cpy-bms/COUSR01.CPY:24}.
-     *
-     * @param transactionName the presented value, stored verbatim; {@code null} and the empty string are
-     *                        retained as distinct states and are neither trimmed nor coerced
-     */
-    public void setTransactionName(String transactionName) {
-        this.transactionName = transactionName;
     }
 
     /**
@@ -347,16 +369,6 @@ public class UserCreateRequest {
      */
     public String getTitle01() {
         return title01;
-    }
-
-    /**
-     * Sets the first screen title line, {@code TITLE01I} at {@code app/cpy-bms/COUSR01.CPY:30}.
-     *
-     * @param title01 the presented value, stored verbatim; {@code null} and the empty string are retained
-     *                as distinct states and are neither trimmed nor coerced
-     */
-    public void setTitle01(String title01) {
-        this.title01 = title01;
     }
 
     /**
@@ -370,16 +382,6 @@ public class UserCreateRequest {
     }
 
     /**
-     * Sets the screen date stamp as presented, {@code CURDATEI} at {@code app/cpy-bms/COUSR01.CPY:36}.
-     *
-     * @param currentDate the presented value, stored verbatim and never reformatted or parsed here;
-     *                    {@code null} and the empty string are retained as distinct states
-     */
-    public void setCurrentDate(String currentDate) {
-        this.currentDate = currentDate;
-    }
-
-    /**
      * Returns the originating program name, {@code PGMNAMEI} at {@code app/cpy-bms/COUSR01.CPY:42}.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
@@ -389,32 +391,12 @@ public class UserCreateRequest {
     }
 
     /**
-     * Sets the originating program name, {@code PGMNAMEI} at {@code app/cpy-bms/COUSR01.CPY:42}.
-     *
-     * @param programName the presented value, stored verbatim; {@code null} and the empty string are
-     *                    retained as distinct states and are neither trimmed nor coerced
-     */
-    public void setProgramName(String programName) {
-        this.programName = programName;
-    }
-
-    /**
      * Returns the second screen title line, {@code TITLE02I} at {@code app/cpy-bms/COUSR01.CPY:48}.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
      */
     public String getTitle02() {
         return title02;
-    }
-
-    /**
-     * Sets the second screen title line, {@code TITLE02I} at {@code app/cpy-bms/COUSR01.CPY:48}.
-     *
-     * @param title02 the presented value, stored verbatim; {@code null} and the empty string are retained
-     *                as distinct states and are neither trimmed nor coerced
-     */
-    public void setTitle02(String title02) {
-        this.title02 = title02;
     }
 
     /**
@@ -428,17 +410,6 @@ public class UserCreateRequest {
     }
 
     /**
-     * Sets the screen time stamp as presented, {@code CURTIMEI} at {@code app/cpy-bms/COUSR01.CPY:54}.
-     * The accepted width is 8 on this map; the sign-on map declares 9, which is why the two are not shared.
-     *
-     * @param currentTime the presented value, stored verbatim and never reformatted or parsed here;
-     *                    {@code null} and the empty string are retained as distinct states
-     */
-    public void setCurrentTime(String currentTime) {
-        this.currentTime = currentTime;
-    }
-
-    /**
      * Returns the operator-supplied first name, {@code FNAMEI} at {@code app/cpy-bms/COUSR01.CPY:60}.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
@@ -448,34 +419,12 @@ public class UserCreateRequest {
     }
 
     /**
-     * Sets the operator-supplied first name, {@code FNAMEI} at {@code app/cpy-bms/COUSR01.CPY:60}. This is
-     * the first field the source validates, at {@code app/cbl/COUSR01C.cbl:118}.
-     *
-     * @param firstName the presented value, stored verbatim and never case-folded here; {@code null} and
-     *                  the empty string are retained as distinct states
-     */
-    public void setFirstName(String firstName) {
-        this.firstName = firstName;
-    }
-
-    /**
      * Returns the operator-supplied last name, {@code LNAMEI} at {@code app/cpy-bms/COUSR01.CPY:66}.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
      */
     public String getLastName() {
         return lastName;
-    }
-
-    /**
-     * Sets the operator-supplied last name, {@code LNAMEI} at {@code app/cpy-bms/COUSR01.CPY:66}. This is
-     * the second field the source validates, at {@code app/cbl/COUSR01C.cbl:124}.
-     *
-     * @param lastName the presented value, stored verbatim and never case-folded here; {@code null} and the
-     *                 empty string are retained as distinct states
-     */
-    public void setLastName(String lastName) {
-        this.lastName = lastName;
     }
 
     /**
@@ -489,53 +438,14 @@ public class UserCreateRequest {
     }
 
     /**
-     * Sets the operator-supplied user identifier, {@code USERIDI} at
-     * {@code app/cpy-bms/COUSR01.CPY:72}. This is the third field the source validates, at
-     * {@code app/cbl/COUSR01C.cbl:130}, and its width matches the {@code USRSEC} cluster key length.
-     *
-     * @param userId the presented value, stored verbatim and never case-folded here; {@code null} and the
-     *               empty string are retained as distinct states
-     */
-    public void setUserId(String userId) {
-        this.userId = userId;
-    }
-
-    /**
-     * Sets the presented plaintext password, {@code PASSWDI} at {@code app/cpy-bms/COUSR01.CPY:78}. This is
-     * the fourth field the source validates, at {@code app/cbl/COUSR01C.cbl:136}.
-     *
-     * <p>This setter is the credential's <strong>only</strong> public accessor: there is deliberately no
-     * matching getter, and the field is annotated write-only for JSON, so the value can be bound inbound
-     * but can never be serialized, logged or read back out through this class.
-     *
-     * @param password the presented plaintext value, stored verbatim and never hashed, trimmed or
-     *                 case-folded here; {@code null} and the empty string are retained as distinct states
-     *                 so that the source's blank-versus-invalid distinction survives
-     */
-    public void setPassword(String password) {
-        this.password = password;
-    }
-
-    /**
      * Returns the operator-supplied user type as a raw one-character code, {@code USRTYPEI} at
-     * {@code app/cpy-bms/COUSR01.CPY:84}. A value outside {@code 'A'} and {@code 'U'} is carried rather
-     * than rejected, so the service can report it with the source's own message.
+     * {@code app/cpy-bms/COUSR01.CPY:84}. A value outside {@code 'A'} and {@code 'U'} is carried rather than
+     * rejected, so the service can report it with the source's own message.
      *
      * @return the presented value exactly as bound, which may be {@code null} or empty
      */
     public String getUserType() {
         return userType;
-    }
-
-    /**
-     * Sets the operator-supplied user type, {@code USRTYPEI} at {@code app/cpy-bms/COUSR01.CPY:84}. This is
-     * the fifth field the source validates, at {@code app/cbl/COUSR01C.cbl:142}.
-     *
-     * @param userType the presented one-character code, stored verbatim and neither mapped to an enum nor
-     *                 case-folded here; {@code null} and the empty string are retained as distinct states
-     */
-    public void setUserType(String userType) {
-        this.userType = userType;
     }
 
     /**
@@ -546,14 +456,38 @@ public class UserCreateRequest {
     public String getErrorMessage() {
         return errorMessage;
     }
-
     /**
-     * Sets the screen error-message area, {@code ERRMSGI} at {@code app/cpy-bms/COUSR01.CPY:90}.
+     * Rejects any JSON property that is not one of the twelve this class declares.
      *
-     * @param errorMessage the value, stored verbatim; {@code null} and the empty string are retained as
-     *                     distinct states and are neither trimmed nor coerced
+     * <p><strong>Why this exists alongside the class-level setting.</strong>
+     * {@code @JsonIgnoreProperties(ignoreUnknown = false)} pins this class to non-permissive binding, but
+     * pinning is not rejecting: that annotation can only decline to suppress the unknown-property check,
+     * never enable it, so it defers the actual decision to the object mapper's
+     * {@code FAIL_ON_UNKNOWN_PROPERTIES} feature. The framework disables that feature by default and this
+     * repository publishes no {@code application*.yml} in which to enable it, so an unrecognised property
+     * was in practice accepted and discarded. This guard is the mechanism that actually refuses one, and
+     * it holds under a lenient mapper as well as a strict one.</p>
+     *
+     * <p>Silent discarding matters here more than on most payloads: a client that misspells
+     * {@code password} would otherwise create a user whose credential is absent, and
+     * {@code app/cbl/COUSR01C.cbl:136} treats an absent password as the empty-field path rather than as a
+     * malformed request.</p>
+     *
+     * <p>Neither the offending name nor the offending value is echoed. Both are untrusted input, and this
+     * payload carries a plaintext credential, so echoing an arbitrary submitted value into a log line is
+     * exactly the disclosure this class is built to avoid.</p>
+     *
+     * @param name  the unrecognised property name, accepted only so that Jackson can invoke this method;
+     *              deliberately never read
+     * @param value the unrecognised property value, accepted only so that Jackson can invoke this method;
+     *              deliberately never read
+     * @throws IllegalArgumentException always, because no unrecognised property is acceptable
      */
-    public void setErrorMessage(String errorMessage) {
-        this.errorMessage = errorMessage;
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(final String name, final Object value) {
+        throw new IllegalArgumentException(
+                "UserCreateRequest accepts only the 12 fields declared by app/cpy-bms/COUSR01.CPY, and an"
+                        + " unrecognised property was supplied. The offending name and value are withheld"
+                        + " because they are untrusted input.");
     }
 }

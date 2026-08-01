@@ -31,142 +31,73 @@
  */
 
 /**
- * The typed exception hierarchy for CardDemo: nine classes that replace the COBOL {@code FILE STATUS}
- * guard idiom and the CICS {@code DFHRESP} response-code branching of the frozen legacy corpus.
+ * The typed exception hierarchy that replaces the two failure-signalling mechanisms of the frozen CardDemo
+ * corpus: the {@code FILE STATUS} guard wrapped around every batch I/O verb and the {@code EXEC CICS}
+ * response-code branching wrapped around every online file request.
  *
- * <p>The banner above names every legacy artefact this package derives from, each pinned to commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} (short {@code 7756d89}), the traceability anchor for
- * the whole migration. File name casing in those citations is load bearing: {@code CBSTM03A.CBL} and
- * {@code CBSTM03B.CBL} are the only two members of {@code app/cbl} with an uppercase extension, the other
- * 26 of the 28 using a lowercase one, and in {@code app/cpy} only {@code COSTM01.CPY} is uppercase, so
- * {@code CSMSG02Y.cpy} and {@code CSSETATY.cpy} are cited lowercase. A wrong case citation is an evidence
- * defect, not a typographical one.
- *
- * <p><strong>Why this documentation file exists.</strong> It is mandated by the project rule
- * <em>Build Verify</em>, not by any functional requirement. Clause B of that rule requires
- * "Document public APIs: purpose, inputs/outputs, side effects, error modes", and Clause E requires that
- * "Every module/component must have a short README or docstring explaining:" what it does, how to
- * run/build/test it, its key configs and defaults, and its common failure modes and troubleshooting. This
- * tree takes the <em>docstring</em> option of that either/or, uniformly, at package granularity: there is
- * no {@code README} and no Markdown file anywhere under {@code src/main/java}. The four sections below
- * correspond one for one to the four Clause E sub-bullets, and this package is one of the fourteen planned
- * package documentation files in the Java tree.
- *
- * <h2>What it does</h2>
- *
- * <p>This package supplies the vocabulary of failure for the whole application. The legacy corpus reports
- * failure in two dialects: batch programs test a two character {@code FILE STATUS} value after every I/O
- * verb, and online programs branch on a CICS {@code DFHRESP} response code. Neither dialect carries a type;
- * both are compared against literals at the call site. This package converts both into nine Java types, so
- * that a caller can distinguish a missing record from a duplicate key from an unreadable dataset without
- * parsing anything.
- *
- * <p>The package contains <strong>exactly nine exception classes plus this package documentation, ten
- * files in the folder, no more and no fewer</strong>. There is no tenth exception, no handler, no advice
- * class, and no Markdown file. The completed Java tree is planned to hold 132 {@code .java} files in total,
- * of which this folder contributes exactly ten; the ten file folder count is verifiable today by listing
- * the directory, and an eleventh file in it would break both counts.
- *
- * <p>The nine classes, each with the legacy construct it stands for:
+ * <p><strong>What it does.</strong> One base class and eight subtypes, and nothing else besides this file.
+ * Neither legacy mechanism carries a failure up a call chain; each aborts the unit of work where it is detected,
+ * after rendering a diagnostic. These nine types give that abort a name, a message and a preserved root cause,
+ * so a caller can tell the conditions apart and a controller can choose a response.
  *
  * <ul>
- *   <li>{@link com.cardemo.exception.CardDemoException} - the root of the hierarchy, extending
- *       {@code RuntimeException}. Every other class here extends it, so a caller can catch the whole family
- *       with one clause. It <strong>always preserves the cause</strong>: its two argument constructor
- *       forwards the {@code Throwable} to {@code RuntimeException}, and nothing in this package discards
- *       one.</li>
- *   <li>{@link com.cardemo.exception.ValidationException} - a field level input failure, derived from
- *       {@code app/cpy/CSSETATY.cpy}. That copybook is a parameterised template resolved through
- *       {@code COPY ... REPLACING}, and it recognises exactly two conditions,
- *       {@code FLG-(TESTVAR1)-NOT-OK} and {@code FLG-(TESTVAR1)-BLANK}
- *       ({@code app/cpy/CSSETATY.cpy:L18-L19 @ 7756d89}), which is why the nested {@code FailureKind} has
- *       exactly two constants rather than a general purpose error code.</li>
- *   <li>{@link com.cardemo.exception.RecordNotFoundException} - {@code FILE STATUS '23'} and
- *       {@code DFHRESP(NOTFND)}, the single most common failure in the corpus with 23 online occurrences.
- *       Subject to the three scoped exceptions documented below, where {@code '23'} means success.</li>
- *   <li>{@link com.cardemo.exception.DuplicateRecordException} - {@code FILE STATUS '22'} and the CICS
- *       equivalents {@code DFHRESP(DUPREC)} and {@code DFHRESP(DUPKEY)}.</li>
- *   <li>{@link com.cardemo.exception.FileUnavailableException} - {@code FILE STATUS '35'} and
- *       {@code DFHRESP(NOTOPEN)}: the dataset, bucket or queue is not open for business.</li>
- *   <li>{@link com.cardemo.exception.ConcurrentUpdateException} - the outcome of
- *       {@code COACTUPC}'s {@code 9700-CHECK-CHANGE-IN-REC} snapshot comparison, plus the record locking
- *       outcomes around it. Its nested {@code Outcome} enum carries all five legacy outcomes individually,
- *       for the reason given under BLOCKER 5.2 below.</li>
- *   <li>{@link com.cardemo.exception.DataIntegrityException} - a referential failure across the ten
- *       foreign keys of the relational schema, which the VSAM original had no way to express because VSAM
- *       enforces no referential integrity at all.</li>
- *   <li>{@link com.cardemo.exception.FileAccessException} - the {@code '9x'} family of physical and logical
- *       I/O errors, carrying the four character expanded status described under key configuration
- *       below.</li>
- *   <li>{@link com.cardemo.exception.FatalProcessingException} - the abend. It carries the four
- *       {@code CABENDD.CPY} work area fields, batch abend code {@code 999} and process return code
- *       {@code 12}.</li>
+ *   <li>{@link CardDemoException} - the root; every subtype preserves the causing throwable.</li>
+ *   <li>{@link ValidationException} - the per-field error markers of the procedural template
+ *       {@code app/cpy/CSSETATY.cpy}, distinguishing a field left empty from a value that was wrong.</li>
+ *   <li>{@link RecordNotFoundException} - {@code FILE STATUS '23'} and {@code DFHRESP(NOTFND)}, but only
+ *       outside the three sites where a missing row is an accepted control path.</li>
+ *   <li>{@link DuplicateRecordException} - {@code FILE STATUS '22'}, {@code DFHRESP(DUPREC)} and
+ *       {@code DFHRESP(DUPKEY)}; the surfacing mechanism for the preserved identifier-generation race.</li>
+ *   <li>{@link FileUnavailableException} - {@code FILE STATUS '35'} and {@code DFHRESP(NOTOPEN)}, extended to
+ *       an unreachable datasource, bucket or queue.</li>
+ *   <li>{@link ConcurrentUpdateException} - the five abandonment outcomes of
+ *       {@code 9600-WRITE-PROCESSING} and {@code 9700-CHECK-CHANGE-IN-REC} in
+ *       {@code app/cbl/COACTUPC.cbl}.</li>
+ *   <li>{@link DataIntegrityException} - the referential and domain rules the relational schema now declares
+ *       and VSAM never enforced.</li>
+ *   <li>{@link FileAccessException} - the {@code '9x'} family, carrying the four-character expanded status so a
+ *       log line matches the legacy job log byte for byte.</li>
+ *   <li>{@link FatalProcessingException} - the residual abend, carrying the four abend work-area fields of
+ *       {@code app/cpy/CSMSG02Y.cpy}, whose internal title is {@code CABENDD.CPY} and which holds
+ *       {@code ABEND-CODE}, {@code ABEND-CULPRIT}, {@code ABEND-REASON} and {@code ABEND-MSG} rather than
+ *       screen messages.</li>
  * </ul>
  *
- * <h3>Dependency direction: {@code exception} to {@code model}, never the reverse</h3>
+ * <p>Five contracts bind every class here. <strong>Dependency direction</strong> runs from {@code exception} to
+ * {@code model} and never the reverse, so an enumeration never imports an exception. <strong>Mapping</strong>
+ * from a status to a type lives in one place, {@code com.cardemo.service.shared.FileStatusMapper}, because the
+ * corpus uses one guard idiom at every I/O site rather than many. <strong>Not-found is conditional</strong>:
+ * {@code IF TCATBALF-STATUS = '00' OR '23'} at {@code app/cbl/CBTRN02C.cbl:481} and
+ * {@code IF DISCGRP-STATUS = '00' OR '23'} at {@code app/cbl/CBACT04C.cbl:422} treat a missing row as success,
+ * as does {@code IF WS-M03B-RC = '00' OR '04'} at {@code app/cbl/CBSTM03A.CBL:736} and its four siblings, so no
+ * exception may be raised at those sites. <strong>A reject is not an exception</strong>: the five reject codes
+ * are business outcomes that increment a counter and write a record, and only the reject count decides the
+ * return code. <strong>No message carries sensitive data</strong>: identifiers are referred to by name, never by
+ * value, so no card number, national identifier, date of birth or credential reaches a log through a message
+ * built here.
  *
- * <p>{@link com.cardemo.exception.FileAccessException} imports {@code com.cardemo.model.enums.FileStatus};
- * no class in {@code com.cardemo.model} imports anything from this package, and none may. The distinction
- * that keeps the direction one way is worth stating precisely, because it is easy to collapse:
- * {@code com.cardemo.model.enums.FileStatus} <strong>classifies</strong> a status value, answering what
- * family a two character code belongs to, whereas it does <strong>not decide</strong> which exception a
- * caller throws. Where {@code FileStatus} needs to name an exception type in its own documentation it does
- * so in prose only, never as an import.
+ * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root compiles
+ * this package under {@code -Xlint:all -Werror} - which is why every serialisable type declares
+ * {@code serialVersionUID} - and enforces the project coverage floor at {@code verify}. Unit tests live in
+ * {@code src/test/java/com/cardemo/unit} and assert the status-to-type mapping, the three accepted control
+ * paths, cause preservation, and that no constructed message contains a field value.
  *
- * <p>{@code com.cardemo.model.enums.RejectCode} is on the far side of a harder line. Its five constants are
- * <strong>business outcomes that are never thrown</strong>, and no class in this package references it
- * except in prose. See the reject code prohibition below.
+ * <p><strong>Key configuration and defaults.</strong> Nothing here is configurable. Two values are parity
+ * contracts published as constants on {@link FatalProcessingException}: abend code 999 and process return code
+ * 12, both from {@code 9999-ABEND-PROGRAM} at {@code app/cbl/CBTRN02C.cbl:707-711}. The default abend message
+ * substituted when the message field is empty comes from {@code app/cbl/COACTUPC.cbl:4206}. This package
+ * terminates nothing: the legacy {@code CALL 'CEE3ABD'} and {@code EXEC CICS ABEND} have no counterpart inside
+ * these classes, and the decision to fail a step belongs to the batch or web tier.
  *
- * <h3>Where the mapping decision lives</h3>
- *
- * <p>This package supplies typed targets; it does not choose between them. The decision is owned by
- * {@code com.cardemo.service.shared.FileStatusMapper}, in a different folder: <strong>one central mapper,
- * one exception per status, no per call site variants</strong>. Responsibility is therefore split three
- * ways, and each way lives in exactly one place: the <em>types</em> are here, the <em>status to type
- * mapping</em> is in {@code FileStatusMapper}, and the <em>HTTP shaping</em> is in the controllers.
- *
- * <p>There is <strong>no {@code @ControllerAdvice}, no {@code @ExceptionHandler} and no advice or handler
- * class in this package or anywhere in the tree</strong>. That is a deliberate design choice rather than an
- * omission. A single global advice would have to guess an HTTP status from an exception type alone, and the
- * legacy behaviour cannot be recovered from the type alone: the same
- * {@link com.cardemo.exception.RecordNotFoundException} means "no such account, tell the user" on the
- * account view path and "abend the job" on the interest calculation path. Contextual mapping is therefore
- * done by the controllers, which know which legacy screen they stand for.
- *
- * <h3>Why one idiom, and therefore one mapper</h3>
- *
- * <p>The corpus does not contain hundreds of independent error checks. It contains one guard shape,
- * repeated. A signed binary result field carries the outcome, with condition names for success and end of
- * file: {@code 01 APPL-RESULT PIC S9(9) COMP} with {@code 88 APPL-AOK VALUE 0} and
- * <strong>{@code 88 APPL-EOF VALUE 16}</strong> ({@code app/cbl/CBTRN02C.cbl:L142-L144 @ 7756d89}). Around
- * it, every single I/O site does the same five things: move 8 into the result field, perform the verb, move
- * 0 if the status is {@code '00'} and 12 otherwise, then either continue or display a message, render the
- * status and abend. The canonical instance is {@code 0000-DALYTRAN-OPEN} at
- * {@code app/cbl/CBTRN02C.cbl:L236-L252 @ 7756d89}.
- *
- * <p>Measured on the frozen source, that program tests the result field at <strong>19 guard sites</strong>:
- * 18 occurrences of {@code IF APPL-AOK}, at lines 244, 262, 281, 299, 317, 335, 357, 457, 486, 517, 535,
- * 571, 590, 608, 627, 645, 663 and 682, plus one {@code IF APPL-EOF} at
- * {@code app/cbl/CBTRN02C.cbl:L360 @ 7756d89} which converts the end of file status into loop termination
- * rather than an error. Recognising these as <strong>one</strong> idiom with one shape, rather than as 19
- * unrelated checks, is precisely what makes a single central mapper correct and a per call site translation
- * wrong.
- *
- * <h2>How to run, build and test</h2>
- *
- * <p>This package has no {@code main} method, no bean and no runtime of its own; it is compiled as part of
- * the single {@code carddemo} Maven module and exercised through the callers that throw its types. The
- * toolchain is pinned: <strong>Java 25</strong> ({@code maven.compiler.release} is {@code 25}, with
- * <strong>no preview features</strong> anywhere in the build), <strong>Maven 3.9.11</strong>, and parent
- * {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}.
- *
- * <h3>Build</h3>
+ * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
  *   <li>{@code ./mvnw -q -DskipTests compile} - compiles the module. Use this as the fast check after
  *       editing anything in this package.</li>
- *   <li>{@code ./mvnw -q verify} - the full gate: compile, unit tests, integration tests, coverage
- *       enforcement and the dependency vulnerability scan.</li>
+ *   <li>{@code ./mvnw -q verify} - the full gate: compile, unit tests, coverage enforcement and the
+ *       dependency vulnerability scan. It runs <strong>no integration test</strong>: measured
+ *       1 August 2026 the {@code src/test/java/com/cardemo/integration} and {@code .../e2e} trees are
+ *       <strong>not available</strong>, so failsafe has nothing to bind.</li>
  * </ul>
  *
  * <p>{@code maven-compiler-plugin:3.14.1} is configured with {@code -Xlint:all} and {@code -Werror}, and
@@ -192,14 +123,18 @@
  *
  * <p>Unit tests live in {@code src/test/java/com/cardemo/unit}; the surefire configuration discovers
  * {@code **}{@code /*Test.java} and {@code **}{@code /*Tests.java} and excludes the {@code integration} and
- * {@code e2e} trees so they cannot run in the {@code test} phase. <strong>No test file lives in this
- * package</strong>, and none should: production and test sources are never mixed in the same directory in
- * this tree.
+ * {@code e2e} trees so they cannot run in the {@code test} phase. Those two exclusion patterns are
+ * pre-emptive: measured 1 August 2026 neither tree exists, so they currently match nothing.
+ * <strong>No test file lives in this package</strong>, and none should: production and test sources are
+ * never mixed in the same directory in this tree.
  *
  * <p>{@code jacoco-maven-plugin} enforces an <strong>80 percent line coverage floor at {@code verify}, with
  * no exclusions</strong> ({@code jacoco.line.coverage.minimum} is {@code 0.80}). Because there are no
  * exclusions, the constructors and accessors of all nine classes must be <strong>genuinely exercised</strong>
- * by tests that assert behaviour, not merely instantiated to move the number. The plugin is pinned to
+ * by tests that assert behaviour, not merely instantiated to move the number. <strong>Not available,
+ * measured 1 August 2026:</strong> none of the nine types has a test class, and none is referenced from the
+ * test tree, so this package contributes zero covered lines and the floor has never been evaluated against
+ * it. That is a real gap, stated rather than implied by silence. The plugin is pinned to
  * {@code 0.8.13} rather than the {@code 0.8.12} named in the original requirement, for a hard technical
  * reason recorded in {@code pom.xml} and in {@code DECISION_LOG.md}: Java 25 emits class file major version
  * 69, which {@code 0.8.12} rejects outright, so the report goal fails before any coverage figure exists.
@@ -212,9 +147,14 @@
  * well-formedness. This file is almost entirely a documentation comment, so it is checked directly:
  *
  * <ul>
- *   <li>{@code javadoc -Xdoclint:all -d target/jd src/main/java/com/cardemo/exception/*.java} must report
- *       zero errors and zero warnings. Run it after any edit here; a malformed element, an unescaped angle
- *       bracket or an unresolved reference is caught by this and by nothing else in the build.</li>
+ *   <li>{@code javadoc -Xdoclint:all -d target/jd -sourcepath src/main/java
+ *       src/main/java/com/cardemo/exception/*.java} must report zero errors and zero warnings. It did, on
+ *       {@code javadoc} 25.0.3 on 1 August 2026. Run it after any edit here; a malformed element, an
+ *       unescaped angle bracket or an unresolved reference is caught by this and by nothing else in the
+ *       build. The {@code -sourcepath} argument is not optional: this package imports
+ *       {@link com.cardemo.model.enums.FileStatus}, and without it {@code javadoc} exits 1 with
+ *       {@code package com.cardemo.model.enums does not exist}. No dependency classpath is needed,
+ *       because the package imports nothing outside {@code com.cardemo}.</li>
  * </ul>
  *
  * <h3>Toolchain actually present in this environment</h3>
@@ -669,7 +609,9 @@
  *   <li><strong>No dead code, no unused imports, no untracked deferred work.</strong> This file declares
  *       <strong>zero imports</strong>, which is deliberate rather than incidental: every type it names is
  *       either in this package, and so resolves without one, or is referenced in prose. An import used only
- *       inside documentation is an unused import, which {@code -Werror} turns into a build failure. No
+ *       inside documentation is an unused import, which Rule 1 Clause B forbids; {@code -Werror} does not
+ *       catch one, because {@code javac} 25.0.3 publishes no unused-import lint key, so the zero-import
+ *       count above is a review guarantee rather than a compiler-enforced one. No
  *       deferred work marker of any kind appears anywhere in the package, so a scan for the usual tokens
  *       returns nothing; the two Not available disclosures above are findings carrying evidence and a
  *       severity, which is the opposite of an untracked reminder.</li>
@@ -733,4 +675,5 @@
  * real callers and exercised by tests. The conflict is recorded here because this package documents the error
  * taxonomy the interest job reports through, not because it hosts an instance of it.
  */
+
 package com.cardemo.exception;

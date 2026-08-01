@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : MenuResponseTest.java
- * Component   : Unit test tier, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM, no container, no Spring
  *               context, no database
@@ -55,17 +53,18 @@ import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.dto.MenuResponse.AdminMenuOption;
 import com.cardemo.model.dto.MenuResponse.MainMenuOption;
 import com.cardemo.model.dto.MenuResponse.MenuOption;
+import com.cardemo.model.dto.MenuResponse.MenuScreen;
 import com.cardemo.model.dto.MenuResponse.MenuType;
 import com.cardemo.model.enums.UserType;
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
+import java.io.InputStream;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
-import java.lang.reflect.Type;
 import java.time.Clock;
 import java.time.Instant;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
@@ -136,9 +135,10 @@ import org.junit.jupiter.api.Test;
  *       gate, left-justifying the option parse, leaving iteration order unspecified, publishing a mutable
  *       option list, treating the program name as a live dispatch key, abstracting a shared screen header,
  *       or modelling a gated cross-field edit as an unconditional class-level constraint.</li>
- *   <li><strong>Medium</strong> - the AAP's census of 460 BMS input fields. A direct count of the seventeen
- *       symbolic maps totals <strong>441</strong>, and the AAP's own table sums to 440, so the three figures
- *       disagree. The two maps this class touches are counted here first hand:
+ *   <li><strong>Medium, closed</strong> - prior-generation plan prose gave a census of 460 BMS input
+ *       fields. A direct count of the seventeen symbolic maps totals <strong>441</strong>, and that prose's
+ *       own table summed to 440, so the three figures disagreed; the specification now publishes 441.
+ *       The two maps this class touches are counted here first hand:
  *       {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} declare
  *       <strong>20 input fields each</strong>. Remediation: recount before quoting the total.</li>
  *   <li><strong>Low</strong> - {@code app/cpy/COMEN02Y.cpy:L2} banners the member as
@@ -182,13 +182,13 @@ import org.junit.jupiter.api.Test;
  *
  * <h2>2. How to run, build and test</h2>
  *
- * <p>{@code mvn -B clean test} compiles the tree and runs this class. Surefire 3.5.4 selects it by the
+ * <p>{@code ./mvnw -B clean test} compiles the tree and runs this class. Surefire 3.5.4 selects it by the
  * {@code **}{@code /*Test.java} name pattern while excluding the {@code integration} and {@code e2e} trees,
  * so a class in this package whose name ends in {@code Test} is collected by <strong>Surefire</strong> and
  * a class outside those name patterns is collected by neither plugin - it silently never runs, with a green
- * build and no warning. Do not rename or relocate this file. {@code mvn -B test-compile} is the fastest
+ * build and no warning. Do not rename or relocate this file. {@code ./mvnw -B test-compile} is the fastest
  * check that it still satisfies the compiler settings, and
- * {@code mvn -B -Dtest=MenuResponseTest surefire:test} runs it alone. Where a local toolchain is
+ * {@code ./mvnw -B -Dtest=MenuResponseTest surefire:test} runs it alone. Where a local toolchain is
  * unavailable the pinned image reproduces it:
  * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q test}.</p>
  *
@@ -215,7 +215,9 @@ import org.junit.jupiter.api.Test;
  *       strict-stubs default would apply, but {@link MenuResponse} has no collaborator to double: it
  *       performs no I/O, reads no configuration and depends on exactly one other CardDemo type. Mocking a
  *       pure value type would assert the mock rather than the contract, so Mockito is deliberately unused
- *       and deliberately not imported - an unused import is fatal under {@code -Werror}.</li>
+ *       and deliberately not imported - Clause B forbids an unused import, and because {@code javac} 25.0.3
+ *       publishes no lint key for one that prohibition is honoured here by omission rather than by the
+ *       compiler.</li>
  *   <li><strong>Reflection.</strong> Used only to read declared structure - field names, method names,
  *       record components, annotations, generic type names - never to invoke anything or to defeat access
  *       control. Synthetic members are filtered because the coverage agent adds {@code $jacocoData} during
@@ -226,9 +228,10 @@ import org.junit.jupiter.api.Test;
  *
  * <ul>
  *   <li><em>The build fails on something trivial.</em> Compilation runs with {@code -Xlint:all},
- *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one unused import,
- *       raw type or deprecation is an error rather than a warning. Reproduce with
- *       {@code mvn -B test-compile}.</li>
+ *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one raw type or
+ *       deprecation is an error rather than a warning. An unused import is not - {@code javac} 25.0.3
+ *       publishes no lint key for one - so that is caught at review. Reproduce with
+ *       {@code ./mvnw -B test-compile}.</li>
  *   <li><em>A count assertion fails at 12 or 9 instead of 10 or 4.</em> The {@code OCCURS} arity was used
  *       as the bound. Use {@link MenuType#getPopulatedOptionCount()}.</li>
  *   <li><em>An admin option appears to have a user type.</em> The 46 byte main shape was imposed on the 45
@@ -278,11 +281,6 @@ import org.junit.jupiter.api.Test;
  */
 class MenuResponseTest {
 
-    // ==============================================================================================
-    // Expected values. Every one is transcribed from the copybook or program line named beside it, so
-    // a failure points at a specific source locator rather than at a bare number. All are immutable.
-    // ==============================================================================================
-
     /**
      * The main menu's populated option count, {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at
      * {@code app/cpy/COMEN02Y.cpy:L21}. This is the iteration bound, and the only one.
@@ -315,8 +313,8 @@ class MenuResponseTest {
 
     /**
      * Byte width of one admin-menu entry: {@code 9(02) + X(35) + X(08)} from
-     * {@code app/cpy/COADM02Y.cpy:L46-L48}. One byte narrower than a main entry, because the admin entry
-     * has no user-type sub-field.
+     * {@code app/cpy/COADM02Y.cpy:L46-L48}. One byte narrower than a main entry, because the admin entry has no
+     * user-type sub-field.
      */
     private static final int ADMIN_ENTRY_WIDTH = 45;
 
@@ -341,63 +339,46 @@ class MenuResponseTest {
     private static final int RENDERED_MENU_LINE_WIDTH = 39;
 
     /**
-     * Number of input fields in {@code app/cpy-bms/COMEN01.CPY} and in {@code app/cpy-bms/COADM01.CPY},
-     * counted first hand: six common-header fields, twelve {@code OPTN0nnI PIC X(40)} caption slots,
+     * Number of input fields in {@code app/cpy-bms/COMEN01.CPY} and in {@code app/cpy-bms/COADM01.CPY}, counted
+     * first hand: six common-header fields, twelve {@code OPTN0nnI PIC X(40)} caption slots,
      * {@code OPTIONI PIC X(2)} and {@code ERRMSGI PIC X(78)}.
      */
     private static final int MENU_MAP_INPUT_FIELD_COUNT = 20;
 
     /**
      * Number of caption slots both display maps declare, {@code OPTN001I} through {@code OPTN012I}.
-     *
-     * <p>Deliberately equal to {@link #MAIN_DECLARED_ARITY} by coincidence and not by derivation: the admin
-     * map declares all twelve slots too, while its table declares nine subscripts and populates four. The
-     * screen slot count is therefore not an option count on either menu.</p>
      */
     private static final int MENU_MAP_CAPTION_SLOT_COUNT = 12;
 
     /**
-     * Width of {@code CURTIMEI} on both menu maps, {@code PIC X(8)} at
-     * {@code app/cpy-bms/COMEN01.CPY:L54} and {@code app/cpy-bms/COADM01.CPY:L54}.
+     * Width of {@code CURTIMEI} on both menu maps, {@code PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY:L54} and
+     * {@code app/cpy-bms/COADM01.CPY:L54}.
      */
     private static final int MENU_MAP_HEADER_TIME_WIDTH = 8;
 
     /**
      * Width of the identically-named {@code CURTIMEI} on the sign-on map, {@code PIC X(9)} at
-     * {@code app/cpy-bms/COSGN00.CPY:L54}. The one-byte divergence from
-     * {@link #MENU_MAP_HEADER_TIME_WIDTH} is why no shared common-header abstraction is admissible.
+     * {@code app/cpy-bms/COSGN00.CPY:L54}. The one-byte divergence from {@link #MENU_MAP_HEADER_TIME_WIDTH} is
+     * why no shared common-header abstraction is admissible.
      */
     private static final int SIGN_ON_HEADER_TIME_WIDTH = 9;
 
     /**
-     * Direct count of input fields across all seventeen BMS symbolic maps.
-     *
-     * <p>Recorded as a Medium-severity finding: the AAP asserts 460 while its own table sums to 440 and a
-     * direct count yields this figure. Only the two menu maps are re-counted by this class; see
-     * {@link #MENU_MAP_INPUT_FIELD_COUNT}.</p>
-     */
-    private static final int SYMBOLIC_MAP_INPUT_FIELD_CENSUS = 441;
-
-    /**
      * Width of {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET}, {@code PIC X(7)} at
-     * {@code app/cpy/COCOM01Y.cpy:L43-L44}. Seven, not eight - recorded because both fields are screen
-     * state that must not appear on a stateless payload, and because the width is commonly misquoted.
+     * {@code app/cpy/COCOM01Y.cpy:L43-L44}. Seven, not eight - recorded because both fields are screen state
+     * that must not appear on a stateless payload, and because the width is commonly misquoted.
      */
     private static final int COMMAREA_LAST_MAP_WIDTH = 7;
 
     /**
-     * The bounds-check message, {@code app/cbl/COMEN01C.cbl:L131} and {@code app/cbl/COADM01C.cbl:L131},
-     * byte for byte. Three trailing dots and <strong>no</strong> trailing space. The same literal serves
-     * all three rejection conditions and both programs.
+     * The bounds-check message, {@code app/cbl/COMEN01C.cbl:L131} and {@code app/cbl/COADM01C.cbl:L131}, byte
+     * for byte. Three trailing dots and <strong>no</strong> trailing space. The same literal serves all three
+     * rejection conditions and both programs.
      */
     private static final String INVALID_OPTION_MESSAGE = "Please enter a valid option number...";
 
     /**
      * The admin-gate message, {@code app/cbl/COMEN01C.cbl:L140}, byte for byte.
-     *
-     * <p><strong>Note the trailing space after the three dots.</strong> It is inside the COBOL literal, it
-     * is a source <em>sic</em>, and trimming it changes the byte comparison the parity gates perform. It
-     * has no counterpart in {@code app/cbl/COADM01C.cbl}, which performs no user-type test at all.</p>
      */
     private static final String ADMIN_ONLY_MESSAGE = "No access - Admin Only option... ";
 
@@ -408,15 +389,15 @@ class MenuResponseTest {
     private static final String PLACEHOLDER_SENTINEL = "DUMMY";
 
     /**
-     * Length of the reference modification {@code (1:5)} applied to the eight-character program name before
-     * the comparison with {@link #PLACEHOLDER_SENTINEL}. Five, not eight.
+     * Length of the reference modification {@code (1:5)} applied to the eight-character program name before the
+     * comparison with {@link #PLACEHOLDER_SENTINEL}. Five, not eight.
      */
     private static final int PLACEHOLDER_PREFIX_LENGTH = 5;
 
     /**
      * The gate byte all ten populated main entries carry, {@code FILLER PIC X(01) VALUE 'U'} at
-     * {@code app/cpy/COMEN02Y.cpy:L29}, {@code :L35}, {@code :L41}, {@code :L47}, {@code :L53},
-     * {@code :L59}, {@code :L65}, {@code :L72}, {@code :L78} and {@code :L84}.
+     * {@code app/cpy/COMEN02Y.cpy:L29}, {@code :L35}, {@code :L41}, {@code :L47}, {@code :L53}, {@code :L59},
+     * {@code :L65}, {@code :L72}, {@code :L78} and {@code :L84}.
      */
     private static final char STANDARD_USER_CODE = 'U';
 
@@ -429,16 +410,12 @@ class MenuResponseTest {
     /**
      * A {@code LOW-VALUES} byte, the state {@code MOVE LOW-VALUES TO COMEN1AO} at
      * {@code app/cbl/COMEN01C.cbl:L89} leaves the map in before the operator types anything.
-     *
-     * <p>Distinct from a space and from absence. The backward scan at {@code :L119} halts on any byte that
-     * is {@code NOT = SPACES}, and this byte satisfies that test while a space does not - which is the
-     * mechanism that keeps the second and third states of the tri-state apart.</p>
      */
     private static final char LOW_VALUE = '\u0000';
 
     /**
-     * The commented-out caption of main option 8, {@code app/cpy/COMEN02Y.cpy:L69}. Preserved legacy
-     * residue: recorded so it is provably absent from the transcribed table, never reproduced as live data.
+     * The commented-out caption of main option 8, {@code app/cpy/COMEN02Y.cpy:L69}. Preserved legacy residue:
+     * recorded so it is provably absent from the transcribed table, never reproduced as live data.
      */
     private static final String WITHDRAWN_OPTION_8_CAPTION = "Transaction Add (Admin Only)       ";
 
@@ -493,13 +470,10 @@ class MenuResponseTest {
 
     /**
      * Member-name fragments drawn from {@code app/cpy/COCOM01Y.cpy} that encode pseudo-conversational
-     * navigation or retained screen state: {@code CDEMO-FROM-TRANID} and {@code CDEMO-TO-TRANID}
-     * ({@code :L21}, {@code :L23}), {@code CDEMO-FROM-PROGRAM} and {@code CDEMO-TO-PROGRAM}
-     * ({@code :L22}, {@code :L24}), {@code CDEMO-PGM-CONTEXT} ({@code :L29}) and {@code CDEMO-LAST-MAP}
-     * with {@code CDEMO-LAST-MAPSET} ({@code :L43-L44}).
-     *
-     * <p>None may surface on a stateless payload. Matching is case-insensitive and by fragment, so a
-     * camel-case rename cannot smuggle one past the assertion.</p>
+     * navigation or retained screen state: {@code CDEMO-FROM-TRANID} and {@code CDEMO-TO-TRANID} ({@code :L21},
+     * {@code :L23}), {@code CDEMO-FROM-PROGRAM} and {@code CDEMO-TO-PROGRAM} ({@code :L22}, {@code :L24}),
+     * {@code CDEMO-PGM-CONTEXT} ({@code :L29}) and {@code CDEMO-LAST-MAP} with {@code CDEMO-LAST-MAPSET}
+     * ({@code :L43-L44}).
      */
     private static final List<String> FORBIDDEN_SESSION_STATE_FRAGMENTS = List.of(
             "fromtranid", "totranid", "fromprogram", "toprogram",
@@ -509,18 +483,14 @@ class MenuResponseTest {
      * Member-name fragments that would indicate the payload had taken over the transfer-of-control decision
      * that {@code EXEC CICS XCTL PROGRAM(CDEMO-MENU-OPT-PGMNAME(WS-OPTION))} performs at
      * {@code app/cbl/COMEN01C.cbl:L153} and {@code app/cbl/COADM01C.cbl:L143}.
-     *
-     * <p>That statement dispatches on a table value, which is the source's own risky pattern. The Java
-     * target replaces it with static URL routing, so the program name must remain opaque legacy metadata
-     * that nothing dispatches on.</p>
      */
     private static final List<String> FORBIDDEN_DISPATCH_FRAGMENTS = List.of(
             "xctl", "dispatch", "route", "forward", "redirect", "invoke", "transfercontrol", "handler");
 
     /**
-     * Member-name fragments that would indicate credential or personally identifiable material had reached
-     * a menu payload. A menu option is a number, a caption, a program name and one eligibility byte;
-     * nothing on this type may resemble a secret.
+     * Member-name fragments that would indicate credential or personally identifiable material had reached a
+     * menu payload. A menu option is a number, a caption, a program name and one eligibility byte; nothing on
+     * this type may resemble a secret.
      */
     private static final List<String> FORBIDDEN_SENSITIVE_FRAGMENTS = List.of(
             "password", "passwd", "secret", "credential", "token", "signingkey", "apikey", "ssn");
@@ -528,69 +498,56 @@ class MenuResponseTest {
     /**
      * Characters that cannot occur in any transcribed caption or program name.
      *
-     * <p>Asserting their absence is how this class proves, without naming a single host, port, scheme or
-     * address, that no canonical value can be an endpoint: a URL needs {@code ':'} and {@code '/'}, a
-     * host-and-port pair needs {@code ':'}, a dotted quad and a domain name need {@code '.'}, and a
-     * user-info or mailbox form needs {@code '@'}. The copybook alphabet contains none of them.</p>
+     * <p>Their absence pins the <em>transcription</em>: a stray one would mean a caption no longer matches the
+     * copybook literal it was copied from. It is deliberately not offered as a security property. An earlier
+     * form of this suite concluded from their absence that no canonical value could be an endpoint, and that
+     * inference does not hold - a bare host name, a registered service name, a Windows UNC-style share, a JNDI
+     * name or an environment-variable key are all reachable without any of these four characters, and in any
+     * case a string's spelling says nothing about whether code will dereference it. Absence of a capability is
+     * proved by absence of the API that provides it, which is what
+     * {@link SecurityAndDeterminism#noRoutingOrInvocationApiIsReachable()} does.
      */
     private static final List<Character> FORBIDDEN_ENDPOINT_CHARACTERS = List.of(':', '/', '@', '.');
 
     /**
+     * Internal class names and member names whose presence in a compiled class file would prove that a
+     * routing, network, process or dynamic invocation capability is reachable from a menu type.
+     *
+     * <p>{@code "invoke"} is deliberately <em>not</em> a needle. A record's generated {@code equals},
+     * {@code hashCode} and {@code toString} are implemented with {@code invokedynamic} against
+     * {@code java.lang.runtime.ObjectMethods}, so every record here legitimately carries it. Note also
+     * that {@code java/lang/Runtime} is matched with a capital {@code R} precisely so that it does not
+     * collide with the lower-case {@code java/lang/runtime/} package those generated members use.
+     */
+    private static final List<String> FORBIDDEN_CAPABILITY_REFERENCES = List.of(
+            "java/net/", "java/nio/channels/", "javax/naming/", "java/rmi/", "Socket",
+            "HttpClient", "WebClient", "RestTemplate", "openConnection",
+            "java/lang/ProcessBuilder", "java/lang/Runtime", "getRuntime", "forName",
+            "java/lang/reflect/");
+
+    /**
      * The leading literal of the not-yet-implemented notice, {@code 'This option '} at
-     * {@code app/cbl/COMEN01C.cbl:L159} and {@code app/cbl/COADM01C.cbl:L149}, both
-     * {@code DELIMITED BY SIZE} and both including the trailing space.
+     * {@code app/cbl/COMEN01C.cbl:L159} and {@code app/cbl/COADM01C.cbl:L149}, both {@code DELIMITED BY SIZE}
+     * and both including the trailing space.
      */
     private static final String COMING_SOON_PREFIX = "This option ";
 
     /**
      * The trailing literal of the same notice, {@code 'is coming soon ...'} at
-     * {@code app/cbl/COMEN01C.cbl:L162} and {@code app/cbl/COADM01C.cbl:L152}. It begins with no space,
-     * which is what makes the divergence between the two programs observable.
+     * {@code app/cbl/COMEN01C.cbl:L162} and {@code app/cbl/COADM01C.cbl:L152}. It begins with no space, which
+     * is what makes the divergence between the two programs observable.
      */
     private static final String COMING_SOON_SUFFIX = "is coming soon ...";
-
-    // ==============================================================================================
-    // Faithful reproductions of the program-level COBOL idioms.
-    //
-    // MenuResponse is a payload: it carries the option table and deliberately decides nothing, which its
-    // own documentation states and which this class asserts. The parse, the bounds check, the user-type
-    // gate, the placeholder guard and the line rendering are statements in COMEN01C and COADM01C, and
-    // their Java home is the menu services derived from those programs. They are reproduced here, over
-    // the real transcribed tables, so that the exact literals and the exact boundary behaviour are pinned
-    // by an executable assertion before any service consumes them. Every helper below is exercised by at
-    // least one test; none is unreachable.
-    // ==============================================================================================
 
     /**
      * Reproduces the three-step option parse of {@code app/cbl/COMEN01C.cbl:L117-L123}, identical at
      * {@code app/cbl/COADM01C.cbl:L117-L123}, and returns the resulting {@code WS-OPTION-X} content.
      *
-     * <p>All three steps are load-bearing and none may be reordered or dropped:</p>
-     * <ol>
-     *   <li><strong>Backward scan</strong>, {@code :L117-L121}. {@code WS-IDX} starts at
-     *       {@code LENGTH OF OPTIONI} and decrements until the addressed byte is {@code NOT = SPACES} or
-     *       {@code WS-IDX} reaches 1. Because the halt test is "not a space", a {@code LOW-VALUES} byte
-     *       <strong>halts</strong> the scan where a space does not - the mechanism that keeps a blank
-     *       entry and an untouched entry distinguishable.</li>
-     *   <li><strong>Right-justified move</strong>, {@code :L122}. The prefix moves into
-     *       {@code WS-OPTION-X PIC X(02) JUST RIGHT}, declared at {@code :L45}, so a one-character prefix
-     *       lands in the <em>second</em> byte and the first is blank-filled.</li>
-     *   <li><strong>Space-to-zero substitution</strong>, {@code :L123}.
-     *       {@code INSPECT WS-OPTION-X REPLACING ALL ' ' BY '0'} turns that leading blank into a zero.</li>
-     * </ol>
-     *
-     * <p>Net effect: {@code " 5"}, {@code "5 "} and a one-character {@code "5"} all become {@code "05"}.
-     * Omitting the justification would turn {@code "5 "} into {@code "50"}.</p>
-     *
-     * <p>A pure function: no state, no I/O, no locale or zone dependency.</p>
-     *
-     * @param screenField the raw {@code OPTIONI} content, exactly {@link #OPTION_NUMBER_WIDTH} characters
-     *                    wide as {@code app/cpy-bms/COMEN01.CPY:L132} declares it; must not be
-     *                    {@code null}
+     * @param screenField the raw {@code OPTIONI} content, exactly {@link #OPTION_NUMBER_WIDTH} characters wide
+     * as {@code app/cpy-bms/COMEN01.CPY:L132} declares it.
      * @return the two-character {@code WS-OPTION-X} content after substitution, never {@code null}
      * @throws IllegalArgumentException if {@code screenField} is {@code null} or is not exactly
-     *                                  {@link #OPTION_NUMBER_WIDTH} characters wide; the message names the
-     *                                  offending argument and its actual width
+     * {@link #OPTION_NUMBER_WIDTH} characters wide.
      */
     private static String normaliseOptionEntry(final String screenField) {
         if (screenField == null) {
@@ -626,16 +583,10 @@ class MenuResponseTest {
     }
 
     /**
-     * Reproduces the {@code WS-OPTION IS NOT NUMERIC} class test of {@code app/cbl/COMEN01C.cbl:L127},
-     * inverted to report validity.
+     * Reproduces the {@code WS-OPTION IS NOT NUMERIC} class test of {@code app/cbl/COMEN01C.cbl:L127}, inverted
+     * to report validity.
      *
-     * <p>{@code WS-OPTION} is {@code PIC 9(02)} at {@code :L46}, an unsigned two-digit display field, so
-     * the class test passes only when every character is a decimal digit. The comparison is written against
-     * the explicit {@code '0'} to {@code '9'} range rather than with a Unicode-aware digit predicate,
-     * because a Unicode predicate accepts digits from other scripts that the COBOL class test rejects, and
-     * because an explicit range cannot vary with the platform locale or charset.</p>
-     *
-     * @param normalisedEntry the output of {@link #normaliseOptionEntry(String)}; must not be {@code null}
+     * @param normalisedEntry the output of {@link #normaliseOptionEntry(String)}.
      * @return {@code true} when every character is an ASCII decimal digit
      */
     private static boolean isNumericOptionEntry(final String normalisedEntry) {
@@ -655,14 +606,10 @@ class MenuResponseTest {
      * Reproduces {@code MOVE WS-OPTION-X TO WS-OPTION} at {@code app/cbl/COMEN01C.cbl:L124}, yielding the
      * numeric selection.
      *
-     * <p>{@code Integer#parseInt(String)} is specified over the ASCII digits with radix ten and consults no
-     * locale, so {@code "05"} yields 5 on every host.</p>
-     *
      * @param normalisedEntry the output of {@link #normaliseOptionEntry(String)}
      * @return the numeric value of the two-digit field, between 0 and 99
-     * @throws IllegalArgumentException if the entry is not numeric, which the caller is expected to have
-     *                                  tested first with {@link #isNumericOptionEntry(String)}; the message
-     *                                  quotes the rejected entry
+     * @throws IllegalArgumentException if the entry is not numeric, which the caller is expected to have tested
+     * first with {@link #isNumericOptionEntry(String)}.
      */
     private static int toOptionNumber(final String normalisedEntry) {
         if (!isNumericOptionEntry(normalisedEntry)) {
@@ -677,10 +624,6 @@ class MenuResponseTest {
      * Reproduces {@code MOVE WS-OPTION TO OPTIONO} at {@code app/cbl/COMEN01C.cbl:L125}, the echo of the
      * accepted selection back onto the map.
      *
-     * <p>The receiving field is {@code PIC 9(02)}, so the value is always rendered as exactly two
-     * zero-padded digits: option 1 echoes as {@code 01}, never as {@code 1}. Formatting is pinned to
-     * {@link Locale#ROOT} so digit shaping cannot vary with the platform locale.</p>
-     *
      * @param optionNumber the numeric selection to render
      * @return exactly {@link #OPTION_NUMBER_WIDTH} characters
      */
@@ -692,14 +635,8 @@ class MenuResponseTest {
      * Reproduces the three-condition bounds check of {@code app/cbl/COMEN01C.cbl:L127-L129}, identical at
      * {@code app/cbl/COADM01C.cbl:L127-L129} with its own count field substituted.
      *
-     * <p>The source condition is a single compound {@code OR}, so any one of the three limbs rejects:
-     * {@code WS-OPTION IS NOT NUMERIC}, {@code WS-OPTION > CDEMO-MENU-OPT-COUNT}, or
-     * {@code WS-OPTION = ZEROS}. <strong>The second limb compares against the count field, never against
-     * the {@code OCCURS} arity</strong>, which is what keeps the unpopulated overlay subscripts
-     * unreachable. All three limbs share the one message, {@link #INVALID_OPTION_MESSAGE}.</p>
-     *
      * @param normalisedEntry the output of {@link #normaliseOptionEntry(String)}
-     * @param menuType        the menu whose populated count bounds the selection
+     * @param menuType the menu whose populated count bounds the selection
      * @return {@code true} when the selection is rejected
      */
     private static boolean isRejectedSelection(final String normalisedEntry, final MenuType menuType) {
@@ -711,22 +648,12 @@ class MenuResponseTest {
     }
 
     /**
-     * Reproduces the user-type gate of {@code app/cbl/COMEN01C.cbl:L136-L137}, which exists on the
-     * <strong>main menu only</strong>.
+     * Reproduces the user-type gate of {@code app/cbl/COMEN01C.cbl:L136-L137}, which exists on the <strong>main
+     * menu only</strong>.
      *
-     * <p>The source condition is {@code IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'}:
-     * both limbs must hold, so an administrator is never denied, and the table byte is compared against the
-     * bare literal {@code 'A'} rather than resolved through the condition names - a byte outside the
-     * two-code domain of {@code app/cpy/COCOM01Y.cpy:L26-L28} is simply not {@code 'A'} and therefore
-     * denies nothing.</p>
-     *
-     * <p>There is deliberately no admin-menu counterpart. {@code app/cbl/COADM01C.cbl} runs straight from
-     * its bounds check at {@code :L134} to its placeholder guard at {@code :L138} with no user-type test at
-     * all, because {@code app/cpy/COADM02Y.cpy} declares no such sub-field.</p>
-     *
-     * @param signedOnUserType the {@code CDEMO-USER-TYPE} of the signed-on operator, or {@code null} when
-     *                         the byte carried a code outside the two-code domain
-     * @param option           the selected main-menu option, whose raw gate byte is compared
+     * @param signedOnUserType the {@code CDEMO-USER-TYPE} of the signed-on operator, or {@code null} when the
+     * byte carried a code outside the two-code domain
+     * @param option the selected main-menu option, whose raw gate byte is compared
      * @return {@code true} when the operator is a standard user and the option is administrator-only
      */
     private static boolean isDeniedByAdminGate(final UserType signedOnUserType, final MainMenuOption option) {
@@ -737,15 +664,9 @@ class MenuResponseTest {
      * Reproduces the placeholder guard of {@code app/cbl/COMEN01C.cbl:L146} and
      * {@code app/cbl/COADM01C.cbl:L138}, {@code IF ...-PGMNAME(WS-OPTION)(1:5) NOT = 'DUMMY'}.
      *
-     * <p><strong>The reference modification compares the first five characters only</strong>, not all eight
-     * of the {@code PIC X(08)} field. So {@code "DUMMY   "} and {@code "DUMMY123"} are both placeholders,
-     * while {@code "XDUMMY"} is not - and neither is anything shorter than five characters, which the
-     * fixed-width source field could not produce but a Java caller can, so it is handled explicitly rather
-     * than left to throw.</p>
-     *
-     * @param programName the option's program name; may be {@code null} or shorter than the prefix
+     * @param programName the option's program name.
      * @return {@code true} when the first {@link #PLACEHOLDER_PREFIX_LENGTH} characters are exactly
-     *         {@link #PLACEHOLDER_SENTINEL}
+     * {@link #PLACEHOLDER_SENTINEL}
      */
     private static boolean isPlaceholderProgram(final String programName) {
         if (programName == null || programName.length() < PLACEHOLDER_PREFIX_LENGTH) {
@@ -758,17 +679,10 @@ class MenuResponseTest {
      * Reproduces the menu-line build of {@code app/cbl/COMEN01C.cbl:L243-L245}, identical at
      * {@code app/cbl/COADM01C.cbl:L233-L235}.
      *
-     * <p>The {@code STRING} statement concatenates three items, every one of them
-     * <strong>{@code DELIMITED BY SIZE}</strong>, which means the full declared width is emitted including
-     * trailing blanks: the two-digit number, the two-character {@code '. '} separator and the
-     * 35-character caption. The result is {@link #RENDERED_MENU_LINE_WIDTH} characters, one short of the
-     * 40-byte {@code WS-MENU-OPT-TXT} slot declared at {@code app/cbl/COMEN01C.cbl:L48}, whose final byte
-     * remains the blank left by the preceding {@code MOVE SPACES}.</p>
-     *
-     * @param option the option to render; either entry shape serves, since the three sub-fields the
-     *               statement reads are exactly the three the sealed {@link MenuOption} supertype declares
-     * @return the concatenated line, {@link #RENDERED_MENU_LINE_WIDTH} characters when the caption is at
-     *         its declared width
+     * @param option the option to render; either entry shape serves, since the three sub-fields the statement
+     * reads are exactly the three the sealed {@link MenuOption} supertype declares
+     * @return the concatenated line, {@link #RENDERED_MENU_LINE_WIDTH} characters when the caption is at its
+     * declared width
      */
     private static String renderMenuLine(final MenuOption option) {
         return renderOptionEcho(option.optionNumber()) + MENU_LINE_SEPARATOR + option.optionName();
@@ -777,12 +691,11 @@ class MenuResponseTest {
     /**
      * Reproduces a COBOL {@code STRING ... DELIMITED BY SPACE} transfer, which stops at the first blank.
      *
-     * <p>Needed because {@code app/cbl/COMEN01C.cbl:L160-L161} references the caption
-     * {@code DELIMITED BY SPACE} rather than {@code BY SIZE}, so the notice built at {@code :L159-L163}
-     * carries only the caption's first blank-delimited word.</p>
+     * <p>{@code app/cbl/COMEN01C.cbl:L160-L161} references the caption {@code DELIMITED BY SPACE} rather than
+     * {@code BY SIZE}, so the notice built at {@code :L159-L163} carries only its first blank delimited word.
      *
      * @param sendingField the field being transferred
-     * @return the content up to, but excluding, the first blank; the whole field when it contains none
+     * @return the content up to, but excluding, the first blank.
      */
     private static String delimitedBySpace(final String sendingField) {
         final int firstBlank = sendingField.indexOf(' ');
@@ -791,12 +704,6 @@ class MenuResponseTest {
 
     /**
      * Reproduces the main-menu not-yet-implemented notice of {@code app/cbl/COMEN01C.cbl:L159-L163}.
-     *
-     * <p>Three items are concatenated: {@code 'This option '} {@code DELIMITED BY SIZE}, the caption
-     * <strong>{@code DELIMITED BY SPACE}</strong> at {@code :L160-L161}, and {@code 'is coming soon ...'}
-     * {@code DELIMITED BY SIZE}. Because the middle item stops at the caption's first blank and the third
-     * item starts with no blank, the two run together in the rendered text. That is what the source
-     * produces and it is reproduced rather than tidied.</p>
      *
      * @param option the selected main-menu option
      * @return the notice exactly as the source composes it
@@ -808,68 +715,14 @@ class MenuResponseTest {
     /**
      * Reproduces the admin-menu not-yet-implemented notice of {@code app/cbl/COADM01C.cbl:L149-L152}.
      *
-     * <p>Only two items are concatenated, because the caption reference at {@code :L150-L151} is
-     * <strong>commented out</strong> while its main-menu counterpart at
-     * {@code app/cbl/COMEN01C.cbl:L160-L161} is live. The admin notice therefore never names the option.
-     * A preserved legacy inconsistency: documented, not normalised.</p>
-     *
      * @return the notice exactly as the source composes it, with no option caption
      */
     private static String renderAdminComingSoonNotice() {
         return COMING_SOON_PREFIX + COMING_SOON_SUFFIX;
     }
 
-    // ==============================================================================================
-    // Structural inspection helpers.
-    //
-    // Reflection is used only to read declared structure - never to invoke anything and never to defeat
-    // access control. Synthetic members are filtered throughout because the coverage agent injects
-    // $jacocoData during `verify`, so an unfiltered assertion would pass under `test` and fail under
-    // `verify`.
-    // ==============================================================================================
-
-    /**
-     * Returns the names of the non-synthetic declared fields of a type, selecting either the static or the
-     * instance ones.
-     *
-     * @param type       the type to inspect
-     * @param wantStatic {@code true} to select static fields, {@code false} to select instance fields
-     * @return the matching field names, in no particular order
-     */
-    private static List<String> declaredFieldNames(final Class<?> type, final boolean wantStatic) {
-        final List<String> names = new ArrayList<>();
-        for (final Field field : type.getDeclaredFields()) {
-            if (!field.isSynthetic() && Modifier.isStatic(field.getModifiers()) == wantStatic) {
-                names.add(field.getName());
-            }
-        }
-        return names;
-    }
-
-    /**
-     * Returns the names of the non-synthetic declared methods of a type.
-     *
-     * <p>Bridge methods are excluded alongside synthetic ones: a record implementing a sealed interface
-     * acquires bridges that are an artefact of erasure rather than declared surface.</p>
-     *
-     * @param type the type to inspect
-     * @return the declared method names, in no particular order
-     */
-    private static List<String> declaredMethodNames(final Class<?> type) {
-        final List<String> names = new ArrayList<>();
-        for (final Method method : type.getDeclaredMethods()) {
-            if (!method.isSynthetic() && !method.isBridge()) {
-                names.add(method.getName());
-            }
-        }
-        return names;
-    }
-
     /**
      * Returns the names of the record components of a record type, in declaration order.
-     *
-     * <p>Declaration order matters: it is the copybook sub-field order, and it is what a positional
-     * canonical constructor call depends on.</p>
      *
      * @param type the record type to inspect
      * @return the component names in declaration order, empty when {@code type} is not a record
@@ -888,9 +741,6 @@ class MenuResponseTest {
     /**
      * Returns the declared types of the record components of a record type, in declaration order.
      *
-     * <p>Used to assert that a one-byte source field is modelled by a {@code char} rather than a
-     * {@code String}, which makes an over-wide value impossible to construct rather than merely invalid.</p>
-     *
      * @param type the record type to inspect
      * @return the component type names in declaration order, empty when {@code type} is not a record
      */
@@ -906,89 +756,18 @@ class MenuResponseTest {
     }
 
     /**
-     * Collects every member name declared by a type and, when it is a record, by its components: a single
-     * list to screen for a forbidden name fragment.
+     * Collects every member name declared by a type and, when it is a record, by its components: a single list
+     * to screen for a forbidden name fragment.
      *
      * @param type the type to inspect
      * @return declared field names, method names and record component names, in no particular order
      */
     private static List<String> declaredMemberNames(final Class<?> type) {
         final List<String> names = new ArrayList<>();
-        names.addAll(declaredFieldNames(type, false));
-        names.addAll(declaredFieldNames(type, true));
-        names.addAll(declaredMethodNames(type));
+        names.addAll(ReflectionCensus.declaredFieldNames(type, false));
+        names.addAll(ReflectionCensus.declaredFieldNames(type, true));
+        names.addAll(ReflectionCensus.declaredMethodNames(type));
         names.addAll(recordComponentNames(type));
-        return names;
-    }
-
-    /**
-     * Collects the generic type names reachable from the declared surface of a type, so that a type argument
-     * such as {@code List<MainMenuOption>} is visible rather than erased away.
-     *
-     * @param type the type to inspect
-     * @return generic type names of declared field types, method return and parameter types, and
-     *         constructor parameter types
-     */
-    private static List<String> declaredSurfaceTypeNames(final Class<?> type) {
-        final List<String> names = new ArrayList<>();
-        for (final Field field : type.getDeclaredFields()) {
-            if (!field.isSynthetic()) {
-                names.add(field.getGenericType().getTypeName());
-            }
-        }
-        for (final Method method : type.getDeclaredMethods()) {
-            if (!method.isSynthetic() && !method.isBridge()) {
-                names.add(method.getGenericReturnType().getTypeName());
-                for (final Type parameter : method.getGenericParameterTypes()) {
-                    names.add(parameter.getTypeName());
-                }
-            }
-        }
-        for (final Constructor<?> constructor : type.getDeclaredConstructors()) {
-            if (!constructor.isSynthetic()) {
-                for (final Type parameter : constructor.getGenericParameterTypes()) {
-                    names.add(parameter.getTypeName());
-                }
-            }
-        }
-        return names;
-    }
-
-    /**
-     * Collects the runtime-visible annotation type names declared on a type and on every declared field,
-     * method, constructor and record component of it.
-     *
-     * @param type the type to inspect
-     * @return the annotation type names found, empty when the type carries none
-     */
-    private static List<String> declaredAnnotationTypeNames(final Class<?> type) {
-        final List<String> names = new ArrayList<>();
-        for (final Annotation annotation : type.getDeclaredAnnotations()) {
-            names.add(annotation.annotationType().getName());
-        }
-        for (final Field field : type.getDeclaredFields()) {
-            for (final Annotation annotation : field.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        for (final Method method : type.getDeclaredMethods()) {
-            for (final Annotation annotation : method.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        for (final Constructor<?> constructor : type.getDeclaredConstructors()) {
-            for (final Annotation annotation : constructor.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        final RecordComponent[] components = type.getRecordComponents();
-        if (components != null) {
-            for (final RecordComponent component : components) {
-                for (final Annotation annotation : component.getDeclaredAnnotations()) {
-                    names.add(annotation.annotationType().getName());
-                }
-            }
-        }
         return names;
     }
 
@@ -996,10 +775,6 @@ class MenuResponseTest {
      * Lower-cases a member name and strips every underscore, so that a fragment screen matches regardless of
      * whether the member is named in camel case, in screaming snake case or in the copybook's own hyphenated
      * style.
-     *
-     * <p>Folding is pinned to {@link Locale#ROOT}: the platform default locale would fold {@code 'I'}
-     * differently in a Turkish locale, which is exactly the kind of host-dependent behaviour a deterministic
-     * assertion must not admit.</p>
      *
      * @param memberName the declared member name
      * @return the name folded for comparison
@@ -1012,7 +787,7 @@ class MenuResponseTest {
      * Asserts that no member of any of the given types carries any of the forbidden name fragments.
      *
      * @param forbiddenFragments the lower-case, underscore-free fragments that must not occur
-     * @param types              the types whose declared members are screened
+     * @param types the types whose declared members are screened
      */
     private static void assertNoMemberNameContains(final List<String> forbiddenFragments, final Class<?>... types) {
         for (final Class<?> type : types) {
@@ -1028,27 +803,14 @@ class MenuResponseTest {
         }
     }
 
-    // ==============================================================================================
-    // Top-level tests. These three are statements about the type as a whole - where its data comes from,
-    // that one payload really does serve both menus, and that it decides nothing - so no single @Nested
-    // group owns them. Surefire attributes a @Nested test to its group's display name, so keeping a few
-    // at this level also keeps the report anchored to this class.
-    // ==============================================================================================
-
     /**
      * The two option tables are {@code WORKING-STORAGE} literals, so they are compile-time constants on the
      * payload and not rows of anything.
-     *
-     * <p>{@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} are copied into exactly two programs
-     * - {@code app/cbl/COMEN01C.cbl:L51} and {@code app/cbl/COADM01C.cbl:L51} - as {@code FILLER} items
-     * carrying {@code VALUE} literals. There is no {@code DEFINE CLUSTER} job for a menu dataset, no
-     * catalogue entry, and no planned migration child. Any claim about a menu table's columns is therefore
-     * <strong>Not available</strong>, and this test pins the constants as the sole source of the data.</p>
      */
     @Test
     @DisplayName("the option tables are copybook constants, so no schema is claimed for them")
     void optionTablesAreCopybookConstantsNotDatabaseTables() {
-        assertThat(declaredFieldNames(MenuResponse.class, true))
+        assertThat(ReflectionCensus.declaredFieldNames(MenuResponse.class, true))
                 .as("both tables are static constants of the payload")
                 .contains("MAIN_MENU_OPTIONS", "ADMIN_MENU_OPTIONS");
 
@@ -1063,16 +825,13 @@ class MenuResponseTest {
         assertThat(MenuResponse.MAIN_MENU_OPTIONS).hasSize(MAIN_POPULATED_COUNT);
         assertThat(MenuResponse.ADMIN_MENU_OPTIONS).hasSize(ADMIN_POPULATED_COUNT);
 
-        assertThat(declaredAnnotationTypeNames(MenuResponse.class))
+        assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuResponse.class))
                 .as("a payload built from copybook literals carries no persistence or mapping annotation")
                 .isEmpty();
     }
 
     /**
      * One payload type serves both menus, and it does so without unifying their two entry shapes.
-     *
-     * <p>The discriminator {@link MenuType} keeps them apart, and each factory pairs a menu with the only
-     * entry type that menu can carry, so main-menu options cannot be labelled as the admin menu.</p>
      */
     @Test
     @DisplayName("one payload serves both menus while keeping the two entry shapes separate")
@@ -1091,12 +850,8 @@ class MenuResponseTest {
     }
 
     /**
-     * The payload carries the option table and decides nothing, which is what keeps the authorisation
-     * boundary in the service.
-     *
-     * <p>The three legacy decisions - the bounds check at {@code app/cbl/COMEN01C.cbl:L127-L129}, the
-     * user-type gate at {@code :L136-L137} and the placeholder guard at {@code :L146} - are program
-     * statements. None of them may migrate onto the payload, or the payload would be deciding access.</p>
+     * The payload carries the option table and decides nothing, which is what keeps the authorisation boundary
+     * in the service.
      */
     @Test
     @DisplayName("declares no method that evaluates the bounds check, the admin gate or the DUMMY guard")
@@ -1132,14 +887,14 @@ class MenuResponseTest {
         @Test
         @DisplayName("declares exactly the menu discriminator and the option list as instance state")
         void declaresExactlyTwoInstanceFields() {
-            assertThat(declaredFieldNames(MenuResponse.class, false))
+            assertThat(ReflectionCensus.declaredFieldNames(MenuResponse.class, false))
                     .containsExactlyInAnyOrder("menuType", "options");
         }
 
         @Test
         @DisplayName("declares exactly the four width and range constants plus the two option tables")
         void declaresExactlyTheDocumentedConstants() {
-            assertThat(declaredFieldNames(MenuResponse.class, true))
+            assertThat(ReflectionCensus.declaredFieldNames(MenuResponse.class, true))
                     .containsExactlyInAnyOrder(
                             "OPTION_NAME_LENGTH",
                             "PROGRAM_NAME_LENGTH",
@@ -1150,14 +905,37 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("declares exactly the four factories, the three accessors and the three value methods")
+        @DisplayName("declares exactly the four factories, three accessors, three value methods and three "
+                + "validation guards")
         void declaresExactlyTheDocumentedMethods() {
-            assertThat(declaredMethodNames(MenuResponse.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MenuResponse.class))
                     .containsExactlyInAnyOrder(
                             "mainMenu", "ofMainMenu", "adminMenu", "ofAdminMenu",
                             "getMenuType", "getOptions", "getOptionCount",
                             "equals", "hashCode", "toString",
-                            "requireOptionNumberInRange", "requireNonNullField");
+                            "requireOptionNumberInRange", "requireNonNullField",
+                            "requireWidthWithinLimit");
+        }
+
+        @Test
+        @DisplayName("declares one guard per documented invariant, and no guard without an invariant")
+        void everyValidationGuardCorrespondsToADeclaredInvariant() {
+            final List<String> guards = ReflectionCensus.declaredMethodNames(MenuResponse.class).stream()
+                    .filter(name -> name.startsWith("require"))
+                    .sorted()
+                    .toList();
+
+            assertThat(guards)
+                    .as("the three published invariants are the option-number range, the non-null caption "
+                            + "and program name, and the declared width of each - so there are exactly "
+                            + "three guards, and adding a fourth without a documented invariant would be "
+                            + "unreachable surface")
+                    .containsExactly("requireNonNullField", "requireOptionNumberInRange",
+                            "requireWidthWithinLimit");
+
+            assertThat(MenuResponse.OPTION_NUMBER_MAX_VALUE).isEqualTo(99);
+            assertThat(MenuResponse.OPTION_NAME_LENGTH).isEqualTo(35);
+            assertThat(MenuResponse.PROGRAM_NAME_LENGTH).isEqualTo(8);
         }
 
         @Test
@@ -1174,7 +952,8 @@ class MenuResponseTest {
                             + "entry shape")
                     .isTrue();
 
-            assertThat(declaredMethodNames(MenuResponse.class)).noneMatch(name -> name.startsWith("set"));
+            assertThat(ReflectionCensus.declaredMethodNames(MenuResponse.class))
+                    .noneMatch(name -> name.startsWith("set"));
         }
 
         @Test
@@ -1185,7 +964,7 @@ class MenuResponseTest {
             assertThat(MenuResponse.adminMenu().getMenuType()).isEqualTo(MenuType.ADMIN);
             assertThat(MenuResponse.ofAdminMenu(new ArrayList<>()).getMenuType()).isEqualTo(MenuType.ADMIN);
 
-            assertThat(declaredMethodNames(MenuResponse.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MenuResponse.class))
                     .as("these four are the only entry points, and each names its menu type as a constant")
                     .contains("mainMenu", "ofMainMenu", "adminMenu", "ofAdminMenu");
 
@@ -1203,11 +982,11 @@ class MenuResponseTest {
         @Test
         @DisplayName("carries no annotation anywhere, so no class-level constraint fires unconditionally")
         void carriesNoAnnotation() {
-            assertThat(declaredAnnotationTypeNames(MenuResponse.class)).isEmpty();
-            assertThat(declaredAnnotationTypeNames(MenuType.class)).isEmpty();
-            assertThat(declaredAnnotationTypeNames(MenuOption.class)).isEmpty();
-            assertThat(declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
-            assertThat(declaredAnnotationTypeNames(AdminMenuOption.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuResponse.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuType.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuOption.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(AdminMenuOption.class)).isEmpty();
         }
 
         @Test
@@ -1224,7 +1003,34 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("carries no BMS common-header member, whose widths are not even uniform")
+        @DisplayName("declares the screen header inline on the map projection and shares it with nothing")
+        void theScreenHeaderIsDeclaredInlineRatherThanShared() {
+            assertThat(recordComponentNames(MenuScreen.class))
+                    .as("the six recurring header fields of app/cpy-bms/COMEN01.CPY:L24-L54 belong on the "
+                            + "map projection, because the map declares them - what must not exist is a "
+                            + "type that hands them to more than one map")
+                    .contains("transactionName", "title01", "currentDate", "programName", "title02",
+                            "currentTime");
+
+            assertThat(MenuScreen.class.getInterfaces())
+                    .as("MenuScreen implements nothing, so it cannot be inheriting a header contract")
+                    .isEmpty();
+            assertThat(MenuScreen.class.getSuperclass())
+                    .as("its only supertype is java.lang.Record, which carries no field of its own, so the "
+                            + "six header components are declared here and nowhere else")
+                    .isEqualTo(Record.class);
+
+            assertThat(MenuScreen.TIME_WIDTH)
+                    .as("CURTIMEI is X(8) at app/cpy-bms/COMEN01.CPY:L54 and X(9) at "
+                            + "app/cpy-bms/COSGN00.CPY:L54, so a shared header type would have to publish "
+                            + "one width the corpus does not agree on - declaring the field inline per map "
+                            + "is the only faithful option")
+                    .isEqualTo(MENU_MAP_HEADER_TIME_WIDTH)
+                    .isNotEqualTo(SIGN_ON_HEADER_TIME_WIDTH);
+        }
+
+        @Test
+        @DisplayName("carries no BMS common-header member on the option surface, whose shape is a table")
         void carriesNoSharedScreenHeader() {
             final List<String> headerFragments = List.of(
                     "trnname", "title01", "title02", "curdate", "curtime", "pgmname", "errmsg");
@@ -1245,7 +1051,10 @@ class MenuResponseTest {
             assertThat(MENU_MAP_HEADER_TIME_WIDTH)
                     .as("CURTIMEI is X(8) on both menu maps but X(9) on app/cpy-bms/COSGN00.CPY:L54, so no "
                             + "shared header base class, interface or mixin can be correct for all "
-                            + "seventeen maps")
+                            + "seventeen maps. The header belongs to the map projection, which declares it "
+                            + "inline; the option records transcribe app/cpy/COMEN02Y.cpy and "
+                            + "app/cpy/COADM02Y.cpy, which are WORKING-STORAGE tables with no header field "
+                            + "at all, so a header member here would be invented rather than translated")
                     .isNotEqualTo(SIGN_ON_HEADER_TIME_WIDTH);
         }
 
@@ -1258,7 +1067,7 @@ class MenuResponseTest {
 
             for (final Class<?> type : List.of(MenuResponse.class, MenuType.class, MenuOption.class,
                     MainMenuOption.class, AdminMenuOption.class)) {
-                for (final String typeName : declaredSurfaceTypeNames(type)) {
+                for (final String typeName : ReflectionCensus.declaredSurfaceTypeNames(type)) {
                     for (final String forbidden : forbiddenPackages) {
                         assertThat(typeName)
                                 .as("the surface of %s must stay free of %s", type.getSimpleName(), forbidden)
@@ -1274,7 +1083,7 @@ class MenuResponseTest {
             final List<String> cardDemoTypes = new ArrayList<>();
             for (final Class<?> type : List.of(MenuResponse.class, MenuOption.class, MainMenuOption.class,
                     AdminMenuOption.class)) {
-                for (final String typeName : declaredSurfaceTypeNames(type)) {
+                for (final String typeName : ReflectionCensus.declaredSurfaceTypeNames(type)) {
                     if (typeName.startsWith("com.cardemo.") && !typeName.contains("MenuResponse")
                             && !cardDemoTypes.contains(typeName)) {
                         cardDemoTypes.add(typeName);
@@ -1447,12 +1256,6 @@ class MenuResponseTest {
             assertThat(MENU_MAP_INPUT_FIELD_COUNT)
                     .as("six header fields plus twelve caption slots plus OPTIONI plus ERRMSGI")
                     .isEqualTo(6 + MENU_MAP_CAPTION_SLOT_COUNT + 2);
-
-            assertThat(SYMBOLIC_MAP_INPUT_FIELD_CENSUS)
-                    .as("Medium: the AAP quotes 460 input fields across the seventeen maps while its own "
-                            + "table sums to 440 and a direct count yields this figure")
-                    .isNotEqualTo(460)
-                    .isNotEqualTo(440);
         }
     }
 
@@ -1485,7 +1288,7 @@ class MenuResponseTest {
                         .doesNotContain("usrtype");
             }
 
-            assertThat(declaredSurfaceTypeNames(AdminMenuOption.class))
+            assertThat(ReflectionCensus.declaredSurfaceTypeNames(AdminMenuOption.class))
                     .as("no admin member may even mention the user-type enumeration")
                     .doesNotContain(UserType.class.getName());
         }
@@ -1493,7 +1296,7 @@ class MenuResponseTest {
         @Test
         @DisplayName("the shared supertype declares only the three genuinely shared sub-fields")
         void sharedSupertypeDeclaresOnlyTheSharedSubFields() {
-            assertThat(declaredMethodNames(MenuOption.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MenuOption.class))
                     .as("declaring a user-type accessor here would invent one for the admin table, so the "
                             + "asymmetry is expressed as the absence of a member")
                     .containsExactlyInAnyOrder("optionNumber", "optionName", "programName");
@@ -1518,8 +1321,8 @@ class MenuResponseTest {
             assertThat(main.userTypeCode()).isEqualTo(STANDARD_USER_CODE);
             assertThat(main.userType()).isEqualTo(UserType.USER);
 
-            assertThat(declaredMethodNames(MainMenuOption.class)).contains("userType", "userTypeCode");
-            assertThat(declaredMethodNames(AdminMenuOption.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MainMenuOption.class)).contains("userType", "userTypeCode");
+            assertThat(ReflectionCensus.declaredMethodNames(AdminMenuOption.class))
                     .doesNotContain("userType", "userTypeCode");
         }
 
@@ -1685,30 +1488,75 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("a caption or program name wider than its declared width is stored, never truncated")
-        void overWideTextIsStoredRatherThanTruncated() {
+        @DisplayName("a caption or program name wider than its declared width is refused, naming the field")
+        void overWideTextIsRefusedRatherThanStored() {
             final String thirtySixCharacterCaption = "A".repeat(MenuResponse.OPTION_NAME_LENGTH + 1);
             final String nineCharacterProgramName = "B".repeat(MenuResponse.PROGRAM_NAME_LENGTH + 1);
+            final String admissibleCaption = EXPECTED_MAIN_CAPTIONS.get(0);
 
-            final MainMenuOption overWide =
-                    new MainMenuOption(1, thirtySixCharacterCaption, nineCharacterProgramName,
-                            STANDARD_USER_CODE);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("CDEMO-MENU-OPT-NAME is PIC X(35) at app/cpy/COMEN02Y.cpy:L90, so a thirty-sixth "
+                            + "character is a value the source field could never have held; storing it "
+                            + "would assert a contract the copybook does not have, and truncating it would "
+                            + "lose data, so it is refused outright")
+                    .isThrownBy(() -> new MainMenuOption(1, thirtySixCharacterCaption, "COACTVWC",
+                            STANDARD_USER_CODE))
+                    .withMessageContaining("optionName")
+                    .withMessageContaining("PIC X(35)")
+                    .withMessageContaining("35")
+                    .withNoCause();
 
-            assertThat(overWide.optionName())
-                    .as("silent truncation would lose data, so the payload stores exactly what it is given "
-                            + "and publishes the declared width as a separate, assertable contract")
-                    .isEqualTo(thirtySixCharacterCaption)
-                    .hasSize(MenuResponse.OPTION_NAME_LENGTH + 1);
-            assertThat(overWide.programName())
-                    .isEqualTo(nineCharacterProgramName)
-                    .hasSize(MenuResponse.PROGRAM_NAME_LENGTH + 1);
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("CDEMO-MENU-OPT-PGMNAME is PIC X(08) at app/cpy/COMEN02Y.cpy:L91, and no load "
+                            + "module in the corpus has a nine-character name")
+                    .isThrownBy(() -> new MainMenuOption(1, admissibleCaption, nineCharacterProgramName,
+                            STANDARD_USER_CODE))
+                    .withMessageContaining("programName")
+                    .withMessageContaining("PIC X(08)")
+                    .withNoCause();
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("the admin record applies the identical bound, from app/cpy/COADM02Y.cpy:L47")
+                    .isThrownBy(() -> new AdminMenuOption(1, thirtySixCharacterCaption, "COUSR00C"))
+                    .withMessageContaining("optionName")
+                    .withMessageContaining("PIC X(35)")
+                    .withNoCause();
+
+            assertThatExceptionOfType(IllegalArgumentException.class)
+                    .as("and so does the admin program name, from app/cpy/COADM02Y.cpy:L48")
+                    .isThrownBy(() -> new AdminMenuOption(1, EXPECTED_ADMIN_CAPTIONS.get(0),
+                            nineCharacterProgramName))
+                    .withMessageContaining("programName")
+                    .withMessageContaining("PIC X(08)")
+                    .withNoCause();
+        }
+
+        @Test
+        @DisplayName("the width bound is an upper bound: a shorter value is stored unpadded and untrimmed")
+        void widthBoundIsAnUpperBoundRatherThanAnExactRequirement() {
+            final MainMenuOption shortCaption = new MainMenuOption(1, "View", "COACTVWC",
+                    STANDARD_USER_CODE);
+
+            assertThat(shortCaption.optionName())
+                    .as("a caller holding an unpadded caption is describing the same option, so a shorter "
+                            + "value is accepted exactly as supplied - nothing is padded out to the "
+                            + "declared width and nothing is trimmed")
+                    .isEqualTo("View")
+                    .hasSize(4);
+
+            assertThat(new AdminMenuOption(1, "", "COUSR00C").optionName())
+                    .as("an empty caption is distinguishable from absence and is a state a caller may "
+                            + "legitimately mean, so it is accepted while null is not")
+                    .isEmpty();
 
             assertThat(MenuResponse.OPTION_NAME_LENGTH)
-                    .as("the published width is unchanged by an over-wide instance, and every canonical "
-                            + "entry still honours it")
+                    .as("the published width is the copybook's and is unaffected by any instance")
                     .isEqualTo(35);
             for (final MainMenuOption canonical : MenuResponse.MAIN_MENU_OPTIONS) {
-                assertThat(canonical.optionName()).hasSize(MenuResponse.OPTION_NAME_LENGTH);
+                assertThat(canonical.optionName())
+                        .as("every canonical entry still carries its full blank padding")
+                        .hasSize(MenuResponse.OPTION_NAME_LENGTH);
+                assertThat(canonical.programName()).hasSize(MenuResponse.PROGRAM_NAME_LENGTH);
             }
         }
 
@@ -2041,7 +1889,7 @@ class MenuResponseTest {
         @Test
         @DisplayName("the admin table has no per-option user-type gate, and none is invented")
         void adminTableHasNoUserTypeGate() {
-            assertThat(declaredMethodNames(MenuOption.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MenuOption.class))
                     .as("if the shared supertype declared a gate accessor, an admin option would be forced "
                             + "to answer a question app/cpy/COADM02Y.cpy never asks")
                     .doesNotContain("userType", "userTypeCode");
@@ -2054,7 +1902,7 @@ class MenuResponseTest {
 
             assertThat(ADMIN_ONLY_MESSAGE)
                     .as("the message exists only in the main-menu program; there is no admin counterpart to "
-                            + "assert, and fabricating one would be a High-severity invention")
+                            + "assert, and fabricating one would be an invention")
                     .isNotEmpty();
         }
 
@@ -2140,10 +1988,10 @@ class MenuResponseTest {
             assertThat(isDeniedByAdminGate(UserType.USER, adminOnlyPlaceholder)).isTrue();
             assertThat(isPlaceholderProgram(adminOnlyPlaceholder.programName())).isTrue();
 
-            assertThat(declaredAnnotationTypeNames(MenuResponse.class))
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuResponse.class))
                     .as("no class-level constraint annotation exists to fire unconditionally")
                     .isEmpty();
-            assertThat(declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MainMenuOption.class)).isEmpty();
         }
     }
 
@@ -2225,7 +2073,7 @@ class MenuResponseTest {
 
             for (final Class<?> type : List.of(MenuResponse.class, MenuType.class, MenuOption.class,
                     MainMenuOption.class, AdminMenuOption.class)) {
-                for (final String typeName : declaredSurfaceTypeNames(type)) {
+                for (final String typeName : ReflectionCensus.declaredSurfaceTypeNames(type)) {
                     for (final String unordered : unorderedTypes) {
                         assertThat(typeName)
                                 .as("position is meaning here: the option number is both the selection key "
@@ -2456,18 +2304,24 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("an unrecognised gate byte can be reported by an exception that names it")
+        @DisplayName("an unrecognised gate byte is reported by its code point rather than echoed")
         void unrecognisedGateByteCanBeReportedByName() {
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("where a recognised code is a genuine invariant, the strict lookup names the "
-                            + "offending character and its code point rather than defaulting silently")
+                    .as("where a recognised code is a genuine invariant, the strict lookup reports the "
+                            + "code point of what it rejected rather than defaulting silently. The "
+                            + "character itself is withheld: this gate byte arrives from a request body "
+                            + "and from a persisted column, so a carriage return among those bytes copied "
+                            + "verbatim into a message that reaches a log would let the caller forge a "
+                            + "log line. The hexadecimal rendering is injective, so nothing diagnostic "
+                            + "is lost")
                     .isThrownBy(() -> UserType.requireFromCode('X'))
-                    .withMessageContaining("X")
+                    .withMessageContaining("0x58")
                     .withMessageContaining("CDEMO-USER-TYPE")
                     .withNoCause();
 
             assertThatExceptionOfType(IllegalArgumentException.class)
-                    .as("a blank byte is invisible in a log, which is why the code point is reported too")
+                    .as("a blank byte is invisible in a log, which is why the code point is what gets "
+                            + "reported in every case rather than only for the printable ones")
                     .isThrownBy(() -> UserType.requireFromCode(' '))
                     .withMessageContaining("0x20");
 
@@ -2538,8 +2392,8 @@ class MenuResponseTest {
         }
 
         @Test
-        @DisplayName("no canonical value can be an endpoint, because the copybook alphabet excludes it")
-        void noCanonicalValueCanBeAnEndpoint() {
+        @DisplayName("no canonical value carries a character the copybook alphabet excludes")
+        void noCanonicalValueCarriesACharacterOutsideTheCopybookAlphabet() {
             final List<String> everyCanonicalValue = new ArrayList<>();
             everyCanonicalValue.addAll(EXPECTED_MAIN_CAPTIONS);
             everyCanonicalValue.addAll(EXPECTED_MAIN_PROGRAM_NAMES);
@@ -2559,10 +2413,57 @@ class MenuResponseTest {
             for (final String value : everyCanonicalValue) {
                 for (final Character forbidden : FORBIDDEN_ENDPOINT_CHARACTERS) {
                     assertThat(value)
-                            .as("a scheme, a host-and-port pair, a dotted quad, a domain and a mailbox each "
-                                    + "need '%s', so its absence proves no value here is an endpoint",
-                                    forbidden)
+                            .as("'%s' occurs in no COMEN02Y or COADM02Y literal, so its presence would mean "
+                                    + "the caption or program name is no longer a faithful transcription. This "
+                                    + "is a transcription assertion, not a security one - the capability claim "
+                                    + "is carried by noRoutingOrInvocationApiIsReachable()", forbidden)
                             .doesNotContain(String.valueOf(forbidden));
+                }
+            }
+        }
+
+        @Test
+        @DisplayName("no routing, network, process or dynamic invocation API is reachable from any type")
+        void noRoutingOrInvocationApiIsReachable() {
+            // This is the assertion that carries the security claim, and it is made the only way a
+            // capability claim CAN be made: by proving the API that provides the capability is not
+            // referenced. The check reads the compiled class file rather than reflecting over signatures,
+            // so a reference buried in a method body is caught too - which is exactly where a value would
+            // have to be dereferenced for a routing risk to be real.
+            for (final Class<?> type : List.of(MenuResponse.class, MenuType.class, MenuOption.class,
+                    MainMenuOption.class, AdminMenuOption.class)) {
+                final String classFile = compiledFormOf(type);
+                for (final String forbidden : FORBIDDEN_CAPABILITY_REFERENCES) {
+                    assertThat(classFile)
+                            .as("%s references '%s', so a routing, network, process or dynamic invocation "
+                                    + "capability is reachable from a menu type. The canonical values are "
+                                    + "opaque legacy program names and must never be dereferenced: "
+                                    + "app/cbl/COMEN01C.cbl:L153 dispatches EXEC CICS XCTL "
+                                    + "PROGRAM(<table value>), and the target replaces that with static "
+                                    + "URL routing decided by the controller, not by this data",
+                                    type.getSimpleName(), forbidden)
+                            .doesNotContain(forbidden);
+                }
+            }
+
+            // The signature surface is asserted as well, so a capability cannot arrive as a parameter or
+            // a return value either.
+            for (final Class<?> type : List.of(MenuResponse.class, MenuType.class, MenuOption.class,
+                    MainMenuOption.class, AdminMenuOption.class)) {
+                for (final Method method : type.getDeclaredMethods()) {
+                    final List<String> signatureTypes = new ArrayList<>();
+                    signatureTypes.add(method.getReturnType().getName());
+                    for (final Class<?> parameter : method.getParameterTypes()) {
+                        signatureTypes.add(parameter.getName());
+                    }
+                    assertThat(signatureTypes)
+                            .as("%s.%s must neither accept nor return a networking or invocation type",
+                                    type.getSimpleName(), method.getName())
+                            .allSatisfy(name -> assertThat(name)
+                                    .doesNotStartWith("java.net.")
+                                    .doesNotStartWith("javax.naming.")
+                                    .doesNotStartWith("java.rmi.")
+                                    .doesNotStartWith("java.lang.reflect."));
                 }
             }
         }
@@ -2650,7 +2551,7 @@ class MenuResponseTest {
 
             for (final Class<?> type : List.of(MenuResponse.class, MainMenuOption.class,
                     AdminMenuOption.class)) {
-                for (final String typeName : declaredSurfaceTypeNames(type)) {
+                for (final String typeName : ReflectionCensus.declaredSurfaceTypeNames(type)) {
                     assertThat(typeName)
                             .as("no functional or reflective type may reach the surface of %s and turn a "
                                     + "table value back into an invocation", type.getSimpleName())
@@ -2685,7 +2586,7 @@ class MenuResponseTest {
                     "java.time.LocalTime", "java.time.ZonedDateTime", "java.util.Date");
             for (final Class<?> type : List.of(MenuResponse.class, MenuType.class, MenuOption.class,
                     MainMenuOption.class, AdminMenuOption.class)) {
-                for (final String typeName : declaredSurfaceTypeNames(type)) {
+                for (final String typeName : ReflectionCensus.declaredSurfaceTypeNames(type)) {
                     assertThat(temporalTypes)
                             .as("a menu option table has no temporal component, so %s must expose none",
                                     type.getSimpleName())
@@ -2706,9 +2607,314 @@ class MenuResponseTest {
             assertThat(UserType.ADMIN.getCode()).isEqualTo(ADMIN_USER_CODE);
             assertThat(UserType.USER.getCode()).isEqualTo(STANDARD_USER_CODE);
 
-            assertThat(declaredMethodNames(MenuType.class))
+            assertThat(ReflectionCensus.declaredMethodNames(MenuType.class))
                     .containsExactlyInAnyOrder("values", "valueOf", "getPopulatedOptionCount",
                             "getDeclaredCapacity");
         }
     }
+
+    /**
+     * The twenty-field map projection. These assertions are about the <em>screen</em> contract rather than
+     * the option tables: {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} each declare
+     * twenty input fields, and every one of them must be present, at its declared width, with absence
+     * distinguishable from emptiness.
+     */
+    @Nested
+    @DisplayName("The twenty-field menu map projection")
+    class MapProjection {
+
+        /**
+         * The twenty component names in map order, which is the order of the {@code 02} declarations at
+         * {@code app/cpy-bms/COMEN01.CPY}:24 through :138.
+         */
+        private static final List<String> MAP_ORDER = List.of(
+                "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
+                "optionSlot01", "optionSlot02", "optionSlot03", "optionSlot04", "optionSlot05",
+                "optionSlot06", "optionSlot07", "optionSlot08", "optionSlot09", "optionSlot10",
+                "optionSlot11", "optionSlot12", "selectedOption", "errorMessage");
+
+        /**
+         * The declared width of each field, positionally aligned with {@link #MAP_ORDER}.
+         */
+        private static final List<Integer> MAP_WIDTHS = List.of(
+                4, 40, 8, 8, 40, 8,
+                40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
+                2, 78);
+
+        /**
+         * The source {@code PICTURE} clause of each field, positionally aligned with {@link #MAP_ORDER}.
+         */
+        private static final List<String> MAP_PICTURES = List.of(
+                "PIC X(4)", "PIC X(40)", "PIC X(8)", "PIC X(8)", "PIC X(40)", "PIC X(8)",
+                "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)",
+                "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)", "PIC X(40)",
+                "PIC X(2)", "PIC X(78)");
+
+        /**
+         * Builds a projection from twenty positional values, so that a single field can be varied while the
+         * other nineteen stay absent.
+         *
+         * @param values exactly twenty values, in {@link #MAP_ORDER}, any of which may be {@code null}
+         * @return the constructed projection
+         */
+        private static MenuScreen screenFrom(final List<String> values) {
+            return new MenuScreen(
+                    values.get(0), values.get(1), values.get(2), values.get(3), values.get(4),
+                    values.get(5), values.get(6), values.get(7), values.get(8), values.get(9),
+                    values.get(10), values.get(11), values.get(12), values.get(13), values.get(14),
+                    values.get(15), values.get(16), values.get(17), values.get(18), values.get(19));
+        }
+
+        /**
+         * Returns twenty absent values with one position replaced.
+         *
+         * @param index the position to populate
+         * @param value the value to place there
+         * @return a twenty-element list, absent everywhere except {@code index}
+         */
+        private static List<String> onlyAt(final int index, final String value) {
+            final List<String> values = new ArrayList<>();
+            for (int position = 0; position < MAP_ORDER.size(); position++) {
+                values.add(position == index ? value : null);
+            }
+            return values;
+        }
+
+        /**
+         * Returns a string of {@code length} repetitions of {@code 'X'}.
+         *
+         * @param length the required length
+         * @return the filler string
+         */
+        private static String filler(final int length) {
+            return "X".repeat(length);
+        }
+
+        @Test
+        @DisplayName("declares exactly the twenty map fields, in the order the copybook declares them")
+        void declaresExactlyTheTwentyMapFieldsInMapOrder() {
+            assertThat(recordComponentNames(MenuScreen.class))
+                    .as("app/cpy-bms/COMEN01.CPY declares twenty 02-level input fields at :L24, :L30, "
+                            + ":L36, :L42, :L48, :L54, :L60, :L66, :L72, :L78, :L84, :L90, :L96, :L102, "
+                            + ":L108, :L114, :L120, :L126, :L132 and :L138, and record components preserve "
+                            + "declaration order, so order is part of the assertion")
+                    .containsExactlyElementsOf(MAP_ORDER);
+        }
+
+        @Test
+        @DisplayName("the field-count arithmetic is derived from its parts and totals twenty")
+        void theFieldCountArithmeticTotalsTwenty() {
+            assertThat(MenuScreen.HEADER_FIELD_COUNT).isEqualTo(6);
+            assertThat(MenuScreen.OPTION_SLOT_COUNT).isEqualTo(12);
+            assertThat(MenuScreen.MAP_FIELD_COUNT)
+                    .as("6 header fields + 12 caption slots + OPTIONI + ERRMSGI = 20, counted directly "
+                            + "against both app/cpy-bms/COMEN01.CPY and app/cpy-bms/COADM01.CPY")
+                    .isEqualTo(20)
+                    .isEqualTo(MenuScreen.HEADER_FIELD_COUNT + MenuScreen.OPTION_SLOT_COUNT + 1 + 1)
+                    .isEqualTo(MAP_ORDER.size());
+        }
+
+        @Test
+        @DisplayName("every declared width equals the PICTURE clause of the field it transcribes")
+        void everyDeclaredWidthMatchesItsPictureClause() {
+            assertThat(MenuScreen.TRANSACTION_NAME_WIDTH).isEqualTo(4);
+            assertThat(MenuScreen.TITLE_WIDTH).isEqualTo(40);
+            assertThat(MenuScreen.DATE_WIDTH).isEqualTo(8);
+            assertThat(MenuScreen.PROGRAM_NAME_WIDTH).isEqualTo(8);
+            assertThat(MenuScreen.TIME_WIDTH).isEqualTo(8);
+            assertThat(MenuScreen.SELECTION_WIDTH).isEqualTo(2);
+            assertThat(MenuScreen.ERROR_MESSAGE_WIDTH).isEqualTo(78);
+            assertThat(MenuResponse.SCREEN_OPTION_SLOT_LENGTH)
+                    .as("OPTN001I through OPTN012I are X(40), which is wider than the X(35) caption the "
+                            + "table holds because app/cbl/COMEN01C.cbl:L243-L246 prefixes the option "
+                            + "number and a '. ' separator")
+                    .isEqualTo(40);
+
+            assertThat(MenuScreen.PROGRAM_NAME_WIDTH)
+                    .as("numerically equal to the table's program-name width, but a separate contract: "
+                            + "PGMNAMEI at app/cpy-bms/COMEN01.CPY:L42 against CDEMO-MENU-OPT-PGMNAME at "
+                            + "app/cpy/COMEN02Y.cpy")
+                    .isEqualTo(MenuResponse.PROGRAM_NAME_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a value exactly at its declared width is accepted, for all twenty fields")
+        void exactlyAtTheDeclaredWidthIsAccepted() {
+            for (int index = 0; index < MAP_ORDER.size(); index++) {
+                final int width = MAP_WIDTHS.get(index);
+                final MenuScreen screen = screenFrom(onlyAt(index, filler(width)));
+                assertThat(screen)
+                        .as("field '%s' must accept its full declared width of %d", MAP_ORDER.get(index),
+                                width)
+                        .isNotNull();
+            }
+        }
+
+        @Test
+        @DisplayName("a value one character over its declared width is refused, naming the field and clause")
+        void overWideValuesAreRefusedNamingTheFieldAndClause() {
+            for (int index = 0; index < MAP_ORDER.size(); index++) {
+                final String fieldName = MAP_ORDER.get(index);
+                final int width = MAP_WIDTHS.get(index);
+                final List<String> values = onlyAt(index, filler(width + 1));
+
+                assertThatExceptionOfType(IllegalArgumentException.class)
+                        .as("field '%s' is %s, so %d characters must be refused rather than truncated",
+                                fieldName, MAP_PICTURES.get(index), width + 1)
+                        .isThrownBy(() -> screenFrom(values))
+                        .withMessageContaining(fieldName)
+                        .withMessageContaining(MAP_PICTURES.get(index))
+                        .withMessageContaining(String.valueOf(width))
+                        .withNoCause();
+            }
+        }
+
+        @Test
+        @DisplayName("absent, empty and marked remain three distinct states, with no coercion either way")
+        void absentEmptyAndMarkedRemainDistinct() {
+            final MenuScreen absent = screenFrom(onlyAt(0, null));
+            final MenuScreen empty = screenFrom(onlyAt(0, ""));
+            final MenuScreen marked = screenFrom(onlyAt(0, "    "));
+
+            assertThat(absent.transactionName()).isNull();
+            assertThat(empty.transactionName()).isEmpty();
+            assertThat(marked.transactionName()).isEqualTo("    ");
+
+            assertThat(absent)
+                    .as("an absent field and an empty field are different inputs and must stay different")
+                    .isNotEqualTo(empty);
+            assertThat(empty).isNotEqualTo(marked);
+        }
+
+        @Test
+        @DisplayName("nothing is trimmed, padded or case folded on the way in")
+        void nothingIsTrimmedPaddedOrCaseFolded() {
+            final MenuScreen screen = screenFrom(onlyAt(1, "  Mixed Case Title  "));
+
+            assertThat(screen.title01())
+                    .as("leading and trailing spaces are screen content, and the corpus applies no case "
+                            + "function to a title line")
+                    .isEqualTo("  Mixed Case Title  ")
+                    .hasSize(20);
+        }
+
+        @Test
+        @DisplayName("the selection field carries two raw characters, so blank, padded and non-numeric differ")
+        void theSelectionFieldCarriesTwoRawCharacters() {
+            final int selectionIndex = MAP_ORDER.indexOf("selectedOption");
+
+            assertThat(screenFrom(onlyAt(selectionIndex, "  ")).selectedOption()).isEqualTo("  ");
+            assertThat(screenFrom(onlyAt(selectionIndex, " 1")).selectedOption()).isEqualTo(" 1");
+            assertThat(screenFrom(onlyAt(selectionIndex, "1 ")).selectedOption()).isEqualTo("1 ");
+            assertThat(screenFrom(onlyAt(selectionIndex, "AB")).selectedOption())
+                    .as("app/cbl/COMEN01C.cbl:L127-L129 has to be able to see a non-numeric selection, so "
+                            + "the projection must not reject or normalise one")
+                    .isEqualTo("AB");
+            assertThat(screenFrom(onlyAt(selectionIndex, null)).selectedOption()).isNull();
+        }
+
+        @Test
+        @DisplayName("the slot view preserves map order, keeps absent slots absent, and cannot be mutated")
+        void theSlotViewPreservesMapOrderAndAbsentSlots() {
+            final List<String> values = new ArrayList<>();
+            for (int position = 0; position < MAP_ORDER.size(); position++) {
+                values.add(null);
+            }
+            values.set(MAP_ORDER.indexOf("optionSlot01"), "1. First");
+            values.set(MAP_ORDER.indexOf("optionSlot10"), "10. Tenth");
+
+            final List<String> slots = screenFrom(values).optionSlots();
+
+            assertThat(slots).hasSize(MenuScreen.OPTION_SLOT_COUNT);
+            assertThat(slots.get(0)).isEqualTo("1. First");
+            assertThat(slots.get(9)).isEqualTo("10. Tenth");
+            assertThat(slots.get(10))
+                    .as("the main menu paints ten options and the admin menu four, so slots eleven and "
+                            + "twelve are declared because app/cpy-bms/COMEN01.CPY:L120 and :L126 declare "
+                            + "them, not because either menu fills them")
+                    .isNull();
+            assertThat(slots.get(11)).isNull();
+
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> slots.set(0, "tampered"));
+            assertThatExceptionOfType(UnsupportedOperationException.class)
+                    .isThrownBy(() -> slots.add("tampered"));
+        }
+
+        @Test
+        @DisplayName("the slot view is a derivation, not a twenty-first wire field")
+        void theSlotViewIsNotABeanProperty() {
+            assertThat(ReflectionCensus.declaredMethodNames(MenuScreen.class))
+                    .as("named without a get prefix so that it is not a bean property: the twelve captions "
+                            + "are already on the payload as components, and emitting the view as well "
+                            + "would put every caption on the wire twice")
+                    .contains("optionSlots")
+                    .doesNotContain("getOptionSlots");
+
+            assertThat(recordComponentNames(MenuScreen.class))
+                    .as("a derivation is never a record component")
+                    .doesNotContain("optionSlots");
+        }
+
+        @Test
+        @DisplayName("declares exactly the twenty accessors, the slot view, the guard and the value methods")
+        void declaresExactlyTheDocumentedMethods() {
+            final List<String> expected = new ArrayList<>(MAP_ORDER);
+            expected.add("optionSlots");
+            expected.add("requireScreenFieldWidth");
+            expected.add("equals");
+            expected.add("hashCode");
+            expected.add("toString");
+
+            assertThat(ReflectionCensus.declaredMethodNames(MenuScreen.class))
+                    .containsExactlyInAnyOrderElementsOf(expected);
+        }
+
+        @Test
+        @DisplayName("carries no annotation, no routing state and no retained screen state")
+        void carriesNoAnnotationAndNoSessionState() {
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(MenuScreen.class)).isEmpty();
+            assertNoMemberNameContains(FORBIDDEN_SESSION_STATE_FRAGMENTS, MenuScreen.class);
+            assertNoMemberNameContains(FORBIDDEN_DISPATCH_FRAGMENTS, MenuScreen.class);
+            assertThat(ReflectionCensus.declaredMethodNames(MenuScreen.class))
+                    .noneMatch(name -> name.startsWith("set"));
+        }
+
+        @Test
+        @DisplayName("is a value: equal contents are equal, and its rendering discloses nothing sensitive")
+        void isAValueWhoseRenderingDisclosesNothingSensitive() {
+            final MenuScreen first = screenFrom(onlyAt(1, "Main Menu"));
+            final MenuScreen second = screenFrom(onlyAt(1, "Main Menu"));
+
+            assertThat(first).isEqualTo(second).hasSameHashCodeAs(second);
+            assertThat(first.toString())
+                    .as("every component is a public caption, a header rendering, a menu selection or an "
+                            + "error line, so the generated rendering carries no personal data, no account "
+                            + "identifier and no credential")
+                    .contains("Main Menu");
+        }
+    }
+    /**
+     * Reads a compiled class file as text so its constant pool can be screened for references.
+     *
+     * <p>Decoded as ISO-8859-1 because that maps every byte to exactly one character, which makes the
+     * search total: no byte sequence can be lost to a decoding error, and the internal class names a
+     * constant pool holds are ASCII.
+     *
+     * @param type the type whose compiled form is wanted
+     * @return the class file's bytes as a searchable string, never {@code null}
+     */
+    private String compiledFormOf(final Class<?> type) {
+        final String resource = type.getName().replace('.', '/') + ".class";
+        try (InputStream stream = type.getClassLoader().getResourceAsStream(resource)) {
+            assertThat(stream)
+                    .as("the compiled form of %s must be readable for this assertion to mean "
+                            + "anything; a silently absent resource would make it vacuous", resource)
+                    .isNotNull();
+            return new String(stream.readAllBytes(), StandardCharsets.ISO_8859_1);
+        } catch (final java.io.IOException failure) {
+            throw new AssertionError("could not read the compiled form of " + resource, failure);
+        }
+    }
+
 }

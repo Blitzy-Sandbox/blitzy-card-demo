@@ -38,6 +38,9 @@ import jakarta.persistence.Table;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 /**
  * Transaction type reference data: the relational replacement for the VSAM KSDS cluster
  * {@code AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS}.
@@ -262,18 +265,20 @@ import org.hibernate.type.SqlTypes;
  *
  * <h2>Required schema, and what is Not available</h2>
  *
- * <p><b>Not available:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} did
- * not exist when this entity was authored, and neither did the directory that will hold it, so
- * the schema could not be read and the mapping could not be reconciled against it. This field
- * contract is therefore the normative column contract, and the migration must converge on it
- * rather than the reverse. What is needed, precisely:
+ * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
+ * <b>present</b> and declares {@code CREATE TABLE transaction_type} with 2
+ * columns whose names are identical, as a set, to the 2 {@code @Column(name = ...)} declarations in this
+ * class, verified by direct comparison. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}
+ * remain <b>not available</b>. What that migration declares, and what this mapping asserts, is
+ * precisely:
  *
  * <ul>
  *   <li>table {@code transaction_type} with {@code tran_type CHAR(2) PRIMARY KEY} and
  *       {@code tran_type_desc CHAR(50) NOT NULL};</li>
  *   <li>no version column;</li>
  *   <li>no index beyond the primary key;</li>
- *   <li>seeded by {@code V3__seed_data.sql} from {@code app/data/ASCII/trantype.txt}, which is
+ *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit) from {@code
+ *       app/data/ASCII/trantype.txt}, which is
  *       7 rows of 60 bytes each.</li>
  * </ul>
  *
@@ -286,14 +291,16 @@ import org.hibernate.type.SqlTypes;
  *
  * <h2>Building, running and testing this component</h2>
  *
- * <p>Build and unit test with {@code mvn -B clean test}, which compiles under
+ * <p>Build and unit test with {@code ./mvnw -B clean test}, which compiles under
  * {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning this file introduces
- * is a build failure rather than console noise. Run the full gate with {@code mvn -B clean
+ * is a build failure rather than console noise. Run the full gate with {@code ./mvnw -B clean
  * verify}, which adds the coverage floor and the dependency vulnerability scan. The unit tests
- * for this entity live in {@code src/test/java/com/cardemo/unit/model} and assert the 60 byte
- * record arithmetic, the key length of 2, the column name {@code tran_type} and that the type
- * is a class rather than an enum. The repository tier is exercised against a Testcontainers
- * PostgreSQL 16 instance from {@code src/test/java/com/cardemo/integration/repository}. There
+ * for this entity belong in {@code src/test/java/com/cardemo/unit/model} and are to assert the 60
+ * byte record arithmetic, the key length of 2, the column name {@code tran_type} and that the type
+ * is a class rather than an enum. The repository tier is to be exercised against a Testcontainers
+ * PostgreSQL 16 instance from {@code src/test/java/com/cardemo/integration/repository}.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code TransactionTypeTest} exists and
+ * that integration directory does not exist, so both sentences state coverage owed, not coverage run. There
  * is no configuration key and no default value specific to this class: it is a mapping, and
  * every setting that governs it, the datasource, the naming strategy and
  * {@code ddl-auto: validate}, is declared in the profile configuration.
@@ -320,127 +327,119 @@ import org.hibernate.type.SqlTypes;
  *       condition to report, not a mapping defect.</li>
  * </ul>
  *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
+ * JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. This row is
+ * lookup reference data - a two character code and its description - and carries no credential, no
+ * personal data and no customer figure, so unlike {@link Card} or {@link Customer} it is not what the
+ * barrier was introduced to protect. It is applied here anyway, and deliberately without exception,
+ * because a barrier that covers every entity in the package is checkable by inspection, whereas one
+ * applied only where a reviewer judged it necessary has to be re-judged every time an entity is added or
+ * a column is widened. Persistence is unaffected: Hibernate reads and writes the annotated fields
+ * reflectively and never consults Jackson visibility.</p>
+ *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
 @Entity
 @Table(name = "transaction_type")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class TransactionType {
 
     /**
+     * Character width of {@code TRAN-TYPE PIC X(02)} at {@code app/cpy/CVTRA03Y.cpy:L5}, carried through
+     * as the {@code CHAR(2)} column width and corroborated by the {@code KEYLEN 2} that
+     * {@code app/catlg/LISTCAT.txt:L3779} reports.
+     */
+    private static final int TYPE_CODE_WIDTH = 2;
+
+    /**
+     * Character width of {@code TRAN-TYPE-DESC PIC X(50)} at {@code app/cpy/CVTRA03Y.cpy:L6}, carried
+     * through as the {@code CHAR(50)} column width.
+     */
+    private static final int TYPE_DESCRIPTION_WIDTH = 50;
+
+    /**
      * Transaction type code: the primary key, from {@code TRAN-TYPE PIC X(02)} at
-     * {@code app/cpy/CVTRA03Y.cpy:L5}, occupying bytes 1 to 2 of the 60 byte record, which is
-     * the {@code KEYLEN 2} with {@code RKP 0} that {@code app/catlg/LISTCAT.txt:L3779-L3780}
-     * reports and the {@code KEYS(2 0)} that {@code app/jcl/TRANTYPE.jcl:L40} defines.
-     *
-     * <p>The column is {@code tran_type}, spelled exactly as the copybook spells the field.
-     * This is the Medium severity divergence recorded in the class documentation: the sibling
-     * copybooks all use {@code TRAN-TYPE-CD}, so the natural instinct is to write that name in
-     * underscored form here. Doing so would part company with the source of record and would
-     * abort startup under {@code ddl-auto: validate} with a missing column.
-     *
-     * <p>{@code JdbcTypeCode(SqlTypes.CHAR)} is required, not decorative; without it Hibernate
-     * maps a {@code String} to {@code VARCHAR} and schema validation rejects the
-     * {@code CHAR(2)} column outright. Not nullable, and not constrained beyond that: a blank
-     * key is storable in the source and must remain loadable here.
+     * {@code app/cpy/CVTRA03Y.cpy:L5}, occupying bytes 1 to 2 of the 60 byte record, which is the
+     * {@code KEYLEN 2} with {@code RKP 0} that {@code app/catlg/LISTCAT.txt:L3779-L3780} reports and the
+     * {@code KEYS(2 0)} that {@code app/jcl/TRANTYPE.jcl:L40} defines.
      */
     @Id
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_type", nullable = false, length = 2)
+    @Column(name = "tran_type", nullable = false, length = TYPE_CODE_WIDTH)
     private String typeCode;
 
     /**
-     * Transaction type description, from {@code TRAN-TYPE-DESC PIC X(50)} at
-     * {@code app/cpy/CVTRA03Y.cpy:L6}, occupying bytes 3 to 52 of the 60 byte record. The
-     * batch report writer prints this text beside the code; see
-     * {@code app/cbl/CBTRN03C.cbl:L366}.
-     *
-     * <p>Stored and returned blank padded to the full 50 characters, which is the faithful
-     * fixed width image rather than an artefact. It is deliberately not trimmed on the way
-     * out. Not nullable, and not constrained beyond that, so a description of only spaces
-     * loads exactly as the source permits.
+     * Transaction type description, from {@code TRAN-TYPE-DESC PIC X(50)} at {@code app/cpy/CVTRA03Y.cpy:L6},
+     * occupying bytes 3 to 52 of the 60 byte record. The batch report writer prints this text beside the code;
+     * see {@code app/cbl/CBTRN03C.cbl:L366}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_type_desc", nullable = false, length = 50)
+    @Column(name = "tran_type_desc", nullable = false, length = TYPE_DESCRIPTION_WIDTH)
     private String typeDescription;
 
     /**
-     * No argument constructor required by the JPA specification so the persistence provider
-     * can instantiate a managed instance before populating its state.
-     *
-     * <p>Deliberately {@code protected} rather than {@code public}: the provider and any
-     * subclass can reach it, while application code is steered to the all columns constructor
-     * and cannot create an instance with two null columns by accident. Both fields are left
-     * null here, which is the correct transient state for an instance the provider is about to
-     * fill; an instance created this way is not valid to persist until both properties are set.
+     * No argument constructor required by the JPA specification so the persistence provider can instantiate a
+     * managed instance before populating its state.
      */
     protected TransactionType() {
         // Intentionally empty: JPA populates the persistent state directly after construction.
     }
 
     /**
-     * Creates a fully populated transaction type, which is how application and test code
-     * should build one.
+     * Creates a fully populated transaction type, which is how application and test code should build one.
      *
-     * <p>Both fields are assigned directly rather than through the setters. That is not a
-     * stylistic choice: this class is not {@code final}, because the JPA specification forbids
-     * a final entity, so a constructor that called an overridable setter would leak
-     * {@code this} to a subclass override before construction finished. The compiler reports
-     * exactly that as a {@code this-escape} warning, and {@code -Werror} would turn it into a
-     * build failure.
-     *
-     * <p>No validation is applied and none is appropriate. Both columns are non null in the
-     * schema, and the persistence provider reports a null on flush with full context; adding a
-     * duplicate check here would reject blank but non null values that the source accepts, and
-     * would move a schema concern into the model. The constructor has no side effect, performs
-     * no I/O and throws nothing.
-     *
-     * @param typeCode        the two character code for {@code tran_type}, from
-     *                        {@code TRAN-TYPE PIC X(02)}; longer values are rejected by the
-     *                        column width on flush, and shorter ones are blank padded by the
-     *                        {@code CHAR(2)} column
-     * @param typeDescription the description for {@code tran_type_desc}, from
-     *                        {@code TRAN-TYPE-DESC PIC X(50)}, blank padded to 50 characters
-     *                        by the column
+     * @param typeCode the two character code for {@code tran_type}, from {@code TRAN-TYPE PIC X(02)}.
+     * @param typeDescription the description for {@code tran_type_desc}, from {@code TRAN-TYPE-DESC PIC X(50)},
+     * blank padded to 50 characters by the column
      */
     public TransactionType(String typeCode, String typeDescription) {
-        this.typeCode = typeCode;
-        this.typeDescription = typeDescription;
+        // Both checks are private static helpers, so this constructor invokes no overridable method
+        // and cannot publish a partially built instance to a subclass override. JPA forbids a final
+        // entity, so that hazard is real and -Xlint:all -Werror reports it as this-escape.
+        this.typeCode = requireWidth(typeCode, "typeCode", "TRAN-TYPE PIC X(02)", TYPE_CODE_WIDTH);
+        this.typeDescription = requireWidth(typeDescription,
+                "typeDescription",
+                "TRAN-TYPE-DESC PIC X(50)",
+                TYPE_DESCRIPTION_WIDTH);
     }
 
     /**
-     * Returns the transaction type code, the primary key, from
-     * {@code TRAN-TYPE PIC X(02)} at {@code app/cpy/CVTRA03Y.cpy:L5}.
+     * Returns the transaction type code, the primary key, from {@code TRAN-TYPE PIC X(02)} at
+     * {@code app/cpy/CVTRA03Y.cpy:L5}.
      *
-     * @return the two character code, blank padded to 2 by the {@code CHAR(2)} column when
-     *         read back from the database, or {@code null} on a transient instance built by
-     *         the no argument constructor
+     * @return the two character code, blank padded to 2 by the {@code CHAR(2)} column when read back from the
+     * database, or {@code null} on a transient instance built by the no argument constructor
      */
     public String getTypeCode() {
         return typeCode;
     }
 
     /**
-     * Sets the transaction type code, from {@code TRAN-TYPE PIC X(02)} at
-     * {@code app/cpy/CVTRA03Y.cpy:L5}.
+     * Sets the transaction type code, from {@code TRAN-TYPE PIC X(02)} at {@code app/cpy/CVTRA03Y.cpy:L5}.
      *
-     * <p>Mutating the primary key of an entity that is already managed is not meaningful to the
-     * persistence provider; this setter exists for the provider's own property access and for
-     * constructing an instance in stages. No validation is performed, so a blank but non null
-     * code is accepted exactly as the source permits, and nothing is thrown.
-     *
-     * @param typeCode the two character code to store in {@code tran_type}
+     * @param typeCode the two character code to store in {@code tran_type}; must not be
+     *                 {@code null} and must be at most 2 characters
+     * @throws IllegalArgumentException if {@code typeCode} is {@code null} or longer than 2
+     *                                  characters
      */
     public void setTypeCode(String typeCode) {
-        this.typeCode = typeCode;
+        this.typeCode = requireWidth(typeCode, "typeCode", "TRAN-TYPE PIC X(02)", TYPE_CODE_WIDTH);
     }
 
     /**
      * Returns the transaction type description, from {@code TRAN-TYPE-DESC PIC X(50)} at
      * {@code app/cpy/CVTRA03Y.cpy:L6}.
      *
-     * @return the description exactly as stored, which after a database read is blank padded to
-     *         50 characters and is not trimmed, or {@code null} on a transient instance built
-     *         by the no argument constructor
+     * @return the description exactly as stored, which after a database read is blank padded to 50 characters
+     * and is not trimmed, or {@code null} on a transient instance built by the no argument constructor
      */
     public String getTypeDescription() {
         return typeDescription;
@@ -450,42 +449,20 @@ public class TransactionType {
      * Sets the transaction type description, from {@code TRAN-TYPE-DESC PIC X(50)} at
      * {@code app/cpy/CVTRA03Y.cpy:L6}.
      *
-     * <p>No validation is performed and nothing is thrown; a description of only spaces is a
-     * legitimate value in the source and stays legitimate here.
-     *
      * @param typeDescription the description to store in {@code tran_type_desc}
      */
     public void setTypeDescription(String typeDescription) {
-        this.typeDescription = typeDescription;
+        this.typeDescription = requireWidth(typeDescription,
+                "typeDescription",
+                "TRAN-TYPE-DESC PIC X(50)",
+                TYPE_DESCRIPTION_WIDTH);
     }
 
     /**
      * Compares two transaction types on {@code typeCode} alone.
      *
-     * <p>The key is the right and only basis for identity here. It is a natural key that
-     * arrives from seed data rather than a generated surrogate, so it is populated from the
-     * moment an instance is meaningful, and it stays stable across the transient, managed and
-     * detached states where a description could legitimately be edited. Including the
-     * description would make two rows that denote the same transaction type compare unequal
-     * after a text correction.
-     *
-     * <p>The type test is a pattern match rather than a {@code getClass()} comparison so that a
-     * lazily loaded provider proxy compares equal to the instance it stands for; a
-     * {@code getClass()} test would see the generated proxy class and report inequality. This
-     * class declares no inheritance and no persistence hierarchy, so the symmetry caveat that
-     * normally attaches to a pattern match in a non final class cannot arise.
-     *
-     * <p>Boundary case, stated rather than hidden: two instances that have not yet been given a
-     * code both hold {@code null} and therefore compare equal, so un keyed instances must not
-     * be relied on to stay distinct inside a hash based collection. Give an instance its code
-     * before putting it in a set or a map. Note also that this comparison is exact string
-     * equality, which is stricter than the database's blank insensitive comparison on
-     * {@code CHAR}; because every seeded code fully occupies {@code CHAR(2)} there is no
-     * padding for the two rules to disagree about.
-     *
      * @param other the object to compare with, which may be {@code null}
-     * @return {@code true} if {@code other} is a transaction type with an equal
-     *         {@code typeCode}
+     * @return {@code true} if {@code other} is a transaction type with an equal {@code typeCode}
      */
     @Override
     public boolean equals(Object other) {
@@ -499,13 +476,7 @@ public class TransactionType {
     }
 
     /**
-     * Returns a hash code derived from {@code typeCode} alone, consistent with
-     * {@link #equals(Object)}.
-     *
-     * <p>{@code Objects.hashCode(Object)} is used rather than dereferencing the field, so a
-     * transient instance whose code is still {@code null} hashes to 0 instead of throwing. The
-     * value is stable for the lifetime of an instance whose key does not change, which is the
-     * property a hash based collection requires.
+     * Returns a hash code derived from {@code typeCode} alone, consistent with {@link #equals(Object)}.
      *
      * @return the hash code of the primary key, or 0 when the key is {@code null}
      */
@@ -517,22 +488,50 @@ public class TransactionType {
     /**
      * Returns a diagnostic rendering that includes <em>both</em> columns.
      *
-     * <p>Nothing in this layout is a secret and nothing is personal data: a transaction type
-     * code and its printable description are reference data that the batch report already
-     * prints in clear. Exposing both is therefore correct rather than merely harmless, and it
-     * is the reason this rendering is unrestricted while the card, customer and user security
-     * entities deliberately restrict theirs, those carrying a card number, a social security
-     * number and a password hash respectively, none of which may reach a log line.
-     *
-     * <p>The description appears exactly as held, so after a database read it shows its 50
-     * character blank padded form. That is intentional: a diagnostic that trimmed the value
-     * would hide the very padding a fixed width defect would show up as.
-     *
      * @return a single line rendering of the type code and its description, never {@code null}
      */
     @Override
     public String toString() {
         return "TransactionType{typeCode=" + typeCode
                 + ", typeDescription=" + typeDescription + "}";
+    }
+
+    /**
+     * Validates a candidate character value against the width of the COBOL field it comes from and
+     * returns it unchanged.
+     *
+     * <p>Rejects {@code null}, because the column is {@code NOT NULL} and because a fixed width
+     * COBOL field cannot be null in the first place, and rejects any value longer than the picture
+     * clause declares, because the {@code CHAR} column would truncate or refuse it and would name
+     * only the column when it did. Everything the picture clause admits is accepted: a value of
+     * only spaces, a shorter value that the {@code CHAR} column blank pads, and any character
+     * content whatever. Nothing is trimmed, padded or case folded, so the stored bytes are the
+     * caller's bytes.
+     *
+     * <p>Declared {@code private static} so that the constructor can call it without invoking an
+     * overridable method, which would otherwise publish a partially initialised instance; the JPA
+     * specification forbids a final entity, so the hazard is real and {@code -Xlint:all -Werror}
+     * reports it as {@code this-escape}.
+     *
+     * @param value      the candidate value, possibly {@code null}
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause, used in the failure
+     *                   message
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null} or longer than
+     *                                  {@code width} characters
+     */
+    private static String requireWidth(String value, String property, String cobolField, int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table transaction_type");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must be at most " + width + " characters but was " + value.length());
+        }
+        return value;
     }
 }

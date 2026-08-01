@@ -33,21 +33,24 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /**
- * Composite primary key of the transaction category balance store, replacing the 17 byte record key of
- * the {@code TCATBALF} VSAM KSDS cluster.
+ * Composite primary key of the transaction category balance store, replacing the 17 byte record key of the
+ * {@code TCATBALF} VSAM KSDS cluster.
  *
- * <p><strong>What it does.</strong> This is a pure, value based identifier. It carries exactly the three
- * components of the COBOL group {@code TRAN-CAT-KEY} and nothing else, and it is consumed through
- * {@code @EmbeddedId} by the transaction category balance entity. It holds no behaviour beyond value
- * equality, exposes no mutators, performs no I/O and has no collaborators.
+ * <p>This is a pure, value based identifier. It carries exactly the three components of the COBOL group
+ * {@code TRAN-CAT-KEY} and nothing else, and it is consumed through {@code @EmbeddedId} by the transaction
+ * category balance entity. It holds no behaviour beyond value equality, exposes no mutators, performs no I/O
+ * and has no collaborators.
  *
- * <p><strong>How it is built and verified.</strong> {@code mvn -B clean verify} compiles this class under
- * {@code -Xlint:all -Werror} and enforces the project line coverage floor; its unit test lives in
- * {@code src/test/java/com/cardemo/unit/model}. The mapping itself is verified by starting the
- * application against a schema produced by the Flyway migrations, because
+ * <p><strong>How it is built and verified.</strong> {@code ./mvnw -B clean verify} compiles this class under
+ * {@code -Xlint:all -Werror} and enforces the project line coverage floor; its unit test belongs in
+ * {@code src/test/java/com/cardemo/unit/model}, where <strong>none exists at this commit</strong> - no
+ * {@code TransactionCategoryBalanceIdTest} has been written, so no test covers this class. The mapping
+ * itself is to be verified by starting the application against a schema produced by the Flyway migrations,
+ * because
  * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile and so any drift between
  * this class and the schema surfaces as a startup failure rather than as a latent fault. The measured
- * outcomes of that check, including the two column types that fail it, are recorded below.
+ * outcomes of that check are recorded below, together with the two type pairings that fail it and the
+ * measured confirmation that {@code V1__create_schema.sql} already declares the remedied types.
  *
  * <h2>Source contract</h2>
  *
@@ -92,9 +95,24 @@ import java.util.Objects;
  *
  * <p>A VSAM browse proceeds in key order, so the byte layout of a composite key <em>is</em> its sort
  * order. {@code app/cbl/CBACT04C.cbl:L188-L222} browses this file sequentially and detects an
- * account level control break by testing {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM}, flushing the
- * accumulated interest for the previous account through {@code 1050-UPDATE-ACCOUNT} on each break and
- * once more when end of file is reached.
+ * account level control break by testing {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM} at
+ * {@code :L194}, flushing the accumulated interest for the previous account through
+ * {@code 1050-UPDATE-ACCOUNT} at {@code :L196} on each break, guarded by the first record test at
+ * {@code :L195-L199}.
+ *
+ * <p><strong>The source does not flush the final account, and earlier revisions of this file said it
+ * did.</strong> The statement "and once more when end of file is reached" was wrong and is corrected
+ * here. The apparent final flush is {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220},
+ * but that {@code ELSE} belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189} and can only be taken
+ * when {@code END-OF-FILE} already equals {@code 'Y'} - which is exactly when the enclosing
+ * {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already terminated, because
+ * {@code PERFORM UNTIL} is test before unless {@code WITH TEST AFTER} is written and it is not written
+ * there. The branch is unreachable, so for the last account in key order the interest is never added to
+ * the balance, the two cycle accumulators are never zeroed, and no rewrite occurs - all three being
+ * effects of {@code 1050-UPDATE-ACCOUNT} at {@code :L350-L370}. The Java flush must still happen, driven
+ * by the end of data condition rather than by translating that dead {@code ELSE}, and that is a labelled
+ * deviation from source behaviour rather than parity. See the fuller treatment on
+ * {@code com.cardemo.repository.TransactionCategoryBalanceRepository}, which carries the same finding.
  *
  * <p>That break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component.
  * Reordering the declarations, for instance alphabetising them to {@code catCd}, {@code accountId},
@@ -145,20 +163,32 @@ import java.util.Objects;
  *   PRIMARY KEY (acct_id, tran_type_cd, tran_cat_cd)
  * </pre>
  *
- * <p><strong>Not available.</strong> At the time this class was authored
- * {@code src/main/resources/db/migration/V1__create_schema.sql} did not exist, and neither did the
- * companion entity. The column names and widths above are the contract derived from
- * {@code app/cpy/CVTRA01Y.cpy} and {@code app/catlg/LISTCAT.txt:L1371}; the SQL types are the ones this
- * mapping was measured to validate against, as recorded below. To close the gap, two artefacts are
- * needed: the authored {@code V1__create_schema.sql} declaring these three columns and the composite
- * primary key in the order above, and the entity that mounts this class through {@code @EmbeddedId}.
+ * <p><strong>Both dependencies are present, measured 1 August 2026.</strong> An earlier generation of
+ * this comment recorded them as unavailable; that is no longer true.
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * {@code transaction_category_balance} at {@code :L1134-L1145} with {@code acct_id BIGINT} at
+ * {@code :L1136}, {@code tran_type_cd VARCHAR(2)} at {@code :L1138} and {@code tran_cat_cd INTEGER} at
+ * {@code :L1140}, closed by {@code CONSTRAINT pk_transaction_category_balance PRIMARY KEY (acct_id,
+ * tran_type_cd, tran_cat_cd)} at {@code :L1144-L1145} - the component order above, exactly. And
+ * {@code com.cardemo.model.entity.TransactionCategoryBalance} mounts this class through
+ * {@code @EmbeddedId}. The column names and widths remain contracted by {@code app/cpy/CVTRA01Y.cpy} and
+ * {@code app/catlg/LISTCAT.txt:L1371}; the SQL types are the ones this mapping validates against, as
+ * recorded below.
  *
  * <h2>Measured type pairings, and one correction</h2>
  *
  * <p>The Hibernate schema validator compares JDBC type codes rather than merely widths, so the Java and
- * SQL types must be paired deliberately. The three pairings below were not assumed: each was executed
- * against PostgreSQL 16.10 with Hibernate 6.6.42.Final and {@code hibernate.hbm2ddl.auto=validate}, on a
- * throwaway schema, and the outcome recorded.
+ * SQL types must be paired deliberately. The three pairings below were established by executing each
+ * against PostgreSQL 16.10 with Hibernate 6.6.42.Final and {@code hibernate.hbm2ddl.auto=validate} on a
+ * throwaway schema. <strong>Re-verified 1 August 2026, and reproducible from this tree without a Spring
+ * context:</strong> applying {@code V1__create_schema.sql} into a throwaway schema on a PostgreSQL 16.10
+ * instance yields 11 tables, 10 foreign keys and 5 check constraints, and bootstrapping Hibernate
+ * 6.6.42.Final directly over all eleven annotated entities with {@code hibernate.hbm2ddl.auto=validate}
+ * reports no mismatch. That check exercises this class, because {@code TransactionCategoryBalance} mounts
+ * it as its {@code @EmbeddedId} and a component name or type mismatch would fail it. An earlier
+ * generation of this comment said the execution was not reproducible because no
+ * {@code application*.yml} and no {@code @SpringBootApplication} entry point exists; that inference was
+ * wrong - neither is needed, only Hibernate's {@code MetadataSources} bootstrap API.
  *
  * <ul>
  *   <li>{@code Long} over {@code BIGINT} validates. {@code Long} over {@code NUMERIC(11)}
@@ -180,6 +210,14 @@ import java.util.Objects;
  *       is lost by it, because the value is always exactly two characters, and {@code VARCHAR} avoids
  *       the trailing space semantics that {@code bpchar} comparison carries.</li>
  * </ul>
+ *
+ * <p><strong>Both remedies are already in the migration, measured 1 August 2026.</strong> Reading
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} directly, the
+ * {@code transaction_category_balance} table it declares carries {@code acct_id BIGINT NOT NULL},
+ * {@code tran_type_cd VARCHAR(2) NOT NULL} and {@code tran_cat_cd INTEGER NOT NULL} - exactly the
+ * three types the mapping table above requires, with neither
+ * {@code NUMERIC(11)} nor {@code CHAR(2)} present. Neither failing pairing is therefore live against this
+ * schema; both entries are retained as the reasoning that fixed the column types, not as open defects.
  *
  * <h2>Provider attribute ordering does not follow declaration order</h2>
  *
@@ -204,8 +242,26 @@ import java.util.Objects;
  * incidental: {@code app/cbl/CBTRN02C.cbl:L467} ({@code 2700-UPDATE-TCATBAL}) populates the key at
  * {@code L469-L471} <em>before</em> reading, and {@code L481} accepts file status {@code '00'}
  * <em>or</em> {@code '23'}, treating record not found as an accepted control path that dispatches to
- * {@code 2700-A-CREATE-TCATBAL-REC}. This class therefore imposes no existence dependent behaviour and
- * performs no validation that would reject a key for a row awaiting creation.
+ * {@code 2700-A-CREATE-TCATBAL-REC}. This class therefore imposes no <em>existence</em> dependent
+ * behaviour: nothing here asks whether the row is already in the table, and a key for a row awaiting
+ * creation is exactly as valid as a key for one already present.
+ *
+ * <p><strong>Row existence and component completeness are two different questions, and only the first is
+ * open.</strong> The three {@code MOVE} statements at {@code app/cbl/CBTRN02C.cbl:L469-L471} - {@code MOVE
+ * XREF-ACCT-ID TO FD-TRANCAT-ACCT-ID}, {@code MOVE DALYTRAN-TYPE-CD TO FD-TRANCAT-TYPE-CD} and
+ * {@code MOVE DALYTRAN-CAT-CD TO FD-TRANCAT-CD} - fill <em>all three</em> components before the
+ * {@code READ} at {@code L472}, and COBOL has no null: a {@code PIC 9(11)}, a {@code PIC X(02)} and a
+ * {@code PIC 9(04)} always hold their declared width. A partially populated key is therefore something the
+ * source cannot produce and the read path never needs, which is why
+ * {@link #TransactionCategoryBalanceId(Long, String, Integer)} validates every component and rejects
+ * {@code null} without narrowing the upsert path by one row.
+ *
+ * <p>The validation is bounded by the picture clauses and by nothing else. It rejects {@code null}, an
+ * account identifier outside 0 through 99999999999, a type code that is not exactly two characters, and a
+ * category code outside 0 through 9999. It does <strong>not</strong> reject a blank or all-space type code,
+ * because {@code PIC X(02)} admits spaces and the fixture data proves two-character codes whose leading
+ * zero is significant; it does not trim, pad, upper-case or otherwise normalise anything, because any
+ * adjustment would change the key bytes.
  *
  * <p>Instances are effectively immutable: the components are private and no setter, wither or other
  * mutating operation is exposed, so a key placed in a persistence context cannot be altered underneath
@@ -231,11 +287,19 @@ import java.util.Objects;
  *
  * <h2>Error modes</h2>
  *
- * <p>No operation on this class throws. Both constructors accept their arguments as given, including
- * {@code null}, so that a partially populated key remains representable for the upsert path described
- * above; {@link #equals(Object)} is total over all three components, so a partially populated key never
- * compares equal to a differently populated one. Callers that require a fully populated key must assert
- * that themselves, at the boundary where the requirement actually applies.
+ * <p>Exactly one operation throws, and it is the application facing constructor.
+ * {@link #TransactionCategoryBalanceId(Long, String, Integer)} raises
+ * {@link IllegalArgumentException} naming the offending component, quoting its picture clause and
+ * reporting what was received, when a component is {@code null} or lies outside the domain its picture
+ * clause can represent. Failing there rather than at flush time is the point: the message names the
+ * component, whereas a constraint violation surfacing from the provider names only a column.
+ *
+ * <p>Every other operation is total and throws nothing. The no-argument constructor accepts the
+ * unpopulated state the persistence provider requires and is {@code protected} so that application code
+ * cannot use it to route around the validation above. {@link #equals(Object)} tolerates {@code null} and a
+ * foreign type, and is total over all three components, so an instance the provider has not finished
+ * populating never compares equal to a differently populated one. {@link #hashCode()} and
+ * {@link #toString()} are equally null tolerant.
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
@@ -244,10 +308,42 @@ public class TransactionCategoryBalanceId implements Serializable {
 
     /**
      * Explicit serialization form identifier. Required by the {@code serial} lint category, which
-     * {@code -Xlint:all -Werror} promotes to a build failure, and pinned so that the serialized form
-     * does not drift when unrelated members are added.
+     * {@code -Xlint:all -Werror} promotes to a build failure, and pinned so that the serialized form does not
+     * drift when unrelated members are added.
      */
     private static final long serialVersionUID = 1L;
+
+    /**
+     * Smallest value {@code TRANCAT-ACCT-ID PIC 9(11)} at {@code app/cpy/CVTRA01Y.cpy:L6} can represent.
+     * The picture clause carries no {@code S}, so the domain is unsigned and starts at zero.
+     */
+    private static final long MIN_ACCOUNT_ID = 0L;
+
+    /**
+     * Largest value {@code TRANCAT-ACCT-ID PIC 9(11)} at {@code app/cpy/CVTRA01Y.cpy:L6} can represent:
+     * eleven unsigned display digits, which is also the domain of the {@code NUMERIC(11)} column. Written as
+     * grouped nines so the digit count can be checked against the picture clause by eye.
+     */
+    private static final long MAX_ACCOUNT_ID = 99_999_999_999L;
+
+    /**
+     * Exact character width of {@code TRANCAT-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA01Y.cpy:L7}. The
+     * field is fixed width, so the requirement is equality and not an upper bound: a one character value
+     * would occupy the wrong bytes of the 17 byte key.
+     */
+    private static final int TYPE_CD_LENGTH = 2;
+
+    /**
+     * Smallest value {@code TRANCAT-CD PIC 9(04)} at {@code app/cpy/CVTRA01Y.cpy:L8} can represent, the
+     * picture clause again being unsigned.
+     */
+    private static final int MIN_CAT_CD = 0;
+
+    /**
+     * Largest value {@code TRANCAT-CD PIC 9(04)} at {@code app/cpy/CVTRA01Y.cpy:L8} can represent: four
+     * unsigned display digits.
+     */
+    private static final int MAX_CAT_CD = 9999;
 
     /**
      * Leading key component: {@code TRANCAT-ACCT-ID PIC 9(11)}, occupying bytes 1 to 11 of the key.
@@ -261,23 +357,15 @@ public class TransactionCategoryBalanceId implements Serializable {
     private Long accountId;
 
     /**
-     * Second key component: {@code TRANCAT-TYPE-CD PIC X(02)}, occupying bytes 12 to 13 of the key.
-     *
-     * <p>Mapped to {@code String} of exactly two characters, not to a numeric type. The picture clause
-     * is {@code X}, that is alphanumeric, so the stored form is significant in its own right: the
-     * fixture value {@code 01} is a two character code whose leading zero carries meaning and must not
-     * be normalised away. The column is neither widened nor trimmed.
+     * Second key component: {@code TRANCAT-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA01Y.cpy:L7},
+     * occupying bytes 12 to 13 of the key.
      */
-    @Column(name = "tran_type_cd", nullable = false, length = 2)
+    @Column(name = "tran_type_cd", nullable = false, length = TYPE_CD_LENGTH)
     private String typeCd;
 
     /**
-     * Trailing key component: {@code TRANCAT-CD PIC 9(04)}, occupying bytes 14 to 17 of the key.
-     *
-     * <p>Mapped to {@code Integer} because a four digit unsigned value reaches only 9,999, which
-     * {@code Integer} represents exactly. No monetary value appears anywhere in this identifier, so no
-     * decimal scale question arises here and no approximate or arbitrary precision numeric type is
-     * needed; every component is an exact integral or fixed width character code.
+     * Trailing key component: {@code TRANCAT-CD PIC 9(04)} at {@code app/cpy/CVTRA01Y.cpy:L8},
+     * occupying bytes 14 to 17 of the key.
      */
     @Column(name = "tran_cat_cd", nullable = false)
     private Integer catCd;
@@ -286,11 +374,17 @@ public class TransactionCategoryBalanceId implements Serializable {
      * Creates an empty identifier with all three components unset.
      *
      * <p>Present because JPA requires a no argument constructor on an embeddable so that the provider
-     * can instantiate the type before populating it reflectively. Application code should prefer
-     * {@link #TransactionCategoryBalanceId(Long, String, Integer)}, which produces a fully populated
-     * key in one step.
+     * can instantiate the type before populating it reflectively.
+     *
+     * <p>It is {@code protected} rather than {@code public}, matching {@code TransactionCategoryId()} at
+     * {@code TransactionCategoryId.java:L316} and {@code DisclosureGroupId()} at
+     * {@code DisclosureGroupId.java:L281}, because an instance with three {@code null} components satisfies
+     * none of the invariants {@link #TransactionCategoryBalanceId(Long, String, Integer)} enforces while
+     * being indistinguishable from a real key at the type level. Leaving it {@code public} would offer a
+     * silent route around that validation, and no caller under {@code src/} needs it. Hibernate is
+     * unaffected: it instantiates an embeddable reflectively and requires only that the constructor exist.
      */
-    public TransactionCategoryBalanceId() {
+    protected TransactionCategoryBalanceId() {
         // Intentionally empty: JPA instantiates through this constructor and then writes the
         // components reflectively. No default is invented for any component, because inventing one
         // would fabricate a key that the source system never produced.
@@ -299,27 +393,94 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Creates a fully populated identifier from its three components, in COBOL declaration order.
      *
-     * <p>Arguments are accepted as given and are not rejected when {@code null}, so that a key may be
-     * built for a row that does not yet exist. That is the daily posting upsert path recorded on the
-     * class: {@code app/cbl/CBTRN02C.cbl:L469-L471} builds the key before the read at {@code L481}
-     * decides whether the row must be created or updated.
-     *
-     * @param accountId leading component, {@code TRANCAT-ACCT-ID PIC 9(11)}; may be {@code null} for a
-     *                  key that is not yet fully determined
-     * @param typeCd    second component, {@code TRANCAT-TYPE-CD PIC X(02)}, a two character
-     *                  alphanumeric code; may be {@code null}
-     * @param catCd     trailing component, {@code TRANCAT-CD PIC 9(04)}; may be {@code null}
+     * @param accountId leading component, {@code TRANCAT-ACCT-ID PIC 9(11)}.
+     * @param typeCd second component, {@code TRANCAT-TYPE-CD PIC X(02)}, a two character alphanumeric code.
+     * @param catCd trailing component, {@code TRANCAT-CD PIC 9(04)}.
      */
     public TransactionCategoryBalanceId(final Long accountId, final String typeCd, final Integer catCd) {
-        this.accountId = accountId;
-        this.typeCd = typeCd;
-        this.catCd = catCd;
+        this.accountId = requireValidAccountId(accountId);
+        this.typeCd = requireValidTypeCd(typeCd);
+        this.catCd = requireValidCatCd(catCd);
+    }
+
+    /**
+     * Validates a candidate account identifier against its source picture clause {@code PIC 9(11)}.
+     *
+     * <p>Declared {@code private static} deliberately: it is called from a constructor, and a
+     * non-{@code static} or overridable method called from a constructor would publish {@code this} before
+     * construction finished. The compiler reports exactly that as a {@code this-escape} warning, which
+     * {@code -Xlint:all -Werror} turns into a build failure.
+     *
+     * @param value the candidate value exactly as supplied by the caller, possibly {@code null}
+     * @return {@code value} unchanged when valid
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, which eleven unsigned
+     *                                  display digits cannot represent, or greater than 99999999999
+     */
+    private static Long requireValidAccountId(final Long value) {
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "accountId (TRANCAT-ACCT-ID PIC 9(11)) is required and must not be null");
+        }
+        if (value.longValue() < MIN_ACCOUNT_ID || value.longValue() > MAX_ACCOUNT_ID) {
+            throw new IllegalArgumentException("accountId (TRANCAT-ACCT-ID PIC 9(11)) must be between "
+                    + MIN_ACCOUNT_ID + " and " + MAX_ACCOUNT_ID + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate transaction type code against its source picture clause {@code PIC X(02)}.
+     *
+     * <p>The requirement is exact width, not a maximum: the component occupies bytes 12 and 13 of a 17 byte
+     * key, so a shorter value would place the category code at the wrong offset. Spaces are accepted, since
+     * an alphanumeric picture clause admits them. Declared {@code private static} for the reason given on
+     * {@link #requireValidAccountId(Long)}.
+     *
+     * @param value the candidate value exactly as supplied by the caller, possibly {@code null}
+     * @return {@code value} unchanged when valid; never trimmed, padded or case folded, because the source
+     *         field is fixed width and any adjustment would change the key
+     * @throws IllegalArgumentException if {@code value} is {@code null} or is not exactly 2 characters long
+     */
+    private static String requireValidTypeCd(final String value) {
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "typeCd (TRANCAT-TYPE-CD PIC X(02)) is required and must not be null");
+        }
+        if (value.length() != TYPE_CD_LENGTH) {
+            throw new IllegalArgumentException("typeCd (TRANCAT-TYPE-CD PIC X(02)) must be exactly "
+                    + TYPE_CD_LENGTH + " characters but was " + value.length() + ": [" + value + "]");
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate transaction category code against its source picture clause {@code PIC 9(04)}.
+     *
+     * <p>Declared {@code private static} for the reason given on {@link #requireValidAccountId(Long)}.
+     *
+     * @param value the candidate value exactly as supplied by the caller, possibly {@code null}
+     * @return {@code value} unchanged when valid
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, which four unsigned
+     *                                  display digits cannot represent, or greater than 9999
+     */
+    private static Integer requireValidCatCd(final Integer value) {
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "catCd (TRANCAT-CD PIC 9(04)) is required and must not be null");
+        }
+        if (value.intValue() < MIN_CAT_CD || value.intValue() > MAX_CAT_CD) {
+            throw new IllegalArgumentException("catCd (TRANCAT-CD PIC 9(04)) must be between "
+                    + MIN_CAT_CD + " and " + MAX_CAT_CD + " inclusive but was " + value);
+        }
+        return value;
     }
 
     /**
      * Returns the leading key component, {@code TRANCAT-ACCT-ID PIC 9(11)}.
      *
-     * @return the account identifier, or {@code null} if unset
+     * @return the account identifier, never {@code null} on an instance built through
+     *         {@link #TransactionCategoryBalanceId(Long, String, Integer)}; {@code null} only on an
+     *         instance the persistence provider has not finished populating
      */
     public Long getAccountId() {
         return accountId;
@@ -328,7 +489,10 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Returns the second key component, {@code TRANCAT-TYPE-CD PIC X(02)}.
      *
-     * @return the two character transaction type code, or {@code null} if unset
+     * @return the two character transaction type code exactly as stored, never trimmed or case folded and
+     *         never {@code null} on an instance built through
+     *         {@link #TransactionCategoryBalanceId(Long, String, Integer)}; {@code null} only on an
+     *         instance the persistence provider has not finished populating
      */
     public String getTypeCd() {
         return typeCd;
@@ -337,7 +501,9 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Returns the trailing key component, {@code TRANCAT-CD PIC 9(04)}.
      *
-     * @return the transaction category code, or {@code null} if unset
+     * @return the transaction category code, never {@code null} on an instance built through
+     *         {@link #TransactionCategoryBalanceId(Long, String, Integer)}; {@code null} only on an
+     *         instance the persistence provider has not finished populating
      */
     public Integer getCatCd() {
         return catCd;
@@ -346,20 +512,9 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Compares two identifiers by value across all three components.
      *
-     * <p>Equality is total: two identifiers are equal only when their account identifier, type code and
-     * category code all agree, so a partially populated key never compares equal to a differently
-     * populated one. {@code null} and foreign types compare unequal. The runtime class is compared
-     * exactly rather than with an {@code instanceof} widening, which keeps the relation symmetric; that
-     * is safe here because an embeddable component is instantiated directly by the persistence provider
-     * and is never replaced by a lazy loading proxy subclass, and because this class is not extended.
-     *
-     * <p>A correct implementation matters more than it appears: JPA relies on it for identity map
-     * lookups, so a broken one degrades {@code find}, {@code merge} and dirty checking into
-     * intermittent data faults rather than clean failures.
-     *
      * @param obj the object to compare against, possibly {@code null}
-     * @return {@code true} if {@code obj} is an identifier of exactly this class with all three
-     *         components equal
+     * @return {@code true} if {@code obj} is an identifier of exactly this class with all three components
+     * equal
      */
     @Override
     public boolean equals(final Object obj) {
@@ -378,12 +533,6 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Returns a hash consistent with {@link #equals(Object)} over all three components.
      *
-     * <p>The hash is derived from exactly the components that {@link #equals(Object)} compares, so the
-     * two are mutually consistent, and it is stable for a given value because the components are never
-     * mutated after construction. Hash order carries no meaning: the account level control break in
-     * {@code app/cbl/CBACT04C.cbl:L188-L222} depends on key order and must never be driven from hash
-     * bucket iteration order.
-     *
      * @return the value based hash code
      */
     @Override
@@ -394,14 +543,8 @@ public class TransactionCategoryBalanceId implements Serializable {
     /**
      * Returns a diagnostic rendering of the three key components.
      *
-     * <p>Intended for diagnostics only and deliberately not treated as a stable log or wire format.
-     * Only key components appear, and none of them is credential or personally identifying material:
-     * an account identifier, a transaction type code and a transaction category code. The rendering is
-     * produced by plain concatenation, so it consults no locale, charset or time zone and is identical
-     * on every machine.
-     *
-     * @return a rendering of the form {@code TransactionCategoryBalanceId[accountId=..., typeCd=...,
-     *         catCd=...]}
+     * @return a rendering of the form
+     * {@code TransactionCategoryBalanceId[accountId=..., typeCd=..., catCd=...]}
      */
     @Override
     public String toString() {

@@ -131,9 +131,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * only through the transaction monitor response codes listed in the table. The tests therefore assert its
  * membership in the taxonomy and its rendering, and cite {@code DFHRESP} rather than a literal.
  *
- * <p><strong>Schema detail: Not available.</strong> {@code src/main/resources/db/migration/V1__create_schema.sql}
- * has no planned children of this file and does not exist at the time of writing, so nothing here asserts
- * a column type, width or constraint. What would be needed: the migration itself.
+ * <p><strong>Schema detail: out of scope for this test.</strong> Measured 1 August 2026,
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} is present, but no column
+ * type, width or constraint in it is a counterpart of {@link FileStatus} - a file status is a runtime I/O
+ * outcome, not a stored value - so nothing here asserts one, and that is by design rather than by
+ * omission.
  *
  * <h2>The three sites where a record not found or a secondary status is success</h2>
  *
@@ -178,8 +180,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>Compile with {@code mvn -B clean test-compile} and run with {@code mvn -B clean test}; gate coverage
- * with {@code mvn -B verify}, which enforces an eighty percent line floor through JaCoCo with no
+ * <p>Compile with {@code ./mvnw -B clean test-compile} and run with {@code ./mvnw -B clean test}; gate coverage
+ * with {@code ./mvnw -B verify}, which enforces an eighty percent line floor through JaCoCo with no
  * exclusions. Where no Java toolchain is on the path, the same commands run inside a container, for
  * example {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q test}.
  *
@@ -259,16 +261,15 @@ import org.junit.jupiter.params.provider.ValueSource;
 final class FileStatusTest {
 
     /**
-     * The twenty character display literal, transcribed independently from
-     * {@code app/cbl/CBTRN02C.cbl:L721} and {@code app/cbl/CBTRN02C.cbl:L725} so that the assertion is a
-     * golden value rather than a restatement of the production constant.
+     * The twenty character display literal, transcribed independently from {@code app/cbl/CBTRN02C.cbl:L721}
+     * and {@code app/cbl/CBTRN02C.cbl:L725} so that the assertion is a golden value rather than a restatement
+     * of the production constant.
      */
     private static final String LEGACY_DISPLAY_LITERAL = "FILE STATUS IS: NNNN";
 
     /**
-     * Width of {@code IO-STATUS}, two {@code PIC X} items grouped at
-     * {@code app/cbl/CBTRN02C.cbl:L131-L133}, and independently the width of {@code LK-M03B-RC PIC X(02)}
-     * at {@code app/cbl/CBSTM03B.CBL:L109}.
+     * Width of {@code IO-STATUS}, two {@code PIC X} items grouped at {@code app/cbl/CBTRN02C.cbl:L131-L133},
+     * and independently the width of {@code LK-M03B-RC PIC X(02)} at {@code app/cbl/CBSTM03B.CBL:L109}.
      */
     private static final int LEGACY_STATUS_FIELD_WIDTH = 2;
 
@@ -286,22 +287,19 @@ final class FileStatusTest {
     private static final char LEGACY_FAMILY_FIRST_BYTE = '9';
 
     /**
-     * Width of the DB2 format timestamp whose redefinition at {@code app/cbl/CBTRN02C.cbl:L159-L175} sums
-     * to exactly twenty six: four year digits, a separator, two month digits, a separator, two day
-     * digits, a separator, two hour digits, a separator, two minute digits, a separator, two second
-     * digits, a separator, two hundredth digits and a four byte remainder.
-     *
-     * <p>It is recorded here for one purpose only, which is to assert that {@link FileStatus} exposes no
-     * such constant. Timestamp geometry belongs to {@code FixedClockProvider} in this same package, not
-     * to a status vocabulary.
+     * Width of the DB2 format timestamp whose redefinition at {@code app/cbl/CBTRN02C.cbl:L159-L175} sums to
+     * exactly twenty six: four year digits, a separator, two month digits, a separator, two day digits, a
+     * separator, two hour digits, a separator, two minute digits, a separator, two second digits, a separator,
+     * two hundredth digits and a four byte remainder.
      */
     private static final int LEGACY_DB2_TIMESTAMP_WIDTH = 26;
 
     /**
-     * Method names that would each amount to {@link FileStatus} deciding rather than classifying. None
-     * may exist on the type: the tolerance of a not found or secondary status is conditional on the call
-     * site, as the three sites documented on this class show, so any single answer here would be wrong
-     * somewhere.
+     * Method names that would each amount to {@link FileStatus} deciding rather than classifying. None may
+     * exist on the type: whether a not found or a secondary status is tolerated depends on the call site -
+     * {@code app/cbl/CBTRN02C.cbl}:L481 and {@code app/cbl/CBACT04C.cbl}:L422 accept {@code '23'} while every
+     * other read treats it as an error, and {@code app/cbl/CBSTM03A.CBL}:L736 accepts {@code '04'} - so any
+     * single answer given here would be wrong somewhere.
      */
     private static final List<String> DECISION_VOCABULARY = List.of(
             "isSuccess", "isSuccessful", "isError", "isFailure", "isFatal", "isAcceptable", "isTolerated",
@@ -309,18 +307,15 @@ final class FileStatusTest {
             "raise", "orThrow");
 
     /**
-     * Lower case fragments of type names that would betray logging or metrics instrumentation on a type
-     * that must have neither. The corpus's only instrumentation is {@code DISPLAY} to SYSOUT, and the
-     * replacement for it lives in {@code com.cardemo.observability}, never in a model enumeration.
+     * Lower case fragments of type names that would betray logging or metrics instrumentation on a type that
+     * must have neither. The corpus's only instrumentation is {@code DISPLAY} to SYSOUT, and the replacement
+     * for it lives in {@code com.cardemo.observability}, never in a model enumeration.
      */
     private static final List<String> INSTRUMENTATION_TOKENS = List.of(
             "logger", "logging", "log4j", "slf4j", "logback", "appender", "micrometer", "meterregistry",
             "counter", "timer", "tracer", "span", "metric");
 
     /**
-     * The exact rejection message {@code classify} produces, assembled here from independently authored
-     * literals so that a change to the production wording is caught rather than mirrored.
-     *
      * @param offendingValue the value that was rejected, rendered as {@code null} when it was null
      * @return the complete expected message, never {@code null}
      */
@@ -336,9 +331,8 @@ final class FileStatusTest {
      * Reports whether a declared member was generated rather than written, which covers the compiler's
      * {@code $VALUES} field and {@code $values} method for every enumeration and the coverage agent's
      * {@code $jacocoData} field and {@code $jacocoInit} method, added by the JaCoCo java agent that the
-     * Surefire {@code argLine} installs. Both sets are marked synthetic; the name test is a second,
-     * independent guard so that the surface assertions cannot be broken by an agent that forgets the
-     * flag.
+     * Surefire {@code argLine} installs. Both sets are marked synthetic; the name test is a second, independent
+     * guard so that the surface assertions cannot be broken by an agent that forgets the flag.
      *
      * @param member a declared field or method of the type under test, never {@code null}
      * @return {@code true} when the member was generated and must not be counted as public surface
@@ -348,9 +342,9 @@ final class FileStatusTest {
     }
 
     /**
-     * Collects the names of every non generated public method declared on {@link FileStatus}, sorted so
-     * that the assertion cannot depend on the order in which reflection happens to report them.
-     * Duplicates are retained deliberately, so that an accidental overload is visible.
+     * Collects the names of every non generated public method declared on {@link FileStatus}, sorted so that
+     * the assertion cannot depend on the order in which reflection happens to report them. Duplicates are
+     * retained deliberately, so that an accidental overload is visible.
      *
      * @return the sorted public method names, never {@code null}
      */
@@ -364,8 +358,8 @@ final class FileStatusTest {
     }
 
     /**
-     * Collects the names of every non generated public field declared on {@link FileStatus}, which is the
-     * seven enumeration constants plus the four named constants, sorted for the same reason.
+     * Collects the names of every non generated public field declared on {@link FileStatus}, which is the seven
+     * enumeration constants plus the four named constants, sorted for the same reason.
      *
      * @return the sorted public field names, never {@code null}
      */
@@ -379,9 +373,9 @@ final class FileStatusTest {
     }
 
     /**
-     * Collects the distinct declared field types of {@link FileStatus} by fully qualified name, public
-     * and private alike, sorted. This is the assertion that proves the absence of a collaborator: a
-     * logger, a meter registry or an injected service would necessarily appear here.
+     * Collects the distinct declared field types of {@link FileStatus} by fully qualified name, public and
+     * private alike, sorted. This is the assertion that proves the absence of a collaborator: a logger, a meter
+     * registry or an injected service would necessarily appear here.
      *
      * @return the sorted distinct field type names, never {@code null}
      */
@@ -396,13 +390,12 @@ final class FileStatusTest {
     }
 
     /**
-     * Collects the values of every non generated public {@code int} constant declared on
-     * {@link FileStatus}, so that the width constants the type exposes can be asserted as a closed set
-     * rather than one at a time.
+     * Collects the values of every non generated public {@code int} constant declared on {@link FileStatus}, so
+     * that the width constants the type exposes can be asserted as a closed set rather than one at a time.
      *
      * @return the sorted constant values, never {@code null}
-     * @throws IllegalStateException if a public constant cannot be read, which on a public static field
-     *         of an accessible public type can only mean the class file no longer matches its source
+     * @throws IllegalStateException if a public constant cannot be read, which on a public static field of an
+     * accessible public type can only mean the class file no longer matches its source
      */
     private static List<Integer> publicIntConstantValues() {
         return Arrays.stream(FileStatus.class.getDeclaredFields())
@@ -416,9 +409,9 @@ final class FileStatusTest {
     }
 
     /**
-     * Reads one public {@code int} constant, translating the checked reflective failure into an
-     * unchecked one that preserves the root cause, because a test helper that swallowed it would hide
-     * the only information available about why the read failed.
+     * Reads one public {@code int} constant, translating the checked reflective failure into an unchecked one
+     * that preserves the root cause, because a test helper that swallowed it would hide the only information
+     * available about why the read failed.
      *
      * @param field a public static {@code int} field of {@link FileStatus}, never {@code null}
      * @return the field's value
@@ -435,20 +428,43 @@ final class FileStatusTest {
     }
 
     /**
-     * The enumeration classifies; it does not decide. These tests assert the absence of every member
-     * that would make it decide, and absence can only be asserted reflectively.
+     * The enumeration classifies; it does not decide. These tests assert the absence of every member that would
+     * make it decide, and absence can only be asserted reflectively.
      */
     @Nested
     @DisplayName("Separation of concerns: it classifies, it does not decide")
     class SeparationOfConcerns {
 
         @Test
-        @DisplayName("the public method surface is exactly the ten documented members and nothing else")
+        @DisplayName("the public method surface is exactly the twelve documented members and nothing else")
         void publicMethodSurfaceIsExactlyTheDocumentedClassificationApi() {
             assertThat(publicMethodNames())
                     .as("an unexpected public method is a widening of the contract, not a detail")
-                    .containsExactly("classify", "code", "fromCode", "isExactValue", "isFamily", "matches",
-                            "renderIoStatus04", "tryClassify", "valueOf", "values");
+                    .containsExactly("classify", "code", "escapeForDiagnostics", "fromCode", "isExactValue",
+                            "isFamily", "matches", "renderIoStatus04", "renderIoStatus04ForDiagnostics",
+                            "tryClassify", "valueOf", "values");
+        }
+
+        @Test
+        @DisplayName("the two renderings are separate methods, so neither can be reached through a flag")
+        void keepsTheParityAndDiagnosticRenderingsAsSeparateMethods() {
+            List<String> renderers = publicMethodNames().stream()
+                    .filter(name -> name.startsWith("render"))
+                    .toList();
+
+            assertThat(renderers)
+                    .as("a boolean or enum switch between them would let one call site silently choose the "
+                            + "wrong one; two names cannot be confused by a mistyped argument")
+                    .containsExactly("renderIoStatus04", "renderIoStatus04ForDiagnostics");
+
+            assertThat(Arrays.stream(FileStatus.class.getDeclaredMethods())
+                    .filter(method -> method.getName().startsWith("render"))
+                    .flatMap(method -> Arrays.stream(method.getParameterTypes()))
+                    .map(Class::getName)
+                    .distinct()
+                    .toList())
+                    .as("each renderer takes the raw status and nothing else - no mode parameter")
+                    .containsExactly("java.lang.String");
         }
 
         @Test
@@ -548,7 +564,6 @@ final class FileStatusTest {
                     .isEmpty();
         }
     }
-
 
     /**
      * The vocabulary itself: seven constants, six of them exact two character codes and one of them the
@@ -680,11 +695,10 @@ final class FileStatusTest {
         }
     }
 
-
     /**
-     * {@code matches} is the per constant membership test. It is strict on purpose: an untrusted value is
-     * a miss rather than something to be reshaped, because reshaping before classifying is how a
-     * malformed status ends up misread as a success.
+     * {@code matches} is the per constant membership test. It is strict on purpose: an untrusted value is a
+     * miss rather than something to be reshaped, because reshaping before classifying is how a malformed status
+     * ends up misread as a success.
      */
     @Nested
     @DisplayName("Membership: matches is strict and never coerces its argument")
@@ -746,8 +760,8 @@ final class FileStatusTest {
     }
 
     /**
-     * {@code fromCode} is an exact value lookup and nothing more. It never returns the family constant,
-     * because a family has no code to index.
+     * {@code fromCode} is an exact value lookup and nothing more. It never returns the family constant, because
+     * a family has no code to index.
      */
     @Nested
     @DisplayName("Exact code lookup: fromCode never returns the family")
@@ -789,9 +803,9 @@ final class FileStatusTest {
     }
 
     /**
-     * {@code tryClassify} matches the six exact codes first and then the family. An empty result is
-     * meaningful rather than an error signal: it is the corpus's own else branch, which the legacy
-     * programs answer by abending.
+     * {@code tryClassify} matches the six exact codes first and then the family. An empty result is meaningful
+     * rather than an error signal: it is the corpus's own else branch, which the legacy programs answer by
+     * abending.
      */
     @Nested
     @DisplayName("Lenient classification: tryClassify reports rather than throws")
@@ -841,9 +855,9 @@ final class FileStatusTest {
     }
 
     /**
-     * {@code classify} is the strict form: it refuses what it cannot classify rather than absorbing it.
-     * The refusal carries the offending value and cites the corpus's abend contract, and it wraps nothing,
-     * because nothing was caught.
+     * {@code classify} is the strict form: it refuses what it cannot classify rather than absorbing it. The
+     * refusal carries the offending value and cites the corpus's abend contract, and it wraps nothing, because
+     * nothing was caught.
      */
     @Nested
     @DisplayName("Strict classification: classify refuses what it cannot classify")
@@ -932,16 +946,10 @@ final class FileStatusTest {
         }
     }
 
-
     /**
-     * The four character {@code IO-STATUS-04} rendering, which reproduces
-     * {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:L714-L727} byte for byte. Both
-     * branches are asserted, because the parity gate compares emitted lines against the legacy baseline
-     * and a one character difference is a gate failure.
-     *
-     * <p>Unlike the classification methods this one is total and never throws: it runs on a path where
-     * something has already failed and a diagnostic is being assembled, so malformed input is reshaped by
-     * the very rule the receiving {@code PIC X(02)} field applies rather than rejected.
+     * The four character {@code IO-STATUS-04} rendering, which reproduces {@code 9910-DISPLAY-IO-STATUS} at
+     * {@code app/cbl/CBTRN02C.cbl:L714-L727} byte for byte. Both branches are asserted, because the parity gate
+     * compares emitted lines against the legacy baseline and a one character difference is a gate failure.
      */
     @Nested
     @DisplayName("Four character rendering: 9910-DISPLAY-IO-STATUS, both branches")
@@ -1125,11 +1133,135 @@ final class FileStatusTest {
     }
 
     /**
+     * The log safe rendering, asserted <strong>separately</strong> from the byte parity rendering above.
+     *
+     * <p>The separation is the point of this class. The tests in
+     * {@code FourCharacterRendering} pin the legacy behaviour: a malformed status has its first byte copied
+     * through unaltered, so {@code "\t\n"} really must render as a raw tab followed by {@code 010}. That is
+     * a parity contract measured byte for byte against the baseline and it is deliberately left exactly as
+     * it was. The tests here pin the different guarantee that a diagnostic record needs - that nothing but
+     * printable ASCII reaches it - and the two guarantees are proved against two different methods rather
+     * than being traded off inside one.
+     *
+     * <p>The most important assertion in this class is
+     * {@link #rendersEveryCorpusStatusIdenticallyToTheParityRenderer()}: for every status the corpus
+     * actually produces the two renderings are character for character identical, so choosing the safe one
+     * at a diagnostic site costs nothing and hides nothing.
+     */
+    @Nested
+    @DisplayName("Log safe rendering: encoded for diagnostics, never traded against parity")
+    class LogSafeRendering {
+
+        @Test
+        @DisplayName("every corpus status renders identically through both renderers, so safety is free")
+        void rendersEveryCorpusStatusIdenticallyToTheParityRenderer() {
+            List<String> corpusStatuses = List.of("00", "04", "10", "22", "23", "35", "90", "99", "9A");
+
+            assertThat(corpusStatuses)
+                    .as("if these ever diverged, the encoding would be changing legitimate diagnostics")
+                    .allSatisfy(status -> assertThat(FileStatus.renderIoStatus04ForDiagnostics(status))
+                            .isEqualTo(FileStatus.renderIoStatus04(status))
+                            .hasSize(LEGACY_RENDERED_WIDTH));
+        }
+
+        @Test
+        @DisplayName("a null status renders identically through both renderers")
+        void rendersNullIdenticallyToTheParityRenderer() {
+            assertThat(FileStatus.renderIoStatus04ForDiagnostics(null))
+                    .isEqualTo(FileStatus.renderIoStatus04(null))
+                    .isEqualTo(" 032");
+        }
+
+        @ParameterizedTest(name = "the malformed status ''{0}'' renders without any control character")
+        @ValueSource(strings = {"\t\n", "\r\n", "\u0000\u0000", "\u001b[", "9\u0000", "\u00ff\u00ff",
+                "\u007f\u007f", "\u0085\u0085", "\u2028\u2029", "\u4e2d\u6587"})
+        @DisplayName("no malformed status can put a control or non-ASCII byte into a diagnostic")
+        void encodesEveryNonPrintableByteSoNoDiagnosticCanBeForged(String malformedStatus) {
+            String rendered = FileStatus.renderIoStatus04ForDiagnostics(malformedStatus);
+
+            assertThat(rendered.chars().filter(character -> character < 0x20 || character > 0x7e).count())
+                    .as("one raw control byte is enough to truncate a log record or begin a forged one")
+                    .isZero();
+            assertThat(rendered.lines()).as("a diagnostic must remain a single record").hasSize(1);
+        }
+
+        @ParameterizedTest(name = "the parity renderer keeps the raw byte that ''{0}'' carries")
+        @ValueSource(strings = {"\t\n", "\r\n", "\u00ff\u00ff", "\u001b["})
+        @DisplayName("the parity renderer is left untouched, which is why a separate one was needed")
+        void leavesTheParityRendererCarryingTheRawByte(String malformedStatus) {
+            assertThat(FileStatus.renderIoStatus04(malformedStatus)
+                    .chars().filter(character -> character < 0x20 || character > 0x7e).count())
+                    .as("this is the legacy behaviour and it is deliberately preserved, not repaired")
+                    .isPositive();
+        }
+
+        @ParameterizedTest(name = "''{0}'' encodes to ''{1}''")
+        @CsvSource({"'\t\n', '\\u0009010'", "'\r\n', '\\u000d010'", "'\u00ff\u00ff', '\\u00ff255'"})
+        @DisplayName("the encoding is the four hexadecimal digit form, and the expansion is unchanged")
+        void encodesTheFirstByteAndLeavesTheExpansionAlone(String malformedStatus, String expected) {
+            assertThat(FileStatus.renderIoStatus04ForDiagnostics(malformedStatus)).isEqualTo(expected);
+        }
+
+        @Test
+        @DisplayName("the encoding is injective: an encoded control byte cannot be forged by typing it")
+        void encodesTheBackslashSoTheEncodingCannotBeForged() {
+            String encodedRealTab = FileStatus.escapeForDiagnostics("\t");
+            String encodedLiteralText = FileStatus.escapeForDiagnostics("\\u0009");
+
+            assertThat(encodedRealTab).isEqualTo("\\u0009");
+            assertThat(encodedLiteralText)
+                    .as("without doubling the backslash a forged record would look like a sanitised one")
+                    .isEqualTo("\\\\u0009")
+                    .isNotEqualTo(encodedRealTab);
+        }
+
+        @ParameterizedTest(name = "''{0}'' passes through the encoder unaltered")
+        @ValueSource(strings = {"00", "0000", "9048", " 032", "FILE STATUS IS: NNNN", "DALYTRAN", "OPEN",
+                "~", " ", "!\"#$%&'()*+,-./0123456789:;<=>?@", "[]^_`{|}"})
+        @DisplayName("printable ASCII is passed through unaltered, so legitimate text is never mangled")
+        void passesPrintableAsciiThroughUnaltered(String printableValue) {
+            assertThat(FileStatus.escapeForDiagnostics(printableValue)).isEqualTo(printableValue);
+        }
+
+        @Test
+        @DisplayName("the encoder is total: null yields the empty string, never the four characters null")
+        void encodesNullAsTheEmptyStringRatherThanTheWordNull() {
+            assertThat(FileStatus.escapeForDiagnostics(null))
+                    .as("the text 'null' would be indistinguishable from a status that read 'nu'")
+                    .isEmpty();
+            assertThat(FileStatus.escapeForDiagnostics("")).isEmpty();
+        }
+
+        @Test
+        @DisplayName("the encoding loses no information, so no root cause is obscured")
+        void losesNoInformationSoNoRootCauseIsObscured() {
+            assertThat(FileStatus.escapeForDiagnostics("a\tb\nc"))
+                    .as("an encoding, not a filter: every byte remains determinable from the output")
+                    .isEqualTo("a\\u0009b\\u000ac")
+                    .doesNotContain("\t")
+                    .doesNotContain("\n");
+        }
+
+        @Test
+        @DisplayName("neither renderer nor encoder throws, whatever it is given")
+        void neitherRendererNorEncoderEverThrows() {
+            List<String> hostileValues = Arrays.asList(null, "", " ", "\u0000", "\uffff",
+                    "\ud83d\ude00", "0".repeat(1024));
+
+            assertThat(hostileValues).allSatisfy(hostileValue -> {
+                assertThat(catchThrowable(() -> FileStatus.renderIoStatus04ForDiagnostics(hostileValue)))
+                        .as("a diagnostic path that threw would destroy the root cause it reports")
+                        .isNull();
+                assertThat(catchThrowable(() -> FileStatus.escapeForDiagnostics(hostileValue))).isNull();
+            });
+        }
+    }
+
+    /**
      * The preserved legacy quirk. {@code DISPLAY 'literal' identifier} concatenates its operands with no
-     * separator, and the literal at {@code app/cbl/CBTRN02C.cbl:L721} and
-     * {@code app/cbl/CBTRN02C.cbl:L725} already contains the placeholder text {@code NNNN}, so the real
-     * four characters are appended after it rather than substituted into it. The tidier looking form is a
-     * parity diff and must never be produced.
+     * separator, and the literal at {@code app/cbl/CBTRN02C.cbl:L721} and {@code app/cbl/CBTRN02C.cbl:L725}
+     * already contains the placeholder text {@code NNNN}, so the real four characters are appended after it
+     * rather than substituted into it. The tidier looking form is a parity diff and must never be produced.
      */
     @Nested
     @DisplayName("Preserved legacy quirk: the NNNN placeholder stays and nothing separates it")
@@ -1206,8 +1338,8 @@ final class FileStatusTest {
     }
 
     /**
-     * The width constants the type exposes, each asserted against the {@code PIC} clause that fixes it,
-     * and the widths it deliberately does not expose.
+     * The width constants the type exposes, each asserted against the {@code PIC} clause that fixes it, and the
+     * widths it deliberately does not expose.
      */
     @Nested
     @DisplayName("Width constants: two and four, and no timestamp geometry")

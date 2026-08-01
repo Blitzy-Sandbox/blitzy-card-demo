@@ -25,24 +25,24 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import jakarta.validation.constraints.Size;
 
 /**
- * Inbound request payload for the online bill-payment conversation, replacing the BMS screen
- * exchange of CICS transaction {@code CB00} and its program {@code app/cbl/COBIL00C.cbl}.
+ * Inbound request payload for the online bill-payment conversation, replacing the BMS screen exchange of CICS
+ * transaction {@code CB00} and its program {@code app/cbl/COBIL00C.cbl}.
  *
- * <p><strong>Purpose.</strong> This type transports the ten screen fields of the bill-payment map
- * from an HTTP client to {@code BillPaymentService}. It is a pure data holder: it performs no
- * arithmetic, no parsing, no formatting, no lookup and no mapping. Those are service concerns, and
- * keeping them out of here is what preserves the separation of concerns the legacy screen program
- * blurred by holding presentation, validation and posting logic in one 572-line member.</p>
+ * <p>This type transports the ten screen fields of the bill-payment map from an HTTP client to
+ * {@code BillPaymentService}. It is a pure data holder: it performs no arithmetic, no parsing, no formatting,
+ * no lookup and no mapping. Those are service concerns, and keeping them out of here is what preserves the
+ * separation of concerns the legacy screen program blurred by holding presentation, validation and posting
+ * logic in one 572-line member.
  *
- * <p><strong>Field contract.</strong> The field set is taken verbatim from the generated symbolic
- * map {@code app/cpy-bms/COBIL00.CPY}, which declares <strong>exactly 10 input fields</strong> -
- * a verified census of its {@code 02 ...I PIC} declarations, at lines 24, 30, 36, 42, 48, 54, 60,
- * 66, 72 and 78. That makes this the smallest data transfer object in the package: four business
- * fields beyond the six recurring header fields. Names, Java types and declared widths below are
- * derived from that map and from nothing else, and they are listed in source order.</p>
+ * <p>The field set is taken verbatim from the generated symbolic map {@code app/cpy-bms/COBIL00.CPY}, which
+ * declares <strong>exactly 10 input fields</strong> - a verified census of its {@code 02 ...I PIC}
+ * declarations, at lines 24, 30, 36, 42, 48, 54, 60, 66, 72 and 78. That makes this the smallest data transfer
+ * object in the package: four business fields beyond the six recurring header fields. Names, Java types and
+ * declared widths below are derived from that map and from nothing else, and they are listed in source order.
  *
  * <p><strong>THERE IS NO AMOUNT FIELD, AND THERE MUST NEVER BE ONE.</strong> The map declares no
  * payment-amount field of any kind: after the header sextet it declares only the account
@@ -200,15 +200,25 @@ import jakarta.validation.constraints.Size;
  *       the exact confirmation character survive transport.</li>
  * </ul>
  *
- * <p><strong>Configuration this type depends on.</strong> Unknown JSON properties must be rejected
- * rather than silently ignored, so that a payload carrying, say, an invented amount property fails
- * loudly instead of being quietly dropped. That cannot be expressed on this type: Jackson only
- * fails on an unknown property when the mapper has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, and
- * an {@code ignoreUnknown = false} annotation does not re-enable it once the mapper has it off,
- * which is Spring Boot's default. The rejection is therefore configured centrally, by
- * {@code spring.jackson.deserialization.fail-on-unknown-properties} set true in every profile and
- * by the web configuration that builds the mapper. This type deliberately adds no serialisation
- * annotation and no dependency of its own.</p>
+ * <p><strong>Unknown JSON properties are rejected by this type itself.</strong> A payload carrying,
+ * say, an invented amount property must fail loudly instead of being quietly dropped, because on
+ * this payload a silently discarded property reads as acceptance of a partial payment that the
+ * source cannot express. Two mechanisms were available and only one of them holds.</p>
+ *
+ * <p>The declarative mechanism does not. Jackson fails on an unknown property only while the mapper
+ * has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, an {@code ignoreUnknown = false} annotation does
+ * not re-enable it once the mapper has it off, and the framework has it off by default. Delegating
+ * to central configuration does not hold either, and the reason is concrete rather than
+ * precautionary: <strong>this repository contains no {@code application*.yml} of any kind</strong> -
+ * {@code src/main/resources} holds one migration and three validation resources and nothing else -
+ * and there is no configuration class that builds a mapper. A type-level annotation or a documented
+ * dependency on a property that no file sets would read as protection that is not in force, which
+ * is worse than no protection at all, because a reviewer would stop looking.</p>
+ *
+ * <p>{@link #rejectUnrecognisedProperty} is therefore declared on this type and rejects
+ * unconditionally, which makes the behaviour a property of the payload rather than of whichever
+ * mapper happens to bind it. When the profiles are introduced they may enable the feature as well;
+ * that would be redundant with this guard rather than a replacement for it.</p>
  *
  * <p><strong>Error modes.</strong> A component longer than its declared width raises a bean
  * validation constraint violation, surfaced by the controller advice as a 400-class response; the
@@ -226,22 +236,28 @@ import jakarta.validation.constraints.Size;
  * lightest payload in the package for sensitive data: it holds no password, no password hash, no
  * token, no signing key, no card number, no customer name, no social security number, no date of
  * birth, no telephone number, no government identifier and no electronic funds account identifier.
- * No explicit {@code toString} is declared; the implicit one a record provides renders the
- * component values, which is why callers should log the individual fields they need rather than the
- * whole object - the balance is financial data even though it is not personally identifying. The
- * type is deliberately not serialisable, so no Java deserialisation path can reach it.</p>
+ * It is nonetheless <strong>not</strong> safe to render whole, and {@link #toString()} is overridden
+ * for that reason. A record's implicit rendering emits every component, which here means the account
+ * identifier from {@code app/cpy-bms/COBIL00.CPY:60} and the balance from {@code :66} - financial
+ * data, even though it is not personally identifying - reaching any log record, stack trace or
+ * diagnostic message that interpolated an instance. Relying on callers to log individual fields is
+ * not a control, because the failure mode is a caller who interpolates the object without thinking
+ * about it; suppressing the values here is. The type is deliberately not serialisable either, so no
+ * Java deserialisation path can reach it.</p>
  *
  * <p><strong>Build, run and test.</strong> The whole tree builds with {@code ./mvnw -B clean verify}
  * on JDK 25 and Maven 3.9.11; compilation runs with {@code -Xlint:all -Werror}, so any warning is a
- * build failure. The unit tests that pin this contract live in
- * {@code src/test/java/com/cardemo/unit/model}, not beside this file, and they assert by reflection
+ * build failure. The unit tests that are to pin this contract belong in
+ * {@code src/test/java/com/cardemo/unit/model}, not beside this file, and are to assert by reflection
  * that the component count is exactly ten, that no component name contains "amount", "amt" or
  * "payment" in any case, that the balance size maximum is 14 rather than 15, that the confirmation
  * component is declared as {@code String} and carries {@code null}, empty, {@code Y}, {@code N} and
  * an invalid character as five distinguishable values, that the account identifier round-trips
  * {@code 00000000001} with its leading zeros intact, that no positive or minimum constraint exists
  * on the balance, that a blank balance stays distinguishable from {@code 0} and {@code 0.00}, and
- * that no component is a floating-point type.</p>
+ * that no component is a floating-point type. They additionally assert that
+ * {@link #toString()} renders neither the account identifier nor the balance, and that an
+ * unrecognised property is refused under a strict mapper and under a lenient one alike.</p>
  *
  * <p><strong>Findings recorded for this file, classified by severity.</strong></p>
  * <ul>
@@ -252,13 +268,36 @@ import jakarta.validation.constraints.Size;
  *       from the submitted {@code currentBalance} instead of the re-read account balance.
  *       Remediation: the service reads the account record first, exactly as line 193 does, and uses
  *       only that value.</li>
- *   <li><strong>Medium</strong> - a corpus census correction. A direct count of the
+ *   <li><strong>High, resolved</strong> - the record's implicit rendering emitted every submitted
+ *       component into any log record, stack trace or diagnostic message that interpolated an
+ *       instance, and an earlier revision of this documentation described that as acceptable
+ *       provided callers logged individual fields. Three components carry caller-supplied bytes:
+ *       the account identifier ({@code ACTIDINI PIC X(11)} at {@code app/cpy-bms/COBIL00.CPY:60}),
+ *       the balance ({@code CURBALI PIC X(14)} at {@code app/cpy-bms/COBIL00.CPY:66}) and the error
+ *       text ({@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COBIL00.CPY:78}). Rendering them
+ *       verbatim is both an information exposure (CWE-532) and a log-injection vector (CWE-117),
+ *       because a carriage-return/line-feed pair inside any {@code X(n)} field forges a whole log
+ *       line and no {@code @Size} bound can prevent it. Remediation applied: {@link #toString()}
+ *       describes each component structurally - a width for a multi-character value, a code point
+ *       for a single character, {@code empty} or {@code absent} otherwise - so no submitted byte
+ *       reaches the output at all, and the six presentation members are omitted wholesale. This
+ *       type's own rendering is the only defence available: the repository contains no
+ *       {@code logback-spring.xml}, so there is no downstream masking layer to fall back on.</li>
+ *   <li><strong>Medium, resolved</strong> - an unrecognised JSON property was silently discarded,
+ *       and an earlier revision of this documentation asserted that a central
+ *       {@code fail-on-unknown-properties} setting covered it. No such setting exists: this
+ *       repository contains no {@code application*.yml} at all. Remediation applied:
+ *       {@link #rejectUnrecognisedProperty} refuses unconditionally, independently of mapper
+ *       configuration.</li>
+ *   <li><strong>Medium, closed</strong> - a corpus census correction. A direct count of the
  *       {@code 02 ...I PIC} declarations across all seventeen symbolic maps in
  *       {@code app/cpy-bms} totals <strong>441</strong> input fields, of which this map contributes
- *       10, and not the 460 asserted elsewhere; the per-map table that accompanies that figure
- *       itself sums to 440 because it counts {@code COACTVW.CPY} as 36 while the file declares 37,
- *       the extra one being the numeric {@code ACCTSIDI} at line 60. Documentation only, no code
- *       impact. Remediation: cite 441.</li>
+ *       10, and not the 460 of prior-generation plan prose; the per-map table that accompanied that
+ *       figure itself summed to 440 because it counted {@code COACTVW.CPY} as 36 while the file
+ *       declares 37, the extra one being the numeric {@code ACCTSIDI} at line 60. Documentation only,
+ *       no code impact. The remediation has been applied: {@code docs/technical-specifications.md}
+ *       cites 441 and 37 and records both supersessions in its section 0.2.2.1 corrections table,
+ *       verified on 1 August 2026.</li>
  *   <li><strong>Low</strong> - {@code ACCTSIDI} does not appear on this map, so the alphanumeric
  *       against numeric divergence recorded above concerns the four maps that declare it plus
  *       {@code COACTVW.CPY:60}, and not this one, whose account identifier is {@code ACTIDINI} at
@@ -322,5 +361,135 @@ public record BillPaymentRequest(
         @Size(max = 14) String currentBalance,     // CURBALI  PIC X(14)  at COBIL00.CPY:66 - display only
         @Size(max = 1) String confirmation,        // CONFIRMI PIC X(1)   at COBIL00.CPY:72 - four states
         @Size(max = 78) String errorMessage) {     // ERRMSGI  PIC X(78)  at COBIL00.CPY:78
-}
 
+    /**
+     * Renders this payload for a log or a diagnostic without disclosing a value and without allowing a
+     * submitted byte to reach the output.
+     *
+     * <p><strong>This override replaces the compiler-generated rendering, and the replacement is the
+     * control.</strong> A record's generated {@code toString} emits every component verbatim, so the
+     * generated form of this type emitted the account identifier and the last-displayed balance, and it
+     * emitted them through the ordinary interpolation path that any parameterised log statement,
+     * exception message, debugger evaluation or telemetry capture takes. Two distinct harms followed.
+     * First, disclosure: an account identifier and a balance together are exactly the pairing an account
+     * enumeration attack needs. Second, log forgery: every component here is bound from an untrusted
+     * request body, so a carriage return and line feed inside any of them terminated the current log line
+     * and let the caller compose the next one, and an escape sequence reached whatever terminal rendered
+     * the file.</p>
+     *
+     * <p><strong>No submitted character appears in the output at all.</strong> That is a stronger
+     * guarantee than escaping, and a much easier one to verify: escaping has to be correct for every
+     * character in every encoding, whereas a rendering built only from fixed literals, decimal lengths
+     * and hexadecimal digits cannot carry a control character by construction. Concretely, free-text and
+     * sensitive members are reduced to their shape by {@link #shapeOf(String)}, and the single
+     * closed-domain gate character is reduced to its code point by {@link #codePointOf(String)} - the
+     * same treatment the user-type code receives, and for the same reason.</p>
+     *
+     * <p>What survives is what actually diagnoses a fault: which members arrived, and how wide they were.
+     * A fixed-width migration fails far more often through a padding or truncation error than through a
+     * wrong value, and a width is visible here while a value is not. The seven screen header and title
+     * members are omitted entirely rather than rendered as shapes, because they are presentation
+     * constants on the legacy map and carry no diagnostic signal.</p>
+     *
+     * @return a rendering containing no submitted character, safe to write to any log sink
+     */
+    @Override
+    public String toString() {
+        return "BillPaymentRequest[accountId=" + shapeOf(accountId)
+                + ", currentBalance=" + shapeOf(currentBalance)
+                + ", confirmation=" + codePointOf(confirmation)
+                + ", errorMessage=" + shapeOf(errorMessage)
+                + ", header=<6 presentation members omitted>]";
+    }
+
+    /**
+     * Describes a member by its shape rather than by its value.
+     *
+     * <p>The three states the source distinguishes stay distinguishable - absent, empty and populated -
+     * because {@code null}, the empty string and a blank-padded value mean three different things
+     * throughout this corpus and a rendering that conflated them would mislead. A populated member is
+     * reported as a character count, which is a non-negative decimal integer and therefore cannot carry a
+     * control character, an escape sequence or any fragment of the value itself.
+     *
+     * @param value the submitted member, which may be {@code null}
+     * @return {@code absent}, {@code empty}, or a character count; never any part of {@code value}
+     */
+    private static String shapeOf(String value) {
+        if (value == null) {
+            return "absent";
+        }
+        if (value.isEmpty()) {
+            return "empty";
+        }
+        return value.length() + (value.length() == 1 ? " char" : " chars");
+    }
+
+    /**
+     * Describes a single-character closed-domain code by its code point.
+     *
+     * <p>Applied only to the confirmation gate, whose domain is four states - blank, affirmative, negative
+     * and anything else - so the code point is the whole of the information and is enough to tell a blank
+     * from a low-value byte, which is precisely the distinction that printing the character cannot make.
+     * {@code Integer.toHexString} emits only hexadecimal digits and is locale independent, so the
+     * rendering is identical on every host and can carry nothing executable.
+     *
+     * <p>A value wider than one character cannot have arrived from the source map, whose field is
+     * {@code PIC X(1)}, and is therefore reported by shape instead. That also bounds the output: this
+     * method never renders more than one code point however long the submitted value is.
+     *
+     * @param value the submitted member, which may be {@code null}
+     * @return {@code absent}, a {@code 0x}-prefixed code point, or a shape for an over-width value
+     */
+    private static String codePointOf(String value) {
+        if (value == null) {
+            return "absent";
+        }
+        if (value.length() != 1) {
+            return shapeOf(value);
+        }
+        return "0x" + Integer.toHexString(value.charAt(0));
+    }
+
+    /**
+     * Rejects any JSON property that is not one of the ten screen fields declared by
+     * {@code app/cpy-bms/COBIL00.CPY}, so that a request carrying an unexpected property fails
+     * loudly instead of being bound with that property silently discarded.
+     *
+     * <p>On this payload the discarded-property failure mode is not hypothetical. The map declares
+     * no payment-amount field, because {@code app/cbl/COBIL00C.cbl:224} moves the <em>entire</em>
+     * current balance into the transaction amount and {@code :234} drives the balance to zero: the
+     * payment is always the full balance and never a partial one. A caller who submits an
+     * {@code amount} property is asking for behaviour the source cannot express, and a mapper that
+     * ignored the property would bind the request successfully and pay the full balance - accepting
+     * a request whose stated intent was refused. Failing is the only honest outcome.</p>
+     *
+     * <p>The guard is local rather than declarative because the declarative alternative is inert
+     * here, for the reasons set out in this type's class documentation: the framework disables
+     * failure on unknown properties by default and this repository contains no
+     * {@code application*.yml} that could re-enable it. Rejecting unconditionally makes the
+     * behaviour independent of mapper configuration.</p>
+     *
+     * <p>Neither the offending property name nor its value is reproduced in the thrown message.
+     * Both are untrusted input, and copying either into a message that reaches a log record would
+     * let a caller forge log content. The message instead names this type, its field count and its
+     * source map, which is what a caller needs in order to correct the payload. Nothing is stored:
+     * this type is immutable, and the method exists only to fail.</p>
+     *
+     * @param name  the unrecognised property name supplied by the caller, deliberately neither
+     *              stored nor reproduced in the thrown message
+     * @param value the unrecognised property value supplied by the caller, deliberately neither
+     *              stored nor reproduced in the thrown message
+     * @throws IllegalArgumentException always, because an unrecognised property is never acceptable
+     *                                 on this request
+     */
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(String name, Object value) {
+        throw new IllegalArgumentException(
+                "BillPaymentRequest accepts only the 10 fields declared by "
+                        + "app/cpy-bms/COBIL00.CPY, and the request contained a property that is "
+                        + "not one of them. Note in particular that the map declares no "
+                        + "payment-amount field, because app/cbl/COBIL00C.cbl:224 always pays the "
+                        + "full balance. The offending name and value are withheld because they "
+                        + "are untrusted input.");
+    }
+}

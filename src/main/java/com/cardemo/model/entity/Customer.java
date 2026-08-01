@@ -30,6 +30,9 @@
 
 package com.cardemo.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -50,11 +53,21 @@ import java.util.Objects;
  * It is a pure persistent data holder. It maps the eighteen populated fields of the
  * COBOL {@code 01 CUSTOMER-RECORD} group onto eighteen columns of table
  * {@code customer}, plus one framework-owned optimistic-locking column. It contains
- * no business logic, performs no validation beyond null-rejection of the primary key,
- * emits no log output, opens no connection and calls no collaborator. Every behavioural
- * rule that reads or compares these fields — change detection, case folding, date
- * parsing, area-code lookup — lives in the service layer, deliberately and for the
- * reasons set out under "Behaviour that deliberately lives elsewhere" below.
+ * no business logic, emits no log output, opens no connection and calls no collaborator.
+ * Every behavioural rule that reads or compares these fields — change detection, case
+ * folding, date parsing, area-code lookup — lives in the service layer, deliberately and
+ * for the reasons set out under "Behaviour that deliberately lives elsewhere" below.
+ * </p>
+ *
+ * <p>
+ * The one thing it does enforce is its own shape. Construction and every mutator refuse a
+ * value the 500-byte record layout cannot have produced: a {@code null}, a character field
+ * wider than its picture clause, or an identifier outside the nine unsigned digits
+ * {@code CUST-ID PIC 9(09)} declares. Failure is reported with
+ * {@link IllegalArgumentException} naming the offending property and its COBOL field. That
+ * is a structural check rather than a business rule — no blank is rejected, no date is
+ * parsed, no code is looked up and no credit score is ranged — so nothing the legacy
+ * system accepts becomes unloadable.
  * </p>
  *
  * <h2>Provenance</h2>
@@ -251,7 +264,10 @@ import java.util.Objects;
  *       data — an absent middle name or third address line arrives as spaces — and must
  *       load unchanged. Likewise no range check on {@code ficoCreditScore}: the fixture
  *       contains {@code 001}, far outside any real credit-score range, and parity
- *       requires it to load as-is.</li>
+ *       requires it to load as-is. The nullability and width checks the constructor and
+ *       setters do apply are not bean validation and are not a substitute for it: they run
+ *       unconditionally, without a {@code Validator}, and constrain only what the record
+ *       layout itself fixes.</li>
  *   <li><strong>Text columns are {@code CHAR(n)}, and the JDBC type code says so
  *       explicitly.</strong> Every text column declares both
  *       {@code columnDefinition = "CHAR(n)"} and
@@ -275,15 +291,17 @@ import java.util.Objects;
  *
  * <h2>How to build and test</h2>
  * <pre>
- *   mvn -B clean compile        # compiles under -Xlint:all -Werror, release 25
- *   mvn -B clean test           # unit suite, including this entity's mapping assertions
- *   mvn -B clean verify         # adds JaCoCo (80% line floor) and the dependency scan
+ *   ./mvnw -B clean compile     # compiles under -Xlint:all -Werror, release 25
+ *   ./mvnw -B clean test        # unit suite, including this entity's mapping assertions
+ *   ./mvnw -B clean verify      # adds JaCoCo (80% line floor) and the dependency scan
  * </pre>
  * <p>
- * Unit coverage lives in {@code src/test/java/com/cardemo/unit/model} and asserts the
- * 500-byte width arithmetic, the nine-byte key, that {@code ssn},
+ * Unit coverage belongs in {@code src/test/java/com/cardemo/unit/model} and is to
+ * assert the 500-byte width arithmetic, the nine-byte key, that {@code ssn},
  * {@code ficoCreditScore} and {@code dateOfBirth} are {@code String}, and that
  * {@code toString} discloses none of the thirteen personal fields.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code CustomerTest}
+ * exists, so that is the coverage owed rather than coverage that runs.
  * </p>
  *
  * <h2>Key configuration and defaults</h2>
@@ -326,20 +344,23 @@ import java.util.Objects;
  *       logging individual getters.</li>
  * </ul>
  *
- * <h2>Information not available at authoring time</h2>
- * <p>
- * <strong>Not available</strong>: {@code src/main/resources/db/migration/V1__create_schema.sql}
- * did not exist when this entity was written, and the {@code db/migration} directory
- * had no children at all. The migration could therefore not be read, and no column
- * name, type or nullability could be confirmed against it. Because
- * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile, any
- * divergence between that migration and this mapping fails application-context startup
- * outright, so the divergence cannot go unnoticed — but it also cannot be pre-empted
- * here. <strong>The field table above is consequently the normative column contract,
- * and {@code V1__create_schema.sql} must converge upon it.</strong>
+ * <h2>Schema reconciliation, and what is still not available</h2>
+ *
+ * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
+ * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
+ * It declares {@code CREATE TABLE customer} with 19 columns whose names are identical, as a
+ * set, to the 19 {@code @Column(name = ...)} declarations below, verified by direct comparison.
+ * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
+ * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, any
+ * divergence between that migration and this mapping would fail application-context startup
+ * outright rather than going unnoticed. What remains <strong>not available</strong> is
+ * {@code V2__create_indexes.sql}, {@code V3__seed_data.sql} and all four {@code application*.yml}
+ * profiles, so that {@code validate} behaviour is the mandated configuration rather than an observed one.
  * </p>
  * <p>
- * What is needed from that migration, exactly: table {@code customer} with
+ * What that migration declares for this table, and what this mapping asserts, is table
+ * {@code customer} with
  * {@code cust_id NUMERIC(9) PRIMARY KEY}, {@code cust_first_name CHAR(25) NOT NULL},
  * {@code cust_middle_name CHAR(25) NOT NULL}, {@code cust_last_name CHAR(25) NOT NULL},
  * {@code cust_addr_line_1 CHAR(50) NOT NULL}, {@code cust_addr_line_2 CHAR(50) NOT NULL},
@@ -358,10 +379,124 @@ import java.util.Objects;
  * metadata tables come from the framework's own schema script — never from a fourth
  * migration, and never as extra tables inside {@code V1}.
  * </p>
+ * <p>
+ * <b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson, and it
+ * carries the widest personal data set of any entity in this package, so the barrier matters here
+ * as much as it does on {@link Card}. {@link JsonIgnoreType} removes any property whose declared
+ * type is this class from an enclosing object's JSON, and {@link JsonAutoDetect} with every
+ * visibility set to {@code NONE} switches off bean introspection entirely, so no getter, no
+ * setter, no field and no creator is discoverable. An entity is a bean with public accessors, so
+ * without the barrier the default behaviour of returning this type from a controller, or holding a
+ * field of it on a response object, is to publish the social security number, the date of birth,
+ * the full name, the three address lines, both telephone numbers, the electronic funds account
+ * identifier and the credit score in one response - a personal data breach, not an over-broad
+ * payload. With the barrier in place Jackson finds no properties and its default
+ * {@code FAIL_ON_EMPTY_BEANS} setting turns that mistake into a loud failure at the first request
+ * rather than a silent disclosure. Nothing legitimate is lost: outbound representations are built
+ * by {@code com.cardemo.model.dto.AccountDto}, inbound JSON targets
+ * {@code com.cardemo.model.dto.AccountUpdateRequest}, and persistence is unaffected because
+ * Hibernate reads and writes the annotated fields reflectively and never consults Jackson
+ * visibility. The social security number masking rule in {@code logback-spring.xml} remains a
+ * backstop for accidents this barrier cannot see, never the primary defence.
+ * </p>
  */
 @Entity
 @Table(name = "customer")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class Customer {
+
+    /**
+     * Inclusive lower bound of {@code CUST-ID PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5}.
+     *
+     * <p>
+     * The picture clause carries no {@code S}, so the field is unsigned and zero is its
+     * floor. Zero is accepted rather than treated as a sentinel, because nine display
+     * digits can hold it and nothing in the corpus reserves it.
+     * </p>
+     */
+    private static final long MIN_CUSTOMER_ID = 0L;
+
+    /**
+     * Inclusive upper bound of {@code CUST-ID PIC 9(09)}: the largest value nine unsigned
+     * display digits can hold, which is also the nine-byte VSAM key width the cluster
+     * allocates.
+     */
+    private static final long MAX_CUSTOMER_ID = 999_999_999L;
+
+    /** Width of {@code CUST-FIRST-NAME PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L6}. */
+    private static final int FIRST_NAME_WIDTH = 25;
+
+    /** Width of {@code CUST-MIDDLE-NAME PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L7}. */
+    private static final int MIDDLE_NAME_WIDTH = 25;
+
+    /** Width of {@code CUST-LAST-NAME PIC X(25)} at {@code app/cpy/CVCUS01Y.cpy:L8}. */
+    private static final int LAST_NAME_WIDTH = 25;
+
+    /** Width of {@code CUST-ADDR-LINE-1 PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L9}. */
+    private static final int ADDRESS_LINE_1_WIDTH = 50;
+
+    /** Width of {@code CUST-ADDR-LINE-2 PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L10}. */
+    private static final int ADDRESS_LINE_2_WIDTH = 50;
+
+    /** Width of {@code CUST-ADDR-LINE-3 PIC X(50)} at {@code app/cpy/CVCUS01Y.cpy:L11}. */
+    private static final int ADDRESS_LINE_3_WIDTH = 50;
+
+    /** Width of {@code CUST-ADDR-STATE-CD PIC X(02)} at {@code app/cpy/CVCUS01Y.cpy:L12}. */
+    private static final int ADDRESS_STATE_CODE_WIDTH = 2;
+
+    /** Width of {@code CUST-ADDR-COUNTRY-CD PIC X(03)} at {@code app/cpy/CVCUS01Y.cpy:L13}. */
+    private static final int ADDRESS_COUNTRY_CODE_WIDTH = 3;
+
+    /** Width of {@code CUST-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L14}. */
+    private static final int ADDRESS_ZIP_WIDTH = 10;
+
+    /** Width of {@code CUST-PHONE-NUM-1 PIC X(15)} at {@code app/cpy/CVCUS01Y.cpy:L15}. */
+    private static final int PHONE_NUMBER_1_WIDTH = 15;
+
+    /** Width of {@code CUST-PHONE-NUM-2 PIC X(15)} at {@code app/cpy/CVCUS01Y.cpy:L16}. */
+    private static final int PHONE_NUMBER_2_WIDTH = 15;
+
+    /**
+     * Width of {@code CUST-SSN PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L17}, carried as
+     * nine characters rather than nine digits so that leading zeros survive.
+     */
+    private static final int SSN_WIDTH = 9;
+
+    /** Width of {@code CUST-GOVT-ISSUED-ID PIC X(20)} at {@code app/cpy/CVCUS01Y.cpy:L18}. */
+    private static final int GOVERNMENT_ISSUED_ID_WIDTH = 20;
+
+    /** Width of {@code CUST-DOB-YYYY-MM-DD PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L19}. */
+    private static final int DATE_OF_BIRTH_WIDTH = 10;
+
+    /** Width of {@code CUST-EFT-ACCOUNT-ID PIC X(10)} at {@code app/cpy/CVCUS01Y.cpy:L20}. */
+    private static final int EFT_ACCOUNT_ID_WIDTH = 10;
+
+    /**
+     * Width of {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L21}.
+     */
+    private static final int PRIMARY_CARD_HOLDER_INDICATOR_WIDTH = 1;
+
+    /**
+     * Width of {@code CUST-FICO-CREDIT-SCORE PIC 9(03)} at {@code app/cpy/CVCUS01Y.cpy:L22},
+     * carried as three characters rather than a number.
+     *
+     * <p>
+     * Only the width is constrained. <b>No credit-score range is imposed</b>, because
+     * {@code app/data/ASCII/custdata.txt} carries twenty-one of its fifty rows below the
+     * conventional 300 floor, so a range check would reject the system of record's own
+     * seed data. The exclusion register in
+     * {@code src/main/resources/db/migration/V1__create_schema.sql} records the same
+     * decision for the corresponding column.
+     * </p>
+     */
+    private static final int FICO_CREDIT_SCORE_WIDTH = 3;
 
     /**
      * Customer identifier — {@code CUST-ID PIC 9(09)}, {@code app/cpy/CVCUS01Y.cpy:L5}.
@@ -394,219 +529,151 @@ public class Customer {
     private Long customerId;
 
     /**
-     * Given name — {@code CUST-FIRST-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L6}.
-     * Bytes 10-34. Personal data: excluded from {@code toString}. Compared through
-     * {@code FUNCTION UPPER-CASE} by the service layer, never here.
+     * Given name — {@code CUST-FIRST-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L6}. Bytes 10-34. Personal
+     * data: excluded from {@code toString}. Compared through {@code FUNCTION UPPER-CASE} by the service layer,
+     * never here.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_first_name", nullable = false, length = 25, columnDefinition = "CHAR(25)")
+    @Column(name = "cust_first_name", nullable = false, length = FIRST_NAME_WIDTH, columnDefinition = "CHAR(25)")
     private String firstName;
 
     /**
-     * Middle name — {@code CUST-MIDDLE-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L7}.
-     * Bytes 35-59. Legitimately all spaces when a customer has no middle name, which is
-     * why the column is {@code NOT NULL} but carries no blank-rejecting constraint.
-     * Personal data: excluded from {@code toString}.
+     * Middle name — {@code CUST-MIDDLE-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L7}. Bytes 35-59.
+     * Legitimately all spaces when a customer has no middle name, which is why the column is {@code NOT NULL}
+     * but carries no blank-rejecting constraint. Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_middle_name", nullable = false, length = 25, columnDefinition = "CHAR(25)")
+    @Column(name = "cust_middle_name", nullable = false, length = MIDDLE_NAME_WIDTH, columnDefinition = "CHAR(25)")
     private String middleName;
 
     /**
-     * Family name — {@code CUST-LAST-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L8}.
-     * Bytes 60-84. Personal data: excluded from {@code toString}.
+     * Family name — {@code CUST-LAST-NAME PIC X(25)}, {@code app/cpy/CVCUS01Y.cpy:L8}. Bytes 60-84. Personal
+     * data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_last_name", nullable = false, length = 25, columnDefinition = "CHAR(25)")
+    @Column(name = "cust_last_name", nullable = false, length = LAST_NAME_WIDTH, columnDefinition = "CHAR(25)")
     private String lastName;
 
     /**
-     * First address line — {@code CUST-ADDR-LINE-1 PIC X(50)},
-     * {@code app/cpy/CVCUS01Y.cpy:L9}. Bytes 85-134. Personal data: excluded from
-     * {@code toString}.
+     * First address line — {@code CUST-ADDR-LINE-1 PIC X(50)}, {@code app/cpy/CVCUS01Y.cpy:L9}. Bytes 85-134.
+     * Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_line_1", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "cust_addr_line_1", nullable = false, length = ADDRESS_LINE_1_WIDTH, columnDefinition = "CHAR(50)")
     private String addressLine1;
 
     /**
-     * Second address line — {@code CUST-ADDR-LINE-2 PIC X(50)},
-     * {@code app/cpy/CVCUS01Y.cpy:L10}. Bytes 135-184. Personal data: excluded from
-     * {@code toString}.
+     * Second address line — {@code CUST-ADDR-LINE-2 PIC X(50)}, {@code app/cpy/CVCUS01Y.cpy:L10}. Bytes
+     * 135-184. Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_line_2", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "cust_addr_line_2", nullable = false, length = ADDRESS_LINE_2_WIDTH, columnDefinition = "CHAR(50)")
     private String addressLine2;
 
     /**
-     * Third address line — {@code CUST-ADDR-LINE-3 PIC X(50)},
-     * {@code app/cpy/CVCUS01Y.cpy:L11}. Bytes 185-234. Legitimately all spaces when the
-     * address needs only two lines. Personal data: excluded from {@code toString}.
+     * Third address line — {@code CUST-ADDR-LINE-3 PIC X(50)}, {@code app/cpy/CVCUS01Y.cpy:L11}. Bytes 185-234.
+     * Legitimately all spaces when the address needs only two lines. Personal data: excluded from
+     * {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_line_3", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "cust_addr_line_3", nullable = false, length = ADDRESS_LINE_3_WIDTH, columnDefinition = "CHAR(50)")
     private String addressLine3;
 
     /**
-     * State or province code — {@code CUST-ADDR-STATE-CD PIC X(02)},
-     * {@code app/cpy/CVCUS01Y.cpy:L12}. Bytes 235-236; row 1 of the fixture holds
-     * {@code NC}. Membership of the recognised state set is checked by the validation
-     * lookup service against its classpath resource, not by this entity.
+     * State or province code — {@code CUST-ADDR-STATE-CD PIC X(02)}, {@code app/cpy/CVCUS01Y.cpy:L12}. Bytes
+     * 235-236. Membership of the recognised state set is checked by the validation lookup service against its
+     * classpath resource, not by this entity.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_state_cd", nullable = false, length = 2, columnDefinition = "CHAR(2)")
+    @Column(name = "cust_addr_state_cd", nullable = false, length = ADDRESS_STATE_CODE_WIDTH,
+            columnDefinition = "CHAR(2)")
     private String addressStateCode;
 
     /**
-     * Country code — {@code CUST-ADDR-COUNTRY-CD PIC X(03)},
-     * {@code app/cpy/CVCUS01Y.cpy:L13}. Bytes 237-239; row 1 of the fixture holds
-     * {@code USA}. Three characters, so it is the alpha-3 form rather than alpha-2.
+     * Country code — {@code CUST-ADDR-COUNTRY-CD PIC X(03)}, {@code app/cpy/CVCUS01Y.cpy:L13}. Bytes 237-239.
+     * Three characters, so it is the alpha-3 form rather than alpha-2.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_country_cd", nullable = false, length = 3, columnDefinition = "CHAR(3)")
+    @Column(name = "cust_addr_country_cd", nullable = false, length = ADDRESS_COUNTRY_CODE_WIDTH,
+            columnDefinition = "CHAR(3)")
     private String addressCountryCode;
 
     /**
-     * Postal code — {@code CUST-ADDR-ZIP PIC X(10)}, {@code app/cpy/CVCUS01Y.cpy:L14}.
-     * Bytes 240-249; row 1 of the fixture holds {@code 12546} followed by five spaces,
-     * so the field is text with trailing padding and not a number. The ten-character
-     * width accommodates the extended plus-four form. Personal data: excluded from
-     * {@code toString}. Compared with no case function by the service layer.
+     * Postal code — {@code CUST-ADDR-ZIP PIC X(10)}, {@code app/cpy/CVCUS01Y.cpy:L14}. Bytes 240-249. Text with
+     * trailing space padding rather than a number, the ten-character width accommodating the extended
+     * plus-four form. Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_addr_zip", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "cust_addr_zip", nullable = false, length = ADDRESS_ZIP_WIDTH, columnDefinition = "CHAR(10)")
     private String addressZip;
 
     /**
-     * Primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)},
-     * {@code app/cpy/CVCUS01Y.cpy:L15}. Bytes 250-264.
-     *
-     * <p>
-     * Text, never numeric, and the fixture proves why: row 1 of
-     * {@code app/data/ASCII/custdata.txt} holds {@code (908)119-8310} followed by two
-     * spaces across those fifteen bytes. Parentheses, a hyphen and trailing padding are
-     * part of the stored value; any numeric mapping would destroy the formatting the
-     * legacy screens redisplay verbatim.
-     * </p>
-     *
-     * <p>
-     * No format constraint is declared here. Area-code plausibility is the validation
-     * lookup service's responsibility, backed by its classpath resource. Personal data:
-     * excluded from {@code toString}.
-     * </p>
+     * Primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)}, {@code app/cpy/CVCUS01Y.cpy:L15}. Bytes
+     * 250-264, held as text because the stored form carries punctuation. Personal data: excluded from
+     * {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_phone_num_1", nullable = false, length = 15, columnDefinition = "CHAR(15)")
+    @Column(name = "cust_phone_num_1", nullable = false, length = PHONE_NUMBER_1_WIDTH, columnDefinition = "CHAR(15)")
     private String phoneNumber1;
 
     /**
-     * Secondary telephone number — {@code CUST-PHONE-NUM-2 PIC X(15)},
-     * {@code app/cpy/CVCUS01Y.cpy:L16}. Bytes 265-279; row 1 of the fixture holds
-     * {@code (373)693-8684} plus two spaces. Text for the same reason as
-     * {@code phoneNumber1}. Personal data: excluded from {@code toString}.
+     * Secondary telephone number — {@code CUST-PHONE-NUM-2 PIC X(15)}, {@code app/cpy/CVCUS01Y.cpy:L16}. Bytes
+     * 265-279. Stored as text because the seed rows carry punctuation in the form
+     * {@code (NNN)NNN-NNNN} within the fifteen bytes. Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_phone_num_2", nullable = false, length = 15, columnDefinition = "CHAR(15)")
+    @Column(name = "cust_phone_num_2", nullable = false, length = PHONE_NUMBER_2_WIDTH, columnDefinition = "CHAR(15)")
     private String phoneNumber2;
 
     /**
-     * Social security number — {@code CUST-SSN PIC 9(09)},
-     * {@code app/cpy/CVCUS01Y.cpy:L17}. Bytes 280-288.
-     *
-     * <p>
-     * <strong>Declared numeric in the copybook, mapped as {@code String} over
-     * {@code CHAR(9)} on purpose.</strong> A leading-zero census over all 50 rows of
-     * {@code app/data/ASCII/custdata.txt} finds <strong>6 rows beginning with
-     * {@code 0}</strong>; row 1 is {@code 020973888}. A numeric mapping drops that
-     * zero, which both corrupts the value and breaks byte-exact re-emission of the
-     * 500-byte record, because nine significant characters would come back as eight.
-     * The field is never an arithmetic operand anywhere in the corpus — it is only ever
-     * compared for equality, and with no case function, at
-     * {@code app/cbl/COACTUPC.cbl:L4171} — so nothing is lost by storing it as text.
-     * The same reasoning already governs the card verification code on the
-     * {@code Card} entity.
-     * </p>
-     *
-     * <p>
-     * The single most sensitive value on the most sensitive record in the application.
-     * Excluded from {@code toString}, and masked by the logging configuration as a
-     * second line of defence.
-     * </p>
+     * National identifier — {@code CUST-SSN PIC 9(09)}, {@code app/cpy/CVCUS01Y.cpy:L17}. Bytes 280-288, held
+     * as text so that leading zeros survive the fixed-width round trip. Personal data: excluded from
+     * {@code toString} and never logged.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_ssn", nullable = false, length = 9, columnDefinition = "CHAR(9)")
+    @Column(name = "cust_ssn", nullable = false, length = SSN_WIDTH, columnDefinition = "CHAR(9)")
     private String ssn;
 
     /**
-     * Government-issued identifier — {@code CUST-GOVT-ISSUED-ID PIC X(20)},
-     * {@code app/cpy/CVCUS01Y.cpy:L18}. Bytes 289-308; row 1 of the fixture holds
-     * {@code 00000000000049368437}, which is zero-padded text and confirms the
-     * character mapping. Personal data: excluded from {@code toString}. Compared through
-     * {@code FUNCTION UPPER-CASE} by the service layer.
+     * Government-issued identifier — {@code CUST-GOVT-ISSUED-ID PIC X(20)}, {@code app/cpy/CVCUS01Y.cpy:L18}.
+     * Bytes 289-308. Zero-padded text in the seed rows, which is why the picture clause is {@code X(20)} and
+     * the mapping is character rather than numeric. Personal data: excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_govt_issued_id", nullable = false, length = 20, columnDefinition = "CHAR(20)")
+    @Column(name = "cust_govt_issued_id", nullable = false, length = GOVERNMENT_ISSUED_ID_WIDTH,
+            columnDefinition = "CHAR(20)")
     private String governmentIssuedId;
 
     /**
-     * Date of birth — {@code CUST-DOB-YYYY-MM-DD PIC X(10)},
-     * {@code app/cpy/CVCUS01Y.cpy:L19}. Bytes 309-318.
-     *
-     * <p>
-     * <strong>Ten-character dash-separated text.</strong> Row 1 of
-     * {@code app/data/ASCII/custdata.txt} holds {@code 1961-06-08}, and a shape census
-     * across all 50 rows finds that form and no other. Stored as {@code String} over
-     * {@code CHAR(10)}: deliberately no Java date-time type, no JPA temporal annotation
-     * and no date conversion of any kind. A temporal mapping would re-render the value
-     * on write and could not guarantee the exact ten characters the fixed-width writers
-     * must reproduce.
-     * </p>
-     *
-     * <p>
-     * <strong>The update-request snapshot is a different width, and conflating the two
-     * breaks the endpoint.</strong> {@code app/cbl/COACTUPC.cbl:L746} declares
-     * {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD PIC X(08)} — eight characters, the compact
-     * separator-free form — with a {@code REDEFINES} at {@code :L747-L751} splitting it
-     * into {@code X(4)}, {@code X(2)}, {@code X(2)}. Its components therefore sit at
-     * offsets 1, 5 and 7, whereas this field's sit at 1, 6 and 9. The source compares
-     * them cross-wise and component-wise at {@code :L4174-L4179}: offset 1 against
-     * offset 1, offset 6 against offset 5, offset 9 against offset 7. Comparing the two
-     * representations whole would differ on every request and make the account-update
-     * endpoint permanently unusable.
-     * </p>
-     *
-     * <p>
-     * Consequently this entity keeps the ten-character dash-separated form unchanged.
-     * Do not align it to the eight-character snapshot and do not strip the separators.
-     * The component-wise comparison belongs to the service layer; parsing and calendar
-     * validation belong to the date validation service. Personal data: excluded from
-     * {@code toString}.
-     * </p>
+     * Date of birth — {@code CUST-DOB-YYYY-MM-DD PIC X(10)}, {@code app/cpy/CVCUS01Y.cpy:L19}. Bytes 309-318,
+     * stored dash-separated as {@code YYYY-MM-DD}. The update path compares it component by component against
+     * a snapshot that holds the same date without separators, so the two sides use different offsets; that
+     * asymmetry is the service layer's contract and must not be normalised away here. Personal data: excluded
+     * from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_dob_yyyy_mm_dd", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "cust_dob_yyyy_mm_dd", nullable = false, length = DATE_OF_BIRTH_WIDTH, columnDefinition = "CHAR(10)")
     private String dateOfBirth;
 
     /**
-     * Electronic-funds-transfer account identifier — {@code CUST-EFT-ACCOUNT-ID
-     * PIC X(10)}, {@code app/cpy/CVCUS01Y.cpy:L20}. Bytes 319-328; row 1 of the fixture
-     * holds {@code 0053581756}, zero-padded text. Personal financial data: excluded
-     * from {@code toString}. Compared with no case function by the service layer.
+     * Electronic-funds-transfer account identifier — {@code CUST-EFT-ACCOUNT-ID PIC X(10)},
+     * {@code app/cpy/CVCUS01Y.cpy:L20}. Bytes 319-328, held as zero-padded text. Personal financial data:
+     * excluded from {@code toString}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_eft_account_id", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "cust_eft_account_id", nullable = false, length = EFT_ACCOUNT_ID_WIDTH,
+            columnDefinition = "CHAR(10)")
     private String eftAccountId;
 
     /**
      * Primary-card-holder indicator — {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)},
-     * {@code app/cpy/CVCUS01Y.cpy:L21}. Byte 329; row 1 of the fixture holds {@code Y}.
-     * A single character rather than a boolean, because the source field is one byte of
-     * character data and the batch writers must re-emit exactly whatever byte was
-     * stored — including any value other than {@code Y} or {@code N}. Compared with no
-     * case function by the service layer.
+     * {@code app/cpy/CVCUS01Y.cpy:L21}. Byte 329. A single character rather than a boolean, because the source
+     * field is one byte of character data and the batch writers must re-emit exactly whatever byte was stored,
+     * including any value other than {@code Y} or {@code N}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_pri_card_holder_ind", nullable = false, length = 1, columnDefinition = "CHAR(1)")
+    @Column(name = "cust_pri_card_holder_ind", nullable = false, length = PRIMARY_CARD_HOLDER_INDICATOR_WIDTH,
+            columnDefinition = "CHAR(1)")
     private String primaryCardHolderIndicator;
 
     /**
@@ -631,123 +698,57 @@ public class Customer {
      * outside any real credit-score band and is a legacy fixture quirk. Parity is the
      * contract: the value loads exactly as it appears in the source, so there is no
      * {@code @Min}, no {@code @Max} and no pattern constraint. Rejecting it here would
-     * make 50-row fixture loads fail on data the legacy system accepts.
+     * make 50-row fixture loads fail on data the legacy system accepts. Only the
+     * three-character width the picture clause declares is enforced, which admits every
+     * value the 500-byte record can carry, {@code 001} included.
      * </p>
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "cust_fico_credit_score", nullable = false, length = 3, columnDefinition = "CHAR(3)")
+    @Column(name = "cust_fico_credit_score", nullable = false, length = FICO_CREDIT_SCORE_WIDTH,
+            columnDefinition = "CHAR(3)")
     private String ficoCreditScore;
 
     /**
-     * Optimistic-locking version counter. Has <strong>no counterpart in the source
-     * record</strong> — the 500-byte layout is fully accounted for by the eighteen data
-     * fields plus {@code FILLER X(168)} — and is introduced because the relational
-     * target has no equivalent of the legacy read-for-update lock.
-     *
-     * <p>
-     * <strong>Necessary but not sufficient.</strong> This counter detects that
-     * <em>some</em> concurrent write has occurred. The legacy account-update program
-     * detects something stricter: that <em>specific business field values</em> differ
-     * from the ones the user was shown. The two are not equivalent — a concurrent write
-     * that set a field and then restored its original value passes the legacy check but
-     * fails a version check. Reproducing the source therefore requires two layers, and
-     * this is only the store-level one.
-     * </p>
-     *
-     * <p>
-     * The business-level layer is an explicit field-by-field comparison against a
-     * snapshot captured when the screen was first populated, implemented in the service
-     * layer from {@code app/cbl/COACTUPC.cbl:L4109-L4193} and fed by the
-     * {@code oldDetails} group that {@code AccountUpdateRequest} in
-     * {@code com.cardemo.model.dto} carries. Because the target is stateless the
-     * snapshot cannot live on the server between requests, which is precisely why the
-     * request body carries it. Neither layer substitutes for the other.
-     * </p>
-     *
-     * <p>
-     * Assigned and incremented by the persistence provider; a caller normally leaves it
-     * alone. It is excluded from the all-columns constructor for that reason, and the
-     * setter exists only so a detached instance can be reconstituted with its known
-     * version.
-     * </p>
+     * Optimistic-locking version counter. Has <strong>no counterpart in the source record</strong> — the
+     * 500-byte layout is fully accounted for by the eighteen data fields plus {@code FILLER X(168)} — and is
+     * introduced because the relational target has no equivalent of the legacy read-for-update lock.
      */
     @Version
     @Column(name = "version", nullable = false, columnDefinition = "BIGINT")
     private Long version;
 
     /**
-     * No-argument constructor required by the JPA specification so that the persistence
-     * provider can instantiate the entity during hydration.
-     *
-     * <p>
-     * Deliberately {@code protected} rather than {@code public}: the provider and
-     * subclasses need it, application code does not, and leaving it public would invite
-     * the creation of instances with every field null — including the primary key —
-     * which the {@code NOT NULL} schema would then reject at flush time with a far less
-     * obvious error than the all-columns constructor produces at the point of the
-     * mistake. It cannot be made {@code private}, because the provider must reach it.
-     * </p>
-     *
-     * <p>
-     * Leaves every field null. Callers other than the provider should use the
-     * all-columns constructor.
-     * </p>
+     * No-argument constructor required by the JPA specification so that the persistence provider can
+     * instantiate the entity during hydration.
      */
     protected Customer() {
-        // Intentionally empty. Field population is the persistence provider's
-        // responsibility during hydration; see the all-columns constructor for the
-        // application-facing entry point.
+        // Intentionally empty: the persistence provider populates every field after construction.
     }
 
     /**
-     * Creates a fully populated customer from the complete {@code CUST-*} field contract
-     * of {@code app/cpy/CVCUS01Y.cpy:L5-L22}.
+     * Creates a fully populated customer from the complete {@code CUST-*} field contract of
+     * {@code app/cpy/CVCUS01Y.cpy:L5-L22}.
      *
-     * <p>
-     * The parameter list is the source record's field order, so a caller reading the
-     * copybook top to bottom supplies the arguments in the order they appear there.
-     * Every parameter maps to a {@code NOT NULL} column and every field is assigned
-     * directly rather than through its setter, both to keep the constructor free of any
-     * call to an overridable method and so that the object is fully formed before any
-     * other code can observe it.
-     * </p>
-     *
-     * <p>
-     * {@code version} is not a parameter. It has no counterpart in the source record and
-     * is assigned by the persistence provider; supplying it at construction would let a
-     * caller fabricate a version and defeat the optimistic-locking guard. Use
-     * {@code setVersion} only when reconstituting a detached instance whose version is
-     * genuinely known.
-     * </p>
-     *
-     * <p>
-     * No trimming, no padding, no case folding and no reformatting is applied to any
-     * argument. Values are stored exactly as supplied, because the fixed-width writers
-     * must be able to re-emit the original 500-byte image and the service layer's
-     * comparisons depend on the stored representation.
-     * </p>
-     *
-     * @param customerId                 {@code CUST-ID PIC 9(09)}; must not be null
-     * @param firstName                  {@code CUST-FIRST-NAME PIC X(25)}
-     * @param middleName                 {@code CUST-MIDDLE-NAME PIC X(25)}; may be blank
-     * @param lastName                   {@code CUST-LAST-NAME PIC X(25)}
-     * @param addressLine1               {@code CUST-ADDR-LINE-1 PIC X(50)}
-     * @param addressLine2               {@code CUST-ADDR-LINE-2 PIC X(50)}
-     * @param addressLine3               {@code CUST-ADDR-LINE-3 PIC X(50)}; may be blank
-     * @param addressStateCode           {@code CUST-ADDR-STATE-CD PIC X(02)}
-     * @param addressCountryCode         {@code CUST-ADDR-COUNTRY-CD PIC X(03)}
-     * @param addressZip                 {@code CUST-ADDR-ZIP PIC X(10)}
-     * @param phoneNumber1               {@code CUST-PHONE-NUM-1 PIC X(15)}; formatted text
-     * @param phoneNumber2               {@code CUST-PHONE-NUM-2 PIC X(15)}; formatted text
-     * @param ssn                        {@code CUST-SSN PIC 9(09)}; text, leading zeros significant
-     * @param governmentIssuedId         {@code CUST-GOVT-ISSUED-ID PIC X(20)}
-     * @param dateOfBirth                {@code CUST-DOB-YYYY-MM-DD PIC X(10)}; dash-separated
-     * @param eftAccountId               {@code CUST-EFT-ACCOUNT-ID PIC X(10)}
+     * @param customerId {@code CUST-ID PIC 9(09)}.
+     * @param firstName {@code CUST-FIRST-NAME PIC X(25)}
+     * @param middleName {@code CUST-MIDDLE-NAME PIC X(25)}.
+     * @param lastName {@code CUST-LAST-NAME PIC X(25)}
+     * @param addressLine1 {@code CUST-ADDR-LINE-1 PIC X(50)}
+     * @param addressLine2 {@code CUST-ADDR-LINE-2 PIC X(50)}
+     * @param addressLine3 {@code CUST-ADDR-LINE-3 PIC X(50)}.
+     * @param addressStateCode {@code CUST-ADDR-STATE-CD PIC X(02)}
+     * @param addressCountryCode {@code CUST-ADDR-COUNTRY-CD PIC X(03)}
+     * @param addressZip {@code CUST-ADDR-ZIP PIC X(10)}
+     * @param phoneNumber1 {@code CUST-PHONE-NUM-1 PIC X(15)}.
+     * @param phoneNumber2 {@code CUST-PHONE-NUM-2 PIC X(15)}.
+     * @param ssn {@code CUST-SSN PIC 9(09)}.
+     * @param governmentIssuedId {@code CUST-GOVT-ISSUED-ID PIC X(20)}
+     * @param dateOfBirth {@code CUST-DOB-YYYY-MM-DD PIC X(10)}.
+     * @param eftAccountId {@code CUST-EFT-ACCOUNT-ID PIC X(10)}
      * @param primaryCardHolderIndicator {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}
-     * @param ficoCreditScore            {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}; text, not ranged
-     * @throws IllegalArgumentException if {@code customerId} is null, since it is the
-     *                                  nine-byte VSAM key and the table's primary key,
-     *                                  and a null there cannot be a valid record
+     * @param ficoCreditScore {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}.
+     * @throws IllegalArgumentException if {@code customerId} is null, since it is the nine-byte VSAM key and
+     * the table's primary key, and a null there cannot be a valid record
      */
     public Customer(Long customerId,
                     String firstName,
@@ -767,27 +768,36 @@ public class Customer {
                     String eftAccountId,
                     String primaryCardHolderIndicator,
                     String ficoCreditScore) {
-        if (customerId == null) {
-            throw new IllegalArgumentException("customerId (CUST-ID) must not be null");
-        }
-        this.customerId = customerId;
-        this.firstName = firstName;
-        this.middleName = middleName;
-        this.lastName = lastName;
-        this.addressLine1 = addressLine1;
-        this.addressLine2 = addressLine2;
-        this.addressLine3 = addressLine3;
-        this.addressStateCode = addressStateCode;
-        this.addressCountryCode = addressCountryCode;
-        this.addressZip = addressZip;
-        this.phoneNumber1 = phoneNumber1;
-        this.phoneNumber2 = phoneNumber2;
-        this.ssn = ssn;
-        this.governmentIssuedId = governmentIssuedId;
-        this.dateOfBirth = dateOfBirth;
-        this.eftAccountId = eftAccountId;
-        this.primaryCardHolderIndicator = primaryCardHolderIndicator;
-        this.ficoCreditScore = ficoCreditScore;
+        this.customerId = requireCustomerId(customerId);
+        this.firstName = requireWidth(firstName, "firstName", "CUST-FIRST-NAME PIC X(25)", FIRST_NAME_WIDTH);
+        this.middleName = requireWidth(middleName, "middleName", "CUST-MIDDLE-NAME PIC X(25)", MIDDLE_NAME_WIDTH);
+        this.lastName = requireWidth(lastName, "lastName", "CUST-LAST-NAME PIC X(25)", LAST_NAME_WIDTH);
+        this.addressLine1 = requireWidth(addressLine1, "addressLine1",
+                "CUST-ADDR-LINE-1 PIC X(50)", ADDRESS_LINE_1_WIDTH);
+        this.addressLine2 = requireWidth(addressLine2, "addressLine2",
+                "CUST-ADDR-LINE-2 PIC X(50)", ADDRESS_LINE_2_WIDTH);
+        this.addressLine3 = requireWidth(addressLine3, "addressLine3",
+                "CUST-ADDR-LINE-3 PIC X(50)", ADDRESS_LINE_3_WIDTH);
+        this.addressStateCode = requireWidth(addressStateCode, "addressStateCode",
+                "CUST-ADDR-STATE-CD PIC X(02)", ADDRESS_STATE_CODE_WIDTH);
+        this.addressCountryCode = requireWidth(addressCountryCode, "addressCountryCode",
+                "CUST-ADDR-COUNTRY-CD PIC X(03)", ADDRESS_COUNTRY_CODE_WIDTH);
+        this.addressZip = requireWidth(addressZip, "addressZip", "CUST-ADDR-ZIP PIC X(10)", ADDRESS_ZIP_WIDTH);
+        this.phoneNumber1 = requireWidth(phoneNumber1, "phoneNumber1",
+                "CUST-PHONE-NUM-1 PIC X(15)", PHONE_NUMBER_1_WIDTH);
+        this.phoneNumber2 = requireWidth(phoneNumber2, "phoneNumber2",
+                "CUST-PHONE-NUM-2 PIC X(15)", PHONE_NUMBER_2_WIDTH);
+        this.ssn = requireWidth(ssn, "ssn", "CUST-SSN PIC 9(09)", SSN_WIDTH);
+        this.governmentIssuedId = requireWidth(governmentIssuedId, "governmentIssuedId",
+                "CUST-GOVT-ISSUED-ID PIC X(20)", GOVERNMENT_ISSUED_ID_WIDTH);
+        this.dateOfBirth = requireWidth(dateOfBirth, "dateOfBirth",
+                "CUST-DOB-YYYY-MM-DD PIC X(10)", DATE_OF_BIRTH_WIDTH);
+        this.eftAccountId = requireWidth(eftAccountId, "eftAccountId",
+                "CUST-EFT-ACCOUNT-ID PIC X(10)", EFT_ACCOUNT_ID_WIDTH);
+        this.primaryCardHolderIndicator = requireWidth(primaryCardHolderIndicator, "primaryCardHolderIndicator",
+                "CUST-PRI-CARD-HOLDER-IND PIC X(01)", PRIMARY_CARD_HOLDER_INDICATOR_WIDTH);
+        this.ficoCreditScore = requireWidth(ficoCreditScore, "ficoCreditScore",
+                "CUST-FICO-CREDIT-SCORE PIC 9(03)", FICO_CREDIT_SCORE_WIDTH);
     }
 
     /**
@@ -802,22 +812,11 @@ public class Customer {
     /**
      * Sets the customer identifier — {@code CUST-ID PIC 9(09)}.
      *
-     * <p>
-     * Reassigning the primary key of an already-persisted entity is not a supported
-     * operation and the persistence provider will not translate it into an update of the
-     * key column. The setter exists so that the identifier can be supplied when building
-     * an instance outside the all-columns constructor, for example while mapping an
-     * inbound fixed-width record field by field.
-     * </p>
-     *
-     * @param customerId the nine-digit identifier; must not be null
+     * @param customerId the nine-digit identifier.
      * @throws IllegalArgumentException if {@code customerId} is null
      */
     public void setCustomerId(Long customerId) {
-        if (customerId == null) {
-            throw new IllegalArgumentException("customerId (CUST-ID) must not be null");
-        }
-        this.customerId = customerId;
+        this.customerId = requireCustomerId(customerId);
     }
 
     /**
@@ -830,33 +829,38 @@ public class Customer {
     }
 
     /**
-     * Sets the given name — {@code CUST-FIRST-NAME PIC X(25)}. Stored verbatim: no
-     * trimming, no padding and no case folding is applied.
+     * Sets the given name — {@code CUST-FIRST-NAME PIC X(25)}. Stored verbatim: no trimming, no padding and no
+     * case folding is applied.
      *
-     * @param firstName the given name
+     * @param firstName the given name; must not be null and must be at
+     *                  most twenty-five characters
+     * @throws IllegalArgumentException if {@code firstName} is null or longer than twenty-five
+     *                                  characters
      */
     public void setFirstName(String firstName) {
-        this.firstName = firstName;
+        this.firstName = requireWidth(firstName, "firstName", "CUST-FIRST-NAME PIC X(25)", FIRST_NAME_WIDTH);
     }
 
     /**
      * Returns the middle name — {@code CUST-MIDDLE-NAME PIC X(25)}.
      *
-     * @return the middle name, which is legitimately all spaces when the customer has
-     *         none
+     * @return the middle name, which is legitimately all spaces when the customer has none
      */
     public String getMiddleName() {
         return middleName;
     }
 
     /**
-     * Sets the middle name — {@code CUST-MIDDLE-NAME PIC X(25)}. Stored verbatim; a blank
-     * value is valid source data and is accepted unchanged.
+     * Sets the middle name — {@code CUST-MIDDLE-NAME PIC X(25)}. Stored verbatim; a blank value is valid source
+     * data and is accepted unchanged.
      *
-     * @param middleName the middle name
+     * @param middleName the middle name; must not be null and must be at
+     *                   most twenty-five characters
+     * @throws IllegalArgumentException if {@code middleName} is null or longer than twenty-five
+     *                                  characters
      */
     public void setMiddleName(String middleName) {
-        this.middleName = middleName;
+        this.middleName = requireWidth(middleName, "middleName", "CUST-MIDDLE-NAME PIC X(25)", MIDDLE_NAME_WIDTH);
     }
 
     /**
@@ -871,10 +875,13 @@ public class Customer {
     /**
      * Sets the family name — {@code CUST-LAST-NAME PIC X(25)}. Stored verbatim.
      *
-     * @param lastName the family name
+     * @param lastName the family name; must not be null and must be at
+     *                 most twenty-five characters
+     * @throws IllegalArgumentException if {@code lastName} is null or longer than twenty-five
+     *                                  characters
      */
     public void setLastName(String lastName) {
-        this.lastName = lastName;
+        this.lastName = requireWidth(lastName, "lastName", "CUST-LAST-NAME PIC X(25)", LAST_NAME_WIDTH);
     }
 
     /**
@@ -889,10 +896,14 @@ public class Customer {
     /**
      * Sets the first address line — {@code CUST-ADDR-LINE-1 PIC X(50)}. Stored verbatim.
      *
-     * @param addressLine1 the first address line
+     * @param addressLine1 the first address line; must not be null and must be at
+     *                     most fifty characters
+     * @throws IllegalArgumentException if {@code addressLine1} is null or longer than fifty
+     *                                  characters
      */
     public void setAddressLine1(String addressLine1) {
-        this.addressLine1 = addressLine1;
+        this.addressLine1 = requireWidth(addressLine1, "addressLine1",
+                "CUST-ADDR-LINE-1 PIC X(50)", ADDRESS_LINE_1_WIDTH);
     }
 
     /**
@@ -907,30 +918,37 @@ public class Customer {
     /**
      * Sets the second address line — {@code CUST-ADDR-LINE-2 PIC X(50)}. Stored verbatim.
      *
-     * @param addressLine2 the second address line
+     * @param addressLine2 the second address line; must not be null and must be at
+     *                     most fifty characters
+     * @throws IllegalArgumentException if {@code addressLine2} is null or longer than fifty
+     *                                  characters
      */
     public void setAddressLine2(String addressLine2) {
-        this.addressLine2 = addressLine2;
+        this.addressLine2 = requireWidth(addressLine2, "addressLine2",
+                "CUST-ADDR-LINE-2 PIC X(50)", ADDRESS_LINE_2_WIDTH);
     }
 
     /**
      * Returns the third address line — {@code CUST-ADDR-LINE-3 PIC X(50)}.
      *
-     * @return the third address line, which is legitimately all spaces for a two-line
-     *         address
+     * @return the third address line, which is legitimately all spaces for a two-line address
      */
     public String getAddressLine3() {
         return addressLine3;
     }
 
     /**
-     * Sets the third address line — {@code CUST-ADDR-LINE-3 PIC X(50)}. Stored verbatim;
-     * a blank value is valid source data.
+     * Sets the third address line — {@code CUST-ADDR-LINE-3 PIC X(50)}. Stored verbatim; a blank value is valid
+     * source data.
      *
-     * @param addressLine3 the third address line
+     * @param addressLine3 the third address line; must not be null and must be at
+     *                     most fifty characters
+     * @throws IllegalArgumentException if {@code addressLine3} is null or longer than fifty
+     *                                  characters
      */
     public void setAddressLine3(String addressLine3) {
-        this.addressLine3 = addressLine3;
+        this.addressLine3 = requireWidth(addressLine3, "addressLine3",
+                "CUST-ADDR-LINE-3 PIC X(50)", ADDRESS_LINE_3_WIDTH);
     }
 
     /**
@@ -943,13 +961,17 @@ public class Customer {
     }
 
     /**
-     * Sets the state or province code — {@code CUST-ADDR-STATE-CD PIC X(02)}. Stored
-     * verbatim; membership of the recognised state set is not checked here.
+     * Sets the state or province code — {@code CUST-ADDR-STATE-CD PIC X(02)}. Stored verbatim; membership of
+     * the recognised state set is not checked here.
      *
-     * @param addressStateCode the two-character state code
+     * @param addressStateCode the two-character state code; must not be null and must be at
+     *                         most two characters
+     * @throws IllegalArgumentException if {@code addressStateCode} is null or longer than two
+     *                                  characters
      */
     public void setAddressStateCode(String addressStateCode) {
-        this.addressStateCode = addressStateCode;
+        this.addressStateCode = requireWidth(addressStateCode, "addressStateCode",
+                "CUST-ADDR-STATE-CD PIC X(02)", ADDRESS_STATE_CODE_WIDTH);
     }
 
     /**
@@ -964,10 +986,14 @@ public class Customer {
     /**
      * Sets the country code — {@code CUST-ADDR-COUNTRY-CD PIC X(03)}. Stored verbatim.
      *
-     * @param addressCountryCode the three-character country code
+     * @param addressCountryCode the three-character country code; must not be null and must be at
+     *                           most three characters
+     * @throws IllegalArgumentException if {@code addressCountryCode} is null or longer than three
+     *                                  characters
      */
     public void setAddressCountryCode(String addressCountryCode) {
-        this.addressCountryCode = addressCountryCode;
+        this.addressCountryCode = requireWidth(addressCountryCode, "addressCountryCode",
+                "CUST-ADDR-COUNTRY-CD PIC X(03)", ADDRESS_COUNTRY_CODE_WIDTH);
     }
 
     /**
@@ -980,33 +1006,39 @@ public class Customer {
     }
 
     /**
-     * Sets the postal code — {@code CUST-ADDR-ZIP PIC X(10)}. Stored verbatim; the
-     * ten-character width accommodates the extended plus-four form.
+     * Sets the postal code — {@code CUST-ADDR-ZIP PIC X(10)}. Stored verbatim; the ten-character width
+     * accommodates the extended plus-four form.
      *
-     * @param addressZip the postal code
+     * @param addressZip the postal code; must not be null and must be at
+     *                   most ten characters
+     * @throws IllegalArgumentException if {@code addressZip} is null or longer than ten
+     *                                  characters
      */
     public void setAddressZip(String addressZip) {
-        this.addressZip = addressZip;
+        this.addressZip = requireWidth(addressZip, "addressZip", "CUST-ADDR-ZIP PIC X(10)", ADDRESS_ZIP_WIDTH);
     }
 
     /**
      * Returns the primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)}.
      *
-     * @return the formatted telephone number as stored, for example
-     *         {@code (908)119-8310} with trailing spaces
+     * @return the formatted telephone number as stored, for example {@code (908)119-8310} with trailing spaces
      */
     public String getPhoneNumber1() {
         return phoneNumber1;
     }
 
     /**
-     * Sets the primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)}. Stored
-     * verbatim, punctuation and padding included; no format check is applied here.
+     * Sets the primary telephone number — {@code CUST-PHONE-NUM-1 PIC X(15)}. Stored verbatim, punctuation and
+     * padding included; no format check is applied here.
      *
-     * @param phoneNumber1 the formatted telephone number
+     * @param phoneNumber1 the formatted telephone number; must not be null and must be at
+     *                     most fifteen characters
+     * @throws IllegalArgumentException if {@code phoneNumber1} is null or longer than fifteen
+     *                                  characters
      */
     public void setPhoneNumber1(String phoneNumber1) {
-        this.phoneNumber1 = phoneNumber1;
+        this.phoneNumber1 = requireWidth(phoneNumber1, "phoneNumber1",
+                "CUST-PHONE-NUM-1 PIC X(15)", PHONE_NUMBER_1_WIDTH);
     }
 
     /**
@@ -1019,23 +1051,21 @@ public class Customer {
     }
 
     /**
-     * Sets the secondary telephone number — {@code CUST-PHONE-NUM-2 PIC X(15)}. Stored
-     * verbatim; no format check is applied here.
+     * Sets the secondary telephone number — {@code CUST-PHONE-NUM-2 PIC X(15)}. Stored verbatim; no format
+     * check is applied here.
      *
-     * @param phoneNumber2 the formatted telephone number
+     * @param phoneNumber2 the formatted telephone number; must not be null and must be at
+     *                     most fifteen characters
+     * @throws IllegalArgumentException if {@code phoneNumber2} is null or longer than fifteen
+     *                                  characters
      */
     public void setPhoneNumber2(String phoneNumber2) {
-        this.phoneNumber2 = phoneNumber2;
+        this.phoneNumber2 = requireWidth(phoneNumber2, "phoneNumber2",
+                "CUST-PHONE-NUM-2 PIC X(15)", PHONE_NUMBER_2_WIDTH);
     }
 
     /**
      * Returns the social security number — {@code CUST-SSN PIC 9(09)}.
-     *
-     * <p>
-     * Text rather than a number so that significant leading zeros survive: 6 of the 50
-     * fixture rows begin with {@code 0}. Callers must not convert the result to a numeric
-     * type, and must not place it in a log message; the class documentation explains why.
-     * </p>
      *
      * @return the nine-character social security number, leading zeros intact
      */
@@ -1044,13 +1074,16 @@ public class Customer {
     }
 
     /**
-     * Sets the social security number — {@code CUST-SSN PIC 9(09)}. Stored verbatim as
-     * nine characters; do not strip leading zeros and do not pass a numeric conversion.
+     * Sets the social security number — {@code CUST-SSN PIC 9(09)}. Stored verbatim as nine characters; do not
+     * strip leading zeros and do not pass a numeric conversion.
      *
-     * @param ssn the nine-character social security number
+     * @param ssn the nine-character social security number; must not be null and must be at
+     *            most nine characters
+     * @throws IllegalArgumentException if {@code ssn} is null or longer than nine
+     *                                  characters
      */
     public void setSsn(String ssn) {
-        this.ssn = ssn;
+        this.ssn = requireWidth(ssn, "ssn", "CUST-SSN PIC 9(09)", SSN_WIDTH);
     }
 
     /**
@@ -1063,24 +1096,21 @@ public class Customer {
     }
 
     /**
-     * Sets the government-issued identifier — {@code CUST-GOVT-ISSUED-ID PIC X(20)}.
-     * Stored verbatim; no case folding is applied here.
+     * Sets the government-issued identifier — {@code CUST-GOVT-ISSUED-ID PIC X(20)}. Stored verbatim; no case
+     * folding is applied here.
      *
-     * @param governmentIssuedId the identifier
+     * @param governmentIssuedId the identifier; must not be null and must be at
+     *                           most twenty characters
+     * @throws IllegalArgumentException if {@code governmentIssuedId} is null or longer than twenty
+     *                                  characters
      */
     public void setGovernmentIssuedId(String governmentIssuedId) {
-        this.governmentIssuedId = governmentIssuedId;
+        this.governmentIssuedId = requireWidth(governmentIssuedId, "governmentIssuedId",
+                "CUST-GOVT-ISSUED-ID PIC X(20)", GOVERNMENT_ISSUED_ID_WIDTH);
     }
 
     /**
      * Returns the date of birth — {@code CUST-DOB-YYYY-MM-DD PIC X(10)}.
-     *
-     * <p>
-     * Ten characters in dash-separated {@code yyyy-MM-dd} form, for example
-     * {@code 1961-06-08}. Note that the account-update snapshot uses the compact
-     * eight-character form, so the two must be compared component-wise rather than
-     * whole; the field's own documentation gives the offsets and the source citation.
-     * </p>
      *
      * @return the ten-character dash-separated date of birth
      */
@@ -1089,20 +1119,23 @@ public class Customer {
     }
 
     /**
-     * Sets the date of birth — {@code CUST-DOB-YYYY-MM-DD PIC X(10)}. Stored verbatim in
-     * the ten-character dash-separated form; the separators must not be stripped and the
-     * value must not be reformatted to the eight-character snapshot form. Calendar
-     * validity is the date validation service's responsibility, not this setter's.
+     * Sets the date of birth — {@code CUST-DOB-YYYY-MM-DD PIC X(10)}. Stored verbatim in the ten-character
+     * dash-separated form; the separators must not be stripped and the value must not be reformatted to the
+     * eight-character snapshot form. Calendar validity is the date validation service's responsibility, not
+     * this setter's.
      *
-     * @param dateOfBirth the ten-character dash-separated date of birth
+     * @param dateOfBirth the ten-character dash-separated date of birth; must not be null and must be at
+     *                    most ten characters
+     * @throws IllegalArgumentException if {@code dateOfBirth} is null or longer than ten
+     *                                  characters
      */
     public void setDateOfBirth(String dateOfBirth) {
-        this.dateOfBirth = dateOfBirth;
+        this.dateOfBirth = requireWidth(dateOfBirth, "dateOfBirth",
+                "CUST-DOB-YYYY-MM-DD PIC X(10)", DATE_OF_BIRTH_WIDTH);
     }
 
     /**
-     * Returns the electronic-funds-transfer account identifier —
-     * {@code CUST-EFT-ACCOUNT-ID PIC X(10)}.
+     * Returns the electronic-funds-transfer account identifier — {@code CUST-EFT-ACCOUNT-ID PIC X(10)}.
      *
      * @return the identifier as stored, zero-padded to 10 characters in the fixture data
      */
@@ -1111,47 +1144,45 @@ public class Customer {
     }
 
     /**
-     * Sets the electronic-funds-transfer account identifier —
-     * {@code CUST-EFT-ACCOUNT-ID PIC X(10)}. Stored verbatim; leading zeros are
-     * significant.
+     * Sets the electronic-funds-transfer account identifier — {@code CUST-EFT-ACCOUNT-ID PIC X(10)}. Stored
+     * verbatim; leading zeros are significant.
      *
-     * @param eftAccountId the identifier
+     * @param eftAccountId the identifier; must not be null and must be at
+     *                     most ten characters
+     * @throws IllegalArgumentException if {@code eftAccountId} is null or longer than ten
+     *                                  characters
      */
     public void setEftAccountId(String eftAccountId) {
-        this.eftAccountId = eftAccountId;
+        this.eftAccountId = requireWidth(eftAccountId, "eftAccountId",
+                "CUST-EFT-ACCOUNT-ID PIC X(10)", EFT_ACCOUNT_ID_WIDTH);
     }
 
     /**
-     * Returns the primary-card-holder indicator —
-     * {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}.
+     * Returns the primary-card-holder indicator — {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}.
      *
-     * @return the single stored character, {@code Y} in the first fixture row
+     * @return the single stored character, re-emitted verbatim by the fixed-width writers
      */
     public String getPrimaryCardHolderIndicator() {
         return primaryCardHolderIndicator;
     }
 
     /**
-     * Sets the primary-card-holder indicator —
-     * {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}. Stored verbatim as a single character
-     * and not coerced to a boolean, so that a value other than {@code Y} or {@code N} is
+     * Sets the primary-card-holder indicator — {@code CUST-PRI-CARD-HOLDER-IND PIC X(01)}. Stored verbatim as a
+     * single character and not coerced to a boolean, so that a value other than {@code Y} or {@code N} is
      * preserved for byte-exact re-emission.
      *
-     * @param primaryCardHolderIndicator the single-character indicator
+     * @param primaryCardHolderIndicator the single-character indicator; must not be null and must be at
+     *                                   most one characters
+     * @throws IllegalArgumentException if {@code primaryCardHolderIndicator} is null or longer than one
+     *                                  characters
      */
     public void setPrimaryCardHolderIndicator(String primaryCardHolderIndicator) {
-        this.primaryCardHolderIndicator = primaryCardHolderIndicator;
+        this.primaryCardHolderIndicator = requireWidth(primaryCardHolderIndicator, "primaryCardHolderIndicator",
+                "CUST-PRI-CARD-HOLDER-IND PIC X(01)", PRIMARY_CARD_HOLDER_INDICATOR_WIDTH);
     }
 
     /**
      * Returns the FICO credit score — {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}.
-     *
-     * <p>
-     * Text rather than a number so that significant leading zeros survive: 7 of the 50
-     * fixture rows begin with {@code 0}. Values outside any plausible credit-score band,
-     * such as the fixture's {@code 001}, are returned unchanged because parity is the
-     * contract.
-     * </p>
      *
      * @return the three-character credit score, leading zeros intact
      */
@@ -1160,13 +1191,17 @@ public class Customer {
     }
 
     /**
-     * Sets the FICO credit score — {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}. Stored
-     * verbatim as three characters, with no range check and no numeric conversion.
+     * Sets the FICO credit score — {@code CUST-FICO-CREDIT-SCORE PIC 9(03)}. Stored verbatim as three
+     * characters, with no range check and no numeric conversion.
      *
-     * @param ficoCreditScore the three-character credit score
+     * @param ficoCreditScore the three-character credit score; must not be null and must be at
+     *                        most three characters
+     * @throws IllegalArgumentException if {@code ficoCreditScore} is null or longer than three
+     *                                  characters
      */
     public void setFicoCreditScore(String ficoCreditScore) {
-        this.ficoCreditScore = ficoCreditScore;
+        this.ficoCreditScore = requireWidth(ficoCreditScore, "ficoCreditScore",
+                "CUST-FICO-CREDIT-SCORE PIC 9(03)", FICO_CREDIT_SCORE_WIDTH);
     }
 
     /**
@@ -1181,14 +1216,6 @@ public class Customer {
     /**
      * Sets the optimistic-locking version counter.
      *
-     * <p>
-     * Normally left to the persistence provider, which assigns the initial value on
-     * persist and increments it on each update. Set it explicitly only when
-     * reconstituting a detached instance whose version is genuinely known — for example
-     * when rebuilding an entity from a request payload that carried it. Fabricating a
-     * version defeats the concurrency guard.
-     * </p>
-     *
      * @param version the version counter
      */
     public void setVersion(Long version) {
@@ -1196,35 +1223,11 @@ public class Customer {
     }
 
     /**
-     * Compares two customers by identifier alone — {@code CUST-ID}, the nine-byte VSAM
-     * key reported at {@code app/catlg/LISTCAT.txt:L632} and the table's primary key.
-     *
-     * <p>
-     * Identity rather than value equality is the right contract here, and the choice is
-     * deliberate on three counts. The identifier is a natural key taken from the source
-     * record and assigned before the entity is persisted, so it never changes and equality
-     * stays consistent across the transient, managed, detached and removed states. The
-     * eighteen data fields are all mutable, so folding them in would let an entity's
-     * equality change while it sits in a hash-based collection. And the source itself
-     * treats the key as identity: its reads are keyed lookups on {@code CUST-ID}.
-     * </p>
-     *
-     * <p>
-     * Two instances that both have a null identifier are equal only if they are the same
-     * object. Without that guard every unsaved instance would collide with every other,
-     * which would quietly corrupt any set or map they were placed in before persisting.
-     * </p>
-     *
-     * <p>
-     * Pattern matching is used in preference to a {@code getClass()} comparison so that a
-     * lazily-initialised provider proxy, which is a generated subclass, still compares
-     * equal to the instance it stands for. No case folding is applied — see the class
-     * documentation for why that asymmetry belongs to the service layer.
-     * </p>
+     * Compares two customers by identifier alone — {@code CUST-ID}, the nine-byte VSAM key reported at
+     * {@code app/catlg/LISTCAT.txt:L632} and the table's primary key.
      *
      * @param other the object to compare with, possibly null
-     * @return true if {@code other} is a customer with the same non-null identifier, or
-     *         is this very object
+     * @return true if {@code other} is a customer with the same non-null identifier, or is this very object
      */
     @Override
     public boolean equals(Object other) {
@@ -1238,17 +1241,7 @@ public class Customer {
     }
 
     /**
-     * Returns a hash code derived from the identifier alone, consistent with
-     * {@link #equals(Object)}.
-     *
-     * <p>
-     * Safe to cache in a hash-based collection because the identifier is a natural key
-     * assigned before the entity is persisted and never changed afterwards, so the hash
-     * cannot shift underneath the collection. A transient instance with a null identifier
-     * hashes to zero, which is correct but means such instances all land in one bucket —
-     * an accepted and negligible cost, since entities are keyed long before they are
-     * collected in bulk.
-     * </p>
+     * Returns a hash code derived from the identifier alone, consistent with {@link #equals(Object)}.
      *
      * @return the identifier's hash code, or zero when the identifier is null
      */
@@ -1258,51 +1251,97 @@ public class Customer {
     }
 
     /**
-     * Returns a diagnostic string containing <strong>only</strong> the customer
-     * identifier and the optimistic-locking version.
+     * Returns a diagnostic string containing <strong>only</strong> the customer identifier and the
+     * optimistic-locking version.
      *
-     * <p>
-     * <strong>This restriction is a security control, not a formatting preference, and it
-     * must not be widened.</strong> Thirteen of the eighteen mapped fields are personal
-     * data: {@code firstName}, {@code middleName}, {@code lastName}, {@code addressLine1},
-     * {@code addressLine2}, {@code addressLine3}, {@code addressZip},
-     * {@code phoneNumber1}, {@code phoneNumber2}, {@code ssn},
-     * {@code governmentIssuedId}, {@code dateOfBirth} and {@code eftAccountId}. None of
-     * them appears below, and none of them may be added.
-     * </p>
-     *
-     * <p>
-     * The reason is that {@code toString} is invoked implicitly and in places a developer
-     * is not thinking about it — string concatenation, collection and map printing, most
-     * logging frameworks' argument rendering, exception messages built from an entity, and
-     * debugger and profiler output. A permissive implementation therefore does not leak
-     * occasionally; it leaks the entire customer master file into the log stream the first
-     * time anything prints an entity. The logging configuration masks social security
-     * numbers, credentials and hashes, but that is the backstop. Not emitting the data is
-     * the primary defence, and it is the only one that also covers the address, the
-     * telephone numbers, the date of birth and the funds-transfer identifier.
-     * </p>
-     *
-     * <p>
-     * For the same reason this class offers no {@code toDebugString}, no
-     * {@code toFullString} and no verbose-mode flag. An escape hatch would be used, and
-     * would reintroduce exactly the exposure this method exists to prevent. Code that
-     * genuinely needs a field calls its getter, at which point the decision to disclose is
-     * explicit, local and reviewable.
-     * </p>
-     *
-     * <p>
-     * The identifier and the version are safe to disclose: the identifier is a
-     * non-sensitive surrogate that appears in the request path already, and the version is
-     * an internal counter. Together they are what a concurrency or persistence
-     * investigation actually needs.
-     * </p>
-     *
-     * @return a string of the form {@code Customer[customerId=1, version=0]}, carrying no
-     *         personal data
+     * @return a string of the form {@code Customer[customerId=1, version=0]}, carrying no personal data
      */
     @Override
     public String toString() {
         return "Customer[customerId=" + customerId + ", version=" + version + "]";
+    }
+
+    /**
+     * Validates a candidate character value against the width of the COBOL field it comes
+     * from and returns it unchanged.
+     *
+     * <p>
+     * Rejects {@code null}, because every character column of this table is
+     * {@code NOT NULL} and a {@code PIC X(n)} field always holds its declared width, and
+     * rejects any value longer than the picture clause declares, because a 500-byte record
+     * cannot contain one and the {@code CHAR(n)} column would blank-pad or refuse it while
+     * naming only a column. Everything the picture clause admits is accepted, blank values
+     * included: {@code CUST-MIDDLE-NAME} and {@code CUST-ADDR-LINE-3} are legitimately all
+     * spaces in {@code app/data/ASCII/custdata.txt}. Nothing is trimmed, padded or case
+     * folded, because the fixed-width writers must be able to re-emit the original image
+     * and the change-detection comparison depends on the stored representation.
+     * </p>
+     *
+     * <p>
+     * <strong>The failure message reports the received length and never the value.</strong>
+     * This record carries a social security number, a government-issued identifier, a date
+     * of birth, two telephone numbers and a full postal address, every one of which
+     * {@link #toString()} already excludes; a validation message is exactly the kind of
+     * string that reaches a log, so it must not reintroduce what {@code toString} was
+     * careful to leave out.
+     * </p>
+     *
+     * <p>
+     * Declared {@code private static} so that the constructor can call it without invoking
+     * an overridable method, which would publish a partially initialised instance. The JPA
+     * specification forbids a final entity, so the hazard is real and
+     * {@code -Xlint:all -Werror} reports it as {@code this-escape}.
+     * </p>
+     *
+     * @param value      the candidate value, possibly null
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is null or longer than
+     *                                  {@code width}
+     */
+    private static String requireWidth(String value, String property, String cobolField, int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table customer");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must be at most "
+                    + width + " characters but was " + value.length());
+        }
+        return value;
+    }
+
+    /**
+     * Validates the primary key against {@code CUST-ID PIC 9(09)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L5} and returns it unchanged.
+     *
+     * <p>
+     * Rejects {@code null}, because a row without its primary key cannot be persisted and
+     * failing here names the offending property instead of surfacing an opaque constraint
+     * violation from the driver much later, and rejects any value outside 0 through
+     * 999999999 inclusive, which is what nine unsigned display digits can hold and what
+     * the nine-byte VSAM key allocates. Zero is accepted and is not a sentinel. Declared
+     * {@code private static} for the reason given on
+     * {@link #requireWidth(String, String, String, int)}.
+     * </p>
+     *
+     * @param value the candidate customer identifier, possibly null
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is null, negative, or greater than
+     *                                  999999999
+     */
+    private static Long requireCustomerId(Long value) {
+        if (value == null) {
+            throw new IllegalArgumentException("customerId (CUST-ID PIC 9(09)) must not be null: it is "
+                    + "the primary key of table customer, derived from app/cpy/CVCUS01Y.cpy:L5");
+        }
+        if (value.longValue() < MIN_CUSTOMER_ID || value.longValue() > MAX_CUSTOMER_ID) {
+            throw new IllegalArgumentException("customerId (CUST-ID PIC 9(09)) must be between "
+                    + MIN_CUSTOMER_ID + " and " + MAX_CUSTOMER_ID + " inclusive but was " + value);
+        }
+        return value;
     }
 }

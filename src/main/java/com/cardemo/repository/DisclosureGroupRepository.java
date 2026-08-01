@@ -109,7 +109,7 @@ import org.springframework.stereotype.Repository;
  * {@code catCd} from {@code app/cpy/CVTRA01Y.cpy} and {@code TransactionCategoryId} uses
  * {@code tranTypeCd} / {@code tranCatCd} from {@code app/cpy/CVTRA04Y.cpy}. Renaming any of them to match
  * the others, or extracting a shared base class to remove the apparent duplication, would sever the
- * one-for-one copybook correspondence that {@code TRACEABILITY_MATRIX.md} is verified against. Every JPQL
+ * one-for-one copybook correspondence that the planned {@code TRACEABILITY_MATRIX.md} is verified against. Every JPQL
  * path in this interface therefore spells the names exactly as {@code DisclosureGroupId} declares them; a
  * mismatch is a startup-time query-derivation failure, not a compile error.
  *
@@ -218,7 +218,7 @@ import org.springframework.stereotype.Repository;
  * trailing blanks inside that query literal are significant and must not be tidied away.</b></p>
  * <p><b>Why {@code CHAR(10)} must not be relaxed, measured rather than asserted.</b> These combinations
  * were exercised directly against PostgreSQL 16.10, comparing a stored group id against the two candidate
- * literals:</p>
+ * literals. <b>Re-run 1 August 2026 against PostgreSQL 16.10 and reproduced exactly, every row:</b></p>
  * <pre>
  * column type    stored image      probe = 'DEFAULT   '   probe = 'DEFAULT'
  * CHAR(10)       padded            match                  match
@@ -308,7 +308,8 @@ import org.springframework.stereotype.Repository;
  * justification. <b>Severity: Low</b> as an observation, since it shapes the authorisation model and the
  * integration-test surface rather than describing a defect.</p>
  * <p>The cluster has no alternate index either. The catalogue's three alternate indexes belong to
- * {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, and {@code V2__create_indexes.sql} creates
+ * {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, and {@code V2__create_indexes.sql} (planned; absent at
+ * this commit) is to create
  * correspondingly exactly three non-unique indexes - {@code card.card_acct_id},
  * {@code card_cross_reference.xref_acct_id} and {@code "transaction".tran_proc_ts} - <b>none of them on
  * {@code disclosure_group}</b>. No secondary-key finder is declared here for that reason: adding one
@@ -415,16 +416,18 @@ import org.springframework.stereotype.Repository;
  *       {@code spring.batch.jdbc.initialize-schema}. They belong neither in {@code V1__create_schema.sql}
  *       nor in a fourth migration.</li>
  *   <li><b>Connection-pool tuning is explicitly out of scope</b> and is recorded as residual risk in
- *       {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Rule 1 Clause A asks that tradeoffs
+ *       the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Rule 1 Clause A asks that tradeoffs
  *       be justified <i>only when needed</i>: this table is 51 rows and read with an indexed keyed lookup,
  *       so pool sizing has no measurable bearing on it. The honest discharge is to state the decision, not
  *       to tune speculatively.</li>
  * </ul>
  *
  * <h2>How to build, run and test</h2>
- * <p>{@code mvn -B clean compile} compiles this interface under {@code --release 25} with
- * {@code -Xlint:all} and {@code -Werror}, so any warning - an unused import above all - is a build
- * failure. {@code mvn -B clean test} runs the unit tier; {@code mvn -B clean verify} additionally enforces
+ * <p>{@code ./mvnw -B clean compile} compiles this interface under {@code --release 25} with
+ * {@code -Xlint:all} and {@code -Werror}, so any warning in a category {@code javac} 25 publishes -
+ * {@code deprecation} and {@code rawtypes} above all - is a build failure. An unused import is not such a
+ * category and is caught by review only. {@code ./mvnw -B clean test} runs the unit tier;
+ * {@code ./mvnw -B clean verify} additionally enforces
  * the JaCoCo line-coverage floor. Verified against OpenJDK 25.0.3 and Apache Maven 3.9.11: the module
  * compiles with no warning attributable to this source.</p>
  * <p>Behavioural coverage belongs in {@code src/test/java/com/cardemo/integration/repository} against a
@@ -444,16 +447,30 @@ import org.springframework.stereotype.Repository;
  * <p>Case 2 must additionally assert that the fallback row is matched when the account group id is
  * supplied space-padded and when it is supplied bare, since {@code CHAR} semantics are what make both
  * work and a change of column type would silently break one of them.</p>
- * <p><b>Verification actually performed on this interface.</b> All four cases above, plus the padded and
- * bare probes, plus the structural contract, were executed against a live PostgreSQL 16.10 instance with
- * {@code hibernate.hbm2ddl.auto=validate} and with the rate table seeded from all 51 fixture rows using
- * the overpunch decoding described below. Recorded for reproducibility:
- * {@code mvn -B -o clean test} on 2026-08-01, OpenJDK 25.0.3 and Apache Maven 3.9.11, PostgreSQL 16.10,
- * Hibernate 6.6.x under Spring Boot 3.5.11 - <b>11 tests, 0 failures, 0 errors, exit 0</b>. The
- * schema-validation pass is itself the proof that the column contract restated below is the one the
- * mappings expect, {@code tran_cat_cd INTEGER} included; and instantiating the repository proxy is the
- * proof that this file's JPQL parses and that every {@code d.id.*} path resolves against the embedded
- * identifier.</p>
+ * <p><b>Not available, measured 1 August 2026 - none of the verification above has been executed.</b>
+ * No test exercises {@code DisclosureGroup} or this interface. The only occurrence of the name anywhere
+ * under {@code src/test} is a string literal in an entity-name census at
+ * {@code UserSecurityTest.java:L607}, which asserts that the class is loadable and nothing about its
+ * behaviour. {@code src/test/java/com/cardemo} contains only
+ * {@code unit/model}; there is no repository, integration or end-to-end tier, and no
+ * {@code application*.yml} exists, so {@code hibernate.hbm2ddl.auto=validate} cannot be configured and no
+ * application context starts. {@code ./mvnw -B -o clean test} runs 1,651 unit tests over model types and
+ * reaches no database. The four query cases above are therefore the coverage this interface
+ * <em>owes</em>, not coverage it has.</p>
+ * <p><b>What <em>was</em> verified on 1 August 2026, and how.</b> Two of the three claims above were
+ * substantiated by execution rather than left as assertions. First, the column contract: applying
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} into a throwaway schema on a PostgreSQL
+ * 16.10 instance produced 11 tables, 10 foreign keys and 5 check constraints, and {@code disclosure_group}
+ * at {@code :L1042-L1052} declares {@code acct_group_id CHAR(10)}, {@code tran_type_cd CHAR(2)},
+ * {@code tran_cat_cd INTEGER} and {@code dis_int_rate NUMERIC(6,2)}; bootstrapping Hibernate 6.6.42.Final
+ * over all eleven annotated entities against that schema with {@code hibernate.hbm2ddl.auto=validate}
+ * reported no mismatch, which is the proof that Hibernate accepts the mapping. Second, the padded and
+ * bare probes: the three-row matrix above was re-run as plain SQL on the same instance and reproduced
+ * exactly. Neither check needs a Spring context - only Hibernate's {@code MetadataSources} bootstrap API
+ * and a JDBC connection.</p>
+ * <p><b>Still owed:</b> the four query cases, because they exercise the two JPQL methods rather than the
+ * schema. What is needed: a {@code DisclosureGroupRepository} test bound to a Testcontainers PostgreSQL 16
+ * instance with the 51 fixture rows loaded using the position-aware overpunch decoding described below.</p>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
@@ -499,10 +516,15 @@ import org.springframework.stereotype.Repository;
  * <p>Rule 1 Clause F requires that missing information be declared instead of invented. Two gaps apply to
  * this interface.</p>
  *
- * <p><b>1. The three Flyway migrations are "Not available" at the time this interface was authored.</b>
- * {@code src/main/resources/db/migration/} does not exist, so {@code V1__create_schema.sql},
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} could not be reconciled against.
- * <i>What is needed:</i> exactly those three files under that directory. Because
+ * <p><b>1. {@code V1__create_schema.sql} exists; {@code V2} and {@code V3} are planned and absent.</b>
+ * An earlier revision recorded all three Flyway migrations as "Not available"; that is now accurate only
+ * for two of them. {@code src/main/resources/db/migration/V1__create_schema.sql} exists and declares the
+ * {@code disclosure_group} table, and the contract below has been reconciled against it — mechanically, by
+ * {@code SchemaStructureTest}, which parses the DDL and cross-checks it against
+ * {@code app/cpy/CVTRA02Y.cpy}. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} have never
+ * existed in this repository; {@code V1} declares no {@code CREATE INDEX} and loads no rows, so any
+ * reference to a secondary index or to seeded disclosure-group data describes <b>planned</b> work.
+ * <i>What is needed to close the remainder:</i> exactly those two files. Because
  * {@code spring.jpa.hibernate.ddl-auto: validate} is mandated in every profile, the contract below is
  * <b>normative</b> and a mismatch fails context startup rather than degrading gracefully:</p>
  * <pre>
@@ -555,78 +577,17 @@ public interface DisclosureGroupRepository extends JpaRepository<DisclosureGroup
      * Stage two of the rate resolution: re-reads the rate table under the {@code DEFAULT} account group,
      * keeping the transaction type and category codes of the failed primary lookup unchanged.
      *
-     * <p><b>Purpose.</b> Translates {@code 1200-A-GET-DEFAULT-INT-RATE},
-     * {@code app/cbl/CBACT04C.cbl:L443-L460}. The caller invokes this method - and only this method - when
-     * the primary lookup {@code findById(DisclosureGroupId)} came back empty, mirroring
-     * {@code app/cbl/CBACT04C.cbl:L436-L439}, where the record-not-found status is the sole trigger for
-     * substituting the group id at {@code :L437} and performing the second read.
-     *
-     * <p><b>Inputs.</b> {@code tranTypeCd} is {@code DIS-TRAN-TYPE-CD}, {@code PIC X(02)}
-     * ({@code app/cpy/CVTRA02Y.cpy:L7}), and {@code tranCatCd} is {@code DIS-TRAN-CAT-CD},
-     * {@code PIC 9(04)} ({@code :L8}). <b>Both must be the very values used in the primary lookup</b>,
-     * because {@code :L437} replaces the group id alone and leaves the two components assigned at
-     * {@code :L211-L212} untouched. Passing anything else resolves a different row and is a correctness
-     * defect. Neither argument is permitted to be {@code null}: a null would make the comparison
-     * unsatisfiable and turn a resolvable rate into a fatal miss, so the caller validates both before
-     * calling. The account group id is deliberately <b>not</b> a parameter - it is fixed by the query, so
-     * the method cannot be repurposed into a general three-part lookup that would duplicate
-     * {@code findById(DisclosureGroupId)}.
-     *
-     * <p><b>The fixed group id, and why its trailing blanks matter.</b> The query matches the
-     * space-padded ten-character image that {@code :L437} actually produces when it moves a
-     * seven-character literal into a {@code PIC X(10)} field - byte-identical to what fixture row
-     * {@code app/data/ASCII/discgrp.txt:L18} stores. The literal is embedded in the query text rather than
-     * bound as a parameter precisely so that no caller can vary it, and it is declared nowhere else in
-     * this file: there is no field and no static member holding it. Under the normative
-     * {@code CHAR(10)} column this padded form and the bare seven-character form select the same row,
-     * since SQL {@code CHAR} comparison disregards trailing blanks. <b>The three blanks inside the
-     * literal are significant and must not be trimmed.</b>
-     *
-     * <p><b>Output.</b> An {@link Optional} holding the fallback group's rate row for the given type and
-     * category, or {@link Optional#empty()} when no such row exists. The primary key is unique
-     * ({@code app/catlg/LISTCAT.txt:L898} declares the cluster {@code UNIQUE}) and all three key
-     * components are constrained by the query, so at most one row can ever match. The returned entity is
-     * fully initialised - it has no association of any kind - so the result is safe to read outside a
-     * transaction.
-     *
-     * <p><b>Side effects.</b> None. This is a single read of one row: no write, no flush, no lock, no
-     * state retained anywhere, and no logging of the arguments or of the result.
-     *
-     * <p><b>Failure mode - Blocker: an empty result here is FATAL.</b> {@code :L446} tests
-     * {@code IF DISCGRP-STATUS = '00'} and accepts that status alone, so the record-not-found status now
-     * falls to the else branch, which displays {@code 'ERROR READING DEFAULT DISCLOSURE GROUP'} at
-     * {@code :L455} and performs {@code 9999-ABEND-PROGRAM} at {@code :L458}. The caller must therefore
-     * raise {@code com.cardemo.exception.FatalProcessingException} carrying abend code <b>999</b> and
-     * return code <b>12</b>, and must fail the step. It must <b>not</b> substitute a zero rate, skip the
-     * record, log and continue: every one of those converts a hard stop into silently missing
-     * interest. This is the exact inverse of the primary lookup, whose empty result is benign, and the two
-     * contracts must not be conflated.
-     *
-     * <p><b>Failure mode - a present row carrying a zero rate is a hit, not a miss.</b>
-     * {@code app/cbl/CBACT04C.cbl:L214} suppresses the interest transaction when the rate is zero, so a
-     * zero-rate row legitimately yields no interest while still being a successful resolution. Seven of
-     * the seventeen seeded fallback rows are zero-rate, so this path is exercised by ordinary data rather
-     * than by a contrived case.
-     *
-     * <p><b>Failure mode - the row exists but nothing is returned.</b> Either the group id column was
-     * relaxed away from {@code CHAR(10)}, so trailing-blank-insensitive comparison no longer applies, the
-     * padded literal above was trimmed. Both are Blockers; see the troubleshooting list on this
-     * type.
-     *
-     * <p><b>Determinism and safety.</b> The query is a single static text block containing no
-     * concatenation and no interpolation; the two variable components are bound as named parameters and
-     * the third is a fixed literal, so no caller-supplied value ever reaches the statement as text. No
-     * native query, no dynamic criteria assembly. No ordering clause is declared, deliberately: the result
-     * is at most one row, so an ordering would be meaningless rather than merely redundant. Any future
-     * multi-row query added to this interface must carry an explicit ordering, per Rule 1 Clause A.
+     * <p>Translates {@code 1200-A-GET-DEFAULT-INT-RATE}, {@code app/cbl/CBACT04C.cbl:L443-L460}. The caller
+     * invokes this method - and only this method - when the primary lookup {@code findById(DisclosureGroupId)}
+     * came back empty, mirroring {@code app/cbl/CBACT04C.cbl:L436-L439}, where the record-not-found status is
+     * the sole trigger for substituting the group id at {@code :L437} and performing the second read.
      *
      * @param tranTypeCd the transaction type code from the failed primary lookup, {@code DIS-TRAN-TYPE-CD}
-     *                   {@code PIC X(02)}; must not be {@code null}
-     * @param tranCatCd  the transaction category code from the failed primary lookup,
-     *                   {@code DIS-TRAN-CAT-CD} {@code PIC 9(04)}, domain 0 to 9999; must not be
-     *                   {@code null}
-     * @return the fallback group's rate row for that type and category, {@link Optional#empty()} if
-     *         none exists - which the caller must escalate as fatal
+     * {@code PIC X(02)}.
+     * @param tranCatCd the transaction category code from the failed primary lookup, {@code DIS-TRAN-CAT-CD}
+     * {@code PIC 9(04)}, domain 0 to 9999.
+     * @return the fallback group's rate row for that type and category, {@link Optional#empty()} if none exists
+     * - which the caller must escalate as fatal
      */
     @Query("""
             select d

@@ -13,7 +13,7 @@
  *               plaintext the source held - and the single character
  *               user class that drives role based authorisation.
  * Source      : app/cpy/CSUSR01Y.cpy (80 B, key 8) @ 7756d89
- * Seed        : app/jcl/DUSRSECJ.jcl (inline IEBGENER data, 10 rows) @ 7756d89
+ * Source      : app/jcl/DUSRSECJ.jcl (inline IEBGENER data, 10 rows) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
@@ -32,9 +32,13 @@
  */
 package com.cardemo.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
 import com.cardemo.model.enums.UserType;
 
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 import jakarta.persistence.AttributeConverter;
 import jakarta.persistence.Column;
@@ -42,6 +46,8 @@ import jakarta.persistence.Convert;
 import jakarta.persistence.Converter;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -51,13 +57,17 @@ import org.hibernate.type.SqlTypes;
  * Application user, credential and role: the relational replacement for the VSAM KSDS cluster
  * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS}.
  *
- * <h2>What it does</h2>
+ * <p>The five fields of {@code app/cpy/CSUSR01Y.cpy} populate 57 bytes of the 80-byte record, the remaining 23
+ * being trailing filler, and the key is the eight-byte user identifier. The cluster is defined in job control
+ * rather than catalogued — {@code app/jcl/DUSRSECJ.jcl:L65-L66} declares {@code KEYS(8,0) RECORDSIZE(80,80)} —
+ * and it has an entry in {@code app/csd/CARDDEMO.CSD}, so it is online data that four screen programs
+ * maintain, not batch-only reference data.
  *
- * <p>Each row carries one application user - an eight character identifier, a first and last name, the
- * credential, and the single character class that decides whether the user reaches the main menu or the
- * admin menu. The record layout is {@code app/cpy/CSUSR01Y.cpy}, whose group item at {@code :L17} is
- * {@code 01 SEC-USER-DATA} (the name is <em>SEC-USER-DATA</em>, not {@code SEC-USER-RECORD}) and whose
- * five elementary items and one named filler occupy {@code :L18} through {@code :L23}.
+ * <p>The credential column is the one place where the column width departs from the picture width: the source
+ * field is eight bytes of plaintext, the column holds a 60-character BCrypt hash, and the member is named for
+ * what it stores rather than for the COBOL field. The shared plaintext literal that the ten seed rows carry is
+ * referred to by locator only ({@code app/jcl/DUSRSECJ.jcl:L35-L44}) and is transcribed nowhere under
+ * {@code src/}.
  *
  * <p>This class is a pure data holder. It performs no I/O, holds no collaborator, emits no log line,
  * hashes nothing, verifies nothing, and reaches no framework beyond the persistence annotations below.
@@ -109,10 +119,12 @@ import org.hibernate.type.SqlTypes;
  *
  * <p>The geometry closes exactly: {@code 8 + 20 + 20 + 8 + 1 = 57} populated bytes, {@code + 23} bytes
  * of trailing filler {@code = 80} bytes, which is the catalogued record length. Row 1 of the seed proves
- * the same arithmetic byte for byte - {@code ADMIN001} in the eight key bytes, {@code MARGARET} blank
- * padded to twenty, {@code GOLD} blank padded to twenty, the eight byte credential field, then
- * {@code A} - which is the 57 populated bytes, the remaining 23 being the filler the fixed length record
- * carries to reach 80.
+ * the same arithmetic byte for byte. Illustrated with a <strong>synthetic</strong> stand-in rather than
+ * the seeded identity - eight key bytes such as {@code ADMNUSR1}, a given name blank padded to twenty
+ * such as {@code FNAME001}, a family name blank padded to twenty such as {@code LNAME001}, the eight
+ * byte credential field, then {@code A} - that is the 57 populated bytes, the remaining 23 being the
+ * filler the fixed length record carries to reach 80. The real row 1 values are not transcribed here;
+ * they are reachable by citation at {@code app/jcl/DUSRSECJ.jcl:L35}.
  *
  * <p>Field 4 is the single place where the column width deliberately departs from the PIC width. The
  * eight bytes still count towards the source record geometry above, because that arithmetic describes
@@ -164,12 +176,16 @@ import org.hibernate.type.SqlTypes;
  * {@code //SYSUT1   DD *}, the ten data rows occupy {@code :L35-L44}, and {@code :L45} terminates the
  * stream with {@code /*}. Any test or migration that needs the seed must read it from there.
  *
- * <p>The ten rows are five administrators - {@code ADMIN001} MARGARET GOLD, {@code ADMIN002} RUSSELL
- * RUSSELL, {@code ADMIN003} RAYMOND WHITMORE, {@code ADMIN004} EMMANUEL CASGRAIN and {@code ADMIN005}
- * GRANVILLE LACHAPELLE, all of type {@code A} - and five standard users - {@code USER0001} LAWRENCE
- * THOMAS, {@code USER0002} AJITH KUMAR, {@code USER0003} LAURITZ ALME, {@code USER0004} AVERARDO MAZZI
- * and {@code USER0005} LEE TING, all of type {@code U}. All ten identifiers are already upper case in
- * the source, which is worth knowing and is <em>not</em> a reason to normalise anything here.
+ * <p>The ten rows split <strong>five administrators of type {@code A} then five standard users of type
+ * {@code U}</strong>, in that order, each an eight character identifier followed by a given name and a
+ * family name. The identifiers and names themselves are <strong>not reproduced here</strong>: they are
+ * seeded identities, and the aggregate plus the layout is the evidence this file needs. Where an example
+ * identifier is required, this documentation uses the synthetic keys {@code ADMNUSR1} through
+ * {@code ADMNUSR5} and {@code STDUSR01} through {@code STDUSR05}, which match the eight character key
+ * width without standing for any real row. The actual values are reachable by citation at
+ * {@code app/jcl/DUSRSECJ.jcl:L35-L44}. One property of the real identifiers does matter and is recorded
+ * without disclosing them: all ten are already upper case in the source, which is worth knowing and is
+ * <em>not</em> a reason to normalise anything here.
  *
  * <p>Every one of the ten carries the same credential: a single shared literal plaintext value, recorded
  * at {@code app/jcl/DUSRSECJ.jcl:L35-L44}. That value is referred to by citation only and is
@@ -236,9 +252,23 @@ import org.hibernate.type.SqlTypes;
  * <p><b>Medium - fixed width text semantics: a blank but non null value must load.</b> Four columns are
  * fixed width {@code CHAR}, so values arrive blank padded to their declared widths and a value of
  * nothing but spaces is legitimate legacy data. Consequently there is no bean validation on any field:
- * no not-blank, not-empty, pattern or minimum size constraint appears anywhere in this class.
- * {@code nullable = false} is the only nullability assertion, and it belongs to the schema rather than
- * to a validation annotation. No accessor trims, folds case or normalises in any way; trimming is a
+ * no not-blank, not-empty, pattern or minimum size constraint annotation appears anywhere in this class,
+ * and the four non credential members are stored exactly as received, unfolded and untrimmed. What is
+ * asserted imperatively for them is only what the record layout itself fixes - that the value is present,
+ * and that a character value is no wider than its picture clause - which admits every blank padded value
+ * the source can produce. {@code nullable = false} on the column remains in place as the schema level
+ * backstop that also covers the provider's own reflective writes.
+ *
+ * <p>The credential is the one deliberate exception, and it is an exception of kind rather than of
+ * degree: it is the only member whose column is not a fixed width transcription of a source field, so
+ * there is no blank padded, short or plaintext value it could legitimately hold. Its invariant is
+ * enforced imperatively at every boundary that can set it - the all columns constructor, the setter, and
+ * a {@code PrePersist} and {@code PreUpdate} callback that also covers field access and provider
+ * materialisation - rather than by an annotation, because the constraint is a structural shape rather
+ * than a presence or size rule and because it must hold at the database boundary without a validation
+ * provider being present. See {@link #setPasswordHash(String)} for the rule and its evidence.
+ *
+ * <p>No accessor trims, folds case or normalises in any way; trimming is a
  * presentation concern that belongs to the DTO layer, and a getter that trimmed would hide the very
  * padding a fixed width defect shows up as. Note in particular that the sign-on program upper cases
  * <em>both</em> the identifier and the presented password before comparing them -
@@ -249,18 +279,21 @@ import org.hibernate.type.SqlTypes;
  *
  * <p><b>Low - no alternate index, and none is wanted.</b> {@code USRSEC} has no alternate index: the
  * catalogue's three alternate indexes belong to {@code CARDDATA}, {@code CARDXREF} and
- * {@code TRANSACT}. {@code V2__create_indexes.sql} therefore creates nothing for this table beyond its
+ * {@code TRANSACT}. {@code V2__create_indexes.sql} (planned; absent at this commit) is therefore to create nothing
+ * for this table beyond its
  * primary key. That is sufficient rather than merely economical - the user list screen
  * {@code app/cbl/COUSR00C.cbl} pages in primary key order at ten rows per page, which the primary key
  * index already serves, so a second index would be write amplification for no read benefit.
  *
  * <h2>Required schema, and what is Not available</h2>
  *
- * <p><b>Not available:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} did not exist
- * when this entity was authored, and neither did the directory that will hold it, so the schema could
- * not be read and this mapping could not be reconciled against it. The field contract above is
- * therefore the normative column contract, and the migration must converge on it rather than the
- * reverse. None of the four {@code application*.yml} profile files was available either, so the
+ * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
+ * <b>present</b> and declares {@code CREATE TABLE user_security} with 5
+ * columns whose names are identical, as a set, to the 5 {@code @Column(name = ...)} declarations above,
+ * verified by direct comparison, so the mapping is reconciled against real DDL rather than asserted in
+ * its absence. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not
+ * available</b>, which is why no seeded row can be cited from the migration here. None of the four
+ * {@code application*.yml} profile files is available either, so the
  * {@code spring.jpa.hibernate.ddl-auto: validate} setting cited throughout this documentation is the
  * mandated configuration rather than an observed one - and it is precisely why the contract below must
  * be met exactly: under {@code validate}, any divergence in column name, type, length or nullability
@@ -284,7 +317,8 @@ import org.hibernate.type.SqlTypes;
  *   <li>no index beyond the primary key;</li>
  *   <li>no foreign key in either direction: the source record has no relationship to any other
  *       cluster;</li>
- *   <li>seeded by {@code V3__seed_data.sql} with the ten users from
+ *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit, so no hash is stored yet) with the
+ *       ten users from
  *       {@code app/jcl/DUSRSECJ.jcl:L35-L44}, stored only as precomputed BCrypt strength 10 hashes. The
  *       shared plaintext literal must never be embedded in that migration or in any other file under
  *       {@code src/}. There is no {@code usrsec.txt} fixture to load; the seed source is inline JCL
@@ -312,9 +346,9 @@ import org.hibernate.type.SqlTypes;
  *
  * <p>Source the pinned toolchain first, then build from the repository root:
  * {@code source /etc/profile.d/10-carddemo-toolchain.sh} for Java 25 and Maven 3.9.11;
- * {@code mvn -B clean compile} to compile, which runs under {@code -Xlint:all -Werror} with
- * {@code failOnWarning} set, so any warning at all is a build failure; {@code mvn -B clean test} for
- * the unit suite; {@code mvn -B clean verify} for the full gate, which additionally enforces the 80
+ * {@code ./mvnw -B clean compile} to compile, which runs under {@code -Xlint:all -Werror} with
+ * {@code failOnWarning} set, so any warning at all is a build failure; {@code ./mvnw -B clean test} for
+ * the unit suite; {@code ./mvnw -B clean verify} for the full gate, which additionally enforces the 80
  * percent line coverage floor. The unit tests for this class belong in
  * {@code src/test/java/com/cardemo/unit/model} and should assert the 80 byte record arithmetic and the
  * key length of 8, that {@code sec_usr_pwd} is declared {@code VARCHAR(60)}, that no member holds a
@@ -362,13 +396,19 @@ import org.hibernate.type.SqlTypes;
  */
 @Entity
 @Table(name = "user_security")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class UserSecurity {
 
     /**
      * Width of the user identifier column: 8 characters, from {@code SEC-USR-ID PIC X(08)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L18}. This is also the cluster's key length, declared as
-     * {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65} and reported as {@code KEYLEN 8} at
-     * {@code app/catlg/LISTCAT.txt:L3883}.
+     * {@code app/cpy/CSUSR01Y.cpy:L18}. This is also the cluster's key length, declared as {@code KEYS(8,0)} at
+     * {@code app/jcl/DUSRSECJ.jcl:L65} and reported as {@code KEYLEN 8} at {@code app/catlg/LISTCAT.txt:L3883}.
      */
     private static final int USER_ID_WIDTH = 8;
 
@@ -386,19 +426,45 @@ public class UserSecurity {
 
     /**
      * Width of the credential column: 60 characters, which is the exact length of a BCrypt hash.
-     *
-     * <p>This is the one width that is not the PIC width of the field it replaces. The source field
-     * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21} is eight bytes because it held
-     * plaintext; the column is 60 characters because it holds a hash, and it is {@code VARCHAR} rather
-     * than {@code CHAR} so that no blank padding can corrupt one.
-     *
-     * <p>The constant is named for the hash algorithm rather than for the credential, deliberately: the
-     * upper case naming convention for constants would otherwise reproduce, as a substring of an
-     * identifier, the very literal that the third Blocker finding forbids appearing anywhere in this
-     * file. Keeping that literal out of the file entirely is what lets the prohibition be checked
-     * mechanically rather than by reading.
      */
     private static final int BCRYPT_HASH_WIDTH = 60;
+
+    /**
+     * The exact shape a stored credential must have: a BCrypt digest at strength 10, sixty characters
+     * long. This is the invariant the credential member enforces, and it is the reason no arbitrary
+     * string can reach {@code sec_usr_pwd}.
+     *
+     * <p>The three parts are each pinned by evidence rather than by convention:
+     *
+     * <ul>
+     *   <li><b>the version tag is one of {@code 2a}, {@code 2b} or {@code 2y}, and nothing else.</b>
+     *       That is exactly the set the verifier accepts, which is what makes the set correct rather
+     *       than merely conventional. {@code BCryptPasswordEncoder.BCryptVersion} of
+     *       {@code spring-security-crypto} 6.5.8 declares exactly three constants, for those three
+     *       tags, and {@code BCrypt.gensalt(String, int, SecureRandom)} rejects any other third
+     *       character with {@code IllegalArgumentException("Invalid prefix")}. The historical
+     *       {@code 2x} tag is therefore deliberately excluded: the encoder can neither produce nor
+     *       verify one, so storing it would store a credential that could never authenticate
+     *       anybody;</li>
+     *   <li><b>the cost factor is exactly {@code 10}.</b> The migration rule for this field pins
+     *       BCrypt strength 10, so a digest at any other cost is not the artefact this column holds,
+     *       even though the algorithm would happily verify it. Pinning the cost here is what makes the
+     *       security audit's every-password-hashed-at-the-pinned-strength assertion provable against
+     *       the ten seeded users rather than merely asserted;</li>
+     *   <li><b>the remaining 53 characters are BCrypt's radix-64 alphabet</b> - {@code .}, {@code /},
+     *       the two cases of the Latin alphabet and the ten digits - which is the 22 character salt
+     *       followed by the 31 character digest. Seven prefix characters plus 53 gives the 60 the
+     *       column is declared to hold.</li>
+     * </ul>
+     *
+     * <p>The pattern is expressed with a character class for the version tag rather than by spelling
+     * the three concrete prefixes out, so that no BCrypt prefix literal appears anywhere in this file
+     * in any of its versions - the prohibition recorded in the third Blocker finding above. It is
+     * compiled once into a constant rather than per call, because it is evaluated on every credential
+     * assignment and on every insert and update of this table.
+     */
+    private static final Pattern BCRYPT_STRENGTH_10_SHAPE =
+            Pattern.compile("^\\$2[aby]\\$10\\$[./A-Za-z0-9]{53}$");
 
     /**
      * Width of the user type column: 1 character, from {@code SEC-USR-TYPE PIC X(01)} at
@@ -407,19 +473,7 @@ public class UserSecurity {
     private static final int USER_TYPE_WIDTH = 1;
 
     /**
-     * User identifier and primary key, from {@code SEC-USR-ID PIC X(08)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L18}.
-     *
-     * <p>The eight leading bytes of the record, which are also the cluster key:
-     * {@code app/jcl/DUSRSECJ.jcl:L65} declares {@code KEYS(8,0)}, an eight byte key at relative offset
-     * zero, and {@code app/catlg/LISTCAT.txt:L3884} confirms {@code RKP 0}. Because the key is the
-     * leading field, primary key order and physical record order coincide, which is what lets the user
-     * list screen page in key order without a secondary index.
-     *
-     * <p>This is a natural business key, supplied by the seed migration and by the user add service that
-     * replaces {@code app/cbl/COUSR01C.cbl}. It is never generated: no generation strategy is declared
-     * here and no sequence exists for it anywhere in the schema. All ten seeded identifiers are already
-     * upper case, and this field neither enforces nor imposes that.
+     * User identifier and primary key, from {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18}.
      */
     @Id
     @JdbcTypeCode(SqlTypes.CHAR)
@@ -428,11 +482,6 @@ public class UserSecurity {
 
     /**
      * User first name, from {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L19}.
-     *
-     * <p>Bytes 9 through 28 of the record. Blank padded to 20 characters by the fixed width source and
-     * by the {@code CHAR(20)} column, and stored exactly as received: nothing here trims, folds case or
-     * otherwise repairs the value, because a name of nothing but spaces is legitimate legacy data and a
-     * loading rule that rejected it would reject rows the source accepts.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "sec_usr_fname", nullable = false, length = FIRST_NAME_WIDTH)
@@ -440,9 +489,6 @@ public class UserSecurity {
 
     /**
      * User last name, from {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L20}.
-     *
-     * <p>Bytes 29 through 48 of the record, with the same fixed width semantics as the first name: blank
-     * padded, never trimmed, never validated for content.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "sec_usr_lname", nullable = false, length = LAST_NAME_WIDTH)
@@ -451,49 +497,13 @@ public class UserSecurity {
     /**
      * BCrypt hash of the user's password - <b>never the password itself</b>. Replaces
      * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21}, which held plaintext.
-     *
-     * <p>This is the only credential member on the class and the only member whose column width departs
-     * from its source PIC width. Three properties of the mapping are load bearing:
-     *
-     * <ul>
-     *   <li>the column is {@code VARCHAR(60)}. Sixty because a BCrypt hash is exactly sixty characters;
-     *       {@code VARCHAR} rather than {@code CHAR} because a {@code CHAR} column would blank pad the
-     *       value and a padded hash fails verification; and emphatically not {@code CHAR(8)}, the
-     *       source's width, which could not hold a hash at all;</li>
-     *   <li>this field deliberately carries <em>no</em> explicit JDBC type code override, unlike the
-     *       four character fields around it. {@code String} maps to JDBC {@code VARCHAR} by default,
-     *       which is precisely the expectation a {@code VARCHAR(60)} column needs, so the absence of an
-     *       override here is what makes schema validation agree that this column is not a
-     *       {@code CHAR};</li>
-     *   <li>no hashing, verification or encoding happens anywhere in this class. There is no
-     *       plaintext-accepting setter, no comparison helper, and no password encoder import. Producing
-     *       the hash is the authentication service's job, and verifying it is the security
-     *       configuration's.</li>
-     * </ul>
-     *
-     * <p>The value is excluded from {@link #toString()}, {@link #equals(Object)} and
-     * {@link #hashCode()}. The sign-on program it descends from compared plaintext directly -
-     * {@code app/cbl/COSGN00C.cbl:L223} - after upper casing both the identifier and the presented
-     * password at {@code :L132} and {@code :L135}; that upper casing is service layer behaviour which
-     * this field neither performs nor obstructs.
      */
     @Column(name = "sec_usr_pwd", nullable = false, length = BCRYPT_HASH_WIDTH)
     private String passwordHash;
 
     /**
-     * User class, from {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}: byte 57 of
-     * the record, carrying {@code A} for an administrator or {@code U} for a standard user.
-     *
-     * <p>Typed as {@link UserType} rather than as a bare character, because the two codes are a closed
-     * domain declared as condition names in {@code app/cpy/COCOM01Y.cpy:L27-L28} against
-     * {@code CDEMO-USER-TYPE PIC X(01)} at {@code :L26}, and because the sign-on program moves this very
-     * byte into that field at {@code app/cbl/COSGN00C.cbl:L227} to drive the menu it routes to.
-     *
-     * <p>Persistence goes through {@link UserTypeConverter}, not through either enumerated mode: a
-     * string mode would persist the constant names into a one character column and an ordinal mode would
-     * persist positions instead of the source's own codes. The explicit JDBC type code makes the
-     * converter's {@code String} form present itself as a {@code CHAR}, matching the {@code CHAR(1)}
-     * column the schema must declare.
+     * User class, from {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}: byte 57 of the
+     * record, carrying {@code A} for an administrator or {@code U} for a standard user.
      */
     @Convert(converter = UserTypeConverter.class)
     @JdbcTypeCode(SqlTypes.CHAR)
@@ -503,12 +513,6 @@ public class UserSecurity {
     /**
      * No argument constructor required by the JPA specification, which the persistence provider uses to
      * materialise an instance before populating its state.
-     *
-     * <p>Deliberately {@code protected} rather than {@code public}: the provider and any subclass can
-     * reach it, while application code is steered to the all columns constructor and cannot accidentally
-     * create a user with five null columns. Every field is left null here, which is the correct transient
-     * state for an instance the provider is about to fill; an instance created this way is not valid to
-     * persist until all five properties are set.
      */
     protected UserSecurity() {
         // Intentionally empty: JPA populates the persistent state directly after construction.
@@ -517,53 +521,33 @@ public class UserSecurity {
     /**
      * Creates a fully populated user, which is how application, migration and test code should build one.
      *
-     * <p>There is deliberately no convenience constructor that accepts a password in plaintext. The
-     * credential argument is a BCrypt hash that the caller has already computed; this class never hashes
-     * and never holds plaintext, so a constructor that appeared to accept one would be a lie about where
-     * the responsibility sits.
-     *
-     * <p>All five fields are assigned directly rather than through the setters. That is not a stylistic
-     * choice: the JPA specification forbids a final entity class, so this class is not final, and a
-     * constructor that called an overridable setter would leak {@code this} to a subclass override
-     * before construction finished. The compiler reports exactly that as a {@code this-escape} warning,
-     * and {@code -Werror} turns it into a build failure.
-     *
-     * <p>No validation is applied and none is appropriate here. All five columns are non null in the
-     * schema and the persistence provider reports a null on flush with full context, while a length or
-     * content check in this constructor would reject the blank but non null values that the fixed width
-     * source legitimately carries. The constructor has no side effect, performs no I/O and throws
-     * nothing.
-     *
-     * @param secUsrId     the eight character identifier for {@code sec_usr_id}, from
-     *                     {@code SEC-USR-ID PIC X(08)}; longer values are rejected by the column width
-     *                     on flush and shorter ones are blank padded by the {@code CHAR(8)} column
-     * @param secUsrFname  the first name for {@code sec_usr_fname}, from
-     *                     {@code SEC-USR-FNAME PIC X(20)}, blank padded to 20 characters by the column
-     * @param secUsrLname  the last name for {@code sec_usr_lname}, from
-     *                     {@code SEC-USR-LNAME PIC X(20)}, blank padded to 20 characters by the column
-     * @param passwordHash the BCrypt hash for {@code sec_usr_pwd} - a sixty character hash, never a
-     *                     password in plaintext and never a hash produced at any other strength than the
-     *                     one the security configuration pins
-     * @param secUsrType   the user class for {@code sec_usr_type}, from
-     *                     {@code SEC-USR-TYPE PIC X(01)}; {@link UserType#ADMIN} for the five seeded
-     *                     administrators and {@link UserType#USER} for the five seeded standard users
+     * @param secUsrId the eight character identifier for {@code sec_usr_id}, from {@code SEC-USR-ID PIC X(08)}.
+     * @param secUsrFname the first name for {@code sec_usr_fname}, from {@code SEC-USR-FNAME PIC X(20)}, blank
+     * padded to 20 characters by the column
+     * @param secUsrLname the last name for {@code sec_usr_lname}, from {@code SEC-USR-LNAME PIC X(20)}, blank
+     * padded to 20 characters by the column
+     * @param passwordHash the BCrypt hash for {@code sec_usr_pwd} - a sixty character hash, never a password in
+     * plaintext and never a hash produced at any other strength than the one the security configuration pins
+     * @param secUsrType the user class for {@code sec_usr_type}, from {@code SEC-USR-TYPE PIC X(01)}.
      */
     public UserSecurity(String secUsrId, String secUsrFname, String secUsrLname, String passwordHash,
             UserType secUsrType) {
-        this.secUsrId = secUsrId;
-        this.secUsrFname = secUsrFname;
-        this.secUsrLname = secUsrLname;
-        this.passwordHash = passwordHash;
-        this.secUsrType = secUsrType;
+        this.secUsrId = requireWidth(secUsrId, "secUsrId", "SEC-USR-ID PIC X(08)", USER_ID_WIDTH);
+        this.secUsrFname = requireWidth(secUsrFname, "secUsrFname", "SEC-USR-FNAME PIC X(20)",
+                FIRST_NAME_WIDTH);
+        this.secUsrLname = requireWidth(secUsrLname, "secUsrLname", "SEC-USR-LNAME PIC X(20)",
+                LAST_NAME_WIDTH);
+        this.passwordHash = requireBcryptStrength10Digest(passwordHash);
+        this.secUsrType = requireUserType(secUsrType);
     }
 
     /**
      * Returns the user identifier, the primary key, from {@code SEC-USR-ID PIC X(08)} at
      * {@code app/cpy/CSUSR01Y.cpy:L18}.
      *
-     * @return the eight character identifier exactly as held, blank padded to 8 by the {@code CHAR(8)}
-     *         column when read back from the database and never trimmed, or {@code null} on a transient
-     *         instance built by the no argument constructor
+     * @return the eight character identifier exactly as held, blank padded to 8 by the {@code CHAR(8)} column
+     * when read back from the database and never trimmed, or {@code null} on a transient instance built by the
+     * no argument constructor
      */
     public String getSecUsrId() {
         return secUsrId;
@@ -572,88 +556,71 @@ public class UserSecurity {
     /**
      * Sets the user identifier, from {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18}.
      *
-     * <p>Mutating the primary key of an entity that is already managed is not meaningful to the
-     * persistence provider; this setter exists for the provider's own property access and for
-     * constructing an instance in stages. No validation, trimming or case folding is performed, so a
-     * blank but non null identifier is accepted exactly as the fixed width source permits, and nothing
-     * is thrown.
-     *
      * @param secUsrId the eight character identifier to store in {@code sec_usr_id}
      */
     public void setSecUsrId(String secUsrId) {
-        this.secUsrId = secUsrId;
+        this.secUsrId = requireWidth(secUsrId, "secUsrId", "SEC-USR-ID PIC X(08)", USER_ID_WIDTH);
     }
 
     /**
-     * Returns the user's first name, from {@code SEC-USR-FNAME PIC X(20)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L19}.
+     * Returns the user's first name, from {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L19}.
      *
-     * @return the name exactly as held, which after a database read is blank padded to 20 characters and
-     *         is not trimmed, or {@code null} on a transient instance built by the no argument
-     *         constructor
+     * @return the name exactly as held, which after a database read is blank padded to 20 characters and is not
+     * trimmed, or {@code null} on a transient instance built by the no argument constructor
      */
     public String getSecUsrFname() {
         return secUsrFname;
     }
 
     /**
-     * Sets the user's first name, from {@code SEC-USR-FNAME PIC X(20)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L19}.
+     * Sets the user's first name, from {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L19}.
      *
-     * <p>No validation, trimming or case folding is performed and nothing is thrown; a name of only
-     * spaces is a legitimate value in the source and stays legitimate here.
-     *
-     * @param secUsrFname the first name to store in {@code sec_usr_fname}
+     * @param secUsrFname the first name to store in {@code sec_usr_fname}; must not be {@code null} and
+     *                    must be at most {@value #FIRST_NAME_WIDTH} characters
+     * @throws IllegalArgumentException if {@code secUsrFname} is {@code null} or longer than
+     *                                  {@value #FIRST_NAME_WIDTH} characters
      */
     public void setSecUsrFname(String secUsrFname) {
-        this.secUsrFname = secUsrFname;
+        this.secUsrFname = requireWidth(secUsrFname, "secUsrFname", "SEC-USR-FNAME PIC X(20)",
+                FIRST_NAME_WIDTH);
     }
 
     /**
-     * Returns the user's last name, from {@code SEC-USR-LNAME PIC X(20)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L20}.
+     * Returns the user's last name, from {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L20}.
      *
-     * @return the name exactly as held, which after a database read is blank padded to 20 characters and
-     *         is not trimmed, or {@code null} on a transient instance built by the no argument
-     *         constructor
+     * @return the name exactly as held, which after a database read is blank padded to 20 characters and is not
+     * trimmed, or {@code null} on a transient instance built by the no argument constructor
      */
     public String getSecUsrLname() {
         return secUsrLname;
     }
 
     /**
-     * Sets the user's last name, from {@code SEC-USR-LNAME PIC X(20)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L20}.
+     * Sets the user's last name, from {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L20}.
      *
-     * <p>No validation, trimming or case folding is performed and nothing is thrown, for the same fixed
-     * width reason as the first name.
-     *
-     * @param secUsrLname the last name to store in {@code sec_usr_lname}
+     * @param secUsrLname the last name to store in {@code sec_usr_lname}; must not be {@code null} and
+     *                    must be at most {@value #LAST_NAME_WIDTH} characters
+     * @throws IllegalArgumentException if {@code secUsrLname} is {@code null} or longer than
+     *                                  {@value #LAST_NAME_WIDTH} characters
      */
     public void setSecUsrLname(String secUsrLname) {
-        this.secUsrLname = secUsrLname;
+        this.secUsrLname = requireWidth(secUsrLname, "secUsrLname", "SEC-USR-LNAME PIC X(20)",
+                LAST_NAME_WIDTH);
     }
 
     /**
      * Returns the BCrypt hash of the user's password.
      *
-     * <p><b>Warning.</b> The returned value is a BCrypt hash and is never a password in plaintext. It is
-     * credential material: it must never be logged, never be written to a trace or a metric tag, never
-     * be serialised into a response body, and never be copied into a DTO. The masking rules in
-     * {@code logback-spring.xml} are a backstop for accidents, not the primary defence; the primary
-     * defence is not emitting the value at all. The only legitimate consumers are the password encoder
-     * that verifies a presented password against it and the migration that seeds it.
+     * @return the sixty character BCrypt hash exactly as stored, never blank padded because the column is
+     * {@code VARCHAR}, or {@code null} on a transient instance built by the no argument constructor
+     * <p>{@link JsonIgnore} is applied here in addition to the class level barrier documented on the type.
+     * The barrier alone already hides this property, so this annotation is defence in depth: it keeps the
+     * credential invisible even if a caller reintroduces bean visibility through a Jackson mix-in or a
+     * custom introspector, and it states the prohibition at the accessor a reader is looking at rather
+     * than only at the top of the file.
      *
-     * <p>This is the normative accessor for {@code com.cardemo.repository.UserSecurityRepository} and
-     * {@code com.cardemo.security.CardDemoUserDetailsService}. It is named for what the value is rather
-     * than for the COBOL field it replaces - {@code SEC-USR-PWD PIC X(08)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L21}, which held plaintext - so that no caller can mistake it for a
-     * comparable password.
-     *
-     * @return the sixty character BCrypt hash exactly as stored, never blank padded because the column
-     *         is {@code VARCHAR}, or {@code null} on a transient instance built by the no argument
-     *         constructor
      */
+    @JsonIgnore
     public String getPasswordHash() {
         return passwordHash;
     }
@@ -661,27 +628,17 @@ public class UserSecurity {
     /**
      * Sets the BCrypt hash of the user's password.
      *
-     * <p><b>Warning.</b> The argument must already be a BCrypt hash. This setter performs no hashing,
-     * no encoding, no validation and no normalisation whatsoever - passing a password in plaintext would
-     * store it in plaintext, which is a defect in the caller and one this class cannot detect
-     * without taking on the hashing responsibility that deliberately belongs to the authentication
-     * service. There is intentionally no overload that accepts a password in plaintext, precisely so that
-     * the correct call is the only call available. The value must never be logged or serialised.
-     *
      * @param passwordHash the sixty character BCrypt hash to store in {@code sec_usr_pwd}
      */
     public void setPasswordHash(String passwordHash) {
-        this.passwordHash = passwordHash;
+        this.passwordHash = requireBcryptStrength10Digest(passwordHash);
     }
 
     /**
-     * Returns the user class, from {@code SEC-USR-TYPE PIC X(01)} at
-     * {@code app/cpy/CSUSR01Y.cpy:L22}.
+     * Returns the user class, from {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}.
      *
-     * @return {@link UserType#ADMIN} when the column holds {@code A} and {@link UserType#USER} when it
-     *         holds {@code U}; {@code null} on a transient instance built by the no argument
-     *         constructor, or when the column held a blank that {@link UserTypeConverter} mapped to
-     *         {@code null}
+     * @return {@link UserType#ADMIN} when the column holds {@code A} and {@link UserType#USER} when it holds
+     * {@code U}.
      */
     public UserType getSecUsrType() {
         return secUsrType;
@@ -690,43 +647,204 @@ public class UserSecurity {
     /**
      * Sets the user class, from {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}.
      *
-     * <p>Because the parameter is the enumeration rather than a character, the closed domain of two
-     * codes is enforced by the type system on this path and there is nothing left for the setter to
-     * validate; the only value outside the domain that can reach it is {@code null}, which the non null
-     * column rejects on flush with full context. Nothing is thrown here.
-     *
      * @param secUsrType the user class to store in {@code sec_usr_type}
      */
     public void setSecUsrType(UserType secUsrType) {
-        this.secUsrType = secUsrType;
+        this.secUsrType = requireUserType(secUsrType);
+    }
+
+    /**
+     * Re-asserts the credential invariant immediately before this row is inserted or updated, so that
+     * the invariant holds at the database boundary and not merely at the two setters that lead to it.
+     *
+     * <h2>Why a callback is needed when the constructor and setter already guard</h2>
+     *
+     * <p>Those two guards cover every path application code can take, but they are not the only paths a
+     * persistent field has. The persistence provider populates a materialised instance through field
+     * access, and reflection reaches a private field directly; neither route runs a setter. This
+     * callback closes both, because the provider invokes it on the instance it is about to write
+     * whatever route put the state there. The result is that a malformed credential cannot be persisted
+     * by any means: not by construction, not by mutation, not by field injection and not by a provider
+     * managed instance that was never fully populated.
+     *
+     * <p>It also gives the never-populated case a diagnostic worth having. An instance built through the
+     * no argument constructor and flushed without its credential being set would otherwise fail as a
+     * not-null violation naming a column, from inside the driver, after the statement was built. Here it
+     * fails before the statement exists, naming the invariant and the entity.
+     *
+     * <h2>Why this is the enforcement point rather than a sixth CHECK constraint</h2>
+     *
+     * <p>A database {@code CHECK} would be the obvious place for a shape rule, and it is deliberately
+     * not used. The migration's constraint budget is fixed at exactly five {@code CHECK} constraints by
+     * the schema requirement this project works to - eleven tables, not null on every column, five check
+     * constraints, ten foreign keys - and {@code V1__create_schema.sql} records that ceiling explicitly,
+     * naming all five and listing every candidate constraint that was considered and excluded to hold
+     * the budget. Adding a sixth would contradict the schema contract, so the equivalent persistence
+     * invariant lives here instead, where it is additionally portable across dialects and testable
+     * without a database.
+     *
+     * <h2>Inputs, outputs and error modes</h2>
+     *
+     * <p>Takes nothing, returns nothing and mutates nothing: it reads one field and either returns or
+     * throws. It performs no I/O, so it cannot slow a flush by more than a regular expression match over
+     * sixty characters. Throwing from a lifecycle callback marks the surrounding transaction for
+     * rollback, which is the correct outcome for a violated invariant - the alternative, writing the row
+     * and reporting later, is exactly what this class exists to prevent.
+     *
+     * <p>Declared {@code private} because the specification permits a lifecycle callback at any access
+     * level and nothing outside this class has any business invoking it; the provider reaches it
+     * reflectively. A single method carries both annotations because insert and update need the identical
+     * assertion, and the specification allows one method to serve more than one lifecycle event.
+     *
+     * @throws IllegalArgumentException if the credential is {@code null} or is not a BCrypt strength 10
+     *                                  digest of exactly {@value #BCRYPT_HASH_WIDTH} characters. The
+     *                                  message names the defect and never reproduces the offending value
+     */
+    @PrePersist
+    @PreUpdate
+    private void assertCredentialInvariantBeforeWrite() {
+        requireBcryptStrength10Digest(this.passwordHash);
+    }
+
+    /**
+     * Returns the argument if it is a BCrypt digest at the pinned strength of 10, and throws otherwise.
+     *
+     * <h2>What it checks, and in what order</h2>
+     *
+     * <p>Three tests, ordered so that the message can name the most specific defect it can prove. First
+     * {@code null}, which is the staged-construction mistake. Then the length, because a wrong length is
+     * the single most common defect - a source width value, a truncated digest, a blank run - and
+     * reporting the observed length is far more useful than reporting that a pattern did not match.
+     * Then the shape, which covers the version tag, the cost factor and the radix-64 alphabet together.
+     *
+     * <h2>Why the message never contains the value</h2>
+     *
+     * <p>The argument is credential material, so no branch interpolates it. Rule 1 clause D is
+     * unconditional about secrets in logs, and an exception message is a log line in every deployment
+     * this project has: it reaches the structured logger, the trace and any error response the exception
+     * handler renders. The masking rules in {@code logback-spring.xml} are a backstop for accidents, not
+     * a licence to emit the value deliberately. What the message does carry is the observed length and
+     * the structural requirement that was not met, which is everything a caller needs to fix the defect
+     * and nothing an attacker can use. The observed length is not credential material: it is a property
+     * of the column, already public in this documentation.
+     *
+     * <p>This is the deliberate divergence from the sibling composite key classes, whose validators
+     * report the received value back in the message. That is correct for an account identifier or a
+     * category code and wrong for a credential, and the difference is the reason this helper is written
+     * out rather than delegated to a shared one.
+     *
+     * <h2>Why static</h2>
+     *
+     * <p>It observes no instance state and it is called from a constructor. A non static helper called
+     * from a constructor of a non final class is precisely the {@code this-escape} pattern that
+     * {@code -Xlint:all} reports and {@code -Werror} fails the build on, so {@code static} is load
+     * bearing rather than incidental.
+     *
+     * @param candidate the value offered for {@code sec_usr_pwd}, which may be {@code null}
+     * @return the same value, unchanged, when it satisfies the invariant - never a repaired,
+     *         trimmed, padded or re-encoded value, because repairing a credential silently is worse
+     *         than rejecting it loudly
+     * @throws IllegalArgumentException if the value is {@code null}, is not exactly
+     *                                  {@value #BCRYPT_HASH_WIDTH} characters, or does not carry a
+     *                                  {@code 2a}, {@code 2b} or {@code 2y} version tag, a cost factor
+     *                                  of 10 and a radix-64 salt and digest
+     */
+    private static String requireBcryptStrength10Digest(final String candidate) {
+        if (candidate == null) {
+            throw new IllegalArgumentException(
+                    "sec_usr_pwd must hold a BCrypt strength 10 digest, but was null. This class never "
+                            + "hashes and never holds a password in plaintext: the caller supplies a "
+                            + "digest already computed by the authentication service's encoder");
+        }
+        if (candidate.length() != BCRYPT_HASH_WIDTH) {
+            throw new IllegalArgumentException(
+                    "sec_usr_pwd must hold a BCrypt strength 10 digest of exactly " + BCRYPT_HASH_WIDTH
+                            + " characters, but the value offered is " + candidate.length()
+                            + " characters. The value itself is credential material and is deliberately "
+                            + "not reproduced in this message");
+        }
+        if (!BCRYPT_STRENGTH_10_SHAPE.matcher(candidate).matches()) {
+            throw new IllegalArgumentException(
+                    "sec_usr_pwd must hold a BCrypt strength 10 digest: the value offered is "
+                            + BCRYPT_HASH_WIDTH + " characters but is not one. Its version tag must be "
+                            + "2a, 2b or 2y - the only three the verifier accepts - its cost factor must "
+                            + "be 10, and its salt and digest must use BCrypt's radix-64 alphabet. The "
+                            + "value itself is credential material and is deliberately not reproduced "
+                            + "in this message");
+        }
+        return candidate;
+    }
+
+    /**
+     * Returns {@code value} when it is present and fits the width of the COBOL field it comes from, and
+     * otherwise reports the offending property and the length received.
+     *
+     * <p>Rejects {@code null}, because COBOL has no null - a {@code PIC X(n)} field always holds its
+     * declared width - and because every column of this table is {@code NOT NULL}. Rejects any value
+     * longer than the picture clause declares, because the 80 byte record cannot carry one and a
+     * {@code CHAR(n)} column would otherwise report a failure naming only a column. Everything the
+     * picture clause admits is accepted, a value of only spaces included, and nothing is trimmed,
+     * padded or case folded: the sign on comparison upper cases the identifier itself, and doing it here
+     * would move a service decision into a data holder.
+     *
+     * <p><strong>The message reports the received length and never the value.</strong> This entity is
+     * the credential record, and while the identifier and the two names are not themselves secret they
+     * sit alongside {@code sec_usr_pwd}; a guard here holds the same line as
+     * {@link #requireBcryptStrength10Digest(String)} rather than a weaker one, so that no message from
+     * this class can ever be the thing that puts user material into a log.
+     *
+     * <p>Static for the same reason as {@link #requireBcryptStrength10Digest(String)}: it is called from
+     * a constructor of a class the JPA specification forbids making {@code final}, and a non static
+     * helper on that path is the {@code this-escape} pattern that {@code -Xlint:all -Werror} fails the
+     * build on.
+     *
+     * @param value      the value offered by the caller, which may be {@code null}
+     * @param property   the Java property name, used in the message
+     * @param cobolField the originating COBOL item and its picture clause, used in the message
+     * @param width      the declared width of that field in characters
+     * @return the same value, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null} or longer than {@code width}
+     */
+    private static String requireWidth(final String value, final String property,
+            final String cobolField, final int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table user_security");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must be at most " + width
+                    + " characters but the value offered is " + value.length()
+                    + " characters. The value itself is deliberately not reproduced in this message");
+        }
+        return value;
+    }
+
+    /**
+     * Returns {@code value} when it is present, and otherwise reports that the user class is missing.
+     *
+     * <p>The enumeration already closes the domain to the two codes {@code SEC-USR-TYPE PIC X(01)}
+     * admits, so {@code null} is the only value outside it that can reach a caller of this method.
+     * Refusing it here rather than on flush means the failure names the property at the call site that
+     * caused it instead of surfacing a constraint violation from the driver much later. Static for the
+     * same reason as {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value the value offered for {@code sec_usr_type}, which may be {@code null}
+     * @return the same value, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}
+     */
+    private static UserType requireUserType(final UserType value) {
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "secUsrType (SEC-USR-TYPE PIC X(01)) must not be null: it maps to a NOT NULL CHAR(1) "
+                            + "column of table user_security, and the two codes the source admits are "
+                            + "A for an administrator and U for a standard user");
+        }
+        return value;
     }
 
     /**
      * Compares two users on {@code secUsrId} alone.
-     *
-     * <p>The identifier is the right and only basis for identity here. It is a natural key that arrives
-     * from the seed rather than a generated surrogate, so it is populated from the moment an instance is
-     * meaningful, and it stays stable across the transient, managed and detached states while a name, a
-     * user class or - especially - a credential can all legitimately change. Two instances that denote
-     * the same user must not start comparing unequal because one of them has had its password rotated.
-     *
-     * <p>The credential is excluded for a second, independent reason: reading it here would put hash
-     * material on a code path that collection membership calls implicitly and frequently, and a hash
-     * comparison is not a meaningful contributor to identity in the first place. The same reasoning
-     * excludes it from {@link #hashCode()}.
-     *
-     * <p>The type test is a pattern match rather than a {@code getClass()} comparison so that a lazily
-     * loaded provider proxy compares equal to the instance it stands for; a {@code getClass()} test would
-     * see the generated proxy class and report inequality. This class declares no inheritance and no
-     * persistence hierarchy, so the symmetry caveat that normally attaches to a pattern match in a non
-     * final class cannot arise.
-     *
-     * <p>Boundary case, stated rather than hidden: two instances that have not yet been given an
-     * identifier both hold {@code null} and therefore compare equal, so unkeyed instances must not be
-     * relied on to stay distinct inside a hash based collection. Give an instance its identifier before
-     * putting it in a set or a map. Note also that this comparison is exact string equality, which is
-     * stricter than the database's blank insensitive comparison on {@code CHAR}; because all ten seeded
-     * identifiers fully occupy {@code CHAR(8)} there is no padding for the two rules to disagree about.
      *
      * @param other the object to compare with, which may be {@code null}
      * @return {@code true} if {@code other} is a user with an equal {@code secUsrId}
@@ -745,12 +863,6 @@ public class UserSecurity {
     /**
      * Returns a hash code derived from {@code secUsrId} alone, consistent with {@link #equals(Object)}.
      *
-     * <p>{@code Objects.hashCode(Object)} is used rather than dereferencing the field, so a transient
-     * instance whose identifier is still {@code null} hashes to 0 instead of throwing. The value is
-     * stable for the lifetime of an instance whose key does not change, which is the property a hash
-     * based collection requires. The credential is not read here, for the reasons given on
-     * {@link #equals(Object)}.
-     *
      * @return the hash code of the primary key, or 0 when the key is {@code null}
      */
     @Override
@@ -759,30 +871,10 @@ public class UserSecurity {
     }
 
     /**
-     * Returns a deliberately narrow diagnostic rendering: the identifier and the user class, and nothing
-     * else.
-     *
-     * <p>The BCrypt hash is excluded <b>unconditionally</b>. There is no flag, no profile and no debug
-     * mode that adds it, because a rendering is exactly how credential material escapes into a log
-     * aggregator, an exception message, a metric tag or an APM trace. The masking rules in
-     * {@code logback-spring.xml} are a backstop against the accidents this method cannot see; never
-     * emitting the value is the primary defence, and the two are not interchangeable.
-     *
-     * <p>The two name fields are omitted as well, not because they are secret but under least privilege:
-     * they are personal data, they contribute nothing to identifying a row that its primary key does not
-     * already identify, and a diagnostic line is not a place personal data needs to be. What remains is
-     * the minimum that makes a log line useful - which row, and which privilege class - and this is why
-     * this rendering is restricted while the reference data entities in this package render every column
-     * they hold.
-     *
-     * <p>The identifier appears exactly as held, so after a database read it shows its 8 character blank
-     * padded form; a rendering that trimmed it would hide the very padding a fixed width defect shows up
-     * as. The user class renders as its constant name rather than its stored code, since a diagnostic
-     * reader is better served by {@code ADMIN} than by {@code A}, and it shows {@code null} for a
-     * transient or blank valued instance rather than substituting a default.
+     * Returns a deliberately narrow diagnostic rendering: the identifier and the user class, and nothing else.
      *
      * @return a single line rendering of the identifier and the user class, never {@code null} and never
-     *         containing credential material
+     * containing credential material
      */
     @Override
     public String toString() {
@@ -791,58 +883,12 @@ public class UserSecurity {
 
     /**
      * Maps {@link UserType} onto the single character {@code sec_usr_type} column, and back.
-     *
-     * <h2>What this component does and why it must exist</h2>
-     *
-     * <p>The column is {@code CHAR(1)} carrying the two codes {@code A} and {@code U} that
-     * {@code app/cpy/COCOM01Y.cpy:L27-L28} declares, and the enumeration it maps to is a pure model type
-     * that deliberately carries no persistence annotation of its own. Neither built in enumerated mode
-     * can bridge the two: a string mode would try to write the constant names {@code ADMIN} and
-     * {@code USER} into one character, failing or truncating, and an ordinal mode would write {@code 0}
-     * and {@code 1}, which are not the source's values and would change meaning silently if the
-     * constants were ever reordered. An explicit converter is therefore the only correct mechanism, and
-     * this is the one place in the application where that mapping is expressed.
-     *
-     * <p>It is a nested class on purpose. The mapping is meaningful only for this entity's one attribute,
-     * so declaring it here keeps it beside the field it serves and adds no twelfth source file to a
-     * package whose eleven entities correspond one to one with the eleven VSAM clusters. It is
-     * {@code public static} so that the persistence provider can reflectively instantiate it, and its
-     * constructor is declared explicitly rather than left implicit so that the provider's requirement is
-     * stated in code rather than inferred.
-     *
-     * <p>Automatic application is switched off. The converter is bound to exactly one attribute, by the
-     * conversion annotation on that field, and can never attach itself to another {@link UserType}
-     * attribute elsewhere in the model as a side effect of being on the classpath. That is the least
-     * privilege reading of an annotation whose permissive setting would widen its reach silently.
-     *
-     * <h2>Inputs, outputs and side effects</h2>
-     *
-     * <p>Both directions are pure functions of their argument: no state is held, no static field is
-     * declared - mutable or otherwise - nothing is logged, nothing is cached and no I/O is performed, so
-     * a single instance is safe for concurrent use by the provider.
-     *
-     * <h2>Error modes</h2>
-     *
-     * <p>Exactly one failure is possible, and it is raised rather than absorbed:
-     * {@link #convertToEntityAttribute(String)} throws {@link IllegalArgumentException} when the column
-     * holds a non blank value that is not exactly one character long, or is one character that is neither
-     * {@code A} nor {@code U}. Nothing is swallowed and nothing
-     * silently defaults - in particular an unrecognised code never resolves to {@link UserType#USER}, to
-     * {@link UserType#ADMIN} or to {@code null}, because guessing a privilege class is the one mistake a
-     * role store must never make. The schema is required to carry a check constraint restricting
-     * {@code sec_usr_type} to {@code 'A'} and {@code 'U'}, so this exception should be unreachable in a
-     * correctly migrated database; it exists to make a bypassed constraint or a direct write loud instead
-     * of invisible, and it must stay consistent with that constraint by accepting no third code.
      */
     @Converter(autoApply = false)
     public static class UserTypeConverter implements AttributeConverter<UserType, String> {
 
         /**
          * Creates a converter instance.
-         *
-         * <p>Declared explicitly, and public, because the persistence provider instantiates this class
-         * reflectively through a no argument constructor. The converter holds no state, so there is
-         * nothing to initialise and no argument to accept.
          */
         public UserTypeConverter() {
             // Intentionally empty: the converter is stateless, so there is nothing to initialise.
@@ -851,15 +897,10 @@ public class UserSecurity {
         /**
          * Converts a user class to the single character code the column stores.
          *
-         * <p>The code comes from the enumeration itself rather than from a literal restated here, so the
-         * written value cannot drift from the value the model considers canonical. The result is a one
-         * character string, which the {@code CHAR(1)} column stores without padding.
-         *
          * @param attribute the user class to write; may be {@code null}
-         * @return {@code "A"} for an administrator and {@code "U"} for a standard user, or {@code null}
-         *         when {@code attribute} is {@code null}, so that a null attribute becomes a SQL null
-         *         and is rejected by the non null column rather than being written as some substitute
-         *         character
+         * @return {@code "A"} for an administrator and {@code "U"} for a standard user, or {@code null} when
+         * {@code attribute} is {@code null}, so that a null attribute becomes a SQL null and is rejected by the
+         * non null column rather than being written as some substitute character
          */
         @Override
         public String convertToDatabaseColumn(UserType attribute) {
@@ -872,47 +913,10 @@ public class UserSecurity {
         /**
          * Converts the single character code the column stores back to a user class.
          *
-         * <p>Every boundary condition is handled explicitly:
-         *
-         * <ul>
-         *   <li>a {@code null} column value yields {@code null};</li>
-         *   <li>a value that is entirely padding yields {@code null}. This case is real rather than
-         *       defensive: the column is fixed width, so a legacy row that never had a user class set
-         *       arrives as a blank, and a blank is an absent value rather than an invalid one;</li>
-         *   <li>otherwise the padding stripped value is resolved through the enumeration, and anything
-         *       outside the two code domain throws.</li>
-         * </ul>
-         *
-         * <p>Padding is stripped with {@code String.trim()} rather than {@code String.strip()} on
-         * purpose. {@code trim()} removes every character at or below the space, which covers both the
-         * blanks and the low value bytes that fixed width legacy records use as padding, whereas
-         * {@code strip()} removes only Unicode whitespace and would leave a low value byte in place -
-         * turning an absent value into a spurious unrecognised code. Neither call depends on a locale,
-         * so the behaviour is deterministic on every host.
-         *
-         * <p>Once padding has been stripped the value must be <em>exactly one</em> character long, and
-         * the length check is delegated to {@link UserType#fromCode(String)} which already reports an
-         * empty result for any other length. Taking the first character of a longer value instead would
-         * be an unsafe default of exactly the kind the security-by-default standard forbids: it would
-         * resolve {@code "AA"} to {@link UserType#ADMIN}, silently granting a privilege class on the
-         * strength of a value the source cannot even represent - {@code app/cpy/COCOM01Y.cpy:L26}
-         * declares {@code CDEMO-USER-TYPE} as {@code PIC X(01)}, so a two character value is not a user
-         * class code at all. The leniency such a shortcut would buy is illusory in any case, because
-         * {@code trim()} above has already removed the padding a driver could have added, so no value a
-         * {@code CHAR(1)} column can produce is affected by the distinction. What is affected is
-         * genuinely corrupt input, and rejecting that is the whole point.
-         *
-         * <p>No case folding is applied: {@code a} is not {@code A}, exactly as the source's own
-         * comparison is exact.
-         *
-         * @param dbData the raw column value; may be {@code null}, may be padding only, and may be
-         *               malformed
-         * @return the matching user class, or {@code null} when {@code dbData} is {@code null} or
-         *         consists only of padding
-         * @throws IllegalArgumentException if the padding stripped value is neither {@code A} nor
-         *                                  {@code U}; the message names the column, the whole rejected
-         *                                  value with its length and code units, and cites the copybook
-         *                                  that defines the accepted codes
+         * @param dbData the raw column value; may be {@code null}, may be padding only, and may be malformed
+         * @return the matching user class, or {@code null} when {@code dbData} is {@code null} or consists only
+         * of padding
+         * @throws IllegalArgumentException if the padding stripped value is neither {@code A} nor {@code U}.
          */
         @Override
         public UserType convertToEntityAttribute(String dbData) {
@@ -924,22 +928,19 @@ public class UserSecurity {
                 return null;
             }
             return UserType.fromCode(unpadded).orElseThrow(() -> new IllegalArgumentException(
-                    "Unrecognised sec_usr_type code '" + unpadded + "' (" + unpadded.length()
-                            + " UTF-16 code unit(s): " + hexUnitsOf(unpadded) + ") read from column "
-                            + "sec_usr_type of table user_security; app/cpy/COCOM01Y.cpy:L26 declares "
-                            + "CDEMO-USER-TYPE as PIC X(01) and :L27-L28 define exactly two codes, 'A' "
-                            + "for ADMIN and 'U' for USER, so either the CHECK constraint on this "
-                            + "column is missing from V1__create_schema.sql or the row was written "
-                            + "around it"));
+                    "Unrecognised sec_usr_type code of " + unpadded.length()
+                            + " UTF-16 code unit(s) at code point(s) " + hexUnitsOf(unpadded)
+                            + " read from column sec_usr_type of table user_security (the rejected "
+                            + "value is withheld from this message so that a control character in "
+                            + "corrupt data cannot forge a log entry); app/cpy/COCOM01Y.cpy:L26 "
+                            + "declares CDEMO-USER-TYPE as PIC X(01) and :L27-L28 define exactly two "
+                            + "codes, 'A' for ADMIN and 'U' for USER, so either the CHECK constraint "
+                            + "on this column is missing from V1__create_schema.sql or the row was "
+                            + "written around it"));
         }
 
         /**
          * Renders each UTF-16 code unit of a rejected value in hexadecimal, space separated.
-         *
-         * <p>Present so that a rejection message stays diagnosable when the offending value is
-         * invisible: a low value control byte, a non breaking space or a full width letter all print as
-         * nothing useful on their own, and the length alone does not identify them. {@code
-         * Integer.toHexString} is locale independent, so the rendering is identical on every host.
          *
          * @param value the rejected value, never {@code null} and never empty
          * @return the value's code units, for example {@code 0x41 0x41} for {@code "AA"}

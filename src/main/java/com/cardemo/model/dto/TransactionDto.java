@@ -25,6 +25,8 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
@@ -32,31 +34,20 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Outbound projection of the two CardDemo transaction enquiry screens: the transaction detail view
- * and the paged transaction list.
+ * Outbound projection of the two CardDemo transaction enquiry screens: the transaction detail view and the
+ * paged transaction list.
  *
- * <p><b>What this type does.</b> It transports, unchanged, the character values that the legacy 3270
- * screens displayed. Two BMS symbolic maps supply the field contract, and both were counted field by
- * field rather than taken on trust:</p>
- * <ul>
- *   <li>{@code app/cpy-bms/COTRN01.CPY} declares <b>21</b> input fields, {@code TRNNAMEI} at line 24
- *       through {@code ERRMSGI} at line 144, driven by {@code app/cbl/COTRN01C.cbl}. This is the
- *       detail projection.</li>
- *   <li>{@code app/cpy-bms/COTRN00.CPY} declares <b>59</b> input fields, {@code TRNNAMEI} at line 24
- *       through {@code ERRMSGI} at line 372, driven by {@code app/cbl/COTRN00C.cbl}. This is the
- *       list projection: 8 preamble fields, then 10 rows of 5 fields each, then 1 trailer field, so
- *       8 + 50 + 1 = 59.</li>
- * </ul>
+ * <p>The two maps are not independent screens over unrelated data; they are a summary and a detail rendering of
+ * the same {@code TRAN-RECORD} declared at {@code app/cpy/CVTRA05Y.cpy}:4-18. Eight of the nine top-level list
+ * fields are declared identically on both maps - the six-field header, the {@code TRNIDINI} search key and the
+ * {@code ERRMSGI} trailer, each with the same name and the same width - so a second type would restate them,
+ * and restating a field contract is how the two copies later disagree. The list projection therefore
+ * contributes exactly one top-level field the detail projection lacks, {@code PAGENUMI}, plus the ten nested
+ * rows. Declaring one type keeps a single authority for every shared width and holds the package to its budget
+ * of eighteen files.
  *
- * <p><b>Why one type serves both.</b> The two maps are not independent screens over unrelated data;
- * they are a summary and a detail rendering of the same {@code TRAN-RECORD} declared at
- * {@code app/cpy/CVTRA05Y.cpy}:4-18. Eight of the nine top-level list fields are declared identically
- * on both maps - the six-field header, the {@code TRNIDINI} search key and the {@code ERRMSGI}
- * trailer, each with the same name and the same width - so a second type would restate them, and
- * restating a field contract is how the two copies later disagree. The list projection therefore
- * contributes exactly one top-level field the detail projection lacks, {@code PAGENUMI}, plus the ten
- * nested rows. Declaring one type keeps a single authority for every shared width and holds the
- * package to its budget of eighteen files.</p>
+ * <p>It is a pure data holder. It parses nothing, formats nothing, truncates nothing, and maps nothing; it
+ * performs no paging arithmetic and issues no query. The DTO transports, the service projects.
  *
  * <p><b>What this type deliberately is not.</b> It is a pure data holder. It parses nothing, formats
  * nothing, truncates nothing, and maps nothing; it performs no paging arithmetic and issues no query.
@@ -133,6 +124,18 @@ import java.util.List;
  * the field is {@code PIC X(12)}. <b>The formatting itself belongs to the service, not to this
  * type</b>; the mask is documented here so the response echo can be made to match.</p>
  *
+ * <p><b>The arithmetic companion is not a wire field. (High, resolved.)</b> {@code amountValue} has no
+ * counterpart in any symbolic map: {@code app/cpy-bms/COTRN01.CPY} declares 21 input fields and
+ * {@code app/cpy-bms/COTRN00.CPY} declares 59, and neither includes a numeric amount. It exists only so
+ * that a caller needing to compute rather than render has somewhere to put the value. It was previously
+ * emitted as a JSON property, which invented a twenty-fourth field the contract does not contain and
+ * offered a second, differently-formatted representation of the same money alongside {@code amount} - two
+ * renderings of one value that a consumer could read inconsistently, since the display mask carries only
+ * eight integer digits while this carries nine. It is therefore annotated {@code @JsonIgnore}: the
+ * canonical constructor still accepts it and {@link #amountValue()} still returns it, so every in-process
+ * use is unaffected, but it is neither serialised nor bound from a request body. {@code amount} remains
+ * the only amount on the wire, exactly as the map declares.</p>
+ *
  * <p><b>Amount arithmetic contract.</b> Where a numeric value is needed rather than a rendering, this
  * type carries {@code amountValue} as a {@link java.math.BigDecimal} at scale
  * {@value #AMOUNT_SCALE} and precision {@value #AMOUNT_PRECISION}, because
@@ -166,9 +169,11 @@ import java.util.List;
  * {@code app/cpy/CVTRA05Y.cpy}:16-17 and are carried as text package-wide, never as a date, a
  * timestamp or an instant. Four verified facts force that representation:</p>
  * <ul>
- *   <li>The generated timestamp is millisecond precision padded to twenty-six characters, so its
- *       final four digits are always zeros; a nanosecond-capable temporal type would render a
- *       different string. {@code app/cpy/CSDAT01Y.cpy}:42-55 fixes the shape as four year digits, a
+ *   <li>The batch-generated timestamp is hundredths-of-a-second precision padded to twenty-six
+ *       characters, so its final four digits are always zeros; a nanosecond-capable temporal type would
+ *       render a different string. The fractional field is {@code DB2-MIL PIC 9(002)} at
+ *       {@code app/cbl/CBTRN02C.cbl}:173, which is why the precision is hundredths and not
+ *       milliseconds. {@code app/cpy/CSDAT01Y.cpy}:42-55 fixes the shape as four year digits, a
  *       dash, two month digits, a dash, two day digits, a space, then hours, minutes and seconds
  *       separated by colons and six fractional digits after a period.</li>
  *   <li>Expiry validation in the posting path compares the first ten characters as a <b>string</b>,
@@ -242,34 +247,37 @@ import java.util.List;
  * its transaction identifier. <b>The card number appears in no diagnostic rendering: not in full, not
  * masked, and not as a last-four.</b> The override exists precisely because the rendering a
  * {@code record} generates by default would publish every component including the card number, which
- * would make an accidental log statement a disclosure. The log configuration masks card numbers
- * profile-invariantly as a second line of defence, but the primary defence is never emitting them.
+ * would make an accidental log statement a disclosure. A central masking rule would be a second line
+ * of defence, but no {@code logback-spring.xml} exists under {@code src/main/resources} yet, so these
+ * overrides are the only defence rather than the first of two.
  * The merchant name, city and postal code are not on the never-emit list, yet they are still kept out
  * of validation messages: no failure message raised here quotes a field value. This type carries no
  * password, no hash, no token and no signing key, and none may be added.</p>
  *
  * <p><b>Findings, classified by severity.</b></p>
  * <ul>
- *   <li><b>Medium - corpus census correction.</b> The specification body states that the seventeen
- *       symbolic maps carry 460 input fields in total. A field-by-field count of all seventeen files
- *       in {@code app/cpy-bms} returns <b>441</b>. The two maps this type implements are correct as
- *       specified, {@code COTRN01.CPY} at 21 and {@code COTRN00.CPY} at 59, so the discrepancy does
- *       not affect this file; it is recorded for the repository-root decision log because the 460
- *       figure is quoted as a coverage total. The count that differs by more than rounding is
- *       {@code COACTVW.CPY}, which holds 37 rather than the 36 stated. Remediation: correct the
- *       aggregate to 441 in the specification and in any gate that asserts it. This type implements
- *       the verified figures.</li>
+ *   <li><b>Medium, closed - corpus census correction.</b> Prior-generation plan prose stated that the
+ *       seventeen symbolic maps carry 460 input fields in total. A field-by-field count of all
+ *       seventeen files in {@code app/cpy-bms} returns <b>441</b>. The two maps this type implements
+ *       are correct as stated, {@code COTRN01.CPY} at 21 and {@code COTRN00.CPY} at 59, so the
+ *       discrepancy never affected this file. The count that differed by more than rounding is
+ *       {@code COACTVW.CPY}, which holds 37 rather than the 36 the prior prose gave. The remediation
+ *       has been applied: {@code docs/technical-specifications.md} publishes 441 and 37 and lists both
+ *       supersessions in its section 0.2.2.1 corrections table, verified on 1 August 2026. No gate in
+ *       the pinned build asserts either figure, because no gate is wired yet. This type implements the
+ *       verified figures.</li>
  *   <li><b>Low - screen picture versus persisted picture.</b> Three fields are persisted numeric and
  *       displayed as characters: {@code TRAN-CAT-CD} at {@code PIC 9(04)} against {@code TCATCDI} at
  *       {@code PIC X(4)}, and {@code TRAN-MERCHANT-ID} at {@code PIC 9(09)} against {@code MIDI} at
  *       {@code PIC X(9)}. Modelling them as text is the remediation, not the defect: it is what keeps
  *       a leading zero intact.</li>
- *   <li><b>Not available - the package contract document.</b> {@code package-info.java} for this
- *       package was not present in the working tree when this file was authored, so its invariants
- *       could not be read directly. The contract applied here was taken instead from the migration
- *       plan and from the sibling types already generated in this package, which agree with one
- *       another. What would be needed to close this item: {@code package-info.java} on disk, followed
- *       by a re-read of this file against it.</li>
+ *   <li><b>Closed - the package contract document now exists.</b> {@code package-info.java} for this
+ *       package was not present when this file was authored and is now on disk, so the earlier
+ *       "not available" record is withdrawn. This file has been re-read against it and the two agree;
+ *       the contract originally taken from the migration plan and the sibling types in this package is
+ *       unchanged by that re-read. The field widths are additionally asserted against
+ *       {@code app/cpy-bms/COTRN01.CPY} by the {@code BmsSymbolicMap} test oracle, so the contract now
+ *       rests on the frozen corpus rather than on agreement among generated files.</li>
  * </ul>
  *
  * <p><b>Error modes.</b> Nothing is thrown during normal operation, and no exception is ever
@@ -284,11 +292,13 @@ import java.util.List;
  * failure mode: no I/O, no clock, no locale and no configuration is touched.</p>
  *
  * <p><b>Building, testing, configuration and troubleshooting.</b> This type belongs to the single
- * Maven module at the repository root. Build it with {@code mvn -B clean compile} and exercise it
- * with {@code mvn -B clean test}; the module compiles under {@code -Xlint:all} with {@code -Werror}
+ * Maven module at the repository root. Build it with {@code ./mvnw -B clean compile} and exercise it
+ * with {@code ./mvnw -B clean test}; the module compiles under {@code -Xlint:all} with {@code -Werror}
  * and {@code failOnWarning}, so any warning introduced here fails the build rather than being
- * reported. Unit tests for this type live under {@code src/test/java/com/cardemo/unit/model}, not
- * beside it. There is nothing to configure: the type reads no property, no environment variable and
+ * reported. Unit tests for this type belong under {@code src/test/java/com/cardemo/unit/model}, not
+ * beside it, and <strong>none exists at this commit</strong> - measured 1 August 2026 there is no
+ * {@code TransactionDtoTest} and this type is not referenced anywhere under {@code src/test/java}.
+ * There is nothing to configure: the type reads no property, no environment variable and
  * no configuration file, and the only defaults it publishes are the constants declared below.
  * Round-tripping through JSON relies on the build's {@code -parameters} compiler flag together with
  * the parameter-names module the framework registers by default, which is why the type declares
@@ -416,6 +426,10 @@ import java.util.List;
  *                           {@value #AMOUNT_SCALE} with {@link RoundingMode#HALF_EVEN}, sign
  *                           preserved. May be {@code null} when no numeric value is offered; the
  *                           magnitude must fit {@value #AMOUNT_INTEGER_DIGITS} integer digits.
+ *                           <b>Annotated {@code @JsonIgnore}: it is an in-process companion, not a
+ *                           wire field.</b> No symbolic map declares it, so serialising it would
+ *                           publish a field the field contract does not contain - see the
+ *                           "arithmetic companion" section on this type.
  */
 public record TransactionDto(
         String transactionName,
@@ -441,107 +455,78 @@ public record TransactionDto(
         String errorMessage,
         String pageNumber,
         List<TransactionListRow> rows,
+
+        @JsonIgnore
         BigDecimal amountValue) {
 
-    // ------------------------------------------------------------------------------------------------------
-    // Field-count contract - app/cpy-bms/COTRN01.CPY:24-144 and app/cpy-bms/COTRN00.CPY:24-372
-    // ------------------------------------------------------------------------------------------------------
-
     /**
-     * Rows displayed per page by the transaction list, namely 10.
-     *
-     * <p>Anchored on {@code app/cbl/COTRN00C.cbl}:65, {@code 10 CDEMO-CT00-PAGE-NUM PIC 9(08).},
-     * declared inside the paging group whose next-page flag follows at line 66, and corroborated
-     * independently by the ten row slots of {@code app/cpy-bms/COTRN00.CPY}:72-366. The same figure
-     * bounds {@link #rows()}, because the screen has exactly this many row slots.
-     *
-     * <p>This is the only page size this type knows. The card list's 7 and the batch transaction
-     * report's 20 printed lines per page are unrelated figures and appear nowhere in this file.
+     * Rows displayed per page by the transaction list, namely 10, from the row loop bound
+     * {@code UNTIL WS-IDX > 10} at {@code app/cbl/COTRN00C.cbl:290}.
      */
     public static final int PAGE_SIZE = 10;
 
     /**
-     * Fields in the transaction detail projection, namely 21.
-     *
-     * <p>Counted field by field across {@code app/cpy-bms/COTRN01.CPY}, {@code TRNNAMEI} at line 24
-     * through {@code ERRMSGI} at line 144, each declaration six lines after the last. These are the
-     * first {@value #DETAIL_FIELD_COUNT} components of this record, in that order, and
-     * {@link #detailProjection()} returns exactly that many values.
+     * Fields in the transaction detail projection, namely 21, counted inside the {@code 01 COTRN1AI} input group
+     * at {@code app/cpy-bms/COTRN01.CPY:17-144}.
      */
     public static final int DETAIL_FIELD_COUNT = 21;
 
     /**
-     * Top-level fields preceding the row table on the list map, namely 8.
-     *
-     * <p>The six-field header at {@code app/cpy-bms/COTRN00.CPY}:24, 30, 36, 42, 48 and 54, then
-     * {@code PAGENUMI} at line 60 and {@code TRNIDINI} at line 66.
+     * Top-level fields preceding the row table on the list map, namely 8: {@code app/cpy-bms/COTRN00.CPY:24}
+     * through :60, the last of them {@code PAGENUMI}.
      */
     public static final int LIST_PREAMBLE_FIELD_COUNT = 8;
 
     /**
-     * Fields in one list row, namely 5.
-     *
-     * <p>{@code SEL000nI} at {@code PIC X(1)}, {@code TRNIDnnI} at {@code PIC X(16)},
-     * {@code TDATEnnI} at {@code PIC X(8)}, {@code TDESCnnI} at {@code PIC X(26)} and
-     * {@code TAMT0nnI} at {@code PIC X(12)}, in that order. Row one occupies
-     * {@code app/cpy-bms/COTRN00.CPY}:72-96 and row ten occupies lines 342-366.
+     * Fields in one list row, namely 5, the ten rows spanning {@code app/cpy-bms/COTRN00.CPY:78-366}.
      */
     public static final int LIST_ROW_FIELD_COUNT = 5;
 
     /**
-     * Top-level fields following the row table on the list map, namely 1.
-     *
-     * <p>{@code ERRMSGI} at {@code PIC X(78)}, {@code app/cpy-bms/COTRN00.CPY}:372.
+     * Top-level fields following the row table on the list map, namely 1: {@code ERRMSGI} at
+     * {@code app/cpy-bms/COTRN00.CPY:372}.
      */
     public static final int LIST_TRAILER_FIELD_COUNT = 1;
 
     /**
      * Fields in the transaction list projection, namely 59.
-     *
-     * <p>Deliberately <b>computed</b> from its three parts rather than written as a literal, so the
-     * decomposition 8 + (10 x 5) + 1 = 59 is proven by the compiler and cannot drift from the
-     * constants it is built out of. {@link #listProjection()} returns exactly this many values for
-     * every instance, whatever the row population.
      */
     public static final int LIST_FIELD_COUNT =
             LIST_PREAMBLE_FIELD_COUNT + (PAGE_SIZE * LIST_ROW_FIELD_COUNT) + LIST_TRAILER_FIELD_COUNT;
 
-    // ------------------------------------------------------------------------------------------------------
-    // Declared field widths. Every constant carries its own anchor; nothing here is inferred.
-    // ------------------------------------------------------------------------------------------------------
-
-    /** {@code TRNNAMEI}, {@code PIC X(4)}, {@code app/cpy-bms/COTRN01.CPY}:24. */
+    /**
+     * {@code TRNNAMEI}, {@code PIC X(4)}, {@code app/cpy-bms/COTRN01.CPY}:24.
+     */
     public static final int TRANSACTION_NAME_LENGTH = 4;
 
     /**
-     * {@code TITLE01I} and {@code TITLE02I}, both {@code PIC X(40)},
-     * {@code app/cpy-bms/COTRN01.CPY}:30 and :48. One constant because the two widths are genuinely
-     * identical on both maps, not because either was assumed.
+     * {@code TITLE01I} and {@code TITLE02I}, both {@code PIC X(40)}, {@code app/cpy-bms/COTRN01.CPY}:30 and
+     * :48. One constant because the two widths are genuinely identical on both maps, not because either was
+     * assumed.
      */
     public static final int TITLE_LENGTH = 40;
 
-    /** {@code CURDATEI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN01.CPY}:36. */
+    /**
+     * {@code CURDATEI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN01.CPY}:36.
+     */
     public static final int CURRENT_DATE_LENGTH = 8;
 
-    /** {@code PGMNAMEI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN01.CPY}:42. */
+    /**
+     * {@code PGMNAMEI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN01.CPY}:42.
+     */
     public static final int PROGRAM_NAME_LENGTH = 8;
 
     /**
      * {@code CURTIMEI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN01.CPY}:54 and
      * {@code app/cpy-bms/COTRN00.CPY}:54.
-     *
-     * <p><b>Not a corpus-wide constant.</b> {@code app/cpy-bms/COSGN00.CPY}:54 declares the same
-     * field as {@code PIC X(9)}. This constant is therefore scoped to the two maps this type serves,
-     * which is exactly why the header sextet is declared inline instead of being hoisted into a
-     * shared abstraction that would have to be wrong for one map or the other.
      */
     public static final int CURRENT_TIME_LENGTH = 8;
 
     /**
      * {@code TRNIDINI}, {@code TRNIDI} and every row's {@code TRNIDnnI}, all {@code PIC X(16)},
-     * {@code app/cpy-bms/COTRN01.CPY}:60 and :66 and {@code app/cpy-bms/COTRN00.CPY}:66, 78, 108,
-     * 138, 168, 198, 228, 258, 288, 318 and 348. Matches the persisted {@code TRAN-ID} of
-     * {@code app/cpy/CVTRA05Y.cpy}:5, so no truncation occurs on this field.
+     * {@code app/cpy-bms/COTRN01.CPY}:60 and :66 and {@code app/cpy-bms/COTRN00.CPY}:66, 78, 108, 138, 168,
+     * 198, 228, 258, 288, 318 and 348. Matches the persisted {@code TRAN-ID} of {@code app/cpy/CVTRA05Y.cpy}:5,
+     * so no truncation occurs on this field.
      */
     public static final int TRANSACTION_ID_LENGTH = 16;
 
@@ -551,7 +536,9 @@ public record TransactionDto(
      */
     public static final int CARD_NUMBER_LENGTH = 16;
 
-    /** {@code TTYPCDI}, {@code PIC X(2)}, {@code app/cpy-bms/COTRN01.CPY}:78. */
+    /**
+     * {@code TTYPCDI}, {@code PIC X(2)}, {@code app/cpy-bms/COTRN01.CPY}:78.
+     */
     public static final int TYPE_CODE_LENGTH = 2;
 
     /**
@@ -562,61 +549,58 @@ public record TransactionDto(
 
     /**
      * {@code TRNSRCI}, {@code PIC X(10)}, {@code app/cpy-bms/COTRN01.CPY}:90, matching the persisted
-     * {@code TRAN-SOURCE} of {@code app/cpy/CVTRA05Y.cpy}:8. Ten unconstrained characters, never an
-     * enum domain.
+     * {@code TRAN-SOURCE} of {@code app/cpy/CVTRA05Y.cpy}:8. Ten unconstrained characters, never an enum
+     * domain.
      */
     public static final int SOURCE_LENGTH = 10;
 
     /**
-     * {@code TDESCI}, {@code PIC X(60)}, {@code app/cpy-bms/COTRN01.CPY}:96 - the <b>detail</b>
-     * description width. Distinct from {@link #ROW_DESCRIPTION_LENGTH} and from
-     * {@link #DESCRIPTION_PERSISTED_LENGTH}; see the class documentation for why all three exist.
+     * {@code TDESCI}, {@code PIC X(60)}, {@code app/cpy-bms/COTRN01.CPY}:96 - the <b>detail</b> description
+     * width. Distinct from {@link #ROW_DESCRIPTION_LENGTH} and from {@link #DESCRIPTION_PERSISTED_LENGTH}; see
+     * the class documentation for why all three exist.
      */
     public static final int DESCRIPTION_LENGTH = 60;
 
     /**
-     * {@code TDESC01I} through {@code TDESC10I}, all {@code PIC X(26)},
-     * {@code app/cpy-bms/COTRN00.CPY}:90, 120, 150, 180, 210, 240, 270, 300, 330 and 360 - the
-     * <b>list row</b> description width. Never derived from {@link #DESCRIPTION_LENGTH}: both are
-     * independent truncations of the same persisted field.
+     * {@code TDESC01I} through {@code TDESC10I}, all {@code PIC X(26)}, {@code app/cpy-bms/COTRN00.CPY}:90,
+     * 120, 150, 180, 210, 240, 270, 300, 330 and 360 - the <b>list row</b> description width. Never derived
+     * from {@link #DESCRIPTION_LENGTH}: both are independent truncations of the same persisted field.
      */
     public static final int ROW_DESCRIPTION_LENGTH = 26;
 
     /**
-     * {@code TRAN-DESC}, {@code PIC X(100)}, {@code app/cpy/CVTRA05Y.cpy}:9 - the <b>persisted</b>
-     * description width, recorded so the two screen truncations are traceable to their origin. No
-     * component of this type accepts 100 characters.
+     * {@code TRAN-DESC}, {@code PIC X(100)}, {@code app/cpy/CVTRA05Y.cpy}:9 - the <b>persisted</b> description
+     * width, recorded so the two screen truncations are traceable to their origin. No component of this type
+     * accepts 100 characters.
      */
     public static final int DESCRIPTION_PERSISTED_LENGTH = 100;
 
     /**
      * {@code TRNAMTI} and every row's {@code TAMT0nnI}, all {@code PIC X(12)},
-     * {@code app/cpy-bms/COTRN01.CPY}:102 and {@code app/cpy-bms/COTRN00.CPY}:96, 126, 156, 186, 216,
-     * 246, 276, 306, 336 and 366. Twelve characters is exactly the width of
-     * {@value #AMOUNT_EDITED_MASK}.
+     * {@code app/cpy-bms/COTRN01.CPY}:102 and {@code app/cpy-bms/COTRN00.CPY}:96, 126, 156, 186, 216, 246, 276,
+     * 306, 336 and 366. Twelve characters is exactly the width of {@value #AMOUNT_EDITED_MASK}.
      */
     public static final int AMOUNT_DISPLAY_LENGTH = 12;
 
     /**
-     * {@code TORIGDTI} and {@code TPROCDTI}, both {@code PIC X(10)},
-     * {@code app/cpy-bms/COTRN01.CPY}:108 and :114. The leading ten characters of a
-     * {@value #PERSISTED_TIMESTAMP_LENGTH}-character timestamp, rendered {@code YYYY-MM-DD}.
+     * {@code TORIGDTI} and {@code TPROCDTI}, both {@code PIC X(10)}, {@code app/cpy-bms/COTRN01.CPY}:108 and
+     * :114. The leading ten characters of a {@value #PERSISTED_TIMESTAMP_LENGTH}-character timestamp, rendered
+     * {@code YYYY-MM-DD}.
      */
     public static final int DETAIL_DATE_LENGTH = 10;
 
     /**
-     * {@code TDATE01I} through {@code TDATE10I}, all {@code PIC X(8)},
-     * {@code app/cpy-bms/COTRN00.CPY}:84, 114, 144, 174, 204, 234, 264, 294, 324 and 354. Rendered
-     * {@code MM/DD/YY} with slash separators and a two-digit year, per
-     * {@code app/cbl/COTRN00C.cbl}:57 and 384-388 with {@code app/cpy/CSDAT01Y.cpy}:30-35. A
-     * different <b>format</b> from {@link #DETAIL_DATE_LENGTH}, not merely a different width.
+     * {@code TDATE01I} through {@code TDATE10I}, all {@code PIC X(8)}, {@code app/cpy-bms/COTRN00.CPY}:84, 114,
+     * 144, 174, 204, 234, 264, 294, 324 and 354. Rendered {@code MM/DD/YY} with slash separators and a
+     * two-digit year, per {@code app/cbl/COTRN00C.cbl}:57 and 384-388 with {@code app/cpy/CSDAT01Y.cpy}:30-35.
+     * A different <b>format</b> from {@link #DETAIL_DATE_LENGTH}, not merely a different width.
      */
     public static final int ROW_DATE_LENGTH = 8;
 
     /**
      * {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS}, both {@code PIC X(26)},
-     * {@code app/cpy/CVTRA05Y.cpy}:16-17. Recorded so the screen date widths are traceable to the
-     * timestamps they are prefixes of; no component of this type accepts 26 characters.
+     * {@code app/cpy/CVTRA05Y.cpy}:16-17. Recorded so the screen date widths are traceable to the timestamps
+     * they are prefixes of; no component of this type accepts 26 characters.
      */
     public static final int PERSISTED_TIMESTAMP_LENGTH = 26;
 
@@ -627,14 +611,14 @@ public record TransactionDto(
     public static final int MERCHANT_ID_LENGTH = 9;
 
     /**
-     * {@code MNAMEI}, {@code PIC X(30)}, {@code app/cpy-bms/COTRN01.CPY}:126, a truncation of the
-     * persisted {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy}:12.
+     * {@code MNAMEI}, {@code PIC X(30)}, {@code app/cpy-bms/COTRN01.CPY}:126, a truncation of the persisted
+     * {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy}:12.
      */
     public static final int MERCHANT_NAME_LENGTH = 30;
 
     /**
-     * {@code MCITYI}, {@code PIC X(25)}, {@code app/cpy-bms/COTRN01.CPY}:132, a truncation of the
-     * persisted {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy}:13.
+     * {@code MCITYI}, {@code PIC X(25)}, {@code app/cpy-bms/COTRN01.CPY}:132, a truncation of the persisted
+     * {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy}:13.
      */
     public static final int MERCHANT_CITY_LENGTH = 25;
 
@@ -652,98 +636,57 @@ public record TransactionDto(
 
     /**
      * {@code PAGENUMI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN00.CPY}:60, matching
-     * {@code app/cpy-bms/COUSR00.CPY}:60 but <b>not</b> {@code app/cpy-bms/COCRDLI.CPY}:60, which
-     * declares {@code PAGENOI} at {@code PIC X(3)}.
+     * {@code app/cpy-bms/COUSR00.CPY}:60 but <b>not</b> {@code app/cpy-bms/COCRDLI.CPY}:60, which declares
+     * {@code PAGENOI} at {@code PIC X(3)}.
      */
     public static final int PAGE_NUMBER_LENGTH = 8;
 
     /**
-     * {@code SEL0001I} through {@code SEL0010I}, all {@code PIC X(1)},
-     * {@code app/cpy-bms/COTRN00.CPY}:72, 102, 132, 162, 192, 222, 252, 282, 312 and 342. The
-     * per-row selection marker the operator types beside a row.
+     * {@code SEL0001I} through {@code SEL0010I}, all {@code PIC X(1)}, {@code app/cpy-bms/COTRN00.CPY}:72, 102,
+     * 132, 162, 192, 222, 252, 282, 312 and 342. The per-row selection marker the operator types beside a row.
      */
     public static final int SELECTION_FLAG_LENGTH = 1;
 
-    // ------------------------------------------------------------------------------------------------------
-    // Amount arithmetic contract - app/cpy/CVTRA05Y.cpy:10 and app/cbl/COTRN02C.cbl:58-59
-    // ------------------------------------------------------------------------------------------------------
-
     /**
-     * Decimal places in a transaction amount, namely 2, from the {@code V99} of
-     * {@code PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy}:10.
+     * Decimal places in a transaction amount, namely 2, from the {@code V99} of {@code PIC S9(09)V99} at
+     * {@code app/cpy/CVTRA05Y.cpy}:10.
      */
     public static final int AMOUNT_SCALE = 2;
 
     /**
-     * Integer digits in a transaction amount, namely 9, from the {@code S9(09)} of
-     * {@code PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy}:10.
-     *
-     * <p>Note that the twelve-character display mask {@value #AMOUNT_EDITED_MASK} renders only eight
-     * integer digits, so a ninth integer digit is representable in the persisted field and in
-     * {@link #amountValue()} but not in {@link #amount()}. That asymmetry is the legacy contract, not
-     * a defect to reconcile.
+     * Integer digits in a transaction amount, namely 9, from the {@code S9(09)} of {@code PIC S9(09)V99} at
+     * {@code app/cpy/CVTRA05Y.cpy}:10.
      */
     public static final int AMOUNT_INTEGER_DIGITS = 9;
 
     /**
-     * Total significant digits in a transaction amount, namely 11, so the column type is
-     * {@code NUMERIC(11,2)}.
-     *
-     * <p>Computed from its two parts so the derivation is proven by the compiler. This is the
-     * <b>transaction</b> money precision and is deliberately distinct from the account money
-     * precision of {@code NUMERIC(12,2)} that {@code PIC S9(10)V99} yields elsewhere in the model.
+     * Total significant digits in a transaction amount, namely 11, so the column type is {@code NUMERIC(11,2)}.
      */
     public static final int AMOUNT_PRECISION = AMOUNT_INTEGER_DIGITS + AMOUNT_SCALE;
 
     /**
      * Rounding applied whenever an amount is rescaled, namely {@link RoundingMode#HALF_EVEN}.
-     *
-     * <p>Amounts must be compared with {@link BigDecimal#compareTo(BigDecimal)} and never with
-     * {@link BigDecimal#equals(Object)}: {@code equals} additionally compares scale and would report
-     * two numerically equal amounts as different.
      */
     public static final RoundingMode AMOUNT_ROUNDING_MODE = RoundingMode.HALF_EVEN;
 
     /**
-     * The legacy edited display mask for an amount, {@code +99999999.99}.
-     *
-     * <p>Declared at {@code app/cbl/COTRN02C.cbl}:59 as
-     * {@code 05 WS-TRAN-AMT-E PIC +99999999.99 VALUE ZEROS.} beside its numeric partner at line 58,
-     * and again on the read path at {@code app/cbl/COTRN01C.cbl}:49. A mandatory sign, exactly eight
-     * integer digits, a decimal point and two decimals total twelve characters, which is why
-     * {@link #AMOUNT_DISPLAY_LENGTH} is 12. Published for services that must reproduce the response
-     * echo of {@code app/cbl/COTRN02C.cbl}:385-386; <b>this type never applies the mask itself</b>.
+     * The legacy edited display mask for an amount, {@code +99999999.99}, declared at
+     * {@code app/cbl/COTRN02C.cbl:59}.
      */
     public static final String AMOUNT_EDITED_MASK = "+99999999.99";
 
     /**
      * Exclusive magnitude bound for an amount: the smallest value needing a tenth integer digit.
-     *
-     * <p>Immutable, as {@link BigDecimal} instances are, so this static field introduces no shared
-     * mutable state.
      */
     private static final BigDecimal AMOUNT_MAGNITUDE_LIMIT = new BigDecimal("1000000000");
 
-    // ------------------------------------------------------------------------------------------------------
-    // Construction
-    // ------------------------------------------------------------------------------------------------------
-
     /**
-     * Validates every declared width, takes an unmodifiable defensive copy of the row list and
-     * canonicalises the amount's scale.
+     * Validates every declared width, takes an unmodifiable defensive copy of the row list and canonicalises
+     * the amount's scale.
      *
-     * <p>A {@code null} component is always accepted: absence is a distinct and meaningful state and
-     * is never coerced to the empty string. No component is trimmed, upper-cased or lower-cased, so a
-     * blank-padded screen value arrives exactly as the screen held it.
-     *
-     * @throws IllegalArgumentException if any component is longer than the COBOL field it represents,
-     *                                  if {@code rows} contains a {@code null} element, if
-     *                                  {@code rows} holds more than {@value #PAGE_SIZE} entries, or if
-     *                                  {@code amountValue} needs more than
-     *                                  {@value #AMOUNT_INTEGER_DIGITS} integer digits. Every message
-     *                                  names the offending field and reports the limit; none reports
-     *                                  the value, because the card number is personally identifiable
-     *                                  information and a message can reach a log
+     * @throws IllegalArgumentException if any component is longer than the COBOL field it represents, if
+     * {@code rows} contains a {@code null} element, if {@code rows} holds more than {@value #PAGE_SIZE}
+     * entries, or if {@code amountValue} needs more than {@value #AMOUNT_INTEGER_DIGITS} integer digits.
      */
     public TransactionDto {
         requireWithinWidth(transactionName, TRANSACTION_NAME_LENGTH, "transactionName");
@@ -772,25 +715,11 @@ public record TransactionDto(
         amountValue = normaliseAmount(amountValue);
     }
 
-    // ------------------------------------------------------------------------------------------------------
-    // Accessors that strengthen the generated contract
-    // ------------------------------------------------------------------------------------------------------
-
     /**
      * Returns the list row slots in positional screen order, row one first.
      *
-     * <p>The backing list is never exposed. The canonical constructor already stored an unmodifiable
-     * copy, and this accessor wraps it once more so the guarantee holds on access as well as on
-     * construction; because the stored list is already unmodifiable the second wrapper adds no copy
-     * and no traversal.
-     *
-     * <p><b>{@code null} and empty mean different things.</b> {@code null} means this instance carries
-     * no list projection at all, which is what a detail response looks like. An empty list means a
-     * list projection that displayed no rows. Neither state is coerced into the other, so a caller can
-     * tell "not a list" from "an empty list" without a second flag.
-     *
-     * @return an unmodifiable, order-preserving view of the row slots, or {@code null} if this
-     *         instance carries no list projection
+     * @return an unmodifiable, order-preserving view of the row slots, or {@code null} if this instance carries
+     * no list projection
      */
     @Override
     public List<TransactionListRow> rows() {
@@ -799,17 +728,10 @@ public record TransactionDto(
 
     /**
      * Returns the {@value #DETAIL_FIELD_COUNT} detail fields in the declaration order of
-     * {@code app/cpy-bms/COTRN01.CPY}, from {@code TRNNAMEI} at line 24 to {@code ERRMSGI} at line
-     * 144.
+     * {@code app/cpy-bms/COTRN01.CPY}, from {@code TRNNAMEI} at line 24 to {@code ERRMSGI} at line 144.
      *
-     * <p>This is an ordered read-only view of values this instance already holds. It converts nothing,
-     * formats nothing and truncates nothing, and it exists so the field contract is verifiable by
-     * assertion rather than only by reading the source. The returned list <b>permits {@code null}
-     * elements</b>, because an absent field must stay distinguishable from a blank one; it is
-     * therefore not built with a null-hostile factory.
-     *
-     * @return an unmodifiable list of exactly {@value #DETAIL_FIELD_COUNT} values, in map declaration
-     *         order, possibly containing {@code null} elements
+     * @return an unmodifiable list of exactly {@value #DETAIL_FIELD_COUNT} values, in map declaration order,
+     * possibly containing {@code null} elements
      */
     public List<String> detailProjection() {
         final List<String> projection = new ArrayList<>(DETAIL_FIELD_COUNT);
@@ -839,25 +761,10 @@ public record TransactionDto(
 
     /**
      * Returns the {@value #LIST_FIELD_COUNT} list fields in the declaration order of
-     * {@code app/cpy-bms/COTRN00.CPY}, from {@code TRNNAMEI} at line 24 to {@code ERRMSGI} at line
-     * 372.
+     * {@code app/cpy-bms/COTRN00.CPY}, from {@code TRNNAMEI} at line 24 to {@code ERRMSGI} at line 372.
      *
-     * <p>The order is the map's own: the {@value #LIST_PREAMBLE_FIELD_COUNT} preamble fields, then the
-     * ten row slots each contributing its {@value #LIST_ROW_FIELD_COUNT} fields in the order selection
-     * marker, identifier, date, description, amount, then the
-     * {@value #LIST_TRAILER_FIELD_COUNT} trailer field.
-     *
-     * <p><b>The size is always exactly {@value #LIST_FIELD_COUNT}, whatever the row population.</b> A
-     * screen always presents ten row slots, blank when unpopulated, so a slot with no supplied row
-     * contributes {@value #LIST_ROW_FIELD_COUNT} {@code null} entries - absent rather than blank,
-     * because the two are not the same and this type does not invent spaces. That makes the field-count
-     * contract assertable on a detail-only instance as readily as on a full page.
-     *
-     * <p>Like {@link #detailProjection()} this is an ordered read-only view: no conversion, no
-     * formatting, no truncation.
-     *
-     * @return an unmodifiable list of exactly {@value #LIST_FIELD_COUNT} values, in map declaration
-     *         order, possibly containing {@code null} elements
+     * @return an unmodifiable list of exactly {@value #LIST_FIELD_COUNT} values, in map declaration order,
+     * possibly containing {@code null} elements
      */
     public List<String> listProjection() {
         final List<String> projection = new ArrayList<>(LIST_FIELD_COUNT);
@@ -882,18 +789,13 @@ public record TransactionDto(
     }
 
     /**
-     * Returns the row occupying a given zero-based screen slot, or {@code null} if that slot is
-     * unpopulated.
-     *
-     * <p>An unpopulated slot is a normal state rather than an error: a final page commonly fills fewer
-     * than {@value #PAGE_SIZE} slots, and a detail response fills none. Returning {@code null} for it
-     * mirrors the blank screen row and keeps the caller from having to bounds-check.
+     * Returns the row occupying a given zero-based screen slot, or {@code null} if that slot is unpopulated.
      *
      * @param slot the zero-based slot index, where 0 is the screen's first row
-     * @return the row in that slot, or {@code null} if the slot is unpopulated or this instance
-     *         carries no list projection
-     * @throws IllegalArgumentException if {@code slot} is negative or not less than
-     *                                  {@value #PAGE_SIZE}, since no such slot exists on the screen
+     * @return the row in that slot, or {@code null} if the slot is unpopulated or this instance carries no list
+     * projection
+     * @throws IllegalArgumentException if {@code slot} is negative or not less than {@value #PAGE_SIZE}, since
+     * no such slot exists on the screen
      */
     public TransactionListRow rowAt(final int slot) {
         if (slot < 0 || slot >= PAGE_SIZE) {
@@ -907,14 +809,7 @@ public record TransactionDto(
     }
 
     /**
-     * Returns a diagnostic rendering that deliberately omits the card number and every other business
-     * field.
-     *
-     * <p>Overridden because the rendering a {@code record} generates by default would publish every
-     * component, including {@code cardNumber} from {@code app/cpy-bms/COTRN01.CPY}:72, which would
-     * turn any incidental log statement into a disclosure. Only the retrieved transaction identifier
-     * and the program name are emitted. <b>The card number never appears here: not in full, not
-     * masked, and not as a last-four.</b>
+     * Returns a diagnostic rendering that deliberately omits the card number and every other business field.
      *
      * @return the type name, the transaction identifier and the program name, and nothing else
      */
@@ -925,22 +820,13 @@ public record TransactionDto(
                 + ", protectedFieldsOmitted=true]";
     }
 
-    // ------------------------------------------------------------------------------------------------------
-    // Shared validation helpers
-    // ------------------------------------------------------------------------------------------------------
-
     /**
      * Rejects a value that cannot fit its fixed-width field.
      *
-     * <p>A {@code null} value is accepted, because absence is a distinct and meaningful state that
-     * must not be coerced to the empty string.
-     *
-     * @param value     the candidate value, possibly {@code null}
+     * @param value the candidate value, possibly {@code null}
      * @param maxLength the declared width of the COBOL field in bytes
      * @param fieldName the Java component name, used verbatim in the failure message
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}; the message
-     *                                  carries the field name and the two lengths, never the value
-     *                                  itself
+     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}.
      */
     private static void requireWithinWidth(final String value, final int maxLength, final String fieldName) {
         if (value != null && value.length() > maxLength) {
@@ -950,15 +836,14 @@ public record TransactionDto(
     }
 
     /**
-     * Takes an unmodifiable defensive copy of the row slots, preserving the distinction between an
-     * absent list and an empty one.
+     * Takes an unmodifiable defensive copy of the row slots, preserving the distinction between an absent list
+     * and an empty one.
      *
      * @param rows the caller's list, possibly {@code null}
-     * @return {@code null} if {@code rows} is {@code null}, otherwise an unmodifiable copy in the
-     *         supplied order
-     * @throws IllegalArgumentException if any element is {@code null}, or if more rows are supplied
-     *                                  than the screen has slots; the message reports the index or the
-     *                                  count, never a row's contents
+     * @return {@code null} if {@code rows} is {@code null}, otherwise an unmodifiable copy in the supplied
+     * order
+     * @throws IllegalArgumentException if any element is {@code null}, or if more rows are supplied than the
+     * screen has slots.
      */
     private static List<TransactionListRow> copyRows(final List<TransactionListRow> rows) {
         if (rows == null) {
@@ -984,24 +869,11 @@ public record TransactionDto(
      * Canonicalises an amount to scale {@value #AMOUNT_SCALE} and rejects a magnitude that
      * {@code PIC S9(09)V99} cannot hold.
      *
-     * <p>Rescaling is the numeric counterpart of preserving fixed-width padding rather than a
-     * coercion that discards information: the picture clause fixes the scale at
-     * {@value #AMOUNT_SCALE}, so a canonical scale is what makes this record's generated
-     * {@code equals} and {@code hashCode} deterministic across callers that happened to build the
-     * same amount at different scales.
-     *
-     * <p><b>The sign is never altered.</b> The corpus carries genuinely negative amounts - the daily
-     * fixture holds both positive and negative zoned-decimal overpunch signs - so no absolute value is
-     * ever applied to the value returned. {@link BigDecimal#abs()} appears once below and only to make
-     * the magnitude bound symmetric, so a debit of ten integer digits is rejected on the same terms as
-     * the equivalent credit.
-     *
      * @param value the candidate amount, possibly {@code null}
      * @return {@code null} if {@code value} is {@code null}, otherwise {@code value} at scale
-     *         {@value #AMOUNT_SCALE}
-     * @throws IllegalArgumentException if the magnitude needs more than
-     *                                  {@value #AMOUNT_INTEGER_DIGITS} integer digits; the message
-     *                                  names the field and reports the limit, not the value
+     * {@value #AMOUNT_SCALE}
+     * @throws IllegalArgumentException if the magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer
+     * digits.
      */
     private static BigDecimal normaliseAmount(final BigDecimal value) {
         if (value == null) {
@@ -1016,56 +888,17 @@ public record TransactionDto(
         return scaled;
     }
 
-    // ------------------------------------------------------------------------------------------------------
-    // Nested row projection - app/cpy-bms/COTRN00.CPY:72-366
-    // ------------------------------------------------------------------------------------------------------
-
     /**
      * One of the ten row slots of the transaction list screen.
      *
-     * <p>Five fields per row, declared in this order for row one at
-     * {@code app/cpy-bms/COTRN00.CPY}:72, 78, 84, 90 and 96, and repeating every thirty lines through
-     * row ten at lines 342, 348, 354, 360 and 366. Ten rows of five fields are the fifty row fields of
-     * the {@value #LIST_FIELD_COUNT}-field list projection.
-     *
-     * <p>Nested here rather than declared as a nineteenth file in this package, because a row has no
-     * meaning apart from the screen that declares ten of them, and because the package budget is
-     * eighteen files.
-     *
-     * <p>Two contrasts with the detail projection are deliberate and must not be harmonised. The row
-     * description is {@code PIC X(26)} where the detail description is {@code PIC X(60)}; both are
-     * independent truncations of one {@code PIC X(100)} persisted field. And the row carries a single
-     * {@code PIC X(8)} date rendered {@code MM/DD/YY} with slashes, where the detail projection
-     * carries two {@code PIC X(10)} dates rendered {@code YYYY-MM-DD} with dashes.
-     *
-     * @param selectionFlag   {@code SEL000nI}, {@code PIC X(1)},
-     *                        {@code app/cpy-bms/COTRN00.CPY}:72 for row one. The marker the operator
-     *                        types beside a row to select it. May be {@code null}; must not exceed 1
-     *                        character.
-     * @param transactionId   {@code TRNIDnnI}, {@code PIC X(16)},
-     *                        {@code app/cpy-bms/COTRN00.CPY}:78 for row one, populated by
-     *                        {@code app/cbl/COTRN00C.cbl}:392 from {@code TRAN-ID}. Card-adjacent, so
-     *                        it is the only field {@link #toString()} emits. May be {@code null}; must
-     *                        not exceed 16 characters.
-     * @param transactionDate {@code TDATEnnI}, {@code PIC X(8)},
-     *                        {@code app/cpy-bms/COTRN00.CPY}:84 for row one. Text, never a temporal
-     *                        type: {@code app/cbl/COTRN00C.cbl}:384-388 rebuilds it from the
-     *                        originating timestamp as {@code MM/DD/YY} through
-     *                        {@code WS-CURDATE-MM-DD-YY} of {@code app/cpy/CSDAT01Y.cpy}:30-35, and
-     *                        line 57 declares the carrier as
-     *                        {@code PIC X(08) VALUE '00/00/00'}. May be {@code null}; must not exceed 8
-     *                        characters.
-     * @param description     {@code TDESCnnI}, {@code PIC X(26)},
-     *                        {@code app/cpy-bms/COTRN00.CPY}:90 for row one, populated by
-     *                        {@code app/cbl/COTRN00C.cbl}:395. <b>Twenty-six characters, not the
-     *                        detail projection's sixty</b>; see the class documentation. May be
-     *                        {@code null}; must not exceed 26 characters.
-     * @param amount          {@code TAMT0nnI}, {@code PIC X(12)},
-     *                        {@code app/cpy-bms/COTRN00.CPY}:96 for row one. The display rendering
-     *                        under the mask {@value #AMOUNT_EDITED_MASK}, produced by
-     *                        {@code app/cbl/COTRN00C.cbl}:383 moving {@code TRAN-AMT} through the
-     *                        edited field. Carried verbatim; never reformatted here. May be
-     *                        {@code null}; must not exceed 12 characters.
+     * @param selectionFlag {@code SEL000nI}, {@code PIC X(1)}, {@code app/cpy-bms/COTRN00.CPY}:72 for row one.
+     * @param transactionId {@code TRNIDnnI}, {@code PIC X(16)}, {@code app/cpy-bms/COTRN00.CPY}:78 for row one,
+     * populated by {@code app/cbl/COTRN00C.cbl}:392 from {@code TRAN-ID}.
+     * @param transactionDate {@code TDATEnnI}, {@code PIC X(8)}, {@code app/cpy-bms/COTRN00.CPY}:84 for row
+     * one.
+     * @param description {@code TDESCnnI}, {@code PIC X(26)}, {@code app/cpy-bms/COTRN00.CPY}:90 for row one,
+     * populated by {@code app/cbl/COTRN00C.cbl}:395.
+     * @param amount {@code TAMT0nnI}, {@code PIC X(12)}, {@code app/cpy-bms/COTRN00.CPY}:96 for row one.
      */
     public record TransactionListRow(
             String selectionFlag,
@@ -1077,13 +910,7 @@ public record TransactionDto(
         /**
          * Validates every declared row width.
          *
-         * <p>A {@code null} component is accepted and left as {@code null}: an unpopulated screen row
-         * is a normal state, and absence stays distinguishable from a blank-padded value. Nothing is
-         * trimmed or case-folded.
-         *
-         * @throws IllegalArgumentException if any component is longer than the COBOL field it
-         *                                  represents; the message names the field and reports the two
-         *                                  lengths, never the value
+         * @throws IllegalArgumentException if any component is longer than the COBOL field it represents.
          */
         public TransactionListRow {
             requireWithinWidth(selectionFlag, SELECTION_FLAG_LENGTH, "selectionFlag");
@@ -1095,11 +922,6 @@ public record TransactionDto(
 
         /**
          * Returns a diagnostic rendering carrying only the transaction identifier.
-         *
-         * <p>Overridden for the same reason as {@link TransactionDto#toString()}: the rendering a
-         * {@code record} generates by default would publish every component, and a row's description
-         * and amount are business data that has no place in a log line. No row field is card data,
-         * and none is emitted beyond the identifier.
          *
          * @return the type name and the transaction identifier, and nothing else
          */

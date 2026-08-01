@@ -34,14 +34,14 @@ import java.io.Serializable;
 import java.util.Objects;
 
 /**
- * Composite primary key of the {@code DISCGRP} disclosure group (interest rate) reference file.
+ * Composite primary key of the {@code DISCGRP} disclosure group (interest rate) reference file, reproducing the
+ * COBOL group {@code DIS-ACCT-GROUP-ID} plus {@code DIS-TRAN-TYPE-CD} plus {@code DIS-TRAN-CAT-CD} of
+ * {@code app/cpy/CVTRA02Y.cpy} field for field and in source order.
  *
- * <h2>What it does</h2>
- * <p>This is a pure, immutable value type. It carries the three components of the COBOL group
- * {@code DIS-GROUP-KEY} declared in {@code app/cpy/CVTRA02Y.cpy}, in the copybook's declaration order, and
- * nothing else. It is consumed through {@code jakarta.persistence.EmbeddedId} by
- * {@code com.cardemo.model.entity.DisclosureGroup}, which replaces the VSAM KSDS cluster
- * {@code AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS} catalogued at {@code app/catlg/LISTCAT.txt:L859}.</p>
+ * <p>The three components sum to {@code 10 + 2 + 4 = 16} bytes, which is the catalogued key length of the
+ * cluster. Component order is load-bearing: the interest job's fallback lookup substitutes only the leading
+ * group identifier and re-reads with the same trailing pair, which works only while that pair keeps its
+ * position.
  *
  * <h2>Source field contract, reproduced exactly</h2>
  * <p>From {@code app/cpy/CVTRA02Y.cpy:L4-L10} (record length 50):</p>
@@ -151,10 +151,15 @@ import java.util.Objects;
  * Switching those columns to {@code VARCHAR} would therefore break the DEFAULT group fallback for any caller
  * that supplies the literal unpadded, and such a caller would then have to pad to ten characters exactly as
  * {@code app/cbl/CBACT04C.cbl:L437} does. Record that consequence rather than making the change silently.</p>
- * <p><strong>Not available.</strong> At the time of writing, {@code src/main/resources/db/migration/} does not
- * exist, so {@code V1__create_schema.sql} is not available, and neither is the sibling entity
- * {@code com.cardemo.model.entity.DisclosureGroup}. Closing that gap needs exactly those two artefacts. Until
- * they exist the contract above is normative and no SQL type beyond it has been invented here.</p>
+ * <p><strong>Both artefacts this paragraph once reported missing now exist.</strong> An earlier revision
+ * said {@code src/main/resources/db/migration/} did not exist and that the sibling entity
+ * {@code com.cardemo.model.entity.DisclosureGroup} was unavailable; both claims are withdrawn.
+ * {@code V1__create_schema.sql} declares the {@code disclosure_group} table with its
+ * three-column composite primary key in COBOL field order, summing to the catalogued key length of 16,
+ * and {@code DisclosureGroup} is present and maps this class through {@code @EmbeddedId}. That agreement
+ * is asserted mechanically by {@code SchemaStructureTest} and {@code CompositeKeyContractTest} rather than
+ * by inspection. The contract above remains normative and no SQL type beyond it has been invented here.
+ * What is still genuinely absent is {@code V2__create_indexes.sql}, which has never existed.</p>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
@@ -187,14 +192,15 @@ import java.util.Objects;
  * Persist and transport it as JPA columns or as JSON, never as a serialized object stream.</p>
  *
  * <h2>How to build and test</h2>
- * <p>{@code mvn -B clean compile} compiles this class under {@code --release 25} with {@code -Xlint:all}
- * and {@code -Werror}, so any warning is a build failure. {@code mvn -B clean test} runs the unit suite, and
- * {@code mvn -B clean verify} additionally enforces the JaCoCo line-coverage floor. Verified on
+ * <p>{@code ./mvnw -B clean compile} compiles this class under {@code --release 25} with {@code -Xlint:all}
+ * and {@code -Werror}, so any warning is a build failure. {@code ./mvnw -B clean test} runs the unit suite, and
+ * {@code ./mvnw -B clean verify} additionally enforces the JaCoCo line-coverage floor. Verified on
  * OpenJDK 25.0.3 with Maven 3.9.11: all three goals succeed and the compiler reports no warning against this
  * source.</p>
- * <p><strong>Not available.</strong> Package-level documentation for {@code com.cardemo.model.key} belongs in
- * a sibling {@code package-info.java}, which does not exist yet; this class documentation is deliberately
- * self-contained in the meantime, and no claim is made here about content that is not present.</p>
+ * <p><strong>Package-level documentation.</strong> {@code com.cardemo.model.key} carries its own
+ * {@code package-info.java}, which holds the package-wide banner, the composite-key inventory, the build and
+ * test instructions and the shared failure modes. This class documentation stays self-contained on the
+ * points specific to the disclosure-group key rather than duplicating that file.</p>
  *
  * <h2>Design constraints deliberately honoured</h2>
  * <p>No base class is extended and none is introduced. The two sibling identifiers in this package describe
@@ -210,8 +216,8 @@ import java.util.Objects;
 public class DisclosureGroupId implements Serializable {
 
     /**
-     * Serialization version identifier. Declared explicitly because this type implements
-     * {@link Serializable} for JPA identifier purposes; see the security note on the class documentation.
+     * Serialization version identifier. Declared explicitly because this type implements {@link Serializable}
+     * for JPA identifier purposes.
      */
     private static final long serialVersionUID = 1L;
 
@@ -225,6 +231,15 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Width of {@code DIS-TRAN-TYPE-CD}, {@code PIC X(02)} at {@code app/cpy/CVTRA02Y.cpy:L7}. Compile-time
      * constant, not persistent state.
+     *
+     * <p>This width is an exact requirement rather than a ceiling, which is why the component is checked with
+     * {@link #requireExactWidth(String, String, String, int)} and the account group id is not. The component
+     * occupies bytes 11 and 12 of the sixteen-byte {@code DIS-GROUP-KEY}, so a one-character value does not
+     * merely under-fill its own field - it moves {@code DIS-TRAN-CAT-CD} to the wrong offset and therefore
+     * denotes a different row. Both sibling identifiers in this package take the same position on the same
+     * picture clause ({@code TransactionCategoryId.requireValidTranTypeCd} and
+     * {@code TransactionCategoryBalanceId.requireValidTypeCd}), and every one of the fifty-one rows in
+     * {@code app/data/ASCII/discgrp.txt} carries exactly two characters there.</p>
      */
     private static final int TRAN_TYPE_CD_LENGTH = 2;
 
@@ -242,9 +257,9 @@ public class DisclosureGroupId implements Serializable {
     /**
      * {@code DIS-ACCT-GROUP-ID}, {@code PIC X(10)}, bytes 1 to 10 of the sixteen-byte key
      * ({@code app/cpy/CVTRA02Y.cpy:L6}). Stored verbatim, including any trailing blanks the source presents -
-     * see the padding discussion on the class documentation. The {@code bpchar} column definition is what
-     * makes this mapping validate against a {@code CHAR(10)} column; the measured evidence for that choice is
-     * also on the class documentation.
+     * see the padding discussion on the class documentation. The {@code bpchar} column definition is what makes
+     * this mapping validate against a {@code CHAR(10)} column; the measured evidence for that choice is also on
+     * the class documentation.
      */
     @Column(name = "acct_group_id", nullable = false, length = ACCOUNT_GROUP_ID_LENGTH,
             columnDefinition = "bpchar(10)")
@@ -252,8 +267,8 @@ public class DisclosureGroupId implements Serializable {
 
     /**
      * {@code DIS-TRAN-TYPE-CD}, {@code PIC X(02)}, bytes 11 to 12 of the sixteen-byte key
-     * ({@code app/cpy/CVTRA02Y.cpy:L7}). Stored verbatim, with the same {@code bpchar} rationale as the
-     * account group id above.
+     * ({@code app/cpy/CVTRA02Y.cpy:L7}). Stored verbatim as fixed-width {@code bpchar} so the blank padding
+     * survives the round trip.
      */
     @Column(name = "tran_type_cd", nullable = false, length = TRAN_TYPE_CD_LENGTH,
             columnDefinition = "bpchar(2)")
@@ -271,52 +286,37 @@ public class DisclosureGroupId implements Serializable {
 
     /**
      * Creates an empty identifier.
-     *
-     * <p>Required by Jakarta Persistence, which instantiates an embeddable through its no-argument constructor
-     * and then populates the fields directly, bypassing the validating constructor below. All three components
-     * are consequently {@code null} immediately after this call, and such an instance is not a usable key
-     * until the provider has populated it. Application code should prefer
-     * {@link #DisclosureGroupId(String, String, Integer)}.</p>
      */
-    public DisclosureGroupId() {
-        // Intentionally empty: Jakarta Persistence populates the fields directly after instantiation.
+    protected DisclosureGroupId() {
+        // Intentionally empty: Jakarta Persistence populates the fields directly after instantiation. No
+        // component is defaulted, because a synthetic default would be indistinguishable from a key actually
+        // read from the database. This is a required Jakarta Persistence hook, not an unfinished
+        // implementation.
     }
 
     /**
      * Creates an identifier from the three components of {@code DIS-GROUP-KEY}, in the declaration order of
      * {@code app/cpy/CVTRA02Y.cpy:L6-L8}.
      *
-     * <p>Values are stored verbatim: nothing is trimmed, padded, upper-cased or reformatted, so the instance
-     * stays a faithful carrier of the sixteen key bytes. The constructor has no side effects and touches no
-     * shared state.</p>
-     *
-     * @param accountGroupId {@code DIS-ACCT-GROUP-ID}, {@code PIC X(10)}; must be non-null and at most 10
-     *                       characters, and may legitimately carry trailing blanks, as the DEFAULT group does
-     * @param tranTypeCd     {@code DIS-TRAN-TYPE-CD}, {@code PIC X(02)}; must be non-null and at most 2
-     *                       characters
-     * @param tranCatCd      {@code DIS-TRAN-CAT-CD}, {@code PIC 9(04)}; must be non-null and within 0 to 9999,
-     *                       the unsigned four-digit display domain
+     * @param accountGroupId {@code DIS-ACCT-GROUP-ID}, {@code PIC X(10)}.
+     * @param tranTypeCd {@code DIS-TRAN-TYPE-CD}, {@code PIC X(02)}.
+     * @param tranCatCd {@code DIS-TRAN-CAT-CD}, {@code PIC 9(04)}.
      * @throws IllegalArgumentException if any component is {@code null}, if either character component is
-     *                                  longer than its source field width, or if {@code tranCatCd} falls
-     *                                  outside the unsigned four-digit domain. The message names the offending
-     *                                  component, both as its Java name and as its COBOL field name, together
-     *                                  with the limit that was broken
+     * longer than its source field width, or if {@code tranCatCd} falls outside the unsigned four-digit domain.
      */
     public DisclosureGroupId(final String accountGroupId, final String tranTypeCd, final Integer tranCatCd) {
         this.accountGroupId = requireWidth(
                 "accountGroupId", "DIS-ACCT-GROUP-ID", accountGroupId, ACCOUNT_GROUP_ID_LENGTH);
-        this.tranTypeCd = requireWidth("tranTypeCd", "DIS-TRAN-TYPE-CD", tranTypeCd, TRAN_TYPE_CD_LENGTH);
+        this.tranTypeCd = requireExactWidth(
+                "tranTypeCd", "DIS-TRAN-TYPE-CD", tranTypeCd, TRAN_TYPE_CD_LENGTH);
         this.tranCatCd = requireCategoryCode(tranCatCd);
     }
 
     /**
      * Returns {@code DIS-ACCT-GROUP-ID}, the first component of the key.
      *
-     * <p>The value is returned exactly as stored, trailing blanks included; the DEFAULT group is genuinely
-     * {@code "DEFAULT"} followed by three blanks in the source data.</p>
-     *
      * @return the ten-character account group id, or {@code null} on an instance that was created by the
-     *         no-argument constructor and has not been populated
+     * no-argument constructor and has not been populated
      */
     public String getAccountGroupId() {
         return accountGroupId;
@@ -326,7 +326,7 @@ public class DisclosureGroupId implements Serializable {
      * Returns {@code DIS-TRAN-TYPE-CD}, the second component of the key.
      *
      * @return the two-character transaction type code, or {@code null} on an instance that was created by the
-     *         no-argument constructor and has not been populated
+     * no-argument constructor and has not been populated
      */
     public String getTranTypeCd() {
         return tranTypeCd;
@@ -335,12 +335,8 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Returns {@code DIS-TRAN-CAT-CD}, the third component of the key.
      *
-     * <p>The source stores four zero-padded unsigned display digits. Rendering the value back to that
-     * fixed-width form is the responsibility of the layer that emits fixed-width records, not of this
-     * identifier.</p>
-     *
      * @return the transaction category code within 0 to 9999, or {@code null} on an instance that was created
-     *         by the no-argument constructor and has not been populated
+     * by the no-argument constructor and has not been populated
      */
     public Integer getTranCatCd() {
         return tranCatCd;
@@ -349,16 +345,9 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Compares this identifier with another object for value equality over all three key components.
      *
-     * <p>Comparison is exact. Nothing is trimmed, padded or case folded, so {@code "DEFAULT"} and
-     * {@code "DEFAULT"} followed by three blanks are distinct values here even though SQL {@code CHAR}
-     * comparison treats them as the same; blank-padded equivalence deliberately belongs to the storage layer.
-     * A partially populated key therefore never compares equal to a fully populated one. The runtime classes
-     * must match exactly, which keeps the relation symmetric even though the class cannot be declared
-     * {@code final}.</p>
-     *
      * @param obj the object to compare with, possibly {@code null} or of a foreign type
      * @return {@code true} if {@code obj} is a {@code DisclosureGroupId} whose three components all equal this
-     *         identifier's, {@code false} otherwise
+     * identifier's, {@code false} otherwise
      */
     @Override
     public boolean equals(final Object obj) {
@@ -377,14 +366,8 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Returns a hash code derived from all three key components, consistent with {@link #equals(Object)}.
      *
-     * <p>Correct hashing is not optional for a JPA identifier: without it the persistence context's identity
-     * map cannot recognise a managed instance, and {@code find}, {@code merge} and dirty checking then
-     * misbehave as intermittent data errors rather than as clean failures. Nothing in the application may rely
-     * on hash iteration order, because key order - not hash order - is what the legacy VSAM browse semantics
-     * depend on.</p>
-     *
      * @return a hash code over the account group id, the transaction type code and the transaction category
-     *         code
+     * code
      */
     @Override
     public int hashCode() {
@@ -393,10 +376,6 @@ public class DisclosureGroupId implements Serializable {
 
     /**
      * Returns a diagnostic rendering of the three key components in COBOL key order.
-     *
-     * <p>Intended for logs and error messages only. It exposes nothing beyond the key components, which are
-     * non-sensitive identifiers; it performs no case-dependent or locale-dependent formatting, so it is stable
-     * on every host; and it is not a wire or record format, so callers must never parse it.</p>
      *
      * @return a stable, locale-independent description of this identifier
      */
@@ -410,15 +389,10 @@ public class DisclosureGroupId implements Serializable {
     /**
      * Validates one fixed-width character component against the width of its COBOL picture.
      *
-     * <p>Declared {@code private static} deliberately: a constructor of a class that cannot be {@code final}
-     * must not call an overridable method, and a static helper additionally keeps the check independent of
-     * instance state. An over-long value is rejected rather than truncated, because truncation would silently
-     * produce a different sixteen-byte key.</p>
-     *
-     * @param javaName  the Java component name, reported in the failure message
-     * @param cobolName the COBOL field name, reported in the failure message so a failure is traceable
-     *                  straight back to {@code app/cpy/CVTRA02Y.cpy}
-     * @param value     the candidate value, which may be {@code null}
+     * @param javaName the Java component name, reported in the failure message
+     * @param cobolName the COBOL field name, reported in the failure message so a failure is traceable straight
+     * back to {@code app/cpy/CVTRA02Y.cpy}
+     * @param value the candidate value, which may be {@code null}
      * @param maxLength the source field width in characters
      * @return {@code value} unchanged when it satisfies the contract
      * @throws IllegalArgumentException if {@code value} is {@code null} or longer than {@code maxLength}
@@ -436,11 +410,45 @@ public class DisclosureGroupId implements Serializable {
     }
 
     /**
-     * Validates {@code DIS-TRAN-CAT-CD} against the unsigned four-digit display domain of {@code PIC 9(04)}.
+     * Validates a fixed-width key component that must occupy its source field completely.
      *
-     * <p>Declared {@code private static} for the same reasons as {@link #requireWidth(String, String, String,
-     * int)}. The picture carries no sign, so negative values are outside the domain and are rejected rather
-     * than coerced.</p>
+     * <p>This is the stricter sibling of {@link #requireWidth(String, String, String, int)} and exists because
+     * the two rules are genuinely different, not because one is a tidier spelling of the other. A ceiling is
+     * right for {@code DIS-ACCT-GROUP-ID}, whose value the interest calculation supplies as the bare literal
+     * {@code DEFAULT} rather than as ten padded bytes. An exact width is right for {@code DIS-TRAN-TYPE-CD},
+     * for the offset reason recorded on {@link #TRAN_TYPE_CD_LENGTH}.</p>
+     *
+     * <p>Nothing is padded to reach the width and nothing is trimmed to fit it. Padding here would accept a
+     * caller's mistake and silently turn it into a different key, which is the outcome the check exists to
+     * prevent; the value is returned exactly as supplied or not at all. Declared {@code private static} for
+     * the same reason as {@link #requireWidth(String, String, String, int)}: it is called from a constructor,
+     * and an overridable method called from a constructor publishes {@code this} before construction has
+     * finished, which {@code -Xlint:all -Werror} reports as {@code this-escape} and fails the build over.</p>
+     *
+     * @param javaName  the Java property name, named in the failure message so a caller can find the argument
+     * @param cobolName the source field name, named so a reader can find the picture clause
+     * @param value     the candidate value exactly as supplied by the caller, which may be {@code null}
+     * @param length    the exact required width, taken from the picture clause
+     * @return {@code value} unchanged when it is exactly {@code length} characters long
+     * @throws IllegalArgumentException if {@code value} is {@code null} or is any length other than
+     *                                  {@code length}. The message reports both the expected and the received
+     *                                  length; quoting the value is safe here because a transaction type code
+     *                                  is a two-character classification and carries nothing sensitive
+     */
+    private static String requireExactWidth(final String javaName, final String cobolName, final String value,
+            final int length) {
+        if (value == null) {
+            throw new IllegalArgumentException(javaName + " (" + cobolName + ") must not be null");
+        }
+        if (value.length() != length) {
+            throw new IllegalArgumentException(javaName + " (" + cobolName + ") must be exactly " + length
+                    + " characters but was " + value.length() + ": '" + value + "'");
+        }
+        return value;
+    }
+
+    /**
+     * Validates {@code DIS-TRAN-CAT-CD} against the unsigned four-digit display domain of {@code PIC 9(04)}.
      *
      * @param value the candidate transaction category code, which may be {@code null}
      * @return {@code value} unchanged when it satisfies the contract

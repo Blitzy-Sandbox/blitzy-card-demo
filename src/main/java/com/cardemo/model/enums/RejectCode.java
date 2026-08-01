@@ -29,14 +29,14 @@ import java.util.Locale;
 import java.util.Optional;
 
 /**
- * The five validation reject outcomes of the daily transaction posting program
- * {@code app/cbl/CBTRN02C.cbl}, each pairing the numeric reason code with the <em>verbatim</em>
- * description literal that the legacy program moves into the reject record trailer.
+ * The five validation reject outcomes of the daily transaction posting program {@code app/cbl/CBTRN02C.cbl},
+ * each pairing the numeric reason code with the <em>verbatim</em> description literal that the legacy program
+ * moves into the reject record trailer.
  *
- * <p>This enumeration is the single source of that text for the whole Java target. The reject file it
- * feeds is compared byte for byte against the legacy baseline, so the five literals below are
- * transcribed character for character from the COBOL and must never be re-cased, re-worded,
- * re-punctuated, pluralised, expanded or grammatically "corrected".
+ * <p>This enumeration is the single source of that text for the whole Java target. The reject file it feeds is
+ * compared byte for byte against the legacy baseline, so the five literals below are transcribed character for
+ * character from the COBOL and must never be re-cased, re-worded, re-punctuated, pluralised, expanded or
+ * grammatically "corrected".
  *
  * <h2>Reject codes are business outcomes, never exceptions</h2>
  *
@@ -174,8 +174,10 @@ import java.util.Optional;
  *       is what the source says and the duplication is reproduced, not resolved.</li>
  * </ul>
  *
- * <p>Both findings are tracked in {@code DECISION_LOG.md} and mapped in {@code TRACEABILITY_MATRIX.md};
- * neither is untracked residue.
+ * <p>Both findings are owed an entry in {@code DECISION_LOG.md} and a row in
+ * {@code TRACEABILITY_MATRIX.md}. Measured 1 August 2026 <strong>neither file is available</strong> - both
+ * are planned root artefacts that have not been authored - so until they are, this Javadoc together with
+ * {@code docs/technical-specifications.md} is the tracking record. Neither finding is untracked residue.
  *
  * @see #toValidationTrailer()
  * @see #fromCode(int)
@@ -183,94 +185,25 @@ import java.util.Optional;
 public enum RejectCode {
 
     /**
-     * Reject code {@code 100} - {@code INVALID CARD NUMBER FOUND}.
-     *
-     * <p>Assigned by {@code 1500-A-LOOKUP-XREF} ({@code app/cbl/CBTRN02C.cbl}:L380-L392) on the
-     * {@code INVALID KEY} branch of {@code READ XREF-FILE INTO CARD-XREF-RECORD}: the card number taken
-     * from the incoming daily transaction has no row in the card cross-reference file, so the
-     * transaction cannot be attributed to an account at all.
-     *
-     * <p>Citations: the code is moved at L385; the description literal occupies L386-L387.
-     *
-     * <p>This is the first of the two validation paragraphs, and it is the only one that always runs.
-     * When it assigns this code the second paragraph is skipped entirely, because L372 gates it on the
-     * reason code still being zero - so {@code 100} can never be combined with {@code 101},
-     * {@code 102} or {@code 103}.
+     * Reject code {@code 100} - {@code INVALID CARD NUMBER FOUND}. Assigned by the cross-reference lookup
+     * {@code 1500-A-LOOKUP-XREF} at {@code app/cbl/CBTRN02C.cbl:385}.
      */
     INVALID_CARD_NUMBER(100, "INVALID CARD NUMBER FOUND"),
 
     /**
-     * Reject code {@code 101} - {@code ACCOUNT RECORD NOT FOUND}.
-     *
-     * <p>Assigned by {@code 1500-B-LOOKUP-ACCT} ({@code app/cbl/CBTRN02C.cbl}:L393-L422) on the
-     * {@code INVALID KEY} branch of {@code READ ACCOUNT-FILE INTO ACCOUNT-RECORD}: the cross-reference
-     * resolved the card to an account identifier, but no such account row exists.
-     *
-     * <p>Citations: the code is moved at L397; the description literal occupies L398-L399.
-     *
-     * <p>Because the read failed, the {@code NOT INVALID KEY} branch that houses the credit-limit and
-     * expiry tests (L400-L421) never executes. {@code 101} therefore cannot be overwritten by
-     * {@code 102} or {@code 103} - it is terminal for the record.
-     *
-     * <p><strong>Its description text is byte-identical to that of
-     * {@link #ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE} ({@code 109}).</strong> That duplication is present
-     * in the source and is reproduced here rather than resolved; see that constant.
+     * Reject code {@code 101} - {@code ACCOUNT RECORD NOT FOUND}. Assigned by the account lookup
+     * {@code 1500-B-LOOKUP-ACCT} at {@code app/cbl/CBTRN02C.cbl:397} when the account is absent.
      */
     ACCOUNT_RECORD_NOT_FOUND(101, "ACCOUNT RECORD NOT FOUND"),
 
     /**
-     * Reject code {@code 102} - {@code OVERLIMIT TRANSACTION}.
+     * Reject code {@code 102} - {@code OVERLIMIT TRANSACTION}. Assigned at
+     * {@code app/cbl/CBTRN02C.cbl:410} when the credit limit is below the temporary balance.
      *
-     * <p>Assigned by {@code 1500-B-LOOKUP-ACCT} ({@code app/cbl/CBTRN02C.cbl}:L393-L422) inside the
-     * {@code NOT INVALID KEY} branch, when the account's credit limit will not cover the projected
-     * balance.
-     *
-     * <p>Citations: the code is moved at L410; the description literal occupies L411-L412.
-     *
-     * <p>The source, verbatim, at L403-L420:
-     *
-     * <pre>
-     * COMPUTE WS-TEMP-BAL = ACCT-CURR-CYC-CREDIT              &lt;- L403
-     *                     - ACCT-CURR-CYC-DEBIT               &lt;- L404
-     *                     + DALYTRAN-AMT                      &lt;- L405
-     *
-     * IF ACCT-CREDIT-LIMIT &gt;= WS-TEMP-BAL                     &lt;- L407
-     *   CONTINUE                                              &lt;- L408
-     * ELSE                                                    &lt;- L409
-     *   MOVE 102 TO WS-VALIDATION-FAIL-REASON                 &lt;- L410
-     *   MOVE 'OVERLIMIT TRANSACTION'                          &lt;- L411
-     *     TO WS-VALIDATION-FAIL-REASON-DESC                   &lt;- L412
-     * END-IF                                                  &lt;- L413
-     * IF ACCT-EXPIRAION-DATE &gt;= DALYTRAN-ORIG-TS (1:10)       &lt;- L414
-     *   CONTINUE                                              &lt;- L415
-     * ELSE                                                    &lt;- L416
-     *   MOVE 103 TO WS-VALIDATION-FAIL-REASON                 &lt;- L417
-     *   MOVE 'TRANSACTION RECEIVED AFTER ACCT EXPIRATION'     &lt;- L418
-     *     TO WS-VALIDATION-FAIL-REASON-DESC                   &lt;- L419
-     * END-IF                                                  &lt;- L420
-     * </pre>
-     *
-     * <p><strong>The over-limit formula must be transcribed exactly as written and never algebraically
-     * rewritten.</strong> The projected balance is the current-cycle credit <em>minus</em> the
-     * current-cycle debit <em>plus</em> the transaction amount, and the reject fires when the credit
-     * limit is <em>not</em> greater than or equal to it. Subtracting the debit accumulator looks wrong
-     * until one reads {@code 2800-UPDATE-ACCOUNT-REC} ({@code app/cbl/CBTRN02C.cbl}:L548-L552): a
-     * non-negative amount is added to {@code ACCT-CURR-CYC-CREDIT}, and a <em>negative</em> amount is
-     * added to {@code ACCT-CURR-CYC-DEBIT}. The debit accumulator therefore legitimately holds negative
-     * values, which is precisely why subtracting it behaves correctly. <strong>No absolute-value
-     * normalisation may be applied anywhere on this path</strong>, and the expression must not be
-     * re-associated or simplified - an equivalent-looking rearrangement changes the rounding and hence
-     * which transactions are rejected.
-     *
-     * <p><strong>Severity: High - this constant can be overwritten before it is ever written out.</strong>
-     * The credit-limit test at L407-L413 and the expiry test at L414-L420 are two
-     * <em>separate, sequential, unguarded</em> {@code IF ... END-IF} blocks. There is no {@code ELSE}
-     * chaining between them, no early exit, and no test of the reason code in between. So when an
-     * account is both over its limit and expired, L417 overwrites the {@code 102} that L410 just
-     * assigned, and the single reject record that is eventually written bears {@code 103} - see
-     * {@link #TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION}. This behaviour is preserved deliberately.
-     * Remediation: <strong>none - preserve and log.</strong> Guarding the second test would silently
-     * change reject output and fail the byte-for-byte parity gate.
+     * <p>The expiry test that follows at {@code app/cbl/CBTRN02C.cbl:413-419} is sequential and
+     * <strong>unguarded</strong> - no alternative branch, no early exit - so when both conditions fail this
+     * value is overwritten by {@link #TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION} and a single reject record
+     * bearing 103 is written. Guarding the second test, or emitting two reject records, would diverge.
      */
     OVERLIMIT_TRANSACTION(102, "OVERLIMIT TRANSACTION"),
 
@@ -308,9 +241,11 @@ public enum RejectCode {
      *       reject as {@code 102}, changing the reject file.</li>
      * </ul>
      *
-     * <p>Remediation: <strong>none - preserve and log.</strong> Tracked in {@code DECISION_LOG.md} among
-     * the preserved legacy defects and mapped in {@code TRACEABILITY_MATRIX.md} as a {@code CBTRN02C}
-     * fidelity hot spot.
+     * <p>Remediation: <strong>none - preserve and log.</strong> It is owed an entry in
+     * {@code DECISION_LOG.md} among the preserved legacy defects and a row in
+     * {@code TRACEABILITY_MATRIX.md} as a {@code CBTRN02C} fidelity hot spot. Measured 1 August 2026
+     * neither file is available - both are planned root artefacts not yet authored,
+     * so this Javadoc is the record until they are.
      *
      * <p><strong>Two further quirks of the expiry test, part of the field contract.</strong>
      * <ul>
@@ -329,108 +264,22 @@ public enum RejectCode {
     TRANSACTION_RECEIVED_AFTER_ACCT_EXPIRATION(103, "TRANSACTION RECEIVED AFTER ACCT EXPIRATION"),
 
     /**
-     * Reject code {@code 109} - {@code ACCOUNT RECORD NOT FOUND}.
+     * Reject code {@code 109} - {@code ACCOUNT RECORD NOT FOUND}, sharing its literal with
+     * {@link #ACCOUNT_RECORD_NOT_FOUND} rather than declaring its own.
      *
-     * <p>Assigned by {@code 2800-UPDATE-ACCOUNT-REC} ({@code app/cbl/CBTRN02C.cbl}:L545-L560) on the
-     * {@code INVALID KEY} branch of {@code REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD}: the account
-     * row that was successfully read during validation could not be written back.
-     *
-     * <p>Citations: the code is moved at L556; the description literal occupies L557-L558; the
-     * enclosing paragraph is L545-L560.
-     *
-     * <p><strong>Its description text is byte-identical to that of {@link #ACCOUNT_RECORD_NOT_FOUND}
-     * ({@code 101}).</strong> The source reuses the same literal for a completely different condition -
-     * a failed rewrite of a record that was found, rather than a record that was not found. The
-     * duplication is reproduced verbatim and is deliberately <em>not</em> differentiated: no qualifier
-     * is appended, no wording is adjusted, and the two constants are not collapsed into one. Only the
-     * Java identifiers differ, because the language forbids two enum constants sharing a name.
-     *
-     * <p><strong>INTENTIONAL NO-OP, RETAINED FOR CONTROL-FLOW PARITY.</strong> This value is assigned on
-     * a genuinely reachable line of the legacy program but is <strong>never read</strong>. <strong>No
-     * reject record bearing {@code 109} is ever written by {@code CBTRN02C}</strong>, and none is ever
-     * written by the Java target either. The constant is retained regardless - it is not deleted, not
-     * commented out and not deprecated - because the assignment is real code on a reachable path and the
-     * migration's contract is one-to-one control-flow correspondence.
-     *
-     * <p>The whole paragraph, verbatim, at L545-L560:
-     *
-     * <pre>
-     * 2800-UPDATE-ACCOUNT-REC.                                &lt;- L545
-     *     ADD DALYTRAN-AMT  TO ACCT-CURR-BAL                  &lt;- L547
-     *     IF DALYTRAN-AMT &gt;= 0                                &lt;- L548
-     *        ADD DALYTRAN-AMT TO ACCT-CURR-CYC-CREDIT         &lt;- L549
-     *     ELSE                                                &lt;- L550
-     *        ADD DALYTRAN-AMT TO ACCT-CURR-CYC-DEBIT          &lt;- L551
-     *     END-IF                                              &lt;- L552
-     *
-     *     REWRITE FD-ACCTFILE-REC FROM  ACCOUNT-RECORD        &lt;- L554
-     *        INVALID KEY                                      &lt;- L555
-     *          MOVE 109 TO WS-VALIDATION-FAIL-REASON          &lt;- L556
-     *          MOVE 'ACCOUNT RECORD NOT FOUND'                &lt;- L557
-     *            TO WS-VALIDATION-FAIL-REASON-DESC            &lt;- L558
-     *     END-REWRITE.                                        &lt;- L559
-     *     EXIT.                                               &lt;- L560
-     * </pre>
-     *
-     * <p>Why the value can never be consumed - four independent reasons, each verifiable at the cited
-     * line:
-     * <ol>
-     *   <li><strong>The paragraph has no result guard and no abend.</strong> Every other I/O paragraph in
-     *       the program follows the house idiom of moving 8 into {@code APPL-RESULT}, testing the file
-     *       status, and calling {@code 9999-ABEND-PROGRAM} on failure - compare
-     *       {@code 2900-WRITE-TRANSACTION-FILE} at {@code app/cbl/CBTRN02C.cbl}:L562 onwards, which does
-     *       exactly that. L545-L560 does none of it. After the {@code INVALID KEY} branch runs, control
-     *       simply falls through to L560.</li>
-     *   <li><strong>The paragraph only ever runs on the already-validated path.</strong> It is performed
-     *       from {@code 2000-POST-TRANSACTION} (L424-L444) at L441, and that routine is entered only
-     *       when the test at L211, {@code IF WS-VALIDATION-FAIL-REASON = 0}, succeeds. So by
-     *       construction the reason code was zero on entry, and the record has already been judged
-     *       acceptable.</li>
-     *   <li><strong>The reject write and the reject counter are unreachable from here.</strong> Both live
-     *       exclusively in the {@code ELSE} branch of that same L211 test - L214 increments
-     *       {@code WS-REJECT-COUNT} and L215 performs {@code 2500-WRITE-REJECT-REC}. Having taken the
-     *       {@code IF} branch, execution cannot reach either.</li>
-     *   <li><strong>The value is overwritten before anything could look at it.</strong> Control continues
-     *       to L442, {@code PERFORM 2900-WRITE-TRANSACTION-FILE}, and then back round the main loop,
-     *       where L208 clears the field to zero for the next record.</li>
-     * </ol>
-     *
-     * <p>A side effect worth recording: because the legacy program commits the category-balance update,
-     * the account update and the transaction write as three independent operations, a failed rewrite here
-     * leaves an orphaned category-balance row and an orphaned transaction row. The Java target scopes all
-     * three into one transaction, so that hazard disappears. That is a genuine improvement rather than
-     * parity and is logged as a deviation, not presented as equivalence.
-     *
-     * <p><strong>Severity: Low</strong> as a code-quality observation - an enum constant that no
-     * production path can emit. <strong>Blocker if removed</strong> - deleting it would break the
-     * paragraph map that the scope-coverage gate verifies, because {@code 2800-UPDATE-ACCOUNT-REC} would
-     * lose its reject-code correspondence and {@code CBTRN02C} would no longer demonstrate complete
-     * paragraph coverage. Remediation for the apparent defect: <strong>none - preserve and log.</strong>
-     *
-     * <p><strong>Why this is not the dead code the quality standard forbids.</strong> That standard bars
-     * dead code and deferred work that carries no owner or tracking reference. This constant carries
-     * both. It is cited to its exact source lines above, its retention is recorded as a named decision in
-     * {@code DECISION_LOG.md} - "exactly 100/101/102/103/109; 109 is reachable but never consumed,
-     * retained and documented rather than deleted" - and it is mapped in
-     * {@code TRACEABILITY_MATRIX.md} among the {@code CBTRN02C} fidelity hot spots alongside the status
-     * rendering, the return-code contract and the {@code 102}-to-{@code 103} overwrite. It is therefore
-     * tracked, justified and reviewable: a documented faithful reproduction of a reachable-but-unconsumed
-     * assignment in the system of record, not abandoned residue. Where the two requirements genuinely
-     * collide, behavioural parity governs, and that resolution is itself recorded in
-     * {@code DECISION_LOG.md}.
-     *
-     * <p>This is the <strong>only</strong> retained-for-parity artefact in this package. No sibling enum
-     * carries one.
+     * <p>It exists because {@code 2800-UPDATE-ACCOUNT-REC} assigns it at {@code app/cbl/CBTRN02C.cbl:556} on
+     * the account-rewrite failure path, which is real code on a reachable path. It is nonetheless
+     * <strong>never consumed as a reject outcome</strong>: that paragraph runs only inside the posting routine,
+     * which is entered only when the reason code was already zero, so no reject record is written, the reject
+     * count is not incremented, execution continues to the transaction write, and the value is cleared on the
+     * next iteration at {@code app/cbl/CBTRN02C.cbl:208}. The constant is therefore retained for fidelity, not
+     * because any reject file can contain it.
      */
     ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE(109, "ACCOUNT RECORD NOT FOUND");
 
     /**
-     * The reason-code value meaning "this record was not rejected": zero.
-     *
-     * <p>{@code app/cbl/CBTRN02C.cbl}:L208 clears {@code WS-VALIDATION-FAIL-REASON} to zero before each
-     * record is validated, and L211 tests it against zero to choose between posting and rejecting. This
-     * is a numeric sentinel in a {@code PIC 9(04)} field, which is precisely why it is exposed as an
-     * {@code int} here and not as a sixth enum constant.
+     * The reason-code value meaning "this record was not rejected": zero. Cleared before every record's
+     * validation at {@code app/cbl/CBTRN02C.cbl:208}.
      */
     public static final int NO_REJECT_REASON_CODE = 0;
 
@@ -447,20 +296,16 @@ public enum RejectCode {
     public static final int FAIL_REASON_DESC_LENGTH = 76;
 
     /**
-     * Width in characters of {@code VALIDATION-TRAILER}, {@code PIC X(80)}
-     * ({@code app/cbl/CBTRN02C.cbl}:L178): eighty, being the four-character reason code followed by the
-     * seventy-six-character description. The sum is written out rather than hard-coded so the identity
-     * {@code 4 + 76 = 80} is visible at the declaration.
+     * Width in characters of {@code VALIDATION-TRAILER}, {@code PIC X(80)} ({@code app/cbl/CBTRN02C.cbl}:L178):
+     * eighty, being the four-character reason code followed by the seventy-six-character description. The sum
+     * is written out rather than hard-coded so the identity {@code 4 + 76 = 80} is visible at the declaration.
      */
     public static final int VALIDATION_TRAILER_LENGTH = FAIL_REASON_LENGTH + FAIL_REASON_DESC_LENGTH;
 
     /**
-     * Width in characters of {@code REJECT-TRAN-DATA}, {@code PIC X(350)}
-     * ({@code app/cbl/CBTRN02C.cbl}:L177): three hundred and fifty - the {@code DALYTRAN-RECORD} image
-     * of {@code app/cpy/CVTRA06Y.cpy}, whose header states {@code RECLN = 350}.
-     *
-     * <p>Published here only so that the record arithmetic can be asserted in one place. This type
-     * never renders the data image; {@code com.cardemo.batch.writers.RejectWriter} does.
+     * Width in characters of {@code REJECT-TRAN-DATA}, {@code PIC X(350)} ({@code app/cbl/CBTRN02C.cbl}:L177):
+     * three hundred and fifty - the {@code DALYTRAN-RECORD} image of {@code app/cpy/CVTRA06Y.cpy}, whose header
+     * states {@code RECLN = 350}.
      */
     public static final int REJECT_TRAN_DATA_LENGTH = 350;
 
@@ -472,17 +317,16 @@ public enum RejectCode {
     public static final int REJECT_RECORD_LENGTH = REJECT_TRAN_DATA_LENGTH + VALIDATION_TRAILER_LENGTH;
 
     /**
-     * Highest value a {@code PIC 9(04)} field can hold: {@code 9999}, that is
-     * {@link #FAIL_REASON_LENGTH} nines. Stated as an integer literal rather than computed, because the
-     * only concise way to derive it would introduce floating-point arithmetic, and no floating-point
-     * type may appear anywhere in this migration.
+     * Highest value a {@code PIC 9(04)} field can hold: {@code 9999}, that is {@link #FAIL_REASON_LENGTH}
+     * nines. Stated as an integer literal rather than computed, because the only concise way to derive it would
+     * introduce floating-point arithmetic, and no floating-point type may appear anywhere in this migration.
      */
     private static final int MAX_FAIL_REASON_CODE = 9999;
 
     /**
      * Format string producing the {@code PIC 9(04)} rendering - zero-padded, right-aligned, exactly
-     * {@link #FAIL_REASON_LENGTH} digits. Built once from the length constant rather than written as a
-     * literal so that the width has a single definition.
+     * {@link #FAIL_REASON_LENGTH} digits. Built once from the length constant rather than written as a literal
+     * so that the width has a single definition.
      */
     private static final String FAIL_REASON_FORMAT = "%0" + FAIL_REASON_LENGTH + "d";
 
@@ -493,25 +337,20 @@ public enum RejectCode {
      */
     private static final String FAIL_REASON_DESC_FORMAT = "%-" + FAIL_REASON_DESC_LENGTH + "s";
 
-    /** The numeric reason code as moved into {@code WS-VALIDATION-FAIL-REASON}. */
+    /**
+     * The numeric reason code as moved into {@code WS-VALIDATION-FAIL-REASON}.
+     */
     private final int code;
 
-    /** The verbatim description literal as moved into {@code WS-VALIDATION-FAIL-REASON-DESC}. */
+    /**
+     * The verbatim description literal as moved into {@code WS-VALIDATION-FAIL-REASON-DESC}.
+     */
     private final String description;
 
     /**
      * Binds a reject outcome to its numeric reason code and its verbatim description literal.
      *
-     * <p>Both arguments originate exclusively from the five constant declarations above, where each was
-     * transcribed from a cited line of {@code app/cbl/CBTRN02C.cbl} and verified against it. They are
-     * therefore compile-time constants under this class's own control, not external input, and are
-     * assigned without runtime guards: adding checks that provably cannot fire would introduce exactly
-     * the unreachable code the project's quality standard forbids. The boundary is drawn deliberately -
-     * arguments arriving from callers are validated, in {@link #fromCode(int)},
-     * {@link #requireFromCode(int)} and {@link #renderFailReason(int)}; the widths those methods depend
-     * on are published as constants so a unit test can prove every description fits its field.
-     *
-     * @param code        the four-digit reason code, one of 100, 101, 102, 103 or 109
+     * @param code the four-digit reason code, one of 100, 101, 102, 103 or 109
      * @param description the reject description exactly as it appears in the COBOL literal
      */
     RejectCode(final int code, final String description) {
@@ -523,11 +362,6 @@ public enum RejectCode {
      * Returns the numeric reason code, as moved into {@code WS-VALIDATION-FAIL-REASON}
      * ({@code app/cbl/CBTRN02C.cbl}:L181).
      *
-     * <p>This is the unpadded integer value - 100, 101, 102, 103 or 109. For the four-character
-     * fixed-width rendering the reject file actually carries, use {@link #toFailReasonField()}.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail.
-     *
      * @return the four-digit reason code as an {@code int}, always one of 100, 101, 102, 103 or 109
      */
     public int getCode() {
@@ -537,16 +371,6 @@ public enum RejectCode {
     /**
      * Returns the reject description exactly as it appears in the COBOL literal, with no padding.
      *
-     * <p>The returned text is byte-for-byte identical to the quoted literal at the source line cited on
-     * this constant. It is <strong>not</strong> padded to the width of
-     * {@code WS-VALIDATION-FAIL-REASON-DESC}; for the fixed-width form use
-     * {@link #toFailReasonDescField()}. Note that {@link #ACCOUNT_RECORD_NOT_FOUND} and
-     * {@link #ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE} return equal strings, faithfully reproducing the
-     * source.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail, and never returns {@code null}
-     * or an empty string.
-     *
      * @return the verbatim description literal, between 21 and 42 characters long
      */
     public String getDescription() {
@@ -554,20 +378,9 @@ public enum RejectCode {
     }
 
     /**
-     * Renders this outcome's reason code as the {@code PIC 9(04)} field
-     * {@code WS-VALIDATION-FAIL-REASON} ({@code app/cbl/CBTRN02C.cbl}:L181): zero-padded on the left to
-     * exactly {@link #FAIL_REASON_LENGTH} characters.
-     *
-     * <p>So {@code 100} renders as {@code "0100"} and {@code 109} as {@code "0109"}. A COBOL
-     * {@code PIC 9(04)} field is unsigned and always fully populated, which is why the leading zero is
-     * significant rather than cosmetic - the reject file is fixed-width and is compared byte for byte.
-     *
-     * <p>Formatting uses {@code Locale.ROOT}, never the platform default. Under a locale whose decimal
-     * digits are not ASCII, the default would emit characters the fixed-width record cannot carry and
-     * would silently corrupt every reject row.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail for any of the five constants,
-     * since every one of their codes lies inside the {@code PIC 9(04)} domain.
+     * Renders this outcome's reason code as the {@code PIC 9(04)} field {@code WS-VALIDATION-FAIL-REASON}
+     * ({@code app/cbl/CBTRN02C.cbl}:L181): zero-padded on the left to exactly {@link #FAIL_REASON_LENGTH}
+     * characters.
      *
      * @return exactly {@link #FAIL_REASON_LENGTH} characters, all ASCII digits
      */
@@ -576,20 +389,11 @@ public enum RejectCode {
     }
 
     /**
-     * Renders this outcome's description as the {@code PIC X(76)} field
-     * {@code WS-VALIDATION-FAIL-REASON-DESC} ({@code app/cbl/CBTRN02C.cbl}:L182): space-padded on the
-     * right to exactly {@link #FAIL_REASON_DESC_LENGTH} characters.
+     * Renders this outcome's description as the {@code PIC X(76)} field {@code WS-VALIDATION-FAIL-REASON-DESC}
+     * ({@code app/cbl/CBTRN02C.cbl}:L182): space-padded on the right to exactly
+     * {@link #FAIL_REASON_DESC_LENGTH} characters.
      *
-     * <p>This reproduces the COBOL semantics of moving a shorter alphanumeric literal into a longer
-     * alphanumeric field: the text is left-justified and the remainder of the field is blank-filled.
-     * The description is <strong>never trimmed and never truncated</strong>. All five descriptions fit
-     * with room to spare - 25, 24, 21, 42 and 24 characters against a 76-character field - so no
-     * truncation case exists to handle.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail.
-     *
-     * @return exactly {@link #FAIL_REASON_DESC_LENGTH} characters: the description followed by trailing
-     *         spaces
+     * @return exactly {@link #FAIL_REASON_DESC_LENGTH} characters.
      */
     public String toFailReasonDescField() {
         return padFailReasonDesc(description);
@@ -597,54 +401,23 @@ public enum RejectCode {
 
     /**
      * Renders the complete {@code WS-VALIDATION-TRAILER} for this outcome
-     * ({@code app/cbl/CBTRN02C.cbl}:L180-L182): the four-character reason code immediately followed by
-     * the seventy-six-character description, {@link #VALIDATION_TRAILER_LENGTH} characters in total.
+     * ({@code app/cbl/CBTRN02C.cbl}:L180-L182): the four-character reason code immediately followed by the
+     * seventy-six-character description, {@link #VALIDATION_TRAILER_LENGTH} characters in total.
      *
-     * <p>This is the exact 80-byte value that {@code 2500-WRITE-REJECT-REC} moves into
-     * {@code VALIDATION-TRAILER} at {@code app/cbl/CBTRN02C.cbl}:L448.
-     *
-     * <p><strong>This is the widest unit this type produces.</strong> It does not and must not build the
-     * {@link #REJECT_RECORD_LENGTH}-byte reject record; that requires the 350-byte
-     * {@code DALYTRAN-RECORD} image, which this type has no access to and no business knowing about.
-     * Assembly of {@code REJECT-TRAN-DATA} followed by {@code VALIDATION-TRAILER}, and the write itself
-     * ({@code app/cbl/CBTRN02C.cbl}:L447, L448 and L451), belong to
-     * {@code com.cardemo.batch.writers.RejectWriter}.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail.
-     *
-     * @return exactly {@link #VALIDATION_TRAILER_LENGTH} characters, being
-     *         {@link #toFailReasonField()} concatenated with {@link #toFailReasonDescField()}
+     * @return exactly {@link #VALIDATION_TRAILER_LENGTH} characters, being {@link #toFailReasonField()}
+     * concatenated with {@link #toFailReasonDescField()}
      */
     public String toValidationTrailer() {
         return toFailReasonField() + toFailReasonDescField();
     }
 
     /**
-     * Renders an arbitrary reason code as the {@code PIC 9(04)} field
-     * {@code WS-VALIDATION-FAIL-REASON}, zero-padded on the left to exactly
-     * {@link #FAIL_REASON_LENGTH} characters.
+     * Renders an arbitrary reason code as the {@code PIC 9(04)} field {@code WS-VALIDATION-FAIL-REASON},
+     * zero-padded on the left to exactly {@link #FAIL_REASON_LENGTH} characters.
      *
-     * <p>This static form exists because the field legitimately holds a value that is not one of the
-     * five constants: {@link #NO_REJECT_REASON_CODE}. {@code app/cbl/CBTRN02C.cbl}:L208 moves zero into
-     * the field before every record is validated, so {@code renderFailReason(0)} yields {@code "0000"},
-     * which is the correct on-the-wire representation of "this record was not rejected". Callers holding
-     * a {@code RejectCode} should prefer the instance method {@link #toFailReasonField()}.
-     *
-     * <p>The argument is caller-supplied and therefore untrusted: any value outside the
-     * {@code PIC 9(04)} domain is rejected outright rather than silently wrapped, truncated or widened,
-     * because a reason code rendered to anything other than four characters would shift every
-     * subsequent byte of a fixed-width record.
-     *
-     * <p>Formatting uses {@code Locale.ROOT} so the digits emitted cannot vary with the platform
-     * default locale.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation.
-     *
-     * @param  reasonCode the reason code to render; {@link #NO_REJECT_REASON_CODE} through
-     *                    {@code 9999} inclusive, which spans the whole {@code PIC 9(04)} domain
+     * @param reasonCode the reason code to render.
      * @return exactly {@link #FAIL_REASON_LENGTH} characters, all ASCII digits
-     * @throws IllegalArgumentException if {@code reasonCode} is negative or exceeds four digits; the
-     *                                 message names the offending value and the permitted range
+     * @throws IllegalArgumentException if {@code reasonCode} is negative or exceeds four digits.
      */
     public static String renderFailReason(final int reasonCode) {
         if (reasonCode < NO_REJECT_REASON_CODE || reasonCode > MAX_FAIL_REASON_CODE) {
@@ -660,21 +433,7 @@ public enum RejectCode {
      * Renders the trailer in its cleared, "no reject" state: {@code "0000"} followed by
      * {@link #FAIL_REASON_DESC_LENGTH} spaces, {@link #VALIDATION_TRAILER_LENGTH} characters in total.
      *
-     * <p>This is the Java analogue of the per-record reset the legacy program performs before every
-     * validation - {@code MOVE 0 TO WS-VALIDATION-FAIL-REASON} at {@code app/cbl/CBTRN02C.cbl}:L208 and
-     * {@code MOVE SPACES TO WS-VALIDATION-FAIL-REASON-DESC} at L209. It is offered here, rather than
-     * left for each caller to assemble, so that the {@code 4 + 76} geometry has exactly one
-     * implementation and a cleared trailer can never be a byte wider or narrower than a populated one.
-     *
-     * <p>A record in this state is never written to the reject file: L211 routes it to
-     * {@code 2000-POST-TRANSACTION} instead. The value matters because it is the baseline the
-     * validation cascade overwrites, and because it is why "not rejected" is a number rather than a
-     * sixth enum constant.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation. Cannot fail.
-     *
-     * @return exactly {@link #VALIDATION_TRAILER_LENGTH} characters: four ASCII zeros followed by
-     *         {@link #FAIL_REASON_DESC_LENGTH} spaces
+     * @return exactly {@link #VALIDATION_TRAILER_LENGTH} characters.
      */
     public static String noRejectTrailer() {
         return renderFailReason(NO_REJECT_REASON_CODE) + padFailReasonDesc("");
@@ -683,26 +442,9 @@ public enum RejectCode {
     /**
      * Resolves a numeric reason code to its outcome, without throwing.
      *
-     * <p>This is the total lookup: every possible {@code int} maps either to one of the five constants
-     * or to an empty result. In particular {@link #NO_REJECT_REASON_CODE} yields an empty
-     * {@link Optional}, which is correct and expected - zero means the record was <em>not</em>
-     * rejected, so there is no reject outcome to return. Any other unrecognised value likewise yields
-     * an empty result: <strong>no fallback constant is invented and {@code null} is never
-     * returned</strong>, so a caller cannot mistake an unknown code for a real business outcome.
-     *
-     * <p>Implemented as a {@code switch} expression rather than a lookup map. That choice keeps this
-     * type entirely free of static mutable state, allocates nothing per call, and makes the mapping
-     * order-independent - there is no hash iteration to depend on. It also makes it impossible for one
-     * code to resolve to two different constants, because duplicate {@code case} labels are a
-     * compile-time error. The complementary invariant, that every constant is reachable through its own
-     * code, is asserted by the unit test: for each {@code c}, {@code fromCode(c.getCode())} returns
-     * {@code c}.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation.
-     *
-     * @param  reasonCode the reason code to resolve; any {@code int} is accepted
-     * @return the matching outcome, or an empty {@link Optional} if {@code reasonCode} is not one of
-     *         100, 101, 102, 103 or 109; never {@code null}
+     * @param reasonCode the reason code to resolve.
+     * @return the matching outcome, or an empty {@link Optional} if {@code reasonCode} is not one of 100, 101,
+     * 102, 103 or 109.
      */
     public static Optional<RejectCode> fromCode(final int reasonCode) {
         return switch (reasonCode) {
@@ -718,25 +460,10 @@ public enum RejectCode {
     /**
      * Resolves a numeric reason code to its outcome, failing fast if the code is not one of the five.
      *
-     * <p>Use this where the caller's own logic guarantees a genuine reject outcome and an unknown code
-     * would mean the program is already wrong - for instance when re-reading a reason code back out of
-     * a persisted reject record. Use {@link #fromCode(int)} instead wherever an unrecognised code, or
-     * the {@link #NO_REJECT_REASON_CODE} value zero, is a legitimate possibility.
-     *
-     * <p>The exception carries the offending code and the full set of permitted values, so a failure is
-     * diagnosable from the message alone without re-running anything. Nothing is swallowed and no
-     * substitute value is produced.
-     *
-     * <p>Note that {@code IllegalArgumentException} here reports a <em>programming</em> error in the
-     * caller's argument. It is emphatically not a reject code being thrown: reject codes are business
-     * outcomes and are returned, counted and written, never raised. See the class documentation.
-     *
-     * <p>Pure: no side effects, no I/O, no state mutation.
-     *
-     * @param  reasonCode the reason code to resolve
+     * @param reasonCode the reason code to resolve
      * @return the matching outcome; never {@code null}
-     * @throws IllegalArgumentException if {@code reasonCode} is not one of 100, 101, 102, 103 or 109,
-     *                                 including when it is {@link #NO_REJECT_REASON_CODE}
+     * @throws IllegalArgumentException if {@code reasonCode} is not one of 100, 101, 102, 103 or 109, including
+     * when it is {@link #NO_REJECT_REASON_CODE}
      */
     public static RejectCode requireFromCode(final int reasonCode) {
         return fromCode(reasonCode).orElseThrow(() -> new IllegalArgumentException(
@@ -747,19 +474,11 @@ public enum RejectCode {
     }
 
     /**
-     * Space-pads text on the right to exactly {@link #FAIL_REASON_DESC_LENGTH} characters, reproducing
-     * a COBOL {@code MOVE} into a {@code PIC X(76)} field.
+     * Space-pads text on the right to exactly {@link #FAIL_REASON_DESC_LENGTH} characters, reproducing a COBOL
+     * {@code MOVE} into a {@code PIC X(76)} field.
      *
-     * <p>Private because the only two inputs it ever sees are a verified description literal and the
-     * empty string of the cleared trailer, both of which are shorter than the field. It therefore never
-     * needs to truncate, and deliberately does not: silently shortening a description would corrupt the
-     * fixed-width record in a way no length assertion downstream could attribute.
-     *
-     * <p>Formatting uses {@code Locale.ROOT}. Pure: no side effects, no I/O, no state mutation.
-     *
-     * @param  text the text to place in the field, left-justified
-     * @return exactly {@link #FAIL_REASON_DESC_LENGTH} characters when {@code text} is no longer than
-     *         the field
+     * @param text the text to place in the field, left-justified
+     * @return exactly {@link #FAIL_REASON_DESC_LENGTH} characters when {@code text} is no longer than the field
      */
     private static String padFailReasonDesc(final String text) {
         return String.format(Locale.ROOT, FAIL_REASON_DESC_FORMAT, text);

@@ -31,6 +31,9 @@ package com.cardemo.model.entity;
 
 import com.cardemo.model.key.TransactionCategoryBalanceId;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import java.math.BigDecimal;
 import java.util.Objects;
 
@@ -43,11 +46,11 @@ import jakarta.persistence.Table;
  * Transaction category balance: the relational replacement for the VSAM KSDS cluster
  * {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}.
  *
- * <p><b>What it does.</b> Each row carries exactly one running balance, held against the triple
- * (account, transaction type, transaction category). The row is the accumulation point of the daily
- * posting job and the input of the interest calculation job, and it holds nothing else: one composite
- * identifier and one signed decimal amount. This class is a pure data holder. It performs no I/O, runs
- * no business rule, emits no log, holds no collaborator and has no static mutable state.
+ * <p>Each row carries exactly one running balance, held against the triple (account, transaction type,
+ * transaction category). The row is the accumulation point of the daily posting job and the input of the
+ * interest calculation job, and it holds nothing else: one composite identifier and one signed decimal amount.
+ * This class is a pure data holder. It performs no I/O, runs no business rule, emits no log, holds no
+ * collaborator and has no static mutable state.
  *
  * <p>The two jobs that use it approach it differently, and both behaviours are properties of the row
  * rather than of this class:
@@ -64,11 +67,14 @@ import jakarta.persistence.Table;
  *       is the reason the composite key order is load bearing rather than cosmetic.</li>
  * </ul>
  *
- * <p><b>How it is built, run and tested.</b> {@code mvn -B clean compile} compiles this class under
- * {@code -Xlint:all -Werror} with {@code failOnWarning} set, so an unused import or a lint finding is a
- * hard build failure rather than a warning. {@code mvn -B clean test} runs its unit test in
- * {@code src/test/java/com/cardemo/unit/model}, and {@code mvn -B clean verify} additionally enforces
- * the JaCoCo line coverage floor. There is nothing to run: this type has no entry point and is
+ * <p><b>How it is built, run and tested.</b> {@code ./mvnw -B clean compile} compiles this class under
+ * {@code -Xlint:all -Werror} with {@code failOnWarning} set, so a lint finding in any category
+ * {@code javac} 25 publishes is a hard build failure rather than a warning. An unused import is not such a
+ * category and is forbidden by review instead. {@code ./mvnw -B clean test} is where this type's unit test
+ * belongs, under {@code src/test/java/com/cardemo/unit/model}, and {@code ./mvnw -B clean verify}
+ * additionally enforces the JaCoCo line coverage floor. <strong>Not available, measured
+ * 1 August 2026:</strong> no {@code TransactionCategoryBalanceTest} exists, so nothing under that path
+ * covers this type today. There is nothing to run: this type has no entry point and is
  * exercised only through the repository and batch layers.
  *
  * <p><b>Key configuration and defaults.</b> This class configures nothing and reads no property. It
@@ -316,7 +322,8 @@ import jakarta.persistence.Table;
  * and {@code USRSEC}. {@code TCATBALF} is not among them, and a search of that file for the name returns
  * nothing. This dataset therefore has no online definition at all and is reached only from batch, as are
  * {@code DISCGRP}, {@code TRANCATG} and {@code TRANTYPE}. That shapes the authorisation model, since no
- * online role needs access to it, and the integration test surface, since only batch tiers exercise it.
+ * online role needs access to it, and the integration test surface, since only batch tiers are to exercise
+ * it - a shape the tests are to take, since no integration tier exists at this commit.
  *
  * <p>It also has no alternate index. {@code app/catlg/LISTCAT.txt:L3938} reports {@code AIX 3} for the
  * whole catalogue, and all three belong to {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}. The
@@ -373,17 +380,19 @@ import jakarta.persistence.Table;
  * cardholder and credential material. The rendering is produced by plain concatenation, so it consults no
  * locale, charset or time zone and is byte identical on every machine.
  *
- * <h2>Not available: the schema this class must validate against</h2>
+ * <h2>Schema reconciliation, and what is still not available</h2>
  *
- * <p><b>Not available.</b> At the time this entity was authored the directory
- * {@code src/main/resources/db/migration} did not exist and {@code V1__create_schema.sql} had not been
- * written, which was verified by inspection rather than assumed. The mapping below could therefore not be
- * checked against real DDL. Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every
- * profile, any mismatch of column name, type, precision or nullability fails application context startup
- * outright, so the gap is a real risk and not a formality.
+ * <p><b>Measured 1 August 2026.</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
+ * <b>present</b> and declares {@code CREATE TABLE transaction_category_balance}
+ * with 4 columns whose names are identical, as a set, to this class's {@code @Column(name = ...)}
+ * declaration taken together with the three components of
+ * {@link com.cardemo.model.key.TransactionCategoryBalanceId}; the declared types and the component order
+ * match the block reproduced below line for line. Because {@code spring.jpa.hibernate.ddl-auto} is
+ * {@code validate} in every planned profile, any mismatch of column name, type, precision or nullability
+ * would fail application context startup outright, so the agreement matters and is not a formality.
  *
- * <p><b>The field mapping in this file is consequently the normative column contract, and
- * {@code V1__create_schema.sql} must converge on it.</b> What is needed, precisely:
+ * <p>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not available</b>. What
+ * {@code V1__create_schema.sql} declares, and what this mapping asserts, is precisely:
  *
  * <pre>
  * CREATE TABLE transaction_category_balance (
@@ -476,27 +485,74 @@ import jakarta.persistence.Table;
  * database raises with full context, rather than into an exception thrown from a setter far from the
  * caller that mattered.
  *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
+ * JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. An entity is a
+ * bean with public accessors, so without the barrier the default behaviour of returning this type from a
+ * controller, or holding a field of it on a response object, is to publish a per-account, per-category
+ * balance. The barrier is applied here even though this row carries no credential and no personal data,
+ * for two reasons: the balance is customer financial data in its own right, and applying the barrier to
+ * every entity in the package without exception is what makes the control checkable by inspection rather
+ * than a judgement to be re-made each time an entity is added. With the barrier in place Jackson finds no
+ * properties and its default {@code FAIL_ON_EMPTY_BEANS} setting turns the mistake into a loud failure
+ * rather than a silent disclosure. Nothing legitimate is lost: this row has no outbound representation, it
+ * is read and upserted by the posting and interest jobs, and persistence is unaffected because Hibernate
+ * reads and writes the annotated fields reflectively and never consults Jackson visibility.
+ *
  * @see TransactionCategoryBalanceId
- * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
 @Entity
 @Table(name = "transaction_category_balance")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class TransactionCategoryBalance {
 
     /**
-     * Composite primary key: the COBOL group {@code TRAN-CAT-KEY} at {@code app/cpy/CVTRA01Y.cpy:L5},
-     * 17 bytes made of {@code TRANCAT-ACCT-ID PIC 9(11)}, {@code TRANCAT-TYPE-CD PIC X(02)} and
+     * Composite primary key: the COBOL group {@code TRAN-CAT-KEY} at {@code app/cpy/CVTRA01Y.cpy:L5}, 17 bytes
+     * made of {@code TRANCAT-ACCT-ID PIC 9(11)}, {@code TRANCAT-TYPE-CD PIC X(02)} and
      * {@code TRANCAT-CD PIC 9(04)} in that order.
-     *
-     * <p>Mounted through {@code @EmbeddedId}, which is the entire identity of this entity. Every column
-     * name, type and nullability for the three components is declared by
-     * {@link TransactionCategoryBalanceId} itself, so nothing about them is repeated here: no
-     * {@code @AttributeOverride}, no duplicate {@code @Column}, no scalar mirror of any component. The
-     * component order is load bearing, because the interest job's account level control break at
-     * {@code app/cbl/CBACT04C.cbl:L194} depends on the account identifier leading the key.
      */
     @EmbeddedId
     private TransactionCategoryBalanceId id;
+
+    /**
+     * Integer digit count of {@code TRAN-CAT-BAL PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L9}: nine.
+     * This is the {@code S9(09)V99} tier, not the {@code S9(10)V99} tier the account entity's money fields
+     * use, and the two must never be conflated.
+     */
+    private static final int BALANCE_INTEGER_DIGITS = 9;
+
+    /**
+     * Decimal digit count of {@code TRAN-CAT-BAL PIC S9(09)V99}: two, the digits after the implied
+     * {@code V}.
+     */
+    private static final int BALANCE_SCALE = 2;
+
+    /**
+     * Total precision of the mapped column, nine integer digits plus two decimal digits, giving
+     * {@code NUMERIC(11,2)}.
+     */
+    private static final int BALANCE_PRECISION = BALANCE_INTEGER_DIGITS + BALANCE_SCALE;
+
+    /**
+     * Largest value {@code TRAN-CAT-BAL PIC S9(09)V99} can represent, and equally the largest
+     * {@code NUMERIC(11,2)} can hold. Constructed from a string literal rather than a {@code double} so
+     * that the bound is exact.
+     */
+    private static final BigDecimal MAX_BALANCE = new BigDecimal("999999999.99");
+
+    /**
+     * Smallest value {@code TRAN-CAT-BAL PIC S9(09)V99} can represent. The picture clause carries an
+     * {@code S}, so the domain is symmetric about zero and a negative balance is a legitimate outcome of
+     * posting a credit.
+     */
+    private static final BigDecimal MIN_BALANCE = MAX_BALANCE.negate();
 
     /**
      * Running balance for this account, type and category triple:
@@ -513,26 +569,15 @@ public class TransactionCategoryBalance {
      * {@code app/cbl/CBTRN02C.cbl:L504-L508} initialises the record and then adds the transaction amount,
      * so the caller always supplies the opening value and a field initialiser here would fabricate one.
      */
-    @Column(name = "tran_cat_bal", nullable = false, precision = 11, scale = 2)
+    @Column(name = "tran_cat_bal", nullable = false,
+            precision = BALANCE_PRECISION, scale = BALANCE_SCALE)
     private BigDecimal balance;
 
     /**
      * Creates an empty instance with both members unset.
-     *
-     * <p>Present solely because JPA requires a no-argument constructor so the persistence provider can
-     * instantiate the entity before populating it reflectively. It is {@code protected} rather than
-     * {@code public} so that application code is steered to
-     * {@link #TransactionCategoryBalance(TransactionCategoryBalanceId, BigDecimal)}, which yields a
-     * complete row in one step; the provider does not require the constructor to be public.
-     *
-     * <p>No member is defaulted here. In particular the balance is left {@code null} rather than set to
-     * zero: a zero opening balance is a decision belonging to the caller that creates a new row, and
-     * inventing one here would hide a caller that failed to make it.
      */
     protected TransactionCategoryBalance() {
-        // Intentionally empty. JPA instantiates through this constructor and then writes the mapped
-        // fields reflectively, so any assignment made here would be overwritten on load and would only
-        // serve to mask an unset value on a newly constructed instance.
+        // Intentionally empty: the provider writes the mapped fields reflectively after construction.
     }
 
     /**
@@ -545,29 +590,43 @@ public class TransactionCategoryBalance {
      * an instance here and hands it to the repository, with no intermediate half-built state and no "is
      * new" flag anywhere.
      *
-     * <p>Both arguments are accepted exactly as given, including {@code null}, so that a row being
-     * assembled remains representable. The not-null requirement is enforced by the mapping's
-     * {@code nullable = false} and by the schema's {@code NOT NULL}, which is where a violation can be
-     * reported against a real write rather than against a setter call.
+     * <p>Both arguments are validated, and the validation is bounded by the record layout and by nothing
+     * else. {@code null} is rejected on both, because both columns are {@code NOT NULL} and because the
+     * source cannot produce a null: {@code TRAN-CAT-KEY} is 17 fixed bytes and {@code TRAN-CAT-BAL} is a
+     * packed numeric that always holds a value. The balance is additionally required to fit
+     * {@code S9(09)V99} - nine integer digits, two decimal digits - because a wider value would be
+     * silently rounded or rejected at the {@code NUMERIC(11,2)} column and the resulting diagnostic would
+     * name only a column. <strong>The sign is untouched and zero and negative balances are accepted</strong>,
+     * the picture clause being signed.
      *
-     * @param id      the composite key, {@code TRAN-CAT-KEY} 17 bytes as account, type and category; may
-     *                be {@code null} for an instance that is not yet fully determined
+     * <p>Rejecting {@code null} does not narrow the accepted "record not found" control path by one row.
+     * That path concerns whether the <em>row</em> exists, not whether the <em>instance</em> is complete:
+     * {@code app/cbl/CBTRN02C.cbl:L504-L508} initialises a complete record and writes it, so a half-built
+     * instance is not something the source produces at any point.
+     *
+     * @param id      the composite key, {@code TRAN-CAT-KEY} 17 bytes as account, type and category; must
+     *                not be {@code null}
      * @param balance the running balance, {@code TRAN-CAT-BAL PIC S9(09)V99}, signed and possibly
-     *                negative; may be {@code null} for an instance that is not yet fully determined
+     *                negative; must not be {@code null}, must have at most two decimal digits, and must
+     *                lie between -999999999.99 and 999999999.99 inclusive
+     * @throws IllegalArgumentException if either argument is {@code null}, or if {@code balance} carries
+     *                                  more than two decimal digits or falls outside the range
+     *                                  {@code S9(09)V99} can represent
      */
     public TransactionCategoryBalance(TransactionCategoryBalanceId id, BigDecimal balance) {
-        this.id = id;
-        this.balance = balance;
+        // Both checks are private static helpers, so this constructor invokes no overridable method and
+        // cannot publish a partially built instance; JPA forbids a final entity, so -Xlint:all -Werror
+        // would otherwise report this-escape.
+        this.id = requireId(id);
+        this.balance = requireBalance(balance);
     }
 
     /**
-     * Returns the composite key, the COBOL group {@code TRAN-CAT-KEY PIC} 17 bytes.
+     * Returns the composite key, the 17-byte COBOL group {@code TRAN-CAT-KEY}.
      *
-     * <p>Individual components are read through this identifier, for instance
-     * {@code getId().getAccountId()}, rather than through pass-through accessors on this class. That
-     * keeps one definition of the key's public surface instead of two.
-     *
-     * @return the composite key, or {@code null} if unset
+     * @return the composite key, never {@code null} on an instance built through
+     *         {@link #TransactionCategoryBalance(TransactionCategoryBalanceId, BigDecimal)};
+     *         {@code null} only on an instance the persistence provider has not finished populating
      */
     public TransactionCategoryBalanceId getId() {
         return id;
@@ -576,27 +635,18 @@ public class TransactionCategoryBalance {
     /**
      * Replaces the composite key.
      *
-     * <p>Side effect worth knowing: for a row already managed by a persistence context this changes the
-     * entity's identity, which is not something a persistence provider supports. Callers reassign the key
-     * only on an instance that is not yet persistent, which is exactly the create path described on the
-     * class.
-     *
-     * @param id the composite key, {@code TRAN-CAT-KEY} as account, type and category; accepted as given,
-     *           including {@code null}
+     * @param id the composite key, {@code TRAN-CAT-KEY} as account, type and category.
      */
     public void setId(TransactionCategoryBalanceId id) {
-        this.id = id;
+        this.id = requireId(id);
     }
 
     /**
-     * Returns the running balance, {@code TRAN-CAT-BAL PIC S9(09)V99}, mapped as
-     * {@code NUMERIC(11,2)}.
+     * Returns the running balance, {@code TRAN-CAT-BAL PIC S9(09)V99}, mapped as {@code NUMERIC(11,2)}.
      *
-     * <p>The returned value is signed and may be negative. Compare it with
-     * {@link BigDecimal#compareTo(BigDecimal)} and never with {@link BigDecimal#equals(Object)}, which is
-     * scale sensitive and would report {@code 2.0} and {@code 2.00} as different balances.
-     *
-     * @return the running balance, or {@code null} if unset
+     * @return the running balance, never {@code null} on an instance built through
+     *         {@link #TransactionCategoryBalance(TransactionCategoryBalanceId, BigDecimal)};
+     *         {@code null} only on an instance the persistence provider has not finished populating
      */
     public BigDecimal getBalance() {
         return balance;
@@ -605,42 +655,14 @@ public class TransactionCategoryBalance {
     /**
      * Replaces the running balance.
      *
-     * <p>This setter is the accumulation point of the daily posting job: both branches of
-     * {@code 2700-UPDATE-TCATBAL} add the transaction amount to the balance, at
-     * {@code app/cbl/CBTRN02C.cbl:L508} for a newly created row and {@code :L527} for an existing one.
-     * The addition itself is performed by the batch layer, which owns the arithmetic and its
-     * {@code RoundingMode.HALF_EVEN} rounding; this class only stores the result, so no algebraic
-     * rewriting of the source formula can ever hide in here.
-     *
-     * <p>The argument is stored exactly as supplied. No sign normalisation is applied, because a negative
-     * balance is a legitimate outcome of posting a credit, and no scale is imposed, because the mapping's
-     * declared scale of 2 is what the column enforces.
-     *
-     * @param balance the running balance, {@code TRAN-CAT-BAL PIC S9(09)V99}, signed and possibly
-     *                negative; accepted as given, including {@code null}
+     * @param balance the running balance, {@code TRAN-CAT-BAL PIC S9(09)V99}, signed and possibly negative.
      */
     public void setBalance(BigDecimal balance) {
-        this.balance = balance;
+        this.balance = requireBalance(balance);
     }
 
     /**
      * Compares two rows by composite key alone.
-     *
-     * <p>The balance is excluded on purpose. It is mutable state that the posting job updates in place,
-     * so including it would let an instance's equality change while it sits in a hash based collection,
-     * and would make two handles on the same database row compare unequal merely because one had been
-     * refreshed. Excluding it also keeps {@link BigDecimal#equals(Object)} and its scale sensitivity out
-     * of this class entirely.
-     *
-     * <p>The value based comparison of the three key components is supplied by
-     * {@link TransactionCategoryBalanceId}; this method only delegates to it through
-     * {@link Objects#equals(Object, Object)}, which also handles an unset key without a null check. Two
-     * instances that both have no key compare equal, which is the correct reading of "same identity,
-     * namely none yet" and is consistent with {@link #hashCode()}.
-     *
-     * <p>The runtime class is compared exactly rather than with a widening {@code instanceof}, which keeps
-     * the relation symmetric. That is safe here because this class is not extended and declares no
-     * association, so it is never replaced by a lazy loading proxy subclass.
      *
      * @param other the object to compare against, possibly {@code null}
      * @return {@code true} if {@code other} is a row of exactly this class with an equal composite key
@@ -659,15 +681,6 @@ public class TransactionCategoryBalance {
     /**
      * Returns a hash derived from the composite key alone, consistent with {@link #equals(Object)}.
      *
-     * <p>Because the balance is excluded, the hash is stable across every update the posting job makes to
-     * a row, so an instance may be held in a hash based collection while its balance is accumulated.
-     * {@link Objects#hashCode(Object)} yields zero for an unset key rather than failing, which keeps a
-     * not-yet-persistent instance usable.
-     *
-     * <p>Hash order carries no meaning and must never be relied upon: the account level control break in
-     * {@code app/cbl/CBACT04C.cbl:L188-L222} depends on composite key order, which is delivered by the
-     * primary key and by explicit ordering in a query, never by hash bucket iteration.
-     *
      * @return the key based hash code
      */
     @Override
@@ -676,23 +689,103 @@ public class TransactionCategoryBalance {
     }
 
     /**
-     * Returns a diagnostic rendering of the composite key and the balance.
+     * Returns a diagnostic rendering of the composite key alone.
      *
-     * <p>Both members appear in full and unmasked, which is safe and checked: this row holds an account
-     * identifier, a two character type code, a four digit category code and a monetary amount, and no
-     * credential, password hash, social security number, cardholder name or address. Nothing here falls
-     * under the logging configuration's masking rules, unlike the card, customer and user security
-     * entities whose renderings are deliberately restricted.
+     * <p>The key appears in full and unmasked, which is safe and checked: it is an account identifier, a
+     * two character type code and a four digit category code, and it carries no credential, no password
+     * hash, no social security number, no cardholder name and no address. It is also the only value here
+     * that identifies which row a log line refers to, which is the sole purpose of this rendering.
+     *
+     * <p><b>The balance is excluded, which narrows an earlier form of this method.</b> The previous
+     * reasoning was that the balance falls under no masking rule in the logging configuration and is
+     * therefore safe to render. That conflated two different questions. A masking rule is a backstop for
+     * values it can recognise by shape, and an unlabelled decimal has no recognisable shape, so the
+     * absence of a rule is not evidence of safety - it is the reason omission at source has to do the
+     * work. And the value itself is customer financial data: this rendering carries the account
+     * identifier, so a log estate holding both holds a per-account, per-category balance ledger that
+     * joins straight back to the row, reconstructable with no database access and no authorisation. A
+     * reader who needs a balance should read the row, where the access is authorised and audited.
      *
      * <p>Intended for diagnostics only and not a stable log or wire format. The rendering is plain
      * concatenation, so it consults no locale, charset or time zone and is identical on every machine.
      *
-     * @return a rendering of the form {@code TransactionCategoryBalance[id=..., balance=...]}
+     * @return a rendering of the form {@code TransactionCategoryBalance[id=...]}, never containing the
+     *         balance
      */
     @Override
     public String toString() {
-        return "TransactionCategoryBalance[id=" + id
-                + ", balance=" + balance
-                + "]";
+        return "TransactionCategoryBalance[id=" + id + "]";
+    }
+
+    /**
+     * Validates a candidate composite key and returns it unchanged.
+     *
+     * <p>Rejects {@code null} only. The three components inside the key are validated by
+     * {@link TransactionCategoryBalanceId} itself, which is the single definition of its own surface, so
+     * nothing about them is re-checked here.
+     *
+     * <p>Declared {@code private static} so that the constructor can call it without invoking an
+     * overridable method, which would otherwise publish a partially initialised instance; the JPA
+     * specification forbids a final entity, so the hazard is real and {@code -Xlint:all -Werror} reports
+     * it as {@code this-escape}.
+     *
+     * @param value the candidate key, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}
+     */
+    private static TransactionCategoryBalanceId requireId(TransactionCategoryBalanceId value) {
+        if (value == null) {
+            throw new IllegalArgumentException("id (TRAN-CAT-KEY, 17 bytes at app/cpy/CVTRA01Y.cpy:L5) "
+                    + "must not be null: it is the composite primary key of table "
+                    + "transaction_category_balance");
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate balance against the domain {@code TRAN-CAT-BAL PIC S9(09)V99} can represent
+     * and returns it unchanged.
+     *
+     * <p>Three things are checked and nothing else. {@code null} is rejected, because the column is
+     * {@code NOT NULL} and a packed numeric field always holds a value. A scale greater than two is
+     * rejected, because {@code V99} declares exactly two decimal positions and the
+     * {@code NUMERIC(11,2)} column would round a wider value half away from zero instead of refusing it.
+     * A magnitude outside -999999999.99 through 999999999.99 is rejected, because nine unsigned integer
+     * digits cannot hold it.
+     *
+     * <p><strong>What is deliberately not checked:</strong> the sign, since the picture clause carries an
+     * {@code S} and the daily posting job legitimately drives this balance negative; zero, which is the
+     * opening value of every newly created row; and a scale smaller than two, since {@code 2} and
+     * {@code 2.00} denote the same amount and the column stores either as two decimal places. The value
+     * is never rescaled, normalised or rounded here.
+     *
+     * <p>Declared {@code private static} for the reason given on
+     * {@link #requireId(TransactionCategoryBalanceId)}.
+     *
+     * @param value the candidate balance, possibly {@code null}
+     * @return {@code value}, unchanged and unrescaled
+     * @throws IllegalArgumentException if {@code value} is {@code null}, has more than two decimal digits,
+     *                                  or falls outside the representable range
+     */
+    private static BigDecimal requireBalance(BigDecimal value) {
+        if (value == null) {
+            throw new IllegalArgumentException("balance (TRAN-CAT-BAL PIC S9(09)V99 at "
+                    + "app/cpy/CVTRA01Y.cpy:L9) must not be null: it maps to a NOT NULL NUMERIC("
+                    + BALANCE_PRECISION + "," + BALANCE_SCALE + ") column of table "
+                    + "transaction_category_balance");
+        }
+        if (value.scale() > BALANCE_SCALE) {
+            throw new IllegalArgumentException("balance (TRAN-CAT-BAL PIC S9(09)V99) must carry at most "
+                    + BALANCE_SCALE + " decimal digits but had a scale of " + value.scale()
+                    + "; rescale it explicitly with RoundingMode.HALF_EVEN rather than letting the "
+                    + "NUMERIC(" + BALANCE_PRECISION + "," + BALANCE_SCALE + ") column round it");
+        }
+        if (value.compareTo(MIN_BALANCE) < 0 || value.compareTo(MAX_BALANCE) > 0) {
+            throw new IllegalArgumentException("balance (TRAN-CAT-BAL PIC S9(09)V99) must be between "
+                    + MIN_BALANCE.toPlainString() + " and " + MAX_BALANCE.toPlainString()
+                    + " inclusive, which is what " + BALANCE_INTEGER_DIGITS
+                    + " signed integer digits can hold, but was " + value.toPlainString());
+        }
+        return value;
     }
 }

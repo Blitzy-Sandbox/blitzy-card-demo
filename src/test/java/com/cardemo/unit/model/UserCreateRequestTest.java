@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : UserCreateRequestTest.java
- * Component   : Unit test for com.cardemo.model.dto.UserCreateRequest,
- *               resident at src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM tier, no container, no
  *               Spring context, no database, no live endpoint
@@ -45,12 +43,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.model.dto.UserCreateRequest;
 import com.cardemo.model.enums.UserType;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintViolation;
 import jakarta.validation.Validation;
-import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Size;
@@ -58,8 +55,10 @@ import java.io.Serializable;
 import java.lang.reflect.Field;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.junit.jupiter.api.DisplayName;
@@ -138,9 +137,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * producing a green build in which it never runs.
  *
  * <ul>
- *   <li>{@code mvn -B test} runs this class with the whole unit tier.</li>
- *   <li>{@code mvn -B test -Dtest=UserCreateRequestTest} runs this class alone.</li>
- *   <li>{@code mvn -B verify} additionally applies the JaCoCo line coverage gate.</li>
+ *   <li>{@code ./mvnw -B test} runs this class with the whole unit tier.</li>
+ *   <li>{@code ./mvnw -B test -Dtest=UserCreateRequestTest} runs this class alone.</li>
+ *   <li>{@code ./mvnw -B verify} additionally applies the JaCoCo line coverage gate.</li>
  * </ul>
  *
  * <h2>Key configurations and defaults</h2>
@@ -216,8 +215,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code noClassLevelConstraintModelsAGatedCrossFieldEdit} and
  *       {@code noSessionOrNavigationPropertyIsPresent}. <em>Remediation:</em> gate the cross field rule
  *       in the service, after the single field edits, and keep routing in the URL.</li>
- *   <li><strong>Medium - the build fails on an unused import or a raw type.</strong> The compiler runs
- *       with {@code -Xlint:all -Werror} at {@code release 25}, so any warning is fatal. In particular an
+ *   <li><strong>Medium - the build fails on a raw type or a resource that is never used.</strong> The
+ *       compiler runs with {@code -Xlint:all -Werror} at {@code release 25}, so any warning in a category
+ *       {@code javac} 25 publishes is fatal. An unused <em>import</em> is not such a category and is
+ *       caught at review instead. In particular an
  *       {@link AutoCloseable} opened in a try with resources block must be referenced inside that
  *       block, or {@code -Xlint:try} fails the build. <em>Remediation:</em> read the first
  *       {@code [ERROR]} line; the compiler names the exact construct.</li>
@@ -247,90 +248,104 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("UserCreateRequest - app/cpy-bms/COUSR01.CPY group COUSR1AI + app/cbl/COUSR01C.cbl")
 class UserCreateRequestTest {
 
-    // ----------------------------------------------------------------------------------------------
-    // Geometry taken from the frozen corpus. Every value below is a byte count proven by a locator.
-    // ----------------------------------------------------------------------------------------------
-
-    /** Input field count of group {@code COUSR1AI}, {@code app/cpy-bms/COUSR01.CPY:17-90}. */
+    /**
+     * Input field count of group {@code COUSR1AI}, {@code app/cpy-bms/COUSR01.CPY:17-90}.
+     */
     private static final int ADD_MAP_INPUT_FIELD_COUNT = 12;
 
-    /** Width of {@code WS-MESSAGE PIC X(80)}, {@code app/cbl/COUSR01C.cbl:L38}. */
+    /**
+     * Width of {@code WS-MESSAGE PIC X(80)}, {@code app/cbl/COUSR01C.cbl:L38}.
+     */
     private static final int WS_MESSAGE_WIDTH = 80;
 
     /**
-     * Width of {@code ERRMSGI} at {@code app/cpy-bms/COUSR01.CPY:90} and of {@code ERRMSGO} at
-     * {@code :164}. Seventy eight, not seventy nine and not eighty.
+     * Width of {@code ERRMSGI} at {@code app/cpy-bms/COUSR01.CPY:90} and of {@code ERRMSGO} at {@code :164}.
+     * Seventy eight, not seventy nine and not eighty.
      */
     private static final int ERRMSG_WIDTH = 78;
 
-    /** Width of {@code SEC-USR-ID PIC X(08)}, {@code app/cpy/CSUSR01Y.cpy:L18}, and the cluster key. */
+    /**
+     * Width of {@code SEC-USR-ID PIC X(08)}, {@code app/cpy/CSUSR01Y.cpy:L18}, and the cluster key.
+     */
     private static final int SEC_USR_ID_WIDTH = 8;
 
-    /** Width of {@code SEC-USER-DATA}, {@code app/cpy/CSUSR01Y.cpy:L17-L23}: 8+20+20+8+1+23. */
+    /**
+     * Width of {@code SEC-USER-DATA}, {@code app/cpy/CSUSR01Y.cpy:L17-L23}: 8+20+20+8+1+23.
+     */
     private static final int SEC_USER_DATA_WIDTH = 80;
 
-    /** Width of the {@code CCDA-} message constants, {@code app/cpy/CSMSG01Y.cpy:20}. */
+    /**
+     * Width of the {@code CCDA-} message constants, {@code app/cpy/CSMSG01Y.cpy:20}.
+     */
     private static final int CCDA_MESSAGE_WIDTH = 50;
 
     /**
      * COBOL {@code LOW-VALUES}: the lowest character in the collating sequence. Expressed as
-     * {@link Character#MIN_VALUE} rather than as a unicode escape, because unicode escapes are resolved
-     * before tokenisation and are therefore a hazard in source text.
+     * {@link Character#MIN_VALUE} rather than as a unicode escape, because unicode escapes are resolved before
+     * tokenisation and are therefore a hazard in source text.
      */
     private static final char LOW_VALUE = Character.MIN_VALUE;
 
-    // ----------------------------------------------------------------------------------------------
-    // Message literals. Reproduced byte for byte from the source, never paraphrased, never re-cased
-    // and never re-punctuated: the parity gates compare these strings byte for byte. Note the
-    // deliberate upper case NOT in all five presence messages and the three dot suffix on each.
-    // ----------------------------------------------------------------------------------------------
-
-    /** {@code app/cbl/COUSR01C.cbl:L120}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L120}.
+     */
     private static final String MSG_FIRST_NAME_EMPTY = "First Name can NOT be empty...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L126}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L126}.
+     */
     private static final String MSG_LAST_NAME_EMPTY = "Last Name can NOT be empty...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L132}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L132}.
+     */
     private static final String MSG_USER_ID_EMPTY = "User ID can NOT be empty...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L138}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L138}.
+     */
     private static final String MSG_PASSWD_EMPTY = "Password can NOT be empty...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L144}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L144}.
+     */
     private static final String MSG_USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
     /**
-     * {@code app/cbl/COUSR01C.cbl:L263}, reached from both {@code WHEN DFHRESP(DUPKEY)} at {@code :L260}
-     * and {@code WHEN DFHRESP(DUPREC)} at {@code :L261}. The source spells the verb {@code exist}, not
+     * {@code app/cbl/COUSR01C.cbl:L263}, reached from both {@code WHEN DFHRESP(DUPKEY)} at {@code :L260} and
+     * {@code WHEN DFHRESP(DUPREC)} at {@code :L261}. The source spells the verb {@code exist}, not
      * {@code exists}; the grammar is deliberately not corrected.
      */
     private static final String MSG_DUPLICATE_USER_ID = "User ID already exist...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L270}, the {@code WHEN OTHER} outcome. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L270}, the {@code WHEN OTHER} outcome.
+     */
     private static final String MSG_UNABLE_TO_ADD = "Unable to Add User...";
 
     /**
-     * Text of {@code CCDA-MSG-INVALID-KEY}, {@code app/cpy/CSMSG01Y.cpy:20-21}, moved into the same
-     * eighty byte work area at {@code app/cbl/COUSR01C.cbl:L101}. The copybook declares
-     * {@code PIC X(50)} and the literal as written is space padded; only the significant text is held
-     * here and the padding is applied by {@link #cobolMove(String, int)} where it matters.
+     * Text of {@code CCDA-MSG-INVALID-KEY}, {@code app/cpy/CSMSG01Y.cpy:20-21}, moved into the same eighty byte
+     * work area at {@code app/cbl/COUSR01C.cbl:L101}. The copybook declares {@code PIC X(50)} and the literal
+     * as written is space padded; only the significant text is held here and the padding is applied by
+     * {@link #cobolMove(String, int)} where it matters.
      */
     private static final String MSG_INVALID_KEY_TEXT = "Invalid key pressed. Please see below...";
 
-    /** First {@code STRING} operand, {@code app/cbl/COUSR01C.cbl:L255}, {@code DELIMITED BY SIZE}. */
+    /**
+     * First {@code STRING} operand, {@code app/cbl/COUSR01C.cbl:L255}, {@code DELIMITED BY SIZE}.
+     */
     private static final String CONFIRMATION_HEAD = "User ";
 
     /**
-     * Third {@code STRING} operand, {@code app/cbl/COUSR01C.cbl:L257}, {@code DELIMITED BY SIZE}. Note
-     * the leading space, the verb {@code added}, and the space that precedes the three dots.
+     * Third {@code STRING} operand, {@code app/cbl/COUSR01C.cbl:L257}, {@code DELIMITED BY SIZE}. Note the
+     * leading space, the verb {@code added}, and the space that precedes the three dots.
      */
     private static final String CONFIRMATION_TAIL = " has been added ...";
 
     /**
      * The five presence messages in the exact order the {@code EVALUATE TRUE} at
-     * {@code app/cbl/COUSR01C.cbl:L117} declares its branches. The order is the contract: the first
-     * matching branch sends the screen and stops.
+     * {@code app/cbl/COUSR01C.cbl:L117} declares its branches. The order is the contract: the first matching
+     * branch sends the screen and stops.
      */
     private static final List<String> CASCADE_MESSAGES_IN_SOURCE_ORDER = List.of(
             MSG_FIRST_NAME_EMPTY,
@@ -339,27 +354,27 @@ class UserCreateRequestTest {
             MSG_PASSWD_EMPTY,
             MSG_USER_TYPE_EMPTY);
 
-    // ----------------------------------------------------------------------------------------------
-    // Synthetic test values. Rule 1 clause D forbids secrets in code, logs, tests and config, and it
-    // names tests explicitly. The plaintext literal shared by the ten operators seeded at
-    // app/jcl/DUSRSECJ.jcl:L35-L44 therefore appears nowhere here. These values are obviously
-    // synthetic, are eight characters to match PASSWDI PIC X(8), and are never echoed into an
-    // assertion message: a failing credential assertion identifies the field, never the value.
-    // ----------------------------------------------------------------------------------------------
-
-    /** Synthetic eight character credential. Not a real password and not the seeded literal. */
+    /**
+     * Synthetic eight character credential. Not a real password and not the seeded literal.
+     */
     private static final String SYNTHETIC_CREDENTIAL = "Zq7#Kv2m";
 
-    /** A second, different synthetic credential, used where two payloads must differ. */
+    /**
+     * A second, different synthetic credential, used where two payloads must differ.
+     */
     private static final String SYNTHETIC_CREDENTIAL_ALTERNATE = "Wm4$Ny8p";
 
-    /** A seeded operator identifier. Identifiers are not credentials and carry no secret. */
-    private static final String SEEDED_USER_ID = "USER0001";
+    /**
+     * A <strong>synthetic</strong> eight character operator identifier standing in for one of the ten
+     * seeded rows at {@code app/jcl/DUSRSECJ.jcl:L35-L44}. The seeded identity itself is not transcribed;
+     * only the key width and shape it exercises matter here.
+     */
+    private static final String SEEDED_USER_ID = "STDUSR01";
 
     /**
      * Property names of the COMMAREA navigation and session fields, {@code app/cpy/COCOM01Y.cpy:L21-L24},
-     * {@code :L29} and {@code :L43-L44}. Transformation rule 7 of the plan states that the target keeps
-     * no server side session state, so none of these may appear on a request payload. Note that
+     * {@code :L29} and {@code :L43-L44}. Transformation rule 7 of the plan states that the target keeps no
+     * server side session state, so none of these may appear on a request payload. Note that
      * {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET} are {@code PIC X(7)}, not {@code X(8)}.
      */
     private static final List<String> COMMAREA_SESSION_PROPERTIES = List.of(
@@ -371,29 +386,9 @@ class UserCreateRequestTest {
             "lastMap",
             "lastMapset");
 
-    // ----------------------------------------------------------------------------------------------
-    // Parity oracles. These are pure functions reproducing the COBOL semantics that the payload
-    // deliberately does not carry, because it is a transport object: presence testing, fixed width
-    // movement and string composition all belong to the service tier. They are test oracles, not
-    // production code, and they exist so that the ordered cascade, the truncation and the composed
-    // literals are asserted against executable behaviour rather than against restated constants.
-    // None reads ambient state, none mutates anything and none performs I/O.
-    // ----------------------------------------------------------------------------------------------
-
     /**
-     * Reproduces the COBOL predicate {@code = SPACES OR LOW-VALUES} used by all five branches of the
-     * cascade at {@code app/cbl/COUSR01C.cbl:L118}, {@code :L124}, {@code :L130}, {@code :L136} and
-     * {@code :L142}.
-     *
-     * <p>The predicate is a disjunction of two whole field comparisons, not a character by character
-     * test, so a field holding a mixture of spaces and low values equals neither operand and is
-     * therefore <em>not</em> empty. That distinction is preserved here rather than simplified away.
-     *
-     * <p>A {@code null} reference is reported as empty because an absent JSON property leaves the
-     * property unset, and the fixed width map area the source received would have contained spaces or
-     * low values in that case. Absent and blank remain distinct <em>values</em> - the accessor returns
-     * exactly what was set - while sharing one screen <em>outcome</em>, which is precisely the three
-     * state model of {@code app/cpy/CSSETATY.cpy}.
+     * Reproduces the COBOL predicate {@code = SPACES OR LOW-VALUES} used by all five branches of the cascade at
+     * {@code app/cbl/COUSR01C.cbl:L118}, {@code :L124}, {@code :L130}, {@code :L136} and {@code :L142}.
      *
      * @param presented the value as bound from the request, which may be {@code null}
      * @return {@code true} when the source would treat the field as empty
@@ -406,13 +401,13 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Reports whether every character of a value is one given fill character, which is what a whole
-     * field comparison against a COBOL figurative constant amounts to.
+     * Reports whether every character of a value is one given fill character, which is what a whole field
+     * comparison against a COBOL figurative constant amounts to.
      *
      * @param value the value to inspect, never {@code null}
-     * @param fill  the fill character to compare against
-     * @return {@code true} when the value contains nothing but the fill character, including when the
-     *         value is empty
+     * @param fill the fill character to compare against
+     * @return {@code true} when the value contains nothing but the fill character, including when the value is
+     * empty
      */
     private static boolean isUniformly(final String value, final char fill) {
         for (int index = 0; index < value.length(); index++) {
@@ -427,20 +422,8 @@ class UserCreateRequestTest {
      * Reproduces the ordered, first match wins presence cascade of {@code PROCESS-ENTER-KEY} at
      * {@code app/cbl/COUSR01C.cbl:L115-L151}.
      *
-     * <p>The source is a single {@code EVALUATE TRUE} whose branches are tested in declaration order.
-     * The first branch that matches sets the error flag, moves its literal into the message work area,
-     * positions the cursor and performs {@code SEND-USRADD-SCREEN}, which ends the evaluation. No later
-     * branch is reached, so at most one message is ever produced no matter how many fields are blank.
-     * The final {@code WHEN OTHER} at {@code :L148} positions the cursor on the first name and
-     * continues without producing a message.
-     *
-     * <p>The credential is passed separately rather than read from the payload because the payload
-     * exposes no read path to it, which is the security contract asserted in {@code CredentialHandling}.
-     * The source reads {@code PASSWDI} straight out of the map area at {@code :L136}, so passing the
-     * presented value explicitly is the faithful equivalent.
-     *
-     * @param presented          the bound payload supplying the four readable operator fields
-     * @param presentedPassword  the presented credential, which the payload cannot surrender
+     * @param presented the bound payload supplying the four readable operator fields
+     * @param presentedPassword the presented credential, which the payload cannot surrender
      * @return the single message the source would display, or empty on the success path
      */
     private static Optional<String> firstCascadeFailure(final UserCreateRequest presented,
@@ -464,16 +447,12 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Reproduces a COBOL alphanumeric {@code MOVE} into a fixed width receiving field, the operation
-     * that silently loses two bytes at {@code app/cbl/COUSR01C.cbl:L188} when the eighty byte
-     * {@code WS-MESSAGE} is moved into the seventy eight byte {@code ERRMSGO}.
+     * Reproduces a COBOL alphanumeric {@code MOVE} into a fixed width receiving field, the operation that
+     * silently loses two bytes at {@code app/cbl/COUSR01C.cbl:L188} when the eighty byte {@code WS-MESSAGE} is
+     * moved into the seventy eight byte {@code ERRMSGO}.
      *
-     * <p>The value is left justified in the receiving field, truncated on the right when it is too long
-     * and space filled on the right when it is too short. Truncation is silent: it is neither an error
-     * nor a rejection, which is why the receiving width must never be widened to hide it.
-     *
-     * @param sending         the sending value, never {@code null}
-     * @param receivingWidth  the declared width of the receiving field, which must be positive
+     * @param sending the sending value, never {@code null}
+     * @param receivingWidth the declared width of the receiving field, which must be positive
      * @return the receiving field contents, always exactly {@code receivingWidth} characters long
      */
     private static String cobolMove(final String sending, final int receivingWidth) {
@@ -487,11 +466,6 @@ class UserCreateRequestTest {
      * Reproduces {@code DELIMITED BY SPACE} as applied to {@code SEC-USR-ID} at
      * {@code app/cbl/COUSR01C.cbl:L256}.
      *
-     * <p>The operand contributes only the characters preceding its first space, so a fixed width
-     * identifier shorter than its eight byte field is trimmed rather than carried with its padding.
-     * This is the one place in the write path where the record's fixed width geometry is deliberately
-     * not preserved into the message.
-     *
      * @param sending the sending field contents, never {@code null}
      * @return the characters up to but excluding the first space, or the whole value when it holds none
      */
@@ -501,16 +475,11 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Reproduces the {@code STRING} statement at {@code app/cbl/COUSR01C.cbl:L255-L258} that composes
-     * the success message on the {@code DFHRESP(NORMAL)} branch.
-     *
-     * <p>The identifier arrives from {@code USERIDI PIC X(8)} through a {@code MOVE} into
-     * {@code SEC-USR-ID PIC X(08)} at {@code :L154}, so it is space padded to eight bytes before the
-     * {@code STRING} trims it at its first space. Both steps are applied here in that order, because
-     * the padding is what the trim acts upon.
+     * Reproduces the {@code STRING} statement at {@code app/cbl/COUSR01C.cbl:L255-L258} that composes the
+     * success message on the {@code DFHRESP(NORMAL)} branch.
      *
      * @param presentedUserId the identifier as presented on the screen, never {@code null}
-     * @return the composed confirmation, for example {@code User USER0001 has been added ...}
+     * @return the composed confirmation, for example {@code User STDUSR01 has been added ...}
      */
     private static String additionConfirmation(final String presentedUserId) {
         final String securityUserId = cobolMove(presentedUserId, SEC_USR_ID_WIDTH);
@@ -519,17 +488,11 @@ class UserCreateRequestTest {
 
     /**
      * Reproduces the {@code EVALUATE WS-RESP-CD} of {@code WRITE-USER-SEC-FILE} at
-     * {@code app/cbl/COUSR01C.cbl:L250-L274}, which maps the CICS response of the
-     * {@code EXEC CICS WRITE} at {@code :L240} onto exactly one of three messages.
+     * {@code app/cbl/COUSR01C.cbl:L250-L274}, which maps the CICS response of the {@code EXEC CICS WRITE} at
+     * {@code :L240} onto exactly one of three messages.
      *
-     * <p>The duplicate case is the structural detail that matters: {@code WHEN DFHRESP(DUPKEY)} at
-     * {@code :L260} and {@code WHEN DFHRESP(DUPREC)} at {@code :L261} are two consecutive
-     * {@code WHEN} clauses with no statements between them, so both fall into the single branch that
-     * follows. The two responses are therefore indistinguishable in the output by construction, and
-     * giving them separate messages would be a behaviour change.
-     *
-     * @param cicsResponse    the symbolic CICS response name, one of {@code NORMAL}, {@code DUPKEY},
-     *                        {@code DUPREC} or {@code OTHER}
+     * @param cicsResponse the symbolic CICS response name, one of {@code NORMAL}, {@code DUPKEY},
+     * {@code DUPREC} or {@code OTHER}
      * @param presentedUserId the identifier the operator supplied, used only on the success branch
      * @return the single message the branch moves into {@code WS-MESSAGE}
      */
@@ -546,8 +509,8 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Reads the declared {@link Size#max()} of one payload property, which is the only way to assert a
-     * declared width without depending on a locale sensitive interpolated constraint message.
+     * Reads the declared {@link Size#max()} of one payload property, which is the only way to assert a declared
+     * width without depending on a locale sensitive interpolated constraint message.
      *
      * @param property the Java property name, which must name a declared field
      * @return the declared maximum length
@@ -580,46 +543,124 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Applies a presented value to one payload property through its real setter.
+     * The twelve Java property names in the copybook's declaration order, which is also the order the
+     * {@code @JsonCreator} constructor declares its parameters.
      *
-     * <p>An explicit switch is used rather than reflective invocation so that every mutation is a
-     * compile checked call on a known method, in keeping with Rule 1 clause D's prohibition on
-     * reflection driven invocation. The switch is exhaustive over the twelve fields of
-     * {@code COUSR1AI} and rejects any other name rather than silently ignoring it.
-     *
-     * @param target   the payload to mutate, never {@code null}
+     * @param target the payload to mutate, never {@code null}
      * @param property the Java property name, which must name one of the twelve fields
-     * @param value    the presented value, which may be {@code null}
+     * @param value the presented value, which may be {@code null}
      */
-    private static void applyPresented(final UserCreateRequest target, final String property,
-            final String value) {
-        switch (property) {
-            case "transactionName" -> target.setTransactionName(value);
-            case "title01" -> target.setTitle01(value);
-            case "currentDate" -> target.setCurrentDate(value);
-            case "programName" -> target.setProgramName(value);
-            case "title02" -> target.setTitle02(value);
-            case "currentTime" -> target.setCurrentTime(value);
-            case "firstName" -> target.setFirstName(value);
-            case "lastName" -> target.setLastName(value);
-            case "userId" -> target.setUserId(value);
-            case "password" -> target.setPassword(value);
-            case "userType" -> target.setUserType(value);
-            case "errorMessage" -> target.setErrorMessage(value);
-            default -> throw new IllegalArgumentException(
-                    "'" + property + "' is not one of the " + ADD_MAP_INPUT_FIELD_COUNT
-                            + " fields of app/cpy-bms/COUSR01.CPY group COUSR1AI");
+    private static final List<String> PROPERTY_ORDER = List.of(
+            "transactionName",
+            "title01",
+            "currentDate",
+            "programName",
+            "title02",
+            "currentTime",
+            "firstName",
+            "lastName",
+            "userId",
+            "password",
+            "userType",
+            "errorMessage");
+
+    /**
+     * An accumulator for the twelve presented values, used to construct payloads in these tests.
+     *
+     * <p><strong>Why the tests need this.</strong> {@link UserCreateRequest} is immutable: it declares no
+     * setters and binds only through its {@code @JsonCreator} constructor, so a test can no longer build
+     * a payload by mutating one field at a time. Naming all twelve arguments at every call site would
+     * make each test unreadable and would obscure which field a given case is actually exercising. This
+     * accumulator keeps the "vary exactly one field" style of the original tests while the type under
+     * test stays immutable, and it is a fixture rather than a production concern - the production type
+     * deliberately offers no builder.
+     *
+     * <p>The accumulator is mutable, which is safe and deliberate: each instance is created inside a
+     * single test, is never shared, and is converted to an immutable payload by {@link #build()} before
+     * any assertion touches it. {@code null} is a meaningful value throughout, so an unset field stays
+     * {@code null} rather than defaulting to the empty string.
+     */
+    private static final class Presented {
+
+        /** The twelve presented values, keyed by Java property name and ordered as the copybook declares. */
+        private final Map<String, String> values = new LinkedHashMap<>();
+
+        /**
+         * Records one presented value, replacing any previously recorded value for the same property.
+         *
+         * <p>The property name is checked against the twelve of {@code COUSR1AI} and an unknown name is
+         * rejected rather than silently ignored, so a typo in a test fails loudly.
+         *
+         * @param property the Java property name, which must name one of the twelve fields
+         * @param value    the presented value, which may be {@code null}
+         * @return this accumulator, for chaining
+         */
+        private Presented with(final String property, final String value) {
+            if (!PROPERTY_ORDER.contains(property)) {
+                throw new IllegalArgumentException(
+                        "'" + property + "' is not one of the " + ADD_MAP_INPUT_FIELD_COUNT
+                                + " fields of app/cpy-bms/COUSR01.CPY group COUSR1AI");
+            }
+            values.put(property, value);
+            return this;
         }
+
+        /**
+         * Builds an immutable payload from the recorded values, leaving every unrecorded field
+         * {@code null}.
+         *
+         * <p>Arguments are passed positionally in the copybook's declaration order, which is the order
+         * the constructor declares them. Passing them positionally rather than reflectively keeps this
+         * a compile checked call, in keeping with Rule 1 clause D's prohibition on reflection driven
+         * invocation.
+         *
+         * @return a new payload carrying exactly the recorded values, never {@code null}
+         */
+        private UserCreateRequest build() {
+            return new UserCreateRequest(
+                    values.get("transactionName"),
+                    values.get("title01"),
+                    values.get("currentDate"),
+                    values.get("programName"),
+                    values.get("title02"),
+                    values.get("currentTime"),
+                    values.get("firstName"),
+                    values.get("lastName"),
+                    values.get("userId"),
+                    values.get("password"),
+                    values.get("userType"),
+                    values.get("errorMessage"));
+        }
+    }
+
+    /**
+     * An empty accumulator, equivalent to the request body {@code {}}.
+     *
+     * @return a fresh accumulator with no value recorded, never {@code null}
+     */
+    private static Presented presented() {
+        return new Presented();
+    }
+
+    /**
+     * An accumulator whose five operator supplied fields are populated, which is the success path of the
+     * cascade. The header and error fields are left unrecorded, exactly as an inbound request leaves them.
+     *
+     * @return a fresh, fully populated accumulator, never {@code null}
+     */
+    private static Presented populatedPresented() {
+        return presented()
+                .with("firstName", "FNAMEAA6")
+                .with("lastName", "LNAME6")
+                .with("userId", SEEDED_USER_ID)
+                .with("password", SYNTHETIC_CREDENTIAL)
+                .with("userType", "U");
     }
 
     /**
      * Reads back one of the eleven readable payload properties through its real getter.
      *
-     * <p>The credential is deliberately absent from this switch: the payload declares no
-     * {@code getPassword()}, so there is nothing to call. Its retention is proven instead by the
-     * binding assertions in {@code CredentialHandling}.
-     *
-     * @param source   the payload to read, never {@code null}
+     * @param source the payload to read, never {@code null}
      * @param property the Java property name, which must name one of the eleven readable fields
      * @return the value exactly as retained, which may be {@code null}
      */
@@ -643,27 +684,59 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Validates a payload with a freshly built, immediately closed validator.
+     * Runs an action expected to be refused and returns the {@link IllegalArgumentException} that caused
+     * the refusal, or {@code null} if none appears anywhere in the cause chain.
      *
-     * <p>The factory is opened and closed per call so that no validator is ever shared as mutable state
-     * between tests. Only the violated property paths and constraint types are asserted by callers,
-     * never the interpolated message text, which Hibernate Validator resolves against the ambient
-     * locale and which would therefore make an assertion machine dependent.
+     * <p>Searching the chain rather than asserting on the thrown type directly is deliberate. Jackson
+     * wraps an exception thrown from an any-setter in a {@code JsonMappingException}, but whether it
+     * does so, and how deeply it nests it, is an implementation detail of the databind version. A
+     * bounded walk of the chain is robust to that where a root-cause assertion is not.
+     *
+     * @param action the action expected to be refused
+     * @return the refusal that caused it, or {@code null} if the action was not refused for that reason
+     */
+    private static IllegalArgumentException refusalOf(final ThrowingAction action) {
+        try {
+            action.run();
+            return null;
+        } catch (final Throwable thrown) {
+            Throwable cursor = thrown;
+            for (int depth = 0; cursor != null && depth < 16; depth++) {
+                if (cursor instanceof IllegalArgumentException refusal) {
+                    return refusal;
+                }
+                cursor = cursor.getCause();
+            }
+            return null;
+        }
+    }
+
+    /** An action that may throw any exception, so that {@link #refusalOf} can invoke it. */
+    @FunctionalInterface
+    private interface ThrowingAction {
+
+        /**
+         * Runs the action.
+         *
+         * @throws Exception if the action fails, which is the case under test
+         */
+        void run() throws Exception;
+    }
+
+    /**
+     * Validates a payload with a freshly built, immediately closed validator.
      *
      * @param payload the payload to validate, never {@code null}
      * @return every violation raised, possibly empty, never {@code null}
      */
     private static Set<ConstraintViolation<UserCreateRequest>> violationsOf(
             final UserCreateRequest payload) {
-        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
-            final Validator validator = factory.getValidator();
-            return validator.validate(payload);
-        }
+        return ValidationSupport.violationsOf(payload, "payload");
     }
 
     /**
-     * Collects the property names that raised a violation, so that assertions can name fields rather
-     * than quote values. This keeps a failing credential assertion free of the credential.
+     * Collects the property names that raised a violation, so that assertions can name fields rather than quote
+     * values. This keeps a failing credential assertion free of the credential.
      *
      * @param payload the payload to validate, never {@code null}
      * @return the violated property names, possibly empty, never {@code null}
@@ -676,29 +749,18 @@ class UserCreateRequestTest {
     }
 
     /**
-     * Builds a payload whose five operator supplied fields are all populated, which is the success path
-     * of the cascade. The header and error fields are left unset, exactly as an inbound request leaves
-     * them.
+     * Builds a payload whose five operator supplied fields are all populated, which is the success path of the
+     * cascade. The header and error fields are left unset, exactly as an inbound request leaves them.
      *
      * @return a fully populated payload, never {@code null}
      */
     private static UserCreateRequest populatedPayload() {
-        final UserCreateRequest payload = new UserCreateRequest();
-        payload.setFirstName("LAWRENCE");
-        payload.setLastName("THOMAS");
-        payload.setUserId(SEEDED_USER_ID);
-        payload.setPassword(SYNTHETIC_CREDENTIAL);
-        payload.setUserType("U");
-        return payload;
+        return populatedPresented().build();
     }
 
-    // ==============================================================================================
-    // 1. The field contract: exactly twelve input fields, every width byte exact.
-    // ==============================================================================================
-
     /**
-     * Asserts the census of group {@code COUSR1AI} at {@code app/cpy-bms/COUSR01.CPY:17-90}: twelve
-     * input fields, no more and no fewer, each an alphanumeric of exactly its declared PIC width.
+     * Asserts the census of group {@code COUSR1AI} at {@code app/cpy-bms/COUSR01.CPY:17-90}: twelve input
+     * fields, no more and no fewer, each an alphanumeric of exactly its declared PIC width.
      */
     @Nested
     @DisplayName("1. Field contract - app/cpy-bms/COUSR01.CPY group COUSR1AI")
@@ -792,22 +854,87 @@ class UserCreateRequestTest {
                     .isEqualTo(UserCreateRequest.class);
             assertThat(declaredMaxLength(property)).isEqualTo(picWidth);
         }
+
+        @Test
+        @DisplayName("MEDIUM: declares no setter, so no field can be rewritten after validation")
+        void declaresNoSetter() {
+            assertThat(Arrays.stream(UserCreateRequest.class.getMethods())
+                    .map(method -> method.getName())
+                    .filter(name -> name.startsWith("set"))
+                    .toList())
+                    .as("Bean Validation runs once, at the boundary. While this class exposed twelve "
+                            + "setters, a payload could be validated and then mutated into a state the "
+                            + "@Size bounds had never seen before the service read it, and the "
+                            + "credential could be replaced after the fact")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("MEDIUM: declares every field final, so immutability is structural not conventional")
+        void declaresEveryFieldFinal() {
+            assertThat(Arrays.stream(UserCreateRequest.class.getDeclaredFields())
+                    .filter(field -> !field.isSynthetic())
+                    .filter(field -> !java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                    .toList())
+                    .hasSize(ADD_MAP_INPUT_FIELD_COUNT)
+                    .allSatisfy(field -> assertThat(
+                            java.lang.reflect.Modifier.isFinal(field.getModifiers()))
+                            .as("field '%s' must be final: a non-final field is one reflective or "
+                                    + "in-package assignment away from defeating the removal of the "
+                                    + "setters", field.getName())
+                            .isTrue());
+        }
+
+        @Test
+        @DisplayName("MEDIUM: binds through exactly one constructor, which is the sole write path")
+        void bindsThroughExactlyOneConstructor() {
+            assertThat(UserCreateRequest.class.getDeclaredConstructors())
+                    .as("a surviving no-argument constructor would let a caller build an instance that "
+                            + "bypassed every value the request actually carried")
+                    .hasSize(1);
+            assertThat(UserCreateRequest.class.getDeclaredConstructors()[0].getParameterCount())
+                    .as("the one constructor takes all twelve fields of COUSR1AI, so an instance cannot "
+                            + "exist in a half-populated intermediate state")
+                    .isEqualTo(ADD_MAP_INPUT_FIELD_COUNT);
+        }
+
+        @Test
+        @DisplayName("MEDIUM: the constructor names every JSON property, so binding is by name not "
+                + "position")
+        void theConstructorNamesEveryJsonProperty() {
+            final java.lang.reflect.Constructor<?> constructor =
+                    UserCreateRequest.class.getDeclaredConstructors()[0];
+
+            assertThat(constructor.isAnnotationPresent(
+                    com.fasterxml.jackson.annotation.JsonCreator.class))
+                    .as("without @JsonCreator, Jackson has no way to construct an immutable instance "
+                            + "and deserialisation fails outright")
+                    .isTrue();
+            assertThat(Arrays.stream(constructor.getParameters())
+                    .map(parameter -> parameter.getAnnotation(
+                            com.fasterxml.jackson.annotation.JsonProperty.class))
+                    .toList())
+                    .as("every parameter must name its JSON property explicitly: relying on parameter "
+                            + "names would make binding depend on the -parameters compiler flag, and "
+                            + "relying on position would silently transpose fields of the same type - "
+                            + "and all twelve of these are String")
+                    .hasSize(ADD_MAP_INPUT_FIELD_COUNT)
+                    .allSatisfy(annotation -> assertThat(annotation).isNotNull());
+            assertThat(Arrays.stream(constructor.getParameters())
+                    .map(parameter -> parameter.getAnnotation(
+                            com.fasterxml.jackson.annotation.JsonProperty.class).value())
+                    .toList())
+                    .as("the parameter order must be the copybook's declaration order, which is what "
+                            + "the positional call in Presented#build() relies on")
+                    .containsExactlyElementsOf(PROPERTY_ORDER);
+        }
     }
 
-    // ==============================================================================================
-    // 2. The add and update maps are not interchangeable.
-    // ==============================================================================================
-
     /**
-     * Asserts the two verified divergences between the add map and the update map, either of which is
-     * enough to make a shared base type factually wrong: the identifier field is named {@code USERIDI}
-     * at {@code app/cpy-bms/COUSR01.CPY:72} here and {@code USRIDINI} at
-     * {@code app/cpy-bms/COUSR02.CPY:60} there, and it sits after the operator's names here and before
-     * them there.
-     *
-     * <p>The sibling payload type is deliberately not referenced from this file. It is not a declared
-     * dependency of this test, and the absence of a shared parent is provable from this class's own
-     * reflected hierarchy without importing anything.
+     * Asserts the two verified divergences between the add map and the update map, either of which is enough to
+     * make a shared base type factually wrong: the identifier field is named {@code USERIDI} at
+     * {@code app/cpy-bms/COUSR01.CPY:72} here and {@code USRIDINI} at {@code app/cpy-bms/COUSR02.CPY:60} there,
+     * and it sits after the operator's names here and before them there.
      */
     @Nested
     @DisplayName("2. Add versus update map divergence - COUSR01.CPY:72 USERIDI vs COUSR02.CPY:60 USRIDINI")
@@ -895,19 +1022,9 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 3. The presence cascade: ordered, first match wins, with exact literals.
-    // ==============================================================================================
-
     /**
      * Asserts the ordered presence cascade of {@code PROCESS-ENTER-KEY} at
      * {@code app/cbl/COUSR01C.cbl:L115-L151} and the five message literals it moves into the work area.
-     *
-     * <p>The payload itself carries no presence constraint, which is asserted here rather than assumed:
-     * the source tolerates a blank submission and answers it with a business message instead of
-     * refusing the input, so presence is the service tier's decision, taken in the source's order.
-     * Bean Validation would report the five failures as an unordered set, so the ordered contract is
-     * asserted against the executable oracle {@link #firstCascadeFailure(UserCreateRequest, String)}.
      */
     @Nested
     @DisplayName("3. Presence cascade - app/cbl/COUSR01C.cbl:L115-L151, first match wins")
@@ -932,7 +1049,7 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("a populated value is not empty, keeping empty distinct from invalid")
         void aPopulatedValueIsNotEmpty() {
-            assertThat(isCobolEmpty("LAWRENCE"))
+            assertThat(isCobolEmpty("FNAMEAA6"))
                     .as("empty and invalid are different states; only the former is what the "
                             + "cascade at app/cbl/COUSR01C.cbl:L115-L151 tests")
                     .isFalse();
@@ -989,7 +1106,7 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("with every field blank the reported failure is the first name alone")
         void withEveryFieldBlankOnlyTheFirstNameIsReported() {
-            final UserCreateRequest blank = new UserCreateRequest();
+            final UserCreateRequest blank = presented().build();
 
             assertThat(firstCascadeFailure(blank, null))
                     .as("the EVALUATE TRUE at app/cbl/COUSR01C.cbl:L117 stops at its first matching "
@@ -1009,20 +1126,21 @@ class UserCreateRequestTest {
         @DisplayName("the cascade reports the first failing field in the source's declaration order")
         void theCascadeReportsTheFirstFailingFieldInSourceOrder(final int populatedCount,
                 final String expected) {
-            final UserCreateRequest payload = new UserCreateRequest();
+            final Presented accumulated = presented();
             String credential = null;
             if (populatedCount > 0) {
-                payload.setFirstName("LAWRENCE");
+                accumulated.with("firstName", "FNAMEAA6");
             }
             if (populatedCount > 1) {
-                payload.setLastName("THOMAS");
+                accumulated.with("lastName", "LNAME6");
             }
             if (populatedCount > 2) {
-                payload.setUserId(SEEDED_USER_ID);
+                accumulated.with("userId", SEEDED_USER_ID);
             }
             if (populatedCount > 3) {
                 credential = SYNTHETIC_CREDENTIAL;
             }
+            final UserCreateRequest payload = accumulated.build();
 
             assertThat(firstCascadeFailure(payload, credential))
                     .as("with the first %d fields supplied the next unsatisfied branch in the order "
@@ -1034,10 +1152,10 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("blank and low values reach the identical message, not two different ones")
         void blankAndLowValuesProduceTheIdenticalMessage() {
-            final UserCreateRequest spaces = new UserCreateRequest();
-            spaces.setFirstName("   ");
-            final UserCreateRequest lowValues = new UserCreateRequest();
-            lowValues.setFirstName(String.valueOf(LOW_VALUE).repeat(3));
+            final UserCreateRequest spaces = presented().with("firstName", "   ").build();
+            final UserCreateRequest lowValues = presented()
+                    .with("firstName", String.valueOf(LOW_VALUE).repeat(3))
+                    .build();
 
             assertThat(firstCascadeFailure(spaces, SYNTHETIC_CREDENTIAL))
                     .as("both operands of = SPACES OR LOW-VALUES lead to the one branch at "
@@ -1049,8 +1167,9 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("a populated but out of domain user type produces no empty message")
         void aPopulatedButOutOfDomainValueProducesNoEmptyMessage() {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setUserType("Z");
+            final UserCreateRequest payload = populatedPresented()
+                    .with("userType", "Z")
+                    .build();
 
             assertThat(firstCascadeFailure(payload, SYNTHETIC_CREDENTIAL))
                     .as("'Z' is outside the 'A'/'U' domain of app/cpy/COCOM01Y.cpy:L27-L28 but it is "
@@ -1071,7 +1190,7 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("the payload declares no presence constraint, so the service owns the order")
         void thePayloadDeclaresNoPresenceConstraintSoTheServiceOwnsTheOrder() {
-            assertThat(violationsOf(new UserCreateRequest()))
+            assertThat(violationsOf(presented().build()))
                     .as("an entirely blank submission binds without a single violation, because the "
                             + "source answers it with a business message rather than refusing it. "
                             + "Bean Validation discovery order is unspecified, so the ordered first "
@@ -1098,18 +1217,10 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 4. The eighty byte work area truncated onto a seventy eight byte screen field.
-    // ==============================================================================================
-
     /**
      * Asserts the silent two byte truncation at {@code app/cbl/COUSR01C.cbl:L188}, where the eighty byte
-     * {@code WS-MESSAGE} declared at {@code :L38} is moved into the seventy eight byte {@code ERRMSGO}
-     * of group {@code COUSR1AO} at {@code app/cpy-bms/COUSR01.CPY:164}.
-     *
-     * <p>The truncation is reproduced, not repaired. Widening the field to eighty would hide it, and
-     * rejecting the over length value would turn a silent COBOL {@code MOVE} into an error the source
-     * never raises.
+     * {@code WS-MESSAGE} declared at {@code :L38} is moved into the seventy eight byte {@code ERRMSGO} of group
+     * {@code COUSR1AO} at {@code app/cpy-bms/COUSR01.CPY:164}.
      */
     @Nested
     @DisplayName("4. Message geometry - WS-MESSAGE X(80) at :L38 moved onto ERRMSGO X(78) at :L188")
@@ -1208,8 +1319,9 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("a 79 character value violates the width, proving 78 was not widened to 80")
         void aSeventyNineCharacterValueViolatesTheWidth() {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setErrorMessage("x".repeat(ERRMSG_WIDTH + 1));
+            final UserCreateRequest payload = populatedPresented()
+                    .with("errorMessage", "x".repeat(ERRMSG_WIDTH + 1))
+                    .build();
 
             assertThat(violatedPropertiesOf(payload))
                     .as("if the field had been widened to the work area's 80 bytes, a 79 character "
@@ -1220,8 +1332,9 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("a 78 character value binds cleanly at the field's exact width")
         void aSeventyEightCharacterValueBindsCleanly() {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setErrorMessage("x".repeat(ERRMSG_WIDTH));
+            final UserCreateRequest payload = populatedPresented()
+                    .with("errorMessage", "x".repeat(ERRMSG_WIDTH))
+                    .build();
 
             assertThat(violationsOf(payload))
                     .as("78 is the declared width, so it is accepted rather than clipped")
@@ -1240,48 +1353,39 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 5. The write path: duplicate handling and the composed success literal.
-    // ==============================================================================================
-
     /**
-     * Asserts the three outcomes of {@code WRITE-USER-SEC-FILE} at
-     * {@code app/cbl/COUSR01C.cbl:L238-L274}, whose {@code EXEC CICS WRITE} at {@code :L240} uses
-     * {@code RIDFLD(SEC-USR-ID)} and {@code KEYLENGTH(LENGTH OF SEC-USR-ID)} against the eight byte key
-     * of the cluster defined {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65}.
-     *
-     * <p>The payload models none of these outcomes, which is asserted rather than assumed: it is a pure
-     * inbound transport object, so response mapping belongs to the service tier. The literals are
-     * nonetheless pinned here, because they are compared byte for byte by the parity gates and this is
-     * the tier that can hold them to that standard.
+     * Asserts the three outcomes of {@code WRITE-USER-SEC-FILE} at {@code app/cbl/COUSR01C.cbl:L238-L274},
+     * whose {@code EXEC CICS WRITE} at {@code :L240} uses {@code RIDFLD(SEC-USR-ID)} and
+     * {@code KEYLENGTH(LENGTH OF SEC-USR-ID)} against the eight byte key of the cluster defined
+     * {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65}.
      */
     @Nested
     @DisplayName("5. Write path outcomes - app/cbl/COUSR01C.cbl:L238-L274")
     class WritePathOutcomes {
 
         @Test
-        @DisplayName("the success message composes byte exactly: User USER0001 has been added ...")
+        @DisplayName("the success message composes byte exactly: User STDUSR01 has been added ...")
         void theSuccessMessageComposesByteExactly() {
             assertThat(writeOutcomeMessage("NORMAL", SEEDED_USER_ID))
                     .as("the STRING at app/cbl/COUSR01C.cbl:L255-L258 concatenates 'User ' "
                             + "DELIMITED BY SIZE, SEC-USR-ID DELIMITED BY SPACE and "
                             + "' has been added ...' DELIMITED BY SIZE")
-                    .isEqualTo("User USER0001 has been added ...");
+                    .isEqualTo("User STDUSR01 has been added ...");
         }
 
         @Test
         @DisplayName("the identifier is trimmed at its first space, not carried with its padding")
         void theIdentifierIsTrimmedAtItsFirstSpace() {
-            assertThat(writeOutcomeMessage("NORMAL", "USER1"))
+            assertThat(writeOutcomeMessage("NORMAL", "STDU1"))
                     .as("USERIDI X(8) is moved into SEC-USR-ID X(08) and so arrives space padded, "
                             + "but DELIMITED BY SPACE at app/cbl/COUSR01C.cbl:L256 contributes only "
                             + "the characters before the first space")
-                    .isEqualTo("User USER1 has been added ...")
-                    .doesNotContain("USER1   ");
-            assertThat(delimitedBySpace(cobolMove("USER1", SEC_USR_ID_WIDTH)))
+                    .isEqualTo("User STDU1 has been added ...")
+                    .doesNotContain("STDU1   ");
+            assertThat(delimitedBySpace(cobolMove("STDU1", SEC_USR_ID_WIDTH)))
                     .as("the padding is what the trim acts upon, so both steps must be applied in "
                             + "that order")
-                    .isEqualTo("USER1");
+                    .isEqualTo("STDU1");
         }
 
         @Test
@@ -1374,25 +1478,9 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 6. The one payload that legitimately carries a plaintext credential.
-    // ==============================================================================================
-
     /**
      * Asserts that the plaintext credential presented by {@code PASSWDI PIC X(8)} at
      * {@code app/cpy-bms/COUSR01.CPY:78} travels inbound and nothing outbound.
-     *
-     * <p>Rule 1 clause D forbids secrets in code, logs, tests and config, naming tests explicitly. Two
-     * consequences are asserted here. First, the payload must offer no read path to the credential: no
-     * getter, no {@code toString}, no {@code equals}, no serialization and no Java deserialization
-     * surface. Second, this test file itself must carry no real secret, so every credential below is
-     * synthetic and no assertion message ever quotes a credential - failures name the field instead.
-     *
-     * <p>The ten operators seeded inline at {@code app/jcl/DUSRSECJ.jcl:L35-L44} share one plaintext
-     * literal. That literal is deliberately absent from this file, and there is no
-     * {@code app/data/ASCII/usrsec.txt} fixture to load it from either: <strong>Not available</strong> -
-     * the rows exist only inside that JCL member, fed through {@code IEBGENER}, so no fixture loader is
-     * used by this test.
      */
     @Nested
     @DisplayName("6. Credential handling - PASSWDI X(8) at app/cpy-bms/COUSR01.CPY:78 is inbound only")
@@ -1405,9 +1493,12 @@ class UserCreateRequestTest {
                     .map(method -> method.getName())
                     .filter(name -> name.toLowerCase(Locale.ROOT).contains("password"))
                     .toList())
-                    .as("the credential's only accessor is the setter; a getPassword() would open a "
-                            + "read path for every caller, serializer and reflective bean mapper")
-                    .containsExactly("setPassword");
+                    .as("the credential is now written only through the constructor, so no method "
+                            + "whatsoever names it: a getPassword() would open a read path for every "
+                            + "caller, serializer and reflective bean mapper, and the setPassword() "
+                            + "this class used to expose would allow the credential to be replaced "
+                            + "after validation had already inspected it")
+                    .isEmpty();
         }
 
         @Test
@@ -1436,8 +1527,9 @@ class UserCreateRequestTest {
                     .isEmpty();
 
             final UserCreateRequest first = populatedPayload();
-            final UserCreateRequest second = populatedPayload();
-            second.setPassword(SYNTHETIC_CREDENTIAL_ALTERNATE);
+            final UserCreateRequest second = populatedPresented()
+                    .with("password", SYNTHETIC_CREDENTIAL_ALTERNATE)
+                    .build();
             assertThat(first)
                     .as("identity semantics are retained, so two payloads are never equal on their "
                             + "field values regardless of the credentials they hold")
@@ -1466,7 +1558,7 @@ class UserCreateRequestTest {
                     .doesNotContain("password")
                     .doesNotContain(SYNTHETIC_CREDENTIAL)
                     .contains("\"userId\":\"" + SEEDED_USER_ID + "\"")
-                    .contains("\"firstName\":\"LAWRENCE\"");
+                    .contains("\"firstName\":\"FNAMEAA6\"");
         }
 
         @Test
@@ -1543,26 +1635,11 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 7. User type: a raw one character code, with the enum's domain asserted separately.
-    // ==============================================================================================
-
     /**
-     * Asserts the user type contract of {@code USRTYPEI PIC X(1)} at
-     * {@code app/cpy-bms/COUSR01.CPY:84}, whose domain is the two 88-level condition names at
-     * {@code app/cpy/COCOM01Y.cpy:L26-L28}: {@code CDEMO-USER-TYPE PIC X(01)} with
-     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and {@code 88 CDEMO-USRTYP-USER VALUE 'U'}.
-     *
-     * <p><strong>The decision, asserted explicitly below: the property is a raw one character
-     * {@code String}, not {@link UserType}.</strong> The rationale is parity. Binding an inbound
-     * one character field straight to the enum would turn any out of domain value into a
-     * deserialization failure and would replace the source program's own message with a framework
-     * error, whereas the source carries the value through and reports it. The enum remains the typed
-     * domain for everything downstream of binding, and its own contract - two constants, a permissive
-     * lookup and a strict lookup that names what it rejected - is asserted here alongside.
-     *
-     * <p>The source performs no membership check on the type character beyond the presence test of the
-     * cascade, so none is added here.
+     * Asserts the user type contract of {@code USRTYPEI PIC X(1)} at {@code app/cpy-bms/COUSR01.CPY:84}, whose
+     * domain is the two 88-level condition names at {@code app/cpy/COCOM01Y.cpy:L26-L28}:
+     * {@code CDEMO-USER-TYPE PIC X(01)} with {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} and
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'}.
      */
     @Nested
     @DisplayName("7. User type - USRTYPEI X(1), domain 'A'/'U' at app/cpy/COCOM01Y.cpy:L26-L28")
@@ -1609,8 +1686,9 @@ class UserCreateRequestTest {
         @ValueSource(strings = {"A", "U", "Z", "a", " "})
         @DisplayName("a single character code round trips byte exactly, in or out of domain")
         void aSingleCharacterCodeRoundTripsByteExactly(final String presented) {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setUserType(presented);
+            final UserCreateRequest payload = populatedPresented()
+                    .with("userType", presented)
+                    .build();
 
             assertThat(payload.getUserType())
                     .as("the presented character is retained verbatim: not trimmed, not case folded "
@@ -1650,24 +1728,33 @@ class UserCreateRequestTest {
         }
 
         @Test
-        @DisplayName("the strict lookup names the offending code rather than falling back")
+        @DisplayName("the strict lookup names the offending code point rather than falling back")
         void theStrictLookupNamesTheOffendingCode() {
             assertThatThrownBy(() -> UserType.requireFromCode('Z'))
                     .as("an unrecognised code must fail loudly and identify what it rejected, "
                             + "because the legacy records are fixed width and blank padded, so a "
                             + "blank, a low value byte and a wrong letter are otherwise "
-                            + "indistinguishable in a log")
+                            + "indistinguishable in a log. It identifies it by code point rather "
+                            + "than by echoing the character, because the value originates in this "
+                            + "payload - it is attacker supplied - and a carriage return copied "
+                            + "verbatim into a message bound for a log would forge a log line")
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("Z")
+                    .hasMessageContaining("code point 0x5a")
                     .hasMessageContaining("app/cpy/COCOM01Y.cpy")
                     .hasNoCause();
+
+            assertThatThrownBy(() -> UserType.requireFromCode('Z'))
+                    .as("and the rejected character itself is absent from the message, so corrupt "
+                            + "data carrying a control byte cannot inject a line into the log")
+                    .hasMessageNotContaining("'Z'");
         }
 
         @Test
         @DisplayName("the payload adds no membership check stricter than the source's")
         void thePayloadAddsNoMembershipCheckStricterThanTheSource() {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setUserType("Z");
+            final UserCreateRequest payload = populatedPresented()
+                    .with("userType", "Z")
+                    .build();
 
             assertThat(violationsOf(payload))
                     .as("the cascade at app/cbl/COUSR01C.cbl:L142 rejects a blank type and nothing "
@@ -1680,8 +1767,9 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("a multi character type violates the width, a state distinct from emptiness")
         void aMultiCharacterTypeViolatesTheWidth() {
-            final UserCreateRequest payload = populatedPayload();
-            payload.setUserType("AU");
+            final UserCreateRequest payload = populatedPresented()
+                    .with("userType", "AU")
+                    .build();
 
             assertThat(violatedPropertiesOf(payload))
                     .as("USRTYPEI is X(1), so two characters overflow the field; this width failure "
@@ -1694,27 +1782,9 @@ class UserCreateRequestTest {
         }
     }
 
-    // ==============================================================================================
-    // 8. Boundaries, the three state model, and the absence of session state.
-    // ==============================================================================================
-
     /**
      * Asserts the boundary behaviour of all twelve fields and the three state model of
      * {@code app/cpy/CSSETATY.cpy}.
-     *
-     * <p>That copybook is a procedural {@code COPY ... REPLACING} template - parameters
-     * {@code (TESTVAR1)}, {@code (SCRNVAR2)} and {@code (MAPNAME3)} - and therefore has no data layout
-     * and no class of its own. It models exactly {@code OK}, {@code NOT-OK} and {@code BLANK}, colouring
-     * a field red when it is either not valid or blank and additionally writing a {@code '*'} marker
-     * only when it is blank, and only on re-entry. The same two-messages-for-two-states distinction is
-     * visible at {@code app/cbl/COACTUPC.cbl:505-508}, where {@code CRED-LIMIT-IS-BLANK} reads
-     * {@code 'Credit Limit must be supplied'} and {@code CRED-LIMIT-IS-NOT-VALID} reads
-     * {@code 'Credit Limit is not valid'}.
-     *
-     * <p>The gated cross field pattern in that same program - verified at {@code :1664-1675}, where the
-     * state and ZIP code edit runs only once both single field edits have passed - is why no
-     * unconditional class level constraint may model a cross field rule: a class level constraint fires
-     * on every submission and produces a different message set from the source's.
      */
     @Nested
     @DisplayName("8. Boundaries and the OK / NOT-OK / BLANK model - app/cpy/CSSETATY.cpy")
@@ -1724,13 +1794,10 @@ class UserCreateRequestTest {
         @DisplayName("absent, empty, blank and low values remain four distinguishable values")
         void absentBlankAndLowValuesRemainDistinguishable() {
             final String lowValues = String.valueOf(LOW_VALUE).repeat(3);
-            final UserCreateRequest absent = new UserCreateRequest();
-            final UserCreateRequest empty = new UserCreateRequest();
-            empty.setFirstName("");
-            final UserCreateRequest blank = new UserCreateRequest();
-            blank.setFirstName("   ");
-            final UserCreateRequest low = new UserCreateRequest();
-            low.setFirstName(lowValues);
+            final UserCreateRequest absent = presented().build();
+            final UserCreateRequest empty = presented().with("firstName", "").build();
+            final UserCreateRequest blank = presented().with("firstName", "   ").build();
+            final UserCreateRequest low = presented().with("firstName", lowValues).build();
 
             assertThat(absent.getFirstName())
                     .as("absent is the state in which the property never arrived")
@@ -1752,9 +1819,10 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("trailing space padding is preserved, never trimmed")
         void trailingSpacePaddingIsPreserved() {
-            final String padded = cobolMove("LEE", 20);
-            final UserCreateRequest payload = populatedPayload();
-            payload.setFirstName(padded);
+            final String padded = cobolMove("FN0", 20);
+            final UserCreateRequest payload = populatedPresented()
+                    .with("firstName", padded)
+                    .build();
 
             assertThat(payload.getFirstName())
                     .as("FNAMEI is a fixed width X(20) field, so its padding is part of the value; "
@@ -1807,8 +1875,8 @@ class UserCreateRequestTest {
                     " ".repeat(width),
                     "x".repeat(oneUnder),
                     "x".repeat(width))) {
-                final UserCreateRequest payload = populatedPayload();
-                applyPresented(payload, property, candidate);
+                final UserCreateRequest payload =
+                        populatedPresented().with(property, candidate).build();
 
                 assertThat(violatedPropertiesOf(payload))
                         .as("%s is PIC X(%d), so nothing up to and including %d characters may be "
@@ -1837,8 +1905,8 @@ class UserCreateRequestTest {
         @DisplayName("one over the declared width is refused on every field")
         void everyFieldRefusesOneOverItsDeclaredWidth(final String property, final String cobolField,
                 final int width, final int oneOver) {
-            final UserCreateRequest payload = populatedPayload();
-            applyPresented(payload, property, "x".repeat(oneOver));
+            final UserCreateRequest payload =
+                    populatedPresented().with(property, "x".repeat(oneOver)).build();
 
             assertThat(violatedPropertiesOf(payload))
                     .as("%s is PIC X(%d) so %d characters cannot be carried; the field is not "
@@ -1865,8 +1933,8 @@ class UserCreateRequestTest {
         void everyReadableFieldRetainsItsValueVerbatim(final String property) {
             final int width = declaredMaxLength(property);
             final String presented = cobolMove("V", width);
-            final UserCreateRequest payload = populatedPayload();
-            applyPresented(payload, property, presented);
+            final UserCreateRequest payload =
+                    populatedPresented().with(property, presented).build();
 
             assertThat(readPresented(payload, property))
                     .as("the payload transports; it does not normalise, so '%s' comes back exactly "
@@ -1877,13 +1945,14 @@ class UserCreateRequestTest {
         @Test
         @DisplayName("hostile over length input on six fields reports exactly those six")
         void hostileOverLengthInputReportsEveryOffendingField() {
-            final UserCreateRequest hostile = new UserCreateRequest();
-            hostile.setUserId("x".repeat(SEC_USR_ID_WIDTH + 1));
-            hostile.setPassword("x".repeat(SEC_USR_ID_WIDTH + 1));
-            hostile.setFirstName("x".repeat(21));
-            hostile.setLastName("x".repeat(21));
-            hostile.setUserType("AU");
-            hostile.setErrorMessage("x".repeat(ERRMSG_WIDTH + 1));
+            final UserCreateRequest hostile = presented()
+                    .with("userId", "x".repeat(SEC_USR_ID_WIDTH + 1))
+                    .with("password", "x".repeat(SEC_USR_ID_WIDTH + 1))
+                    .with("firstName", "x".repeat(21))
+                    .with("lastName", "x".repeat(21))
+                    .with("userType", "AU")
+                    .with("errorMessage", "x".repeat(ERRMSG_WIDTH + 1))
+                    .build();
 
             assertThat(violatedPropertiesOf(hostile))
                     .as("inputs are untrusted: every field that overflows its PIC width is named, "
@@ -1918,16 +1987,60 @@ class UserCreateRequestTest {
             assertThat(COMMAREA_SESSION_PROPERTIES).allSatisfy(sessionProperty -> {
                 final String inbound = "{\"userId\":\"" + SEEDED_USER_ID + "\",\""
                         + sessionProperty + "\":\"X\"}";
-                assertThatThrownBy(() -> mapper.readValue(inbound, UserCreateRequest.class))
+                assertThat(refusalOf(() -> mapper.readValue(inbound, UserCreateRequest.class)))
                         .as("the payload refuses unknown properties, so smuggling '%s' in fails "
                                 + "loudly instead of being dropped without trace", sessionProperty)
-                        .isInstanceOf(UnrecognizedPropertyException.class);
+                        .isNotNull();
             });
 
             assertThat(mapper.readValue("{\"userId\":\"" + SEEDED_USER_ID + "\"}",
                     UserCreateRequest.class).getUserId())
                     .as("a payload carrying only mapped fields binds cleanly")
                     .isEqualTo(SEEDED_USER_ID);
+        }
+
+        @Test
+        @DisplayName("MEDIUM: the refusal holds under a lenient mapper too, which is the posture this "
+                + "repository actually runs")
+        void theRefusalHoldsUnderALenientMapperToo() {
+            final String inbound = "{\"userId\":\"" + SEEDED_USER_ID + "\",\"pgmContext\":\"X\"}";
+
+            final ObjectMapper lenient = new ObjectMapper()
+                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            assertThat(refusalOf(() -> lenient.readValue(inbound, UserCreateRequest.class)))
+                    .as("this is the whole point of declaring the guard on the type rather than "
+                            + "relying on @JsonIgnoreProperties or on mapper configuration. Spring Boot "
+                            + "disables FAIL_ON_UNKNOWN_PROPERTIES by default and this repository "
+                            + "publishes no application*.yml in which to re-enable it, so under the "
+                            + "posture that actually ships, an undeclared property would otherwise be "
+                            + "accepted and dropped")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("MEDIUM: the refusal names neither the offending property nor its value")
+        void theRefusalNamesNeitherThePropertyNorItsValue() {
+            final String offendingName = "smuggledProperty";
+            final String offendingValue = "smuggledValue";
+            final String inbound = "{\"userId\":\"" + SEEDED_USER_ID + "\",\""
+                    + offendingName + "\":\"" + offendingValue + "\"}";
+
+            final IllegalArgumentException refusal =
+                    refusalOf(() -> new ObjectMapper().readValue(inbound, UserCreateRequest.class));
+
+            assertThat(refusal).isNotNull();
+            assertThat(refusal.getMessage())
+                    .as("the message states the declared field count and cites the copybook so a "
+                            + "caller can find the contract it breached")
+                    .contains(String.valueOf(ADD_MAP_INPUT_FIELD_COUNT))
+                    .contains("app/cpy-bms/COUSR01.CPY");
+            assertThat(refusal.getMessage())
+                    .as("this payload carries a plaintext credential, so echoing an arbitrary "
+                            + "submitted name or value into a log line is exactly the disclosure this "
+                            + "class exists to avoid")
+                    .doesNotContain(offendingName)
+                    .doesNotContain(offendingValue);
         }
 
         @Test
@@ -1944,9 +2057,10 @@ class UserCreateRequestTest {
             final String presentedTime =
                     headerTime.format(FixedClockProvider.canonicalClock().instant());
 
-            final UserCreateRequest payload = populatedPayload();
-            payload.setCurrentDate(presentedDate);
-            payload.setCurrentTime(presentedTime);
+            final UserCreateRequest payload = populatedPresented()
+                    .with("currentDate", presentedDate)
+                    .with("currentTime", presentedTime)
+                    .build();
 
             assertThat(presentedDate)
                     .as("CURDATEI is X(8) at app/cpy-bms/COUSR01.CPY:36 and the value is derived "

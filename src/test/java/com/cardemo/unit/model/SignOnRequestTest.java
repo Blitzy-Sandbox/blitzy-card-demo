@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : SignOnRequestTest.java
- * Component   : Unit test tier - model and DTO suite, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM, no container, no Spring
  *               context, no database
@@ -44,9 +42,9 @@ import com.cardemo.model.dto.SignOnRequest;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validation;
 import jakarta.validation.Validator;
 import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
@@ -123,11 +121,11 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>{@code mvn -B clean test} runs this suite. Surefire 3.5.4 collects it because the class name
+ * <p>{@code ./mvnw -B clean test} runs this suite. Surefire 3.5.4 collects it because the class name
  * ends in {@code Test} and the path is neither under {@code integration} nor under {@code e2e},
  * which are the plugin's two exclusions; a class moved out of {@code src/test/java/com/cardemo/unit}
  * or renamed away from that suffix is collected by neither Surefire nor Failsafe and then silently
- * never runs, reporting a green build the whole time. {@code mvn -B clean test-compile} is the
+ * never runs, reporting a green build the whole time. {@code ./mvnw -B clean test-compile} is the
  * fastest check that this file still satisfies the compiler settings. Where a local toolchain is
  * unavailable the pinned image reproduces it exactly:
  * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q test}.
@@ -157,8 +155,9 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <ul>
  *   <li><em>The build fails on something that looks cosmetic.</em> Compilation runs with
  *       {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, and that reaches test
- *       compilation, so one unused import, raw type or deprecation is an error rather than a
- *       warning. Reproduce with {@code mvn -B clean test-compile}.</li>
+ *       compilation, so one raw type or one deprecation is an error rather than a
+ *       warning. An unused import is not - {@code javac} 25.0.3 publishes no lint key for one - so that is
+ *       caught at review. Reproduce with {@code ./mvnw -B clean test-compile}.</li>
  *   <li><em>An annotation assertion reads {@code null} unexpectedly.</em> Neither
  *       {@link Size} nor {@link JsonProperty} declares {@code ElementType.RECORD_COMPONENT}, so
  *       {@link RecordComponent#getAnnotation(Class)} returns {@code null} for both even though the
@@ -183,212 +182,185 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 @DisplayName("SignOnRequest - BMS field contract, credential containment and the tri-state model")
 final class SignOnRequestTest {
 
-    // -----------------------------------------------------------------------------------------
-    // Verified widths from app/cpy-bms/COSGN00.CPY. Restated here as literals on purpose: a test
-    // that asserted SignOnRequest's own constants against themselves would be a tautology, so the
-    // expected values are transcribed from the copybook and compared against the production
-    // constants. Changing a production width therefore fails a test rather than moving the goalposts.
-    // -----------------------------------------------------------------------------------------
-
-    /** {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COSGN00.CPY:24}. */
+    /**
+     * {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COSGN00.CPY:24}.
+     */
     private static final int TRANSACTION_NAME_WIDTH = 4;
 
-    /** {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:30}. */
+    /**
+     * {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:30}.
+     */
     private static final int TITLE01_WIDTH = 40;
 
-    /** {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:36}. */
+    /**
+     * {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:36}.
+     */
     private static final int CURRENT_DATE_WIDTH = 8;
 
-    /** {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:42}. */
+    /**
+     * {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:42}.
+     */
     private static final int PROGRAM_NAME_WIDTH = 8;
 
-    /** {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:48}. */
+    /**
+     * {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:48}.
+     */
     private static final int TITLE02_WIDTH = 40;
 
     /**
-     * {@code CURTIMEI PIC X(9)} at {@code app/cpy-bms/COSGN00.CPY:54} - nine, not eight, and unique
-     * to this map in the whole corpus.
+     * {@code CURTIMEI PIC X(9)} at {@code app/cpy-bms/COSGN00.CPY:54} - nine, not eight, and unique to this map
+     * in the whole corpus.
      */
     private static final int CURRENT_TIME_WIDTH = 9;
 
     /**
-     * The width every <em>other</em> symbolic map declares for {@code CURTIMEI} at its own line 54.
-     * Held as a constant so the divergence is asserted rather than merely described.
+     * The width every <em>other</em> symbolic map declares for {@code CURTIMEI} at its own line 54. Held as a
+     * constant so the divergence is asserted rather than merely described.
      */
     private static final int SIBLING_MAP_CURRENT_TIME_WIDTH = 8;
 
-    /** {@code APPLIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:60}. */
+    /**
+     * {@code APPLIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:60}.
+     */
     private static final int APPLICATION_ID_WIDTH = 8;
 
-    /** {@code SYSIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:66}. */
+    /**
+     * {@code SYSIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:66}.
+     */
     private static final int SYSTEM_ID_WIDTH = 8;
 
-    /** {@code USERIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:72}. */
+    /**
+     * {@code USERIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:72}.
+     */
     private static final int USER_ID_WIDTH = 8;
 
-    /** {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:78}. */
+    /**
+     * {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:78}.
+     */
     private static final int CREDENTIAL_WIDTH = 8;
 
-    /** {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COSGN00.CPY:84}. */
+    /**
+     * {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COSGN00.CPY:84}.
+     */
     private static final int ERROR_MESSAGE_WIDTH = 78;
 
-    /** Number of input data items in {@code 01 COSGN0AI}: eleven, counted item by item. */
+    /**
+     * Number of input data items in {@code 01 COSGN0AI}: eleven, counted item by item.
+     */
     private static final int SIGN_ON_INPUT_FIELD_COUNT = 11;
 
     /**
-     * Number of symbolic maps under {@code app/cpy-bms}: seventeen, one per BMS mapset in
-     * {@code app/bms}.
-     */
-    private static final int SYMBOLIC_MAP_COUNT = 17;
-
-    /**
-     * Input data item count per symbolic map, in the directory order of {@code app/cpy-bms}.
+     * Synthetic credential used throughout this suite: eight characters, matching {@link #CREDENTIAL_WIDTH},
+     * and obviously fabricated.
      *
-     * <p>Counted two independent ways that agree exactly: once by tallying the
-     * {@code ...L COMP PIC S9(4)} length items inside each {@code ...AI} input group, and once by
-     * tallying the non-{@code FILLER}, non-{@code COMP} data items in the same range. Both give
-     * {@value #CORPUS_INPUT_FIELD_COUNT}. The order is COACTUP, COACTVW, COADM01, COBIL00, COCRDLI,
-     * COCRDSL, COCRDUP, COMEN01, CORPT00, COSGN00, COTRN00, COTRN01, COTRN02, COUSR00, COUSR01,
-     * COUSR02, COUSR03.
-     */
-    private static final int[] INPUT_FIELDS_PER_MAP = {
-        54, 37, 20, 10, 45, 15, 17, 20, 17, 11, 59, 21, 21, 59, 12, 12, 11,
-    };
-
-    /**
-     * Total input data items across all seventeen symbolic maps: <strong>441</strong>.
-     *
-     * <p>Recorded as a <strong>Medium</strong> finding because the specification asserts 460 while
-     * its own per-map table sums to 440. Neither is right. The table is short by exactly one because
-     * {@code app/cpy-bms/COACTVW.CPY:60} declares {@code 02  ACCTSIDI  PIC 99999999999.} in
-     * repeated-nine form rather than as {@code PIC 9(11)}, so a scan keyed on the
-     * {@code X(n)}/{@code 9(n)} shape passes over it; COACTVW therefore contributes 37, not 36.
-     * Remediation: the corpus total is 441 and COSGN00 contributes
-     * {@value #SIGN_ON_INPUT_FIELD_COUNT} of them.
-     */
-    private static final int CORPUS_INPUT_FIELD_COUNT = 441;
-
-    /** Zero based position of COSGN00 within {@link #INPUT_FIELDS_PER_MAP}. */
-    private static final int SIGN_ON_MAP_INDEX = 9;
-
-    // -----------------------------------------------------------------------------------------
-    // Deterministic fixtures. Every value is immutable and every temporal value is derived from
-    // FixedClockProvider, so nothing here can vary between runs or between hosts.
-    // -----------------------------------------------------------------------------------------
-
-    /**
-     * Synthetic credential used throughout this suite: eight characters, matching
-     * {@link #CREDENTIAL_WIDTH}, and obviously fabricated.
-     *
-     * <p>It is deliberately <em>not</em> the seeded plaintext from
-     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}, which appears nowhere under {@code src/}. Because it
-     * contains lower case letters, digits and punctuation it cannot match that value's character
-     * shape, and {@link #theSyntheticCredentialCannotCollideWithTheSeededPlaintext()} asserts exactly
-     * that - a non-collision proof that never has to name the real literal.
+     * <p>Deliberately <em>not</em> the plaintext seeded at {@code app/jcl/DUSRSECJ.jcl:L35-L44}, which appears
+     * nowhere under {@code src/}. Because it carries lower case letters, digits and punctuation it cannot match
+     * that value's character shape, which is what lets this suite prove non collision without writing it.
      */
     private static final String SYNTHETIC_CREDENTIAL = "n0tR3al!";
 
-    /** A second, different synthetic credential, for the value identity assertions. */
+    /**
+     * A second, different synthetic credential, for the value identity assertions.
+     */
     private static final String OTHER_SYNTHETIC_CREDENTIAL = "f4k3Pwd!";
 
     /**
      * Character shape of the seeded plaintext credential: eight upper case letters.
      *
-     * <p>Derived by inspecting bytes 49 to 56 of {@code app/jcl/DUSRSECJ.jcl:L35-L44}, which hold a
-     * single distinct value across all ten seeded users. Only the <em>shape</em> is recorded, never
-     * the value, which is what lets this suite prove non-collision while honouring the prohibition on
-     * writing the credential itself.
+     * <p>Derived from bytes 49 to 56 of {@code app/jcl/DUSRSECJ.jcl:L35-L44}, which hold one single distinct
+     * value across all ten seeded users. Only the shape is recorded here, never the value.
      */
     private static final String SEEDED_CREDENTIAL_SHAPE = "^[A-Z]{8}$";
 
     /**
-     * Synthetic user identifier: eight characters, mixed case so that the no-folding assertions have
-     * something to bite on. Deliberately not one of the ten seeded identifiers, so that no real user
-     * name can reach an assertion message.
+     * Synthetic user identifier: eight characters, mixed case so that the no-folding assertions have something
+     * to bite on. Deliberately not one of the ten seeded identifiers, so that no real user name can reach an
+     * assertion message.
      */
     private static final String SYNTHETIC_USER_ID = "tstUsr01";
 
-    /** CICS transaction identifier of the sign-on transaction, {@code app/cbl/COSGN00C.cbl:L37}. */
+    /**
+     * CICS transaction identifier of the sign-on transaction, {@code app/cbl/COSGN00C.cbl:L37}.
+     */
     private static final String TRANSACTION_NAME = "CC00";
 
-    /** Owning program name, {@code app/cbl/COSGN00C.cbl:L36}. */
+    /**
+     * Owning program name, {@code app/cbl/COSGN00C.cbl:L36}.
+     */
     private static final String PROGRAM_NAME = "COSGN00C";
 
-    /** First header title line, within {@link #TITLE01_WIDTH}. */
+    /**
+     * First header title line, within {@link #TITLE01_WIDTH}.
+     */
     private static final String TITLE01 = "CardDemo";
 
-    /** Second header title line, within {@link #TITLE02_WIDTH}. */
+    /**
+     * Second header title line, within {@link #TITLE02_WIDTH}.
+     */
     private static final String TITLE02 = "Sign-on";
 
-    /** CICS application identifier, within {@link #APPLICATION_ID_WIDTH}. */
+    /**
+     * CICS application identifier, within {@link #APPLICATION_ID_WIDTH}.
+     */
     private static final String APPLICATION_ID = "APPL0001";
 
-    /** CICS system identifier, within {@link #SYSTEM_ID_WIDTH}. */
+    /**
+     * CICS system identifier, within {@link #SYSTEM_ID_WIDTH}.
+     */
     private static final String SYSTEM_ID = "SYS00001";
 
-    /** Diagnostic text, within {@link #ERROR_MESSAGE_WIDTH}. */
+    /**
+     * Diagnostic text, within {@link #ERROR_MESSAGE_WIDTH}.
+     */
     private static final String ERROR_MESSAGE = "Please enter User ID ...";
 
     /**
-     * Header date in the layout {@code app/cpy/CSDAT01Y.cpy:L30-L35} defines - two month digits, a
-     * {@code '/'}, two day digits, a {@code '/'}, two year digits - which is exactly eight
-     * characters and so fills {@code CURDATEI PIC X(8)} precisely.
-     *
-     * <p>Formatted from {@link FixedClockProvider#CANONICAL_INSTANT} in
-     * {@link FixedClockProvider#CANONICAL_ZONE} with {@link Locale#ROOT}. The pattern uses
-     * {@code uu} rather than {@code yy} because {@code y} is year-of-era and would misrender a
-     * proleptic year; the source has no era to render.
+     * Header date in the layout {@code app/cpy/CSDAT01Y.cpy:L30-L35} defines - two month digits, a {@code '/'},
+     * two day digits, a {@code '/'}, two year digits - which is exactly eight characters and so fills
+     * {@code CURDATEI PIC X(8)} precisely.
      */
     private static final String HEADER_DATE = DateTimeFormatter.ofPattern("MM/dd/uu", Locale.ROOT)
             .format(LocalDate.ofInstant(FixedClockProvider.CANONICAL_INSTANT, FixedClockProvider.CANONICAL_ZONE));
 
     /**
-     * Header time in the layout {@code app/cpy/CSDAT01Y.cpy:L36-L41} defines - two hour digits, a
-     * {@code ':'}, two minute digits, a {@code ':'}, two second digits - which is
-     * <strong>eight</strong> characters.
+     * Header time in the layout {@code app/cpy/CSDAT01Y.cpy:L36-L41} defines - two hour digits, a {@code ':'},
+     * two minute digits, a {@code ':'}, two second digits - which is <strong>eight</strong> characters.
      */
     private static final String HEADER_TIME = DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT)
             .format(LocalTime.ofInstant(FixedClockProvider.CANONICAL_INSTANT, FixedClockProvider.CANONICAL_ZONE));
 
     /**
-     * The header time as the nine byte field actually holds it: eight characters of content followed
-     * by one space.
+     * The header time as the nine byte field actually holds it: eight characters of content followed by one
+     * space.
      *
-     * <p>This is not decoration. {@code app/cbl/COSGN00C.cbl:L196} moves the eight character
-     * {@code WS-CURTIME-HH-MM-SS} into {@code CURTIMEO}, which redefines the nine byte
-     * {@code CURTIMEI} of {@code app/cpy-bms/COSGN00.CPY:54}. A COBOL alphanumeric move left
-     * justifies and space fills to the receiving width, so byte nine is a space by construction.
-     * That is the mechanical reason this one map is nine bytes wide while the other sixteen are
-     * eight, and it is why trailing space padding has to survive the round trip verbatim.
+     * <p>{@code app/cbl/COSGN00C.cbl:L196} moves the eight character {@code WS-CURTIME-HH-MM-SS} into
+     * {@code CURTIMEO}, which redefines the nine byte {@code CURTIMEI} of {@code app/cpy-bms/COSGN00.CPY:54}. A
+     * COBOL alphanumeric move left justifies and space fills, so the ninth byte is a space and not absent.
      */
     private static final String HEADER_TIME_PADDED = HEADER_TIME + " ";
 
     /**
      * COBOL {@code LOW-VALUES} for an eight byte alphanumeric field: eight NUL characters.
      *
-     * <p>{@code app/cbl/COSGN00C.cbl:L118} and {@code :L123} test {@code SPACES OR LOW-VALUES} as two
-     * separate sentinels, so low-values is a state in its own right and not a synonym for blank.
+     * <p>{@code app/cbl/COSGN00C.cbl:L118} and {@code :L123} test {@code SPACES OR LOW-VALUES} as two separate
+     * sentinels, so low values is a state in its own right and never a synonym for blank.
      */
     private static final String LOW_VALUES = "\u0000".repeat(USER_ID_WIDTH);
 
-    /** An all-spaces value of user identifier width: the BLANK state of {@code CSSETATY.cpy}. */
+    /**
+     * An all-spaces value of user identifier width: the BLANK state of {@code CSSETATY.cpy}.
+     */
     private static final String SPACES = " ".repeat(USER_ID_WIDTH);
-
-    // -----------------------------------------------------------------------------------------
-    // The field contract table and the pure helpers that drive the parameterised assertions. All
-    // static members below are immutable or pure functions: there is no settable fixture, no shared
-    // builder and no cached mutable state that one test could leave behind for another.
-    // -----------------------------------------------------------------------------------------
 
     /**
      * One row of the sign-on field contract, transcribed from {@code app/cpy-bms/COSGN00.CPY}.
      *
-     * @param cobolItem      the {@code ...I} data item name as the copybook spells it
-     * @param sourceLine     the line of {@code app/cpy-bms/COSGN00.CPY} that declares it
-     * @param pictureClause  the declared PICTURE, verbatim
-     * @param width          the declared width in bytes
-     * @param componentName  the {@link SignOnRequest} record component that carries it
-     * @param widthConstant  the public width constant {@link SignOnRequest} publishes for it
+     * @param cobolItem the {@code ...I} data item name as the copybook spells it
+     * @param sourceLine the line of {@code app/cpy-bms/COSGN00.CPY} that declares it
+     * @param pictureClause the declared PICTURE, verbatim
+     * @param width the declared width in bytes
+     * @param componentName the {@link SignOnRequest} record component that carries it
+     * @param widthConstant the public width constant {@link SignOnRequest} publishes for it
      * @param inboundBounded whether the component carries an inbound {@link Size} constraint
      */
     private record FieldContract(
@@ -409,9 +381,6 @@ final class SignOnRequestTest {
 
     /**
      * The eleven rows of the sign-on field contract, in copybook declaration order.
-     *
-     * <p>A pure factory rather than a static collection so that no test can mutate what another test
-     * sees.
      *
      * @return the eleven field contracts, ordered exactly as {@code 01 COSGN0AI} declares them
      */
@@ -438,14 +407,17 @@ final class SignOnRequestTest {
                 new FieldContract("PASSWDI", 78, "PIC X(8)", CREDENTIAL_WIDTH,
                         "password", SignOnRequest.PASSWORD_MAX_LENGTH, true),
                 new FieldContract("ERRMSGI", 84, "PIC X(78)", ERROR_MESSAGE_WIDTH,
-                        "errorMessage", SignOnRequest.ERROR_MESSAGE_MAX_LENGTH, false));
+                        "errorMessage", SignOnRequest.ERROR_MESSAGE_MAX_LENGTH, true));
     }
 
     /**
-     * The subset of the contract that a client populates and that therefore carries an inbound
-     * bound.
+     * The subset of the contract that a client populates and that therefore carries an inbound bound.
      *
-     * @return the ten client supplied field contracts
+     * <p>Retained as a filtered view rather than collapsed into {@link #fieldContracts()} so that the
+     * distinction stays expressible: if a future component is genuinely unbindable, flipping its flag
+     * is the single edit required, and the tests that assert bounds will then correctly skip it.</p>
+     *
+     * @return the eleven inbound bounded field contracts, in declaration order
      */
     private static Stream<FieldContract> inboundBoundedFieldContracts() {
         return fieldContracts().filter(FieldContract::inboundBounded);
@@ -472,21 +444,13 @@ final class SignOnRequestTest {
     }
 
     /**
-     * {@link #baseline()} with exactly one component replaced, so that a violation can be attributed
-     * to a single field rather than inferred from a set.
+     * {@link #baseline()} with exactly one component replaced, so that a violation can be attributed to a
+     * single field rather than inferred from a set.
      *
-     * <p>The substitution is an explicit {@code switch} rather than a reflective write. That is a
-     * security choice as much as a style one: reflective invocation driven by a string is precisely
-     * the pattern the project's standards ask to be flagged, and it would also defeat the compiler's
-     * ability to notice a renamed component.
-     *
-     * @param componentName the record component to replace, spelled as {@link SignOnRequest} declares
-     *                      it
-     * @param value         the replacement value, which may be {@code null}
+     * @param componentName the record component to replace, spelled as {@link SignOnRequest} declares it
+     * @param value the replacement value, which may be {@code null}
      * @return a request identical to {@link #baseline()} except for the named component
-     * @throws IllegalArgumentException if {@code componentName} is not a component of
-     *                                  {@link SignOnRequest}; the message names the component and
-     *                                  never a value, because one of the components is a credential
+     * @throws IllegalArgumentException if {@code componentName} is not a component of {@link SignOnRequest}.
      */
     private static SignOnRequest baselineWith(final String componentName, final String value) {
         return switch (componentName) {
@@ -531,14 +495,10 @@ final class SignOnRequestTest {
     /**
      * Reads a component's value back through its canonical accessor.
      *
-     * <p>Uses an explicit {@code switch} for the same reason {@link #baselineWith(String, String)}
-     * does: no reflective invocation, and a renamed component becomes a compile error.
-     *
-     * @param request       the request to read
+     * @param request the request to read
      * @param componentName the record component to read
      * @return the component's value, possibly {@code null}
-     * @throws IllegalArgumentException if {@code componentName} is not a component of
-     *                                  {@link SignOnRequest}
+     * @throws IllegalArgumentException if {@code componentName} is not a component of {@link SignOnRequest}
      */
     private static String componentOf(final SignOnRequest request, final String componentName) {
         return switch (componentName) {
@@ -561,36 +521,22 @@ final class SignOnRequestTest {
     /**
      * Validates a request against a freshly built default {@link Validator} and closes the factory.
      *
-     * <p>Building the factory per call rather than once per class is deliberate: it keeps this suite
-     * free of shared mutable state and of an unclosed resource, and the cost - a few tens of
-     * milliseconds after the provider's classes are loaded - is not worth trading that away for.
-     *
      * @param request the request to validate; may contain {@code null} components
      * @return the constraint violations, empty when the request satisfies every declared bound
      */
     private static Set<ConstraintViolation<SignOnRequest>> violationsOf(final SignOnRequest request) {
-        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
-            final Validator validator = factory.getValidator();
-            return validator.validate(request);
-        }
+        return ValidationSupport.violationsOf(request, "request");
     }
 
     /**
      * Reads an annotation from the <em>field</em> a record component generates.
      *
-     * <p>Reading it from the {@link RecordComponent} itself does not work here and the reason is
-     * worth stating: neither {@link Size} nor {@link JsonProperty} lists
-     * {@code ElementType.RECORD_COMPONENT} among its targets, so although both are written on the
-     * component, neither is <em>directly present</em> on it. Java propagates each to the applicable
-     * declarations instead - the private field, the accessor and the constructor parameter - which is
-     * where they are legible, and which is also where Bean Validation and Jackson read them.
-     *
-     * @param componentName   the record component whose generated field should be inspected
-     * @param annotationType  the annotation to look for
-     * @param <A>             the annotation type
+     * @param componentName the record component whose generated field should be inspected
+     * @param annotationType the annotation to look for
+     * @param <A> the annotation type
      * @return the annotation, or {@code null} when the component does not carry it
-     * @throws AssertionError if {@link SignOnRequest} declares no such field, which would mean the
-     *                        component was renamed
+     * @throws AssertionError if {@link SignOnRequest} declares no such field, which would mean the component
+     * was renamed
      */
     private static <A extends java.lang.annotation.Annotation> A fieldAnnotation(
             final String componentName, final Class<A> annotationType) {
@@ -604,6 +550,46 @@ final class SignOnRequestTest {
     }
 
     /**
+     * Runs an action expected to be refused and returns the {@link IllegalArgumentException} that
+     * caused the refusal, or {@code null} if none appears anywhere in the cause chain.
+     *
+     * <p>Searching the chain rather than asserting on the thrown type directly is deliberate. Jackson
+     * wraps an exception thrown from an any-setter in a {@code JsonMappingException}, but whether it
+     * does so - and how deeply it nests it - is an implementation detail of the databind version. A
+     * bounded walk of the chain is robust to that, where {@code hasRootCauseInstanceOf} is not.</p>
+     *
+     * @param action the action expected to be refused
+     * @return the refusal that caused it, or {@code null} if the action was not refused for that reason
+     */
+    private static IllegalArgumentException refusalOf(final ThrowingAction action) {
+        try {
+            action.run();
+            return null;
+        } catch (final Throwable thrown) {
+            Throwable cursor = thrown;
+            for (int depth = 0; cursor != null && depth < 16; depth++) {
+                if (cursor instanceof IllegalArgumentException refusal) {
+                    return refusal;
+                }
+                cursor = cursor.getCause();
+            }
+            return null;
+        }
+    }
+
+    /** An action that may throw any exception, so that {@link #refusalOf} can invoke it. */
+    @FunctionalInterface
+    private interface ThrowingAction {
+
+        /**
+         * Runs the action.
+         *
+         * @throws Exception if the action fails, which is the case under test
+         */
+        void run() throws Exception;
+    }
+
+    /**
      * The record component names of {@link SignOnRequest}, in declaration order.
      *
      * @return the eleven component names
@@ -613,10 +599,6 @@ final class SignOnRequestTest {
                 .map(RecordComponent::getName)
                 .toList();
     }
-
-    // =========================================================================================
-    // 1. THE FIELD CONTRACT - app/cpy-bms/COSGN00.CPY, input group 01 COSGN0AI
-    // =========================================================================================
 
     @Test
     @DisplayName("1.1 exposes exactly the eleven input data items of group COSGN0AI, no more, no fewer")
@@ -667,12 +649,12 @@ final class SignOnRequestTest {
 
     @ParameterizedTest(name = "1.5 [{index}] {0}")
     @MethodSource("inboundBoundedFieldContracts")
-    @DisplayName("1.5 bounds every client supplied component at its declared width and no tighter")
+    @DisplayName("1.5 bounds every inbound component at its declared width and no tighter")
     void boundsEveryClientSuppliedComponentAtItsDeclaredWidth(final FieldContract contract) {
         final Size size = fieldAnnotation(contract.componentName(), Size.class);
 
         assertThat(size)
-                .as("component %s carries client input and must declare a Size bound",
+                .as("component %s binds from the request body and must declare a Size bound",
                         contract.componentName())
                 .isNotNull();
         assertThat(size.max())
@@ -686,53 +668,63 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("1.6 records the errorMessage width but leaves it unbounded inbound, as the program"
-            + " writes it")
-    void recordsTheErrorMessageWidthWithoutBindingItInbound() {
+    @DisplayName("1.6 bounds errorMessage at its declared width too, because a REST client can supply"
+            + " what the terminal could not")
+    void boundsErrorMessageAtItsDeclaredWidth() {
         assertThat(SignOnRequest.ERROR_MESSAGE_MAX_LENGTH)
                 .as("ERRMSGI is declared PIC X(78) at app/cpy-bms/COSGN00.CPY:84")
                 .isEqualTo(ERROR_MESSAGE_WIDTH);
-        assertThat(fieldAnnotation("errorMessage", Size.class))
-                .as("errorMessage is populated by the program, not the terminal, so an inbound bound"
-                        + " would reject payloads the source accepts")
-                .isNull();
-        assertThat(violationsOf(baselineWith("errorMessage", "x".repeat(ERROR_MESSAGE_WIDTH * 2))))
-                .as("an over-width errorMessage must not be reported as a client error")
-                .isEmpty();
+
+        final Size size = fieldAnnotation("errorMessage", Size.class);
+
+        assertThat(size)
+                .as("on the 3270 screen the program wrote ERRMSGI and the operator could not, so it was"
+                        + " not a trust boundary there. That protection does not survive the move to a"
+                        + " stateless REST surface: errorMessage binds from the request body like every"
+                        + " other component, so it must carry the same bound as the other ten")
+                .isNotNull();
+        assertThat(size.max())
+                .as("the bound must be the declared PIC X(78) width - neither truncated nor widened")
+                .isEqualTo(ERROR_MESSAGE_WIDTH);
+        assertThat(size.min())
+                .as("the source imposes no minimum length on ERRMSGI, so neither may this type")
+                .isZero();
     }
 
     @Test
-    @DisplayName("1.7 MEDIUM: the corpus carries 441 input fields, not 460; COSGN00 contributes 11")
-    void signOnContributesElevenOfTheCorpusInputFieldBudget() {
-        assertThat(INPUT_FIELDS_PER_MAP)
-                .as("app/cpy-bms holds one symbolic map per BMS mapset in app/bms")
-                .hasSize(SYMBOLIC_MAP_COUNT);
-        assertThat(Arrays.stream(INPUT_FIELDS_PER_MAP).sum())
-                .as("counted two agreeing ways - by COMP PIC S9(4) length items and by data items -"
-                        + " the corpus total is %d, correcting the specification's 460 and its own"
-                        + " table's 440 (COACTVW contributes 37: app/cpy-bms/COACTVW.CPY:60 declares"
-                        + " ACCTSIDI PIC 99999999999 in repeated-nine form)",
-                        CORPUS_INPUT_FIELD_COUNT)
-                .isEqualTo(CORPUS_INPUT_FIELD_COUNT);
-        assertThat(INPUT_FIELDS_PER_MAP[SIGN_ON_MAP_INDEX])
-                .as("COSGN00's own contribution to the corpus budget")
-                .isEqualTo(SIGN_ON_INPUT_FIELD_COUNT);
+    @DisplayName("1.6b rejects an over-width errorMessage, naming it and never echoing its value")
+    void rejectsAnOverWidthErrorMessage() {
+        final String overWide = "x".repeat(ERROR_MESSAGE_WIDTH * 2);
+
+        final Set<ConstraintViolation<SignOnRequest>> violations =
+                violationsOf(baselineWith("errorMessage", overWide));
+
+        assertThat(violations)
+                .as("a value of %d characters cannot be rendered into a PIC X(78) field, so it must be"
+                        + " reported rather than silently carried to the rendering boundary",
+                        overWide.length())
+                .hasSize(1);
+
+        final ConstraintViolation<SignOnRequest> violation = violations.iterator().next();
+
+        assertThat(violation.getPropertyPath().toString())
+                .as("the violation must name errorMessage so a caller can act on it")
+                .isEqualTo("errorMessage");
+        assertThat(violation.getMessage())
+                .as("the message must not echo the offending value: this type is a trust boundary and"
+                        + " one of its components is a credential, so no component's value is echoed")
+                .doesNotContain(overWide);
     }
 
-    // =========================================================================================
-    // 2. THE HEADER CONTRACT - the nine byte CURTIMEI, and why no shared header type may exist
-    // =========================================================================================
-
     @Test
-    @DisplayName("2.1 MEDIUM: bounds currentTime at nine bytes, the corpus's only nine byte CURTIMEI")
+    @DisplayName("2.1 bounds currentTime at nine bytes, the corpus's only nine byte CURTIMEI")
     void signOnDeclaresTheOnlyNineByteHeaderTimeInTheCorpus() {
         assertThat(SignOnRequest.CURRENT_TIME_MAX_LENGTH)
                 .as("app/cpy-bms/COSGN00.CPY:54 declares CURTIMEI PIC X(9)")
                 .isEqualTo(CURRENT_TIME_WIDTH);
         assertThat(SignOnRequest.CURRENT_TIME_MAX_LENGTH)
                 .as("the other sixteen symbolic maps declare CURTIMEI PIC X(8) at their own line 54,"
-                        + " so this map must not be normalised to %d; the specification's claim that"
-                        + " CURTIME is universally X(9) inverts the outlier - remediation: X(9) on"
+                        + " so this map must not be normalised to %d: the nine byte form belongs to"
                         + " COSGN00 alone", SIBLING_MAP_CURRENT_TIME_WIDTH)
                 .isNotEqualTo(SIBLING_MAP_CURRENT_TIME_WIDTH);
         assertThat(SignOnRequest.CURRENT_TIME_MAX_LENGTH - SIBLING_MAP_CURRENT_TIME_WIDTH)
@@ -761,7 +753,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("2.4 HIGH: introduces no shared header supertype, which would force one CURTIME width")
+    @DisplayName("2.4 introduces no shared header supertype, which would force one CURTIME width")
     void noSharedHeaderSupertypeIsIntroduced() {
         assertThat(SignOnRequest.class.getSuperclass())
                 .as("a header base class would have to fix CURTIME at a single width and so would"
@@ -829,12 +821,8 @@ final class SignOnRequestTest {
                 .isEqualTo("06/10/22");
     }
 
-    // =========================================================================================
-    // 3. SIGN-ON SEMANTICS - the payload transports; app/cbl/COSGN00C.cbl decides
-    // =========================================================================================
-
     @Test
-    @DisplayName("3.1 HIGH: transports the user identifier without folding case, leaving the fold to"
+    @DisplayName("3.1 transports the user identifier without folding case, leaving the fold to"
             + " the service")
     void transportsTheUserIdentifierWithoutFoldingCase() {
         final SignOnRequest request = baselineWith("userId", SYNTHETIC_USER_ID);
@@ -850,7 +838,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("3.2 HIGH: transports the credential without folding case either - both are folded"
+    @DisplayName("3.2 transports the credential without folding case either - both are folded"
             + " by the program")
     void transportsTheCredentialWithoutFoldingCase() {
         final SignOnRequest request = baseline();
@@ -921,12 +909,8 @@ final class SignOnRequestTest {
                 .hasSize(SIGN_ON_INPUT_FIELD_COUNT);
     }
 
-    // =========================================================================================
-    // 4. CREDENTIAL CONTAINMENT - the presented password leaves this type through no path at all
-    // =========================================================================================
-
     @Test
-    @DisplayName("4.1 BLOCKER: renders no credential value through toString")
+    @DisplayName("4.1 renders no credential value through toString")
     void toStringRendersNoCredentialValue() {
         final String rendered = baseline().toString();
 
@@ -937,7 +921,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("4.2 BLOCKER: names no credential field and emits no mask or length through toString")
+    @DisplayName("4.2 names no credential field and emits no mask or length through toString")
     void toStringNamesNoCredentialFieldAndEmitsNoMask() {
         final String rendered = baseline().toString();
 
@@ -964,7 +948,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("4.4 BLOCKER: omits both the credential key and its value when serialised outward")
+    @DisplayName("4.4 omits both the credential key and its value when serialised outward")
     void serialisedFormOmitsBothTheCredentialKeyAndItsValue() throws JsonProcessingException {
         final String json = new ObjectMapper().writeValueAsString(baseline());
 
@@ -1067,7 +1051,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("4.10 BLOCKER: uses a synthetic credential that cannot collide with the seeded"
+    @DisplayName("4.10 uses a synthetic credential that cannot collide with the seeded"
             + " plaintext")
     void theSyntheticCredentialCannotCollideWithTheSeededPlaintext() {
         assertThat(SYNTHETIC_CREDENTIAL)
@@ -1105,7 +1089,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("4.12 BLOCKER: reports an over-width credential without echoing its value")
+    @DisplayName("4.12 reports an over-width credential without echoing its value")
     void constraintViolationsNeverEchoTheCredentialValue() {
         final String overWidth = SYNTHETIC_CREDENTIAL + "x";
 
@@ -1131,12 +1115,98 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("4.13 discloses no credential through its hash code rendering")
-    void disclosesNoCredentialThroughItsHashCodeRendering() {
-        assertThat(String.valueOf(baseline().hashCode()))
-                .as("the credential participates in value identity, so this records that identity"
-                        + " nonetheless discloses nothing: a hash code is an int and renders as digits")
+    @DisplayName("4.13 discloses no credential through the rendering that can actually carry one")
+    void disclosesNoCredentialThroughItsRendering() {
+        // The previous form of this test rendered hashCode() to a string and asserted the credential was
+        // absent from it. That could never fail: hashCode() returns an int, whose decimal rendering is
+        // digits and a possible sign, so it cannot contain an alphanumeric credential no matter what the
+        // production code does. It therefore asserted a property of int, not a property of SignOnRequest.
+        // The surface that genuinely can leak a credential is toString(), so that is what is asserted.
+        final SignOnRequest request = baseline();
+
+        assertThat(request.toString())
+                .as("app/cbl/COSGN00C.cbl:L118-L123 receives the presented credential, and a record's "
+                        + "compiler generated toString would render every component including it; the "
+                        + "override exists precisely to omit it")
                 .doesNotContain(SYNTHETIC_CREDENTIAL);
+        assertThat(request.toString())
+                .as("no fragment of the credential may survive either, so neither a prefix nor a suffix "
+                        + "of it may appear")
+                .doesNotContain(SYNTHETIC_CREDENTIAL.substring(0, SYNTHETIC_CREDENTIAL.length() - 1))
+                .doesNotContain(SYNTHETIC_CREDENTIAL.substring(1));
+        assertThat(request.toString())
+                .as("nor may the rendering name the component, which would invite a reader to look for "
+                        + "the value")
+                .doesNotContain("password");
+
+        // Two payloads differing ONLY in the credential must render identically. That is the assertion
+        // which proves omission rather than mere masking: were any credential-derived content present -
+        // a length, a masked prefix, a digest - the two renderings would diverge and disclose a
+        // discriminator.
+        assertThat(baselineWith("password", OTHER_SYNTHETIC_CREDENTIAL).toString())
+                .as("the rendering carries nothing derived from the credential at all")
+                .isEqualTo(request.toString());
+    }
+
+    @Test
+    @DisplayName("4.14 MEDIUM: refuses an unrecognised property rather than discarding it, under a"
+            + " lenient mapper as well as a strict one")
+    void refusesAnUnrecognisedPropertyUnderEitherMapperPosture() {
+        final String body = "{\"userId\":\"" + SYNTHETIC_USER_ID + "\",\"userIdd\":\"x\"}";
+
+        final ObjectMapper lenient = new ObjectMapper()
+                .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        final ObjectMapper strict = new ObjectMapper()
+                .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+        assertThat(refusalOf(() -> lenient.readValue(body, SignOnRequest.class)))
+                .as("this repository publishes no application*.yml, so the framework default - ignore"
+                        + " unknown properties - would otherwise be in force. The guard is declared on"
+                        + " the type precisely so that it holds under a lenient mapper")
+                .isNotNull();
+        assertThat(refusalOf(() -> strict.readValue(body, SignOnRequest.class)))
+                .as("a strict mapper must refuse it too")
+                .isNotNull();
+    }
+
+    @Test
+    @DisplayName("4.15 MEDIUM: names neither the unrecognised property nor its value, because both are"
+            + " untrusted input")
+    void namesNeitherTheUnrecognisedPropertyNorItsValue() {
+        final String offendingName = "sneakyProperty";
+        final String offendingValue = "sneakyValue";
+        final String body = "{\"userId\":\"" + SYNTHETIC_USER_ID
+                + "\",\"" + offendingName + "\":\"" + offendingValue + "\"}";
+
+        final IllegalArgumentException refusal =
+                refusalOf(() -> new ObjectMapper().readValue(body, SignOnRequest.class));
+
+        assertThat(refusal).isNotNull();
+        assertThat(refusal.getMessage())
+                .as("the message must state the declared field count and cite the copybook, so that a"
+                        + " caller can find the contract")
+                .contains("11")
+                .contains("app/cpy-bms/COSGN00.CPY");
+        assertThat(refusal.getMessage())
+                .as("echoing either the name or the value would let a caller place chosen text into the"
+                        + " logs of a request that failed at the authentication boundary")
+                .doesNotContain(offendingName)
+                .doesNotContain(offendingValue);
+    }
+
+    @Test
+    @DisplayName("4.16 accepts a body naming only declared properties, so the guard rejects nothing it"
+            + " should admit")
+    void acceptsABodyNamingOnlyDeclaredProperties() throws JsonProcessingException {
+        final ObjectMapper mapper = new ObjectMapper();
+
+        final SignOnRequest deserialised =
+                mapper.readValue(mapper.writeValueAsString(baseline()), SignOnRequest.class);
+
+        assertThat(deserialised)
+                .as("a round trip of this type's own output names only declared properties and must"
+                        + " therefore pass the guard untouched")
+                .isEqualTo(baselineWith("password", null));
     }
 
     // =========================================================================================
@@ -1146,7 +1216,7 @@ final class SignOnRequestTest {
     // =========================================================================================
 
     @Test
-    @DisplayName("5.1 HIGH: keeps absent, blank, low-values and present as four distinguishable states")
+    @DisplayName("5.1 keeps absent, blank, low-values and present as four distinguishable states")
     void keepsAbsentBlankLowValuesAndPresentDistinguishable() {
         final SignOnRequest absent = baselineWith("userId", null);
         final SignOnRequest empty = baselineWith("userId", "");
@@ -1307,10 +1377,6 @@ final class SignOnRequestTest {
                 .isEmpty();
     }
 
-    // =========================================================================================
-    // 6. VALUE SEMANTICS
-    // =========================================================================================
-
     @Test
     @DisplayName("6.1 defines equals as reflexive, symmetric and transitive over its components")
     void definesEqualsAsReflexiveSymmetricAndTransitive() {
@@ -1373,7 +1439,7 @@ final class SignOnRequestTest {
     }
 
     @Test
-    @DisplayName("6.5 LOW: includes the credential in value identity, which is record semantics and"
+    @DisplayName("6.5 includes the credential in value identity, which is record semantics and"
             + " discloses nothing")
     void includesTheCredentialInValueIdentity() {
         final SignOnRequest first = baseline();
@@ -1383,14 +1449,19 @@ final class SignOnRequestTest {
                 .as("two payloads differing only in the presented credential are different values."
                         + " This is the compiler generated, value based equals a record defines over"
                         + " all eleven components, and SignOnRequest documents it deliberately."
-                        + " Severity Low rather than Blocker because neither equals nor hashCode"
-                        + " RENDERS the credential - one returns a boolean, the other an int - so"
-                        + " nothing is disclosed. Remediation: do not use instances as cache keys and"
-                        + " do not identify them by hash code in diagnostics")
+                        + " Neither member RENDERS the credential - one returns a boolean, the other"
+                        + " an int - so nothing is disclosed. Callers must still not use instances as"
+                        + " cache keys nor identify them by hash code in diagnostics")
                 .isNotEqualTo(first);
-        assertThat(second.hashCode())
-                .as("and their hash codes are correspondingly unlikely to coincide")
-                .isNotEqualTo(first.hashCode());
+
+        // Deliberately NOT asserted: that the two hash codes differ. Object.hashCode permits unequal
+        // values to share a hash code, and only the converse is contractual, so requiring them to differ
+        // would let a correct implementation fail for a reason that is not a defect. What IS contractual
+        // is asserted instead - equal values agree - and it is asserted in 6.3 and 6.4.
+        assertThat(baseline().hashCode())
+                .as("the contract runs one way only: equal values must agree on their hash code, and "
+                        + "that is the direction a hash based collection depends on")
+                .isEqualTo(first.hashCode());
         assertThat(second.toString())
                 .as("while the rendering stays identical, because the rendering omits the credential -"
                         + " which is the property that actually matters")

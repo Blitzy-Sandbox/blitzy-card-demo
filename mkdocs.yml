@@ -6,3 +6,16 @@ nav:
 plugins:
   - techdocs-core
   - mermaid2
+# The mermaid2 plugin alone is not sufficient here. techdocs-core enables
+# pymdownx.superfences, which claims every fenced block first, so a ```mermaid
+# fence was being rendered as a line-numbered, syntax-highlighted code block -
+# the diagram source shown as literal text instead of a diagram. Registering
+# mermaid as a custom fence hands those blocks to mermaid2 for client-side
+# rendering. Verify with: mkdocs build && grep -c '<pre class="mermaid"' \
+# site/technical-specifications/index.html   (expect 1 or more, not 0).
+markdown_extensions:
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:mermaid2.fence_mermaid_custom

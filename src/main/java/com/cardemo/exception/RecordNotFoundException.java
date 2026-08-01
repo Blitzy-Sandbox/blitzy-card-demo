@@ -37,12 +37,11 @@ import java.util.Optional;
 /**
  * Signals that a keyed read found no record where the caller required one.
  *
- * <p><strong>What it does.</strong> It is the <em>error</em> reading of two legacy conditions: the
- * COBOL {@code FILE STATUS} value {@code '23'} on a keyed read, and the CICS response
- * {@code DFHRESP(NOTFND)} on an {@code EXEC CICS READ}. Neither legacy mechanism propagates a value
- * to a caller; the batch corpus displays a diagnostic and abends, and the online corpus sets an
- * input-error flag and repaints the screen. This type gives that outcome a name, so a caller can
- * distinguish "the row you asked for does not exist" from every other way a read can fail.
+ * <p>It is the <em>error</em> reading of two legacy conditions: the COBOL {@code FILE STATUS} value
+ * {@code '23'} on a keyed read, and the CICS response {@code DFHRESP(NOTFND)} on an {@code EXEC CICS READ}.
+ * Neither legacy mechanism propagates a value to a caller; the batch corpus displays a diagnostic and abends,
+ * and the online corpus sets an input-error flag and repaints the screen. This type gives that outcome a name,
+ * so a caller can distinguish "the row you asked for does not exist" from every other way a read can fail.
  *
  * <p><strong>What it is not.</strong> Not-found is <em>conditionally</em> an error, and this is the
  * most nuanced translation in the package for exactly that reason. There are three verified sites in
@@ -222,8 +221,10 @@ import java.util.Optional;
  * which with {@code CBSTM03B.CBL} is one of the only two uppercase members of {@code app/cbl}. Its
  * shared call area declares {@code WS-M03B-RC PIC X(02)} at L80. Nine sites accept
  * {@code IF WS-M03B-RC = '00' OR '04'} - L736, L748, L771, L789, L807, L862, L879, L895 and L911 -
- * covering the opens, the closes and the initial reads, so {@code '04'} is a second success value
- * there and not a failure. Four further sites, {@code EVALUATE WS-M03B-RC} at L353, L379, L403 and
+ * decomposing as four opens, one priming read and four closes, so {@code '04'} is a second success value
+ * there and not a failure. The priming read is L748, which sits inside {@code 8100-TRNXFILE-OPEN} rather
+ * than in a read paragraph of its own; it is the only read in the program that tolerates
+ * {@code '04'}. Four further sites, {@code EVALUATE WS-M03B-RC} at L353, L379, L403 and
  * L837, accept {@code '00'} only, treat {@code '10'} as end of file and abend on anything else. This
  * type is not raised for {@code '04'} anywhere.
  *
@@ -357,53 +358,25 @@ import java.util.Optional;
 public class RecordNotFoundException extends CardDemoException {
 
     /**
-     * Fixed serialization identity. {@link Throwable} already implements
-     * {@link java.io.Serializable}, so every type in this hierarchy is unavoidably serializable and
-     * must pin this value explicitly: the build runs {@code -Xlint:all} with {@code -Werror} and
-     * {@code failOnWarning}, which turns the {@code serial} lint into a compilation failure. A fixed
-     * literal is used rather than a computed default so that the identity does not shift when the
-     * class is edited.
+     * Fixed serialization identity, on the contract described on {@link CardDemoException}.
      */
     private static final long serialVersionUID = 1L;
 
     /**
      * The logical file or entity that was searched, or null when the caller did not supply one.
-     *
-     * <p>Normalised at construction so that a null, empty or whitespace-only argument is stored as
-     * null, giving absence a single representation. Never sensitive: the legacy names are file names
-     * such as {@code ACCTDAT}, {@code CARDDAT}, {@code CCXREF}, {@code CUSTDAT}, {@code TRANSACT},
-     * {@code USRSEC}, {@code TCATBALF}, {@code DISCGRP}, {@code TRANCATG} and {@code TRANTYPE}.
      */
     private final String recordType;
 
     /**
-     * A non sensitive descriptor of the key that found nothing, or null when the caller did not
-     * supply one.
-     *
-     * <p>Normalised at construction on the same rule as {@link #recordType}. Subject to the masking
-     * contract in the class documentation: it must never hold an unmasked card number, a social
-     * security number, a government identifier, a telephone number, a date of birth, an electronic
-     * funds account identifier, a credential or a password hash.
+     * A non sensitive descriptor of the key that found nothing, or null when the caller did not supply one.
      */
     private final String recordKey;
 
     /**
-     * Creates an exception reporting that a keyed read found nothing, with no record identity and no
-     * underlying throwable.
+     * Creates an exception reporting that a keyed read found nothing, with no record identity and no underlying
+     * throwable.
      *
-     * <p>Use this form only when the message already identifies the record adequately and there is
-     * genuinely no cause to preserve. Prefer {@link #RecordNotFoundException(String, String, String)}
-     * so that the record identity is available as structured data to a caller building a log entry,
-     * and prefer a cause carrying constructor inside any {@code catch} block, because discarding a
-     * caught throwable is the swallowing that Rule 1 Clause B forbids.
-     *
-     * <p>Side effects: none beyond throwable construction. Nothing is logged, no metric is recorded
-     * and no state outside this instance is read or written.
-     *
-     * @param message the detail message, retrievable through {@link Throwable#getMessage()}. Null and
-     *                blank are permitted and are passed through unchanged. It must not contain a
-     *                secret, a credential or a personally identifiable value, because exception
-     *                messages are logged
+     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
      */
     public RecordNotFoundException(String message) {
         super(message);
@@ -412,21 +385,11 @@ public class RecordNotFoundException extends CardDemoException {
     }
 
     /**
-     * Creates an exception reporting that a keyed read found nothing and preserves the throwable that
-     * caused it.
+     * Creates an exception reporting that a keyed read found nothing and preserves the throwable that caused
+     * it.
      *
-     * <p>This is the form required when adapting a persistence or framework level not-found signal:
-     * the message supplies the CardDemo context and the original throwable is retained unchanged.
-     *
-     * <p>Side effects: none beyond throwable construction. The cause is neither inspected, unwrapped,
-     * rethrown nor logged; it is delegated to {@link CardDemoException} as supplied.
-     *
-     * @param message the detail message, retrievable through {@link Throwable#getMessage()}. Null and
-     *                blank are permitted and are passed through unchanged, subject to the same
-     *                prohibition on secrets and personally identifiable values
-     * @param cause   the underlying throwable, retrievable through {@link Throwable#getCause()}. Null
-     *                is permitted and records that there is no underlying failure to attribute; a non
-     *                null value is always retained
+     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
+     * @param cause the underlying throwable, retrievable through {@link Throwable#getCause()}.
      */
     public RecordNotFoundException(String message, Throwable cause) {
         super(message, cause);
@@ -435,27 +398,12 @@ public class RecordNotFoundException extends CardDemoException {
     }
 
     /**
-     * Creates an exception reporting that a keyed read found nothing, carrying the identity of the
-     * record that was sought.
+     * Creates an exception reporting that a keyed read found nothing, carrying the identity of the record that
+     * was sought.
      *
-     * <p>This is the preferred form for a CardDemo originated lookup miss. The record identity is
-     * carried as structured data rather than only interpolated into the message, so that a caller can
-     * emit it as its own field in a JSON log line and query on it, which is the observability that
-     * Rule 1 Clause A asks for. This class itself neither logs nor formats it.
-     *
-     * <p>Side effects: none beyond throwable construction.
-     *
-     * @param message    the detail message, retrievable through {@link Throwable#getMessage()}. Null
-     *                   and blank are permitted and are passed through unchanged
-     * @param recordType the logical file or entity searched, such as {@code ACCTDAT} or
-     *                   {@code TRANSACT}. Null, empty and whitespace-only are permitted and are all
-     *                   normalised to absent, reported by {@link #recordType()}
-     * @param recordKey  a non sensitive descriptor of the key that found nothing. Null, empty and
-     *                   whitespace-only are permitted and are all normalised to absent, reported by
-     *                   {@link #recordKey()}. It must satisfy the masking contract documented on this
-     *                   class: never an unmasked card number, social security number, government
-     *                   identifier, telephone number, date of birth, electronic funds account
-     *                   identifier, credential or password hash
+     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
+     * @param recordType the logical file or entity searched, such as {@code ACCTDAT} or {@code TRANSACT}.
+     * @param recordKey a non sensitive descriptor of the key that found nothing.
      */
     public RecordNotFoundException(String message, String recordType, String recordKey) {
         super(message);
@@ -464,27 +412,14 @@ public class RecordNotFoundException extends CardDemoException {
     }
 
     /**
-     * Creates an exception reporting that a keyed read found nothing, carrying both the identity of
-     * the record that was sought and the throwable that caused the failure.
+     * Creates an exception reporting that a keyed read found nothing, carrying both the identity of the record
+     * that was sought and the throwable that caused the failure.
      *
-     * <p>This is the widest of the four forms and the one to use when adapting an underlying
-     * not-found signal at a point where the record identity is also known. It satisfies Rule 1
-     * Clause B on both counts at once: the message and the record identity supply the context, and
-     * the cause preserves the root failure.
-     *
-     * <p>Side effects: none beyond throwable construction. The cause is delegated to
-     * {@link CardDemoException} exactly as supplied and is never dropped.
-     *
-     * @param message    the detail message, retrievable through {@link Throwable#getMessage()}. Null
-     *                   and blank are permitted and are passed through unchanged
-     * @param recordType the logical file or entity searched. Null, empty and whitespace-only are
-     *                   permitted and are all normalised to absent
-     * @param recordKey  a non sensitive descriptor of the key that found nothing, subject to the
-     *                   masking contract documented on this class. Null, empty and whitespace-only
-     *                   are permitted and are all normalised to absent
-     * @param cause      the underlying throwable, retrievable through {@link Throwable#getCause()}.
-     *                   Null is permitted and records that there is no underlying failure to
-     *                   attribute; a non null value is always retained
+     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
+     * @param recordType the logical file or entity searched.
+     * @param recordKey a non sensitive descriptor of the key that found nothing - a masked shape such as
+     * {@code <11-digit-zero-padded-account-id>}, never a raw value.
+     * @param cause the underlying throwable, retrievable through {@link Throwable#getCause()}.
      */
     public RecordNotFoundException(String message, String recordType, String recordKey,
             Throwable cause) {
@@ -496,31 +431,18 @@ public class RecordNotFoundException extends CardDemoException {
     /**
      * Returns the logical file or entity that was searched, if the throwing site supplied one.
      *
-     * <p>Intended for a caller assembling a structured log entry or choosing a response, so that the
-     * record identity does not have to be parsed back out of the message. This accessor performs no
-     * formatting, no case folding and no lookup, and consults no locale.
-     *
-     * <p>Side effects: none. The value is immutable and is the value normalised at construction.
-     *
-     * @return the record type, or {@link Optional#empty()} when the throwing site supplied null, an
-     *         empty string or a whitespace-only string. Never null
+     * @return the record type, or {@link Optional#empty()} when the throwing site supplied null, an empty
+     * string or a whitespace-only string.
      */
     public Optional<String> recordType() {
         return Optional.ofNullable(recordType);
     }
 
     /**
-     * Returns the non sensitive descriptor of the key that found nothing, if the throwing site
-     * supplied one.
+     * Returns the non sensitive descriptor of the key that found nothing, if the throwing site supplied one.
      *
-     * <p>Whether this value is safe to log is the throwing site's responsibility under the masking
-     * contract documented on this class; this accessor cannot and does not verify it, and returns
-     * exactly what was supplied.
-     *
-     * <p>Side effects: none. The value is immutable and is the value normalised at construction.
-     *
-     * @return the record key descriptor, or {@link Optional#empty()} when the throwing site supplied
-     *         null, an empty string or a whitespace-only string. Never null
+     * @return the record key descriptor, or {@link Optional#empty()} when the throwing site supplied null, an
+     * empty string or a whitespace-only string.
      */
     public Optional<String> recordKey() {
         return Optional.ofNullable(recordKey);
@@ -528,14 +450,6 @@ public class RecordNotFoundException extends CardDemoException {
 
     /**
      * Normalises an absent-or-blank record identity component to null.
-     *
-     * <p>Collapsing null, the empty string and a whitespace-only string onto one representation is
-     * what lets {@link #recordType()} and {@link #recordKey()} report absence honestly through
-     * {@link Optional} rather than handing a caller a blank string to re-check.
-     * {@link String#isBlank()} tests Unicode whitespace through
-     * {@link Character#isWhitespace(char)} and so is locale independent, which keeps this class
-     * deterministic as Rule 1 Clause C requires. The value is otherwise returned untouched: not
-     * trimmed, not case folded and not validated.
      *
      * @param value the caller supplied component, which may be null, empty or whitespace only
      * @return null when the value is null or blank, otherwise the value exactly as supplied

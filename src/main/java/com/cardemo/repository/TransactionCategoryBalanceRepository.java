@@ -42,8 +42,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 /**
- * Transaction category balance data access: the relational replacement for the VSAM access verbs
- * over the KSDS cluster {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}.
+ * Transaction category balance data access: the relational replacement for the VSAM access verbs over the KSDS
+ * cluster {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}.
  *
  * <h2>What it does</h2>
  *
@@ -73,9 +73,11 @@ import org.springframework.stereotype.Repository;
  *
  * <h2>How it is built, run and tested</h2>
  *
- * <p>{@code mvn -B clean compile} compiles this interface under {@code -Xlint:all -Werror} with
- * {@code failOnWarning} enabled, so an unused import or any lint finding is a hard build failure rather
- * than a warning. {@code mvn -B clean test} runs the unit tier; {@code mvn -B clean verify} additionally
+ * <p>{@code ./mvnw -B clean compile} compiles this interface under {@code -Xlint:all -Werror} with
+ * {@code failOnWarning} enabled, so any lint finding in a category {@code javac} 25 publishes is a hard
+ * build failure rather than a warning. An unused import is not such a category - {@code javac} 25.0.3
+ * publishes no key for one - so it is forbidden by review instead.
+ * {@code ./mvnw -B clean test} runs the unit tier; {@code ./mvnw -B clean verify} additionally
  * enforces the JaCoCo line-coverage floor. There is nothing to run: a Spring Data repository is an
  * interface with no implementation in the source tree, and the proxy is created by the container at
  * startup.
@@ -121,8 +123,8 @@ import org.springframework.stereotype.Repository;
  *
  * <p>No connection-pool tuning is applied. HikariCP defaults are in force deliberately: the source
  * system publishes no throughput or latency objective anywhere, so there is no target to tune towards
- * and inventing one would be fabrication. This is recorded as residual risk in {@code DECISION_LOG.md}
- * and {@code docs/validation-gates.md} rather than silently omitted.
+ * and inventing one would be fabrication. This is recorded as residual risk in the planned {@code DECISION_LOG.md}
+ * and the planned {@code docs/validation-gates.md} rather than silently omitted.
  *
  * <h2>Batch only: proved by absence from the CICS CSD</h2>
  *
@@ -391,8 +393,9 @@ import org.springframework.stereotype.Repository;
  * like a defect and must not be tidied. {@code app/cbl/CBTRN02C.cbl:L138-L140} renders a status through
  * {@code IO-STATUS-04}, a group of {@code PIC 9} followed by {@code PIC 999}, so the rendering is always
  * exactly four characters. Status {@code '23'} therefore renders as {@code 0023} and the emitted
- * diagnostic reads {@code FILE STATUS IS: NNNN0023}. That is logged in {@code DECISION_LOG.md} and
- * reproduced rather than corrected.
+ * diagnostic reads {@code FILE STATUS IS: NNNN0023}. That is reproduced rather than corrected, and it is
+ * owed an entry in {@code DECISION_LOG.md}; measured 1 August 2026 that file is <strong>not
+ * available</strong>, so this Javadoc is the record until it is authored.
  *
  * <h2>Atomicity belongs to the caller, not to this interface</h2>
  *
@@ -413,7 +416,7 @@ import org.springframework.stereotype.Repository;
  * category-balance row and an orphaned transaction row committed against an account that was never
  * updated. A single transaction closes that hole as a side effect. This is a genuine <b>improvement</b>
  * over the source rather than parity with it, so it is labelled as a deviation in
- * {@code DECISION_LOG.md} and must not be presented as equivalence.
+ * the planned {@code DECISION_LOG.md} and must not be presented as equivalence.
  *
  * <h2>Reject codes are business outcomes, never exceptions</h2>
  *
@@ -467,8 +470,11 @@ import org.springframework.stereotype.Repository;
  *       ({@code ELSE PERFORM 1050-UPDATE-ACCOUNT}), but that branch is <b>unreachable as written</b>: the
  *       {@code ELSE} belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189}, while the enclosing
  *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited by the time the
- *       condition could be false. This is carried in {@code DECISION_LOG.md} as discrepancy #2,
- *       <b>severity Medium</b>. The Java flush must still happen; it is triggered by the end-of-data
+ *       condition could be false. This is <b>severity Medium</b>, and it is owed an entry in
+ *       {@code DECISION_LOG.md}; measured 1 August 2026 that file is <strong>not available</strong>, so
+ *       until it is authored the register of record is this Javadoc together with the corresponding
+ *       analysis in {@code docs/technical-specifications.md}. The Java flush must still happen; it is
+ *       triggered by the end-of-data
  *       condition, not by translating that dead {@code ELSE}.</li>
  *   <li><b>Paging over this table inside the interest job is stable.</b> The job never mutates the table
  *       it browses: its only write verbs are {@code REWRITE FD-ACCTFILE-REC} at
@@ -548,12 +554,15 @@ import org.springframework.stereotype.Repository;
  * stated plainly rather than assumed, together with what is needed to close them:
  *
  * <ol>
- *   <li><b>The three Flyway migrations are "Not available".</b> {@code V1__create_schema.sql},
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} do not yet exist.
- *       <b>What is needed:</b> those three files under {@code src/main/resources/db/migration}. Because
- *       {@code ddl-auto: validate} is set in every profile, the mapping this interface is typed over is
- *       the <b>normative contract {@code V1} must satisfy</b>, and it is restated here so the migration
- *       can be written against it without re-deriving it: table {@code transaction_category_balance}; a
+ *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
+ *       {@code V1__create_schema.sql} <b>is present</b> and declares
+ *       {@code CREATE TABLE transaction_category_balance} with {@code fk07_tcatbal_account}
+ *       and {@code fk08_tcatbal_category}; {@code V2__create_indexes.sql} and
+ *       {@code V3__seed_data.sql} do not yet exist.
+ *       <b>What is needed:</b> those two remaining files under {@code src/main/resources/db/migration}.
+ *       Because {@code ddl-auto: validate} is mandated in every planned profile, the mapping this
+ *       interface is typed over must match the DDL exactly, and it is restated here because it is what
+ *       {@code V1} declares: table {@code transaction_category_balance}; a
  *       composite primary key over {@code (acct_id NUMERIC(11), tran_type_cd CHAR(2),
  *       tran_cat_cd NUMERIC(4))} in <b>that component order</b>; and the column
  *       {@code tran_cat_bal NUMERIC(11,2)}. Every column is {@code NOT NULL}. {@code V2} adds <b>no</b>
@@ -627,61 +636,17 @@ public interface TransactionCategoryBalanceRepository
         extends JpaRepository<TransactionCategoryBalance, TransactionCategoryBalanceId> {
 
     /**
-     * Reads the table in composite-key order, one chunk at a time: the replacement for the key-ordered
-     * VSAM browse that the interest calculation job performs.
+     * Reads the table in composite-key order, one chunk at a time: the replacement for the key-ordered VSAM
+     * browse that the interest calculation job performs.
      *
-     * <p><b>Purpose.</b> Reproduce {@code app/cbl/CBACT04C.cbl:L188-L222}, where the file is opened
+     * <p>Reproduces {@code app/cbl/CBACT04C.cbl:L188-L222}, where the file is opened
      * {@code ACCESS MODE IS SEQUENTIAL} ({@code :L28-L32}) and read one record at a time through
      * {@code 1000-TCATBALF-GET-NEXT} until end of file, so that the account-level control break at
      * {@code :L194} can group each account's rows together.
      *
-     * <p><b>The ordering is part of this method, not of its caller.</b> The name encodes
-     * {@code order by id.accountId asc, id.typeCd asc, id.catCd asc} - the exact component order of the
-     * 17-byte composite key - so the ordering cannot be omitted, overridden by accident or forgotten.
-     * That is deliberate: a variant taking the sort from the {@link Pageable} would make correctness of
-     * the interest calculation depend on every call site remembering to supply three sort keys in the
-     * right sequence. <b>Severity: Blocker</b> if the ordering is ever removed; see the browse section of
-     * the type documentation for why an unordered read loses interest silently rather than failing.
-     *
-     * <p><b>Why a chunked read rather than a single list.</b> The legacy program holds one record in
-     * working storage at a time and never materialises the table, so a chunked read is the faithful
-     * counterpart and it keeps heap use independent of table size. {@link Slice} is returned rather than
-     * a page because the browse needs only "is there more", which {@code Slice.hasNext} answers without
-     * the extra {@code count} query a page would issue on every chunk.
-     *
-     * <p><b>Input.</b> A {@link Pageable} supplying the chunk index and size - for example
-     * {@code PageRequest.of(0, 500)}. Pass it <b>unsorted</b>: the ordering is already fixed by this
-     * method, and any {@link org.springframework.data.domain.Sort} carried on the {@link Pageable} would
-     * be appended to it, which is at best redundant and at worst misleading to a later reader. Must not be
-     * {@code null}, and {@code Pageable.unpaged()} defeats the purpose of the method.
-     *
-     * <p><b>Output.</b> A {@link Slice} of {@link TransactionCategoryBalance} in composite-key order, and
-     * an empty slice once the table is exhausted - the counterpart of file status {@code '10'}, which
-     * {@code 1000-TCATBALF-GET-NEXT} maps to {@code 88 APPL-EOF VALUE 16} and treats as ordinary loop
-     * termination rather than as an error. Every returned instance is fully initialised; the entity has no
-     * lazy member.
-     *
-     * <p><b>Side effects.</b> None. This is a read; nothing is written, nothing is locked, and no row is
-     * modified. The interest job never writes this table - its writes go to the account cluster and the
-     * sequential transaction file - so a chunked traversal cannot be disturbed by its own job.
-     *
-     * <p><b>Failure modes.</b> An empty result is normal, both for an exhausted traversal and for an empty
-     * table, and is never an error: the sequential guard accepts {@code '00'} and treats {@code '10'} as
-     * end of file. A provider or connectivity fault propagates as a data-access exception and must not be
-     * swallowed; in the source the equivalent branch displays
-     * {@code 'ERROR READING TRANSACTION CATEGORY FILE'} and abends, so the Java counterpart is a failed
-     * step with {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and return
-     * code 12. Callers must not silently substitute an empty result for a failure, because for this job an
-     * empty table and an unreadable table differ only in that the second one must stop the run.
-     *
-     * <p><b>Caller.</b> The interest calculation job and its processor, in
-     * {@code com.cardemo.batch}, driven by {@code app/jcl/INTCALC.jcl}. It is the only caller: this
-     * method exists for that browse and for nothing else.
-     *
-     * @param pageable the chunk index and size to read, unsorted because this method fixes its own
-     *                 ordering; must not be {@code null}
-     * @return a {@link Slice} of rows in {@code id.accountId}, {@code id.typeCd}, {@code id.catCd} order,
-     *         empty once the traversal is exhausted
+     * @param pageable the chunk index and size to read, unsorted because this method fixes its own ordering.
+     * @return a {@link Slice} of rows in {@code id.accountId}, {@code id.typeCd}, {@code id.catCd} order, empty
+     * once the traversal is exhausted
      */
     Slice<TransactionCategoryBalance> findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(Pageable pageable);
 }

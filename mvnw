@@ -1,12 +1,17 @@
 #!/bin/sh
 # ******************************************************************
-# Component   : mvnw
+# Program     : mvnw
 # Application : CardDemo
 # Type        : Maven Wrapper launcher (Unix, POSIX shell)
 # Function    : Resolves, downloads, SHA-256 verifies, caches and then
 #               executes the Apache Maven distribution pinned by this
 #               repository, so that building CardDemo needs no Maven
 #               installed on the host.
+# Source      : samples/proc/BUILDBAT.prc, samples/proc/BUILDBMS.prc,
+#               samples/proc/BUILDONL.prc, samples/jcl/BATCMP.jcl,
+#               samples/jcl/BMSCMP.jcl and samples/jcl/CICCMP.jcl
+#               @ 7756d89 - the frozen z/OS build tooling this wrapper
+#               supersedes, none of which is ported
 # ******************************************************************
 # Copyright Amazon.com, Inc. or its affiliates.
 # All Rights Reserved.
@@ -26,114 +31,100 @@
 #
 # PROVENANCE. Derived from the Apache Maven Wrapper 3.3.4 only-script
 # launcher (Apache License 2.0, The Apache Software Foundation). The
-# distribution cache layout and the distribution-URL hash are
-# reproduced exactly, so an existing ~/.m2/wrapper cache and the
-# sibling mvnw.cmd remain interoperable with this file. Configuration
-# is read only from .mvn/wrapper/maven-wrapper.properties; no Maven
-# version appears anywhere in this script.
+# distribution cache layout and the distribution-URL hash are reproduced
+# exactly, so an existing ~/.m2/wrapper cache and the sibling mvnw.cmd
+# remain interoperable with this file. Configuration is read only from
+# .mvn/wrapper/maven-wrapper.properties, and no Maven version appears
+# anywhere in this script - duplicating it in prose would let the two
+# drift apart.
 #
-# It supersedes the frozen z/OS build tooling, none of which is
-# ported: the compile procedures samples/proc/BUILDBAT.prc,
-# BUILDBMS.prc and BUILDONL.prc and the templates samples/jcl/
-# BATCMP.jcl, BMSCMP.jcl and CICCMP.jcl. Authored per the Agent Action
-# Plan in docs/technical-specifications.md sections 0.3.1.4, 0.3.1.8,
-# 0.4.1.1 and 0.5.1.1, at traceability anchor commit 7756d89.
-#
-# WHAT IT DOES, in order.
-#   1. Finds .mvn/wrapper/maven-wrapper.properties, following symlinks
-#      and tolerating directory names that contain spaces.
-#   2. Reads distributionUrl and distributionSha256Sum from it.
-#   3. Rejects anything that is not an HTTPS URL for a released
-#      Apache Maven binary zip.
-#   4. Derives the cache directory from the URL and runs Maven straight
-#      away when that directory already holds a distribution.
-#   5. Otherwise downloads over HTTPS into a private staging directory,
-#      verifies the SHA-256, expands the archive, and publishes it with
-#      a single same-filesystem rename.
-#   6. Replaces itself with Maven through exec, so Maven's exit status,
-#      signal disposition, stdin, stdout and stderr are unchanged and
-#      every argument is forwarded verbatim.
-#
-# BUILD AND TEST. No version is repeated here on purpose: the pinned
-# Maven is whatever .mvn/wrapper/maven-wrapper.properties declares, and
-# duplicating it in prose would let the two drift apart.
+# BUILD AND TEST
 #   ./mvnw --version               report the pinned Maven and the JDK
 #   ./mvnw -B clean compile        compile the Java sources
 #   ./mvnw -B test                 run the unit test tier
 #   ./mvnw -B clean verify         full build with coverage and scans
 #   MVNW_VERBOSE=true ./mvnw ...   log wrapper decisions to stderr
-#   MVNW_VERBOSE=debug ./mvnw ...  shell trace, credentials suppressed
+#   MVNW_VERBOSE=debug ./mvnw ...  shell trace of the wrapper only
 #   sh -n mvnw && shellcheck -s sh mvnw    static checks on this file
+#
+#   What MVNW_VERBOSE=debug does NOT trace, deliberately: the mirror
+#   credentials, and the arguments forwarded to Maven. The trace is
+#   suspended around every statement that expands MVNW_PASSWORD, and it
+#   is switched off for good immediately before the final exec, so a
+#   caller-supplied -Dsomething.secret=VALUE is never echoed to stderr.
+#   That closes the wrapper as a disclosure path but nothing else: such
+#   an argument is still visible in the process list and in shell
+#   history. NEVER put a secret on the Maven command line - supply it
+#   through the environment or an encrypted Maven settings file.
 #
 # KEYS AND DEFAULTS. Read by this script:
 #   JAVA_HOME            JDK used to locate java, and jar when unzip is
 #                        absent. Default: java from PATH.
 #   MAVEN_USER_HOME      Root of the wrapper cache. Default: $HOME/.m2.
-#                        The cache path is
+#                        The path is
 #                        <MAVEN_USER_HOME>/wrapper/dists/<dist>/<hash>,
 #                        so it is deterministic for a given URL.
-#   MAVEN_PROJECTBASEDIR Directory that holds .mvn/wrapper. Default:
+#   MAVEN_PROJECTBASEDIR Directory holding .mvn/wrapper. Default:
 #                        discovered by walking up from this script and
 #                        then from the current directory.
-#   MVNW_REPOURL         HTTPS base of a private Maven mirror. The
-#                        cache key follows the mirror URL, so mirrored
-#                        and upstream downloads never share a slot.
+#   MVNW_REPOURL         HTTPS base of a private Maven mirror. The cache
+#                        key follows the mirror URL, so mirrored and
+#                        upstream downloads never share a slot.
 #   MVNW_USERNAME        Mirror credentials. Both must be set, they are
 #   MVNW_PASSWORD        never placed on a command line, and they are
 #                        removed from the environment before Maven
 #                        starts. No default and no committed value.
 #   MVNW_VERBOSE         true for wrapper logging, debug for a shell
 #                        trace. Default: quiet.
-# Passed through untouched, because Apache Maven's own bin/mvn already
-# implements them and duplicating that here would let the two drift:
-#   MAVEN_OPTS, MAVEN_ARGS, MAVEN_BASEDIR.
+# MAVEN_OPTS, MAVEN_ARGS and MAVEN_BASEDIR are passed through untouched,
+# because Apache Maven's own bin/mvn already implements them.
 #
 # EXIT STATUS. On success this process is replaced by Maven, so the
-# caller observes Maven's own status and signal death. A wrapper
-# failure exits 1 after writing a message to stderr prefixed
-# "mvnw: ERROR:"; that prefix, not a special code, identifies a
-# wrapper failure. Nothing is ever written to stdout by this script.
+# caller observes Maven's own status and signal death. A wrapper failure
+# exits 1 after writing a message to stderr prefixed "mvnw: ERROR:";
+# that prefix, not a special code, identifies a wrapper failure, and
+# nothing is ever written to stdout by this script.
 #
 # SECURITY MODEL. HTTPS only, with certificate verification left at the
-# downloader's secure default and never disabled. Protocol downgrades,
-# including on redirect, are refused. The SHA-256 is mandatory and is
+# downloader's secure default and never disabled, and protocol
+# downgrades refused even on redirect. The SHA-256 is mandatory and is
 # checked before the archive is expanded, so a mismatch cannot reach
 # execution. There is no eval, no piping of downloaded bytes into a
-# shell, and no generated code. Credentials travel through a mode-600
+# shell and no generated code. Credentials travel through a mode-600
 # file, never through argv, and the shell trace is suspended around
 # every statement that expands them, so MVNW_VERBOSE=debug cannot print
 # a password. This file contains no credential, token or key.
 #
-# DELIBERATE DIVERGENCES from the upstream launcher, each recorded so a
-# side-by-side reader can see they are intentional:
+# DELIBERATE DIVERGENCES from the upstream launcher, so a side-by-side
+# reader can see they are intentional:
 #   * The checksum is mandatory. Upstream skips verification silently
 #     when distributionSha256Sum is absent or blank.
 #   * No .tar.gz retarget when unzip is missing. Upstream rewrites the
 #     URL, which then fails the zip checksum and reports a possibly
 #     compromised distribution when the real fault is a missing tool.
-#     Instead the JDK jar tool is used, then a precise error.
-#   * No generated-and-compiled Java downloader. curl, then wget, then
+#     The JDK jar tool is used instead, then a precise error.
+#   * No generated-and-compiled Java downloader: curl, then wget, then
 #     an explicit error.
-#   * No maven-mvnd and no mvnwDebug name variant: this repository pins
-#     apache-maven, so those branches would be unreachable code.
+#   * No maven-mvnd and no mvnwDebug name variant, because this
+#     repository pins apache-maven and those branches would be
+#     unreachable code.
 #   * Staging happens inside the cache directory, making the install a
 #     rename rather than a cross-filesystem copy.
 #   * MAVEN_HOME is not assigned, so an exported value is not mutated.
 #
-# TROUBLESHOOTING.
-#   checksum mismatch   Maven is not executed. Expected and actual
-#                       digests are both printed. When the pinned
-#                       version changes, update distributionUrl and
-#                       distributionSha256Sum together.
+# TROUBLESHOOTING
+#   checksum mismatch   Maven is not executed and both digests are
+#                       printed. When the pinned version changes, update
+#                       distributionUrl and distributionSha256Sum
+#                       together.
 #   no downloader       install curl or wget.
 #   no digest tool      install coreutils, perl-shasum or openssl.
 #   cannot expand       install unzip, or make $JAVA_HOME/bin/jar
 #                       reachable.
-#   wrong JDK           a warning names the JDK found; the enforcer
+#   wrong JDK           a warning names the JDK found, and the enforcer
 #                       rule requireJavaVersion [25,) in pom.xml fails
 #                       the build. Point JAVA_HOME at a JDK 25.
 #   permission denied   run chmod +x mvnw.
-#   slow first build    a cold cache fetches about 9 MB once.
 # ******************************************************************
 
 # Fail on error, on an unset variable, and with pathname expansion off
@@ -150,13 +141,11 @@ if [ "${MVNW_VERBOSE-}" = debug ]; then
   set -x
 fi
 
-# ------------------------------------------------------------------
 # Diagnostics. Everything goes to stderr so stdout belongs to Maven
 # alone, and every line is prefixed so a wrapper failure is never
 # mistaken for build output.
 # POSIX sh has no local variables, so helper scratch variables carry a
 # function-specific underscore prefix to keep them from colliding.
-# ------------------------------------------------------------------
 
 # Join the arguments into one line with a single separating space, so a
 # long diagnostic can be wrapped in the source without ever being
@@ -489,6 +478,117 @@ cleanup_staging() {
   return 0
 }
 
+# Publish the extracted distribution at its final path.
+#
+# WHY THIS NEEDS A LOCK. POSIX mv moves the source INTO the destination
+# when the destination is an existing directory. A bare
+#
+#     if [ ! -d "$dest" ]; then mv -- "$src" "$dest"; fi
+#
+# therefore has a window: another invocation can create $dest between the
+# test and the rename, after which mv SUCCEEDS and produces
+# $dest/apache-maven-<v>/bin/mvn while $dest/bin/mvn stays absent. The
+# wrapper then reports a successful install and the very next run fails
+# on a missing launcher, with nothing in the log connecting the two.
+# Retrying does not help, because the nested copy makes $dest look like a
+# populated cache for ever after.
+#
+# mkdir is the only atomic claim POSIX sh has - it fails if the path
+# exists - so it is used as the mutual exclusion. The holder is the only
+# process that may rename, and it renames only into an ABSENT
+# destination, so nesting is not merely unlikely, it is unreachable.
+#
+# A waiter never removes a lock it does not own: a lock left behind by a
+# killed holder is reported with its path so an operator can clear it,
+# because silently stealing it would restore exactly the race this
+# function exists to remove.
+publishLockWaitSeconds=180
+
+publish_distribution() {
+  _pd_lock="$mavenDistHome.lock"
+  _pd_waited=0
+  while :; do
+    if mkdir -- "$_pd_lock" 2>/dev/null; then
+      # The claim is ours. Nothing else can rename onto $mavenDistHome
+      # while it is held, so the branches below race with nobody.
+      if [ -x "$mavenLauncher" ]; then
+        # A complete distribution was published while this invocation
+        # was downloading. Keep it and discard our copy; overwriting a
+        # working install would only churn the cache.
+        verbose "another invocation published '$mavenDistHome' first; discarding this copy"
+      elif [ -e "$mavenDistHome" ]; then
+        # The path exists but carries no executable launcher: an install
+        # interrupted by a kill or a full disk, or a foreign tree. It
+        # cannot be renamed onto, because that is precisely what produces
+        # the nested layout, so it is moved ASIDE and publication then
+        # proceeds into an absent destination.
+        #
+        # Quarantined rather than deleted. The bytes may be a customised
+        # distribution somebody cares about, and this wrapper did not
+        # create them, so destroying them is not its decision; the path
+        # is reported at warning level so an operator can inspect or
+        # remove it. What matters for the build is that the destination
+        # is now absent, which the rename below requires.
+        if ! quarantine_incomplete_distribution; then
+          release_publish_lock "$_pd_lock"
+          die "'$mavenDistHome' has no executable bin/mvn and could not be moved aside;" \
+            "remove it and re-run to reinstall"
+        fi
+        if mv -- "$extractedDir" "$mavenDistHome"; then
+          verbose "installed $mavenDistHome"
+        else
+          release_publish_lock "$_pd_lock"
+          die "cannot install: moving '$extractedDir' to '$mavenDistHome' failed"
+        fi
+      elif mv -- "$extractedDir" "$mavenDistHome"; then
+        verbose "installed $mavenDistHome"
+      else
+        release_publish_lock "$_pd_lock"
+        die "cannot install: moving '$extractedDir' to '$mavenDistHome' failed"
+      fi
+      release_publish_lock "$_pd_lock"
+      return 0
+    fi
+
+    # Another invocation holds the claim. Validate rather than assume:
+    # the lock going away proves only that the holder finished, not that
+    # it succeeded, so the launcher itself is the completion signal.
+    if [ -x "$mavenLauncher" ]; then
+      verbose "lost the install race; using the distribution the other invocation published"
+      return 0
+    fi
+    if [ "$_pd_waited" -ge "$publishLockWaitSeconds" ]; then
+      die "waited ${publishLockWaitSeconds}s for another invocation to publish '$mavenDistHome'" \
+        "and no executable bin/mvn appeared; if no other build is running, remove the stale" \
+        "lock directory '$_pd_lock' and re-run"
+    fi
+    sleep 1
+    _pd_waited=$((_pd_waited + 1))
+  done
+}
+
+# Move an incomplete or foreign distribution out of the destination path.
+# The holder directory is created by mktemp, so the name cannot collide
+# with a leftover from an earlier run, and the tree is moved inside it in
+# one rename. Called only while the publication lock is held, so no other
+# invocation can be reading the path at the time.
+quarantine_incomplete_distribution() {
+  _qi_holder="$(mktemp -d "$mavenDistHome.incomplete.XXXXXX")" || return 1
+  mv -- "$mavenDistHome" "$_qi_holder" || return 1
+  warn "'$mavenDistHome' had no executable bin/mvn and was moved to '$_qi_holder';" \
+    "the distribution has been reinstalled - delete that directory once you have inspected it"
+  return 0
+}
+
+# Release a lock this invocation owns. rmdir rather than rm -rf, so the
+# call cannot escalate into deleting a populated directory if the path
+# ever changes meaning.
+release_publish_lock() {
+  rmdir -- "$1" 2>/dev/null ||
+    warn "could not remove the lock directory '$1'; delete it manually"
+  return 0
+}
+
 # Hand over to Maven. exec replaces this shell, so Maven owns the exit
 # status and the signal disposition, and "$@" is forwarded unaltered
 # including empty arguments and arguments containing whitespace.
@@ -506,13 +606,13 @@ exec_maven() {
   # Wrapper-only settings, including any credential, must not leak into
   # the build or into anything the build spawns.
   unset MVNW_VERBOSE MVNW_USERNAME MVNW_PASSWORD MVNW_REPOURL
+  # No trace guard here on purpose - see WHY THE GUARD IS AT THE CALL
+  # SITES below. By the time this body runs the guard has already fired.
   exec "$mavenLauncher" "$@"
 }
 
-# ------------------------------------------------------------------
 # Locate the wrapper configuration. Explicit configuration wins over
 # inference; every path stays quoted so names containing spaces work.
-# ------------------------------------------------------------------
 
 wrapperPropertiesRelPath='.mvn/wrapper/maven-wrapper.properties'
 wrapperBaseDir=''
@@ -544,10 +644,8 @@ if [ ! -r "$wrapperPropertiesFile" ]; then
 fi
 verbose "wrapper configuration: $wrapperPropertiesFile"
 
-# ------------------------------------------------------------------
 # Read the pinned distribution. This file is the only source of the
 # Maven version; nothing below substitutes a default for it.
-# ------------------------------------------------------------------
 
 distributionUrl=''
 distributionSha256Sum=''
@@ -564,6 +662,16 @@ fi
 
 # An optional private mirror. The rewrite matches the upstream launcher
 # so that a cache filled through a mirror keys on the mirror URL.
+#
+# The base has any trailing slash stripped before concatenation, because
+# mvnwRepoPattern begins with one: a value of https://mirror.example/
+# would otherwise produce https://mirror.example//org/apache/maven/...
+# The two slashes are harmless to some servers and a 404 on others, and
+# either way the cache directory keys on a hash of this URL, so the same
+# mirror written with and without the slash would fill two separate
+# caches and download the distribution twice. mvnw.cmd already trims it
+# via .TrimEnd('/'); this makes the platforms agree byte-for-byte on the
+# resulting URL, which is the only way the two can share a cache entry.
 mvnwRepoPattern='/org/apache/maven/'
 if [ -n "${MVNW_REPOURL-}" ]; then
   require_https "$MVNW_REPOURL" 'MVNW_REPOURL'
@@ -574,7 +682,11 @@ if [ -n "${MVNW_REPOURL-}" ]; then
       "so it cannot be remapped: '$distributionUrl'"
     ;;
   esac
-  distributionUrl="${MVNW_REPOURL}${mvnwRepoPattern}${distributionUrl#*"$mvnwRepoPattern"}"
+  # require_https above has already established that the value begins
+  # with https://, so trimming a trailing slash can never empty it and
+  # no emptiness guard is needed here - one would be unreachable.
+  mvnwRepoBase="${MVNW_REPOURL%/}"
+  distributionUrl="${mvnwRepoBase}${mvnwRepoPattern}${distributionUrl#*"$mvnwRepoPattern"}"
   verbose "mirror applied: $distributionUrl"
 fi
 
@@ -606,12 +718,10 @@ case "$distributionSha256Sum" in
   ;;
 esac
 
-# ------------------------------------------------------------------
 # Deterministic cache location:
 #   <mavenUserHome>/wrapper/dists/<distribution>/<url hash>
 # The layout and the hash match the upstream launcher exactly, so a
 # cache populated by any Maven Wrapper is reused as-is.
-# ------------------------------------------------------------------
 
 distributionArchiveName="${distributionUrl##*/}"
 distributionName="${distributionArchiveName%-bin.zip}"
@@ -643,17 +753,24 @@ javaCommand=''
 resolve_java
 report_java_level
 
-if [ -d "$mavenDistHome" ]; then
+# The cache hit is decided on the LAUNCHER, not merely on the directory.
+# A directory carrying no executable bin/mvn is an incomplete or foreign
+# install, not a cache entry, and treating it as one is what leaves a
+# checkout permanently unable to build: every subsequent run would take
+# this path and die in exec_maven with the same message. Falling through
+# instead lets publish_distribution quarantine it and reinstall, so the
+# condition is self-healing. mvnw.cmd already tests its launcher this
+# way; this makes the two launchers agree.
+if [ -x "$mavenLauncher" ]; then
   verbose "using the cached distribution at $mavenDistHome"
+  trace_off
   exec_maven "$@"
 fi
 
-# ------------------------------------------------------------------
 # Install. Staging lives inside the cache directory so publishing is a
 # same-filesystem rename: no other process can observe a half-written
 # distribution, and the unique suffix keeps concurrent invocations
 # from colliding.
-# ------------------------------------------------------------------
 
 mkdir -p -- "$mavenDistHomeParent" ||
   die "cannot create the wrapper cache directory '$mavenDistHomeParent'"
@@ -774,17 +891,9 @@ fi
 printf '%s\n' "$distributionUrl" >"$extractedDir/mvnw.url" ||
   die "cannot write the provenance marker '$extractedDir/mvnw.url'"
 
-if [ -d "$mavenDistHome" ]; then
-  verbose "another invocation installed '$mavenDistHome' first; discarding this copy"
-elif mv -- "$extractedDir" "$mavenDistHome"; then
-  verbose "installed $mavenDistHome"
-elif [ -d "$mavenDistHome" ]; then
-  verbose "lost the install race; using the distribution the other invocation published"
-else
-  die "cannot install: moving '$extractedDir' to '$mavenDistHome' failed"
-fi
+publish_distribution
 
 cleanup_staging
 trap - HUP INT TERM EXIT
+trace_off
 exec_maven "$@"
-

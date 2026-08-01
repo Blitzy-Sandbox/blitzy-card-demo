@@ -40,21 +40,16 @@ import jakarta.persistence.Table;
 
 import com.cardemo.model.key.DisclosureGroupId;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 /**
  * One row of the {@code DISCGRP} disclosure group reference file: the interest rate that applies to a given
  * account group, transaction type and transaction category.
  *
- * <h2>What it does</h2>
- * <p>This is a pure data holder, and deliberately nothing more. It carries the composite key of
- * {@code DIS-GROUP-RECORD} plus the single payload field {@code DIS-INT-RATE}, mapping the VSAM KSDS cluster
- * {@code AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS} - catalogued at {@code app/catlg/LISTCAT.txt:L894} - onto the
- * relational table {@code disclosure_group}. It holds no behaviour: the rate lookup, the fallback to the
- * {@code DEFAULT} account group and the monthly interest arithmetic all live in the interest calculation batch
- * layer, exactly where the source puts them. See "Deliberate omissions" below for why that separation is
- * enforced rather than merely preferred.</p>
- * <p>The sole consumer in the legacy corpus is {@code app/cbl/CBACT04C.cbl}, the interest calculator, which
- * copies this layout and reads the file through its rate lookup paragraph at
- * {@code app/cbl/CBACT04C.cbl:L415-L440}.</p>
+ * <p>{@code DIS-INT-RATE} is {@code PIC S9(04)V99}, so the column is {@code NUMERIC(6,2)} — the narrowest of
+ * the three decimal tiers in this package, which must never be collapsed into one. It is carried as
+ * {@link java.math.BigDecimal}; no approximate type appears on any rate or monetary path.
  *
  * <h2>Source field contract, reproduced exactly</h2>
  * <p>From {@code app/cpy/CVTRA02Y.cpy}, whose header comment at {@code :L2} reads
@@ -161,8 +156,10 @@ import com.cardemo.model.key.DisclosureGroupId;
  * load-bearing member of the domain, and the seed fixture's default-group rows include zero-rate combinations.
  * Accordingly this entity declares no Bean Validation constraint asserting positivity or a minimum of one, and
  * treats zero as present rather than missing: a zero rate must load, round-trip and persist unchanged. What is
- * rejected is {@code null}, and only {@code null}, because the source field is fixed-width and always
- * carries a value.</p>
+ * rejected is {@code null}, because the source field is fixed-width and always carries a value, together
+ * with a scale above the two decimal positions {@code V99} declares and a magnitude beyond what four signed
+ * integer digits can hold - neither of which the source record can represent, and the first of which
+ * PostgreSQL would otherwise round half away from zero rather than refuse.</p>
  * <p>The picture is signed, {@code S9(04)V99}, so a negative rate is inside the source domain. No
  * non-negativity constraint is declared and no magnitude normalisation is applied anywhere: the sign the source
  * presents is preserved verbatim.</p>
@@ -226,10 +223,14 @@ import com.cardemo.model.key.DisclosureGroupId;
  * generated from these annotations: a mismatch in column name, SQL type, precision, scale or nullability fails
  * application-context startup instead of surfacing later as corrupt data. There is no default value for the
  * rate; the column is non-nullable and the value always comes from source data or from a caller.</p>
- * <p><strong>Not available.</strong> {@code src/main/resources/db/migration/} does not exist at the time of
- * writing, so {@code V1__create_schema.sql} is <strong>Not available</strong> and could not be reconciled
- * against. The field contract documented above is therefore the normative column contract, and {@code V1} must
- * converge on it. What is needed, precisely:</p>
+ * <p><strong>{@code V1__create_schema.sql} now exists and has been reconciled against.</strong> An earlier
+ * revision of this paragraph recorded the migration directory as absent; that claim is withdrawn. {@code V1}
+ * declares the {@code disclosure_group} table, and its agreement with the field contract
+ * documented above — including the uncommon {@code NUMERIC(6,2)} rate precision that follows from
+ * {@code DIS-INT-RATE PIC S9(04)V99} — is asserted mechanically by {@code SchemaStructureTest} against
+ * {@code app/cpy/CVTRA02Y.cpy}, not by inspection. The field contract remains the normative column
+ * contract, so any future divergence is resolved by changing {@code V1}. The shape it declares is exactly
+ * this, and {@code V2__create_indexes.sql} remains <strong>planned</strong> and absent:</p>
  * <pre>
  * table disclosure_group
  *   acct_group_id  CHAR(10)      NOT NULL   -- part of PK; mapping owned by DisclosureGroupId
@@ -239,7 +240,8 @@ import com.cardemo.model.key.DisclosureGroupId;
  *   PRIMARY KEY (acct_group_id, tran_type_cd, tran_cat_cd)   -- in this exact COBOL field order
  * </pre>
  * <p>{@code CHAR(10)}, not {@code VARCHAR(10)}, on the group id, so the space-padded default group matches, as
- * argued above. No version column. No index beyond the primary key. Seeded by {@code V3__seed_data.sql} from
+ * argued above. No version column. No index beyond the primary key. To be seeded by {@code V3__seed_data.sql}
+ * (planned; absent at this commit, so no row is loaded yet) from
  * {@code app/data/ASCII/discgrp.txt} - 51 rows of 50 bytes, of which 17 carry the default group id - with
  * position-aware zoned-decimal overpunch decoding driven by the picture clause: the trailing {@code &#123;} in
  * {@code 00150&#123;} denotes {@code +0}, so that row's rate is {@code +15.00}, not {@code 1500}. Across the
@@ -306,29 +308,69 @@ import com.cardemo.model.key.DisclosureGroupId;
  * assembled anywhere in this class, so no injection surface exists here.</p>
  *
  * <h2>How to build and test</h2>
- * <p>{@code mvn -B clean compile} compiles this class under {@code --release 25} with {@code -Xlint:all} and
+ * <p>{@code ./mvnw -B clean compile} compiles this class under {@code --release 25} with {@code -Xlint:all} and
  * {@code -Werror}, so any warning at all is a build failure; that is why the all-arguments constructor assigns
  * fields directly instead of calling its own setters, which would leak a partially constructed reference from a
- * class the persistence provider must be able to subclass. {@code mvn -B clean test} runs the unit suite and
- * {@code mvn -B clean verify} additionally enforces the JaCoCo line-coverage floor. Unit coverage for this
+ * class the persistence provider must be able to subclass. {@code ./mvnw -B clean test} runs the unit suite and
+ * {@code ./mvnw -B clean verify} additionally enforces the JaCoCo line-coverage floor. Unit coverage for this
  * entity belongs in {@code src/test/java/com/cardemo/unit/model} and should assert the 50-byte record
  * arithmetic, the 16-byte composite key in copybook order, {@code precision = 6} with {@code scale = 2} on the
  * rate, that a zero rate round-trips, that {@code +15.00} decoded from fixture row {@code :L18} round-trips,
  * and that no key column is restated or overridden here.</p>
  *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
+ * JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. This row is
+ * interest rate reference data: it carries no credential, no personal data and no customer figure, so
+ * unlike {@link Card} or {@link Customer} it is not what the barrier was introduced to protect. It is
+ * applied here anyway, and deliberately without exception, because a barrier that covers every entity in
+ * the package is checkable by inspection, whereas one applied only where a reviewer judged it necessary
+ * has to be re-judged every time an entity is added or a column is widened - and a rate table is exactly
+ * the kind of apparently harmless type that later acquires a column worth protecting. Persistence is
+ * unaffected: Hibernate reads and writes the annotated fields reflectively and never consults Jackson
+ * visibility.</p>
+ *
  * @see DisclosureGroupId
  */
 @Entity
 @Table(name = "disclosure_group")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class DisclosureGroup {
+
+    /**
+     * Decimal positions declared by the {@code V99} of {@code DIS-INT-RATE PIC S9(04)V99} at
+     * {@code app/cpy/CVTRA02Y.cpy:L9}: exactly two.
+     */
+    private static final int INTEREST_RATE_SCALE = 2;
+
+    /** Integer digit count of {@code DIS-INT-RATE PIC S9(04)V99}: four. */
+    private static final int INTEREST_RATE_INTEGER_DIGITS = 4;
+
+    /**
+     * Total precision of column {@code dis_int_rate}, {@code NUMERIC(6,2)}: the four integer digits plus the
+     * two decimal positions the picture clause declares.
+     */
+    private static final int INTEREST_RATE_PRECISION = INTEREST_RATE_INTEGER_DIGITS + INTEREST_RATE_SCALE;
+
+    /** Inclusive upper bound of {@code DIS-INT-RATE}: the largest magnitude {@code S9(04)V99} can hold. */
+    private static final BigDecimal MAX_INTEREST_RATE = new BigDecimal("9999.99");
+
+    /**
+     * Inclusive lower bound of {@code DIS-INT-RATE}. The picture clause carries an {@code S}, so the full
+     * negative range is representable and is deliberately admitted.
+     */
+    private static final BigDecimal MIN_INTEREST_RATE = MAX_INTEREST_RATE.negate();
 
     /**
      * The composite primary key: {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}, sixteen bytes made
      * up of the account group id, the transaction type code and the transaction category code in that order.
-     *
-     * <p>Declared as an embedded id, which is the entity's <em>only</em> identity mechanism. All three key
-     * column mappings are owned by {@link DisclosureGroupId} and are deliberately not restated, overridden or
-     * shadowed here; see the Blocker section on the class documentation.</p>
      */
     @EmbeddedId
     private DisclosureGroupId id;
@@ -336,25 +378,13 @@ public class DisclosureGroup {
     /**
      * {@code DIS-INT-RATE}, {@code PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9}, occupying bytes 17 to 22
      * of the 50-byte record: the annual interest rate for this group, type and category combination.
-     *
-     * <p>The only non-key column on this entity. {@code precision = 6, scale = 2} reproduces the picture
-     * exactly - four integer digits and two decimals - and is the narrowest of the package's three decimal
-     * tiers. A {@link BigDecimal} rather than an approximate binary primitive, so the two decimals are exact.
-     * Zero is a legitimate value and the picture is signed, so no positivity, minimum or magnitude constraint
-     * is declared.</p>
      */
-    @Column(name = "dis_int_rate", nullable = false, precision = 6, scale = 2)
+    @Column(name = "dis_int_rate", nullable = false, precision = INTEREST_RATE_PRECISION,
+            scale = INTEREST_RATE_SCALE)
     private BigDecimal interestRate;
 
     /**
      * Creates an empty disclosure group row.
-     *
-     * <p>Required by Jakarta Persistence, which instantiates an entity through its no-argument constructor and
-     * then populates the fields directly, bypassing the validating constructor below. It is {@code protected}
-     * rather than {@code public} so that the provider and any subclass can reach it while application code
-     * cannot casually create an instance with a {@code null} key and a {@code null} rate. Both fields are
-     * {@code null} immediately after this call, and such an instance is not a usable row until it has been
-     * populated. Application code should prefer {@link #DisclosureGroup(DisclosureGroupId, BigDecimal)}.</p>
      */
     protected DisclosureGroup() {
         // Intentionally empty: Jakarta Persistence populates the fields directly after instantiation.
@@ -363,24 +393,13 @@ public class DisclosureGroup {
     /**
      * Creates a disclosure group row from its composite key and its interest rate.
      *
-     * <p>Both arguments are stored verbatim. The rate is neither rescaled nor rounded nor normalised in sign,
-     * so the instance stays a faithful image of the source record; rescaling belongs to whichever layer emits
-     * fixed-width output. The constructor has no side effects and touches no shared state.</p>
-     *
-     * @param id           the composite key, {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}; must be
-     *                     non-null, and all three of its components must be populated for the row to be
-     *                     addressable
-     * @param interestRate {@code DIS-INT-RATE}, {@code PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9}; must
-     *                     be non-null, and may legitimately be zero or negative, as the signed picture allows
-     * @throws IllegalArgumentException if {@code id} or {@code interestRate} is {@code null}; the message names
-     *                                  both the Java field and its COBOL counterpart so the failure is
-     *                                  traceable straight back to the copybook
+     * @param id the composite key, {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}.
+     * @param interestRate {@code DIS-INT-RATE}, {@code PIC S9(04)V99} at {@code app/cpy/CVTRA02Y.cpy:L9}.
+     * @throws IllegalArgumentException if {@code id} or {@code interestRate} is {@code null}.
      */
     public DisclosureGroup(final DisclosureGroupId id, final BigDecimal interestRate) {
-        // Direct field assignment, never setter invocation: calling an overridable method from a constructor of
-        // a non-final class would leak a partially constructed reference, which the zero-warning compile
-        // rejects outright. The class cannot be final because the persistence provider subclasses it to build
-        // lazy-loading proxies.
+        // Direct field assignment, never a setter: the provider subclasses this class for lazy-loading
+        // proxies, so calling an overridable method here would leak a partially constructed reference.
         this.id = requireId(id);
         this.interestRate = requireInterestRate(interestRate);
     }
@@ -388,12 +407,8 @@ public class DisclosureGroup {
     /**
      * Returns the composite primary key, {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}.
      *
-     * <p>The key is returned whole. There is deliberately no accessor here for the account group id, the
-     * transaction type code or the transaction category code individually: those belong to
-     * {@link DisclosureGroupId}, and duplicating its surface would let the two definitions drift apart.</p>
-     *
      * @return the sixteen-byte composite key, or {@code null} on an instance created by the no-argument
-     *         constructor and not yet populated
+     * constructor and not yet populated
      */
     public DisclosureGroupId getId() {
         return id;
@@ -402,14 +417,9 @@ public class DisclosureGroup {
     /**
      * Replaces the composite primary key.
      *
-     * <p>Present because Jakarta Persistence expects a mutable property pair, and because a row being built
-     * before it is persisted legitimately needs its key set. Reassigning the key of an <em>already managed</em>
-     * instance changes that instance's identity and is not a supported operation: persist a new row instead.</p>
-     *
-     * @param id the composite key to apply, {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}; must be
-     *           non-null
+     * @param id the composite key to apply, {@code DIS-GROUP-KEY} at {@code app/cpy/CVTRA02Y.cpy:L5}.
      * @throws IllegalArgumentException if {@code id} is {@code null}, since a row without a key cannot be
-     *                                  addressed
+     * addressed
      */
     public void setId(final DisclosureGroupId id) {
         this.id = requireId(id);
@@ -419,13 +429,8 @@ public class DisclosureGroup {
      * Returns the interest rate, {@code DIS-INT-RATE}, {@code PIC S9(04)V99} at
      * {@code app/cpy/CVTRA02Y.cpy:L9}.
      *
-     * <p>Returned exactly as stored, at whatever scale it was loaded or supplied with. Compare the result with
-     * {@code compareTo} rather than {@code equals}: a rate of {@code 15.0} and one of {@code 15.00} are the
-     * same number at different scales, and only {@code compareTo} says so. A returned zero means the rate is
-     * genuinely zero, which the source treats as "charge no interest" rather than as a missing value.</p>
-     *
      * @return the annual interest rate as an exact decimal, or {@code null} on an instance created by the
-     *         no-argument constructor and not yet populated
+     * no-argument constructor and not yet populated
      */
     public BigDecimal getInterestRate() {
         return interestRate;
@@ -434,13 +439,7 @@ public class DisclosureGroup {
     /**
      * Replaces the interest rate.
      *
-     * <p>The value is stored verbatim: it is not rescaled to two decimals, not rounded and not normalised in
-     * sign. Callers that need a particular scale should apply {@code RoundingMode.HALF_EVEN} themselves before
-     * calling, so that the rounding decision stays visible at the point it is taken rather than being hidden
-     * inside a mutator.</p>
-     *
-     * @param interestRate the rate to apply, {@code DIS-INT-RATE}, {@code PIC S9(04)V99}; must be non-null, and
-     *                     may legitimately be zero or negative
+     * @param interestRate the rate to apply, {@code DIS-INT-RATE}, {@code PIC S9(04)V99}.
      * @throws IllegalArgumentException if {@code interestRate} is {@code null}
      */
     public void setInterestRate(final BigDecimal interestRate) {
@@ -449,13 +448,6 @@ public class DisclosureGroup {
 
     /**
      * Compares this row with another for entity identity, on the composite key alone.
-     *
-     * <p>Two rows are equal when they denote the same key, irrespective of rate, which is the standard contract
-     * for a persistent entity: a row loaded twice must compare equal even if one copy has since been modified,
-     * and including the mutable rate would break that. {@link DisclosureGroupId} supplies the value-based
-     * comparison over the three components, so this method delegates rather than reimplementing it. An
-     * instance whose key is still {@code null} is equal only to itself, which keeps unsaved instances distinct
-     * in a collection.</p>
      *
      * @param other the object to compare with, possibly {@code null} or of a foreign type
      * @return {@code true} if {@code other} is a {@code DisclosureGroup} with an equal, non-null key
@@ -474,12 +466,6 @@ public class DisclosureGroup {
     /**
      * Returns a hash code derived from the composite key alone, consistent with {@link #equals(Object)}.
      *
-     * <p>Derived from the key and never from the rate, so that a row's hash code cannot change while it sits in
-     * a hash-based collection. Correct hashing is not optional for an entity: without it the persistence
-     * context's identity map fails to recognise a managed instance, and lookup, merge and dirty checking then
-     * misbehave as intermittent data errors rather than as clean failures. Nothing may rely on hash iteration
-     * order, because it is key order - not hash order - that reproduces the legacy browse semantics.</p>
-     *
      * @return a hash code over the composite key, or the hash of {@code null} on an unpopulated instance
      */
     @Override
@@ -490,13 +476,6 @@ public class DisclosureGroup {
     /**
      * Returns a diagnostic rendering of the whole row: the composite key and the interest rate.
      *
-     * <p>Rendering every attribute is safe and intentional here, because none of them is secret or personal -
-     * a group id, a type code, a category code and a rate. This is the deliberate opposite of {@code Card},
-     * {@code Customer} and {@code UserSecurity}, whose renderings are restricted because they carry card
-     * numbers, personal data and password hashes. Intended for logs and error messages only: it performs no
-     * locale-dependent formatting, so it is stable on every host, and it is not a record or wire format, so
-     * callers must never parse it.</p>
-     *
      * @return a stable, locale-independent description of this row
      */
     @Override
@@ -506,10 +485,6 @@ public class DisclosureGroup {
 
     /**
      * Validates the composite key.
-     *
-     * <p>Declared {@code private static} deliberately: a constructor of a class that cannot be {@code final}
-     * must not call an overridable method, and a static helper additionally keeps the check independent of
-     * instance state. Shared by the constructor and the setter so both enforce one rule.</p>
      *
      * @param value the candidate key, which may be {@code null}
      * @return {@code value} unchanged when it satisfies the contract
@@ -527,20 +502,30 @@ public class DisclosureGroup {
     /**
      * Validates the interest rate.
      *
-     * <p>Rejects only {@code null}, because the source field is fixed-width and always carries a value. Zero
-     * and negative rates are explicitly <em>not</em> rejected: zero is the source's "charge no interest" case
-     * at {@code app/cbl/CBACT04C.cbl:L214}, and the picture {@code S9(04)V99} is signed. Declared
-     * {@code private static} for the same reason as {@link #requireId(DisclosureGroupId)}.</p>
-     *
      * @param value the candidate rate, which may be {@code null}
      * @return {@code value} unchanged when it satisfies the contract
-     * @throws IllegalArgumentException if {@code value} is {@code null}
+     * @throws IllegalArgumentException if {@code value} is {@code null}, carries more than two decimal
+     *                                  digits, or falls outside the range {@code S9(04)V99} can hold
      */
     private static BigDecimal requireInterestRate(final BigDecimal value) {
         if (value == null) {
             throw new IllegalArgumentException(
-                    "interestRate (DIS-INT-RATE) must not be null: it is a non-nullable NUMERIC(6,2) column of "
-                            + "table disclosure_group, derived from PIC S9(04)V99 at app/cpy/CVTRA02Y.cpy:L9");
+                    "interestRate (DIS-INT-RATE) must not be null: it is a non-nullable NUMERIC("
+                            + INTEREST_RATE_PRECISION + "," + INTEREST_RATE_SCALE + ") column of table "
+                            + "disclosure_group, derived from PIC S9(04)V99 at app/cpy/CVTRA02Y.cpy:L9");
+        }
+        if (value.scale() > INTEREST_RATE_SCALE) {
+            throw new IllegalArgumentException("interestRate (DIS-INT-RATE PIC S9(04)V99) must carry at most "
+                    + INTEREST_RATE_SCALE + " decimal digits but had a scale of " + value.scale()
+                    + "; rescale it explicitly with RoundingMode.HALF_EVEN rather than letting the NUMERIC("
+                    + INTEREST_RATE_PRECISION + "," + INTEREST_RATE_SCALE
+                    + ") column round it half away from zero");
+        }
+        if (value.compareTo(MIN_INTEREST_RATE) < 0 || value.compareTo(MAX_INTEREST_RATE) > 0) {
+            throw new IllegalArgumentException("interestRate (DIS-INT-RATE PIC S9(04)V99) must be between "
+                    + MIN_INTEREST_RATE.toPlainString() + " and " + MAX_INTEREST_RATE.toPlainString()
+                    + " inclusive, which is what " + INTEREST_RATE_INTEGER_DIGITS
+                    + " signed integer digits can hold, but was " + value.toPlainString());
         }
         return value;
     }

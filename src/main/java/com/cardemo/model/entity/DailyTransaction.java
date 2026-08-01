@@ -25,6 +25,9 @@
  */
 package com.cardemo.model.entity;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
@@ -35,23 +38,17 @@ import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * Staging row for one inbound daily transaction, replacing the physical
- * sequential dataset {@code AWS.M2.CARDDEMO.DALYTRAN.PS}.
+ * Staging row for one inbound daily transaction, replacing the physical sequential dataset
+ * {@code AWS.M2.CARDDEMO.DALYTRAN.PS}.
  *
- * <h2>What this component does</h2>
- * <p>This is a pure data holder. It carries one 350-byte {@code DALYTRAN-RECORD}
- * image, exactly as declared by {@code app/cpy/CVTRA06Y.cpy}, from the flat input
- * file into the relational store so the daily posting job can read, validate and
- * post it. It performs no business logic, opens no connection, emits no log
- * record and holds no state beyond its thirteen mapped columns.</p>
+ * <p>This is the only table in the model whose source is not a VSAM KSDS cluster: the dataset is catalogued as
+ * a {@code NONVSAM} entry and has no cluster, no record key and no alternate index. The 350-byte layout is
+ * {@code app/cpy/CVTRA06Y.cpy}, and the ASCII fixture that seeds it spells the word in full as
+ * {@code app/data/ASCII/dailytran.txt} even though the mainframe DD name and dataset are {@code DALYTRAN}.
  *
- * <p><strong>This table holds untrusted input.</strong> Its rows are unvalidated
- * file content: the card number, type code and category code a row carries may
- * not resolve to any master row at all. Discovering that is precisely the job of
- * the posting-job validation sequence, which assigns reject code 100 for an
- * invalid card number and 101 for a missing account
- * ({@code app/cbl/CBTRN02C.cbl}). The entity therefore accepts every well-formed
- * 350-byte record without judgement, and defers all judgement to that job.</p>
+ * <p>Its rows are untrusted input. The posting job reads them before validating them, so every field must load
+ * exactly as presented; no mutator here trims, normalises or rejects a value, and the amount keeps its sign
+ * because the fixture carries genuinely negative amounts that drive the cycle-debit branch.
  *
  * <h2>Provenance and physical facts</h2>
  * <p>Source of record: {@code app/cpy/CVTRA06Y.cpy} at anchor commit
@@ -84,7 +81,8 @@ import org.hibernate.type.SqlTypes;
  * <pre>
  *  #   COBOL field (CVTRA06Y.cpy)   PIC          Offsets    Java field          Column                    SQL type
  * --- ---------------------------- ------------ ---------- ------------------- ------------------------- --------------
- *  1   DALYTRAN-ID          :L5     X(16)          1-16     transactionId       dalytran_id               CHAR(16) PK
+ *  -   none - not a record field    none         none       ingestSequence      ingest_seq                NUMERIC(9) PK
+ *  1   DALYTRAN-ID          :L5     X(16)          1-16     transactionId       dalytran_id               CHAR(16)
  *  2   DALYTRAN-TYPE-CD     :L6     X(02)         17-18     typeCode            dalytran_type_cd          CHAR(2)
  *  3   DALYTRAN-CAT-CD      :L7     9(04)         19-22     categoryCode        dalytran_cat_cd           NUMERIC(4)
  *  4   DALYTRAN-SOURCE      :L8     X(10)         23-32     transactionSource   dalytran_source           CHAR(10)
@@ -117,6 +115,15 @@ import org.hibernate.type.SqlTypes;
  * fixture confirms the padding is inert: bytes 331-350 hold exactly one distinct
  * value across all 300 rows, twenty spaces.</p>
  *
+ * <p><strong>{@code ingest_seq} appears in the table above with no offsets and no
+ * PIC clause, and that is deliberate.</strong> It is the one column on this entity
+ * that is not record content: it occupies none of the 350 bytes, so it contributes
+ * zero to the width arithmetic below and the fixed-width reader and writer neither
+ * consume nor emit it. It is listed first because it is the identifier, and its
+ * blank offset cells are the marker that it is table metadata rather than a
+ * copybook field. Adding it to the byte budget would break the geometry; omitting
+ * it from this map altogether would hide the row's identity.</p>
+ *
  * <h2>Naming convention - deliberately mixed, not an oversight</h2>
  * <p>Two different conventions are applied on purpose, and the apparent
  * inconsistency is intentional:</p>
@@ -129,11 +136,93 @@ import org.hibernate.type.SqlTypes;
  *   <li>the <strong>column</strong> names follow the COBOL field names verbatim,
  *       {@code dalytran_*}, preserving the legacy abbreviation {@code DALYTRAN} -
  *       which is also the mainframe DD name - so that any column can be traced
- *       back to its copybook line by name alone.</li>
+ *       back to its copybook line by name alone;</li>
+ *   <li>the one <strong>synthetic</strong> column, {@code ingest_seq}, deliberately
+ *       does <em>not</em> carry the {@code dalytran_} prefix, precisely because it
+ *       has no copybook line to trace back to. The prefix is what separates the
+ *       thirteen record columns from the one metadata column, so a reader can tell
+ *       them apart by name alone. Naming it {@code dalytran_ingest_seq} would
+ *       assert a copybook field that does not exist.</li>
  * </ul>
  * <p>Readability is served by the Java-side name; traceability, which the
  * migration is contractually measured on, is served by the column name. Neither
  * convention is a substitute for the other, so both are kept.</p>
+ *
+ * <h2>Finding: BLOCKER - {@code DALYTRAN-ID} is not the identifier, and must never
+ * be made one</h2>
+ * <p>This is the single most consequential mapping decision on the class, and the
+ * intuitive reading of the copybook gets it wrong. {@code DALYTRAN-ID} at
+ * {@code :L5} is the first field of the record and looks exactly like the key of
+ * the master transaction record it feeds, so promoting it to {@code @Id} is the
+ * obvious move. It is also incorrect, because <strong>the dataset it stages has no
+ * key at all</strong>.</p>
+ *
+ * <p><strong>The corpus evidence is exhaustive and entirely negative.</strong>
+ * Exactly two programs open this file, {@code app/cbl/CBTRN01C.cbl} and
+ * {@code app/cbl/CBTRN02C.cbl}, and both declare it identically -
+ * {@code ORGANIZATION IS SEQUENTIAL} and {@code ACCESS MODE IS SEQUENTIAL} at
+ * {@code CBTRN02C.cbl:L30-L31} and {@code CBTRN01C.cbl:L30-L31}. Their whole verb
+ * inventory against it is three statements:</p>
+ * <ul>
+ *   <li>{@code OPEN INPUT} at {@code CBTRN02C.cbl:L238} and
+ *       {@code CBTRN01C.cbl:L254};</li>
+ *   <li>a bare {@code READ ... INTO} inside {@code 1000-DALYTRAN-GET-NEXT} at
+ *       {@code CBTRN02C.cbl:L346} and {@code CBTRN01C.cbl:L203}, whose only two
+ *       accepted file statuses are {@code '00'} continue and {@code '10'} end of
+ *       file, with anything else abending;</li>
+ *   <li>{@code CLOSE} at {@code CBTRN02C.cbl:L584} and
+ *       {@code CBTRN01C.cbl:L363}.</li>
+ * </ul>
+ * <p>There is no {@code STARTBR}, no keyed {@code READ}, no {@code READ ... KEY IS}
+ * and no {@code INVALID KEY} path against this file anywhere in {@code app/cbl},
+ * because a physical sequential dataset has no key to browse. The catalogue agrees:
+ * there is no cluster block for it and no IDCAMS {@code KEYS(...)} operand for it in
+ * any job - {@code app/jcl/POSTTRAN.jcl:L30-L31} allocates it with
+ * {@code DISP=SHR} and a dataset name and nothing else. A flat file may therefore
+ * legitimately carry the same transaction identifier twice, and the source posts
+ * both records without complaint.</p>
+ *
+ * <p><strong>Why this is a Blocker rather than a nuisance: the shipped fixture
+ * cannot detect the error.</strong> {@code app/data/ASCII/dailytran.txt} is both
+ * unique on that field <em>and</em> already ascending by it. A unique key over
+ * {@code dalytran_id} therefore passes every test built from the fixture, and every
+ * ordering assertion that sorts by identifier also passes, and the invented
+ * constraint then rejects real input in production. The fixture masks the defect
+ * completely, which is why the correct treatment is stated here rather than left to
+ * be inferred from the copybook.</p>
+ *
+ * <p><strong>The identity is therefore an ingestion sequence.</strong> For a
+ * sequential dataset the record's position in the file <em>is</em> its identity, and
+ * the source already counts exactly that: {@code WS-TRANSACTION-COUNT}, declared
+ * {@code PIC 9(09) VALUE 0} at {@code app/cbl/CBTRN02C.cbl:L185}, incremented once
+ * per accepted read by {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code :L206}, and
+ * reported at {@code :L227}. {@code ingestSequence} is that ordinal: one-based,
+ * dense, in read order. Its {@code NUMERIC(9)} column is not a guess - it is the
+ * declared precision of the counter being modelled, so the domain is 1 through
+ * 999,999,999. That domain is documented rather than constrained: the first
+ * migration's check-constraint budget is exactly five and this table contributes
+ * none of them, so a sixth is not added to express a range the loader controls
+ * anyway.</p>
+ *
+ * <p><strong>The ordinal is assigned by the loader, never by the database.</strong>
+ * There is no generated-value strategy, no identity column and no sequence, here or
+ * anywhere in the schema. Three reasons, in order of weight. First, determinism:
+ * re-staging the same input file must yield the same ordinals, which a
+ * database-side allocator cannot promise because it keeps counting across a
+ * truncate-and-reload. Second, parity: the ordinal has to equal the source's own
+ * read counter for the two to be comparable at all, and only the reader knows the
+ * read position. Third, load shape: staged rows arrive through a batched JDBC
+ * update, and a database-side identity forces a per-row round trip to retrieve the
+ * generated value. This is also why the all-columns constructor takes the ordinal
+ * as its first argument - a staging row cannot be constructed without one.</p>
+ *
+ * <p><strong>Consequences a caller must respect.</strong> {@code transactionId}
+ * remains an ordinary, non-unique, fixed-width sixteen-character column and no
+ * uniqueness may be reintroduced over it in any artefact. Ordering a staged read by
+ * {@code ingestSequence} reproduces the flat-file read order exactly; ordering it by
+ * {@code transactionId} does not, and would silently reorder real input. And
+ * {@code equals} and {@code hashCode} are keyed on the ordinal, so two staged rows
+ * that happen to share a transaction identifier are correctly unequal.</p>
  *
  * <h2>Finding: BLOCKER - the two 26-character TS fields are text, never a
  * temporal type, and the blank value must load</h2>
@@ -154,9 +243,11 @@ import org.hibernate.type.SqlTypes;
  *       digits. The batch producer writes a different shape entirely: the format
  *       comment at {@code app/cbl/CBTRN02C.cbl:L149} reads
  *       {@code EEEE-MM-DD-UU.MM.SS.HH0000}, that is a dash before the hour, dots
- *       between the time parts, and millisecond precision followed by four
- *       literal zero characters, which {@code :L700-L701} confirm by moving the
- *       hundredths into place and then the literal {@code '0000'}. One
+ *       between the time parts, and <strong>hundredths of a second</strong>
+ *       precision followed by four literal zero characters, which
+ *       {@code :L700-L701} confirm by moving the hundredths into place and then
+ *       the literal {@code '0000'}. The fractional field is two digits wide, not
+ *       three: {@code DB2-MIL} is {@code PIC 9(002)} at {@code :L173}. One
  *       normalising parse would silently rewrite one of these into the other.</li>
  *   <li><strong>One assignment path is pure text pass-through.</strong>
  *       {@code app/cbl/CBTRN02C.cbl:L436} moves this record's field straight
@@ -242,7 +333,7 @@ import org.hibernate.type.SqlTypes;
  * monetary values with {@code compareTo} and never with {@code equals}, because
  * {@code equals} on this type is scale-sensitive: {@code 2.0} and {@code 2.00}
  * are unequal under {@code equals} yet compare as identical. This entity's own
- * {@code equals} is keyed on the identifier alone, so it is unaffected.</p>
+ * {@code equals} is keyed on the ingestion ordinal alone, so it is unaffected.</p>
  *
  * <h2>Finding: HIGH - the card number is never rendered</h2>
  * <p>{@code toString} deliberately omits the card number, and no alternative
@@ -255,11 +346,16 @@ import org.hibernate.type.SqlTypes;
  * <h2>Finding: MEDIUM - no shared supertype with the master transaction entity,
  * despite the near-identical shape</h2>
  * <p>The master transaction entity, derived from {@code app/cpy/CVTRA05Y.cpy},
- * has the same thirteen fields in the same order at the same widths, differing
- * only in the COBOL field-name prefix. Extracting a mapped superclass, an
+ * carries the same thirteen record fields in the same order at the same widths,
+ * differing only in the COBOL field-name prefix. Extracting a mapped superclass, an
  * abstract base entity, a shared interface or a mapper class is nonetheless
  * rejected, and this decision is recorded here so it is not "tidied up" later.</p>
- * <p>The two tables are not the same kind of thing. This one is a
+ * <p>The two tables are not the same kind of thing, and their identities are not
+ * even the same shape. The master table is keyed on {@code TRAN-ID}, the natural
+ * sixteen-character key of a catalogued VSAM cluster; this table is keyed on an
+ * ingestion ordinal, because its dataset is unkeyed. So the two entities agree on
+ * thirteen columns and disagree on the fourteenth, which is the identifier - the one
+ * column a supertype would most want to own. Beyond that, this one is a
  * <em>staging</em> table: rows arrive from an untrusted flat file, may reference
  * master rows that do not exist, are consumed once by the posting job, and carry
  * no optimistic-locking version column. The master table is a system of record:
@@ -285,15 +381,20 @@ import org.hibernate.type.SqlTypes;
  *       staging table. A second benefit is that, with no association to walk,
  *       there is no lazy-versus-eager choice to get wrong and no N-plus-one query
  *       pattern reachable from here.</li>
- *   <li><strong>No generated-identifier strategy and no database sequence.</strong>
- *       Staging identifiers arrive from the input file verbatim, and
+ *   <li><strong>No generated-identifier strategy and no database sequence,
+ *       including for the ordinal that is the identifier.</strong> The ingestion
+ *       ordinal is assigned by the loader in read order, so no generated-value
+ *       annotation and no sequence generator appears on this class - see the
+ *       identity finding above for the three reasons. The business identifier is
+ *       equally never generated: it arrives from the input file verbatim, and
  *       {@code app/cbl/CBTRN02C.cbl:L425} moves the record's own identifier
- *       straight into the master record. Generating one would destroy the
+ *       straight into the master record, so generating one would destroy the
  *       correspondence between input file and row.</li>
  *   <li><strong>Every column is NOT NULL, and every text column accepts a
  *       blank-but-non-null value.</strong> A fixed-width record has no concept of
  *       absence: an unpopulated field is spaces or zeros, never nothing. No
- *       emptiness constraint is declared anywhere.</li>
+ *       emptiness constraint is declared anywhere. The ordinal is {@code NOT NULL}
+ *       for the stronger reason that it is the primary key.</li>
  *   <li><strong>The JDK serialization marker interface is deliberately not
  *       implemented.</strong> Insecure deserialization is a known risky pattern,
  *       and this type holds untrusted content, so no serialization channel into
@@ -318,12 +419,16 @@ import org.hibernate.type.SqlTypes;
  * </ul>
  *
  * <h2>Error modes</h2>
- * <p>This entity throws nothing of its own. Accessors are plain field access and
- * cannot fail. Where an argument check is ever warranted it raises
- * {@code java.lang.IllegalArgumentException} naming the offending field; the
- * project exception hierarchy is deliberately not reachable from this package,
- * because a data holder that depended on it would invert the intended layering.
- * The realistic failure modes are therefore external to the class:</p>
+ * <p>Accessors are plain field access and cannot fail. The constructor and every
+ * setter refuse a value the 350-byte record layout cannot have produced - a
+ * {@code null}, a field wider than its picture clause, a code outside its
+ * unsigned range, or an amount outside {@code S9(09)V99} - and report it with
+ * {@code java.lang.IllegalArgumentException} naming the offending property and
+ * that field's picture clause. Nothing else is refused, so no business rule and
+ * no reject code is pre-empted here. The project exception hierarchy is
+ * deliberately not reachable from this package, because a data holder that
+ * depended on it would invert the intended layering. The remaining failure modes
+ * are external to the class:</p>
  * <ul>
  *   <li><em>Application context fails to start</em> with a wrong-column-type or
  *       missing-column report - the schema does not match the contract below.
@@ -337,15 +442,20 @@ import org.hibernate.type.SqlTypes;
  * </ul>
  *
  * <h2>Build, test and troubleshooting</h2>
- * <p>Build with {@code mvn -B clean compile}; run the unit suite with
- * {@code mvn -B clean test}. Compilation is strict - all lint categories are
- * enabled and warnings are errors - so an unused import or an unnecessary cast
- * fails the build rather than being reported. Tests covering this entity live in
- * {@code src/test/java/com/cardemo/unit/model} and assert the 350-byte geometry
+ * <p>Build with {@code ./mvnw -B clean compile}; run the unit suite with
+ * {@code ./mvnw -B clean test}. Compilation is strict - every lint category
+ * {@code javac} 25 publishes is enabled and warnings are errors - so an unnecessary
+ * cast or a deprecated call fails the build rather than being reported. An unused
+ * import does not: {@code javac} 25.0.3 publishes no lint key for one, so that
+ * prohibition is review-enforced. Tests covering this entity belong in
+ * {@code src/test/java/com/cardemo/unit/model} and are to assert the 350-byte geometry
  * and offset map, that the two TS fields are declared as text of length 26, that
  * a blank 26-space process TS persists and reloads unchanged, that the amount is
  * eleven digits at scale two, and that a negative amount round-trips with its
- * sign intact. Repository and batch tiers additionally exercise the round trip
+ * sign intact. <strong>Not available, measured 1 August 2026:</strong> no
+ * {@code DailyTransactionTest} exists and neither the repository nor the batch tier
+ * exists, so that whole list is the coverage owed rather than coverage that runs.
+ * Repository and batch tiers are additionally to exercise the round trip
  * against a containerised PostgreSQL 16 instance; a reachable container runtime
  * is a prerequisite for those, and their absence is a prerequisite failure rather
  * than a defect in this class.</p>
@@ -363,22 +473,26 @@ import org.hibernate.type.SqlTypes;
  * scale, and SQL type explicitly, precisely so that no provider default can
  * silently differ from the copybook.</p>
  *
- * <h2>Not available - the schema this entity must agree with</h2>
- * <p><strong>Not available:</strong> {@code V1__create_schema.sql} did not exist
- * when this entity was authored. The directory
- * {@code src/main/resources/db/migration} was verified to have no children at
- * that point, so there was no schema definition to conform to and none to check
- * this mapping against. Because {@code spring.jpa.hibernate.ddl-auto: validate}
- * is set in every profile, any mismatch of column name, SQL type, precision,
- * scale or nullability fails application-context startup outright rather than
- * degrading quietly - so the two artefacts must agree exactly.</p>
+ * <h2>Schema reconciliation, and what is still not available</h2>
+ * <p><strong>Measured 1 August 2026:</strong> {@code V1__create_schema.sql} is
+ * <strong>present</strong> and declares
+ * {@code CREATE TABLE daily_transaction} with 13 columns whose names
+ * are identical, as a set, to the 13 {@code @Column(name = ...)} declarations in
+ * this class, verified by direct comparison. Because
+ * {@code spring.jpa.hibernate.ddl-auto: validate} is the mandated setting, any
+ * mismatch of column name, SQL type, precision, scale or nullability would fail
+ * application-context startup outright rather than degrading quietly - so the two
+ * artefacts must agree exactly. What remains <strong>not available</strong> is
+ * {@code V2__create_indexes.sql}, {@code V3__seed_data.sql} and all four
+ * {@code application*.yml} profiles, so that {@code validate} behaviour is
+ * mandated rather than observed.</p>
  *
- * <p><strong>The field table above is therefore the normative column contract,
- * and the migration must converge upon it.</strong> What is needed is table
- * {@code daily_transaction} with:</p>
+ * <p>What that migration declares for table {@code daily_transaction}, and what
+ * this mapping asserts, is:</p>
  *
  * <pre>
- * dalytran_id             CHAR(16)        PRIMARY KEY
+ * ingest_seq              NUMERIC(9)      PRIMARY KEY   &lt;- no copybook line
+ * dalytran_id             CHAR(16)        NOT NULL      &lt;- NOT unique
  * dalytran_type_cd        CHAR(2)         NOT NULL
  * dalytran_cat_cd         NUMERIC(4)      NOT NULL
  * dalytran_source         CHAR(10)        NOT NULL
@@ -393,10 +507,14 @@ import org.hibernate.type.SqlTypes;
  * dalytran_proc_ts        CHAR(26)        NOT NULL
  * </pre>
  *
- * <p><strong>No version column. No foreign key.</strong> The table is seeded from
+ * <p><strong>No version column. No foreign key. No unique constraint and no unique
+ * index over {@code dalytran_id}</strong>, in this migration or any later one - see
+ * the identity finding above for why that would be a fabricated constraint the
+ * shipped fixture cannot detect. The table is seeded from
  * {@code app/data/ASCII/dailytran.txt} by {@code V3__seed_data.sql}, using
  * position-aware zoned-decimal overpunch decoding driven by the PIC clauses and
- * the decode table given earlier. Position-awareness is not optional: a naive
+ * the decode table given earlier, and assigning {@code ingest_seq} as the
+ * one-based row ordinal in file order. Position-awareness is not optional: a naive
  * text load produces wrong values, and the very same letters occur legitimately
  * inside merchant-name text, so the decoder must key on the field position
  * established by the offset map rather than on character appearance.</p>
@@ -407,118 +525,261 @@ import org.hibernate.type.SqlTypes;
  * check constraint. The batch framework's own bookkeeping tables come from the
  * framework's supplied script - never a fourth migration, and never additional
  * tables smuggled into the first one.</p>
+ *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by
+ * Jackson. {@link JsonIgnoreType} removes any property whose declared type is this class
+ * from an enclosing object's JSON, and {@link JsonAutoDetect} with every visibility set
+ * to {@code NONE} switches off bean introspection entirely, so no getter, no setter, no
+ * field and no creator is discoverable. An entity is a bean with public accessors, so
+ * without the barrier the default behaviour of returning this type from a controller, or
+ * holding a field of it on a response object, is to publish the card number alongside the
+ * amount and the full merchant detail. That risk is not theoretical on a staging table:
+ * this is the entity a batch diagnostic endpoint would most plausibly be asked to expose.
+ * With the barrier in place Jackson finds no properties and its default
+ * {@code FAIL_ON_EMPTY_BEANS} setting turns the mistake into a loud failure rather than a
+ * silent disclosure. Nothing legitimate is lost, because this staging type has no outbound
+ * representation at all - it is written by the reader and consumed by the posting
+ * processor - and persistence is unaffected because Hibernate reads and writes the
+ * annotated fields reflectively and never consults Jackson visibility.</p>
  */
 @Entity
 @Table(name = "daily_transaction")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class DailyTransaction {
+
+    /**
+     * Character widths of the ten alphanumeric fields of {@code app/cpy/CVTRA06Y.cpy}, in record order,
+     * together with the numeric domains of the three others. The copybook is the authority for every one of
+     * these numbers, and the fixed-width reader slices exactly these byte counts out of each 350-byte
+     * record, which is why a value that violates one of them cannot have come from the input file at all.
+     */
+    private static final int TRANSACTION_ID_WIDTH = 16;
+
+    /** Width of {@code DALYTRAN-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA06Y.cpy:L6}. */
+    private static final int TYPE_CODE_WIDTH = 2;
+
+    /** Width of {@code DALYTRAN-SOURCE PIC X(10)} at {@code app/cpy/CVTRA06Y.cpy:L8}. */
+    private static final int TRANSACTION_SOURCE_WIDTH = 10;
+
+    /** Width of {@code DALYTRAN-DESC PIC X(100)} at {@code app/cpy/CVTRA06Y.cpy:L9}. */
+    private static final int DESCRIPTION_WIDTH = 100;
+
+    /** Width of {@code DALYTRAN-MERCHANT-NAME PIC X(50)} at {@code app/cpy/CVTRA06Y.cpy:L12}. */
+    private static final int MERCHANT_NAME_WIDTH = 50;
+
+    /** Width of {@code DALYTRAN-MERCHANT-CITY PIC X(50)} at {@code app/cpy/CVTRA06Y.cpy:L13}. */
+    private static final int MERCHANT_CITY_WIDTH = 50;
+
+    /** Width of {@code DALYTRAN-MERCHANT-ZIP PIC X(10)} at {@code app/cpy/CVTRA06Y.cpy:L14}. */
+    private static final int MERCHANT_ZIP_WIDTH = 10;
+
+    /** Width of {@code DALYTRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA06Y.cpy:L15}. */
+    private static final int CARD_NUMBER_WIDTH = 16;
+
+    /** Width of {@code DALYTRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA06Y.cpy:L16}. */
+    private static final int ORIG_TS_WIDTH = 26;
+
+    /** Width of {@code DALYTRAN-PROC-TS PIC X(26)} at {@code app/cpy/CVTRA06Y.cpy:L17}. */
+    private static final int PROC_TS_WIDTH = 26;
+
+    /** Smallest value the unsigned {@code DALYTRAN-CAT-CD PIC 9(04)} at {@code :L7} can represent. */
+    private static final int MIN_CATEGORY_CODE = 0;
+
+    /** Largest value {@code DALYTRAN-CAT-CD PIC 9(04)} can represent: four unsigned display digits. */
+    private static final int MAX_CATEGORY_CODE = 9999;
+
+    /** Smallest value the unsigned {@code DALYTRAN-MERCHANT-ID PIC 9(09)} at {@code :L11} can represent. */
+    private static final long MIN_MERCHANT_ID = 0L;
+
+    /** Largest value {@code DALYTRAN-MERCHANT-ID PIC 9(09)} can represent: nine unsigned display digits. */
+    private static final long MAX_MERCHANT_ID = 999_999_999L;
+
+    /** Integer digit count of {@code DALYTRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA06Y.cpy:L10}. */
+    private static final int AMOUNT_INTEGER_DIGITS = 9;
+
+    /** Decimal digit count of {@code DALYTRAN-AMT PIC S9(09)V99}: the two digits after the implied V. */
+    private static final int AMOUNT_SCALE = 2;
+
+    /** Total precision of the mapped column: nine integer digits plus two decimal digits. */
+    private static final int AMOUNT_PRECISION = AMOUNT_INTEGER_DIGITS + AMOUNT_SCALE;
+
+    /**
+     * Largest value {@code DALYTRAN-AMT PIC S9(09)V99} can represent. Built from a string literal so the
+     * bound is exact, and reached from the eleven zoned-decimal bytes the record allocates to the field.
+     */
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999999.99");
+
+    /**
+     * Smallest value {@code DALYTRAN-AMT PIC S9(09)V99} can represent. The picture clause is signed and
+     * {@code app/data/ASCII/dailytran.txt} carries close-brace overpunch characters, so genuinely negative
+     * amounts are legitimate input and are never normalised.
+     */
+    private static final BigDecimal MIN_AMOUNT = MAX_AMOUNT.negate();
 
     /** {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16. Primary key, taken verbatim from the input file. */
     @Id
+    @Column(name = "ingest_seq", nullable = false, precision = 9, scale = 0, columnDefinition = "NUMERIC(9)")
+    private Long ingestSequence;
+
+    /**
+     * {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16.
+     *
+     * <p><strong>Ordinary non-unique data, not the key.</strong> Taken verbatim from the
+     * input file, which is unkeyed physical sequential and may legitimately repeat it.</p>
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_id", nullable = false, length = 16, columnDefinition = "CHAR(16)")
+    @Column(name = "dalytran_id", nullable = false, length = TRANSACTION_ID_WIDTH, columnDefinition = "CHAR(16)")
     private String transactionId;
 
-    /** {@code DALYTRAN-TYPE-CD}, {@code PIC X(02)}, bytes 17-18. */
+    /**
+     * {@code DALYTRAN-TYPE-CD}, {@code PIC X(02)}, bytes 17-18.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_type_cd", nullable = false, length = 2, columnDefinition = "CHAR(2)")
+    @Column(name = "dalytran_type_cd", nullable = false, length = TYPE_CODE_WIDTH, columnDefinition = "CHAR(2)")
     private String typeCode;
 
-    /** {@code DALYTRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22. Unsigned four-digit code. */
+    /**
+     * {@code DALYTRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22. Unsigned four-digit code.
+     */
     @Column(name = "dalytran_cat_cd", nullable = false, precision = 4, scale = 0, columnDefinition = "NUMERIC(4)")
     private Integer categoryCode;
 
-    /** {@code DALYTRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32. Free text, never a closed domain. */
+    /**
+     * {@code DALYTRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32. Free text, never a closed domain.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_source", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "dalytran_source", nullable = false, length = TRANSACTION_SOURCE_WIDTH,
+            columnDefinition = "CHAR(10)")
     private String transactionSource;
 
-    /** {@code DALYTRAN-DESC}, {@code PIC X(100)}, bytes 33-132. */
+    /**
+     * {@code DALYTRAN-DESC}, {@code PIC X(100)}, bytes 33-132.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_desc", nullable = false, length = 100, columnDefinition = "CHAR(100)")
+    @Column(name = "dalytran_desc", nullable = false, length = DESCRIPTION_WIDTH,
+            columnDefinition = "CHAR(100)")
     private String description;
 
     /** {@code DALYTRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143. Signed; negative values are valid. */
-    @Column(name = "dalytran_amt", nullable = false, precision = 11, scale = 2, columnDefinition = "NUMERIC(11,2)")
+    @Column(name = "dalytran_amt", nullable = false, precision = AMOUNT_PRECISION, scale = AMOUNT_SCALE,
+            columnDefinition = "NUMERIC(11,2)")
     private BigDecimal amount;
 
-    /** {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152. Unsigned nine-digit code. */
+    /**
+     * {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152. Unsigned nine-digit code.
+     */
     @Column(name = "dalytran_merchant_id", nullable = false, precision = 9, scale = 0,
             columnDefinition = "NUMERIC(9)")
     private Long merchantId;
 
-    /** {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202. */
+    /**
+     * {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_merchant_name", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "dalytran_merchant_name", nullable = false, length = MERCHANT_NAME_WIDTH,
+            columnDefinition = "CHAR(50)")
     private String merchantName;
 
-    /** {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252. */
+    /**
+     * {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_merchant_city", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "dalytran_merchant_city", nullable = false, length = MERCHANT_CITY_WIDTH,
+            columnDefinition = "CHAR(50)")
     private String merchantCity;
 
-    /** {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262. */
+    /**
+     * {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_merchant_zip", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "dalytran_merchant_zip", nullable = false, length = MERCHANT_ZIP_WIDTH,
+            columnDefinition = "CHAR(10)")
     private String merchantZip;
 
-    /** {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278. Never rendered by {@code toString}. */
+    /**
+     * {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278. Never rendered by {@code toString}.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_card_num", nullable = false, length = 16, columnDefinition = "CHAR(16)")
+    @Column(name = "dalytran_card_num", nullable = false, length = CARD_NUMBER_WIDTH, columnDefinition = "CHAR(16)")
     private String cardNumber;
 
-    /** {@code DALYTRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304. Carried as text, never parsed. */
+    /**
+     * {@code DALYTRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304. Carried as text, never parsed.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_orig_ts", nullable = false, length = 26, columnDefinition = "CHAR(26)")
+    @Column(name = "dalytran_orig_ts", nullable = false, length = ORIG_TS_WIDTH, columnDefinition = "CHAR(26)")
     private String origTs;
 
-    /** {@code DALYTRAN-PROC-TS}, {@code PIC X(26)}, bytes 305-330. Blank in every fixture row; must load. */
+    /**
+     * {@code DALYTRAN-PROC-TS}, {@code PIC X(26)}, bytes 305-330. Blank in every fixture row; must load.
+     */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "dalytran_proc_ts", nullable = false, length = 26, columnDefinition = "CHAR(26)")
+    @Column(name = "dalytran_proc_ts", nullable = false, length = PROC_TS_WIDTH, columnDefinition = "CHAR(26)")
     private String procTs;
 
     /**
-     * No-argument constructor required by the persistence provider so that it can
-     * create a row object before populating it.
-     *
-     * <p>Visibility is {@code protected} rather than {@code public} on purpose: the
-     * provider and any subclass can reach it, while application code cannot create
-     * a half-populated staging row by accident. Application code uses the
-     * all-columns constructor instead, which cannot leave a column unset.</p>
-     *
-     * <p>Every field is left at its default until the provider assigns it. That is
-     * safe here and only here, because the provider always follows this call with a
-     * complete field population from the result set. It performs no work, has no
-     * side effect and cannot fail.</p>
+     * No-argument constructor required by the persistence provider so that it can create a row object before
+     * populating it.
      */
     protected DailyTransaction() {
-        // Intentionally empty: the persistence provider populates every field
-        // immediately after this call returns. No default value is invented here,
-        // because inventing one would mask a column the provider failed to set.
+        // Intentionally empty: the provider populates every field afterwards, and a default invented here
+        // would mask a column it failed to set.
     }
 
     /**
-     * Creates a fully populated staging row from one 350-byte
-     * {@code DALYTRAN-RECORD} image.
+     * Creates a fully populated staging row from one 350-byte {@code DALYTRAN-RECORD} image.
      *
-     * <p>The parameter order is the COBOL field order of
-     * {@code app/cpy/CVTRA06Y.cpy:L5-L17}, so a caller reading the record
-     * left to right supplies the arguments top to bottom with no reordering. The
-     * 20-byte {@code FILLER} at {@code :L18} has no parameter because it carries
-     * no data.</p>
+     * <p>The <strong>ingestion ordinal comes first</strong>, because it is the
+     * identifier and because the reader knows it before it parses anything: it is the
+     * read counter's current value. Taking it as a required argument is what makes a
+     * staging row impossible to construct without an identity, which matters here
+     * precisely because no database-side allocator will supply one - see the identity
+     * finding in the class documentation. The remaining thirteen parameters are in the
+     * COBOL field order of {@code app/cpy/CVTRA06Y.cpy:L5-L17}, so a caller reading the
+     * record left to right supplies them top to bottom with no reordering. The 20-byte
+     * {@code FILLER} at {@code :L18} has no parameter because it carries no data.</p>
      *
-     * <p>All thirteen values are stored exactly as supplied. Nothing is trimmed,
+     * <p>All fourteen values are stored exactly as supplied. Nothing is trimmed,
      * padded, upper-cased, re-signed, rounded or re-formatted, because every one of
      * those transformations would break byte-level parity with the source record.
      * In particular a blank process TS and a negative amount are both stored
-     * unchanged, since the fixture proves both are legitimate.</p>
+     * unchanged, since the fixture proves both are legitimate, and a
+     * {@code transactionId} that duplicates one already staged is accepted, since the
+     * unkeyed input may legitimately repeat it.</p>
      *
-     * <p>This constructor performs only direct field assignment. It calls no
-     * method on the instance under construction, so no partially initialised
-     * reference can escape, and it has no side effect beyond populating this
-     * object. It throws nothing.</p>
+     * <p><strong>Every value is nevertheless checked against the record layout,
+     * and that is a structural check rather than a business one.</strong> This
+     * table deliberately holds unvalidated business content - a card number with
+     * no cross-reference row, an amount that will breach a credit limit - and none
+     * of that is rejected here, because rejecting it would pre-empt the posting
+     * job's reject codes. What is rejected is a value the 350-byte record cannot
+     * have produced: {@code null}, since the reader slices fixed byte ranges and a
+     * {@code PIC X} field always holds its width; text longer than its field; a
+     * category code or merchant identifier outside its unsigned range; and an
+     * amount outside {@code S9(09)V99} or carrying more than two decimal digits.
+     * Such a value can only be a defect in the caller, and naming the property and
+     * its picture clause here is more use than a constraint violation naming a
+     * column at flush time.</p>
      *
+     * <p>This constructor performs field assignment through private static
+     * helpers only. It calls no method on the instance under construction, so no
+     * partially initialised reference can escape, and it has no side effect beyond
+     * populating this object.</p>
+     *
+     * @param ingestSequence    the one-based ordinal of this record within the staged
+     *                          file, in read order; the primary key, modelling
+     *                          {@code WS-TRANSACTION-COUNT} at
+     *                          {@code app/cbl/CBTRN02C.cbl:L185} and {@code :L206}. Not
+     *                          a record field and not derived from one
      * @param transactionId     {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16;
-     *                          the primary key, taken verbatim from the input file
+     *                          ordinary non-unique data taken verbatim from the input
+     *                          file, and explicitly not the key
      * @param typeCode          {@code DALYTRAN-TYPE-CD}, {@code PIC X(02)}, bytes 17-18
      * @param categoryCode      {@code DALYTRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22
      * @param transactionSource {@code DALYTRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32;
@@ -538,6 +799,7 @@ public class DailyTransaction {
      *                          26 characters of text, blank in every fixture row
      */
     public DailyTransaction(
+            final Long ingestSequence,
             final String transactionId,
             final String typeCode,
             final Integer categoryCode,
@@ -551,27 +813,70 @@ public class DailyTransaction {
             final String cardNumber,
             final String origTs,
             final String procTs) {
-        this.transactionId = transactionId;
-        this.typeCode = typeCode;
-        this.categoryCode = categoryCode;
-        this.transactionSource = transactionSource;
-        this.description = description;
-        this.amount = amount;
-        this.merchantId = merchantId;
-        this.merchantName = merchantName;
-        this.merchantCity = merchantCity;
-        this.merchantZip = merchantZip;
-        this.cardNumber = cardNumber;
-        this.origTs = origTs;
-        this.procTs = procTs;
+        this.ingestSequence = ingestSequence;
+        this.transactionId = requireWidth(transactionId,
+                "transactionId", "DALYTRAN-ID PIC X(16)", TRANSACTION_ID_WIDTH);
+        this.typeCode = requireWidth(typeCode,
+                "typeCode", "DALYTRAN-TYPE-CD PIC X(02)", TYPE_CODE_WIDTH);
+        this.categoryCode = requireCategoryCode(categoryCode);
+        this.transactionSource = requireWidth(transactionSource,
+                "transactionSource", "DALYTRAN-SOURCE PIC X(10)", TRANSACTION_SOURCE_WIDTH);
+        this.description = requireWidth(description,
+                "description", "DALYTRAN-DESC PIC X(100)", DESCRIPTION_WIDTH);
+        this.amount = requireAmount(amount);
+        this.merchantId = requireMerchantId(merchantId);
+        this.merchantName = requireWidth(merchantName,
+                "merchantName", "DALYTRAN-MERCHANT-NAME PIC X(50)", MERCHANT_NAME_WIDTH);
+        this.merchantCity = requireWidth(merchantCity,
+                "merchantCity", "DALYTRAN-MERCHANT-CITY PIC X(50)", MERCHANT_CITY_WIDTH);
+        this.merchantZip = requireWidth(merchantZip,
+                "merchantZip", "DALYTRAN-MERCHANT-ZIP PIC X(10)", MERCHANT_ZIP_WIDTH);
+        this.cardNumber = requireWidth(cardNumber,
+                "cardNumber", "DALYTRAN-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
+        this.origTs = requireWidth(origTs, "origTs", "DALYTRAN-ORIG-TS PIC X(26)", ORIG_TS_WIDTH);
+        this.procTs = requireWidth(procTs, "procTs", "DALYTRAN-PROC-TS PIC X(26)", PROC_TS_WIDTH);
+    }
+
+    /**
+     * Returns the primary key: the one-based ordinal of this record within the
+     * staged file.
+     *
+     * <p>This is the value to order a staged read by. Ordering by it reproduces the
+     * flat-file read order that {@code 1000-DALYTRAN-GET-NEXT} at
+     * {@code app/cbl/CBTRN02C.cbl:L345-L346} produces; ordering by
+     * {@link #getTransactionId()} does not, and would silently reorder real input.</p>
+     *
+     * @return the one-based ingestion ordinal, or {@code null} on an instance the
+     *         persistence provider has created but not yet populated
+     */
+    public Long getIngestSequence() {
+        return this.ingestSequence;
+    }
+
+    /**
+     * Sets the primary key: the one-based ordinal of this record within the staged
+     * file.
+     *
+     * <p>Assigned by the loader from its own read counter, modelling
+     * {@code WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L185} which
+     * {@code :L206} increments once per accepted read. It is not generated by the
+     * database, so this setter is the only route by which a new row acquires an
+     * identity, and the all-columns constructor is the preferred one.</p>
+     *
+     * <p>Stored verbatim. The value is not range-checked here: the modelled counter is
+     * {@code PIC 9(09)}, so the domain is 1 through 999,999,999, and that domain is
+     * documented rather than enforced because the loader controls it and the first
+     * migration's check-constraint budget is closed. Mutating the ordinal of a row
+     * that is already persistent changes its identity and must not be done.</p>
+     *
+     * @param ingestSequence the one-based ingestion ordinal, in read order
+     */
+    public void setIngestSequence(final Long ingestSequence) {
+        this.ingestSequence = ingestSequence;
     }
 
     /**
      * Returns {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16 of the record.
-     *
-     * <p>The primary key. Sixteen characters of digits as written by the upstream
-     * system; it is a fixed-width identifier, not a number, so it is never
-     * converted to an integral type - leading zeros are significant.</p>
      *
      * @return the sixteen-character staging identifier, exactly as loaded
      */
@@ -582,15 +887,11 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16 of the record.
      *
-     * <p>Stored verbatim. No generated-identifier strategy applies to this column:
-     * the value arrives from the input file and must correspond to it byte for
-     * byte, which {@code app/cbl/CBTRN02C.cbl:L425} relies on when it moves the
-     * identifier into the master record.</p>
-     *
      * @param transactionId the sixteen-character staging identifier
      */
     public void setTransactionId(final String transactionId) {
-        this.transactionId = transactionId;
+        this.transactionId = requireWidth(transactionId,
+                "transactionId", "DALYTRAN-ID PIC X(16)", TRANSACTION_ID_WIDTH);
     }
 
     /**
@@ -605,21 +906,15 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-TYPE-CD}, {@code PIC X(02)}, bytes 17-18 of the record.
      *
-     * <p>Stored verbatim. The value is not checked against the transaction-type
-     * table here; the posting job performs that lookup and rejects the record if it
-     * fails, which is why an unknown code must still be loadable.</p>
-     *
      * @param typeCode the two-character transaction type code
      */
     public void setTypeCode(final String typeCode) {
-        this.typeCode = typeCode;
+        this.typeCode = requireWidth(typeCode,
+                "typeCode", "DALYTRAN-TYPE-CD PIC X(02)", TYPE_CODE_WIDTH);
     }
 
     /**
      * Returns {@code DALYTRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22 of the record.
-     *
-     * <p>An unsigned four-digit code. It is integral rather than textual because
-     * the PIC clause carries no sign and no character positions beyond the digits.</p>
      *
      * @return the four-digit transaction category code, exactly as loaded
      */
@@ -630,22 +925,14 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22 of the record.
      *
-     * <p>Stored verbatim. As with the type code, validity is the posting job's
-     * concern, not this class's.</p>
-     *
      * @param categoryCode the four-digit transaction category code
      */
     public void setCategoryCode(final Integer categoryCode) {
-        this.categoryCode = categoryCode;
+        this.categoryCode = requireCategoryCode(categoryCode);
     }
 
     /**
      * Returns {@code DALYTRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32 of the record.
-     *
-     * <p>Ten characters of free text describing where the transaction originated.
-     * This is deliberately not a closed domain: {@code app/cbl/CBTRN02C.cbl:L428}
-     * passes the value straight through unexamined, and the fixture contains a
-     * value that has no literal assignment site anywhere in the corpus.</p>
      *
      * @return the ten-character origin text, exactly as loaded
      */
@@ -656,14 +943,11 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32 of the record.
      *
-     * <p>Stored verbatim as text. Any value of ten characters or fewer is accepted,
-     * because constraining this column to the values the corpus happens to assign
-     * would reject legacy data that the source system accepts.</p>
-     *
      * @param transactionSource the ten-character origin text
      */
     public void setTransactionSource(final String transactionSource) {
-        this.transactionSource = transactionSource;
+        this.transactionSource = requireWidth(transactionSource,
+                "transactionSource", "DALYTRAN-SOURCE PIC X(10)", TRANSACTION_SOURCE_WIDTH);
     }
 
     /**
@@ -678,31 +962,16 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-DESC}, {@code PIC X(100)}, bytes 33-132 of the record.
      *
-     * <p>Stored verbatim, including any trailing spaces, which are part of the
-     * fixed-width image rather than incidental padding to be trimmed away.</p>
-     *
      * @param description the hundred-character description
      */
     public void setDescription(final String description) {
-        this.description = description;
+        this.description = requireWidth(description,
+                "description", "DALYTRAN-DESC PIC X(100)", DESCRIPTION_WIDTH);
     }
 
     /**
-     * Returns {@code DALYTRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143 of the
-     * record: eleven digits of precision at a scale of two.
-     *
-     * <p><strong>The value is signed and may be negative.</strong> Fifty of the 300
-     * fixture rows are negative, and that is not a data-quality problem: a negative
-     * amount is what drives the cycle-debit branch at
-     * {@code app/cbl/CBTRN02C.cbl:L551}, which is in turn why the over-limit
-     * expression at {@code :L403-L405} subtracts the debit accumulator. Callers must
-     * not normalise the sign.</p>
-     *
-     * <p>Compare the returned value with {@code compareTo} and never with
-     * {@code equals}: {@code equals} on this type is scale-sensitive, so a value
-     * loaded at scale two will not equal an otherwise identical literal written at a
-     * different scale. Any rounding a caller applies must use
-     * {@code RoundingMode.HALF_EVEN}.</p>
+     * Returns {@code DALYTRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143 of the record: eleven digits of
+     * precision at a scale of two.
      *
      * @return the signed transaction amount at scale two, exactly as loaded
      */
@@ -713,24 +982,14 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143 of the record.
      *
-     * <p>Stored verbatim. The sign is preserved exactly as supplied: this method
-     * performs no sign normalisation, no magnitude conversion and no rescaling,
-     * because each of those would silently change a posted balance.</p>
-     *
      * @param amount the signed transaction amount, negative values included
      */
     public void setAmount(final BigDecimal amount) {
-        this.amount = amount;
+        this.amount = requireAmount(amount);
     }
 
     /**
-     * Returns {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152 of the
-     * record.
-     *
-     * <p>An unsigned nine-digit code. It is integral because the PIC clause is
-     * unsigned numeric, and it is widened to a long rather than an int because nine
-     * digits reach 999,999,999, which is close enough to the int ceiling that a
-     * later widening of the field would be a breaking change.</p>
+     * Returns {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152 of the record.
      *
      * @return the nine-digit merchant code, exactly as loaded
      */
@@ -739,25 +998,16 @@ public class DailyTransaction {
     }
 
     /**
-     * Sets {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152 of the
-     * record.
-     *
-     * <p>Stored verbatim.</p>
+     * Sets {@code DALYTRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152 of the record.
      *
      * @param merchantId the nine-digit merchant code
      */
     public void setMerchantId(final Long merchantId) {
-        this.merchantId = merchantId;
+        this.merchantId = requireMerchantId(merchantId);
     }
 
     /**
-     * Returns {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202 of
-     * the record.
-     *
-     * <p>Note for anyone writing a decoder over the raw record: this text field can
-     * legitimately contain the very letters that act as sign overpunches in the
-     * numeric fields, which is exactly why overpunch decoding must be driven by
-     * field position rather than by character appearance.</p>
+     * Returns {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202 of the record.
      *
      * @return the fifty-character merchant name, exactly as loaded
      */
@@ -766,20 +1016,17 @@ public class DailyTransaction {
     }
 
     /**
-     * Sets {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202 of the
-     * record.
-     *
-     * <p>Stored verbatim.</p>
+     * Sets {@code DALYTRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202 of the record.
      *
      * @param merchantName the fifty-character merchant name
      */
     public void setMerchantName(final String merchantName) {
-        this.merchantName = merchantName;
+        this.merchantName = requireWidth(merchantName,
+                "merchantName", "DALYTRAN-MERCHANT-NAME PIC X(50)", MERCHANT_NAME_WIDTH);
     }
 
     /**
-     * Returns {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252 of
-     * the record.
+     * Returns {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252 of the record.
      *
      * @return the fifty-character merchant city, exactly as loaded
      */
@@ -788,23 +1035,17 @@ public class DailyTransaction {
     }
 
     /**
-     * Sets {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252 of the
-     * record.
-     *
-     * <p>Stored verbatim.</p>
+     * Sets {@code DALYTRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252 of the record.
      *
      * @param merchantCity the fifty-character merchant city
      */
     public void setMerchantCity(final String merchantCity) {
-        this.merchantCity = merchantCity;
+        this.merchantCity = requireWidth(merchantCity,
+                "merchantCity", "DALYTRAN-MERCHANT-CITY PIC X(50)", MERCHANT_CITY_WIDTH);
     }
 
     /**
-     * Returns {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262 of the
-     * record.
-     *
-     * <p>Ten characters of text, not a number: the field is declared alphanumeric so
-     * that it can hold postal codes with leading zeros or non-digit characters.</p>
+     * Returns {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262 of the record.
      *
      * @return the ten-character merchant postal code, exactly as loaded
      */
@@ -813,30 +1054,17 @@ public class DailyTransaction {
     }
 
     /**
-     * Sets {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262 of the
-     * record.
-     *
-     * <p>Stored verbatim.</p>
+     * Sets {@code DALYTRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262 of the record.
      *
      * @param merchantZip the ten-character merchant postal code
      */
     public void setMerchantZip(final String merchantZip) {
-        this.merchantZip = merchantZip;
+        this.merchantZip = requireWidth(merchantZip,
+                "merchantZip", "DALYTRAN-MERCHANT-ZIP PIC X(10)", MERCHANT_ZIP_WIDTH);
     }
 
     /**
-     * Returns {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278 of the
-     * record.
-     *
-     * <p><strong>Handle with care.</strong> This is the only sensitive value on the
-     * record. It is deliberately excluded from {@code toString}, so a caller that
-     * obtains it here becomes responsible for keeping it out of log records,
-     * exception messages and any serialised response. There is no masking helper on
-     * this class by design; masking belongs to the layer that renders output, not to
-     * the data holder.</p>
-     *
-     * <p>Sixteen characters of digits, kept as text because leading zeros are
-     * significant and the value is an identifier rather than a quantity.</p>
+     * Returns {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278 of the record.
      *
      * @return the sixteen-character card number, exactly as loaded
      */
@@ -845,29 +1073,17 @@ public class DailyTransaction {
     }
 
     /**
-     * Sets {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278 of the
-     * record.
-     *
-     * <p>Stored verbatim. The value is not checked against the card cross-reference
-     * here: an unknown card number is precisely what the posting job detects, and it
-     * assigns reject code 100 when it does, so such a row must remain loadable.</p>
+     * Sets {@code DALYTRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278 of the record.
      *
      * @param cardNumber the sixteen-character card number
      */
     public void setCardNumber(final String cardNumber) {
-        this.cardNumber = cardNumber;
+        this.cardNumber = requireWidth(cardNumber,
+                "cardNumber", "DALYTRAN-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
     }
 
     /**
-     * Returns {@code DALYTRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304 of the
-     * record.
-     *
-     * <p>Twenty-six characters of text, carried as text and never parsed. Every one
-     * of the 300 fixture rows holds the same value, {@code 2022-06-10 19:27:53.000000},
-     * whose shape - a space separator and six fraction digits - differs from the
-     * shape the batch producer writes for the process field, so the two are not
-     * interconvertible and neither may be normalised into the other.
-     * {@code app/cbl/CBTRN02C.cbl:L436} moves this field straight across as text.</p>
+     * Returns {@code DALYTRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304 of the record.
      *
      * @return the twenty-six-character origination TS text, exactly as loaded
      */
@@ -878,13 +1094,10 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304 of the record.
      *
-     * <p>Stored verbatim as text. No format is enforced and no conversion is
-     * attempted, so a blank or partially populated value is accepted.</p>
-     *
      * @param origTs the twenty-six-character origination TS text
      */
     public void setOrigTs(final String origTs) {
-        this.origTs = origTs;
+        this.origTs = requireWidth(origTs, "origTs", "DALYTRAN-ORIG-TS PIC X(26)", ORIG_TS_WIDTH);
     }
 
     /**
@@ -895,8 +1108,8 @@ public class DailyTransaction {
      * the same single value in bytes 305-330: twenty-six spaces. The field is filled
      * in downstream, not upstream - {@code app/cbl/CBTRN02C.cbl:L438} writes the
      * producer-formatted value into the master record at posting time, in the shape
-     * documented at {@code :L149}, which is millisecond precision followed by four
-     * literal zero characters as {@code :L700-L701} confirm.</p>
+     * documented at {@code :L149}, which is hundredths-of-a-second precision followed
+     * by four literal zero characters as {@code :L700-L701} confirm.</p>
      *
      * <p>A blank is therefore the normal, expected state of this column on a staging
      * row, and it is the canonical explicit empty case for this entity. Callers must
@@ -912,41 +1125,18 @@ public class DailyTransaction {
     /**
      * Sets {@code DALYTRAN-PROC-TS}, {@code PIC X(26)}, bytes 305-330 of the record.
      *
-     * <p>Stored verbatim as text. A blank value of twenty-six spaces is explicitly
-     * supported and round-trips through the database unchanged; this is asserted by
-     * the unit and repository tests rather than assumed.</p>
-     *
      * @param procTs the twenty-six-character process TS text, possibly all spaces
      */
     public void setProcTs(final String procTs) {
-        this.procTs = procTs;
+        this.procTs = requireWidth(procTs, "procTs", "DALYTRAN-PROC-TS PIC X(26)", PROC_TS_WIDTH);
     }
 
     /**
-     * Compares two staging rows on {@code DALYTRAN-ID} alone.
+     * Compares two staging rows on the ingestion ordinal alone.
      *
-     * <p>Identity is the primary key and nothing else, for three reasons. The key is
-     * supplied by the input file rather than generated, so it is stable from the
-     * moment the object exists and does not change when the row is persisted.
-     * Comparing the remaining twelve columns as well would make two loads of the same
-     * row unequal after any edit, which breaks collection membership. And a
-     * field-by-field comparison would have to compare the amount, where the natural
-     * equality of the decimal type is scale-sensitive and would report
-     * {@code 2.0} and {@code 2.00} as different values - a subtle wrong answer rather
-     * than an obvious one.</p>
-     *
-     * <p>Two rows with a null identifier are never equal unless they are the same
-     * object, which the reference check at the top handles. This follows directly
-     * from delegating to null-safe value comparison and is the correct behaviour for
-     * an unsaved instance.</p>
-     *
-     * <p>Pattern matching is used rather than a class comparison so that the type
-     * test and the cast cannot disagree. Note that a persistence provider may hand
-     * back a generated subtype, which this test accepts.</p>
-     *
-     * @param other the object to compare against; may be null
-     * @return {@code true} when {@code other} is a staging row with an equal
-     *         {@code DALYTRAN-ID}, {@code false} otherwise
+     * @param other the object to compare against.
+     * @return {@code true} when {@code other} is a staging row with an equal {@code DALYTRAN-ID}, {@code false}
+     * otherwise
      */
     @Override
     public boolean equals(final Object other) {
@@ -956,28 +1146,21 @@ public class DailyTransaction {
         if (!(other instanceof DailyTransaction that)) {
             return false;
         }
-        return Objects.equals(this.transactionId, that.transactionId);
+        return Objects.equals(this.ingestSequence, that.ingestSequence);
     }
 
     /**
-     * Returns a hash consistent with {@link #equals(Object)}, derived from
-     * {@code DALYTRAN-ID} alone.
+     * Returns a hash consistent with {@link #equals(Object)}, derived from {@code DALYTRAN-ID} alone.
      *
-     * <p>Because the identifier is assigned from the input file and never
-     * regenerated, the hash is stable for the whole life of the object, including
-     * across the transition from new to persistent. That is what makes it safe to
-     * put a staging row into a hash-based collection before it is written.</p>
-     *
-     * @return the hash of the staging identifier, or zero when it is not yet set
+     * @return the hash of the ingestion ordinal, or zero when it is not yet set
      */
     @Override
     public int hashCode() {
-        return Objects.hashCode(this.transactionId);
+        return Objects.hashCode(this.ingestSequence);
     }
 
     /**
-     * Returns a diagnostic rendering of this row that deliberately omits the card
-     * number.
+     * Returns a diagnostic rendering of this row that deliberately omits the card number.
      *
      * <p><strong>Security restriction.</strong> The card number is the one sensitive
      * value on the record, and {@code toString} is the single most likely route by
@@ -992,30 +1175,193 @@ public class DailyTransaction {
      * low-value bulk that would dominate every log line in which a row appears. The
      * description is omitted for the same reason.</p>
      *
-     * <p>What remains is exactly the seven values needed to identify a row and reason
-     * about the posting decision taken on it: the identifier, the type and category
-     * codes, the origin text, the signed amount, and the two TS values. The amount is
-     * rendered by the decimal type's own conversion and the codes by their integral
-     * ones, all of which are independent of locale, so the output is identical on
-     * every machine. Both TS values are wrapped in brackets, because they are usually
-     * space-padded and the process one is normally entirely blank; without a
-     * delimiter a reader cannot tell a blank field from a missing one.</p>
+     * <p><b>The signed amount and both TS values are excluded as well, which narrows an
+     * earlier and wider form of this method.</b> An amount is customer financial data,
+     * and because this rendering also carries the transaction identifier, a log estate
+     * holding both holds a per-transaction amount ledger keyed by a value that joins
+     * straight back to the row - the substance of the account activity, reconstructable
+     * with no database access. Adding the two TS values would turn that ledger into a
+     * timeline. Neither timestamp identifies a row that the identifier does not already
+     * identify, so nothing correlational is lost by their removal. The type code, the
+     * category code and the origin text go for the least-privilege reason that governs
+     * the rest of this package: they are classification state, and a reader should
+     * obtain that from the row, where the access is authorised and audited.</p>
+     *
+     * <p>What remains is the identifier alone, which is the minimum that tells a reader
+     * which row a line refers to. This entity carries no optimistic lock version to
+     * render alongside it - it is a staging table that is loaded and consumed within one
+     * job, never concurrently updated - so unlike {@link Transaction} there is no
+     * version counter here and its absence is deliberate rather than an omission. The
+     * identifier is rendered by plain concatenation, independent of locale, so the
+     * output is identical on every machine.</p>
      *
      * <p>The format is a diagnostic aid, not an interface. It is not parsed anywhere
      * and no caller should depend on its exact shape.</p>
      *
-     * @return a rendering carrying the identifier, type code, category code, origin
-     *         text, signed amount and both TS values, and never the card number
+     * @return a rendering carrying the transaction identifier only, never the card
+     *         number, the amount, either TS value or merchant detail
      */
     @Override
     public String toString() {
-        return "DailyTransaction{transactionId=" + this.transactionId
-                + ", typeCode=" + this.typeCode
-                + ", categoryCode=" + this.categoryCode
-                + ", transactionSource=" + this.transactionSource
-                + ", amount=" + this.amount
-                + ", origTs=[" + this.origTs + ']'
-                + ", procTs=[" + this.procTs + ']'
-                + '}';
+        return "DailyTransaction{transactionId=" + this.transactionId + '}';
+    }
+
+    /**
+     * Validates a candidate character value against the width of the COBOL field it
+     * comes from and returns it unchanged.
+     *
+     * <p>Rejects {@code null}, because every character column here is {@code NOT
+     * NULL} and because the fixed-width reader always yields a string of the
+     * field's width, and rejects any value longer than the picture clause declares,
+     * because a 350-byte record cannot contain one. Everything the picture clause
+     * admits is accepted, including a value of only spaces - the blank
+     * {@code DALYTRAN-PROC-TS} of every fixture row is exactly that - and any
+     * character content whatever. Nothing is trimmed, padded or case folded.</p>
+     *
+     * <p><strong>The failure message reports the length and never the value.</strong>
+     * Two of the ten character fields guarded here, {@code DALYTRAN-CARD-NUM} and
+     * {@code DALYTRAN-ID}, are sensitive or identifying, and a validation message is
+     * exactly the kind of string that reaches a log.</p>
+     *
+     * <p>Declared {@code private static} so that the constructor can call it without
+     * invoking an overridable method, which would otherwise publish a partially
+     * initialised instance; the JPA specification forbids a final entity, so the
+     * hazard is real and {@code -Xlint:all -Werror} reports it as
+     * {@code this-escape}.</p>
+     *
+     * @param value      the candidate value, possibly {@code null}
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null} or longer
+     *                                  than {@code width}
+     */
+    private static String requireWidth(final String value,
+                                       final String property,
+                                       final String cobolField,
+                                       final int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table daily_transaction");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must be at most " + width + " characters but was "
+                    + value.length());
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate category code against {@code DALYTRAN-CAT-CD PIC 9(04)}
+     * and returns it unchanged.
+     *
+     * <p>Rejects {@code null} and any value outside 0 through 9999 inclusive, which
+     * is what four unsigned display digits can hold. <strong>No membership check
+     * against the transaction-category table happens here</strong>: this staging
+     * table exists precisely to hold rows whose business content may be wrong, and
+     * the posting job owns that judgement. Declared {@code private static} for the
+     * reason given on {@link #requireWidth(String, String, String, int)}.</p>
+     *
+     * @param value the candidate category code, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, or
+     *                                  greater than 9999
+     */
+    private static Integer requireCategoryCode(final Integer value) {
+        if (value == null) {
+            throw new IllegalArgumentException("categoryCode (DALYTRAN-CAT-CD PIC "
+                    + "9(04)) must not be null: it maps to a NOT NULL NUMERIC(4) "
+                    + "column of table daily_transaction");
+        }
+        if (value.intValue() < MIN_CATEGORY_CODE || value.intValue() > MAX_CATEGORY_CODE) {
+            throw new IllegalArgumentException("categoryCode (DALYTRAN-CAT-CD PIC "
+                    + "9(04)) must be between " + MIN_CATEGORY_CODE + " and "
+                    + MAX_CATEGORY_CODE + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate merchant identifier against
+     * {@code DALYTRAN-MERCHANT-ID PIC 9(09)} and returns it unchanged.
+     *
+     * <p>Rejects {@code null} and any value outside 0 through 999999999 inclusive,
+     * which is what nine unsigned display digits can hold. Zero is accepted and is
+     * not a sentinel to reject. Declared {@code private static} for the reason given
+     * on {@link #requireWidth(String, String, String, int)}.</p>
+     *
+     * @param value the candidate merchant identifier, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, or
+     *                                  greater than 999999999
+     */
+    private static Long requireMerchantId(final Long value) {
+        if (value == null) {
+            throw new IllegalArgumentException("merchantId (DALYTRAN-MERCHANT-ID PIC "
+                    + "9(09)) must not be null: it maps to a NOT NULL NUMERIC(9) "
+                    + "column of table daily_transaction");
+        }
+        if (value.longValue() < MIN_MERCHANT_ID || value.longValue() > MAX_MERCHANT_ID) {
+            throw new IllegalArgumentException("merchantId (DALYTRAN-MERCHANT-ID PIC "
+                    + "9(09)) must be between " + MIN_MERCHANT_ID + " and "
+                    + MAX_MERCHANT_ID + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate amount against the domain
+     * {@code DALYTRAN-AMT PIC S9(09)V99} can represent and returns it unchanged.
+     *
+     * <p>Three things are checked and nothing else. {@code null} is rejected. A scale
+     * greater than two is rejected, because {@code V99} declares exactly two decimal
+     * positions and PostgreSQL rounds a {@code NUMERIC(11,2)} insert half away from
+     * zero rather than refusing it - a silent alteration, and by a rounding mode that
+     * is not the {@code RoundingMode.HALF_EVEN} the posting job uses. A magnitude
+     * outside -999999999.99 through 999999999.99 is rejected, because the eleven
+     * zoned-decimal bytes the record allocates cannot hold more.</p>
+     *
+     * <p><strong>What is deliberately not checked:</strong> the sign, because the
+     * picture clause carries an {@code S} and
+     * {@code app/cbl/CBTRN02C.cbl:L547-L552} adds a negative amount to the cycle
+     * debit accumulator; zero; and a scale smaller than two. <strong>No absolute
+     * value, no rescaling and no rounding is applied anywhere in this
+     * class.</strong></p>
+     *
+     * <p>Declared {@code private static} for the reason given on
+     * {@link #requireWidth(String, String, String, int)}.</p>
+     *
+     * @param value the candidate amount, possibly {@code null}
+     * @return {@code value}, unchanged and unrescaled
+     * @throws IllegalArgumentException if {@code value} is {@code null}, has more than
+     *                                  two decimal digits, or falls outside the
+     *                                  representable range
+     */
+    private static BigDecimal requireAmount(final BigDecimal value) {
+        if (value == null) {
+            throw new IllegalArgumentException("amount (DALYTRAN-AMT PIC S9(09)V99) "
+                    + "must not be null: it maps to a NOT NULL NUMERIC("
+                    + AMOUNT_PRECISION + "," + AMOUNT_SCALE
+                    + ") column of table daily_transaction");
+        }
+        if (value.scale() > AMOUNT_SCALE) {
+            throw new IllegalArgumentException("amount (DALYTRAN-AMT PIC S9(09)V99) "
+                    + "must carry at most " + AMOUNT_SCALE
+                    + " decimal digits but had a scale of " + value.scale()
+                    + "; rescale it explicitly with RoundingMode.HALF_EVEN rather "
+                    + "than letting the NUMERIC(" + AMOUNT_PRECISION + ","
+                    + AMOUNT_SCALE + ") column round it");
+        }
+        if (value.compareTo(MIN_AMOUNT) < 0 || value.compareTo(MAX_AMOUNT) > 0) {
+            throw new IllegalArgumentException("amount (DALYTRAN-AMT PIC S9(09)V99) "
+                    + "must be between " + MIN_AMOUNT.toPlainString() + " and "
+                    + MAX_AMOUNT.toPlainString() + " inclusive, which is what "
+                    + AMOUNT_INTEGER_DIGITS + " signed integer digits can hold, but "
+                    + "was " + value.toPlainString());
+        }
+        return value;
     }
 }

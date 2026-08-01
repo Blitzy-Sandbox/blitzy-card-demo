@@ -24,31 +24,30 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
 
 /**
- * Sign-on request payload: the eleven input fields a client presents in order to authenticate,
- * derived field-for-field from the BMS symbolic map {@code app/cpy-bms/COSGN00.CPY}.
+ * Sign-on request payload: the eleven input fields a client presents in order to authenticate, derived
+ * field-for-field from the BMS symbolic map {@code app/cpy-bms/COSGN00.CPY}.
  *
- * <p><strong>Provenance and field budget.</strong> The symbolic map's input group
- * {@code 01 COSGN0AI} opens at {@code app/cpy-bms/COSGN00.CPY:17} and runs through line 84, where
- * {@code 01 COSGN0AO REDEFINES COSGN0AI} takes over at line 85. Within that group BMS generates a
- * quintuple for every screen field: a {@code COMP PIC S9(4)} length item, an attribute byte, a
- * redefined attribute alias, four reserved bytes, and only then the data item itself. Only the
- * eleven {@code ...I} data items constitute the data-transfer budget; the surrounding plumbing and
- * the leading twelve-byte terminal input/output header at line 18 are terminal concerns and are
- * deliberately not modelled. The count is therefore <strong>exactly eleven</strong>, no more and no
- * fewer, and the components below preserve both the source order and the declared width of every
- * one of them.</p>
+ * <p>The symbolic map's input group {@code 01 COSGN0AI} opens at {@code app/cpy-bms/COSGN00.CPY:17} and runs
+ * through line 84, where {@code 01 COSGN0AO REDEFINES COSGN0AI} takes over at line 85. Within that group BMS
+ * generates a quintuple for every screen field: a {@code COMP PIC S9(4)} length item, an attribute byte, a
+ * redefined attribute alias, four reserved bytes, and only then the data item itself. Only the eleven
+ * {@code ...I} data items constitute the data-transfer budget; the surrounding plumbing and the leading
+ * twelve-byte terminal input/output header at line 18 are terminal concerns and are deliberately not modelled.
+ * The count is therefore <strong>exactly eleven</strong>, no more and no fewer, and the components below
+ * preserve both the source order and the declared width of every one of them.
  *
- * <p><strong>Distinction 1: this map's {@code CURTIMEI} is nine bytes, not eight.</strong>
- * {@code app/cpy-bms/COSGN00.CPY:54} declares {@code 02  CURTIMEI  PIC X(9).}, whereas the other
- * sixteen symbolic maps under {@code app/cpy-bms} - COACTUP, COACTVW, COADM01, COBIL00, COCRDLI,
- * COCRDSL, COCRDUP, COMEN01, CORPT00, COTRN00, COTRN01, COTRN02, COUSR00, COUSR01, COUSR02 and
- * COUSR03 - each declare {@code 02  CURTIMEI  PIC X(8).} at line 54 exactly. COSGN00 is the sole
- * nine-byte outlier in the corpus, so {@code currentTime} is bounded at nine characters here and is
- * never normalised down to eight to match its siblings.</p>
+ * <p>This map's {@code CURTIMEI} is nine bytes, not eight.
+ * {@code app/cpy-bms/COSGN00.CPY:54} declares {@code 02 CURTIMEI PIC X(9).}, whereas the other sixteen symbolic
+ * maps under {@code app/cpy-bms} - COACTUP, COACTVW, COADM01, COBIL00, COCRDLI, COCRDSL, COCRDUP, COMEN01,
+ * CORPT00, COTRN00, COTRN01, COTRN02, COUSR00, COUSR01, COUSR02 and COUSR03 - each declare
+ * {@code 02 CURTIMEI PIC X(8).} at line 54 exactly. COSGN00 is the sole nine-byte outlier in the corpus, so
+ * {@code currentTime} is bounded at nine characters here and is never normalised down to eight to match its
+ * siblings.
  *
  * <p>That single fact is also the reason <strong>no shared common-header type exists.</strong> Six
  * header fields genuinely do recur on all seventeen maps - {@code TRNNAME X(4)},
@@ -102,8 +101,9 @@ import jakarta.validation.constraints.Size;
  * {@code ""} is never coerced to {@code null}.</p>
  *
  * <p><strong>Validation and error modes.</strong> This type is an inbound payload and therefore a
- * trust boundary, so each client-supplied component carries a {@code jakarta.validation}
- * {@code @Size} bound equal to its declared COBOL width. The bounds are deliberately no stricter
+ * trust boundary, so <em>every one</em> of the eleven components carries a {@code jakarta.validation}
+ * {@code @Size} bound equal to its declared COBOL width - including {@code errorMessage}, which the
+ * terminal could not populate but a REST client can. The bounds are deliberately no stricter
  * than the source: no minimum length, no character-class restriction and no password-complexity
  * rule is imposed, because rejecting input the legacy system accepts breaks parity just as surely
  * as accepting input it rejects. Consistent with the three-state model, {@code @Size} treats
@@ -127,12 +127,13 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>Building and testing.</strong> This type needs no configuration and has no defaults
  * beyond the null-preserving behaviour described above. It compiles under
- * {@code mvn -B clean compile} with {@code -Xlint:all -Werror}, so any warning it introduced would
+ * {@code ./mvnw -B clean compile} with {@code -Xlint:all -Werror}, so any warning it introduced would
  * fail the build outright, and it is exercised by the unit suite under
- * {@code src/test/java/com/cardemo/unit/model} via {@code mvn -B clean test}. Troubleshooting note:
+ * {@code src/test/java/com/cardemo/unit/model} via {@code ./mvnw -B clean test}. Troubleshooting note:
  * if a response is ever observed to contain a {@code password} key, the write-only annotation on
- * that component has been removed or overridden by a custom serialiser - the annotation, not the
- * log masking in {@code logback-spring.xml}, is the primary defence.</p>
+ * that component has been removed or overridden by a custom serialiser. The annotation is the only
+ * defence, not the first of two: no {@code logback-spring.xml} exists under
+ * {@code src/main/resources} yet, so no log-side masking rule would catch the leak.</p>
  *
  * @param transactionName CICS transaction identifier shown in the screen header. Source
  *                        {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COSGN00.CPY:24}.
@@ -161,9 +162,10 @@ import jakarta.validation.constraints.Size;
  *                        serialised outward, and never rendered by {@code toString()}. Source
  *                        {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:78}.
  * @param errorMessage    diagnostic text the program writes back to the screen. It occupies the
- *                        input group, so it is part of the eleven-field budget, but it is populated
- *                        by the program rather than the terminal and is not client-supplied, which
- *                        is why it carries no client-facing constraint. Source
+ *                        input group, so it is part of the eleven-field budget. On the terminal the
+ *                        program wrote it and the operator could not, but on a stateless REST surface
+ *                        it binds from the request body like every other component, so it is bounded
+ *                        at its declared width for the same reason the other ten are. Source
  *                        {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COSGN00.CPY:84}.
  */
 public record SignOnRequest(
@@ -199,6 +201,7 @@ public record SignOnRequest(
         @Size(max = PASSWORD_MAX_LENGTH)
         String password,
 
+        @Size(max = ERROR_MESSAGE_MAX_LENGTH)
         String errorMessage) {
 
     /**
@@ -208,85 +211,57 @@ public record SignOnRequest(
     public static final int TRANSACTION_NAME_MAX_LENGTH = 4;
 
     /**
-     * Declared width of {@code title01}: {@code TITLE01I PIC X(40)} at
-     * {@code app/cpy-bms/COSGN00.CPY:30}.
+     * Declared width of {@code title01}: {@code TITLE01I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:30}.
      */
     public static final int TITLE01_MAX_LENGTH = 40;
 
     /**
-     * Declared width of {@code currentDate}: {@code CURDATEI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:36}.
+     * Declared width of {@code currentDate}: {@code CURDATEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:36}.
      */
     public static final int CURRENT_DATE_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code programName}: {@code PGMNAMEI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:42}.
+     * Declared width of {@code programName}: {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:42}.
      */
     public static final int PROGRAM_NAME_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code title02}: {@code TITLE02I PIC X(40)} at
-     * {@code app/cpy-bms/COSGN00.CPY:48}.
+     * Declared width of {@code title02}: {@code TITLE02I PIC X(40)} at {@code app/cpy-bms/COSGN00.CPY:48}.
      */
     public static final int TITLE02_MAX_LENGTH = 40;
 
     /**
-     * Declared width of {@code currentTime}: {@code CURTIMEI PIC X(9)} at
-     * {@code app/cpy-bms/COSGN00.CPY:54}.
-     *
-     * <p>Nine, not eight. This is Distinction 1: every other symbolic map in
-     * {@code app/cpy-bms} declares {@code CURTIMEI PIC X(8)} at line 54, and COSGN00 alone declares
-     * nine bytes. The value is stated as a named constant precisely so that the outlier is explicit
-     * at its point of use and cannot be quietly normalised to eight.</p>
+     * Declared width of {@code currentTime}: {@code CURTIMEI PIC X(9)} at {@code app/cpy-bms/COSGN00.CPY:54}.
      */
     public static final int CURRENT_TIME_MAX_LENGTH = 9;
 
     /**
-     * Declared width of {@code applicationId}: {@code APPLIDI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:60}.
+     * Declared width of {@code applicationId}: {@code APPLIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:60}.
      */
     public static final int APPLICATION_ID_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code systemId}: {@code SYSIDI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:66}.
+     * Declared width of {@code systemId}: {@code SYSIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:66}.
      */
     public static final int SYSTEM_ID_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code userId}: {@code USERIDI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:72}.
+     * Declared width of {@code userId}: {@code USERIDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:72}.
      */
     public static final int USER_ID_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code password}: {@code PASSWDI PIC X(8)} at
-     * {@code app/cpy-bms/COSGN00.CPY:78}.
-     *
-     * <p>This is the width of the COBOL field, not a password policy. No minimum length and no
-     * complexity requirement is derived from it, because the source imposes none.</p>
+     * Declared width of {@code password}: {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COSGN00.CPY:78}.
      */
     public static final int PASSWORD_MAX_LENGTH = 8;
 
     /**
-     * Declared width of {@code errorMessage}: {@code ERRMSGI PIC X(78)} at
-     * {@code app/cpy-bms/COSGN00.CPY:84}.
-     *
-     * <p>Recorded for completeness of the field contract and used when the message is rendered back
-     * into a fixed-width screen field. It is deliberately not applied as an inbound constraint,
-     * because this component is written by the program rather than supplied by the client.</p>
+     * Declared width of {@code errorMessage}: {@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COSGN00.CPY:84}.
      */
     public static final int ERROR_MESSAGE_MAX_LENGTH = 78;
 
     /**
      * Returns a diagnostic rendering that deliberately omits the credential.
-     *
-     * <p>Only {@code userId}, {@code transactionName} and {@code programName} are reported. This
-     * override is mandatory rather than cosmetic: the {@code toString()} a record would otherwise
-     * inherit prints every component and would therefore print {@code password}. Nothing is emitted
-     * in the credential's place either - not a masked placeholder and not a length - so this
-     * rendering discloses nothing whatsoever about the presented password.</p>
      *
      * @return a rendering of this request that contains no credential material
      */
@@ -295,5 +270,39 @@ public record SignOnRequest(
         return "SignOnRequest[userId=" + userId
                 + ", transactionName=" + transactionName
                 + ", programName=" + programName + "]";
+    }
+
+    /**
+     * Rejects any JSON property that is not one of the eleven this type declares.
+     *
+     * <p>The symbolic map is a closed field contract: {@code 01 COSGN0AI} declares exactly eleven
+     * input data items and the terminal could send nothing else. Silently discarding an unrecognised
+     * property would break that contract in the direction that hides mistakes rather than reporting
+     * them - a client that misspells {@code userId} would otherwise authenticate as an absent user and
+     * receive the source's own "please enter User ID" path, which reads as a credential failure rather
+     * than as the malformed request it is.</p>
+     *
+     * <p>This guard is declared on the type rather than configured on the object mapper, and that is
+     * deliberate. A mapper-level setting is one line of configuration away from being switched off,
+     * and this repository publishes no {@code application*.yml} at all, so the framework default -
+     * which is to ignore unknown properties - would otherwise be in force. Declaring the guard here
+     * means it holds under a lenient mapper as well as a strict one.</p>
+     *
+     * <p>Neither the offending name nor the offending value is echoed in the message. Both are
+     * untrusted input, and echoing either would let a caller place chosen text into the logs of a
+     * request that failed at the authentication boundary.</p>
+     *
+     * @param name  the unrecognised property name, accepted only so that Jackson can invoke this
+     *              method; deliberately never read
+     * @param value the unrecognised property value, accepted only so that Jackson can invoke this
+     *              method; deliberately never read
+     * @throws IllegalArgumentException always, because no unrecognised property is acceptable
+     */
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(final String name, final Object value) {
+        throw new IllegalArgumentException(
+                "SignOnRequest accepts only the 11 fields declared by app/cpy-bms/COSGN00.CPY, and an"
+                        + " unrecognised property was supplied. The offending name and value are"
+                        + " withheld because they are untrusted input.");
     }
 }

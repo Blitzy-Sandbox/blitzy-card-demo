@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : SignOnResponseTest.java
- * Component   : Unit test tier - model and DTO suite, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM, no container, no Spring
  *               context, no database
@@ -16,8 +14,8 @@
  *               low-values and present remain four distinguishable
  *               states.
  * Source      : app/cpy/COCOM01Y.cpy:19-44 identity fields
- *               (no BMS map exists for this response - see the class
- *               documentation for the "Not available" disclosure)
+ *               (a response carries no BMS symbolic map, so no
+ *               app/cpy-bms member defines its shape)
  *               + app/cbl/COSGN00C.cbl:98-101,118,123,132-136,
  *                 145-157,223-240
  *               + app/cpy-bms/COSGN00.CPY:17,24-84,85,92-152
@@ -54,9 +52,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
 import java.lang.annotation.Annotation;
@@ -144,8 +139,8 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *
  * <h2>3. How to build, run and test</h2>
  *
- * <p>{@code mvn -B clean test} compiles this tree and runs the unit tier;
- * {@code mvn -B test -Dtest=SignOnResponseTest} runs this class alone. Surefire 3.5.4 selects
+ * <p>{@code ./mvnw -B clean test} compiles this tree and runs the unit tier;
+ * {@code ./mvnw -B test -Dtest=SignOnResponseTest} runs this class alone. Surefire 3.5.4 selects
  * {@code **}{@code /*Test.java} and {@code **}{@code /*Tests.java} while excluding
  * {@code **}{@code /integration/**} and {@code **}{@code /e2e/**}, so <strong>this class is
  * collected by Surefire and not by Failsafe</strong>. That is why the path
@@ -188,8 +183,10 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  * <ul>
  *   <li><em>The build fails on something that looks trivial.</em> Compilation runs with
  *       {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, and that reaches test
- *       compilation, so one unused import, one raw type or one deprecation is a build failure rather
- *       than a warning. Reproduce with {@code mvn -B -q test-compile}.</li>
+ *       compilation, so one raw type or one deprecation is a build failure rather
+ *       than a warning. An unused import is not: {@code javac} 25.0.3 publishes no lint key for one, so
+ *       Clause B's prohibition on it is enforced by review. Reproduce with
+ *       {@code ./mvnw -B -q test-compile}.</li>
  *   <li><em>Test 3.1 or 3.2 fails.</em> The token has leaked into a diagnostic rendering -
  *       {@code SignOnResponse.toString()} has been removed, weakened, or bypassed by a custom
  *       serialiser. Restore the override; the log masking in {@code logback-spring.xml} is a second
@@ -215,7 +212,8 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *
  * <ul>
  *   <li><strong>Medium.</strong> The corpus carries 441 input fields across its seventeen symbolic
- *       maps, not the 460 quoted in the plan, whose own table sums to 440. The census counts
+ *       maps, not the 460 of prior-generation plan prose, whose own table summed to 440. The current
+ *       {@code docs/technical-specifications.md} publishes 441, so the finding is closed there. The census counts
  *       <em>request</em> fields; a response with no map contributes none of them. Test 1.5.</li>
  *   <li><strong>Low.</strong> The plan marks seven COMMAREA data items as having no Java
  *       counterpart - {@code CDEMO-FROM-TRANID}, {@code CDEMO-FROM-PROGRAM},
@@ -250,145 +248,129 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
 @DisplayName("SignOnResponse - COMMAREA identity split, token containment and the tri-state model")
 final class SignOnResponseTest {
 
-    // -----------------------------------------------------------------------------------------
-    // Widths, codes and sizes transcribed from app/cpy/COCOM01Y.cpy. Restated as literals on
-    // purpose: a test that compared SignOnResponse's constants against themselves would be a
-    // tautology, so the expected values are transcribed from the copybook and compared against the
-    // production constants. Changing a production width therefore fails a test rather than moving
-    // the goalposts.
-    // -----------------------------------------------------------------------------------------
-
-    /** {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:25}. */
+    /**
+     * {@code CDEMO-USER-ID PIC X(08)} at {@code app/cpy/COCOM01Y.cpy:25}.
+     */
     private static final int USER_ID_WIDTH = 8;
 
-    /** {@code CDEMO-USER-TYPE PIC X(01)} at {@code app/cpy/COCOM01Y.cpy:26}. */
+    /**
+     * {@code CDEMO-USER-TYPE PIC X(01)} at {@code app/cpy/COCOM01Y.cpy:26}.
+     */
     private static final int USER_TYPE_WIDTH = 1;
 
-    /** {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} at {@code app/cpy/COCOM01Y.cpy:27}. */
+    /**
+     * {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'} at {@code app/cpy/COCOM01Y.cpy:27}.
+     */
     private static final String ADMIN_CODE = "A";
 
-    /** {@code 88 CDEMO-USRTYP-USER VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:28}. */
+    /**
+     * {@code 88 CDEMO-USRTYP-USER VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:28}.
+     */
     private static final String USER_CODE = "U";
 
     /**
      * Byte length of {@code 01 CARDDEMO-COMMAREA}, {@code app/cpy/COCOM01Y.cpy:19-44}.
-     *
-     * <p>The sum of the declared pictures: {@code 4 + 8 + 4 + 8 + 8 + 1 + 1} for the general
-     * information group, {@code 9 + 25 + 25 + 25} for the customer group, {@code 11 + 1} for the
-     * account group, {@code 16} for the card group and {@code 7 + 7} for the trailing group. The
-     * figure is quoted so that the count of fields this type drops can be tied to a whole area
-     * rather than to a list someone might trim.
      */
     private static final int COMMAREA_LENGTH = 160;
 
-    /** Data items {@code app/cpy/COCOM01Y.cpy} declares, excluding group and condition-name lines. */
+    /**
+     * Data items {@code app/cpy/COCOM01Y.cpy} declares, excluding group and condition-name lines.
+     */
     private static final int COMMAREA_DATA_ITEMS = 16;
 
     /**
-     * Input fields the seventeen symbolic maps of {@code app/cpy-bms/**} declare between them.
-     *
-     * <p>441, not the 460 the plan quotes; the plan's own table sums to 440. Classified
-     * <strong>Medium</strong>: the discrepancy is a census of <em>request</em> fields and cannot
-     * reach a response with no map, but a figure that disagrees with its own table must be recorded
-     * rather than repeated.
+     * Input fields {@code 01 COSGN0AI} declares, {@code app/cpy-bms/COSGN00.CPY:24-84}.
      */
-    private static final int CORPUS_INPUT_FIELDS = 441;
-
-    /** Input fields {@code 01 COSGN0AI} declares, {@code app/cpy-bms/COSGN00.CPY:24-84}. */
     private static final int SIGN_ON_MAP_INPUT_FIELDS = 11;
 
     /**
      * A second fixed instant, distinct from {@link FixedClockProvider#CANONICAL_INSTANT}.
-     *
-     * <p>Its only purpose is to give test 4.2 two different clocks to render under. Stated as a
-     * literal instant rather than derived by adding to the canonical one, so that the two cannot
-     * accidentally coincide if the canonical value is ever revised.
      */
     private static final Instant ALTERNATE_INSTANT = Instant.parse("2023-11-27T08:15:42Z");
 
     /**
      * The "present" state used wherever a test needs a value that is neither absent, empty, blank nor
      * low-values.
-     *
-     * <p>One character, so that it is a legitimate value for the one byte type code as well as for the
-     * eight byte identifier and the unbounded token. It is deliberately not one of the two condition
-     * name codes: a state test must not double as a domain test.
      */
     private static final String PRESENT_VALUE = "X";
 
-    // -----------------------------------------------------------------------------------------
-    // Deterministic fixtures. Every one is an immutable value; none is a real credential.
-    // -----------------------------------------------------------------------------------------
-
     /**
      * The synthetic token this suite transports.
-     *
-     * <p>Obviously fake by construction, and deliberately <em>not</em> shaped like a JSON Web Token:
-     * it carries no dot separated segments, so it cannot be mistaken for, or accidentally parsed as,
-     * a real credential. Nothing here mints or verifies a token - the type under test treats it as
-     * an opaque string - so a well formed token would buy no coverage and would only put a
-     * credential shaped literal under {@code src/}.
      */
     private static final String SYNTHETIC_TOKEN = "SYNTHETIC-UNIT-TEST-TOKEN-NOT-A-CREDENTIAL";
 
     /**
-     * A second synthetic token, needed wherever a test must distinguish two responses that differ
-     * only in the token.
+     * A second synthetic token, needed wherever a test must distinguish two responses that differ only in the
+     * token.
      */
     private static final String OTHER_SYNTHETIC_TOKEN = "ANOTHER-SYNTHETIC-UNIT-TEST-TOKEN-VALUE";
 
     /**
      * A synthetic eight character user identifier, filling {@code CDEMO-USER-ID PIC X(08)} exactly.
      *
-     * <p>Chosen so that it is none of the ten identifiers seeded by
-     * {@code app/jcl/DUSRSECJ.jcl:35-44} - which are {@code ADMIN001} to {@code ADMIN005} and
-     * {@code USER0001} to {@code USER0005} - and so that it shares no four character run with either
-     * token fixture, which is what lets test 3.1 assert substring containment meaningfully.
+     * <p>Chosen so that it matches neither {@link #SEEDED_IDENTIFIER_SHAPE} nor
+     * {@link #SEEDED_PLAINTEXT_SHAPE}, and so that it shares no four character run with either token fixture,
+     * which is what lets the substring containment assertions mean something.
      */
     private static final String SYNTHETIC_USER_ID = "TSTUSR01";
 
     /**
-     * Shape of the plaintext password shared by the ten seeded users, expressed as a pattern so that
-     * the literal itself never appears under {@code src/}.
+     * Shape of the plaintext password shared by the ten seeded users, expressed as a pattern so that the
+     * literal itself never appears under {@code src/}.
      *
-     * <p>{@code app/jcl/DUSRSECJ.jcl:35-44} carries it inline in bytes 49 to 56 of each 80 byte
-     * record, with the type character at byte 57: eight upper case letters and nothing else. Writing
-     * that literal into a test would be a <strong>Blocker</strong> under the no-secrets-in-tests
-     * standard, so the fixtures are proved distinct from it by shape instead.
+     * <p>{@code app/jcl/DUSRSECJ.jcl:35-44} carries it inline in bytes 49 to 56 of each 80 byte record, with
+     * the type character at byte 57: eight upper case letters and nothing else.
      */
     private static final String SEEDED_PLAINTEXT_SHAPE = "^[A-Z]{8}$";
+
+    /**
+     * Shape of the ten user identifiers seeded by {@code app/jcl/DUSRSECJ.jcl:L35-L44}, expressed as a
+     * pattern so that no seeded identity is transcribed under {@code src/}.
+     *
+     * <p>Each of the ten occupies bytes 1 to 8 of its 80 byte record and is an upper case alphabetic
+     * prefix followed by digits filling the eight byte key: five administrator rows of type {@code 'A'}
+     * then five standard rows of type {@code 'U'}. Asserting that a fixture does not match this shape is
+     * strictly stronger than asserting it differs from ten enumerated values, because it excludes every
+     * identifier of the seeded form rather than only those ten - and it discloses the layout, which is
+     * evidence, without disclosing the identities, which are not.
+     */
+    private static final String SEEDED_IDENTIFIER_SHAPE = "^[A-Z]{4,5}[0-9]{3,4}$";
 
     /** Shape of an AWS access key identifier; no fixture may look like one. */
     private static final String CLOUD_ACCESS_KEY_SHAPE = "^(?:AKIA|ASIA)[0-9A-Z]{16}$";
 
-    /** Shape of a BCrypt hash; hashing belongs to the security tier, not to this one. */
+    /**
+     * Shape of a BCrypt hash; hashing belongs to the security tier, not to this one.
+     */
     private static final String BCRYPT_HASH_SHAPE = "^\\$2[aby]\\$\\d{2}\\$.{53}$";
 
-    /** Shape of a three segment JSON Web Token; no fixture may look like one. */
+    /**
+     * Shape of a three segment JSON Web Token; no fixture may look like one.
+     */
     private static final String JWT_SHAPE = "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$";
 
-    /** COBOL {@code LOW-VALUES} for a single byte field: {@code X'00'}, not a space and not absent. */
+    /**
+     * COBOL {@code LOW-VALUES} for a single byte field: {@code X'00'}, not a space and not absent.
+     */
     private static final String LOW_VALUES = "\u0000";
 
-    /** The blank state: a value that is present but carries only spaces. */
+    /**
+     * The blank state: a value that is present but carries only spaces.
+     */
     private static final String BLANK = " ";
 
-    /** The shortest present value: the empty string, which is present but zero length. */
+    /**
+     * The shortest present value: the empty string, which is present but zero length.
+     */
     private static final String EMPTY = "";
 
     /**
      * The three record component names {@link SignOnResponse} declares, in declaration order.
-     *
-     * <p>Transcribed rather than derived, so that a reordering or a rename is a test failure instead
-     * of something the suite silently follows.
      */
     private static final List<String> EXPECTED_COMPONENTS = List.of("token", "userId", "userType");
 
     /**
      * The eleven data item names of {@code 01 COSGN0AI}, {@code app/cpy-bms/COSGN00.CPY:24-84}.
-     *
-     * <p>Held only so that test 1.2 can assert that none of them was borrowed into this type. The
-     * eleven are the field contract of the sign-on <em>request</em>.
      */
     private static final List<String> SIGN_ON_MAP_ITEMS = List.of(
             "TRNNAMEI", "TITLE01I", "CURDATEI", "PGMNAMEI", "TITLE02I", "CURTIMEI",
@@ -396,12 +378,6 @@ final class SignOnResponseTest {
 
     /**
      * The Java component names the eleven map items would have carried, had they been borrowed.
-     *
-     * <p>{@code userId} is deliberately excluded: {@code USERIDI} and {@code CDEMO-USER-ID} agree on
-     * both name and width, so its presence here proves nothing either way. What the list does prove
-     * is that no screen-only field - the transaction name, the two titles, the header date and time,
-     * the application and system identifiers, the presented password or the error message - reached
-     * this type.
      */
     private static final List<String> SCREEN_ONLY_COMPONENTS = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
@@ -410,12 +386,10 @@ final class SignOnResponseTest {
     /**
      * Property and accessor names that must not exist on this type under any spelling.
      *
-     * <p>Three groups, each excluded for its own reason: credential material, because a sign-on reply
-     * returns no secret; personally identifiable information, because
-     * {@code app/cbl/COSGN00C.cbl:223-228} never populates the customer name group on the success
-     * path and returning it would both invent a result and disclose gratuitously; and token metadata,
-     * because the COMMAREA declares no lifetime, no issue instant and no scope, so any such field
-     * would be invented rather than translated.
+     * <p>Three groups, each excluded for its own reason: credential material, because a sign-on reply returns
+     * no secret; personally identifiable fields, because {@code app/cbl/COSGN00C.cbl:223-228} never populates
+     * the customer group on the success path; and screen state, because none of it survives the move to a
+     * stateless protocol.
      */
     private static final List<String> FORBIDDEN_MEMBERS = List.of(
             "password", "passwordHash", "pwd", "secret", "credential", "signingKey", "key",
@@ -427,9 +401,9 @@ final class SignOnResponseTest {
     /**
      * Names a routing hint would plausibly be spelled with, asserted absent by test 2.7.
      *
-     * <p>The destination that {@code app/cbl/COSGN00C.cbl:230-240} selects is already fully
-     * determined by the user type, so a second field restating it would create two sources of truth
-     * for one decision and would reintroduce {@code CDEMO-TO-PROGRAM} by another name.
+     * <p>The destination {@code app/cbl/COSGN00C.cbl:230-240} selects is already fully determined by the user
+     * type, so a second field restating it would create two sources of truth for one decision and would
+     * reintroduce {@code CDEMO-TO-PROGRAM} under another name.
      */
     private static final List<String> FORBIDDEN_ROUTING_HINTS = List.of(
             "landingProgram", "destination", "destinationProgram", "nextProgram", "redirect",
@@ -442,20 +416,15 @@ final class SignOnResponseTest {
             "timestamp", "createdAt", "issuedTimestamp", "validUntil", "instant", "clock",
             "processingTimestamp", "originatingTimestamp");
 
-    // -----------------------------------------------------------------------------------------
-    // Contract rows and pure factories. Every provider below is a factory rather than a static
-    // collection, so no test can mutate what another test sees.
-    // -----------------------------------------------------------------------------------------
-
     /**
      * One bounded component of this type, transcribed from {@code app/cpy/COCOM01Y.cpy}.
      *
-     * @param cobolItem      the data item name as the copybook spells it
-     * @param sourceLine     the line of {@code app/cpy/COCOM01Y.cpy} that declares it
-     * @param pictureClause  the declared PICTURE, verbatim
-     * @param width          the declared width in bytes
-     * @param componentName  the {@link SignOnResponse} component that carries it
-     * @param widthConstant  the public width constant {@link SignOnResponse} publishes for it
+     * @param cobolItem the data item name as the copybook spells it
+     * @param sourceLine the line of {@code app/cpy/COCOM01Y.cpy} that declares it
+     * @param pictureClause the declared PICTURE, verbatim
+     * @param width the declared width in bytes
+     * @param componentName the {@link SignOnResponse} component that carries it
+     * @param widthConstant the public width constant {@link SignOnResponse} publishes for it
      */
     private record FieldContract(
             String cobolItem,
@@ -488,11 +457,11 @@ final class SignOnResponseTest {
     /**
      * One COMMAREA data item that this type deliberately does not carry.
      *
-     * @param cobolItem     the data item name as {@code app/cpy/COCOM01Y.cpy} spells it
-     * @param sourceLine    the line that declares it
+     * @param cobolItem the data item name as {@code app/cpy/COCOM01Y.cpy} spells it
+     * @param sourceLine the line that declares it
      * @param pictureClause the declared PICTURE, verbatim
      * @param componentName the component name it would have carried, which must not exist
-     * @param reason        why it has no counterpart
+     * @param reason why it has no counterpart
      */
     private record OmittedField(
             String cobolItem,
@@ -510,10 +479,6 @@ final class SignOnResponseTest {
 
     /**
      * The seven routing and screen-state data items that carry no counterpart at all.
-     *
-     * <p>These are the items the plan marks "No equivalent". They are the ones whose reappearance
-     * would be <strong>High severity</strong>, because each is server side session state and the
-     * REST surface is required to hold none.
      *
      * @return the seven omitted routing and screen-state field rows, in copybook order
      */
@@ -538,9 +503,8 @@ final class SignOnResponseTest {
     /**
      * The seven customer, account and card data items that this reply also drops.
      *
-     * <p>{@code app/cbl/COSGN00C.cbl:223-228} writes none of them on the success path, so returning
-     * any would invent a result the source does not produce; the three name fields and the card
-     * number would in addition disclose personally identifiable information.
+     * <p>{@code app/cbl/COSGN00C.cbl:223-228} writes none of them on the success path, so returning any would
+     * invent a result the source does not produce; three of them would in addition disclose personal data.
      *
      * @return the seven omitted customer, account and card field rows, in copybook order
      */
@@ -628,10 +592,9 @@ final class SignOnResponseTest {
         return FORBIDDEN_MEMBERS.stream();
     }
 
-
     /**
-     * A fully populated, entirely valid response: an eight character identifier, the administrator
-     * code and the synthetic token.
+     * A fully populated, entirely valid response: an eight character identifier, the administrator code and the
+     * synthetic token.
      *
      * @return a valid response built only from this class's deterministic fixtures
      */
@@ -640,21 +603,13 @@ final class SignOnResponseTest {
     }
 
     /**
-     * {@link #baseline()} with exactly one component replaced, so that a violation can be attributed
-     * to a single field rather than inferred from a set.
+     * {@link #baseline()} with exactly one component replaced, so that a violation can be attributed to a
+     * single field rather than inferred from a set.
      *
-     * <p>The substitution is an explicit {@code switch} rather than a reflective write. That is a
-     * security choice as much as a style one: reflective invocation driven by a string is precisely
-     * the pattern the project's standards ask to be flagged, and it would also defeat the compiler's
-     * ability to notice a renamed component.
-     *
-     * @param componentName the record component to replace, spelled as {@link SignOnResponse}
-     *                      declares it
-     * @param value         the replacement value, which may be {@code null}
+     * @param componentName the record component to replace, spelled as {@link SignOnResponse} declares it
+     * @param value the replacement value, which may be {@code null}
      * @return a response identical to {@link #baseline()} except for the named component
-     * @throws IllegalArgumentException if {@code componentName} is not a component of
-     *                                  {@link SignOnResponse}; the message names the component and
-     *                                  never a value, because one component is a credential
+     * @throws IllegalArgumentException if {@code componentName} is not a component of {@link SignOnResponse}.
      */
     private static SignOnResponse baselineWith(final String componentName, final String value) {
         return switch (componentName) {
@@ -669,15 +624,10 @@ final class SignOnResponseTest {
     /**
      * Reads a component's value back through its canonical accessor.
      *
-     * <p>An explicit {@code switch} for the same reasons {@link #baselineWith(String, String)} uses
-     * one: no reflective invocation, and a renamed component becomes a compile error rather than a
-     * run time surprise.
-     *
-     * @param response      the response to read
+     * @param response the response to read
      * @param componentName the record component to read
      * @return the component's value, possibly {@code null}
-     * @throws IllegalArgumentException if {@code componentName} is not a component of
-     *                                  {@link SignOnResponse}
+     * @throws IllegalArgumentException if {@code componentName} is not a component of {@link SignOnResponse}
      */
     private static String componentOf(final SignOnResponse response, final String componentName) {
         return switch (componentName) {
@@ -692,37 +642,23 @@ final class SignOnResponseTest {
     /**
      * Validates a response with a freshly built validator factory.
      *
-     * <p>The factory is created and closed per call rather than cached in a static field, so this
-     * suite holds no mutable shared state and no test can be affected by the order it runs in. This
-     * is plain Jakarta Bean Validation: no Spring context is refreshed and no container is started.
-     *
      * @param response the response to validate
      * @return the constraint violations, empty when the response satisfies every declared bound
      */
     private static Set<ConstraintViolation<SignOnResponse>> violationsOf(
             final SignOnResponse response) {
-        try (ValidatorFactory factory = Validation.buildDefaultValidatorFactory()) {
-            final Validator validator = factory.getValidator();
-            return validator.validate(response);
-        }
+        return ValidationSupport.violationsOf(response, "response");
     }
 
     /**
      * Reads an annotation from the <em>field</em> a record component generates.
      *
-     * <p>Reading it from the {@link RecordComponent} itself does not work, and the reason is worth
-     * stating: {@link Size} does not list {@code ElementType.RECORD_COMPONENT} among its targets, so
-     * although it is written on the component it is not directly present on it. Java propagates it to
-     * the applicable declarations instead - the private field, the accessor and the constructor
-     * parameter - which is where Bean Validation reads it.
-     *
-     * @param componentName  the record component whose generated field should be inspected
+     * @param componentName the record component whose generated field should be inspected
      * @param annotationType the annotation to look for
-     * @param <A>            the annotation type
+     * @param <A> the annotation type
      * @return the annotation, or {@code null} when the component does not carry it
-     * @throws AssertionError if {@link SignOnResponse} declares no such field, which would mean the
-     *                        component was renamed; the original reflective failure is preserved as
-     *                        the cause rather than swallowed
+     * @throws AssertionError if {@link SignOnResponse} declares no such field, which would mean the component
+     * was renamed.
      */
     private static <A extends Annotation> A fieldAnnotation(
             final String componentName, final Class<A> annotationType) {
@@ -738,14 +674,9 @@ final class SignOnResponseTest {
     /**
      * Looks up a no-argument accessor that {@link SignOnResponse} declares.
      *
-     * <p>Reflective <em>lookup</em> only: nothing here invokes a method chosen by a string, because
-     * reflection driven invocation is one of the risky patterns the project's standards ask to be
-     * flagged. The result is inspected for its annotations and its return type, never called.
-     *
      * @param accessorName the accessor to look up
      * @return the accessor
-     * @throws AssertionError if no such accessor is declared, which would mean it was renamed; the
-     *                        original reflective failure is preserved as the cause
+     * @throws AssertionError if no such accessor is declared, which would mean it was renamed.
      */
     private static Method accessor(final String accessorName) {
         try {
@@ -779,13 +710,8 @@ final class SignOnResponseTest {
     }
 
     /**
-     * Every declared field and method name of {@link SignOnResponse}, lower cased with
-     * {@link Locale#ROOT} so that a comparison cannot vary with the host's default locale.
-     *
-     * <p>Both are inspected together because a value can escape a type through either: a field is
-     * what a serialiser reflects over, and a method is what a template or an expression language
-     * resolves. Constants and generated members are included deliberately - the question these
-     * assertions answer is whether a name exists anywhere on the type, not whether it is public.
+     * Every declared field and method name of {@link SignOnResponse}, lower cased with {@link Locale#ROOT} so
+     * that a comparison cannot vary with the host's default locale.
      *
      * @return the lower cased declared field and method names
      */
@@ -812,15 +738,10 @@ final class SignOnResponseTest {
     /**
      * Serialises a response to JSON with a plain, unconfigured mapper.
      *
-     * <p>Unconfigured on purpose: no polymorphic default typing is activated, because a response type
-     * that carried a type identifier would be a deserialisation gadget surface, and no inclusion or
-     * naming strategy is set, so what these tests observe is the shape the type itself dictates
-     * rather than the shape a configuration produced.
-     *
      * @param response the response to serialise
      * @return the JSON rendering
-     * @throws JsonProcessingException if serialisation fails, which is a genuine failure and is
-     *                                 therefore allowed to propagate rather than being caught
+     * @throws JsonProcessingException if serialisation fails, which is a genuine failure and is therefore
+     * allowed to propagate rather than being caught
      */
     private static String toJson(final SignOnResponse response) throws JsonProcessingException {
         return new ObjectMapper().writeValueAsString(response);
@@ -854,12 +775,7 @@ final class SignOnResponseTest {
     /**
      * Every contiguous substring of a value at or above a minimum length, longest first.
      *
-     * <p>Used by test 3.1 so that the token's absence from a rendering is asserted for every fragment
-     * of it rather than only for the whole value. A masked prefix, a truncation or a first-and-last
-     * four rendering would each satisfy a whole value comparison while still disclosing enough of a
-     * bearer credential to matter.
-     *
-     * @param value     the value to fragment
+     * @param value the value to fragment
      * @param minLength the shortest fragment to produce
      * @return the fragments, in descending length order
      */
@@ -870,13 +786,6 @@ final class SignOnResponseTest {
                         .map(start -> value.substring(start, start + length)))
                 .toList();
     }
-
-
-    // =========================================================================================
-    // 1. PROVENANCE - this response has no symbolic map, so nothing may be borrowed from one
-    //    app/cpy-bms/COSGN00.CPY:17,24-84 is the request contract; :85,92-152 is the re-displayed
-    //    screen; app/cbl/COSGN00C.cbl:223-240 sends no map on the success path at all.
-    // =========================================================================================
 
     @Test
     @DisplayName("1.1 exposes exactly the token and the two COMMAREA identity fields, in that order")
@@ -898,7 +807,7 @@ final class SignOnResponseTest {
 
     @ParameterizedTest
     @MethodSource("screenOnlyComponentNames")
-    @DisplayName("1.2 HIGH: borrows no data item from the sign-on symbolic map, which is the request"
+    @DisplayName("1.2 borrows no data item from the sign-on symbolic map, which is the request"
             + " contract")
     void borrowsNoDataItemFromTheSignOnSymbolicMap(final String screenOnlyComponent) {
         assertThat(declaredComponentNames())
@@ -959,29 +868,17 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("1.6 MEDIUM: the corpus's 441 input fields are a request census; this response"
-            + " contributes none")
-    void theCorpusInputFieldCensusCoversRequestsOnly() {
-        assertThat(CORPUS_INPUT_FIELDS)
-                .as("441 input fields across the seventeen symbolic maps, not the 460 the plan"
-                        + " quotes; the plan's own table sums to 440, and a figure that disagrees with"
-                        + " its own table is recorded rather than repeated")
-                .isNotEqualTo(460)
-                .isNotEqualTo(440);
+    @DisplayName("1.6 declares fewer components than the sign-on map declares input fields, because a"
+            + " response borrows from no map")
+    void declaresFewerComponentsThanTheSignOnMapDeclaresInputFields() {
         assertThat(SIGN_ON_MAP_INPUT_FIELDS)
                 .as("group 01 COSGN0AI declares eleven data items, app/cpy-bms/COSGN00.CPY:24-84")
                 .isEqualTo(SIGN_ON_MAP_ITEMS.size());
         assertThat(declaredComponentNames())
-                .as("a census of input fields cannot reach a response with no map: this type"
-                        + " contributes none of the 441 and takes none of COSGN00's eleven")
+                .as("an input field count cannot reach a response that has no map: this type takes"
+                        + " none of COSGN00's eleven items")
                 .hasSizeLessThan(SIGN_ON_MAP_INPUT_FIELDS);
     }
-
-    // =========================================================================================
-    // 2. THE COMMAREA IDENTITY SPLIT - app/cpy/COCOM01Y.cpy:19-44 is 160 bytes and sixteen data
-    //    items; exactly two survive. app/cbl/COSGN00C.cbl:98-101 returned the whole area to CICS,
-    //    :224-:228 populated it and :230-:240 branched on one byte of it.
-    // =========================================================================================
 
     @Test
     @DisplayName("2.1 carries the identifier and the type verbatim, transporting rather than"
@@ -1005,7 +902,7 @@ final class SignOnResponseTest {
 
     @ParameterizedTest
     @MethodSource("omittedSessionFields")
-    @DisplayName("2.2 HIGH: reinstates no routing or screen-state field, so no server side session"
+    @DisplayName("2.2 reinstates no routing or screen-state field, so no server side session"
             + " state survives")
     void reinstatesNoRoutingOrScreenStateField(final OmittedField omitted) {
         assertThat(declaredComponentNames())
@@ -1019,7 +916,7 @@ final class SignOnResponseTest {
 
     @ParameterizedTest
     @MethodSource("omittedSubjectFields")
-    @DisplayName("2.3 HIGH: returns no customer, account or card field, none of which sign-on"
+    @DisplayName("2.3 returns no customer, account or card field, none of which sign-on"
             + " produces")
     void returnsNoCustomerAccountOrCardField(final OmittedField omitted) {
         assertThat(declaredComponentNames())
@@ -1110,7 +1007,7 @@ final class SignOnResponseTest {
 
     @ParameterizedTest
     @MethodSource("outOfDomainUserTypeCodes")
-    @DisplayName("2.7 HIGH: resolves an out-of-domain type to null and never defaults it to a"
+    @DisplayName("2.7 resolves an out-of-domain type to null and never defaults it to a"
             + " constant")
     void resolvesAnOutOfDomainTypeToNullAndNeverDefaults(final String code, final String reason) {
         final SignOnResponse response = baselineWith("userType", code);
@@ -1145,7 +1042,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("2.9 LOW: propagates neither card number shape, numeric nor alphanumeric")
+    @DisplayName("2.9 propagates neither card number shape, numeric nor alphanumeric")
     void propagatesNeitherCardNumberShape() {
         assertThat(declaredComponentTypes())
                 .as("CDEMO-CARD-NUM at app/cpy/COCOM01Y.cpy:41 is PIC 9(16), numeric, while the card"
@@ -1159,14 +1056,8 @@ final class SignOnResponseTest {
                 .doesNotContain("cardnum", "cardnumber", "card", "pan");
     }
 
-
-    // =========================================================================================
-    // 3. TOKEN CONTAINMENT - the credential leaves this type through no diagnostic path
-    //    Rule 1 Clause D names tests explicitly: "No secrets in code, logs, tests, or config."
-    // =========================================================================================
-
     @Test
-    @DisplayName("3.1 BLOCKER: renders no fragment of the token through toString, not even a"
+    @DisplayName("3.1 renders no fragment of the token through toString, not even a"
             + " four character run")
     void toStringRendersNoFragmentOfTheToken() {
         final String rendered = baseline().toString();
@@ -1184,7 +1075,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("3.2 BLOCKER: names no token field through toString and emits no mask, length or"
+    @DisplayName("3.2 names no token field through toString and emits no mask, length or"
             + " presence hint")
     void toStringNamesNoTokenFieldAndEmitsNoMaskOrLength() {
         final String rendered = baseline().toString();
@@ -1237,7 +1128,7 @@ final class SignOnResponseTest {
 
     @ParameterizedTest
     @MethodSource("forbiddenMemberNames")
-    @DisplayName("3.5 BLOCKER: carries no credential, no personally identifiable field and no invented"
+    @DisplayName("3.5 carries no credential, no personally identifiable field and no invented"
             + " token metadata")
     void carriesNoCredentialPersonalDataOrInventedTokenMetadata(final String forbidden)
             throws JsonProcessingException {
@@ -1317,7 +1208,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("3.10 BLOCKER: uses fixtures that cannot collide with the seeded plaintext password")
+    @DisplayName("3.10 uses fixtures that cannot collide with the seeded plaintext password")
     void usesFixturesThatCannotCollideWithTheSeededPlaintext() {
         for (final String fixture : List.of(SYNTHETIC_TOKEN, OTHER_SYNTHETIC_TOKEN,
                 SYNTHETIC_USER_ID, ADMIN_CODE, USER_CODE)) {
@@ -1330,13 +1221,15 @@ final class SignOnResponseTest {
                     .doesNotMatch(SEEDED_PLAINTEXT_SHAPE);
         }
         assertThat(SYNTHETIC_USER_ID)
-                .as("and the identifier fixture must be none of the ten seeded identifiers")
-                .isNotIn("ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
-                        "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+                .as("and the identifier fixture must be none of the ten seeded identifiers. That is proved"
+                        + " against the shape of the seeded key rather than against an enumeration of the"
+                        + " ten values, so no seeded identity is written under src/ - and the guarantee is"
+                        + " stronger, because it excludes every identifier of the seeded form")
+                .doesNotMatch(SEEDED_IDENTIFIER_SHAPE);
     }
 
     @Test
-    @DisplayName("3.11 BLOCKER: uses no signing key, cloud access key, password hash or real token as"
+    @DisplayName("3.11 uses no signing key, cloud access key, password hash or real token as"
             + " a fixture")
     void usesNoSigningKeyCloudKeyHashOrRealTokenAsAFixture() {
         for (final String fixture : List.of(SYNTHETIC_TOKEN, OTHER_SYNTHETIC_TOKEN,
@@ -1365,7 +1258,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("3.12 BLOCKER: reports an over-width identifier without echoing its value")
+    @DisplayName("3.12 reports an over-width identifier without echoing its value")
     void constraintViolationsNeverEchoTheOffendingValue() {
         final String overWidth = SYNTHETIC_USER_ID + "x";
 
@@ -1392,16 +1285,8 @@ final class SignOnResponseTest {
                 });
     }
 
-
-    // =========================================================================================
-    // 4. DETERMINISM - nothing on this type is derived from the ambient clock
-    //    The three legacy renderings: app/cbl/COBIL00C.cbl:249-267 (online),
-    //    app/cbl/CBACT04C.cbl:613-626 and app/cbl/CBTRN02C.cbl:692-706 (batch),
-    //    app/cbl/COTRN02C.cbl:464-465 (pass through). All three are 26 byte character fields.
-    // =========================================================================================
-
     @Test
-    @DisplayName("4.1 HIGH: declares no temporal component, so no value on it can be wall clock"
+    @DisplayName("4.1 declares no temporal component, so no value on it can be wall clock"
             + " derived")
     void declaresNoTemporalComponent() {
         assertThat(declaredComponentTypes())
@@ -1476,8 +1361,9 @@ final class SignOnResponseTest {
         assertThat(batch)
                 .as("app/cbl/CBACT04C.cbl:623 moves a dash into THREE separator bytes, so the batch"
                         + " rendering carries a dash between the day and the hour, and :621-:622 fill"
-                        + " hundredths then four literal zeros - millisecond precision, never"
-                        + " nanoseconds, which would give 29 characters")
+                        + " hundredths then four literal zeros - hundredths-of-a-second precision, never"
+                        + " milliseconds, which would give 27 characters, and never nanoseconds, which"
+                        + " would give 29")
                 .hasSize(FixedClockProvider.TIMESTAMP_LENGTH)
                 .isEqualTo(FixedClockProvider.CANONICAL_BATCH_TIMESTAMP)
                 .endsWith("0000");
@@ -1521,16 +1407,9 @@ final class SignOnResponseTest {
                 .isEqualTo(UserType.ADMIN);
     }
 
-    // =========================================================================================
-    // 5. THE TRI-STATE MODEL AND BOUNDARY CONDITIONS
-    //    app/cpy/CSSETATY.cpy:18-27 models OK / NOT-OK / BLANK and fires its markers only on
-    //    re-entry (:20); app/cbl/COSGN00C.cbl:118 and :123 test SPACES OR LOW-VALUES as two
-    //    separate sentinels.
-    // =========================================================================================
-
     @ParameterizedTest
     @MethodSource("componentNames")
-    @DisplayName("5.1 HIGH: keeps absent, empty, blank, low-values and present as five"
+    @DisplayName("5.1 keeps absent, empty, blank, low-values and present as five"
             + " distinguishable states")
     void keepsAbsentEmptyBlankLowValuesAndPresentDistinguishable(final String componentName) {
         final List<String> states = Arrays.asList(null, EMPTY, BLANK, LOW_VALUES, PRESENT_VALUE);
@@ -1620,7 +1499,7 @@ final class SignOnResponseTest {
     @DisplayName("5.6 leaves the token unbounded, because no PIC clause for it is available")
     void leavesTheTokenUnbounded() {
         assertThat(fieldAnnotation("token", Size.class))
-                .as("the token's declared width is Not available: it is a new artefact with no COBOL"
+                .as("the token carries no declared width: it is a new artefact with no COBOL"
                         + " PICTURE, so there is nothing to transcribe. A width invented here would"
                         + " reject valid tokens as the claim set grows")
                 .isNull();
@@ -1634,7 +1513,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("5.7 HIGH: rejects a blank padded type code rather than repairing it")
+    @DisplayName("5.7 rejects a blank padded type code rather than repairing it")
     void rejectsABlankPaddedTypeCodeRatherThanRepairingIt() {
         final SignOnResponse padded = baselineWith("userType", ADMIN_CODE + BLANK);
 
@@ -1676,11 +1555,6 @@ final class SignOnResponseTest {
                 .containsOnlyKeys(EXPECTED_COMPONENTS.toArray(String[]::new))
                 .containsValue(null);
     }
-
-
-    // =========================================================================================
-    // 6. VALUE SEMANTICS AND ERROR MODES
-    // =========================================================================================
 
     @Test
     @DisplayName("6.1 defines equals as reflexive, symmetric and transitive over its components")
@@ -1748,7 +1622,7 @@ final class SignOnResponseTest {
     }
 
     @Test
-    @DisplayName("6.5 LOW: includes the token in value identity, which is record semantics and"
+    @DisplayName("6.5 includes the token in value identity, which is record semantics and"
             + " discloses nothing")
     void includesTheTokenInValueIdentityWithoutDisclosingIt() {
         final SignOnResponse withToken = baseline();
@@ -1834,4 +1708,3 @@ final class SignOnResponseTest {
                 .withCauseInstanceOf(NoSuchMethodException.class);
     }
 }
-

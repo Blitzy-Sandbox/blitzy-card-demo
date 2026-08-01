@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : UserTypeTest.java
- * Component   : Unit test tier, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM tier, no container, no
  *               Spring context, no database, no live endpoint
@@ -100,9 +98,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to build, run and test</h2>
  *
  * <pre>
- * mvn -B -o test -Dtest=UserTypeTest     # this class alone
- * mvn -B clean test                      # the whole unit tier
- * mvn -B clean verify                    # unit tier plus coverage and dependency gates
+ * ./mvnw -B -o test -Dtest=UserTypeTest  # this class alone
+ * ./mvnw -B clean test                   # the whole unit tier
+ * ./mvnw -B clean verify                 # unit tier plus coverage and dependency gates
  * </pre>
  *
  * <p><strong>Which plugin collects this class matters, and the failure mode is silent.</strong>
@@ -152,9 +150,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li><strong>The build fails at {@code testCompile} rather than at a test.</strong>
  *       {@code maven-compiler-plugin} 3.14.1 is configured with {@code failOnWarning}, {@code -Xlint:all}
- *       and {@code -Werror}, and that configuration reaches test compilation. An unused import, a raw type,
- *       a deprecated call or an unchecked conversion is therefore a hard build failure and not a warning.
- *       Read the {@code [ERROR]} line: it names the offending import or expression.</li>
+ *       and {@code -Werror}, and that configuration reaches test compilation. A raw type, a deprecated
+ *       call or an unchecked conversion is therefore a hard build failure and not a warning. An unused
+ *       import is <em>not</em> - {@code javac} 25.0.3 publishes no lint key for one, as
+ *       {@code javac --help-lint} shows - so it is caught at review instead.
+ *       Read the {@code [ERROR]} line: it names the offending expression.</li>
  *   <li><strong>A constant set assertion fails.</strong> A third constant was added to {@link UserType}.
  *       The copybook is the authority, not the enum: confirm against
  *       {@code app/cpy/COCOM01Y.cpy:L26-L28} before changing this test, because {@code app/} is frozen and
@@ -194,8 +194,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       coverage gate is declared at bundle level with a floor of 0.80, so it measures the whole project
  *       rather than one class. This class takes {@link UserType} to full line coverage, but the remaining
  *       main classes are covered by their own test classes, and until those exist the bundle ratio stays far
- *       below the floor and {@code mvn verify} stops at {@code jacoco:check}. Remediation: run
- *       {@code mvn -B clean test} while working on this class and read the per class figure in
+ *       below the floor and {@code ./mvnw verify} stops at {@code jacoco:check}. Remediation: run
+ *       {@code ./mvnw -B clean test} while working on this class and read the per class figure in
  *       {@code target/site/jacoco/index.html}; expect {@code verify} to go green only once the test tier is
  *       complete. Lowering the floor or adding a coverage exclusion is not a remediation and is not
  *       permitted.</li>
@@ -224,8 +224,8 @@ import org.junit.jupiter.params.provider.ValueSource;
 class UserTypeTest {
 
     /**
-     * The name of the compiled class file this test scans, resolved relative to the package of
-     * {@link UserType} by {@link Class#getResourceAsStream(String)}.
+     * The name of the compiled class file this test scans, resolved relative to the package of {@link UserType}
+     * by {@link Class#getResourceAsStream(String)}.
      */
     private static final String USER_TYPE_CLASS_FILE = "UserType.class";
 
@@ -245,15 +245,6 @@ class UserTypeTest {
     /**
      * The ten {@code SEC-USR-TYPE} bytes of the seeded user security records, read in record order from
      * position 57 of {@code app/jcl/DUSRSECJ.jcl:L35-L44}.
-     *
-     * <p>This is a {@link String} rather than a {@code char[]} on purpose: a {@code static final} array is
-     * mutable content behind an immutable reference, which is the global mutable state Rule 1 clause B
-     * forbids, whereas a string constant cannot be altered by one test and observed by another.
-     *
-     * <p><strong>Only the type bytes are encoded.</strong> The records also carry a name and a plain text
-     * password, and reproducing a record here would place a credential in a test file. Position 57 is
-     * derived rather than sliced: {@code SEC-USR-ID PIC X(08)} plus {@code SEC-USR-FNAME PIC X(20)} plus
-     * {@code SEC-USR-LNAME PIC X(20)} plus {@code SEC-USR-PWD PIC X(08)} occupy the 56 preceding bytes.
      */
     private static final String SEEDED_TYPE_BYTES = "AAAAAUUUUU";
 
@@ -264,12 +255,8 @@ class UserTypeTest {
     private static final int SEEDED_RECORDS_PER_TYPE = 5;
 
     /**
-     * Internal names that must not appear in the constant pool of the compiled {@link UserType}, each one
-     * a layer or framework the enum is required to stay clear of.
-     *
-     * <p>The list is deliberately expressed as internal names with slash separators, which is the form the
-     * class file uses, so that a match means a genuine type reference rather than a coincidence in a string
-     * literal or a comment. Comments do not survive compilation at all.
+     * Internal names that must not appear in the constant pool of the compiled {@link UserType}, each one a
+     * layer or framework the enum is required to stay clear of.
      */
     private static final List<String> FORBIDDEN_INTERNAL_NAMES = List.of(
             "org/springframework",
@@ -291,9 +278,6 @@ class UserTypeTest {
     /**
      * Lower case fragments that must not occur in the name of any member of {@link UserType}, covering
      * credential material and the personally identifiable fields the customer and user layouts carry.
-     *
-     * <p>Matching is performed after folding the member name with {@link Locale#ROOT}, so the check cannot
-     * change behaviour under a locale whose case rules differ, such as Turkish.
      */
     private static final List<String> FORBIDDEN_MEMBER_NAME_FRAGMENTS = List.of(
             "password",
@@ -314,13 +298,6 @@ class UserTypeTest {
             "address",
             "authority",
             "granted");
-
-    // ==================================================================
-    // Movement 1 - the constant set is closed at exactly two, and the
-    // external meaning of a constant is carried by its code and never by
-    // its declaration position.
-    // Source: app/cpy/COCOM01Y.cpy:L26-L28 @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("declares exactly two constants, one per 88-level condition name and no more")
@@ -414,13 +391,6 @@ class UserTypeTest {
                         + "which is what keeps the constant set out of global mutable state")
                 .containsExactly(UserType.ADMIN, UserType.USER);
     }
-
-    // ==================================================================
-    // Movement 2 - the lookups are exact and total. Every input is
-    // treated as untrusted, every boundary condition is handled
-    // explicitly, and nothing ever falls back onto a default.
-    // Source: app/cpy/COCOM01Y.cpy:L26-L28 @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("fromCode(char) resolves both copybook codes to their constants")
@@ -544,22 +514,42 @@ class UserTypeTest {
 
     @ParameterizedTest
     @MethodSource("unrecognisedCodesWithTheirHexadecimalCodePoints")
-    @DisplayName("requireFromCode names the offending value, its code point and the two valid codes")
+    @DisplayName("requireFromCode names the code point and the two valid codes, never the rejected value")
     void requireFromCodeNamesTheOffendingValueAndItsCodePoint(final char unrecognisedCode,
             final String expectedHexadecimalCodePoint) {
         // The hexadecimal code point is not decoration. A blank, a low value byte and a wrong letter
         // are indistinguishable once a message is rendered into a log, and the records this type reads
         // are blank padded, so the numeric form is what makes the failure diagnosable.
+        //
+        // It is also, now, the ONLY rendering of the rejected code that the message carries. This test
+        // previously required the quoted raw character alongside it, and that requirement has been
+        // inverted. The code reaching this method arrives from a persisted column and from a request
+        // body, so it is attacker influenced; a carriage return or a line feed among those bytes,
+        // copied verbatim into a message that is then written to a log, terminates the current line and
+        // starts one the attacker composed. The code point rendering is injective - every distinct
+        // character has a distinct hexadecimal form - so nothing diagnostic is lost by withholding the
+        // character itself, and the forgery route closes.
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .as("an out of domain code must fail with a message an operator can act on without "
                         + "opening the source")
                 .isThrownBy(() -> UserType.requireFromCode(unrecognisedCode))
                 .withMessageContainingAll(
-                        "'" + unrecognisedCode + "'",
                         "code point 0x" + expectedHexadecimalCodePoint,
                         "app/cpy/COCOM01Y.cpy:L27-L28",
                         "'A'",
-                        "'U'");
+                        "'U'")
+                .satisfies(thrown -> assertThat(thrown.getMessage())
+                        .as("the quoted raw character must not appear: it is the form a reader would "
+                                + "copy out of a log, and reproducing it is what would let a control "
+                                + "character in the rejected value forge a log entry. Code point 0x%s",
+                                expectedHexadecimalCodePoint)
+                        .doesNotContain("'" + unrecognisedCode + "'")
+                        .satisfies(message -> assertThat(message.chars()
+                                .filter(codePoint -> codePoint < 0x20)
+                                .count())
+                                .as("and no control character of any kind reaches the message, whatever "
+                                        + "the rejected code was")
+                                .isZero()));
     }
 
     @Test
@@ -577,11 +567,8 @@ class UserTypeTest {
 
     /**
      * Supplies unrecognised codes paired with the hexadecimal rendering of their code point, as
-     * {@code Integer.toHexString} produces it: no {@code 0x} prefix, no leading zeroes and lower case
-     * digits. Feeds {@link #requireFromCodeNamesTheOffendingValueAndItsCodePoint(char, String)}.
-     *
-     * <p>The expected renderings are written out as literals rather than computed, so that the test
-     * pins the message format independently instead of restating the production expression.
+     * {@code Integer.toHexString} produces it: no {@code 0x} prefix, no leading zeroes and lower case digits.
+     * Feeds {@link #requireFromCodeNamesTheOffendingValueAndItsCodePoint(char, String)}.
      *
      * @return one argument pair per unrecognised code under test
      */
@@ -596,13 +583,6 @@ class UserTypeTest {
                 Arguments.of('\u0391', "391"),
                 Arguments.of('\u0410', "410"));
     }
-
-    // ==================================================================
-    // Movement 3 - the type stays a pure data holder. Persistence,
-    // authorisation, framework coupling and credential material all
-    // belong elsewhere, and their absence is asserted rather than
-    // assumed.
-    // ==================================================================
 
     @Test
     @DisplayName("declares no interface of its own, deliberately including Serializable")
@@ -783,13 +763,6 @@ class UserTypeTest {
         }
     }
 
-    // ==================================================================
-    // Movement 4 - the ten seeded user records corroborate that the two
-    // constants are complete, using their type byte and nothing else.
-    // Source: app/jcl/DUSRSECJ.jcl:L35-L44 @ 7756d89
-    //         app/cpy/CSUSR01Y.cpy:L17-L23 @ 7756d89
-    // ==================================================================
-
     @Test
     @DisplayName("the ten seeded type bytes resolve in a five administrator and five user split")
     void theTenSeededTypeBytesResolveInAFiveAndFiveSplit() {
@@ -832,11 +805,6 @@ class UserTypeTest {
                 .containsExactlyInAnyOrder(UserType.ADMIN, UserType.USER);
     }
 
-    // ==================================================================
-    // Shared pure helpers. Neither holds state, so no test can influence
-    // another through them.
-    // ==================================================================
-
     /**
      * Collects the names of every member {@link UserType} declares - fields and methods, synthetic ones
      * included - so that a scan for a forbidden naming shape cannot be evaded by a compiler generated or
@@ -858,14 +826,8 @@ class UserTypeTest {
     }
 
     /**
-     * Reads the compiled {@code UserType.class} from the test classpath and returns its bytes decoded one
-     * for one as characters, which makes the constant pool searchable as text.
-     *
-     * <p>{@link StandardCharsets#ISO_8859_1} is chosen because it maps every byte to exactly one character
-     * and never fails, so a search for an internal name such as {@code org/springframework} is a search
-     * over the real bytes rather than over a lossy decoding. The constant pool stores type names in
-     * modified UTF-8, in which every ASCII character is a single byte, so the internal names this test
-     * looks for survive the mapping unchanged.
+     * Reads the compiled {@code UserType.class} from the test classpath and returns its bytes decoded one for
+     * one as characters, which makes the constant pool searchable as text.
      *
      * @return the compiled class file of {@link UserType}, one character per byte
      * @throws IOException if the class file is present but cannot be read to completion

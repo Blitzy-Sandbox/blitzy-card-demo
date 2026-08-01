@@ -28,6 +28,9 @@ package com.cardemo.model.entity;
 import java.math.BigDecimal;
 import java.util.Objects;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
@@ -45,31 +48,24 @@ import jakarta.persistence.Version;
  * <p>
  * This is a pure data holder. It carries the twelve populated fields of the COBOL record layout
  * {@code app/cpy/CVACT01Y.cpy} ({@code 01 ACCOUNT-RECORD}, fields at {@code :L5}-{@code :L16}) plus one
- * optimistic-locking counter that has no COBOL counterpart. It performs no business logic, no validation,
- * no case folding, no rounding, no arithmetic and no logging; every one of those responsibilities belongs to
- * the service, batch and validation layers that consume this type. The class exists so that the account
- * master data has exactly one shape in Java, derived field-for-field from the frozen legacy corpus.
+ * optimistic-locking counter that has no COBOL counterpart. It performs no business logic, no case folding,
+ * no rounding, no arithmetic and no logging; every one of those responsibilities belongs to the service,
+ * batch and validation layers that consume this type. The class exists so that the account master data has
+ * exactly one shape in Java, derived field-for-field from the frozen legacy corpus.
+ * <p>
+ * The one thing it does enforce is its own shape. Construction and every mutator refuse a value the 300-byte
+ * record layout cannot have produced - a {@code null}, a character field wider than its picture clause, or a
+ * numeric outside the domain its picture clause declares - and say so through
+ * {@link IllegalArgumentException} naming the offending property. That is a structural check, not a business
+ * rule: no credit limit is compared against a balance, no date is parsed as a calendar date, and no group
+ * identifier is looked up against the disclosure-group table, because each of those is a judgement the
+ * service and batch layers own.
  *
- * <h2>Provenance</h2>
- * <ul>
- *   <li>Record layout: {@code app/cpy/CVACT01Y.cpy}. The header comment at {@code :L2} reads
- *       {@code *    Data-structure for  account entity (RECLN 300)}, and {@code FILLER PIC X(178)} closes the
- *       layout at {@code :L17}.</li>
- *   <li>Physical specification: {@code app/catlg/LISTCAT.txt:L57} defines the cluster
- *       {@code AWS.M2.CARDDEMO.ACCTDATA.VSAM.KSDS}; {@code :L59} reports {@code KEYLEN 11} and
- *       {@code AVGLRECL 300}; {@code :L60} reports {@code RKP 0} and {@code MAXLRECL 300}, proving the key sits
- *       at byte zero of a fixed-length 300-byte record.</li>
- *   <li>Online consumer: {@code app/cbl/COACTUPC.cbl} (account update, 4,236 lines) reads this record for
- *       update, snapshots it, compares it field by field in {@code 9700-CHECK-CHANGE-IN-REC}
- *       ({@code :L4109}-{@code :L4193}) and rewrites it in {@code 9600-WRITE-PROCESSING}.</li>
- *   <li>Batch consumers: {@code app/cbl/CBTRN02C.cbl} (daily posting) validates and updates the record in
- *       {@code 1500-B-LOOKUP-ACCT} ({@code :L393}) and {@code 2800-UPDATE-ACCOUNT-REC} ({@code :L545});
- *       {@code app/cbl/CBACT04C.cbl} (interest calculation) updates it in {@code 1050-UPDATE-ACCOUNT}
- *       ({@code :L350}); {@code app/cbl/CBACT01C.cbl} reads it sequentially and never writes.</li>
- *   <li>Seed and fixture data: {@code app/data/ASCII/acctdata.txt}, 50 rows of exactly 300 bytes each, which
- *       corroborates {@code REC-TOTAL 50} at {@code app/catlg/LISTCAT.txt:L64}.</li>
- *   <li>Traceability anchor: commit {@code 7756d89}.</li>
- * </ul>
+ * <p>Three mappings are deliberate and easy to "correct" by mistake. {@code expiraionDate} keeps the
+ * copybook's misspelling, because the field contract fixes the name. The three date fields are
+ * {@code CHAR(10)} text, because the posting and update paths compare them as strings and by substring.
+ * {@code currentCycleDebit} legitimately holds negative values, which is why the over-limit expression
+ * subtracts rather than adds it.
  *
  * <h2>Record geometry: the 300-byte proof</h2>
  * <p>
@@ -181,22 +177,28 @@ import jakarta.persistence.Version;
  *
  * <h2>How to build, run and test</h2>
  * <ul>
- *   <li>Compile: {@code mvn -B clean compile}. The build compiles with {@code -Xlint:all -Werror} and
- *       {@code failOnWarning}, so an unused import or a missing {@code serialVersionUID} is a hard
- *       failure rather than a warning.</li>
+ *   <li>Compile: {@code ./mvnw -B clean compile}. The build compiles with {@code -Xlint:all -Werror} and
+ *       {@code failOnWarning}, so a missing {@code serialVersionUID}, a raw type or a deprecated call is a
+ *       hard failure rather than a warning. An unused import is not - {@code javac} 25.0.3 publishes no
+ *       lint key for one - so that prohibition is enforced by review.</li>
  *   <li>Run: this type is not independently runnable. It is a managed persistent type that the application
  *       context loads at boot, so it participates in a run only as part of the Spring Boot application,
- *       started with {@code mvn -B spring-boot:run} or from the packaged executable JAR with
- *       {@code java -jar target/carddemo-1.0.0.jar}. Two preconditions apply at boot and both fail fast: a
+ *       started with {@code ./mvnw -B spring-boot:run} or from the packaged executable JAR with
+ *       {@code java -jar target/carddemo-1.0.0.jar}. <strong>Neither is possible at this commit, measured
+ *       1 August 2026:</strong> no {@code @SpringBootApplication} entry point and no
+ *       {@code application*.yml} profile exists, so no context can refresh and no executable JAR can be
+ *       produced. Two preconditions apply at boot once it can, and both fail fast: a
  *       reachable PostgreSQL instance carrying the table enumerated below, and the environment-indirected
  *       JWT signing key, which has no committed default. Because {@code ddl-auto} is {@code validate}, any
  *       disagreement between this mapping and the deployed schema aborts context startup outright rather
  *       than degrading later at runtime.</li>
- *   <li>Test: {@code mvn -B clean test}. Unit tests for this type live in
- *       {@code src/test/java/com/cardemo/unit/model} and assert the record geometry, the key length, the five
- *       {@code NUMERIC(12,2)} precisions, that the three date fields are {@code String}, that a negative
- *       {@code currentCycleDebit} round-trips unchanged and that a blank {@code groupId} is accepted.</li>
- *   <li>Verify: {@code mvn -B clean verify} additionally enforces the line-coverage floor and the dependency
+ *   <li>Test: {@code ./mvnw -B clean test}. Unit tests for this type belong in
+ *       {@code src/test/java/com/cardemo/unit/model} and are to assert the record geometry, the key length, the
+ *       five {@code NUMERIC(12,2)} precisions, that the three date fields are {@code String}, that a negative
+ *       {@code currentCycleDebit} round-trips unchanged and that a blank {@code groupId} is accepted.
+ *       <strong>Not available, measured 1 August 2026:</strong> no {@code AccountTest} exists, so that list is
+ *       the coverage owed, not coverage that runs.</li>
+ *   <li>Verify: {@code ./mvnw -B clean verify} additionally enforces the line-coverage floor and the dependency
  *       vulnerability gate.</li>
  * </ul>
  *
@@ -256,13 +258,20 @@ import jakarta.persistence.Version;
  * </ul>
  *
  * <h2>Missing information disclosure</h2>
- * <p>
- * <b>Not available:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} did not exist when this
- * entity was authored, and the migration directory had no planned children, so the mapping below could not be
- * reconciled against real DDL at authoring time. Because {@code spring.jpa.hibernate.ddl-auto} is
- * {@code validate} in every profile, any disagreement between the two fails application-context startup
- * outright rather than producing a warning. <b>This entity's field contract is therefore the normative column
- * contract, and the migration must converge upon it rather than the reverse.</b>
+ *
+ * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
+ * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
+ * It declares {@code CREATE TABLE account} with 13 columns whose names are identical, as a
+ * set, to the 13 {@code @Column(name = ...)} declarations below, verified by direct comparison.
+ * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
+ * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, any
+ * disagreement between the two would fail application-context startup outright rather than producing a
+ * warning.
+ * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
+ * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
+ * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
+ * rather than an observed one.</p>
  * <p>
  * What is needed is table {@code account} with these columns and no others:
  * <pre>
@@ -284,10 +293,91 @@ import jakarta.persistence.Version;
  * For the avoidance of doubt about the surrounding migration: it creates exactly eleven tables with ten
  * foreign keys and five check constraints. The Spring Batch metadata tables come from the framework's own
  * schema script and are neither a fourth migration nor extra tables in the first one.
+ * <p>
+ * <b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson, enforced by the
+ * two class-level annotations below rather than by reviewer discipline. {@link JsonIgnoreType} removes any
+ * property whose declared type is this class from an enclosing object's JSON, and {@link JsonAutoDetect}
+ * with every visibility set to {@code NONE} switches off bean introspection entirely, so no getter, no
+ * setter, no field and no creator is discoverable. An entity is a bean with public accessors, so without
+ * the barrier the default behaviour of returning this type from a controller, or holding a field of it on a
+ * response object, is to publish every column it carries - here the balance, both credit limits, both cycle
+ * totals, the three dates and the postal code. With the barrier in place Jackson finds no properties and its
+ * default {@code FAIL_ON_EMPTY_BEANS} setting turns that mistake into a loud failure at the first request
+ * instead of a silent disclosure. Nothing legitimate is lost: outbound representations are built by
+ * {@code com.cardemo.model.dto.AccountDto} and inbound JSON targets
+ * {@code com.cardemo.model.dto.AccountUpdateRequest}, and persistence is unaffected because Hibernate reads
+ * and writes the annotated fields reflectively and never consults Jackson visibility.
  */
 @Entity
 @Table(name = "account")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class Account {
+
+    /**
+     * Inclusive lower bound of {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5}.
+     * <p>
+     * The picture clause carries no {@code S}, so the field is unsigned and zero is its floor. Zero itself is
+     * accepted rather than treated as a sentinel, because eleven display digits can hold it and nothing in the
+     * corpus reserves it.
+     */
+    private static final long MIN_ACCOUNT_ID = 0L;
+
+    /**
+     * Inclusive upper bound of {@code ACCT-ID PIC 9(11)}: the largest value eleven unsigned display digits can
+     * hold, which is also the {@code KEYLEN 11} reported at {@code app/catlg/LISTCAT.txt:L59}.
+     */
+    private static final long MAX_ACCOUNT_ID = 99_999_999_999L;
+
+    /** Declared width of {@code ACCT-ACTIVE-STATUS PIC X(01)} at {@code app/cpy/CVACT01Y.cpy:L6}. */
+    private static final int ACTIVE_STATUS_WIDTH = 1;
+
+    /** Declared width of {@code ACCT-OPEN-DATE PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L10}. */
+    private static final int OPEN_DATE_WIDTH = 10;
+
+    /** Declared width of {@code ACCT-EXPIRAION-DATE PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L11}. */
+    private static final int EXPIRAION_DATE_WIDTH = 10;
+
+    /** Declared width of {@code ACCT-REISSUE-DATE PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L12}. */
+    private static final int REISSUE_DATE_WIDTH = 10;
+
+    /** Declared width of {@code ACCT-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L15}. */
+    private static final int ADDRESS_ZIP_WIDTH = 10;
+
+    /** Declared width of {@code ACCT-GROUP-ID PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L16}. */
+    private static final int GROUP_ID_WIDTH = 10;
+
+    /**
+     * Integer digit count of the five money fields, every one of which is declared
+     * {@code S9(10)V99}: {@code ACCT-CURR-BAL} at {@code app/cpy/CVACT01Y.cpy:L7},
+     * {@code ACCT-CREDIT-LIMIT} at {@code :L8}, {@code ACCT-CASH-CREDIT-LIMIT} at {@code :L9},
+     * {@code ACCT-CURR-CYC-CREDIT} at {@code :L13} and {@code ACCT-CURR-CYC-DEBIT} at {@code :L14}.
+     */
+    private static final int MONEY_INTEGER_DIGITS = 10;
+
+    /** Decimal positions declared by the {@code V99} of every money field: exactly two. */
+    private static final int MONEY_SCALE = 2;
+
+    /**
+     * Total precision of a money column, {@code NUMERIC(12,2)}: the ten integer digits plus the two decimal
+     * positions the picture clause declares.
+     */
+    private static final int MONEY_PRECISION = MONEY_INTEGER_DIGITS + MONEY_SCALE;
+
+    /** Inclusive upper bound of a money field: the largest magnitude {@code S9(10)V99} can represent. */
+    private static final BigDecimal MAX_MONEY = new BigDecimal("9999999999.99");
+
+    /**
+     * Inclusive lower bound of a money field. The picture clause carries an {@code S}, so the full negative
+     * range is representable and legitimate: a negative balance is an over-payment, and a negative cycle debit
+     * is what the over-limit expression subtracts.
+     */
+    private static final BigDecimal MIN_MONEY = MAX_MONEY.negate();
 
     /**
      * Account identifier: the primary key, from {@code ACCT-ID PIC 9(11)} at
@@ -309,241 +399,92 @@ public class Account {
     private Long accountId;
 
     /**
-     * Active status flag, from {@code ACCT-ACTIVE-STATUS PIC X(01)} at
-     * {@code app/cpy/CVACT01Y.cpy:L6}.
-     * <p>
-     * A single character at byte 12. The seed fixture {@code app/data/ASCII/acctdata.txt} carries {@code Y}
-     * in this position on row 1. The field is kept as a one-character {@code String} rather than promoted to
-     * an enumeration because the copybook declares no condition names for it, so the set of accepted values
-     * is not stated anywhere in the corpus and inventing one would narrow the contract.
+     * Active status flag, from {@code ACCT-ACTIVE-STATUS PIC X(01)} at {@code app/cpy/CVACT01Y.cpy:L6}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_active_status", nullable = false, length = 1, columnDefinition = "CHAR(1)")
+    @Column(name = "acct_active_status", nullable = false, length = ACTIVE_STATUS_WIDTH, columnDefinition = "CHAR(1)")
     private String activeStatus;
 
     /**
-     * Current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99} at
-     * {@code app/cpy/CVACT01Y.cpy:L7}.
-     * <p>
-     * Ten integer digits and two decimals, signed, occupying bytes 13-24 of the record; the column is
-     * therefore {@code NUMERIC(12,2)}. Row 1 of the fixture holds <code>00000001940&#123;</code>, where the
-     * trailing overpunch character <code>&#123;</code> denotes a positive zero digit, so the value decodes to
-     * {@code +194.00}.
-     * <p>
-     * Both batch writers mutate this field by addition and never by assignment:
-     * {@code app/cbl/CBTRN02C.cbl:L547} adds the transaction amount to it, and
-     * {@code app/cbl/CBACT04C.cbl:L352} adds the accumulated interest to it. The value may legitimately be
-     * negative, and the bill-payment path drives it to exactly zero.
+     * Current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L7}.
      */
-    @Column(name = "acct_curr_bal", nullable = false, precision = 12, scale = 2)
+    @Column(name = "acct_curr_bal", nullable = false, precision = MONEY_PRECISION, scale = MONEY_SCALE)
     private BigDecimal currentBalance;
 
     /**
-     * Credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at
-     * {@code app/cpy/CVACT01Y.cpy:L8}.
-     * <p>
-     * Bytes 25-36, mapped to {@code NUMERIC(12,2)}. Row 1 of the fixture decodes to {@code +2020.00}.
-     * <p>
-     * This is the left-hand side of the over-limit test at {@code app/cbl/CBTRN02C.cbl:L407}, which reads
-     * {@code IF ACCT-CREDIT-LIMIT &gt;= WS-TEMP-BAL} and assigns reject code 102 otherwise. The temporary
-     * balance it is compared against is computed at {@code :L403}-{@code :L405} as the current cycle credit
-     * minus the current cycle debit plus the transaction amount. That expression must be transcribed in
-     * exactly that shape wherever it is reproduced, because the debit term is an accumulator that holds
-     * negative values.
+     * Credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L8}.
      */
-    @Column(name = "acct_credit_limit", nullable = false, precision = 12, scale = 2)
+    @Column(name = "acct_credit_limit", nullable = false, precision = MONEY_PRECISION, scale = MONEY_SCALE)
     private BigDecimal creditLimit;
 
     /**
-     * Cash credit limit, from {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99} at
-     * {@code app/cpy/CVACT01Y.cpy:L9}.
-     * <p>
-     * Bytes 37-48, mapped to {@code NUMERIC(12,2)}. Row 1 of the fixture decodes to {@code +1020.00}. The
-     * field is carried and compared but is not an input to the over-limit test, which uses the general credit
-     * limit; it is one of the twelve account predicates the update path snapshots and compares at
-     * {@code app/cbl/COACTUPC.cbl:L4121}.
+     * Cash credit limit, from {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99} at {@code app/cpy/CVACT01Y.cpy:L9}.
      */
-    @Column(name = "acct_cash_credit_limit", nullable = false, precision = 12, scale = 2)
+    @Column(name = "acct_cash_credit_limit", nullable = false, precision = MONEY_PRECISION, scale = MONEY_SCALE)
     private BigDecimal cashCreditLimit;
 
     /**
-     * Account open date as text, from {@code ACCT-OPEN-DATE PIC X(10)} at
-     * {@code app/cpy/CVACT01Y.cpy:L10}.
-     * <p>
-     * Ten characters at bytes 49-58, holding {@code 2014-11-20} on row 1 of the fixture, so the stored form is
-     * {@code yyyy-MM-dd} with dash separators.
-     * <p>
-     * <b>Severity High: this is character data and must stay character data.</b> The update path compares it
-     * as three substrings rather than as one value: {@code app/cbl/COACTUPC.cbl:L4127}-{@code :L4129} compares
-     * {@code ACCT-OPEN-DATE(1:4)}, {@code (6:2)} and {@code (9:2)} against discrete snapshot fields, and the
-     * whole-string alternative is present in the source but commented out at {@code :L3831}, which shows the
-     * component-wise treatment is deliberate rather than incidental. Mapping this column to a date type would
-     * impose calendar validation the source does not perform, would reject the blank and legacy-invalid values
-     * the record can legitimately contain, and would not round-trip byte-exactly. Parsing and calendar
-     * validation belong to the date validation service.
+     * Account open date as text, from {@code ACCT-OPEN-DATE PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L10}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_open_date", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "acct_open_date", nullable = false, length = OPEN_DATE_WIDTH, columnDefinition = "CHAR(10)")
     private String openDate;
 
     /**
      * Account expiry date as text, from {@code ACCT-EXPIRAION-DATE PIC X(10)} at
      * {@code app/cpy/CVACT01Y.cpy:L11}.
-     * <p>
-     * <b>Severity High: the misspelling is intentional and is part of the field contract.</b> The copybook
-     * declares {@code ACCT-EXPIRAION-DATE}, without the {@code T} of {@code EXPIRATION}. That name is used
-     * throughout the corpus: {@code app/cbl/CBTRN02C.cbl:L414} reads
-     * {@code IF ACCT-EXPIRAION-DATE &gt;= DALYTRAN-ORIG-TS (1:10)},
-     * {@code app/cbl/COACTUPC.cbl:L4131}-{@code :L4133} compares its {@code (1:4)}, {@code (6:2)} and
-     * {@code (9:2)} substrings, and {@code :L3837}-{@code :L3839} captures the same three substrings into the
-     * snapshot. A repository-wide search finds twelve references to the misspelled name and none to any
-     * correctly spelled variant, so the misspelling is the only name that exists. The Java field is therefore
-     * {@code expiraionDate} and the column is {@code acct_expiraion_date}. Correcting the spelling would
-     * break paragraph-level traceability and would diverge from the column the migration creates.
-     * <p>
-     * Like the other two dates this is {@code CHAR(10)} text holding {@code yyyy-MM-dd}; row 1 of the fixture
-     * holds {@code 2025-05-20} at bytes 59-68. The expiry test at {@code app/cbl/CBTRN02C.cbl:L414} is a
-     * string comparison against the first ten characters of the transaction's <em>originating</em> timestamp,
-     * not its processing timestamp, and it runs unguarded immediately after the over-limit test, so when both
-     * conditions fail reject code 103 overwrites 102. That control flow belongs to the posting processor; it
-     * is described here only because it is what fixes this field's type as text.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_expiraion_date", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "acct_expiraion_date", nullable = false, length = EXPIRAION_DATE_WIDTH,
+            columnDefinition = "CHAR(10)")
     private String expiraionDate;
 
     /**
-     * Card reissue date as text, from {@code ACCT-REISSUE-DATE PIC X(10)} at
-     * {@code app/cpy/CVACT01Y.cpy:L12}.
-     * <p>
-     * Ten characters at bytes 69-78, holding {@code 2025-05-20} on row 1 of the fixture. Compared as three
-     * substrings at {@code app/cbl/COACTUPC.cbl:L4135}-{@code :L4137} and snapshotted the same way at
-     * {@code :L3843}-{@code :L3845}. Text for the same reasons given on {@code openDate}.
+     * Card reissue date as text, from {@code ACCT-REISSUE-DATE PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L12}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_reissue_date", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "acct_reissue_date", nullable = false, length = REISSUE_DATE_WIDTH, columnDefinition = "CHAR(10)")
     private String reissueDate;
 
     /**
      * Current cycle credit accumulator, from {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99} at
      * {@code app/cpy/CVACT01Y.cpy:L13}.
-     * <p>
-     * Bytes 79-90, mapped to {@code NUMERIC(12,2)}. This is an accumulator, not a snapshot: the posting path
-     * adds the transaction amount to it at {@code app/cbl/CBTRN02C.cbl:L549} whenever the amount is
-     * non-negative, and the interest path zeroes it at {@code app/cbl/CBACT04C.cbl:L353} at the end of a
-     * cycle. It is the first term of the over-limit expression at {@code app/cbl/CBTRN02C.cbl:L403}.
      */
-    @Column(name = "acct_curr_cyc_credit", nullable = false, precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_credit", nullable = false, precision = MONEY_PRECISION, scale = MONEY_SCALE)
     private BigDecimal currentCycleCredit;
 
     /**
      * Current cycle debit accumulator, from {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99} at
      * {@code app/cpy/CVACT01Y.cpy:L14}.
-     * <p>
-     * <b>Severity Medium: this accumulator legitimately holds negative values and must never be
-     * normalised.</b> The column is signed, which {@code NUMERIC(12,2)} is by default in PostgreSQL, so no
-     * additional declaration is required to permit it.
-     * <p>
-     * The sign behaviour is explicit in the source. {@code app/cbl/CBTRN02C.cbl:L548}-{@code :L552} reads
-     * {@code IF DALYTRAN-AMT &gt;= 0} then adds the amount to the credit accumulator, and in the
-     * {@code ELSE} branch at {@code :L551} adds the <em>same signed amount</em> to this debit accumulator. No
-     * absolute value is taken. A negative amount is therefore accumulated as a negative number, which is
-     * precisely why the over-limit expression at {@code :L403}-{@code :L405} <em>subtracts</em> this term:
-     * subtracting a negative accumulator increases the temporary balance, which is the intended arithmetic.
-     * <p>
-     * The behaviour is genuinely exercised rather than theoretical. The fixture
-     * {@code app/data/ASCII/dailytran.txt} carries 300 amount values of which 250 are positive and 50 are
-     * negative, and both the <code>&#123;</code> and <code>&#125;</code> zoned-decimal overpunch signs occur
-     * in it.
-     * Consequently this class applies no {@code abs}, no {@code negate}, no clamping to zero and no
-     * non-negativity constraint of any kind, and no consumer may add one. Rewriting the over-limit expression
-     * into an algebraically equivalent form is equally forbidden, because equivalence over unsigned values is
-     * not equivalence over these.
-     * <p>
-     * Like the credit accumulator it is zeroed at end of cycle, at {@code app/cbl/CBACT04C.cbl:L354}.
      */
-    @Column(name = "acct_curr_cyc_debit", nullable = false, precision = 12, scale = 2)
+    @Column(name = "acct_curr_cyc_debit", nullable = false, precision = MONEY_PRECISION, scale = MONEY_SCALE)
     private BigDecimal currentCycleDebit;
 
     /**
-     * Account address postal code, from {@code ACCT-ADDR-ZIP PIC X(10)} at
-     * {@code app/cpy/CVACT01Y.cpy:L15}.
-     * <p>
-     * Ten characters at bytes 103-112, holding {@code A000000000} on row 1 of the fixture, which shows the
-     * field is not restricted to digits. No program in the corpus reads or writes it: the only occurrence of
-     * the name anywhere is the copybook declaration itself. It is mapped because it occupies ten bytes of the
-     * 300-byte record and must round-trip, not because any behaviour depends on it.
-     * <p>
-     * This field is deliberately excluded from {@link #toString()}. Postal data is address-adjacent personal
-     * information, {@code toString} output reaches logs by default, and the logging configuration masks
-     * personal data; omitting the value at source is stronger than relying on a downstream mask.
+     * Account address postal code, from {@code ACCT-ADDR-ZIP PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L15}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_addr_zip", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "acct_addr_zip", nullable = false, length = ADDRESS_ZIP_WIDTH, columnDefinition = "CHAR(10)")
     private String addressZip;
 
     /**
-     * Disclosure group identifier, from {@code ACCT-GROUP-ID PIC X(10)} at
-     * {@code app/cpy/CVACT01Y.cpy:L16}.
-     * <p>
-     * <b>Severity Medium: this field may be blank but is never null.</b> Row 1 of
-     * {@code app/data/ASCII/acctdata.txt} holds ten spaces at bytes 113-122. Combined with the
-     * not-null-on-every-column rule, the contract is a blank-but-present {@code CHAR(10)}. This class
-     * therefore applies no constraint that would reject blank input and never trims a blank value to
-     * {@code null}; either would make the seed data unloadable.
-     * <p>
-     * The blank is load-bearing rather than accidental. A blank group identifier matches no real disclosure
-     * group, which is exactly why the interest calculation's fallback to the literal default group exists and
-     * is reached; the fixture {@code app/data/ASCII/discgrp.txt} carries seventeen default-group rows for that
-     * purpose.
-     * <p>
-     * Note for consumers: {@code app/cbl/COACTUPC.cbl:L4139}-{@code :L4140} compares this field through
-     * {@code FUNCTION LOWER-CASE} on both sides, a deliberate asymmetry against the upper-casing applied to
-     * the customer text fields in the same paragraph. That comparison is service-layer logic and is not
-     * performed here: this entity applies no case folding at all. Any case operation added anywhere must pass
-     * an explicit {@code Locale.ROOT} so the result cannot vary with the platform default locale.
+     * Disclosure group identifier, from {@code ACCT-GROUP-ID PIC X(10)} at {@code app/cpy/CVACT01Y.cpy:L16}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "acct_group_id", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "acct_group_id", nullable = false, length = GROUP_ID_WIDTH, columnDefinition = "CHAR(10)")
     private String groupId;
 
     /**
      * Optimistic-locking version counter. This column has no COBOL counterpart and is additive.
-     * <p>
-     * <b>Severity Medium: this is the store-level guard only, and it is necessary but not sufficient.</b> The
-     * counter detects <em>that</em> the row changed since it was read. The legacy account-update path detects
-     * something strictly stronger: <em>which</em> business fields changed, and in what representation.
-     * {@code app/cbl/COACTUPC.cbl:L4109}-{@code :L4193}, the paragraph
-     * {@code 9700-CHECK-CHANGE-IN-REC}, evaluates twelve account predicates beginning with the active-status
-     * comparison against a snapshot captured when the screen was first displayed, and abandons the write if
-     * any one of them differs.
-     * <p>
-     * The two guarantees are not interchangeable. A concurrent write that set a field and then restored its
-     * original value passes the legacy check and fails a version check; conversely a version check cannot
-     * report which field the user's view went stale on, which the legacy screen reported. Because the target
-     * is stateless there is no server-side place to keep the snapshot between requests, so it travels in the
-     * request body: {@code AccountUpdateRequest} carries both an old-details and a new-details group, and the
-     * field-by-field comparison runs in the account update service. Both layers are required and neither
-     * substitutes for the other.
-     * <p>
-     * The field is provider-managed. It is deliberately absent from the all-columns constructor so that a
-     * freshly constructed instance is unambiguously new; the accessor pair exists for detached-instance merge
-     * and for test fixtures.
      */
     @Version
     @Column(name = "version", nullable = false)
     private Long version;
 
-
     /**
      * No-argument constructor required by the Jakarta Persistence specification, which obliges every entity to
      * declare a public or protected constructor taking no arguments so that the provider can instantiate the
      * class when materialising a row.
-     * <p>
-     * It is {@code protected} rather than {@code public} deliberately: the persistence provider and any
-     * subclass proxy can reach it, while application code cannot use it to create a half-built instance that
-     * would then fail the not-null constraint on every column. Application code uses the all-columns
-     * constructor instead. Every field is left {@code null} here; populating them is the provider's job.
      */
     protected Account() {
         // Intentionally empty: field population is performed by the persistence provider.
@@ -551,39 +492,19 @@ public class Account {
 
     /**
      * Creates a fully populated account record from the twelve data columns of the source layout.
-     * <p>
-     * Parameters are declared in COBOL field order, so the argument list reads in the same sequence as
-     * {@code app/cpy/CVACT01Y.cpy:L5}-{@code :L16}. This keeps a call site directly comparable with the record
-     * layout and with a fixed-width reader that walks the 300-byte image left to right.
-     * <p>
-     * The optimistic-locking {@code version} counter is deliberately not a parameter: it is provider-managed,
-     * and an instance built here is unambiguously new. Use {@link #setVersion(Long)} only when reconstituting a
-     * detached instance for merge, or in a test fixture.
-     * <p>
-     * <b>Side effects:</b> none. The constructor assigns fields directly and calls no overridable method, so
-     * no partially constructed reference escapes.
-     * <p>
-     * <b>Error modes:</b> {@link IllegalArgumentException} if {@code accountId} is {@code null}, because a row
-     * without its primary key cannot be persisted and failing here names the offending field instead of
-     * surfacing an opaque constraint violation from the driver much later. No other argument is checked: every
-     * remaining column is {@code NOT NULL} in the schema and is validated there, and adding checks here would
-     * duplicate that authority. In particular blank text and negative money values are accepted, because both
-     * are legitimate in the source data.
      *
-     * @param accountId          eleven-digit account key, {@code ACCT-ID PIC 9(11)}; must not be {@code null}
-     * @param activeStatus       one-character active flag, {@code ACCT-ACTIVE-STATUS PIC X(01)}
-     * @param currentBalance     current balance, {@code ACCT-CURR-BAL PIC S9(10)V99}; may be negative
-     * @param creditLimit        credit limit, {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}
-     * @param cashCreditLimit    cash credit limit, {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}
-     * @param openDate           open date as {@code yyyy-MM-dd} text, {@code ACCT-OPEN-DATE PIC X(10)}
-     * @param expiraionDate      expiry date as {@code yyyy-MM-dd} text,
-     *                           {@code ACCT-EXPIRAION-DATE PIC X(10)}; the spelling is the source's
-     * @param reissueDate        reissue date as {@code yyyy-MM-dd} text, {@code ACCT-REISSUE-DATE PIC X(10)}
+     * @param accountId eleven-digit account key, {@code ACCT-ID PIC 9(11)}.
+     * @param activeStatus one-character active flag, {@code ACCT-ACTIVE-STATUS PIC X(01)}
+     * @param currentBalance current balance, {@code ACCT-CURR-BAL PIC S9(10)V99}.
+     * @param creditLimit credit limit, {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}
+     * @param cashCreditLimit cash credit limit, {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}
+     * @param openDate open date as {@code yyyy-MM-dd} text, {@code ACCT-OPEN-DATE PIC X(10)}
+     * @param expiraionDate expiry date as {@code yyyy-MM-dd} text, {@code ACCT-EXPIRAION-DATE PIC X(10)}.
+     * @param reissueDate reissue date as {@code yyyy-MM-dd} text, {@code ACCT-REISSUE-DATE PIC X(10)}
      * @param currentCycleCredit cycle credit accumulator, {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99}
-     * @param currentCycleDebit  cycle debit accumulator, {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}; may be
-     *                           negative and is never normalised
-     * @param addressZip         postal code, {@code ACCT-ADDR-ZIP PIC X(10)}
-     * @param groupId            disclosure group identifier, {@code ACCT-GROUP-ID PIC X(10)}; may be blank
+     * @param currentCycleDebit cycle debit accumulator, {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}.
+     * @param addressZip postal code, {@code ACCT-ADDR-ZIP PIC X(10)}
+     * @param groupId disclosure group identifier, {@code ACCT-GROUP-ID PIC X(10)}.
      * @throws IllegalArgumentException if {@code accountId} is {@code null}
      */
     public Account(
@@ -599,33 +520,38 @@ public class Account {
             BigDecimal currentCycleDebit,
             String addressZip,
             String groupId) {
-        if (accountId == null) {
-            throw new IllegalArgumentException(
-                    "accountId must not be null: it is the primary key of table account, derived from "
-                            + "ACCT-ID PIC 9(11) at app/cpy/CVACT01Y.cpy:L5");
-        }
-        // Direct field assignment, never setter invocation: calling an overridable method from a constructor
-        // of a non-final class would leak a partially constructed reference, which the zero-warning compile
-        // rejects outright. The class cannot be final because the persistence provider subclasses it to build
-        // lazy-loading proxies.
-        this.accountId = accountId;
-        this.activeStatus = activeStatus;
-        this.currentBalance = currentBalance;
-        this.creditLimit = creditLimit;
-        this.cashCreditLimit = cashCreditLimit;
-        this.openDate = openDate;
-        this.expiraionDate = expiraionDate;
-        this.reissueDate = reissueDate;
-        this.currentCycleCredit = currentCycleCredit;
-        this.currentCycleDebit = currentCycleDebit;
-        this.addressZip = addressZip;
-        this.groupId = groupId;
+        // Direct field assignment through private static guards, never setter invocation: calling an
+        // overridable method from a constructor of a non-final class would leak a partially constructed
+        // reference, which the zero-warning compile rejects outright as this-escape. The class cannot be
+        // final because the persistence provider subclasses it to build lazy-loading proxies, so the guards
+        // are static to sidestep the hazard entirely rather than merely to avoid it by convention.
+        this.accountId = requireAccountId(accountId);
+        this.activeStatus = requireWidth(activeStatus, "activeStatus",
+                "ACCT-ACTIVE-STATUS PIC X(01)", ACTIVE_STATUS_WIDTH);
+        this.currentBalance = requireMoney(currentBalance, "currentBalance",
+                "ACCT-CURR-BAL PIC S9(10)V99");
+        this.creditLimit = requireMoney(creditLimit, "creditLimit",
+                "ACCT-CREDIT-LIMIT PIC S9(10)V99");
+        this.cashCreditLimit = requireMoney(cashCreditLimit, "cashCreditLimit",
+                "ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99");
+        this.openDate = requireWidth(openDate, "openDate",
+                "ACCT-OPEN-DATE PIC X(10)", OPEN_DATE_WIDTH);
+        this.expiraionDate = requireWidth(expiraionDate, "expiraionDate",
+                "ACCT-EXPIRAION-DATE PIC X(10)", EXPIRAION_DATE_WIDTH);
+        this.reissueDate = requireWidth(reissueDate, "reissueDate",
+                "ACCT-REISSUE-DATE PIC X(10)", REISSUE_DATE_WIDTH);
+        this.currentCycleCredit = requireMoney(currentCycleCredit, "currentCycleCredit",
+                "ACCT-CURR-CYC-CREDIT PIC S9(10)V99");
+        this.currentCycleDebit = requireMoney(currentCycleDebit, "currentCycleDebit",
+                "ACCT-CURR-CYC-DEBIT PIC S9(10)V99");
+        this.addressZip = requireWidth(addressZip, "addressZip",
+                "ACCT-ADDR-ZIP PIC X(10)", ADDRESS_ZIP_WIDTH);
+        this.groupId = requireWidth(groupId, "groupId",
+                "ACCT-GROUP-ID PIC X(10)", GROUP_ID_WIDTH);
     }
 
-
     /**
-     * Returns the eleven-digit account key, from {@code ACCT-ID PIC 9(11)}
-     * ({@code app/cpy/CVACT01Y.cpy:L5}).
+     * Returns the eleven-digit account key, from {@code ACCT-ID PIC 9(11)} ({@code app/cpy/CVACT01Y.cpy:L5}).
      *
      * @return the account identifier, or {@code null} on an instance the provider has not yet populated
      */
@@ -634,17 +560,15 @@ public class Account {
     }
 
     /**
-     * Sets the eleven-digit account key, from {@code ACCT-ID PIC 9(11)}
-     * ({@code app/cpy/CVACT01Y.cpy:L5}).
-     * <p>
-     * Changing the key of an already persistent instance is not a supported operation: the primary key is
-     * supplied by the cross-reference record and by the account-creation path, never reassigned. This setter
-     * exists so that the provider and fixture code can populate the field.
+     * Sets the eleven-digit account key, from {@code ACCT-ID PIC 9(11)} ({@code app/cpy/CVACT01Y.cpy:L5}).
      *
-     * @param accountId the account identifier to set
+     * @param accountId the account identifier to set; must not be {@code null} and must lie between 0
+     *                  and 99999999999 inclusive
+     * @throws IllegalArgumentException if {@code accountId} is {@code null}, negative, or greater than
+     *                                  99999999999
      */
     public void setAccountId(Long accountId) {
-        this.accountId = accountId;
+        this.accountId = requireAccountId(accountId);
     }
 
     /**
@@ -660,43 +584,39 @@ public class Account {
     /**
      * Sets the one-character active flag, from {@code ACCT-ACTIVE-STATUS PIC X(01)}
      * ({@code app/cpy/CVACT01Y.cpy:L6}).
-     * <p>
-     * The value is stored exactly as supplied. No case folding and no membership check is applied, because the
-     * copybook declares no condition names for this field and therefore states no accepted value set.
      *
-     * @param activeStatus the active status character to set
+     * @param activeStatus the active status character to set; must not be {@code null} and must be at
+     *                     most one character
+     * @throws IllegalArgumentException if {@code activeStatus} is {@code null} or longer than one characters
      */
     public void setActiveStatus(String activeStatus) {
-        this.activeStatus = activeStatus;
+        this.activeStatus = requireWidth(activeStatus, "activeStatus",
+                "ACCT-ACTIVE-STATUS PIC X(01)", ACTIVE_STATUS_WIDTH);
     }
 
     /**
-     * Returns the current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99}
-     * ({@code app/cpy/CVACT01Y.cpy:L7}).
+     * Returns the current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99} ({@code app/cpy/CVACT01Y.cpy:L7}).
      *
-     * @return the current balance with two-decimal scale; may be negative
+     * @return the current balance with two-decimal scale.
      */
     public BigDecimal getCurrentBalance() {
         return currentBalance;
     }
 
     /**
-     * Sets the current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99}
-     * ({@code app/cpy/CVACT01Y.cpy:L7}).
-     * <p>
-     * Stored verbatim. Callers that compute a new balance perform the arithmetic themselves and are
-     * responsible for using {@code RoundingMode.HALF_EVEN} if the result needs rounding to the column's
-     * two-decimal scale.
+     * Sets the current balance, from {@code ACCT-CURR-BAL PIC S9(10)V99} ({@code app/cpy/CVACT01Y.cpy:L7}).
      *
-     * @param currentBalance the balance to set; may be negative
+     * @param currentBalance the balance to set; must not be {@code null}, may be negative, and must
+     *                       carry at most two decimal digits
+     * @throws IllegalArgumentException if {@code currentBalance} is {@code null}, carries more than two decimal
+     *                                  digits, or falls outside the range {@code S9(10)V99} can hold
      */
     public void setCurrentBalance(BigDecimal currentBalance) {
-        this.currentBalance = currentBalance;
+        this.currentBalance = requireMoney(currentBalance, "currentBalance", "ACCT-CURR-BAL PIC S9(10)V99");
     }
 
     /**
-     * Returns the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}
-     * ({@code app/cpy/CVACT01Y.cpy:L8}).
+     * Returns the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} ({@code app/cpy/CVACT01Y.cpy:L8}).
      *
      * @return the credit limit with two-decimal scale
      */
@@ -705,13 +625,15 @@ public class Account {
     }
 
     /**
-     * Sets the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99}
-     * ({@code app/cpy/CVACT01Y.cpy:L8}).
+     * Sets the credit limit, from {@code ACCT-CREDIT-LIMIT PIC S9(10)V99} ({@code app/cpy/CVACT01Y.cpy:L8}).
      *
-     * @param creditLimit the credit limit to set
+     * @param creditLimit the credit limit to set; must not be {@code null} and must carry at most two
+     *                    decimal digits
+     * @throws IllegalArgumentException if {@code creditLimit} is {@code null}, carries more than two decimal
+     *                                  digits, or falls outside the range {@code S9(10)V99} can hold
      */
     public void setCreditLimit(BigDecimal creditLimit) {
-        this.creditLimit = creditLimit;
+        this.creditLimit = requireMoney(creditLimit, "creditLimit", "ACCT-CREDIT-LIMIT PIC S9(10)V99");
     }
 
     /**
@@ -728,17 +650,21 @@ public class Account {
      * Sets the cash credit limit, from {@code ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99}
      * ({@code app/cpy/CVACT01Y.cpy:L9}).
      *
-     * @param cashCreditLimit the cash credit limit to set
+     * @param cashCreditLimit the cash credit limit to set; must not be {@code null} and must carry at
+     *                        most two decimal digits
+     * @throws IllegalArgumentException if {@code cashCreditLimit} is {@code null}, carries more than two decimal
+     *                                  digits, or falls outside the range {@code S9(10)V99} can hold
      */
     public void setCashCreditLimit(BigDecimal cashCreditLimit) {
-        this.cashCreditLimit = cashCreditLimit;
+        this.cashCreditLimit = requireMoney(cashCreditLimit, "cashCreditLimit",
+                "ACCT-CASH-CREDIT-LIMIT PIC S9(10)V99");
     }
 
     /**
      * Returns the account open date as ten-character text, from {@code ACCT-OPEN-DATE PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L10}).
      *
-     * @return the open date in {@code yyyy-MM-dd} form as stored; never parsed or normalised here
+     * @return the open date in {@code yyyy-MM-dd} form as stored.
      */
     public String getOpenDate() {
         return openDate;
@@ -747,23 +673,18 @@ public class Account {
     /**
      * Sets the account open date as ten-character text, from {@code ACCT-OPEN-DATE PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L10}).
-     * <p>
-     * No calendar validation is performed. The source compares this field by year, month and day substrings at
-     * offsets 1, 6 and 9 rather than as a date, and blank or legacy-invalid values must remain loadable, so
-     * validating here would reject data the system of record accepts.
      *
-     * @param openDate the open date text to set
+     * @param openDate the open date text to set; must not be {@code null} and must be at most ten
+     *                 characters
+     * @throws IllegalArgumentException if {@code openDate} is {@code null} or longer than ten characters
      */
     public void setOpenDate(String openDate) {
-        this.openDate = openDate;
+        this.openDate = requireWidth(openDate, "openDate", "ACCT-OPEN-DATE PIC X(10)", OPEN_DATE_WIDTH);
     }
 
     /**
      * Returns the account expiry date as ten-character text, from {@code ACCT-EXPIRAION-DATE PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L11}).
-     * <p>
-     * The accessor name preserves the copybook's misspelling of {@code EXPIRATION}, which is the only spelling
-     * used anywhere in the corpus.
      *
      * @return the expiry date in {@code yyyy-MM-dd} form as stored
      */
@@ -774,15 +695,14 @@ public class Account {
     /**
      * Sets the account expiry date as ten-character text, from {@code ACCT-EXPIRAION-DATE PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L11}).
-     * <p>
-     * The accessor name preserves the copybook's misspelling of {@code EXPIRATION}. No calendar validation is
-     * performed; the posting path compares this value as a string against the first ten characters of a
-     * transaction's originating timestamp.
      *
-     * @param expiraionDate the expiry date text to set
+     * @param expiraionDate the expiry date text to set; must not be {@code null} and must be at most
+     *                      ten characters
+     * @throws IllegalArgumentException if {@code expiraionDate} is {@code null} or longer than ten characters
      */
     public void setExpiraionDate(String expiraionDate) {
-        this.expiraionDate = expiraionDate;
+        this.expiraionDate = requireWidth(expiraionDate, "expiraionDate",
+                "ACCT-EXPIRAION-DATE PIC X(10)", EXPIRAION_DATE_WIDTH);
     }
 
     /**
@@ -798,13 +718,14 @@ public class Account {
     /**
      * Sets the card reissue date as ten-character text, from {@code ACCT-REISSUE-DATE PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L12}).
-     * <p>
-     * No calendar validation is performed, for the reasons given on {@link #setOpenDate(String)}.
      *
-     * @param reissueDate the reissue date text to set
+     * @param reissueDate the reissue date text to set; must not be {@code null} and must be at most ten
+     *                    characters
+     * @throws IllegalArgumentException if {@code reissueDate} is {@code null} or longer than ten characters
      */
     public void setReissueDate(String reissueDate) {
-        this.reissueDate = reissueDate;
+        this.reissueDate = requireWidth(reissueDate, "reissueDate",
+                "ACCT-REISSUE-DATE PIC X(10)", REISSUE_DATE_WIDTH);
     }
 
     /**
@@ -820,22 +741,20 @@ public class Account {
     /**
      * Sets the current cycle credit accumulator, from {@code ACCT-CURR-CYC-CREDIT PIC S9(10)V99}
      * ({@code app/cpy/CVACT01Y.cpy:L13}).
-     * <p>
-     * The posting path accumulates into this field and the interest path zeroes it at end of cycle; both
-     * compute the new value and set it here. Nothing is accumulated by this setter.
      *
-     * @param currentCycleCredit the cycle credit accumulator value to set
+     * @param currentCycleCredit the cycle credit accumulator value to set; must not be {@code null} and
+     *                           must carry at most two decimal digits
+     * @throws IllegalArgumentException if {@code currentCycleCredit} is {@code null}, carries more than two decimal
+     *                                  digits, or falls outside the range {@code S9(10)V99} can hold
      */
     public void setCurrentCycleCredit(BigDecimal currentCycleCredit) {
-        this.currentCycleCredit = currentCycleCredit;
+        this.currentCycleCredit = requireMoney(currentCycleCredit, "currentCycleCredit",
+                "ACCT-CURR-CYC-CREDIT PIC S9(10)V99");
     }
 
     /**
      * Returns the current cycle debit accumulator, from {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}
      * ({@code app/cpy/CVACT01Y.cpy:L14}).
-     * <p>
-     * The returned value <b>may be negative</b> and is returned exactly as stored. Callers must not take its
-     * absolute value: the over-limit expression subtracts this term precisely because it can be negative.
      *
      * @return the cycle debit accumulator with two-decimal scale, signed and unnormalised
      */
@@ -846,49 +765,40 @@ public class Account {
     /**
      * Sets the current cycle debit accumulator, from {@code ACCT-CURR-CYC-DEBIT PIC S9(10)V99}
      * ({@code app/cpy/CVACT01Y.cpy:L14}).
-     * <p>
-     * The value is stored exactly as supplied, sign included. A negative amount posted to the debit
-     * accumulator is correct and intended behaviour, so this setter applies no absolute value, no clamping to
-     * zero and no sign correction of any kind.
      *
-     * @param currentCycleDebit the cycle debit accumulator value to set; may be negative
+     * @param currentCycleDebit the cycle debit accumulator value to set.
      */
     public void setCurrentCycleDebit(BigDecimal currentCycleDebit) {
-        this.currentCycleDebit = currentCycleDebit;
+        this.currentCycleDebit = requireMoney(currentCycleDebit, "currentCycleDebit",
+                "ACCT-CURR-CYC-DEBIT PIC S9(10)V99");
     }
 
     /**
-     * Returns the account postal code, from {@code ACCT-ADDR-ZIP PIC X(10)}
-     * ({@code app/cpy/CVACT01Y.cpy:L15}).
-     * <p>
-     * This value is address-adjacent personal data and is deliberately absent from {@link #toString()}. A
-     * caller that logs it must mask it.
+     * Returns the account postal code, from {@code ACCT-ADDR-ZIP PIC X(10)} ({@code app/cpy/CVACT01Y.cpy:L15}).
      *
-     * @return the postal code as stored; not restricted to digits
+     * @return the postal code as stored.
      */
     public String getAddressZip() {
         return addressZip;
     }
 
     /**
-     * Sets the account postal code, from {@code ACCT-ADDR-ZIP PIC X(10)}
-     * ({@code app/cpy/CVACT01Y.cpy:L15}).
+     * Sets the account postal code, from {@code ACCT-ADDR-ZIP PIC X(10)} ({@code app/cpy/CVACT01Y.cpy:L15}).
      *
-     * @param addressZip the postal code to set
+     * @param addressZip the postal code to set; must not be {@code null} and must be at most ten
+     *                   characters
+     * @throws IllegalArgumentException if {@code addressZip} is {@code null} or longer than ten characters
      */
     public void setAddressZip(String addressZip) {
-        this.addressZip = addressZip;
+        this.addressZip = requireWidth(addressZip, "addressZip",
+                "ACCT-ADDR-ZIP PIC X(10)", ADDRESS_ZIP_WIDTH);
     }
 
     /**
      * Returns the disclosure group identifier, from {@code ACCT-GROUP-ID PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L16}).
-     * <p>
-     * The returned value <b>may be blank</b>, which is a legitimate state present in the seed data, and is
-     * returned without trimming or case folding. Consumers that match it against a disclosure group must
-     * apply the fallback to the default group, exactly as the interest calculation does.
      *
-     * @return the group identifier as stored; may be all spaces, never {@code null} once loaded
+     * @return the group identifier as stored.
      */
     public String getGroupId() {
         return groupId;
@@ -897,14 +807,11 @@ public class Account {
     /**
      * Sets the disclosure group identifier, from {@code ACCT-GROUP-ID PIC X(10)}
      * ({@code app/cpy/CVACT01Y.cpy:L16}).
-     * <p>
-     * Blank input is accepted and stored as given. This setter never trims a blank value to {@code null} and
-     * never folds case, because both would corrupt a value the seed data legitimately contains.
      *
-     * @param groupId the group identifier to set; may be blank
+     * @param groupId the group identifier to set.
      */
     public void setGroupId(String groupId) {
-        this.groupId = groupId;
+        this.groupId = requireWidth(groupId, "groupId", "ACCT-GROUP-ID PIC X(10)", GROUP_ID_WIDTH);
     }
 
     /**
@@ -918,11 +825,6 @@ public class Account {
 
     /**
      * Sets the optimistic-locking version counter.
-     * <p>
-     * The counter is provider-managed and application code normally leaves it alone. Set it only when
-     * reconstituting a detached instance whose version was carried outside the persistence context, or in a
-     * test fixture. Supplying a stale value causes the next flush to fail with an optimistic-lock error, which
-     * is the intended protection rather than a defect.
      *
      * @param version the version counter to set
      */
@@ -930,25 +832,8 @@ public class Account {
         this.version = version;
     }
 
-
     /**
      * Compares two accounts by primary key alone.
-     * <p>
-     * Identity for a persistent record is its key, so {@code accountId} is the only field considered. Two
-     * instances carrying the same eleven-digit key denote the same account no matter how their mutable
-     * balances, dates or accumulators currently differ, which is what makes the result stable across a
-     * transaction that updates those balances. An instance whose key is still {@code null} is equal only to
-     * itself, so unsaved instances never collide in a collection.
-     * <p>
-     * The test uses {@code instanceof} rather than an exact class comparison on purpose: the persistence
-     * provider materialises lazy references as a generated subclass, and an exact class comparison would
-     * report a proxy and its own target as different objects.
-     * <p>
-     * <b>No monetary field participates, and none may be added.</b> {@link BigDecimal#equals(Object)} is
-     * scale-sensitive and reports {@code 2.0} and {@code 2.00} as unequal, so any value comparison of the
-     * money fields anywhere in the codebase must use {@link BigDecimal#compareTo(BigDecimal)} instead. The
-     * rule is stated here, on the one method a reader checks first, so that it is discoverable even though
-     * this implementation is key-based.
      *
      * @param other the object to compare with, may be {@code null}
      * @return {@code true} if {@code other} is an account with a non-null key equal to this one's
@@ -965,14 +850,7 @@ public class Account {
     }
 
     /**
-     * Returns a hash code derived from the primary key alone, consistent with
-     * {@link #equals(Object)}.
-     * <p>
-     * Only {@code accountId} contributes, so the hash of an instance does not change when a balance, a date or
-     * an accumulator is updated. That stability is the point: a mutable-field hash would let an instance go
-     * missing from a hash-based collection the moment a transaction touched it. Instances whose key is still
-     * {@code null} all share one bucket, which is acceptable because unsaved instances are few and are unequal
-     * to one another.
+     * Returns a hash code derived from the primary key alone, consistent with {@link #equals(Object)}.
      *
      * @return the hash code of the account identifier
      */
@@ -982,37 +860,154 @@ public class Account {
     }
 
     /**
-     * Returns a diagnostic representation of this account.
+     * Returns a deliberately minimal diagnostic representation: the account identifier, which correlates a
+     * log line to a row, and the optimistic lock version, which distinguishes two readings of that row.
+     * Nothing else.
      * <p>
-     * <b>{@code addressZip} is deliberately omitted.</b> A postal code is address-adjacent personal data,
-     * {@code toString} output reaches log files as a matter of routine, and omitting the value at source is a
-     * stronger control than relying on a downstream masking rule to catch it. Every other field is included:
-     * the identifiers, the three text dates and the group identifier are not personal data, and the monetary
-     * amounts are account figures rather than personal identifiers, so they are safe to render and are the
-     * fields an operator actually needs when reading a log line.
+     * <b>Every financial and date-bearing column is omitted, and that omission is the whole point.</b> An
+     * earlier form of this method rendered the current balance, both credit limits, both current-cycle
+     * totals, the three text dates, the group identifier and the active status. Each of those is customer
+     * financial data, and {@code toString} is invoked implicitly - by string concatenation, by a logging
+     * placeholder, by an exception message, by a debugger and by an APM agent capturing local variables - so
+     * anything rendered here is data that reaches a log aggregator as a matter of routine, on paths no
+     * reviewer sees. Withholding the values at source is a strictly stronger control than relying on a
+     * masking rule in {@code logback-spring.xml} to recognise them downstream, because masking must know the
+     * shape of what it is looking for and an unlabelled decimal has no distinguishing shape.
+     * <p>
+     * The postal code remains omitted for the reason it always was: it is address-adjacent personal data.
+     * <p>
+     * What is retained is the minimum that makes a log line useful. The account identifier is a surrogate
+     * key with no personal or financial content of its own, and it is what an operator needs in order to
+     * find the row; the version counter is what tells them whether they are looking at the same state twice.
+     * An operator who needs a balance should read the row, where the access is authorised and audited,
+     * rather than recover it from a log.
      * <p>
      * The format is intended for humans and for log correlation only. It is not a serialisation format, it is
      * not parsed anywhere, and it is not the fixed-width 300-byte representation: emitting that record image is
      * the job of the fixed-width writers, which apply the byte offsets and the zoned-decimal sign encoding.
      *
-     * @return a single-line description of this account, excluding the postal code
+     * @return a single-line rendering of the account identifier and version, never containing a monetary
+     *         amount, a date or personal data
      */
     @Override
     public String toString() {
-        return "Account{"
-                + "accountId=" + accountId
-                + ", activeStatus='" + activeStatus + '\''
-                + ", currentBalance=" + currentBalance
-                + ", creditLimit=" + creditLimit
-                + ", cashCreditLimit=" + cashCreditLimit
-                + ", openDate='" + openDate + '\''
-                + ", expiraionDate='" + expiraionDate + '\''
-                + ", reissueDate='" + reissueDate + '\''
-                + ", currentCycleCredit=" + currentCycleCredit
-                + ", currentCycleDebit=" + currentCycleDebit
-                + ", groupId='" + groupId + '\''
-                + ", version=" + version
-                + '}';
+        return "Account{accountId=" + accountId + ", version=" + version + '}';
+    }
+
+    /**
+     * Validates a candidate character value against the width of the COBOL field it comes from and returns it
+     * unchanged.
+     * <p>
+     * Rejects {@code null}, because every character column of this table is {@code NOT NULL} and because a
+     * {@code PIC X(n)} field always holds its declared width, and rejects any value longer than the picture
+     * clause declares, because a 300-byte record cannot contain one. Everything the picture clause admits is
+     * accepted, including a value of only spaces - {@code ACCT-GROUP-ID} is legitimately all spaces in the
+     * seed data - and any character content whatever. Nothing is trimmed, padded or case folded.
+     * <p>
+     * The failure message reports the received length and never the value: {@code ACCT-ADDR-ZIP} is
+     * address-adjacent personal data that {@link #toString()} deliberately omits, and a validation message is
+     * exactly the kind of string that reaches a log.
+     * <p>
+     * Declared {@code private static} so that the constructor can call it without invoking an overridable
+     * method, which would publish a partially initialised instance; the JPA specification forbids a final
+     * entity, so the hazard is real and {@code -Xlint:all -Werror} reports it as {@code this-escape}.
+     *
+     * @param value      the candidate value, possibly {@code null}
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null} or longer than {@code width}
+     */
+    private static String requireWidth(String value, String property, String cobolField, int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table account");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must be at most " + width
+                    + " characters but was " + value.length());
+        }
+        return value;
+    }
+
+    /**
+     * Validates the primary key against {@code ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} and
+     * returns it unchanged.
+     * <p>
+     * Rejects {@code null}, because a row without its primary key cannot be persisted and failing here names
+     * the offending property instead of surfacing an opaque constraint violation from the driver much later,
+     * and rejects any value outside 0 through 99999999999 inclusive, which is what eleven unsigned display
+     * digits can hold and what the catalogued {@code KEYLEN 11} allocates. Zero is accepted and is not a
+     * sentinel. Declared {@code private static} for the reason given on
+     * {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value the candidate account identifier, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, or greater than 99999999999
+     */
+    private static Long requireAccountId(Long value) {
+        if (value == null) {
+            throw new IllegalArgumentException(
+                    "accountId (ACCT-ID PIC 9(11)) must not be null: it is the primary key of table account, "
+                            + "derived from app/cpy/CVACT01Y.cpy:L5");
+        }
+        if (value.longValue() < MIN_ACCOUNT_ID || value.longValue() > MAX_ACCOUNT_ID) {
+            throw new IllegalArgumentException("accountId (ACCT-ID PIC 9(11)) must be between "
+                    + MIN_ACCOUNT_ID + " and " + MAX_ACCOUNT_ID + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate money value against the domain {@code S9(10)V99} can represent and returns it
+     * unchanged.
+     * <p>
+     * Three things are checked and nothing else. {@code null} is rejected, because all five money columns are
+     * {@code NOT NULL} and a packed decimal always holds a value. A scale greater than two is rejected,
+     * because {@code V99} declares exactly two decimal positions and PostgreSQL rounds a
+     * {@code NUMERIC(12,2)} insert half away from zero rather than refusing it - a silent alteration, and by a
+     * rounding mode that is not the {@code RoundingMode.HALF_EVEN} the interest and posting paths use. A
+     * magnitude outside -9999999999.99 through 9999999999.99 is rejected, because twelve zoned-decimal bytes
+     * cannot hold more.
+     * <p>
+     * <b>What is deliberately not checked:</b> the sign, because every one of the five picture clauses carries
+     * an {@code S}, a negative balance is an over-payment, and
+     * {@code app/cbl/CBTRN02C.cbl:L547-L552} adds a negative amount to the cycle debit accumulator, which is
+     * precisely why the over-limit expression at {@code app/cbl/CBTRN02C.cbl:L393-L422} subtracts that term;
+     * zero, which is the opening value of every accumulator and the value the interest path writes back at end
+     * of cycle; and a scale smaller than two, because {@code 0} and {@code 0.00} denote the same amount. <b>No
+     * absolute value, no clamping, no rescaling and no rounding is applied anywhere in this class.</b>
+     * <p>
+     * Declared {@code private static} for the reason given on
+     * {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value      the candidate amount, possibly {@code null}
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause
+     * @return {@code value}, unchanged and unrescaled
+     * @throws IllegalArgumentException if {@code value} is {@code null}, carries more than two decimal digits,
+     *                                  or falls outside the representable range
+     */
+    private static BigDecimal requireMoney(BigDecimal value, String property, String cobolField) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL NUMERIC(" + MONEY_PRECISION + ","
+                    + MONEY_SCALE + ") column of table account");
+        }
+        if (value.scale() > MONEY_SCALE) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must carry at most "
+                    + MONEY_SCALE + " decimal digits but had a scale of " + value.scale()
+                    + "; rescale it explicitly with RoundingMode.HALF_EVEN rather than letting the NUMERIC("
+                    + MONEY_PRECISION + "," + MONEY_SCALE + ") column round it half away from zero");
+        }
+        if (value.compareTo(MIN_MONEY) < 0 || value.compareTo(MAX_MONEY) > 0) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must be between "
+                    + MIN_MONEY.toPlainString() + " and " + MAX_MONEY.toPlainString()
+                    + " inclusive, which is what " + MONEY_INTEGER_DIGITS
+                    + " signed integer digits can hold, but was " + value.toPlainString());
+        }
+        return value;
     }
 }
-

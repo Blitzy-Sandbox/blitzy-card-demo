@@ -65,17 +65,21 @@ import org.springframework.stereotype.Repository;
  *
  * <ul>
  *   <li><b>Build.</b> {@code ./mvnw -B clean compile} - Java 25 with
- *       {@code maven.compiler.release} 25, under {@code -Xlint:all -Werror}, so an unused import or
- *       any other warning in this file is a build failure rather than a note.</li>
+ *       {@code maven.compiler.release} 25, under {@code -Xlint:all -Werror}, so any warning in a
+ *       category {@code javac} 25 publishes is a build failure rather than a note. An unused import is
+ *       not such a category and is forbidden by review instead.</li>
  *   <li><b>Test.</b> {@code ./mvnw -B clean test} for the unit tier;
- *       {@code ./mvnw -B clean verify} for the integration tier, which runs
+ *       {@code ./mvnw -B clean verify} for the integration tier, which is to run
  *       {@code src/test/java/com/cardemo/integration/repository} against a Testcontainers
- *       PostgreSQL 16 and therefore needs a reachable Docker socket. The same command applies the
- *       80% line-coverage floor.</li>
+ *       PostgreSQL 16 and will therefore need a reachable Docker socket. The same command applies the
+ *       80% line-coverage floor. <strong>Not available, measured 1 August 2026:</strong> that directory
+ *       does not exist, so {@code verify} currently runs no integration test for this interface.</li>
  *   <li><b>Run.</b> {@code docker compose up -d} to raise PostgreSQL, then
  *       {@code ./mvnw -B spring-boot:run}. Flyway applies the migrations at startup; a signing key
- *       must be supplied through the environment, because no profile carries a committed
- *       default.</li>
+ *       must be supplied through the environment, because no profile carries a committed default.
+ *       <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry
+ *       point and no {@code application*.yml} profile exists, so that command cannot start anything -
+ *       it is the target invocation, not one that works today.</li>
  * </ul>
  *
  * <h2>Provenance: key length 8 and record length 80, established twice over</h2>
@@ -128,7 +132,9 @@ import org.springframework.stereotype.Repository;
  * of trailing filler, equals the catalogued 80. Field 1 is the eight-byte primary key, which is
  * why the identifier type of this repository is {@link String} and not a numeric type - unlike the
  * account and card clusters, whose keys are zoned-decimal digit strings, this key is genuinely
- * alphanumeric, as {@code ADMIN001} and {@code USER0001} in the seed demonstrate.
+ * alphanumeric - every one of the ten seeded rows mixes letters and digits in its eight key bytes. The
+ * seeded identifiers themselves are not reproduced here; the synthetic stand-ins this documentation uses,
+ * {@code ADMNUSR1} and {@code STDUSR01}, carry the same eight character alphanumeric shape.
  *
  * <p>Field 4 is the one place where the column width deliberately departs from the PIC width; see
  * the first Blocker finding below. Field 5 is persisted through the nested converter declared on
@@ -221,8 +227,8 @@ import org.springframework.stereotype.Repository;
  *   <li><b>{@code carddemo.pagination.*}</b> supplies the page size for the declared browse. It is
  *       ten for the user list, and that value is configuration, never a constant in this file.</li>
  *   <li><b>Connection pooling is left at its framework defaults.</b> Pool tuning is explicitly out
- *       of scope for this migration and is recorded as residual risk in {@code DECISION_LOG.md}
- *       and {@code docs/validation-gates.md}. Rule 1 clause A asks that tradeoffs be justified
+ *       of scope for this migration and is recorded as residual risk in the planned {@code DECISION_LOG.md}
+ *       and the planned {@code docs/validation-gates.md}. Rule 1 clause A asks that tradeoffs be justified
  *       rather than assumed, and the honest justification is that the legacy system publishes no
  *       throughput or latency objective - {@code app/catlg/LISTCAT.txt} records
  *       {@code BUFSPACE 24576} and {@code CISIZE 8192} for this cluster, which are VSAM buffer
@@ -278,7 +284,7 @@ import org.springframework.stereotype.Repository;
  * exactly. <b>No guard is added.</b> Behavioural parity is the contract of this migration, and
  * inserting a check the source does not have would change observable behaviour - which is
  * forbidden - however defensible the check would be in a green-field system. The quirk is cited in
- * {@code TRACEABILITY_MATRIX.md} and justified in {@code DECISION_LOG.md}; it is a tracked,
+ * the planned {@code TRACEABILITY_MATRIX.md} and justified in the planned {@code DECISION_LOG.md}; it is a tracked,
  * deliberate reproduction rather than an oversight, and it must not be silently repaired by a later
  * change to this interface or its callers.
  *
@@ -289,7 +295,7 @@ import org.springframework.stereotype.Repository;
  * {@code :L3883}. The two sources agree on both key length and record length, so the discrepancy is
  * documentary only and no code is affected. <i>Remediation, applied:</i> cite both locators
  * wherever this geometry is asserted, which the provenance section above does. Recorded in
- * {@code DECISION_LOG.md}.
+ * the planned {@code DECISION_LOG.md}.
  *
  * <p><b>Low - the browse in the list program does not use generic positioning.</b>
  * {@code app/cbl/COUSR00C.cbl:L592} carries {@code GTEQ} as a <em>comment</em>, and that is the
@@ -349,11 +355,13 @@ import org.springframework.stereotype.Repository;
  * items are <b>Not available</b> at the time this interface was authored:
  *
  * <ol>
- *   <li><b>The three Flyway migrations are "Not available".</b> Neither
- *       {@code V1__create_schema.sql}, nor {@code V2__create_indexes.sql}, nor
- *       {@code V3__seed_data.sql} exists yet. <i>What is needed:</i> those three files, under
- *       {@code src/main/resources/db/migration}. Until they exist, this interface and
- *       {@link UserSecurity} are the normative contract {@code V1} must satisfy, because
+ *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
+ *       {@code V1__create_schema.sql} <b>is present</b> and declares
+ *       {@code CREATE TABLE user_security} with {@code ck_user_security_type};
+ *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} do not exist yet. <i>What is
+ *       needed:</i> those two remaining files, under {@code src/main/resources/db/migration}. The
+ *       absence of {@code V3} is why no seeded row can be cited from the migration here. What
+ *       {@code V1} declares, and what this interface and {@link UserSecurity} are typed over, is - and
  *       {@code ddl-auto: validate} makes the match mandatory rather than advisory - table
  *       {@code user_security}, with columns {@code sec_usr_id CHAR(8)} as the primary key,
  *       {@code sec_usr_fname CHAR(20)}, {@code sec_usr_lname CHAR(20)},
@@ -386,67 +394,19 @@ public interface UserSecurityRepository extends JpaRepository<UserSecurity, Stri
     /**
      * Returns one page of all users, ordered by user identifier ascending.
      *
-     * <p><b>Purpose.</b> This is the Java form of the {@code STARTBR} + {@code READNEXT} +
-     * {@code ENDBR} sequence in the 695-line {@code app/cbl/COUSR00C.cbl}. That program opens a
-     * browse over the file at {@code :L586-L595} with
-     * {@code EXEC CICS STARTBR DATASET(WS-USRSEC-FILE) RIDFLD(SEC-USR-ID)
-     * KEYLENGTH(LENGTH OF SEC-USR-ID)}, walks it forward with {@code READNEXT} at
-     * {@code :L619-L621} - or backward with {@code READPREV} at {@code :L653-L655} when the user
-     * pages up - and closes it with {@code ENDBR} at {@code :L687-L691}. A VSAM browse over a KSDS
-     * returns records in key order by construction, so key order is not an incidental property of
-     * the legacy screen: it <em>is</em> the observable behaviour being reproduced, and it is what
-     * makes the page-forward and page-backward paths at {@code :L282} and following coherent with
-     * one another.</p>
+     * <p>This is the Java form of the {@code STARTBR} + {@code READNEXT} + {@code ENDBR} sequence in the
+     * 695-line {@code app/cbl/COUSR00C.cbl}. That program opens a browse over the file at {@code :L586-L595}
+     * with
+     * {@code EXEC CICS STARTBR DATASET(WS-USRSEC-FILE) RIDFLD(SEC-USR-ID) KEYLENGTH(LENGTH OF SEC-USR-ID)},
+     * walks it forward with {@code READNEXT} at {@code :L619-L621} - or backward with {@code READPREV} at
+     * {@code :L653-L655} when the user pages up - and closes it with {@code ENDBR} at {@code :L687-L691}. A
+     * VSAM browse over a KSDS returns records in key order by construction, so key order is not an incidental
+     * property of the legacy screen: it <em>is</em> the observable behaviour being reproduced, and it is what
+     * makes the page-forward and page-backward paths at {@code :L282} and following coherent with one another.
      *
-     * <p><b>Why this is declared rather than delegated to the inherited {@code findAll(Pageable)}.</b>
-     * The inherited method applies only whatever {@code Sort} the caller happens to supply. If the
-     * caller supplies none, row order becomes whatever the database finds convenient, and paging
-     * over an unstable order can show a row twice or skip it entirely between two requests. Naming
-     * the ordering here makes it an invariant of the repository rather than a caller convention,
-     * which is what Rule 1 clause A demands of a multi-row query: correctness and determinism ahead
-     * of cleverness. This is not an alternate-key finder - it restricts on nothing and orders by
-     * the primary key, so it implies no index beyond the one the primary key already provides,
-     * which is why the migration correctly adds none on this table.</p>
-     *
-     * <p><b>Inputs.</b> {@code pageable} carries the page index and the page size. The size
-     * originates from {@code carddemo.pagination.*} and is ten for the user list, evidenced by
-     * {@code app/cbl/COUSR00C.cbl:L57}, {@code 02 USER-REC OCCURS 10 TIMES.} - the screen's row
-     * array is ten deep, so ten rows are what one page means. That value is configuration and is
-     * deliberately not written as a constant anywhere in this interface. A {@code Sort} carried on
-     * the argument is redundant here and should be omitted, because the {@code OrderBy} clause in
-     * this method name governs the ordering.</p>
-     *
-     * <p><b>Outputs.</b> A {@code Page} of users in ascending identifier order, together with the
-     * total count that {@code com.cardemo.service.admin.UserListService} turns into the next-page
-     * indicator the legacy screen carried in its COMMAREA. Every returned entity is fully
-     * initialised, since {@code spring.jpa.open-in-view} is {@code false}. Each element is a
-     * complete {@link UserSecurity} aggregate, not a projection; the service maps it to a DTO that
-     * omits the credential, so the hash never reaches a response body. The result is never
-     * {@code null}: an empty page means the table holds no rows, or the requested index lies past
-     * the end, and both are legitimate outcomes rather than failures.</p>
-     *
-     * <p><b>Side effects.</b> None. This is a read: it modifies no row, acquires no pessimistic
-     * lock, writes no log record of its own and starts no transaction. It has no equivalent of the
-     * legacy {@code ENDBR} to forget, because no cursor outlives the call.</p>
-     *
-     * <p><b>Failure modes.</b> A {@code null} {@code pageable} is <em>not</em> rejected: Spring Data
-     * normalises it to {@code Pageable.unpaged()}, so the query degenerates into an unpaged read of
-     * the whole table in a single page. Callers must therefore supply a {@code Pageable}
-     * deliberately - on this unfiltered browse the consequence of {@code null} is the entire user
-     * master in one response, which is precisely what pagination exists to prevent. A page index
-     * past the end is not an error and yields an empty page. Connection loss or a schema fault
-     * surfaces as a subtype of {@code org.springframework.dao.DataAccessException} for
-     * {@code com.cardemo.service.shared.FileStatusMapper} to translate with the root cause intact;
-     * nothing is caught, mapped or swallowed here. Note finally that this method applies no
-     * authorisation of its own: the user-administration surface is restricted to the administrator
-     * role at the controller boundary under {@code /api/admin/*}, matching the legacy screen's own
-     * reachability only from the admin menu.</p>
-     *
-     * @param pageable the page index and page size to apply; the size comes from
-     *                 {@code carddemo.pagination.*} and is never hardcoded in this interface. A
-     *                 {@code Sort} on it is redundant, since this method name fixes the ordering
-     * @return a page of users in ascending user-identifier order, empty if the table holds no rows
-     *         or the page index lies past the end; never {@code null}
+     * @param pageable the page index and page size to apply.
+     * @return a page of users in ascending user-identifier order, empty if the table holds no rows or the page
+     * index lies past the end.
      */
     Page<UserSecurity> findAllByOrderBySecUsrIdAsc(Pageable pageable);
 }

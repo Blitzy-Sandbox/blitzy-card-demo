@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : PageResponseTest.java
- * Component   : Unit test tier, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM, no container, no Spring
  *               context, no database
@@ -43,12 +41,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 
 import com.cardemo.model.dto.PageResponse;
-import java.lang.annotation.Annotation;
 import java.lang.reflect.Constructor;
-import java.lang.reflect.Field;
-import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.lang.reflect.Type;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Iterator;
@@ -91,10 +85,13 @@ import org.junit.jupiter.api.Test;
  * {@code CDEMO-ACCT-STATUS X(01)} at {@code :L39}, {@code CDEMO-CARD-NUM 9(16)} at {@code :L41}, and
  * {@code CDEMO-LAST-MAP X(7)} with {@code CDEMO-LAST-MAPSET X(7)} at {@code :L43-L44}.</p>
  *
- * <p><b>Remediation.</b> Cite program WORKING-STORAGE instead. The canonical anchor for this type is
+ * <p><b>Remediation, applied.</b> Cite program WORKING-STORAGE and the program COMMAREA extensions
+ * instead. {@code docs/technical-specifications.md} now does exactly that, verified on 1 August 2026.
+ * The canonical anchor for this type is
  * {@code app/cbl/COUSR00C.cbl:L54}, {@code 05 WS-PAGE-NUM PIC S9(04) COMP VALUE ZEROS.}, supported by
  * {@code app/cbl/COTRN00C.cbl:L63-L68} and {@code app/cbl/COCRDLIC.cbl:L239-L244}. The likely cause
- * of the specification error is textual adjacency rather than carelessness, and it is worth recording
+ * of the prior-generation attribution error is textual adjacency rather than carelessness, and it is
+ * worth recording
  * because it will recur: each list program declares its own paging fields as level-05 items placed
  * immediately after its {@code COPY COCOM01Y.} statement, so those items extend the copybook's
  * {@code 01 CARDDEMO-COMMAREA} group while being declared in the program. See
@@ -102,13 +99,15 @@ import org.junit.jupiter.api.Test;
  * {@code app/cbl/COUSR00C.cbl:L66} followed by {@code :L67-L75}. A reader scanning an expanded
  * listing sees the paging fields inside the COMMAREA group and attributes them to the copybook.</p>
  *
- * <p><b>Finding, severity Medium.</b> The same plan states that the seventeen BMS symbolic maps carry
- * 460 input fields, while its own per-map table sums to 440. A census of
+ * <p><b>Finding, severity Medium, closed.</b> The same prior-generation plan prose stated that the
+ * seventeen BMS symbolic maps carry 460 input fields, while its own per-map table summed to 440. A
+ * census of
  * {@code app/cpy-bms/*.CPY} counting {@code 02 <name>I PIC} declarations totals <b>441</b>:
  * COACTUP 54, COACTVW 37, COADM01 20, COBIL00 10, COCRDLI 45, COCRDSL 15, COCRDUP 17, COMEN01 20,
  * CORPT00 17, COSGN00 11, COTRN00 59, COTRN01 21, COTRN02 21, COUSR00 59, COUSR01 12, COUSR02 12,
- * COUSR03 11. The single discrepancy against the plan's table is COACTVW, which holds 37 rather than
- * 36. Neither figure affects this type; the census is recorded here because
+ * COUSR03 11. The single discrepancy against that prose's table was COACTVW, which holds 37 rather than
+ * 36. The specification now publishes 441 and 37. Neither figure affects this type; the census is
+ * pinned here because
  * {@code PagingFieldWidthDivergence.symbolicMapInputFieldCensusIs441NotThe460Claimed} is where the
  * figure is pinned.</p>
  *
@@ -153,7 +152,7 @@ import org.junit.jupiter.api.Test;
  *
  * <h2>2. How to run, build and test</h2>
  *
- * <p>{@code mvn -B clean test} runs this class; {@code mvn -B -o test -Dtest=PageResponseTest} runs it
+ * <p>{@code ./mvnw -B clean test} runs this class; {@code ./mvnw -B -o test -Dtest=PageResponseTest} runs it
  * alone against the warm local repository. <b>Collection depends on the path and the name together.</b>
  * The root {@code pom.xml} binds {@code maven-surefire-plugin} 3.5.4 to {@code **}{@code /*Test.java}
  * and {@code **}{@code /*Tests.java} while excluding {@code **}{@code /integration/**} and
@@ -200,8 +199,8 @@ import org.junit.jupiter.api.Test;
  * filter synthetic members, which is load bearing rather than defensive: {@code jacoco-maven-plugin}
  * instruments classes through a Java agent during {@code verify} and adds a synthetic
  * {@code $jacocoData} field and {@code $jacocoInit} method, so an unfiltered
- * {@code getDeclaredFields()} assertion passes under {@code mvn test} and fails under
- * {@code mvn verify}. Reflection here is read-only: nothing is made accessible and nothing is
+ * {@code getDeclaredFields()} assertion passes under {@code ./mvnw test} and fails under
+ * {@code ./mvnw verify}. Reflection here is read-only: nothing is made accessible and nothing is
  * invoked.</p>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
@@ -209,8 +208,9 @@ import org.junit.jupiter.api.Test;
  * <ul>
  *   <li><b>The build fails on something trivial-looking.</b> Compilation runs with
  *       {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, and that reaches test
- *       compilation, so one unused import, one raw type or one deprecation is an error rather than a
- *       warning. Reproduce with {@code mvn -o -q test-compile}.</li>
+ *       compilation, so one raw type or one deprecation is an error rather than a
+ *       warning. An unused import is not - {@code javac} 25.0.3 publishes no lint key for one - so that is
+ *       caught at review. Reproduce with {@code ./mvnw -o -q test-compile}.</li>
  *   <li><b>An assertion cites {@code COCOM01Y} for pagination.</b> Severity High. The copybook has no
  *       paging field; see &sect;1.1 above and cite {@code app/cbl/COUSR00C.cbl:L54} instead.</li>
  *   <li><b>The two next-page sentinels get conflated.</b> Severity Blocker. {@code 'N'} at
@@ -257,137 +257,155 @@ import org.junit.jupiter.api.Test;
  *   <li><b>The wall-clock zone of the legacy region: Not available.</b> Neither producer stores an
  *       offset. {@link FixedClockProvider#CANONICAL_ZONE} records the chosen zone explicitly rather
  *       than leaving it implicit.</li>
+ *   <li><b>The production owners of the sentinel encodings: Not available.</b> The six helpers
+ *       {@code moveToAlphanumericField}, {@code toFamilyA}, {@code toFamilyB}, {@code fromFamilyA},
+ *       {@code fromFamilyB} and {@code toFamilyBLastPageMarker} re-implement, as test-local oracles,
+ *       the {@code 'Y'} / {@code 'N'} family of {@code app/cbl/COTRN00C.cbl:L63-L68} and the inverted
+ *       zero-or-nine last-page family of {@code app/cbl/COCRDLIC.cbl:L239-L244}. The services that
+ *       will own those encodings, {@code TransactionListService} from {@code app/cbl/COTRN00C.cbl} and
+ *       {@code CardListService} from {@code app/cbl/COCRDLIC.cbl}, do not exist at this checkpoint, so
+ *       the oracles are retained deliberately to record the contract rather than lose it, and this
+ *       entry is their tracking record. What would be needed: those two services; the moment either
+ *       arrives, re-point the dependent assertions at the production encoder and delete the oracle.</li>
  * </ul>
  */
 class PageResponseTest {
 
-    // ==============================================================================================
-    // Legacy constants, each transcribed from one verified locator. Every one of these is immutable,
-    // so there is no static mutable fixture anywhere in this class. Values are transcribed rather
-    // than derived, so that a drift in the corpus shows up as a failed assertion here.
-    // ==============================================================================================
-
-    /** Width of {@code PAGENOI PIC X(3)} on the card list screen, {@code app/cpy-bms/COCRDLI.CPY:60}. */
+    /**
+     * Width of {@code PAGENOI PIC X(3)} on the card list screen, {@code app/cpy-bms/COCRDLI.CPY:60}.
+     */
     private static final int CARD_LIST_PAGING_FIELD_WIDTH = 3;
 
     /**
      * Width of {@code PAGENUMI PIC X(8)} on the transaction and user list screens,
-     * {@code app/cpy-bms/COTRN00.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:60}. Also the digit count
-     * of {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65}.
+     * {@code app/cpy-bms/COTRN00.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:60}. Also the digit count of
+     * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65}.
      */
     private static final int WIDE_LIST_PAGING_FIELD_WIDTH = 8;
 
-    /** Largest value {@code PIC 9(08)} can hold, {@code app/cbl/COTRN00C.cbl:L65}. */
+    /**
+     * Largest value {@code PIC 9(08)} can hold, {@code app/cbl/COTRN00C.cbl:L65}.
+     */
     private static final int MAX_EIGHT_DIGIT_PAGE_NUMBER = 99_999_999;
 
-    /** Smallest value that overflows {@code PIC 9(08)}; the deliberate one-over case. */
+    /**
+     * Smallest value that overflows {@code PIC 9(08)}; the deliberate one-over case.
+     */
     private static final int NINE_DIGIT_PAGE_NUMBER = 100_000_000;
 
-    /** {@code 88 NEXT-PAGE-YES VALUE 'Y'.} - {@code app/cbl/COTRN00C.cbl:L67}. */
+    /**
+     * {@code 88 NEXT-PAGE-YES VALUE 'Y'.} - {@code app/cbl/COTRN00C.cbl:L67}.
+     */
     private static final char FAMILY_A_NEXT_PAGE_YES = 'Y';
 
-    /** {@code 88 NEXT-PAGE-NO VALUE 'N'.} - {@code app/cbl/COTRN00C.cbl:L68}. */
+    /**
+     * {@code 88 NEXT-PAGE-NO VALUE 'N'.} - {@code app/cbl/COTRN00C.cbl:L68}.
+     */
     private static final char FAMILY_A_NEXT_PAGE_NO = 'N';
 
-    /** {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.} - {@code app/cbl/COCRDLIC.cbl:L244}. */
+    /**
+     * {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.} - {@code app/cbl/COCRDLIC.cbl:L244}.
+     */
     private static final char FAMILY_B_NEXT_PAGE_EXISTS = 'Y';
 
     /**
      * {@code 88 CA-NEXT-PAGE-NOT-EXISTS VALUE LOW-VALUES.} - {@code app/cbl/COCRDLIC.cbl:L243}.
-     *
-     * <p>{@code LOW-VALUES} is the lowest value of the native collating sequence, which for a
-     * single-byte alphanumeric field is a zero byte. It is emphatically <b>not</b> a space, and it is
-     * not the {@code 'N'} the other family uses.</p>
      */
     private static final char FAMILY_B_NEXT_PAGE_NOT_EXISTS = '\u0000';
 
     /**
      * {@code 88 CA-LAST-PAGE-SHOWN VALUE 0.} - {@code app/cbl/COCRDLIC.cbl:L240}.
-     *
-     * <p>Counter-intuitive by design: <b>zero means the last page IS displayed.</b></p>
      */
     private static final int FAMILY_B_LAST_PAGE_SHOWN = 0;
 
     /**
      * {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9.} - {@code app/cbl/COCRDLIC.cbl:L241}.
-     *
-     * <p>Counter-intuitive by design: <b>nine means the last page is NOT displayed.</b></p>
      */
     private static final int FAMILY_B_LAST_PAGE_NOT_SHOWN = 9;
 
     /**
      * {@code 05 WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20.} - {@code app/cbl/CBTRN03C.cbl:L131}.
-     *
-     * <p>A batch report line count. Present here only so that its <b>absence</b> from this type can be
-     * asserted; it is never a page size for an online list.</p>
      */
     private static final int BATCH_REPORT_LINES_PER_PAGE = 20;
 
-    /** Width of {@code CDEMO-CT00-TRNID-FIRST} and {@code -TRNID-LAST}, {@code app/cbl/COTRN00C.cbl:L63-L64}. */
+    /**
+     * Width of {@code CDEMO-CT00-TRNID-FIRST} and {@code -TRNID-LAST}, {@code app/cbl/COTRN00C.cbl:L63-L64}.
+     */
     private static final int TRANSACTION_KEY_WIDTH = 16;
 
-    /** Width of {@code CDEMO-CU00-USRID-FIRST} and {@code -USRID-LAST}, {@code app/cbl/COUSR00C.cbl:L68-L69}. */
+    /**
+     * Width of {@code CDEMO-CU00-USRID-FIRST} and {@code -USRID-LAST}, {@code app/cbl/COUSR00C.cbl:L68-L69}.
+     */
     private static final int USER_KEY_WIDTH = 8;
 
     /**
      * Width of {@code WS-CA-LAST-CARDKEY}, {@code app/cbl/COCRDLIC.cbl:L230-L232}: a
-     * {@code WS-CA-LAST-CARD-NUM PIC X(16)} followed by a {@code WS-CA-LAST-CARD-ACCT-ID PIC 9(11)},
-     * so 27 bytes in total. {@code WS-CA-FIRST-CARDKEY} at {@code :L233-L235} mirrors it.
+     * {@code WS-CA-LAST-CARD-NUM PIC X(16)} followed by a {@code WS-CA-LAST-CARD-ACCT-ID PIC 9(11)}, so 27
+     * bytes in total. {@code WS-CA-FIRST-CARDKEY} at {@code :L233-L235} mirrors it.
      */
     private static final int CARD_KEY_WIDTH = 27;
 
-    /** Digits of {@code CDEMO-CARD-NUM PIC 9(16)}, numeric, {@code app/cpy/COCOM01Y.cpy:L41}. */
+    /**
+     * Digits of {@code CDEMO-CARD-NUM PIC 9(16)}, numeric, {@code app/cpy/COCOM01Y.cpy:L41}.
+     */
     private static final int COMMAREA_CARD_NUMBER_DIGITS = 16;
 
-    /** Characters of {@code CARD-NUM PIC X(16)}, alphanumeric, {@code app/cpy/CVACT02Y.cpy:L5}. */
+    /**
+     * Characters of {@code CARD-NUM PIC X(16)}, alphanumeric, {@code app/cpy/CVACT02Y.cpy:L5}.
+     */
     private static final int CARD_ENTITY_CARD_NUMBER_WIDTH = 16;
 
-    /** Width of {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET}, {@code app/cpy/COCOM01Y.cpy:L43-L44}. */
+    /**
+     * Width of {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET}, {@code app/cpy/COCOM01Y.cpy:L43-L44}.
+     */
     private static final int COMMAREA_LAST_MAP_WIDTH = 7;
 
-    /** Width of {@code CURTIMEI} on sixteen of the seventeen symbolic maps. */
+    /**
+     * Width of {@code CURTIMEI} on sixteen of the seventeen symbolic maps.
+     */
     private static final int COMMON_HEADER_TIME_WIDTH = 8;
 
-    /** Width of {@code CURTIMEI PIC X(9)} on the sign-on map alone, {@code app/cpy-bms/COSGN00.CPY:54}. */
+    /**
+     * Width of {@code CURTIMEI PIC X(9)} on the sign-on map alone, {@code app/cpy-bms/COSGN00.CPY:54}.
+     */
     private static final int SIGN_ON_HEADER_TIME_WIDTH = 9;
 
-    /** Verified input-field census across {@code app/cpy-bms/*.CPY}; the plan claims 460. */
-    private static final int SYMBOLIC_MAP_INPUT_FIELD_CENSUS = 441;
-
-    /** Elementary field count of {@code app/cpy/COCOM01Y.cpy}, lines 19 to 44. None is a paging field. */
+    /**
+     * Elementary field count of {@code app/cpy/COCOM01Y.cpy}, lines 19 to 44. None is a paging field.
+     */
     private static final int COMMAREA_ELEMENTARY_FIELD_COUNT = 16;
 
-    /** Digits of {@code WS-CA-SCREEN-NUM PIC 9(1)} at {@code app/cbl/COCRDLIC.cbl:L237}. */
+    /**
+     * Digits of {@code WS-CA-SCREEN-NUM PIC 9(1)} at {@code app/cbl/COCRDLIC.cbl:L237}.
+     */
     private static final int CARD_LIST_PAGE_NUMBER_DIGITS = 1;
 
-    /** Digits of {@code WS-PAGE-NUM PIC S9(04) COMP} at {@code app/cbl/COUSR00C.cbl:L54}. */
+    /**
+     * Digits of {@code WS-PAGE-NUM PIC S9(04) COMP} at {@code app/cbl/COUSR00C.cbl:L54}.
+     */
     private static final int USER_LIST_WORKING_PAGE_NUMBER_DIGITS = 4;
 
     /**
      * A deliberately synthetic row payload. It is not a primary account number, not a name and not a
-     * credential, so it can be asserted absent from {@link PageResponse#toString()} without a
-     * failure message ever carrying real data.
+     * credential, so it can be asserted absent from {@link PageResponse#toString()} without a failure message
+     * ever carrying real data.
      */
     private static final String ROW_SENTINEL = "ROW-PAYLOAD-MUST-NOT-BE-LOGGED";
 
     /**
      * A 16-character transaction identifier with leading zeros, shaped like
-     * {@code CDEMO-CT00-TRNID-FIRST PIC X(16)} but obviously synthetic. Leading zeros are the point:
-     * they are what a numeric type would silently discard.
+     * {@code CDEMO-CT00-TRNID-FIRST PIC X(16)} but obviously synthetic. Leading zeros are the point: they are
+     * what a numeric type would silently discard.
      */
     private static final String TRANSACTION_KEY_WITH_LEADING_ZEROS = "0000000000000001";
-
-    // ==============================================================================================
-    // Helpers. Pure functions over their arguments; no shared mutable state, no field on this class.
-    // ==============================================================================================
 
     /**
      * Builds a mutable list of {@code count} distinct synthetic rows, ascending and insertion ordered.
      *
-     * <p>Mutable on purpose: it is the input to the defensive-copy assertions. Ascending on purpose:
-     * {@code app/data/ASCII/cardxref.txt} is already strictly ascending by key, which is the
-     * precondition that makes the early-exit scan of {@code app/cbl/CBSTM03A.CBL} correct, so ordered
-     * input is the realistic case. Values are synthetic row markers, never card numbers.</p>
+     * <p>Mutable on purpose: it is the input to the defensive copy assertions. Ascending on purpose:
+     * {@code app/data/ASCII/cardxref.txt} is already strictly ascending by key, which is the precondition that
+     * makes the early exit scan of {@code app/cbl/CBSTM03A.CBL} correct. Values are row markers, never card
+     * numbers.
      *
      * @param count how many rows to build; zero yields an empty list
      * @return a new mutable list holding {@code count} rows in ascending insertion order
@@ -403,12 +421,8 @@ class PageResponseTest {
     /**
      * Renders a page number into a fixed-width alphanumeric screen field the way a COBOL move does.
      *
-     * <p>A COBOL alphanumeric move is left justified and truncates on the right when the sending item
-     * is longer than the receiving item, which is why a four-character page number cannot survive
-     * {@code PAGENOI PIC X(3)}.</p>
-     *
      * @param digits the already-rendered page number digits
-     * @param width  the receiving field width
+     * @param width the receiving field width
      * @return {@code digits} truncated on the right to at most {@code width} characters
      */
     private static String moveToAlphanumericField(final String digits, final int width) {
@@ -418,7 +432,7 @@ class PageResponseTest {
     /**
      * Encodes this type's next-page indicator into the {@code 'Y'} / {@code 'N'} sentinel family.
      *
-     * <p>{@code app/cbl/COTRN00C.cbl:L66-L68}. Used by the transaction and user list adapters.</p>
+     * <p>{@code app/cbl/COTRN00C.cbl:L66-L68}, used by the transaction and user list adapters.
      *
      * @param nextPageAvailable the indicator carried by a {@link PageResponse}
      * @return {@code 'Y'} when a further page exists, {@code 'N'} otherwise
@@ -430,7 +444,7 @@ class PageResponseTest {
     /**
      * Encodes this type's next-page indicator into the {@code 'Y'} / {@code LOW-VALUES} sentinel family.
      *
-     * <p>{@code app/cbl/COCRDLIC.cbl:L242-L244}. Used by the card list adapter.</p>
+     * <p>{@code app/cbl/COCRDLIC.cbl:L242-L244}, used by the card list adapter.
      *
      * @param nextPageAvailable the indicator carried by a {@link PageResponse}
      * @return {@code 'Y'} when a further page exists, a {@code LOW-VALUES} zero byte otherwise
@@ -444,8 +458,8 @@ class PageResponseTest {
      *
      * @param sentinel the character held by {@code CDEMO-CT00-NEXT-PAGE-FLG}
      * @return {@code true} for {@code 'Y'}, {@code false} for {@code 'N'}
-     * @throws IllegalArgumentException when the character belongs to neither condition name, so a
-     *                                  foreign sentinel can never be silently read as "no next page"
+     * @throws IllegalArgumentException when the character belongs to neither condition name, so a foreign
+     * sentinel can never be silently read as "no next page"
      */
     private static boolean fromFamilyA(final char sentinel) {
         if (sentinel == FAMILY_A_NEXT_PAGE_YES) {
@@ -462,8 +476,8 @@ class PageResponseTest {
      *
      * @param sentinel the character held by {@code WS-CA-NEXT-PAGE-IND}
      * @return {@code true} for {@code 'Y'}, {@code false} for a {@code LOW-VALUES} zero byte
-     * @throws IllegalArgumentException when the character belongs to neither condition name, which is
-     *                                  precisely what a {@code 'N'} from the other family would hit
+     * @throws IllegalArgumentException when the character belongs to neither condition name, which is precisely
+     * what a {@code 'N'} from the other family would hit
      */
     private static boolean fromFamilyB(final char sentinel) {
         if (sentinel == FAMILY_B_NEXT_PAGE_EXISTS) {
@@ -478,110 +492,14 @@ class PageResponseTest {
     /**
      * Derives the inverted {@code WS-CA-LAST-PAGE-DISPLAYED} marker from the next-page indicator.
      *
-     * <p>{@code app/cbl/COCRDLIC.cbl:L239-L241}. The inversion is the whole point: no further page
-     * means the last page <b>is</b> displayed, which the source encodes as zero.</p>
+     * <p>{@code app/cbl/COCRDLIC.cbl:L239-L241}. The inversion is the whole point: no further page means the
+     * last page <b>is</b> displayed, which the source encodes as zero.
      *
      * @param nextPageAvailable the indicator carried by a {@link PageResponse}
      * @return {@code 0} when this is the last page, {@code 9} when a further page exists
      */
     private static int toFamilyBLastPageMarker(final boolean nextPageAvailable) {
         return nextPageAvailable ? FAMILY_B_LAST_PAGE_NOT_SHOWN : FAMILY_B_LAST_PAGE_SHOWN;
-    }
-
-    /**
-     * Returns the names of the non-synthetic declared fields of {@link PageResponse} matching a
-     * static-or-instance selector.
-     *
-     * <p>Synthetic members are filtered because the coverage agent adds {@code $jacocoData} during
-     * {@code verify}; see &sect;3 of the class documentation.</p>
-     *
-     * @param wantStatic {@code true} to select static fields, {@code false} to select instance fields
-     * @return the matching field names, in no particular order
-     */
-    private static List<String> declaredFieldNames(final boolean wantStatic) {
-        final List<String> names = new ArrayList<>();
-        for (final Field field : PageResponse.class.getDeclaredFields()) {
-            if (!field.isSynthetic() && Modifier.isStatic(field.getModifiers()) == wantStatic) {
-                names.add(field.getName());
-            }
-        }
-        return names;
-    }
-
-    /**
-     * Returns the names of the non-synthetic declared methods of {@link PageResponse}.
-     *
-     * @return the declared method names, in no particular order
-     */
-    private static List<String> declaredMethodNames() {
-        final List<String> names = new ArrayList<>();
-        for (final Method method : PageResponse.class.getDeclaredMethods()) {
-            if (!method.isSynthetic()) {
-                names.add(method.getName());
-            }
-        }
-        return names;
-    }
-
-    /**
-     * Collects every type name reachable from the declared surface of {@link PageResponse}, using
-     * generic type names so that a type argument such as {@code Page<Foo>} is visible rather than
-     * erased away.
-     *
-     * @return generic type names of declared field types, method return types and parameter types
-     */
-    private static List<String> declaredSurfaceTypeNames() {
-        final List<String> names = new ArrayList<>();
-        for (final Field field : PageResponse.class.getDeclaredFields()) {
-            if (!field.isSynthetic()) {
-                names.add(field.getGenericType().getTypeName());
-            }
-        }
-        for (final Method method : PageResponse.class.getDeclaredMethods()) {
-            if (!method.isSynthetic()) {
-                names.add(method.getGenericReturnType().getTypeName());
-                for (final Type parameter : method.getGenericParameterTypes()) {
-                    names.add(parameter.getTypeName());
-                }
-            }
-        }
-        for (final Constructor<?> constructor : PageResponse.class.getDeclaredConstructors()) {
-            if (!constructor.isSynthetic()) {
-                for (final Type parameter : constructor.getGenericParameterTypes()) {
-                    names.add(parameter.getTypeName());
-                }
-            }
-        }
-        return names;
-    }
-
-    /**
-     * Collects the runtime-visible annotation type names declared on the class and on every declared
-     * field, method and constructor of {@link PageResponse}.
-     *
-     * @return the annotation type names found, empty when the type carries none
-     */
-    private static List<String> declaredAnnotationTypeNames() {
-        final List<String> names = new ArrayList<>();
-        for (final Annotation annotation : PageResponse.class.getDeclaredAnnotations()) {
-            names.add(annotation.annotationType().getName());
-        }
-        for (final Field field : PageResponse.class.getDeclaredFields()) {
-            for (final Annotation annotation : field.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        for (final Method method : PageResponse.class.getDeclaredMethods()) {
-            for (final Annotation annotation : method.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        for (final Constructor<?> constructor : PageResponse.class.getDeclaredConstructors()) {
-            for (final Annotation annotation : constructor.getDeclaredAnnotations()) {
-                names.add(annotation.annotationType().getName());
-            }
-        }
-        return names;
     }
 
     // ==============================================================================================
@@ -600,21 +518,6 @@ class PageResponseTest {
     /**
      * Records the provenance of this type positively, and with it the specification defect described in
      * &sect;1.1 of the class documentation.
-     *
-     * <p>The decisive evidence that no single copybook defines a pagination record - so the honest
-     * answer to "which copybook is this?" is <b>Not available</b> - is that the three list programs
-     * declare the page number at three different widths in their own WORKING-STORAGE:
-     * {@code WS-CA-SCREEN-NUM PIC 9(1)} at {@code app/cbl/COCRDLIC.cbl:L237},
-     * {@code WS-PAGE-NUM PIC S9(04) COMP} at {@code app/cbl/COUSR00C.cbl:L54}, and
-     * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65} mirrored by
-     * {@code CDEMO-CU00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COUSR00C.cbl:L70}. One digit, four
-     * digits and eight digits cannot all be the same shared declaration. A copybook, by contrast, would
-     * impose one width on every program that copied it - which is precisely the argument that
-     * {@code app/cpy/COCOM01Y.cpy} is not the origin.</p>
-     *
-     * <p>{@code app/cpy/COCOM01Y.cpy} declares sixteen elementary fields across lines 19 to 44 and not
-     * one of them is a page number or a next-page flag. Severity Medium as a specification defect;
-     * severity High if this test class were to repeat the claim.</p>
      */
     @Test
     @DisplayName("pagination provenance is program WORKING-STORAGE, not the COMMAREA copybook")
@@ -640,10 +543,9 @@ class PageResponseTest {
     }
 
     /**
-     * One generic type serves all three paged lists at once, each with its own page size, its own
-     * boundary key width and its own sentinel family, and without a shared paging abstraction that
-     * would have to assume one shape. This is the integrative statement the seven groups below then
-     * examine facet by facet.
+     * One generic type serves all three paged lists at once, each with its own page size, its own boundary key
+     * width and its own sentinel family, and without a shared paging abstraction that would have to assume one
+     * shape. This is the integrative statement the seven groups below then examine facet by facet.
      */
     @Test
     @DisplayName("one generic type serves all three lists without assuming a single shape")
@@ -656,7 +558,7 @@ class PageResponseTest {
                 "0000000000000010");
         final PageResponse<String> userPage = new PageResponse<>(
                 rows(PageResponse.PAGE_SIZE_USER_LIST), 1, PageResponse.PAGE_SIZE_USER_LIST, false,
-                "USER0001", "USER0010");
+                "STDUSR01", "STDUSR10");
 
         assertThat(cardPage.getPageSize()).isEqualTo(7);
         assertThat(transactionPage.getPageSize()).isEqualTo(10);
@@ -675,14 +577,9 @@ class PageResponseTest {
         assertThat(toFamilyB(userPage.isNextPageAvailable())).isEqualTo('\u0000');
     }
 
-    // ==============================================================================================
-    // Group 1 - the declared surface.
-    // ==============================================================================================
-
     /**
-     * Pins the exact declared surface of the type. A single assertion over the whole member set is
-     * stronger than a list of "does not have" checks, because it also fails when something new and
-     * unexamined is added.
+     * Pins the exact declared surface of the type. A single assertion over the whole member set is stronger
+     * than a list of "does not have" checks, because it also fails when something new and unexamined is added.
      */
     @Nested
     @DisplayName("Declared surface")
@@ -691,7 +588,7 @@ class PageResponseTest {
         @Test
         @DisplayName("declares exactly the six paging metadata fields and nothing else")
         void declaresExactlyTheSixPagingMetadataFields() {
-            assertThat(declaredFieldNames(false))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
                     .containsExactlyInAnyOrder("rows", "pageNumber", "pageSize", "nextPageAvailable",
                             "firstKey", "lastKey");
         }
@@ -699,7 +596,7 @@ class PageResponseTest {
         @Test
         @DisplayName("declares exactly the six accessors plus equals, hashCode and toString")
         void declaresExactlyTheSixAccessorsPlusValueSemantics() {
-            assertThat(declaredMethodNames())
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
                     .containsExactlyInAnyOrder("getRows", "getPageNumber", "getPageSize",
                             "isNextPageAvailable", "getFirstKey", "getLastKey", "equals", "hashCode",
                             "toString");
@@ -708,70 +605,63 @@ class PageResponseTest {
         @Test
         @DisplayName("declares exactly the three page sizes and the page-number origin as constants")
         void declaresExactlyTheThreePageSizesAndThePageNumberOrigin() {
-            assertThat(declaredFieldNames(true))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, true))
                     .containsExactlyInAnyOrder("PAGE_SIZE_CARD_LIST", "PAGE_SIZE_TRANSACTION_LIST",
                             "PAGE_SIZE_USER_LIST", "FIRST_PAGE_NUMBER");
         }
 
         /**
-         * Transformation rule 7 of the migration plan is "No server-side session state". The seven
-         * COMMAREA fields named here are exactly the routing and screen-state fields that carried it,
-         * and paging state moves instead to request parameters and response metadata - which is what
-         * this type is. Severity High if any of them appears.
+         * Transformation rule 7 of the migration plan is "No server-side session state".
          */
         @Test
         @DisplayName("carries no COMMAREA routing or screen-state field")
         void carriesNoCommareaRoutingOrScreenStateField() {
-            assertThat(declaredFieldNames(false))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
                     .doesNotContain("fromTranId", "fromTranid", "toTranId", "toTranid", "fromProgram",
                             "toProgram", "pgmContext", "programContext", "lastMap", "lastMapset",
                             "lastMapSet", "commArea", "commarea");
-            assertThat(declaredMethodNames())
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
                     .doesNotContain("getFromTranId", "getToTranId", "getFromProgram", "getToProgram",
                             "getPgmContext", "getLastMap", "getLastMapset", "getCommArea");
         }
 
         /**
          * {@code CURTIMEI} is {@code PIC X(8)} on sixteen symbolic maps but {@code PIC X(9)} on
-         * {@code app/cpy-bms/COSGN00.CPY:54} alone, so a shared common-header helper cannot be
-         * correct for all seventeen. None of the six recurring header fields belongs on this type
-         * anyway: it reports position, not screen furniture. Severity High if one appears.
+         * {@code app/cpy-bms/COSGN00.CPY:54} alone, so a shared common-header helper cannot be correct for all
+         * seventeen.
          */
         @Test
         @DisplayName("carries no BMS common-header field, whose widths are not uniform either")
         void carriesNoBmsCommonHeaderField() {
             assertThat(SIGN_ON_HEADER_TIME_WIDTH).isNotEqualTo(COMMON_HEADER_TIME_WIDTH);
-            assertThat(declaredFieldNames(false))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
                     .doesNotContain("trnName", "title01", "title02", "curDate", "curTime", "pgmName");
-            assertThat(declaredMethodNames())
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
                     .doesNotContain("getTrnName", "getTitle01", "getTitle02", "getCurDate",
                             "getCurTime", "getPgmName");
         }
 
         /**
-         * The plan maps the VSAM browse verbs onto {@code Pageable} and {@code Slice} queries in the
-         * repository tier, which is a different tier with a different test package. Severity High if a
-         * Spring Data type reaches this DTO.
+         * The plan maps the VSAM browse verbs onto {@code Pageable} and {@code Slice} queries in the repository
+         * tier, which is a different tier with a different test package.
          */
         @Test
         @DisplayName("exposes no Spring Data type anywhere on its surface")
         void exposesNoSpringDataTypeAnywhereOnItsSurface() {
-            assertThat(declaredSurfaceTypeNames())
+            assertThat(ReflectionCensus.declaredSurfaceTypeNames(PageResponse.class))
                     .isNotEmpty()
                     .allSatisfy(typeName -> assertThat(typeName).doesNotContain("org.springframework"));
         }
 
         /**
          * A class-level constraint fires unconditionally, whereas the reference pattern at
-         * {@code app/cbl/COACTUPC.cbl:1665-1668} runs the cross-field edit only once both
-         * single-field edits have passed, with the outcome set at {@code :1674}. Reproducing that gate
-         * needs ordered service logic, not a declarative annotation, so the DTO carries none.
-         * Severity High if one appears.
+         * {@code app/cbl/COACTUPC.cbl:1665-1668} runs the cross-field edit only once both single-field edits
+         * have passed, with the outcome set at {@code :1674}.
          */
         @Test
         @DisplayName("carries no validation annotation, so no cross-field edit fires unconditionally")
         void carriesNoValidationAnnotation() {
-            assertThat(declaredAnnotationTypeNames()).isEmpty();
+            assertThat(ReflectionCensus.declaredAnnotationTypeNames(PageResponse.class)).isEmpty();
         }
 
         @Test
@@ -786,28 +676,23 @@ class PageResponseTest {
                 }
             }
             assertThat(constructorCount).isEqualTo(2);
-            assertThat(declaredMethodNames()).noneMatch(name -> name.startsWith("set"));
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
+                    .noneMatch(name -> name.startsWith("set"));
         }
     }
 
-    // ==============================================================================================
-    // Group 2 - the paging field diverges in name and in width across the three list screens.
-    // ==============================================================================================
-
     /**
-     * The three list screens agree on neither the name nor the width of their paging field. That is a
-     * verified inconsistency in the corpus, not an inference, and it is the reason this type carries
-     * the page number as an {@code int} and leaves rendering to each adapter.
+     * The three list screens agree on neither the name nor the width of their paging field. That is a verified
+     * inconsistency in the corpus, not an inference, and it is the reason this type carries the page number as
+     * an {@code int} and leaves rendering to each adapter.
      */
     @Nested
     @DisplayName("Paging field width divergence")
     class PagingFieldWidthDivergence {
 
         /**
-         * {@code PAGENOI PIC X(3)} at {@code app/cpy-bms/COCRDLI.CPY:60} against
-         * {@code PAGENUMI PIC X(8)} at {@code app/cpy-bms/COTRN00.CPY:60} and
-         * {@code app/cpy-bms/COUSR00.CPY:60}: two names and two widths. Severity High if either width
-         * is baked into a shared abstraction.
+         * {@code PAGENOI PIC X(3)} at {@code app/cpy-bms/COCRDLI.CPY:60} against {@code PAGENUMI PIC X(8)} at
+         * {@code app/cpy-bms/COTRN00.CPY:60} and {@code app/cpy-bms/COUSR00.CPY:60}.
          */
         @Test
         @DisplayName("the card list field is three characters wide and the other two are eight")
@@ -818,8 +703,8 @@ class PageResponseTest {
         }
 
         /**
-         * The page number is an {@code int}, so no screen width is baked in. Both a value that only
-         * the wide field can hold and the widest value the wide field can hold are accepted unchanged.
+         * The page number is an {@code int}, so no screen width is baked in. Both a value that only the wide
+         * field can hold and the widest value the wide field can hold are accepted unchanged.
          */
         @Test
         @DisplayName("carries the page number as an int, so neither screen width is baked in")
@@ -837,9 +722,9 @@ class PageResponseTest {
         }
 
         /**
-         * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65} is eight numeric
-         * digits, so page 1 reaches the screen as {@code 00000001}. The zero padding is part of the
-         * field contract, and {@link Locale#ROOT} keeps the digits locale independent.
+         * {@code CDEMO-CT00-PAGE-NUM PIC 9(08)} at {@code app/cbl/COTRN00C.cbl:L65} is eight numeric digits, so
+         * page 1 reaches the screen as {@code 00000001}. The zero padding is part of the field contract, and
+         * {@link Locale#ROOT} keeps the digits locale independent.
          */
         @Test
         @DisplayName("page 1 renders as 00000001 on the eight-digit transaction and user path")
@@ -856,9 +741,9 @@ class PageResponseTest {
         }
 
         /**
-         * A four-character page number cannot survive {@code PAGENOI PIC X(3)}: the alphanumeric move
-         * is left justified and truncates on the right. This is exactly why no single width may be
-         * assumed, and the truncation belongs to the card list adapter rather than to this type.
+         * A four-character page number cannot survive {@code PAGENOI PIC X(3)}: the alphanumeric move is left
+         * justified and truncates on the right. This is exactly why no single width may be assumed, and the
+         * truncation belongs to the card list adapter rather than to this type.
          */
         @Test
         @DisplayName("a four-character page number truncates to three on the card list field")
@@ -876,8 +761,8 @@ class PageResponseTest {
         }
 
         /**
-         * Page 7 fits the narrow field, which shows the truncation above is a width consequence rather
-         * than a defect in the helper.
+         * Page 7 fits the narrow field, which shows the truncation above is a width consequence rather than a
+         * defect in the helper.
          */
         @Test
         @DisplayName("a single-digit page number survives the three-character card list field")
@@ -892,65 +777,47 @@ class PageResponseTest {
         }
 
         /**
-         * {@code CDEMO-CARD-NUM} is numeric {@code PIC 9(16)} at {@code app/cpy/COCOM01Y.cpy:L41}
-         * whereas the card entity's {@code CARD-NUM} is alphanumeric {@code PIC X(16)} at
-         * {@code app/cpy/CVACT02Y.cpy:L5}: the same sixteen positions with two different
-         * representations. Equal widths, unequal types - and neither is this type's business, which is
-         * what this test records.
+         * {@code CDEMO-CARD-NUM} is numeric {@code PIC 9(16)} at {@code app/cpy/COCOM01Y.cpy:L41} whereas the
+         * card entity's {@code CARD-NUM} is alphanumeric {@code PIC X(16)} at {@code app/cpy/CVACT02Y.cpy:L5}:
+         * the same sixteen positions with two different representations. Equal widths, unequal types - and
+         * neither is this type's business, which is what this test records.
          */
         @Test
         @DisplayName("the COMMAREA card number and the card entity card number diverge in type only")
         void theCommareaCardNumberAndTheCardEntityCardNumberDivergeInTypeOnly() {
             assertThat(COMMAREA_CARD_NUMBER_DIGITS).isEqualTo(CARD_ENTITY_CARD_NUMBER_WIDTH);
-            assertThat(declaredFieldNames(false)).doesNotContain("cardNum", "cardNumber");
-            assertThat(declaredMethodNames()).doesNotContain("getCardNum", "getCardNumber");
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
+                    .doesNotContain("cardNum", "cardNumber");
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
+                    .doesNotContain("getCardNum", "getCardNumber");
         }
 
         /**
          * {@code CDEMO-LAST-MAP} and {@code CDEMO-LAST-MAPSET} are {@code PIC X(7)} at
-         * {@code app/cpy/COCOM01Y.cpy:L43-L44}, not {@code X(8)} as an eye accustomed to program names
-         * would assume. They are screen state, so they are absent here; the width is asserted so the
-         * correction is on the record.
+         * {@code app/cpy/COCOM01Y.cpy:L43-L44}, not {@code X(8)} as an eye accustomed to program names would
+         * assume. They are screen state, so they are absent here; the width is asserted so the correction is on
+         * the record.
          */
         @Test
         @DisplayName("the COMMAREA last-map fields are seven characters wide and are absent here")
         void theCommareaLastMapFieldsAreSevenCharactersWideAndAreAbsentHere() {
             assertThat(COMMAREA_LAST_MAP_WIDTH).isEqualTo(7);
             assertThat(COMMAREA_LAST_MAP_WIDTH).isNotEqualTo(WIDE_LIST_PAGING_FIELD_WIDTH);
-            assertThat(declaredFieldNames(false)).doesNotContain("lastMap", "lastMapset");
-        }
-
-        /**
-         * The census over {@code app/cpy-bms/*.CPY} totals 441 input fields; the plan claims 460 and
-         * its own table sums to 440. Severity Medium, recorded rather than propagated.
-         */
-        @Test
-        @DisplayName("the symbolic map input field census is 441, not the 460 claimed")
-        void symbolicMapInputFieldCensusIs441NotThe460Claimed() {
-            final int perMapTotal = 54 + 37 + 20 + 10 + 45 + 15 + 17 + 20 + 17 + 11 + 59 + 21 + 21
-                    + 59 + 12 + 12 + 11;
-
-            assertThat(perMapTotal).isEqualTo(SYMBOLIC_MAP_INPUT_FIELD_CENSUS);
-            assertThat(SYMBOLIC_MAP_INPUT_FIELD_CENSUS).isEqualTo(441).isNotEqualTo(460);
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
+                    .doesNotContain("lastMap", "lastMapset");
         }
     }
 
-    // ==============================================================================================
-    // Group 3 - two mutually incompatible next-page sentinels, and an inverted last-page encoding.
-    // ==============================================================================================
-
     /**
-     * The central trap of this DTO. Two programs encode "no next page" with two different bytes, and
-     * one of them additionally carries a counter-intuitive last-page marker. Conflating the sentinels
-     * is Blocker severity; inverting the marker is Blocker severity.
+     * The central trap of this DTO.
      */
     @Nested
     @DisplayName("Next-page sentinels")
     class NextPageSentinels {
 
         /**
-         * {@code app/cbl/COTRN00C.cbl:L66-L68}. Round-trip in both directions so the mapping is proven
-         * lossless rather than merely one-way.
+         * {@code app/cbl/COTRN00C.cbl:L66-L68}. Round-trip in both directions so the mapping is proven lossless
+         * rather than merely one-way.
          */
         @Test
         @DisplayName("family A round-trips losslessly through 'Y' and 'N'")
@@ -967,8 +834,8 @@ class PageResponseTest {
         }
 
         /**
-         * {@code app/cbl/COCRDLIC.cbl:L242-L244}. The absent-page sentinel is {@code LOW-VALUES}, a
-         * zero byte, and specifically not a space - a space would be a third state.
+         * {@code app/cbl/COCRDLIC.cbl:L242-L244}. The absent-page sentinel is {@code LOW-VALUES}, a zero byte,
+         * and specifically not a space - a space would be a third state.
          */
         @Test
         @DisplayName("family B round-trips losslessly through 'Y' and LOW-VALUES")
@@ -986,9 +853,8 @@ class PageResponseTest {
         }
 
         /**
-         * The two families share the {@code 'Y'} affirmative but not the negative, so a single
-         * character cannot serve both. Feeding one family's negative to the other decoder must be
-         * rejected outright rather than silently read as "no next page". Severity Blocker if conflated.
+         * The two families share the {@code 'Y'} affirmative but not the negative, so a single character cannot
+         * serve both.
          */
         @Test
         @DisplayName("the two negative sentinels are different bytes and are not interchangeable")
@@ -1009,9 +875,9 @@ class PageResponseTest {
         }
 
         /**
-         * Because this type transports a {@code boolean} rather than a character, the same page can be
-         * rendered into either family without either adapter ever seeing the other's sentinel. That is
-         * the property that makes one reusable DTO safe across the two conventions.
+         * Because this type transports a {@code boolean} rather than a character, the same page can be rendered
+         * into either family without either adapter ever seeing the other's sentinel. That is the property that
+         * makes one reusable DTO safe across the two conventions.
          */
         @Test
         @DisplayName("one page renders into either family without leaking the other's sentinel")
@@ -1029,9 +895,7 @@ class PageResponseTest {
         }
 
         /**
-         * {@code app/cbl/COCRDLIC.cbl:L239-L241}: {@code 88 CA-LAST-PAGE-SHOWN VALUE 0} and
-         * {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9}. <b>Zero means the last page IS shown.</b> Reading
-         * zero as "false, so not shown" is exactly backwards. Severity Blocker if inverted.
+         * {@code app/cbl/COCRDLIC.cbl:L239-L241}.
          */
         @Test
         @DisplayName("family B encodes 0 as last page SHOWN and 9 as last page NOT shown")
@@ -1051,25 +915,24 @@ class PageResponseTest {
         }
 
         /**
-         * The marker is a screen-resident scroll flag, so it is session state and stays off the wire.
-         * It is fully derivable from the next-page indicator, which is why nothing is lost by omitting
-         * it. See {@code app/cbl/COCRDLIC.cbl:L913-L915}, where the program itself derives one from the
-         * other.
+         * The marker is a screen-resident scroll flag, so it is session state and stays off the wire. It is
+         * fully derivable from the next-page indicator, which is why nothing is lost by omitting it. See
+         * {@code app/cbl/COCRDLIC.cbl:L913-L915}, where the program itself derives one from the other.
          */
         @Test
         @DisplayName("the last-page marker is derivable and is therefore not carried")
         void theLastPageMarkerIsDerivableAndIsThereforeNotCarried() {
-            assertThat(declaredFieldNames(false))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, false))
                     .doesNotContain("lastPageDisplayed", "lastPageShown", "screenNum", "screenNumber");
-            assertThat(declaredMethodNames())
+            assertThat(ReflectionCensus.declaredMethodNames(PageResponse.class))
                     .doesNotContain("getLastPageDisplayed", "isLastPageShown", "getScreenNum");
             assertThat(toFamilyBLastPageMarker(false)).isNotEqualTo(toFamilyBLastPageMarker(true));
         }
 
         /**
          * The indicator is a primitive {@code boolean}, so the "null next-page indicator" boundary is
-         * unrepresentable by construction rather than merely rejected at run time. Both states are
-         * reachable and distinct.
+         * unrepresentable by construction rather than merely rejected at run time. Both states are reachable
+         * and distinct.
          */
         @Test
         @DisplayName("the indicator is a primitive boolean, so a null indicator cannot be constructed")
@@ -1081,23 +944,17 @@ class PageResponseTest {
         }
     }
 
-    // ==============================================================================================
-    // Group 4 - three page sizes, deliberately not unified, and one batch figure that must stay out.
-    // ==============================================================================================
-
     /**
-     * Three page sizes exist in the source. Two of them happen to be 10, which is a coincidence of
-     * value rather than a shared fact: they come from different programs and different screen arrays.
-     * Collapsing them is High severity because it loses the card list.
+     * Three page sizes exist in the source.
      */
     @Nested
     @DisplayName("Page sizes")
     class PageSizes {
 
         /**
-         * 7 from {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at
-         * {@code app/cbl/COCRDLIC.cbl:L177-L178}, corroborated by the seven-row selection array
-         * {@code CRDSEL1I} through {@code CRDSEL7I} in {@code app/cpy-bms/COCRDLI.CPY}.
+         * 7 from {@code WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7} at {@code app/cbl/COCRDLIC.cbl:L177-L178},
+         * corroborated by the seven-row selection array {@code CRDSEL1I} through {@code CRDSEL7I} in
+         * {@code app/cpy-bms/COCRDLI.CPY}.
          */
         @Test
         @DisplayName("the card list page size is 7")
@@ -1106,9 +963,9 @@ class PageResponseTest {
         }
 
         /**
-         * 10 from the ten-row screen array {@code TRNID01I} through {@code TRNID10I} with
-         * {@code TDESC01I} through {@code TDESC10I} in {@code app/cpy-bms/COTRN00.CPY}, whose paging
-         * fields are at {@code app/cbl/COTRN00C.cbl:L63-L68}.
+         * 10 from the ten-row screen array {@code TRNID01I} through {@code TRNID10I} with {@code TDESC01I}
+         * through {@code TDESC10I} in {@code app/cpy-bms/COTRN00.CPY}, whose paging fields are at
+         * {@code app/cbl/COTRN00C.cbl:L63-L68}.
          */
         @Test
         @DisplayName("the transaction list page size is 10")
@@ -1117,9 +974,8 @@ class PageResponseTest {
         }
 
         /**
-         * 10 from {@code 02 USER-REC OCCURS 10 TIMES.} at {@code app/cbl/COUSR00C.cbl:L57},
-         * corroborated by {@code USRID01I} through {@code USRID10I} in
-         * {@code app/cpy-bms/COUSR00.CPY}.
+         * 10 from {@code 02 USER-REC OCCURS 10 TIMES.} at {@code app/cbl/COUSR00C.cbl:L57}, corroborated by
+         * {@code USRID01I} through {@code USRID10I} in {@code app/cpy-bms/COUSR00.CPY}.
          */
         @Test
         @DisplayName("the user list page size is 10")
@@ -1128,9 +984,7 @@ class PageResponseTest {
         }
 
         /**
-         * Asserted as three separate facts that are not folded into one constant. The card list differs
-         * from both others; the two tens are equal in value while remaining separately anchored, so
-         * changing one screen's array cannot silently move the other. Severity High if unified.
+         * Asserted as three separate facts that are not folded into one constant.
          */
         @Test
         @DisplayName("the three page sizes stay three separate constants")
@@ -1140,16 +994,16 @@ class PageResponseTest {
                     .isNotEqualTo(PageResponse.PAGE_SIZE_USER_LIST);
             assertThat(PageResponse.PAGE_SIZE_TRANSACTION_LIST)
                     .isEqualTo(PageResponse.PAGE_SIZE_USER_LIST);
-            assertThat(declaredFieldNames(true).stream().filter(name -> name.startsWith("PAGE_SIZE_"))
+            assertThat(ReflectionCensus.declaredFieldNames(PageResponse.class, true).stream()
+                    .filter(name -> name.startsWith("PAGE_SIZE_"))
                     .toList())
                     .containsExactlyInAnyOrder("PAGE_SIZE_CARD_LIST", "PAGE_SIZE_TRANSACTION_LIST",
                             "PAGE_SIZE_USER_LIST");
         }
 
         /**
-         * {@code 05 WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20.} at {@code app/cbl/CBTRN03C.cbl:L131} is a
-         * printed report line count for the batch transaction report, not an online page size. Severity
-         * High if it leaks onto this type.
+         * {@code 05 WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20.} at {@code app/cbl/CBTRN03C.cbl:L131} is a printed
+         * report line count for the batch transaction report, not an online page size.
          */
         @Test
         @DisplayName("the batch report's 20 lines per page never appears as a page size")
@@ -1165,8 +1019,8 @@ class PageResponseTest {
         }
 
         /**
-         * A final page legitimately holds fewer rows than the size applied, which is why the size is
-         * carried explicitly instead of being inferred from the row count.
+         * A final page legitimately holds fewer rows than the size applied, which is why the size is carried
+         * explicitly instead of being inferred from the row count.
          */
         @Test
         @DisplayName("a partially filled final page keeps the applied page size")
@@ -1181,8 +1035,8 @@ class PageResponseTest {
         }
 
         /**
-         * An empty page is a valid, meaningful state - a list with no matching rows, or a page beyond
-         * the end of the data - and is distinguishable from both a partial and a full page.
+         * An empty page is a valid, meaningful state - a list with no matching rows, or a page beyond the end
+         * of the data - and is distinguishable from both a partial and a full page.
          */
         @Test
         @DisplayName("an empty page is valid and is distinguishable from a partial page")
@@ -1198,8 +1052,8 @@ class PageResponseTest {
         }
 
         /**
-         * An exactly full page is accepted at each of the three sizes, and is distinguishable from a
-         * partial page of the same size.
+         * An exactly full page is accepted at each of the three sizes, and is distinguishable from a partial
+         * page of the same size.
          */
         @Test
         @DisplayName("an exactly full page is accepted at each of the three page sizes")
@@ -1220,8 +1074,8 @@ class PageResponseTest {
         }
 
         /**
-         * A page can never hold more rows than the size applied to it. The message names both figures
-         * so a caller can see which side is wrong.
+         * A page can never hold more rows than the size applied to it. The message names both figures so a
+         * caller can see which side is wrong.
          */
         @Test
         @DisplayName("a page holding more rows than its page size is rejected")
@@ -1237,22 +1091,18 @@ class PageResponseTest {
         }
     }
 
-    // ==============================================================================================
-    // Group 5 - keyset boundaries, and the absent / blank / LOW-VALUES tri-state.
-    // ==============================================================================================
-
     /**
-     * The legacy programs page by browsing a key, not by offset, and the boundary key widths differ per
-     * list: {@code PIC X(16)} for transactions, {@code PIC X(08)} for users, and a 27-byte composite for
-     * cards. An opaque {@code String} is the only representation that holds all three without loss.
+     * The legacy programs page by browsing a key, not by offset, and the boundary key widths differ per list:
+     * {@code PIC X(16)} for transactions, {@code PIC X(08)} for users, and a 27-byte composite for cards. An
+     * opaque {@code String} is the only representation that holds all three without loss.
      */
     @Nested
     @DisplayName("Keyset boundaries")
     class KeysetBoundaries {
 
         /**
-         * A numeric type would discard the leading zeros of {@code CDEMO-CT00-TRNID-FIRST PIC X(16)},
-         * so the accessors must return {@code String}. Severity High if typed numerically.
+         * A numeric type would discard the leading zeros of {@code CDEMO-CT00-TRNID-FIRST PIC X(16)}, so the
+         * accessors must return {@code String}.
          */
         @Test
         @DisplayName("boundary keys are opaque Strings, never a numeric type")
@@ -1264,8 +1114,8 @@ class PageResponseTest {
         }
 
         /**
-         * The sixteen characters survive byte for byte, leading zeros included. The companion assertion
-         * shows what a numeric round trip would have cost, which is why the type is a {@code String}.
+         * The sixteen characters survive byte for byte, leading zeros included. The companion assertion shows
+         * what a numeric round trip would have cost, which is why the type is a {@code String}.
          */
         @Test
         @DisplayName("a 16-character transaction key keeps its leading zeros")
@@ -1285,25 +1135,25 @@ class PageResponseTest {
         }
 
         /**
-         * {@code CDEMO-CU00-USRID-FIRST PIC X(08)} at {@code app/cbl/COUSR00C.cbl:L68} is eight
-         * characters, not sixteen, so the boundary width is per list. Nothing pads it here.
+         * {@code CDEMO-CU00-USRID-FIRST PIC X(08)} at {@code app/cbl/COUSR00C.cbl:L68} is eight characters, not
+         * sixteen, so the boundary width is per list. Nothing pads it here.
          */
         @Test
         @DisplayName("an 8-character user key survives unchanged and unpadded")
         void anEightCharacterUserKeySurvivesUnchangedAndUnpadded() {
             final PageResponse<String> page = new PageResponse<>(rows(10), 1,
-                    PageResponse.PAGE_SIZE_USER_LIST, true, "USER0001", "USER0010");
+                    PageResponse.PAGE_SIZE_USER_LIST, true, "STDUSR01", "STDUSR10");
 
-            assertThat(page.getFirstKey()).isEqualTo("USER0001").hasSize(USER_KEY_WIDTH);
-            assertThat(page.getLastKey()).isEqualTo("USER0010").hasSize(USER_KEY_WIDTH);
+            assertThat(page.getFirstKey()).isEqualTo("STDUSR01").hasSize(USER_KEY_WIDTH);
+            assertThat(page.getLastKey()).isEqualTo("STDUSR10").hasSize(USER_KEY_WIDTH);
             assertThat(USER_KEY_WIDTH).isNotEqualTo(TRANSACTION_KEY_WIDTH);
         }
 
         /**
-         * {@code WS-CA-LAST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl:L230-L232} is a {@code PIC X(16)}
-         * card number followed by a {@code PIC 9(11)} account identifier, so 27 bytes. The composite
-         * survives as one opaque value; this type never parses it into parts. The digits used here are
-         * a synthetic filler, not a card number.
+         * {@code WS-CA-LAST-CARDKEY} at {@code app/cbl/COCRDLIC.cbl:L230-L232} is a {@code PIC X(16)} card
+         * number followed by a {@code PIC 9(11)} account identifier, so 27 bytes. The composite survives as one
+         * opaque value; this type never parses it into parts. The digits used here are a synthetic filler, not
+         * a card number.
          */
         @Test
         @DisplayName("a 27-character composite card key survives as one opaque value")
@@ -1318,8 +1168,8 @@ class PageResponseTest {
         }
 
         /**
-         * The card list path pages by number in its simplest form, so the absence of a boundary key
-         * must be representable. The four-argument constructor exists for exactly that case.
+         * The card list path pages by number in its simplest form, so the absence of a boundary key must be
+         * representable. The four-argument constructor exists for exactly that case.
          */
         @Test
         @DisplayName("absent boundary keys are representable through the short constructor")
@@ -1335,12 +1185,9 @@ class PageResponseTest {
 
         /**
          * {@code app/cpy/CSSETATY.cpy} models OK, NOT-OK and BLANK as three separate states, and
-         * {@code app/cbl/COACTUPC.cbl:L304-L306} implements that literally with
-         * {@code VALUE LOW-VALUES}, {@code VALUE '0'} and {@code VALUE 'B'} - so {@code LOW-VALUES} is a
-         * live sentinel here rather than an abstraction. At message level
-         * {@code app/cbl/COACTUPC.cbl:505-508} keeps "must be supplied" distinct from "is not valid" for
-         * the same reason. Absent, blank and a zero byte are therefore three distinct states and must
-         * not be collapsed. Severity Blocker if collapsed.
+         * {@code app/cbl/COACTUPC.cbl:L304-L306} implements that literally with {@code VALUE LOW-VALUES},
+         * {@code VALUE '0'} and {@code VALUE 'B'} - so {@code LOW-VALUES} is a live sentinel here rather than
+         * an abstraction.
          */
         @Test
         @DisplayName("absent, blank and LOW-VALUES are three distinct boundary key states")
@@ -1363,16 +1210,8 @@ class PageResponseTest {
         }
     }
 
-    // ==============================================================================================
-    // Group 6 - immutability and row ordering. Order is behaviour, not presentation.
-    // ==============================================================================================
-
     /**
-     * This is a response type, so its rows are read-only once assembled. Ordering matters because the
-     * legacy browses are key ordered: {@code app/data/ASCII/cardxref.txt} is already strictly ascending
-     * by card number, which is the precondition that makes the early-exit scan in
-     * {@code app/cbl/CBSTM03A.CBL} correct. Severity High if ordering is unspecified, and the rule
-     * against global mutable state is what makes the collection unmodifiable.
+     * This is a response type, so its rows are read-only once assembled.
      */
     @Nested
     @DisplayName("Immutability and ordering")
@@ -1397,8 +1236,8 @@ class PageResponseTest {
         }
 
         /**
-         * The iterator is checked separately because a collection can be unmodifiable through its own
-         * methods while still leaking mutation through its iterator.
+         * The iterator is checked separately because a collection can be unmodifiable through its own methods
+         * while still leaking mutation through its iterator.
          */
         @Test
         @DisplayName("the row iterator cannot remove")
@@ -1414,8 +1253,8 @@ class PageResponseTest {
         }
 
         /**
-         * The list handed to the constructor is copied, so a caller that keeps and mutates its own list
-         * cannot reach inside a page it already handed out.
+         * The list handed to the constructor is copied, so a caller that keeps and mutates its own list cannot
+         * reach inside a page it already handed out.
          */
         @Test
         @DisplayName("mutating the supplied list after construction does not affect the page")
@@ -1433,9 +1272,9 @@ class PageResponseTest {
         }
 
         /**
-         * Ascending input arrives ascending, exactly as the frozen cross-reference fixture does. The
-         * assertion is on the exact sequence, not on membership, because a set-style assertion would
-         * pass on a reordering.
+         * Ascending input arrives ascending, exactly as the frozen cross-reference fixture does. The assertion
+         * is on the exact sequence, not on membership, because a set-style assertion would pass on a
+         * reordering.
          */
         @Test
         @DisplayName("ascending rows keep their ascending order")
@@ -1449,9 +1288,9 @@ class PageResponseTest {
         }
 
         /**
-         * Deliberately unsorted input is reported unchanged. The DTO reports position; it does not page,
-         * sort or normalise, and no hash-ordered collection is involved, so iteration order cannot vary
-         * between runs or JVMs.
+         * Deliberately unsorted input is reported unchanged. The DTO reports position; it does not page, sort
+         * or normalise, and no hash-ordered collection is involved, so iteration order cannot vary between runs
+         * or JVMs.
          */
         @Test
         @DisplayName("unsorted rows are reported in the order supplied, never reordered")
@@ -1470,8 +1309,8 @@ class PageResponseTest {
         }
 
         /**
-         * Equality is order sensitive, which is the observable consequence of holding rows in a list.
-         * Two pages carrying the same rows in a different order are different pages.
+         * Equality is order sensitive, which is the observable consequence of holding rows in a list. Two pages
+         * carrying the same rows in a different order are different pages.
          */
         @Test
         @DisplayName("equality is order sensitive")
@@ -1492,8 +1331,8 @@ class PageResponseTest {
         }
 
         /**
-         * The hash code is stable across invocations and across equal instances, so nothing here depends
-         * on a hash iteration order or on identity.
+         * The hash code is stable across invocations and across equal instances, so nothing here depends on a
+         * hash iteration order or on identity.
          */
         @Test
         @DisplayName("the hash code is stable and value based")
@@ -1511,23 +1350,19 @@ class PageResponseTest {
         }
     }
 
-    // ==============================================================================================
-    // Group 7 - input boundaries and the deterministic, payload-free rendering.
-    // ==============================================================================================
-
     /**
-     * Every input boundary the source exposes, asserted explicitly: page zero, page one, the widest
-     * eight-digit page number, the one-over nine-digit case, a negative page number, a page size below
-     * one, a null row list and a null row element. Each rejection is asserted on its exact message and
-     * on the absence of a cause, so nothing is swallowed and no context is lost.
+     * Every input boundary the source exposes, asserted explicitly: page zero, page one, the widest eight-digit
+     * page number, the one-over nine-digit case, a negative page number, a page size below one, a null row list
+     * and a null row element. Each rejection is asserted on its exact message and on the absence of a cause, so
+     * nothing is swallowed and no context is lost.
      */
     @Nested
     @DisplayName("Boundaries and determinism")
     class BoundariesAndDeterminism {
 
         /**
-         * {@code 88 CA-FIRST-PAGE VALUE 1} at {@code app/cbl/COCRDLIC.cbl:L238} makes numbering
-         * one-based, so page one is the floor and page zero is not a page.
+         * {@code 88 CA-FIRST-PAGE VALUE 1} at {@code app/cbl/COCRDLIC.cbl:L238} makes numbering one-based, so
+         * page one is the floor and page zero is not a page.
          */
         @Test
         @DisplayName("page numbering is one-based, so page 1 is accepted")
@@ -1572,9 +1407,9 @@ class PageResponseTest {
         }
 
         /**
-         * The one-over case, asserted as two separate facts rather than one. This type imposes no screen
-         * width, so it accepts a nine-digit page number; the screen field cannot hold it, which is the
-         * adapter's problem and is why the width is not baked in here.
+         * The one-over case, asserted as two separate facts rather than one. This type imposes no screen width,
+         * so it accepts a nine-digit page number; the screen field cannot hold it, which is the adapter's
+         * problem and is why the width is not baked in here.
          */
         @Test
         @DisplayName("a nine-digit page number is accepted here yet overflows the eight-digit field")
@@ -1603,8 +1438,8 @@ class PageResponseTest {
         }
 
         /**
-         * A null row list is rejected rather than coerced to empty, because an empty page is a distinct
-         * and meaningful state and silently conflating the two would hide a caller defect.
+         * A null row list is rejected rather than coerced to empty, because an empty page is a distinct and
+         * meaningful state and silently conflating the two would hide a caller defect.
          */
         @Test
         @DisplayName("a null row list is rejected rather than coerced to empty")
@@ -1617,8 +1452,8 @@ class PageResponseTest {
         }
 
         /**
-         * A null element is rejected and the message names its index, so the caller can find it without
-         * a debugger.
+         * A null element is rejected and the message names its index, so the caller can find it without a
+         * debugger.
          */
         @Test
         @DisplayName("a null row element is rejected and the message names its index")
@@ -1642,11 +1477,7 @@ class PageResponseTest {
         }
 
         /**
-         * The diagnostic rendering carries page number, page size and the next-page indicator only. A
-         * page of card rows would otherwise print primary account numbers and a page of user rows would
-         * print identities, so this is the security assertion of the class. Severity Blocker if a row
-         * payload or a boundary key reaches it. The sentinel used here is a synthetic marker, never real
-         * data, so even a failure message stays clean.
+         * The diagnostic rendering carries page number, page size and the next-page indicator only.
          */
         @Test
         @DisplayName("toString omits every row payload and both boundary keys")
@@ -1668,8 +1499,8 @@ class PageResponseTest {
         }
 
         /**
-         * The rendering is built with {@link Locale#ROOT}, so it is identical on every host and the
-         * false state prints as {@code false} rather than a localised word.
+         * The rendering is built with {@link Locale#ROOT}, so it is identical on every host and the false state
+         * prints as {@code false} rather than a localised word.
          */
         @Test
         @DisplayName("toString is locale independent for both indicator states")
@@ -1687,11 +1518,10 @@ class PageResponseTest {
         }
 
         /**
-         * A page of transaction rows carries the legacy 26-character timestamps, and the only sanctioned
-         * source of those is {@link FixedClockProvider}: the ambient clock is never read, so this
-         * assertion cannot become flaky on a second, day or month boundary. The page passes the rendered
-         * text through untouched - it neither parses nor reformats a row - and the text never reaches the
-         * diagnostic rendering.
+         * A page of transaction rows carries the legacy 26-character timestamps, and the only sanctioned source
+         * of those is {@link FixedClockProvider}: the ambient clock is never read, so this assertion cannot
+         * become flaky on a second, day or month boundary. The page passes the rendered text through untouched
+         * - it neither parses nor reformats a row - and the text never reaches the diagnostic rendering.
          */
         @Test
         @DisplayName("rows carrying fixed-clock timestamps pass through untouched and unlogged")

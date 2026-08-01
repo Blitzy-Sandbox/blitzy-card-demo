@@ -155,8 +155,10 @@ import java.util.List;
  *   <li>The generated timestamp's final four digits are <em>always</em> literal zeros.
  *       {@code app/cbl/CBTRN02C.cbl:701} executes {@code MOVE '0000' TO DB2-REST} inside
  *       {@code Z-GET-DB2-FORMAT-TIMESTAMP} at {@code app/cbl/CBTRN02C.cbl:692}, and the format is documented at
- *       {@code app/cbl/CBTRN02C.cbl:149} as {@code EEEE-MM-DD-UU.MM.SS.HH0000}. The value is millisecond
- *       precision followed by four zeros, not nanosecond precision.</li>
+ *       {@code app/cbl/CBTRN02C.cbl:149} as {@code EEEE-MM-DD-UU.MM.SS.HH0000}. The value is
+ *       hundredths-of-a-second precision followed by four zeros - neither nanosecond nor millisecond
+ *       precision, the fractional field being {@code DB2-MIL PIC 9(002)} at
+ *       {@code app/cbl/CBTRN02C.cbl:173}.</li>
  *   <li>Batch expiry validation compares strings, not instants. {@code app/cbl/CBTRN02C.cbl:414} evaluates
  *       {@code IF ACCT-EXPIRAION-DATE >= DALYTRAN-ORIG-TS (1:10)} - a character comparison over the first ten
  *       characters of the originating timestamp. The misspelled account field name is part of the field
@@ -292,8 +294,10 @@ import java.util.List;
  *
  * <p>{@link CardGroup} uses an unbounded {@link List} instead, which removes a silent truncation-and-corruption
  * hazard. That is a <strong>behavioural improvement rather than parity</strong>, so it is labelled explicitly:
- * the deviation is recorded in the root {@code DECISION_LOG.md} and the legacy ceiling is recorded in
- * {@code TRACEABILITY_MATRIX.md} as the historical capacity limit. <strong>This type imposes no 510-record
+ * the deviation is owed an entry in the root {@code DECISION_LOG.md} and the legacy ceiling a row in
+ * {@code TRACEABILITY_MATRIX.md} as the historical capacity limit. Measured 1 August 2026 neither file
+ * is available - both are planned root artefacts not yet authored, so this
+ * Javadoc is the record until they are. <strong>This type imposes no 510-record
  * limit.</strong> The ceiling was removed deliberately, not overlooked, and the three legacy figures remain
  * published as {@link #LEGACY_MAX_CARDS_PER_RUN}, {@link #LEGACY_MAX_TRANSACTIONS_PER_CARD} and
  * {@link #LEGACY_MAX_TRANSACTIONS_PER_RUN} so the limit stays discoverable.
@@ -323,8 +327,9 @@ import java.util.List;
  * messages either. Argument failures raise {@link IllegalArgumentException} naming the offending
  * <em>field</em> and never its <em>value</em>. This type carries no password, hash, token or signing key, does
  * not implement {@code Serializable} - insecure deserialization being a flagged risky pattern - and adds no
- * dependency. {@code logback-spring.xml} masks card numbers profile-invariantly, but the primary defence is
- * never emitting them (Rule 1 Clause D).
+ * dependency. A masking rule in {@code logback-spring.xml} would be a second line of defence, but no such
+ * file exists under {@code src/main/resources} yet, so never emitting the card number is the only defence
+ * rather than the first of two (Rule 1 Clause D).
  *
  * <h2>Observability posture</h2>
  *
@@ -394,9 +399,11 @@ import java.util.List;
  * <h2>How to build and test</h2>
  *
  * <p>Built by the root {@code pom.xml} against Java 25 with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so an unused import or any warning fails the build. Compile with
- * {@code mvn -B clean compile} and exercise the unit tier with {@code mvn -B test}; coverage is enforced at
- * {@code verify}. The tests for this type live in {@code src/test/java/com/cardemo/unit/model} and must assert,
+ * {@code failOnWarning}, so any warning in a category {@code javac} 25 publishes fails the build; an
+ * unused import is not such a category and is caught by review instead. Compile with
+ * {@code ./mvnw -B clean compile} and exercise the unit tier with {@code ./mvnw -B test}; coverage is enforced at
+ * {@code verify}. The tests for this type belong in {@code src/test/java/com/cardemo/unit/model}, where none
+ * exists at this commit - measured 1 August 2026 there is no {@code StatementTransactionTest} - and must assert,
  * at minimum, that the three geometry constants are 32, 318 and 350 and sum correctly, that the remainder field
  * widths add to 318, that a 24-character processing timestamp is accepted without being padded to 26, that the
  * amount is a scale-2 {@link BigDecimal} whose negative sign survives a round trip, that {@code "0001"} and
@@ -424,11 +431,13 @@ import java.util.List;
  *   <li><strong>High</strong> - {@code TRNX-PROC-TS} carries 24 of its 26 declared characters
  *       ({@code app/jcl/CREASTMT.JCL:54}). Highest-risk item in this file. Remediation: treat
  *       {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} as the significant length, never 26.</li>
- *   <li><strong>Medium</strong> - the BMS input-field census is <strong>441</strong> fields, not 460. Counted
+ *   <li><strong>Medium, closed</strong> - the BMS input-field census is <strong>441</strong> fields, not the
+ *       460 of prior-generation plan prose, which {@code docs/technical-specifications.md} has superseded. Counted
  *       across the 17 symbolic maps in {@code app/cpy-bms}: 440 declared {@code PIC X(n)} plus exactly one
  *       declared numerically, {@code 02 ACCTSIDI PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60}, which
  *       the four sibling maps declare as {@code PIC X(11)} instead.</li>
- *   <li><strong>Medium</strong> - this package holds <strong>17</strong> data transfer objects, not 16, plus
+ *   <li><strong>Medium, closed</strong> - this package holds <strong>17</strong> data transfer objects, not the
+ *       16 of prior-generation plan prose, which the specification has since corrected, plus
  *       {@code package-info.java}, for 18 files in total; this file is the eighteenth and last.</li>
  *   <li><strong>Medium</strong> - the detail line is {@value #REPORT_DETAIL_LINE_LENGTH} bytes, not 115; a
  *       prior description double-counted a {@code FILLER X(01)}.</li>
@@ -476,18 +485,11 @@ import java.util.List;
  * @param merchantZip         {@code TRNX-MERCHANT-ZIP}, {@code PIC X(10)}, {@code app/cpy/COSTM01.CPY:33}, 10
  *                            bytes, offsets 269-278. May be {@code null}; must not exceed 10 characters.
  * @param originatingTimestamp {@code TRNX-ORIG-TS}, {@code PIC X(26)}, {@code app/cpy/COSTM01.CPY:34}, 26
- *                            bytes, offsets 279-304. Text, never a temporal type; all 26 characters are
- *                            significant. May be {@code null}; must not exceed 26 characters.
+ * bytes, offsets 279-304.
  * @param processingTimestamp {@code TRNX-PROC-TS}, {@code PIC X(26)}, {@code app/cpy/COSTM01.CPY:35}, 26 bytes
- *                            declared at offsets 305-330, of which <strong>only the first
- *                            {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} are significant</strong>;
- *                            positions 25-26 are sort padding introduced by
- *                            {@code app/jcl/CREASTMT.JCL:54}. Accepted at 24 characters and never padded to 26.
- *                            May be {@code null}; must not exceed 26 characters.
- * @param filler              {@code FILLER}, {@code PIC X(20)}, {@code app/cpy/COSTM01.CPY:36}, 20 bytes,
- *                            offsets 331-350. Present so the declared record reaches 350 bytes; the projection
- *                            never writes it, so it is expected to be {@code null} or blank. May be
- *                            {@code null}; must not exceed 20 characters.
+ * declared at offsets 305-330, of which <strong>only the first
+ * {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} are significant</strong>.
+ * @param filler {@code FILLER}, {@code PIC X(20)}, {@code app/cpy/COSTM01.CPY:36}, 20 bytes, offsets 331-350.
  */
 public record StatementTransaction(
         String cardNumber,
@@ -504,10 +506,6 @@ public record StatementTransaction(
         String originatingTimestamp,
         String processingTimestamp,
         String filler) {
-
-    // ------------------------------------------------------------------------------------------------------
-    // Record geometry - app/cpy/COSTM01.CPY:20-36, corroborated by app/jcl/CREASTMT.JCL:30 and :32
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Length in bytes of the composite key {@code TRNX-KEY}, {@code app/cpy/COSTM01.CPY:21-23}: the 16-byte
@@ -530,22 +528,34 @@ public record StatementTransaction(
      */
     public static final int RECORD_LENGTH = 350;
 
-    /** {@code TRNX-CARD-NUM PIC X(16)}, {@code app/cpy/COSTM01.CPY:22}, offsets 1-16. Value {@value}. */
+    /**
+     * {@code TRNX-CARD-NUM PIC X(16)}, {@code app/cpy/COSTM01.CPY:22}, offsets 1-16. Value {@value}.
+     */
     public static final int CARD_NUMBER_LENGTH = 16;
 
-    /** {@code TRNX-ID PIC X(16)}, {@code app/cpy/COSTM01.CPY:23}, offsets 17-32. Value {@value}. */
+    /**
+     * {@code TRNX-ID PIC X(16)}, {@code app/cpy/COSTM01.CPY:23}, offsets 17-32. Value {@value}.
+     */
     public static final int TRANSACTION_ID_LENGTH = 16;
 
-    /** {@code TRNX-TYPE-CD PIC X(02)}, {@code app/cpy/COSTM01.CPY:25}, offsets 33-34. Value {@value}. */
+    /**
+     * {@code TRNX-TYPE-CD PIC X(02)}, {@code app/cpy/COSTM01.CPY:25}, offsets 33-34. Value {@value}.
+     */
     public static final int TYPE_CODE_LENGTH = 2;
 
-    /** {@code TRNX-CAT-CD PIC 9(04)}, {@code app/cpy/COSTM01.CPY:26}, offsets 35-38. Value {@value}. */
+    /**
+     * {@code TRNX-CAT-CD PIC 9(04)}, {@code app/cpy/COSTM01.CPY:26}, offsets 35-38. Value {@value}.
+     */
     public static final int CATEGORY_CODE_LENGTH = 4;
 
-    /** {@code TRNX-SOURCE PIC X(10)}, {@code app/cpy/COSTM01.CPY:27}, offsets 39-48. Value {@value}. */
+    /**
+     * {@code TRNX-SOURCE PIC X(10)}, {@code app/cpy/COSTM01.CPY:27}, offsets 39-48. Value {@value}.
+     */
     public static final int SOURCE_LENGTH = 10;
 
-    /** {@code TRNX-DESC PIC X(100)}, {@code app/cpy/COSTM01.CPY:28}, offsets 49-148. Value {@value}. */
+    /**
+     * {@code TRNX-DESC PIC X(100)}, {@code app/cpy/COSTM01.CPY:28}, offsets 49-148. Value {@value}.
+     */
     public static final int DESCRIPTION_LENGTH = 100;
 
     /**
@@ -576,7 +586,9 @@ public record StatementTransaction(
      */
     public static final int AMOUNT_INTEGER_DIGITS = 9;
 
-    /** {@code TRNX-MERCHANT-ID PIC 9(09)}, {@code app/cpy/COSTM01.CPY:30}, offsets 160-168. Value {@value}. */
+    /**
+     * {@code TRNX-MERCHANT-ID PIC 9(09)}, {@code app/cpy/COSTM01.CPY:30}, offsets 160-168. Value {@value}.
+     */
     public static final int MERCHANT_ID_LENGTH = 9;
 
     /**
@@ -589,7 +601,9 @@ public record StatementTransaction(
      */
     public static final int MERCHANT_CITY_LENGTH = 50;
 
-    /** {@code TRNX-MERCHANT-ZIP PIC X(10)}, {@code app/cpy/COSTM01.CPY:33}, offsets 269-278. Value {@value}. */
+    /**
+     * {@code TRNX-MERCHANT-ZIP PIC X(10)}, {@code app/cpy/COSTM01.CPY:33}, offsets 269-278. Value {@value}.
+     */
     public static final int MERCHANT_ZIP_LENGTH = 10;
 
     /**
@@ -599,22 +613,16 @@ public record StatementTransaction(
     public static final int ORIGINATING_TIMESTAMP_LENGTH = 26;
 
     /**
-     * <strong>Declared</strong> width of {@code TRNX-PROC-TS PIC X(26)}, {@code app/cpy/COSTM01.CPY:35},
-     * offsets 305-330. Only {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} of these characters carry data;
-     * see {@link #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH}. Value {@value}.
+     * width of {@code TRNX-PROC-TS PIC X(26)}, {@code app/cpy/COSTM01.CPY:35}, offsets 305-330. Only
+     * {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} of these characters carry data; see
+     * {@link #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH}. Value {@value}.
      */
     public static final int PROCESSING_TIMESTAMP_LENGTH = 26;
 
     /**
-     * <strong>Significant</strong> width of {@code TRNX-PROC-TS} - the highest-risk measurement in this file.
-     *
-     * <p>{@code OUTREC FIELDS=(1:263,16,17:1,262,279:279,50)} at {@code app/jcl/CREASTMT.JCL:54} copies 50
-     * bytes from base offset 279. The first 26 of those are the originating timestamp, base 279-304, leaving
-     * only 24 for the processing timestamp, whose base extent is 305-330. Output positions 329-330 are
-     * therefore DFSORT blank padding inside a field declared {@code PIC X(26)}.
-     *
-     * <p>Compare projected processing timestamps over this length, never over
-     * {@value #PROCESSING_TIMESTAMP_LENGTH}. Value {@value}.
+     * Characters of {@code TRNX-PROC-TS} the projection actually writes, {@value}, against the
+     * {@value #PROCESSING_TIMESTAMP_LENGTH}-byte width the record declares at {@code app/cpy/COSTM01.CPY:35}.
+     * The shortfall is the truncation that {@code app/jcl/CREASTMT.JCL:STEP010} imposes.
      */
     public static final int PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH = 24;
 
@@ -632,10 +640,6 @@ public record StatementTransaction(
      */
     public static final int FILLER_LENGTH = 20;
 
-    // ------------------------------------------------------------------------------------------------------
-    // The DFSORT projection - app/jcl/CREASTMT.JCL:53-54
-    // ------------------------------------------------------------------------------------------------------
-
     /**
      * Offset of {@code TRAN-CARD-NUM} in the <em>base</em> record {@code app/cpy/CVTRA05Y.cpy:15}, which the
      * first {@code OUTREC} clause {@code 1:263,16} relocates to position 1, and on which
@@ -645,18 +649,21 @@ public record StatementTransaction(
     public static final int BASE_CARD_NUMBER_OFFSET = 263;
 
     /**
-     * Bytes copied verbatim by the second {@code OUTREC} clause {@code 17:1,262}: base offsets 1-262,
+     * Bytes copied verbatim by the second {@code OUTREC} clause {@code 17:1,262} of
+     * {@code app/jcl/CREASTMT.JCL:STEP010}: base offsets 1-262,
      * {@code TRAN-ID} through {@code TRAN-MERCHANT-ZIP}, landing at output offsets 17-278. Value {@value}.
      */
     public static final int BASE_HEAD_LENGTH = 262;
 
     /**
-     * Source and destination offset of the third {@code OUTREC} clause {@code 279:279,50}. Value {@value}.
+     * Source and destination offset of the third {@code OUTREC} clause {@code 279:279,50} of
+     * {@code app/jcl/CREASTMT.JCL:STEP010}. Value {@value}.
      */
     public static final int BASE_TAIL_OFFSET = 279;
 
     /**
-     * Bytes copied by the third {@code OUTREC} clause {@code 279:279,50}: the 26-byte originating timestamp
+     * Bytes copied by the third {@code OUTREC} clause {@code 279:279,50} of
+     * {@code app/jcl/CREASTMT.JCL:STEP010}: the 26-byte originating timestamp
      * plus only {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} of the processing timestamp's
      * {@value #PROCESSING_TIMESTAMP_LENGTH}. This constant is where the truncation is arithmetically visible.
      * Value {@value}.
@@ -664,16 +671,11 @@ public record StatementTransaction(
     public static final int BASE_TAIL_LENGTH = 50;
 
     /**
-     * Last output position the projection writes. Everything from
-     * {@value #PROJECTION_LAST_WRITTEN_POSITION} plus one to {@link #RECORD_LENGTH} is DFSORT blank padding:
-     * the final two characters of the declared processing timestamp and the whole trailing filler. Value
-     * {@value}.
+     * Last output position the projection writes. Everything from {@value #PROJECTION_LAST_WRITTEN_POSITION}
+     * plus one to {@link #RECORD_LENGTH} is DFSORT blank padding: the final two characters of the declared
+     * processing timestamp and the whole trailing filler. Value {@value}.
      */
     public static final int PROJECTION_LAST_WRITTEN_POSITION = 328;
-
-    // ------------------------------------------------------------------------------------------------------
-    // Report line geometry - app/cpy/CVTRA07Y.cpy
-    // ------------------------------------------------------------------------------------------------------
 
     /**
      * Report record length in bytes. The authority is the single declaration
@@ -711,13 +713,15 @@ public record StatementTransaction(
     public static final int REPORT_TOTALS_LINE_LENGTH = 112;
 
     /**
-     * Invariant shared by all three totals layouts: label width plus dots width. It holds for
-     * {@code 11 + 86}, {@code 13 + 84} and {@code 11 + 86} alike, which is why a single
-     * {@link ReportTotalsLine} type serves every totals line. Value {@value}.
+     * Invariant shared by all three totals layouts: label width plus dots width. It holds for {@code 11 + 86},
+     * {@code 13 + 84} and {@code 11 + 86} alike, which is why a single {@link ReportTotalsLine} type serves
+     * every totals line. Value {@value}.
      */
     public static final int REPORT_TOTALS_LABEL_PLUS_DOTS_LENGTH = 97;
 
-    /** Width of both edit masks, {@code -ZZZ,ZZZ,ZZZ.ZZ} and {@code +ZZZ,ZZZ,ZZZ.ZZ}. Value {@value}. */
+    /**
+     * Width of both edit masks, {@code -ZZZ,ZZZ,ZZZ.ZZ} and {@code +ZZZ,ZZZ,ZZZ.ZZ}. Value {@value}.
+     */
     public static final int AMOUNT_MASK_LENGTH = 15;
 
     /**
@@ -740,7 +744,9 @@ public record StatementTransaction(
      */
     public static final String REPORT_SHORT_NAME = "DALYREPT";
 
-    /** Declared width of {@code REPT-SHORT-NAME}, {@code app/cpy/CVTRA07Y.cpy:5}. Value {@value}. */
+    /**
+     * Declared width of {@code REPT-SHORT-NAME}, {@code app/cpy/CVTRA07Y.cpy:5}. Value {@value}.
+     */
     public static final int REPORT_SHORT_NAME_LENGTH = 38;
 
     /**
@@ -749,7 +755,9 @@ public record StatementTransaction(
      */
     public static final String REPORT_LONG_NAME = "Daily Transaction Report";
 
-    /** Declared width of {@code REPT-LONG-NAME}, {@code app/cpy/CVTRA07Y.cpy:7}. Value {@value}. */
+    /**
+     * Declared width of {@code REPT-LONG-NAME}, {@code app/cpy/CVTRA07Y.cpy:7}. Value {@value}.
+     */
     public static final int REPORT_LONG_NAME_LENGTH = 41;
 
     /**
@@ -770,13 +778,19 @@ public record StatementTransaction(
      */
     public static final int REPORT_DATE_LENGTH = 10;
 
-    /** {@code REPORT-PAGE-TOTALS} label, {@code app/cpy/CVTRA07Y.cpy:51-52}. Value {@value}. */
+    /**
+     * {@code REPORT-PAGE-TOTALS} label, {@code app/cpy/CVTRA07Y.cpy:51-52}. Value {@value}.
+     */
     public static final String PAGE_TOTAL_LABEL = "Page Total";
 
-    /** Declared width of the page-total label, {@code app/cpy/CVTRA07Y.cpy:51}. Value {@value}. */
+    /**
+     * Declared width of the page-total label, {@code app/cpy/CVTRA07Y.cpy:51}. Value {@value}.
+     */
     public static final int PAGE_TOTAL_LABEL_LENGTH = 11;
 
-    /** Width of the page-total dot run, {@code X(86) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:53}. {@value} */
+    /**
+     * Width of the page-total dot run, {@code X(86) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:53}. {@value}
+     */
     public static final int PAGE_TOTAL_DOTS_LENGTH = 86;
 
     /**
@@ -787,40 +801,65 @@ public record StatementTransaction(
      */
     public static final String ACCOUNT_TOTAL_LABEL = "Account Total";
 
-    /** Declared width of the account-total label, {@code app/cpy/CVTRA07Y.cpy:57}. Value {@value}. */
+    /**
+     * Declared width of the account-total label, {@code app/cpy/CVTRA07Y.cpy:57}. Value {@value}.
+     */
     public static final int ACCOUNT_TOTAL_LABEL_LENGTH = 13;
 
-    /** Width of the account-total dot run, {@code X(84) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:59}. {@value} */
+    /**
+     * Width of the account-total dot run, {@code X(84) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:59}.
+     * {@value}
+     */
     public static final int ACCOUNT_TOTAL_DOTS_LENGTH = 84;
 
-    /** {@code REPORT-GRAND-TOTALS} label, {@code app/cpy/CVTRA07Y.cpy:63-64}. Value {@value}. */
+    /**
+     * {@code REPORT-GRAND-TOTALS} label, {@code app/cpy/CVTRA07Y.cpy:63-64}. Value {@value}.
+     */
     public static final String GRAND_TOTAL_LABEL = "Grand Total";
 
-    /** Declared width of the grand-total label, {@code app/cpy/CVTRA07Y.cpy:63}. Value {@value}. */
+    /**
+     * Declared width of the grand-total label, {@code app/cpy/CVTRA07Y.cpy:63}. Value {@value}.
+     */
     public static final int GRAND_TOTAL_LABEL_LENGTH = 11;
 
-    /** Width of the grand-total dot run, {@code X(86) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:65}. {@value} */
+    /**
+     * Width of the grand-total dot run, {@code X(86) VALUE ALL '.'}, {@code app/cpy/CVTRA07Y.cpy:65}. {@value}
+     */
     public static final int GRAND_TOTAL_DOTS_LENGTH = 86;
 
-    /** {@code TRAN-REPORT-TRANS-ID PIC X(16)}, {@code app/cpy/CVTRA07Y.cpy:16}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-TRANS-ID PIC X(16)}, {@code app/cpy/CVTRA07Y.cpy:16}. Value {@value}.
+     */
     public static final int REPORT_TRANSACTION_ID_LENGTH = 16;
 
-    /** {@code TRAN-REPORT-ACCOUNT-ID PIC X(11)}, {@code app/cpy/CVTRA07Y.cpy:18}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-ACCOUNT-ID PIC X(11)}, {@code app/cpy/CVTRA07Y.cpy:18}. Value {@value}.
+     */
     public static final int REPORT_ACCOUNT_ID_LENGTH = 11;
 
-    /** {@code TRAN-REPORT-TYPE-CD PIC X(02)}, {@code app/cpy/CVTRA07Y.cpy:20}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-TYPE-CD PIC X(02)}, {@code app/cpy/CVTRA07Y.cpy:20}. Value {@value}.
+     */
     public static final int REPORT_TYPE_CODE_LENGTH = 2;
 
-    /** {@code TRAN-REPORT-TYPE-DESC PIC X(15)}, {@code app/cpy/CVTRA07Y.cpy:22}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-TYPE-DESC PIC X(15)}, {@code app/cpy/CVTRA07Y.cpy:22}. Value {@value}.
+     */
     public static final int REPORT_TYPE_DESCRIPTION_LENGTH = 15;
 
-    /** {@code TRAN-REPORT-CAT-CD PIC 9(04)}, {@code app/cpy/CVTRA07Y.cpy:24}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-CAT-CD PIC 9(04)}, {@code app/cpy/CVTRA07Y.cpy:24}. Value {@value}.
+     */
     public static final int REPORT_CATEGORY_CODE_LENGTH = 4;
 
-    /** {@code TRAN-REPORT-CAT-DESC PIC X(29)}, {@code app/cpy/CVTRA07Y.cpy:26}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-CAT-DESC PIC X(29)}, {@code app/cpy/CVTRA07Y.cpy:26}. Value {@value}.
+     */
     public static final int REPORT_CATEGORY_DESCRIPTION_LENGTH = 29;
 
-    /** {@code TRAN-REPORT-SOURCE PIC X(10)}, {@code app/cpy/CVTRA07Y.cpy:28}. Value {@value}. */
+    /**
+     * {@code TRAN-REPORT-SOURCE PIC X(10)}, {@code app/cpy/CVTRA07Y.cpy:28}. Value {@value}.
+     */
     public static final int REPORT_SOURCE_LENGTH = 10;
 
     /**
@@ -829,47 +868,34 @@ public record StatementTransaction(
      */
     public static final String REPORT_CODE_DESCRIPTION_SEPARATOR = "-";
 
-    // ------------------------------------------------------------------------------------------------------
-    // Statement output geometry - app/jcl/CREASTMT.JCL:89 and :94
-    // ------------------------------------------------------------------------------------------------------
-
     /**
-     * Record length of the plain-text statement output, from
-     * {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)} on the {@code STMTFILE} DD of the execution step at
-     * {@code app/jcl/CREASTMT.JCL:89}. Value {@value}.
+     * Record length of the plain-text statement output, from {@code DCB=(LRECL=80,BLKSIZE=8000,RECFM=FB)} on
+     * the {@code STMTFILE} DD of the execution step at {@code app/jcl/CREASTMT.JCL:89}. Value {@value}.
      */
     public static final int STATEMENT_TEXT_RECORD_LENGTH = 80;
 
     /**
      * Record length of the HTML statement output, from {@code DCB=(LRECL=100,BLKSIZE=800,RECFM=FB)} on the
      * {@code HTMLFILE} DD of the execution step at {@code app/jcl/CREASTMT.JCL:94}, corroborated by
-     * {@code HTML-FIXED-LN PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:149} - the single hundred-character
-     * field through which every markup fragment is emitted.
-     *
-     * <p>The pre-delete step at {@code app/jcl/CREASTMT.JCL:69} declares {@code LRECL=80} for the same dataset.
-     * That inconsistency is a legacy defect, logged and not repaired; the execution step governs, so this
-     * constant is {@value}.
+     * {@code HTML-FIXED-LN PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:149} - the single hundred-character field
+     * through which every markup fragment is emitted.
      */
     public static final int STATEMENT_HTML_RECORD_LENGTH = 100;
 
-    // ------------------------------------------------------------------------------------------------------
-    // Legacy capacity ceiling - app/cbl/CBSTM03A.CBL:225-230. Recorded, deliberately NOT enforced.
-    // ------------------------------------------------------------------------------------------------------
-
-    /** {@code WS-CARD-TBL OCCURS 51 TIMES}, {@code app/cbl/CBSTM03A.CBL:226}. Value {@value}. */
+    /**
+     * {@code WS-CARD-TBL OCCURS 51 TIMES}, {@code app/cbl/CBSTM03A.CBL:226}. Value {@value}.
+     */
     public static final int LEGACY_MAX_CARDS_PER_RUN = 51;
 
-    /** {@code WS-TRAN-TBL OCCURS 10 TIMES}, {@code app/cbl/CBSTM03A.CBL:228}. Value {@value}. */
+    /**
+     * {@code WS-TRAN-TBL OCCURS 10 TIMES}, {@code app/cbl/CBSTM03A.CBL:228}. Value {@value}.
+     */
     public static final int LEGACY_MAX_TRANSACTIONS_PER_CARD = 10;
 
     /**
      * The legacy hard ceiling, {@value #LEGACY_MAX_CARDS_PER_RUN} cards times
      * {@value #LEGACY_MAX_TRANSACTIONS_PER_CARD} transactions each, on a table whose building loop at
      * {@code app/cbl/CBSTM03A.CBL:828-829} increments both subscripts with no bounds check at all.
-     *
-     * <p>Published for traceability only. {@link CardGroup} imposes no such limit - it uses an unbounded
-     * {@link List}, which is a labelled deviation from parity rather than parity, recorded in the root
-     * {@code DECISION_LOG.md}. Value {@value}.
      */
     public static final int LEGACY_MAX_TRANSACTIONS_PER_RUN = 510;
 
@@ -885,19 +911,8 @@ public record StatementTransaction(
      * Validates each component against its declared width and normalises the amount to the scale the PIC clause
      * dictates.
      *
-     * <p>Width checks are maxima, never equalities: a value shorter than its declared width is legal and is
-     * space-padded downstream by the writer. That is precisely what admits the
-     * {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH}-character projected processing timestamp without
-     * padding it to {@value #PROCESSING_TIMESTAMP_LENGTH}.
-     *
-     * <p>No value is trimmed, upper-cased or lower-cased: doing so would destroy the fixed-width padding the
-     * byte-exact parity comparison depends on. {@code null}, the empty string and a run of NUL characters - the
-     * COBOL {@code LOW-VALUES} image - are three distinct states and each is preserved exactly as supplied.
-     *
      * @throws IllegalArgumentException if any component exceeds its declared width, or if the amount's
-     *                                 magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer digits.
-     *                                 The message names the field and never the value, because the card number
-     *                                 is personally identifiable information.
+     * magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer digits.
      */
     public StatementTransaction {
         requireWithinWidth(cardNumber, CARD_NUMBER_LENGTH, "cardNumber");
@@ -920,11 +935,10 @@ public record StatementTransaction(
      * Rejects a value that cannot fit its fixed-width field. A {@code null} value is accepted, because absence
      * is a distinct and meaningful state that must not be coerced to the empty string.
      *
-     * @param value     the candidate value, possibly {@code null}
+     * @param value the candidate value, possibly {@code null}
      * @param maxLength the declared width of the COBOL field in bytes
      * @param fieldName the Java component name, used verbatim in the failure message
-     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}; the message carries
-     *                                 the field name and the two lengths, never the value itself
+     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}.
      */
     private static void requireWithinWidth(String value, int maxLength, String fieldName) {
         if (value != null && value.length() > maxLength) {
@@ -937,21 +951,11 @@ public record StatementTransaction(
      * Normalises an amount to scale {@value #AMOUNT_SCALE} using {@link RoundingMode#HALF_EVEN} and rejects a
      * magnitude that {@code PIC S9(09)V99} cannot hold.
      *
-     * <p>Rescaling is the numeric counterpart of preserving fixed-width padding rather than a coercion that
-     * discards information: the PIC clause fixes the scale at {@value #AMOUNT_SCALE}, so a canonical scale is
-     * what makes the byte image, and the record's generated {@code equals}, deterministic.
-     *
-     * <p><strong>The stored sign is never altered.</strong> The corpus carries genuinely negative amounts - the
-     * daily fixture holds both positive and negative zoned-decimal overpunch signs - so no absolute value is
-     * ever applied to the value this method returns. {@link BigDecimal#abs()} appears exactly once below, and
-     * only to make the magnitude bound symmetric, so that a debit of nine-plus integer digits is rejected on the
-     * same terms as the equivalent credit. The returned amount is always the signed, rescaled original.
-     *
      * @param value the candidate amount, possibly {@code null}
      * @return {@code null} if {@code value} is {@code null}, otherwise {@code value} at scale
-     *         {@value #AMOUNT_SCALE}
+     * {@value #AMOUNT_SCALE}
      * @throws IllegalArgumentException if the magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer
-     *                                 digits; the message names the field and reports the limit, not the value
+     * digits.
      */
     private static BigDecimal normaliseAmount(BigDecimal value) {
         if (value == null) {
@@ -971,14 +975,8 @@ public record StatementTransaction(
      * {@link #processingTimestamp()} that the DFSORT projection actually wrote, discarding the trailing
      * {@value #PROCESSING_TIMESTAMP_PAD_LENGTH} pad positions if they are present.
      *
-     * <p>This accessor exists so that no caller silently assumes the declared
-     * {@value #PROCESSING_TIMESTAMP_LENGTH}. Use it for every baseline comparison of a projected record; see
-     * {@link #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} for the derivation from
-     * {@code app/jcl/CREASTMT.JCL:54}.
-     *
      * @return {@code null} when the timestamp is absent, the value unchanged when it is already at or below the
-     *         significant length, otherwise its leading
-     *         {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} characters. Never trims and never pads.
+     * significant length, otherwise its leading {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} characters.
      */
     public String significantProcessingTimestamp() {
         if (processingTimestamp == null || processingTimestamp.length() <= PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH) {
@@ -991,13 +989,8 @@ public record StatementTransaction(
      * Compares this record's amount with another by numeric value, using
      * {@link BigDecimal#compareTo(BigDecimal)} rather than {@link BigDecimal#equals(Object)}.
      *
-     * <p>{@link BigDecimal#equals(Object)} is scale-sensitive and would report two amounts of equal value but
-     * differing scale as unequal, which is never the intended business comparison. This method is the sanctioned
-     * way to compare monetary values on this type.
-     *
      * @param other the amount to compare against, possibly {@code null}
-     * @return {@code true} if both amounts are absent, or if both are present and numerically equal;
-     *         {@code false} if exactly one is absent or the values differ
+     * @return {@code true} if both amounts are absent, or if both are present and numerically equal.
      */
     public boolean hasSameAmountAs(BigDecimal other) {
         if (amount == null || other == null) {
@@ -1009,14 +1002,7 @@ public record StatementTransaction(
     /**
      * Returns a diagnostic rendering that deliberately omits the card number.
      *
-     * <p>This override is a security control, not a convenience. A Java record generates a {@code toString}
-     * covering <em>every</em> component, so leaving it generated here would publish
-     * {@code TRNX-CARD-NUM} - {@code app/cpy/COSTM01.CPY:22} - into logs and diagnostics. Because that field is
-     * also the leading component of the composite key, any key-oriented rendering leaks it too; see
-     * {@link Key#toString()} and {@link CardGroup#toString()}, which are overridden for the same reason.
-     *
-     * @return the type name and the transaction identifier only. Never the card number, not masked and not as a
-     *         last-four fragment, and never the merchant name, city or postal code
+     * @return the type name and the transaction identifier only.
      */
     @Override
     public String toString() {
@@ -1026,28 +1012,17 @@ public record StatementTransaction(
     /**
      * The {@value #KEY_LENGTH}-byte composite key {@code TRNX-KEY}, {@code app/cpy/COSTM01.CPY:21-23}.
      *
-     * <p>Card number first, transaction identifier second - the order the DFSORT projection establishes at
-     * {@code app/jcl/CREASTMT.JCL:54} and the order the work cluster's {@code KEYS(32 0)} at
-     * {@code app/jcl/CREASTMT.JCL:30} indexes. That ordering is also the sort order the two-key
-     * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at {@code app/jcl/CREASTMT.JCL:53} produces, and the legacy
-     * lookup at {@code app/cbl/CBSTM03A.CBL:416-419} depends on it.
-     *
-     * <p><strong>PII warning.</strong> The card number is the <em>leading</em> component, so this key must never
-     * be rendered wholesale; {@link #toString()} is overridden accordingly.
-     *
-     * @param cardNumber    {@code TRNX-CARD-NUM}, {@code PIC X(16)}, {@code app/cpy/COSTM01.CPY:22}, 16 bytes,
-     *                      key offsets 1-16. PII: never emitted. May be {@code null}; must not exceed 16
-     *                      characters.
+     * @param cardNumber {@code TRNX-CARD-NUM}, {@code PIC X(16)}, {@code app/cpy/COSTM01.CPY:22}, 16 bytes, key
+     * offsets 1-16.
      * @param transactionId {@code TRNX-ID}, {@code PIC X(16)}, {@code app/cpy/COSTM01.CPY:23}, 16 bytes, key
-     *                      offsets 17-32. May be {@code null}; must not exceed 16 characters.
+     * offsets 17-32.
      */
     public record Key(String cardNumber, String transactionId) {
 
         /**
          * Validates both components against their declared widths.
          *
-         * @throws IllegalArgumentException if either component exceeds 16 characters; the message names the
-         *                                 field and never the value
+         * @throws IllegalArgumentException if either component exceeds 16 characters.
          */
         public Key {
             requireWithinWidth(cardNumber, CARD_NUMBER_LENGTH, "cardNumber");
@@ -1056,9 +1031,6 @@ public record StatementTransaction(
 
         /**
          * Returns a diagnostic rendering that deliberately omits the card number.
-         *
-         * <p>Overridden for the same reason as {@link StatementTransaction#toString()}: the generated record
-         * rendering would publish the leading key component, which is the card number.
          *
          * @return the type name and the transaction identifier only, never the card number
          */
@@ -1072,28 +1044,11 @@ public record StatementTransaction(
      * One card's statement transactions, in encounter order - the Java counterpart of a single
      * {@code WS-CARD-TBL} entry at {@code app/cbl/CBSTM03A.CBL:226-230}.
      *
-     * <p><strong>The legacy ceiling is gone, deliberately.</strong> The COBOL table held
-     * {@value #LEGACY_MAX_CARDS_PER_RUN} cards of {@value #LEGACY_MAX_TRANSACTIONS_PER_CARD} transactions each,
-     * a hard maximum of {@value #LEGACY_MAX_TRANSACTIONS_PER_RUN} per run, and its building loop at
-     * {@code app/cbl/CBSTM03A.CBL:828-829} incremented both subscripts with no bounds check - a latent
-     * storage-overrun defect. This type uses an unbounded {@link List} and imposes no limit, which removes a
-     * silent truncation-and-corruption hazard. That is a behavioural improvement rather than parity, so it is
-     * labelled as a deviation in the root {@code DECISION_LOG.md} and the ceiling is recorded in
-     * {@code TRACEABILITY_MATRIX.md} as the historical capacity limit. The ceiling was removed on purpose, not
-     * overlooked.
-     *
-     * <p><strong>Ordering is a correctness dependency.</strong> A {@link List} is used because the legacy
-     * lookup at {@code app/cbl/CBSTM03A.CBL:416-419} exits early once a stored card number exceeds the one
-     * sought, which is sound only while the sequence is ascending by card number - a guarantee the sort at
-     * {@code app/jcl/CREASTMT.JCL:53} supplies. No {@code Map} or {@code Set} governs order here and no hash
-     * iteration order is relied upon.
-     *
-     * @param cardNumber   the card these transactions belong to, {@code WS-CARD-NUM PIC X(16)} at
-     *                     {@code app/cbl/CBSTM03A.CBL:227}, 16 bytes. PII: never emitted. May be {@code null};
-     *                     must not exceed 16 characters.
-     * @param transactions the card's transactions in encounter order, never {@code null} and never containing a
-     *                     {@code null} element. Copied defensively on construction and exposed only as an
-     *                     unmodifiable view; an empty list is legal and means the card had no activity.
+     * @param cardNumber the card these transactions belong to, {@code WS-CARD-NUM PIC X(16)} at
+     * {@code app/cbl/CBSTM03A.CBL:227}, 16 bytes.
+     * @param transactions the card's transactions in encounter order, the Java counterpart of the ten
+     * {@code WS-TRAN-TBL} slots at {@code app/cbl/CBSTM03A.CBL:228-230}; never {@code null} and never containing
+     * a {@code null} element.
      */
     public record CardGroup(String cardNumber, List<StatementTransaction> transactions) {
 
@@ -1101,8 +1056,7 @@ public record StatementTransaction(
          * Validates the card number width and takes an unmodifiable defensive copy of the transaction list.
          *
          * @throws IllegalArgumentException if the card number exceeds 16 characters, if {@code transactions} is
-         *                                 {@code null}, or if any element is {@code null}. The message names the
-         *                                 field and never the value
+         * {@code null}, or if any element is {@code null}.
          */
         public CardGroup {
             requireWithinWidth(cardNumber, CARD_NUMBER_LENGTH, "cardNumber");
@@ -1120,11 +1074,6 @@ public record StatementTransaction(
         /**
          * Returns the card's transactions as an unmodifiable list, in encounter order.
          *
-         * <p>The backing list is never exposed. The canonical constructor already stored an immutable copy, and
-         * {@link List#copyOf(java.util.Collection)} is applied again here so the defensive copy holds on access
-         * as well as on construction; because the stored list is already unmodifiable this second call is
-         * documented by {@code List.copyOf} as not producing a further copy, so the guarantee costs nothing.
-         *
          * @return an unmodifiable, order-preserving view of the card's transactions, never {@code null}
          */
         public List<StatementTransaction> transactions() {
@@ -1133,9 +1082,6 @@ public record StatementTransaction(
 
         /**
          * Returns a diagnostic rendering that deliberately omits the card number.
-         *
-         * <p>Overridden for the same reason as {@link StatementTransaction#toString()}: the generated record
-         * rendering would publish the card number, and would additionally expand every transaction.
          *
          * @return the type name and the transaction count only, never the card number
          */
@@ -1149,45 +1095,20 @@ public record StatementTransaction(
      * Values for one {@value #REPORT_DETAIL_LINE_LENGTH}-byte detail line of the transaction report,
      * {@code 01 TRANSACTION-DETAIL-REPORT} at {@code app/cpy/CVTRA07Y.cpy:15-31}.
      *
-     * <p>This type <em>carries</em> the values; the fixed-width rendering into a
-     * {@value #REPORT_LINE_LENGTH}-byte record belongs to the writer, which pads the
-     * {@value #REPORT_DETAIL_LINE_LENGTH} composed bytes out to the record length and applies
-     * {@link #DETAIL_AMOUNT_MASK} - the minus-leading mask, not the plus-leading
-     * {@link #TOTALS_AMOUNT_MASK}. The interleaved {@code FILLER} items and the two
-     * {@link #REPORT_CODE_DESCRIPTION_SEPARATOR} hyphens at {@code app/cpy/CVTRA07Y.cpy:21} and {@code :25} are
-     * literals of the layout, so they are not modelled as data.
-     *
-     * <p>No card number appears on this layout - the report identifies rows by account, per
-     * {@code TRAN-REPORT-ACCOUNT-ID} at {@code app/cpy/CVTRA07Y.cpy:18} - so the generated record rendering
-     * carries no never-emit value and is left in place.
-     *
-     * @param transactionId       {@code TRAN-REPORT-TRANS-ID}, {@code PIC X(16)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:16}, 16 bytes. May be {@code null}; must not exceed
-     *                            16 characters.
-     * @param accountId           {@code TRAN-REPORT-ACCOUNT-ID}, {@code PIC X(11)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:18}, 11 bytes. May be {@code null}; must not exceed
-     *                            11 characters.
-     * @param typeCode            {@code TRAN-REPORT-TYPE-CD}, {@code PIC X(02)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:20}, 2 bytes. May be {@code null}; must not exceed
-     *                            2 characters.
-     * @param typeDescription     {@code TRAN-REPORT-TYPE-DESC}, {@code PIC X(15)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:22}, 15 bytes. May be {@code null}; must not exceed
-     *                            15 characters.
-     * @param categoryCode        {@code TRAN-REPORT-CAT-CD}, {@code PIC 9(04)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:24}, 4 bytes. A {@code String} despite the numeric
-     *                            picture, so leading zeros survive. May be {@code null}; must not exceed 4
-     *                            characters.
+     * @param transactionId {@code TRAN-REPORT-TRANS-ID}, {@code PIC X(16)}, {@code app/cpy/CVTRA07Y.cpy:16}, 16
+     * bytes.
+     * @param accountId {@code TRAN-REPORT-ACCOUNT-ID}, {@code PIC X(11)}, {@code app/cpy/CVTRA07Y.cpy:18}, 11
+     * bytes.
+     * @param typeCode {@code TRAN-REPORT-TYPE-CD}, {@code PIC X(02)}, {@code app/cpy/CVTRA07Y.cpy:20}, 2 bytes.
+     * @param typeDescription {@code TRAN-REPORT-TYPE-DESC}, {@code PIC X(15)}, {@code app/cpy/CVTRA07Y.cpy:22},
+     * 15 bytes.
+     * @param categoryCode {@code TRAN-REPORT-CAT-CD}, {@code PIC 9(04)}, {@code app/cpy/CVTRA07Y.cpy:24}, 4
+     * bytes.
      * @param categoryDescription {@code TRAN-REPORT-CAT-DESC}, {@code PIC X(29)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:26}, 29 bytes. May be {@code null}; must not exceed
-     *                            29 characters.
-     * @param source              {@code TRAN-REPORT-SOURCE}, {@code PIC X(10)},
-     *                            {@code app/cpy/CVTRA07Y.cpy:28}, 10 bytes. An unconstrained {@code String}, not
-     *                            the {@code TransactionSource} enum. May be {@code null}; must not exceed 10
-     *                            characters.
-     * @param amount              {@code TRAN-REPORT-AMT}, {@code PIC -ZZZ,ZZZ,ZZZ.ZZ},
-     *                            {@code app/cpy/CVTRA07Y.cpy:30}, rendered through
-     *                            {@link #DETAIL_AMOUNT_MASK}. Held at scale {@value #AMOUNT_SCALE}; the sign is
-     *                            data and is never normalised away. May be {@code null}.
+     * {@code app/cpy/CVTRA07Y.cpy:26}, 29 bytes.
+     * @param source {@code TRAN-REPORT-SOURCE}, {@code PIC X(10)}, {@code app/cpy/CVTRA07Y.cpy:28}, 10 bytes.
+     * @param amount {@code TRAN-REPORT-AMT}, {@code PIC -ZZZ,ZZZ,ZZZ.ZZ}, {@code app/cpy/CVTRA07Y.cpy:30},
+     * rendered through {@link #DETAIL_AMOUNT_MASK}.
      */
     public record ReportDetailLine(
             String transactionId,
@@ -1204,8 +1125,7 @@ public record StatementTransaction(
          * {@value #AMOUNT_SCALE}.
          *
          * @throws IllegalArgumentException if any component exceeds its declared width, or if the amount's
-         *                                 magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer
-         *                                 digits. The message names the field and never the value
+         * magnitude needs more than {@value #AMOUNT_INTEGER_DIGITS} integer digits.
          */
         public ReportDetailLine {
             requireWithinWidth(transactionId, REPORT_TRANSACTION_ID_LENGTH, "transactionId");
@@ -1217,33 +1137,39 @@ public record StatementTransaction(
             requireWithinWidth(source, REPORT_SOURCE_LENGTH, "source");
             amount = normaliseAmount(amount);
         }
+
+        /**
+         * Returns a deliberately redacted rendering that exposes only the transaction identifier.
+         *
+         * <p>Overridden for the same reason as {@link StatementTransaction#toString()}, reached by a different
+         * route. This layout declares no card number, so it holds none of the values that method suppresses;
+         * what it does hold is an account identifier at {@code app/cpy/CVTRA07Y.cpy:18} beside a signed amount
+         * at {@code :30}. Rendering the pair states whose money moved and how much, which is customer financial
+         * activity whether or not a card number accompanies it. The amount is omitted rather than rounded or
+         * bucketed, because a rounded amount beside an account identifier is still that account's activity.
+         *
+         * <p>The four classification components - type code, type description, category code and category
+         * description - are omitted as well. They are not sensitive in themselves, but including them would
+         * describe what the customer bought, which is the same disclosure by another route.
+         *
+         * @return the type name and the transaction identifier only, never the account identifier, the amount
+         *         or the transaction's classification
+         */
+        @Override
+        public String toString() {
+            return "StatementTransaction.ReportDetailLine[transactionId=" + transactionId + "]";
+        }
     }
 
     /**
-     * Values for one {@value #REPORT_TOTALS_LINE_LENGTH}-byte totals line of the transaction report.
+     * Values for one {@value #REPORT_TOTALS_LINE_LENGTH}-byte totals line of the transaction report, whose layout
+     * is declared at {@code app/cpy/CVTRA07Y.cpy}.
      *
-     * <p>{@code app/cpy/CVTRA07Y.cpy} declares three totals layouts and no more:
-     * {@code REPORT-PAGE-TOTALS} at {@code :50-54}, {@code REPORT-ACCOUNT-TOTALS} at {@code :56-60} and
-     * {@code REPORT-GRAND-TOTALS} at {@code :62-66}. All three share the shape "label, then a run of dots, then
-     * a {@value #AMOUNT_MASK_LENGTH}-character plus-leading mask", and all three satisfy the invariant that
-     * label width plus dots width equals {@value #REPORT_TOTALS_LABEL_PLUS_DOTS_LENGTH} - which is why one type
-     * serves them all. The canonical constructor enforces that invariant, so a fourth totals line cannot be
-     * invented by accident.
-     *
-     * <p>Use {@link #pageTotal(BigDecimal)}, {@link #accountTotal(BigDecimal)} or
-     * {@link #grandTotal(BigDecimal)} rather than the constructor, so the label and its two widths can only ever
-     * be paired as the copybook declares them. All three render through {@link #TOTALS_AMOUNT_MASK}, the
-     * plus-leading mask, which is deliberately not harmonised with the minus-leading
-     * {@link #DETAIL_AMOUNT_MASK}.
-     *
-     * @param label      the layout's literal label, exactly as the copybook declares it - one of
-     *                   {@link #PAGE_TOTAL_LABEL}, {@link #ACCOUNT_TOTAL_LABEL} or {@link #GRAND_TOTAL_LABEL}.
-     *                   Never {@code null}
-     * @param labelWidth the declared width of the label field: 11, 13 or 11 respectively
-     * @param dotsWidth  the declared width of the {@code VALUE ALL '.'} run that follows: 86, 84 or 86
-     *                   respectively
-     * @param total      the accumulated amount, held at scale {@value #AMOUNT_SCALE}. The sign is data and is
-     *                   never normalised away. May be {@code null}
+     * @param label the layout's literal label, exactly as the copybook declares it - one of
+     * {@link #PAGE_TOTAL_LABEL}, {@link #ACCOUNT_TOTAL_LABEL} or {@link #GRAND_TOTAL_LABEL}.
+     * @param labelWidth the declared width of the label field.
+     * @param dotsWidth the declared width of the {@code VALUE ALL '.'} run that follows.
+     * @param total the accumulated amount, held at scale {@value #AMOUNT_SCALE}.
      */
     public record ReportTotalsLine(String label, int labelWidth, int dotsWidth, BigDecimal total) {
 
@@ -1252,10 +1178,8 @@ public record StatementTransaction(
          * normalises the total to scale {@value #AMOUNT_SCALE}.
          *
          * @throws IllegalArgumentException if {@code label} is {@code null}, if the label and widths do not
-         *                                 match a triple declared in {@code app/cpy/CVTRA07Y.cpy:50-66}, or if
-         *                                 the total's magnitude needs more than
-         *                                 {@value #AMOUNT_INTEGER_DIGITS} integer digits. The message names the
-         *                                 field and never the value
+         * match a triple declared in {@code app/cpy/CVTRA07Y.cpy:50-66}, or if the total's magnitude needs more
+         * than {@value #AMOUNT_INTEGER_DIGITS} integer digits.
          */
         public ReportTotalsLine {
             if (label == null) {
@@ -1274,9 +1198,33 @@ public record StatementTransaction(
         }
 
         /**
+         * Returns a deliberately redacted rendering that exposes only the layout's label.
+         *
+         * <p>The generated record rendering would publish {@code total}, which on the account-totals layout at
+         * {@code app/cpy/CVTRA07Y.cpy:56-60} is one customer's accumulated activity for the reporting window,
+         * and on the grand-totals layout at {@code :62-66} is the portfolio figure for the whole run. Neither
+         * belongs in a log record, a stack trace or a diagnostic message, and an aggregate is not safer than a
+         * single amount merely because it is a sum - the account total is attributable to exactly the account
+         * whose control break produced it.
+         *
+         * <p>The label is safe to render, provably rather than by judgement: the canonical constructor accepts
+         * it only when it equals {@link #PAGE_TOTAL_LABEL}, {@link #ACCOUNT_TOTAL_LABEL} or
+         * {@link #GRAND_TOTAL_LABEL}, so it is one of three copybook literals and carries no caller input at
+         * all. It is also the one component a diagnostic reading actually needs, because it says which of the
+         * three totals layouts the instance is. The two widths are omitted as redundant: each is determined by
+         * the label.
+         *
+         * @return the type name and the layout label only, never the accumulated total
+         */
+        @Override
+        public String toString() {
+            return "StatementTransaction.ReportTotalsLine[label=" + label + "]";
+        }
+
+        /**
          * Reports whether a label and label width pair matches one of the three declared totals layouts.
          *
-         * @param label      the candidate label, never {@code null} at the call site
+         * @param label the candidate label, never {@code null} at the call site
          * @param labelWidth the candidate label width
          * @return {@code true} if the pair is declared in {@code app/cpy/CVTRA07Y.cpy:50-66}
          */
@@ -1299,13 +1247,8 @@ public record StatementTransaction(
         /**
          * Builds the {@code REPORT-ACCOUNT-TOTALS} line, {@code app/cpy/CVTRA07Y.cpy:56-60}.
          *
-         * <p>The label is the literal {@link #ACCOUNT_TOTAL_LABEL} even though the control break that emits
-         * this line fires on the card number rather than the account: see {@code app/cbl/CBTRN03C.cbl:181} and
-         * {@code app/cbl/CBTRN03C.cbl:306-310}. The mismatch is an intentional legacy quirk, logged in the root
-         * {@code DECISION_LOG.md} and never corrected.
-         *
          * @param total the per-card accumulation that the legacy program labels as an account total, possibly
-         *              {@code null}
+         * {@code null}
          * @return a totals line labelled {@link #ACCOUNT_TOTAL_LABEL} with the copybook's declared widths
          */
         public static ReportTotalsLine accountTotal(BigDecimal total) {

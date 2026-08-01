@@ -100,7 +100,8 @@ import org.springframework.stereotype.Repository;
  * Java; and translation from a legacy status to a typed exception happens exactly once, in
  * {@code com.cardemo.service.shared.FileStatusMapper}. Exception types are therefore named in this
  * documentation as prose only and are never imported here, because importing a type this interface does
- * not use would be an unused import, which {@code -Werror} turns into a build failure.
+ * not use would be an unused import, which Rule 1 Clause B forbids. That prohibition is review-enforced:
+ * {@code javac} 25.0.3 publishes no unused-import lint key, so {@code -Werror} cannot catch one.
  *
  * <h2>Inherited methods and their named call sites</h2>
  *
@@ -215,7 +216,7 @@ import org.springframework.stereotype.Repository;
  * {@code app/catlg/LISTCAT.txt:L488} carries {@code SPANNED NONUNIQKEY}, and
  * {@code app/jcl/XREFFILE.jcl:L75} independently carries {@code NONUNIQUEKEY} on the
  * {@code DEFINE ALTERNATEINDEX}. The domain agrees: one account legitimately fronts more than one card.
- * The corresponding index created by {@code V2__create_indexes.sql} on
+ * The corresponding index to be created by {@code V2__create_indexes.sql} (planned; absent at this commit) on
  * {@code card_cross_reference.xref_acct_id} must therefore be a <strong>non-unique</strong> B-tree
  * index. Making it unique would reject valid data at load time. That index is also the deliberate
  * performance substitute for the VSAM alternate index - the honest discharge of Rule 1 clause A's
@@ -261,7 +262,7 @@ import org.springframework.stereotype.Repository;
  * offset invites a future change to guess. Remediation, applied here: cite both
  * {@code app/catlg/LISTCAT.txt:L486} and {@code app/jcl/XREFFILE.jcl:L74} at every point the offset is
  * relied upon, state its base explicitly wherever it appears, and record the omission as a discrepancy
- * in {@code DECISION_LOG.md} so that the plan and the code converge rather than drift.
+ * in the planned {@code DECISION_LOG.md} so that the plan and the code converge rather than drift.
  *
  * <p><strong>Low - one call site is attributed to the wrong door upstream.</strong> The written brief
  * lists {@code app/cbl/COACTVWC.cbl} under the base key read. Reading the program shows otherwise:
@@ -275,21 +276,23 @@ import org.springframework.stereotype.Repository;
  * for {@code findById}. Severity is Low because the correction adds evidence without altering the method
  * surface: the finder count stays at one and {@code findById} remains inherited and still exercised by
  * {@code CBTRN02C}. Remediation: the citation is corrected above and the discrepancy belongs in
- * {@code DECISION_LOG.md}.
+ * the planned {@code DECISION_LOG.md}.
  *
  * <h2>Not available</h2>
  *
  * <p>Rule 1 clause F requires that missing information be declared rather than assumed. Three items are
  * <strong>Not available</strong> at the time this interface was authored.
  *
- * <p><strong>Not available: the three Flyway migrations.</strong>
- * {@code src/main/resources/db/migration/V1__create_schema.sql},
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} do not exist; the directory
- * {@code src/main/resources/db/migration} has no children, which was confirmed by inspection rather
- * than presumed. What is needed is those three files. Until they exist the field contract stated in this
- * documentation is the <strong>normative contract they must satisfy</strong>, and not the reverse,
- * because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile and a divergence
- * aborts context startup instead of degrading gracefully. Concretely:
+ * <p><strong>Not available: two of the three Flyway migrations.</strong> Measured 1 August 2026 by
+ * inspection rather than presumed, {@code src/main/resources/db/migration/V1__create_schema.sql}
+ * <strong>is present</strong> and declares
+ * {@code CREATE TABLE card_cross_reference} with the two foreign keys
+ * {@code fk02_xref_customer} and {@code fk03_xref_account}, while {@code V2__create_indexes.sql} and
+ * {@code V3__seed_data.sql} do not exist. What is needed is those two remaining files - and the absence
+ * of {@code V2} is why the alternate-index equivalent for this cluster has no B-tree index yet. The
+ * field contract stated in this documentation is what {@code V1} declares, and because
+ * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile a divergence
+ * would abort context startup instead of degrading gracefully. Concretely:
  *
  * <ul>
  *   <li>{@code V1} must create table {@code card_cross_reference} with
@@ -345,7 +348,7 @@ import org.springframework.stereotype.Repository;
  * </ul>
  *
  * <p>Connection pool tuning is explicitly out of scope and is recorded as residual risk in
- * {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The pool ships at its framework
+ * the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The pool ships at its framework
  * defaults. Stating that plainly, rather than inventing numbers for a workload nobody has measured, is
  * the honest reading of Rule 1 clause A: the legacy system publishes no throughput or latency objective,
  * so none may be reverse engineered into a default here.
@@ -354,19 +357,31 @@ import org.springframework.stereotype.Repository;
  *
  * <p>Build and check with {@code ./mvnw -B clean compile}, then {@code ./mvnw -B clean test}. The
  * compiler runs with {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, so any warning this
- * file provokes - an unused import above all - fails the build rather than scrolling past. The full gate
+ * file provokes in a category {@code javac} 25 publishes - {@code deprecation} and {@code rawtypes} above
+ * all - fails the build rather than scrolling past. An unused import is not one of those categories and is
+ * caught by review only. The full gate
  * is {@code ./mvnw -B clean verify}, which adds a JaCoCo line coverage floor and a dependency
  * vulnerability scan.
  *
- * <p>To run: {@code docker compose up -d} brings up PostgreSQL 16 among the backing services, then
- * {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local} starts the application, Flyway
- * applies the migrations and the entity is validated against the result. {@code JWT_SECRET} must be
+ * <p>To run, once the application exists: {@code docker compose up -d} brings up PostgreSQL 16 among the
+ * backing services, then {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local} starts the
+ * application, Flyway applies the migrations and the entity is validated against the result.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point
+ * and no {@code application*.yml} profile exists in this tree, so that command cannot start anything and
+ * the {@code local} profile it names has nothing to select. Treat it as the target invocation.
+ * {@code JWT_SECRET} must be
  * present in the environment; it is environment indirected with no committed default and the application
  * refuses to start without it.
  *
- * <p>The tests for this interface live in {@code src/test/java/com/cardemo/integration/repository} and
- * run against a Testcontainers PostgreSQL 16, because a derived query is only meaningfully proved
- * against a real dialect. Per Rule 1 clause B they must cover the core behaviour, which here means: the
+ * <p>The tests for this interface belong in {@code src/test/java/com/cardemo/integration/repository} and
+ * are to run against a Testcontainers PostgreSQL 16, because a derived query is only meaningfully proved
+ * against a real dialect. <strong>Partly available, measured 1 August 2026:</strong> that directory does
+ * not exist, so no behavioural coverage runs against a real dialect. The interface is not unreferenced,
+ * however: {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest.java} names it and
+ * pins its structural contract by reflection - the {@code JpaRepository} type arguments, the exact
+ * declared method inventory, and the non-scalar return type the non-unique alternate key demands. What
+ * remains owed is therefore behaviour rather than structure.
+ * Per Rule 1 clause B that coverage must include: the
  * account keyed finder <strong>returns several rows for one account</strong> - inserting its own
  * multi-card account, since the seed fixture is one to one - that those rows are ordered ascending by
  * card number, that an account with no cards yields an empty list rather than {@code null}, and that the
@@ -408,84 +423,17 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
     /**
      * Finds every cross reference row attached to one account, ordered by card number ascending.
      *
-     * <p><strong>Purpose.</strong> This is the relational replacement for the account keyed browse of
-     * the VSAM alternate index {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX}, reached in the source through
-     * its path {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH} - online as CICS file {@code CXACAIX}
+     * <p>This is the relational replacement for the account keyed browse of the VSAM alternate index
+     * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX}, reached in the source through its path
+     * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH} - online as CICS file {@code CXACAIX}
      * ({@code app/csd/CARDDEMO.CSD:L63, L65}), in batch as DD {@code XREFFIL1}
-     * ({@code app/jcl/INTCALC.jcl:L31-L32}). The COBOL file definition that declares the same access
-     * path is {@code app/cbl/CBACT04C.cbl:L34-L39}, whose {@code SELECT} carries
-     * {@code RECORD KEY IS FD-XREF-CARD-NUM} followed by
-     * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID}.
+     * ({@code app/jcl/INTCALC.jcl:L31-L32}). The COBOL file definition that declares the same access path is
+     * {@code app/cbl/CBACT04C.cbl:L34-L39}, whose {@code SELECT} carries {@code RECORD KEY IS FD-XREF-CARD-NUM}
+     * followed by {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID}.
      *
-     * <p><strong>Input.</strong> {@code accountId} is the eleven digit account identifier,
-     * {@code XREF-ACCT-ID PIC 9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}. It is bound as a query
-     * parameter by Spring Data; no fragment of this query is ever assembled by string concatenation,
-     * which is the standing answer in this package to Rule 1 clause A's requirement to treat inputs as
-     * untrusted. A {@code null} argument is not defended against here and must not be passed: the
-     * derived query would degenerate into an {@code is null} comparison against a {@code NOT NULL}
-     * column and return an empty result, which is indistinguishable from a genuine miss and would
-     * therefore hide a caller side defect. Callers resolve the identifier before calling - in the
-     * source it is always already in hand, moved into the key immediately beforehand, as at
-     * {@code app/cbl/CBACT04C.cbl:L204}.
-     *
-     * <p><strong>Output.</strong> A list, possibly empty, never {@code null}. Ordering is ascending by
-     * {@code cardNumber}, which is the primary key, so the sequence is total and reproducible across
-     * runs, machines and query plans. That ordering is not cosmetic: it reproduces the
-     * {@code STARTBR} / {@code READNEXT} browse over the path, where records sharing one alternate key
-     * are returned in base key sequence. Rule 1 clause A puts correctness and determinism first, and an
-     * unordered multi-row result would leave the first element - which is exactly what the single
-     * record legacy reads consume - at the mercy of the plan.
-     *
-     * <p><strong>Side effects.</strong> None. This is a read. It starts no unit of work, writes
-     * nothing, emits no log record and mutates no state, so it is safe inside a read only transaction
-     * and safe to call repeatedly. It returns fully initialised entities: the entity declares no
-     * association and therefore no lazy proxy, and {@code spring.jpa.open-in-view} is {@code false},
-     * so nothing here can escape as a detached lazy reference.
-     *
-     * <p><strong>Sensitivity.</strong> Every returned row carries a card number. It must never be
-     * written to a log, an exception message, a metric tag or a trace attribute. Rule 1 clause D admits
-     * no secret in code, logs, tests or config; the masking rules in {@code logback-spring.xml} are a
-     * backstop and not the primary defence, and no illustrative card number appears anywhere in this
-     * file for the same reason.
-     *
-     * <p><strong>Failure modes.</strong> An empty list is returned for an account with no cards. This
-     * interface does not decide what that means, because the source does not decide it uniformly -
-     * three different outcomes exist and each belongs to its caller:
-     *
-     * <ol>
-     *   <li><strong>Fatal, in the interest calculation job.</strong>
-     *       {@code app/cbl/CBACT04C.cbl:L393-L413}, paragraph {@code 1110-GET-XREF-DATA}, is the trap
-     *       in this file. Its {@code INVALID KEY} branch at {@code :L396-L397} merely displays
-     *       "ACCOUNT NOT FOUND: " and looks forgiving, but nothing returns there. Control falls into
-     *       the unguarded status check at {@code :L400-L404}, which sets the result to 12 for any
-     *       status other than {@code '00'}, and then into {@code :L405-L412}, which displays "ERROR
-     *       READING XREF FILE" and performs {@code 9999-ABEND-PROGRAM}. <strong>The job abends.</strong>
-     *       {@code com.cardemo.batch.processors.InterestCalculationProcessor} must therefore translate
-     *       an empty result on this path into {@code com.cardemo.exception.FatalProcessingException},
-     *       carrying abend code 999 and driving process return code 12, and must <strong>not</strong>
-     *       skip the record. Treating it as a skip is a <strong>Blocker</strong>: it would silently
-     *       compute interest for an incomplete population, and the divergence would surface as a
-     *       balance discrepancy rather than as a failure.</li>
-     *   <li><strong>An ordinary not found, in the online flows.</strong>
-     *       {@code app/cbl/COBIL00C.cbl:L408-L436}, paragraph {@code READ-CXACAIX-FILE}, evaluates
-     *       {@code DFHRESP(NOTFND)} at {@code :L423} into the screen message "Account ID NOT found..."
-     *       and repositions the cursor; anything else becomes "Unable to lookup XREF AIX file..." at
-     *       {@code :L429-L435}. {@code app/cbl/COACTVWC.cbl:L741-L757} does the equivalent, composing
-     *       "Account:... not found in Cross ref file." Both surface as
-     *       {@code com.cardemo.exception.RecordNotFoundException} - the mapping for FILE STATUS
-     *       {@code '23'} and {@code DFHRESP(NOTFND)} - and neither abends.</li>
-     *   <li><strong>A business reject, in the daily posting job.</strong> Reached by
-     *       {@code findById} rather than by this method, and recorded here so that the contrast is not
-     *       lost: {@code app/cbl/CBTRN02C.cbl:L385} moves {@code 100} into the reject reason and
-     *       {@code :L386-L387} moves the description "INVALID CARD NUMBER FOUND". That is a business
-     *       outcome that drives {@code ExitStatus} and the 430 byte reject record; it is
-     *       <strong>never thrown</strong>.</li>
-     * </ol>
-     *
-     * @param accountId the eleven digit account identifier to browse on, {@code XREF-ACCT-ID PIC
-     *                  9(11)} at {@code app/cpy/CVACT03Y.cpy:L7}; must not be {@code null}
-     * @return every cross reference attached to that account, ascending by card number; empty when the
-     *         account fronts no card, never {@code null}
+     * @param accountId the eleven digit account identifier to browse on, {@code XREF-ACCT-ID PIC 9(11)} at
+     * {@code app/cpy/CVACT03Y.cpy:L7}.
+     * @return every cross reference attached to that account, ascending by card number.
      */
     List<CardCrossReference> findByAccountIdOrderByCardNumberAsc(Long accountId);
 }

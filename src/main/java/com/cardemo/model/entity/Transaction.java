@@ -27,6 +27,9 @@
 package com.cardemo.model.entity;
 
 import java.math.BigDecimal;
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 import java.util.Objects;
 
 import org.hibernate.annotations.JdbcTypeCode;
@@ -39,19 +42,18 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
 /**
- * Posted transaction master record.
+ * Posted transaction master record: the relational replacement for the VSAM KSDS cluster
+ * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}.
  *
- * <h2>What this is</h2>
- * A pure data holder mapping one row of the relational table {@code transaction} onto one 350-byte
- * record of the VSAM KSDS cluster {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}. The record layout is
- * {@code app/cpy/CVTRA05Y.cpy}, whose header comment at {@code :L2} reads
- * "Data-structure for TRANsaction record (RECLN = 350)" and whose fields occupy {@code :L5-L18}.
+ * <p>The 350-byte offset map of {@code app/cpy/CVTRA05Y.cpy} is normative, because the fixed-width writers and
+ * the DFSORT symbol definitions of {@code app/proc/TRANREPT.prc} and {@code app/jcl/CREASTMT.JCL} address the
+ * record by byte position rather than by field name. Where a sort deck and the copybook disagree, the copybook
+ * governs.
  *
- * <p>The physical facts are catalogued, not inferred. {@code app/catlg/LISTCAT.txt:L3591} names the
- * cluster and {@code :L3593} reports {@code KEYLEN 16} with {@code AVGLRECL 350}. The adjacent
- * {@code :L3594} adds {@code RKP 0} and {@code MAXLRECL 350}: the key starts at byte 1 of the record
- * (so it is {@code TRAN-ID}), and because the average and maximum record lengths are both 350 the
- * record is fixed width rather than merely averaging 350.
+ * <p>Both 26-character timestamps are text, never a temporal type: the generated form carries millisecond
+ * precision followed by four zero digits, and the report filter compares the first ten characters lexically.
+ * The non-unique {@code TRANSACT.VSAM.AIX} alternate index at offset 304 is not mapped here at all — it
+ * becomes a range query on {@code com.cardemo.repository.TransactionRepository}.
  *
  * <h2>Responsibilities and non-responsibilities</h2>
  * This class holds state and nothing else. It performs no I/O, emits no log, starts no transaction,
@@ -139,7 +141,8 @@ import jakarta.persistence.Version;
  *
  * <p><strong>The alternate index is not an entity and is not mapped here.</strong> It becomes exactly
  * two things: a processing-timestamp finder on the transaction repository, and a <em>non-unique</em>
- * B-tree index on {@code tran_proc_ts} created by {@code V2__create_indexes.sql}. The non-uniqueness is
+ * B-tree index on {@code tran_proc_ts} to be created by {@code V2__create_indexes.sql} (planned; absent at this
+ * commit). The non-uniqueness is
  * not a judgement call - {@code app/catlg/LISTCAT.txt:L3678} declares the alternate index
  * {@code NONUNIQKEY} in so many words, and the fixture bears that out, since all 300 staging rows share
  * a single processing-timestamp value. A unique index would reject legitimate legacy data.
@@ -162,8 +165,11 @@ import jakarta.persistence.Version;
  *       {@code DB2-REST PIC X(04)} at {@code :L174}, assigned by {@code :L700}
  *       {@code MOVE COB-MIL TO DB2-MIL} and {@code :L701} {@code MOVE '0000' TO DB2-REST}. The format
  *       comment at {@code :L149} reads {@code EEEE-MM-DD-UU.MM.SS.HH0000}, that is
- *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}: dash separated, millisecond precision, then four literal
- *       zeros.</li>
+ *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}: dash separated, <strong>hundredths of a second</strong>
+ *       precision, then four literal zeros. The precision is hundredths and not milliseconds:
+ *       {@code DB2-MIL} is a two digit field, and {@code COB-MIL PIC X(02)} at {@code :L157} is the
+ *       hundredths pair of the twenty one character {@code FUNCTION CURRENT-DATE} result. The field name
+ *       invites the wrong reading, which is why the width is stated here.</li>
  *   <li><strong>Online generated.</strong> The bill-payment path writes
  *       {@code yyyy-MM-dd HH:mm:ss.000000} - space separator, six-digit fraction - into
  *       <em>both</em> columns.</li>
@@ -182,10 +188,12 @@ import jakarta.persistence.Version;
  *
  * <p>Consequences that follow from that decision and are enforced here: no format validation, no
  * {@code @Pattern}, and no parsing helper method on this class. Where a timestamp is
- * <em>generated</em> - in the batch layer, never here - it must be formatted to millisecond precision
- * followed by four zeros, exactly as {@code :L700-L701} does, and never to nanosecond precision, since
- * a 26-character field cannot hold nine fractional digits and a differently padded tail is a byte-level
- * diff against the baseline. Because these columns are text, this entity is entirely insulated from JVM
+ * <em>generated</em> - in the batch layer, never here - it must be formatted to <strong>hundredths of a
+ * second</strong> precision followed by four literal zeros, exactly as {@code :L700-L701} does. Neither
+ * nanosecond nor millisecond precision is correct: nine fractional digits do not fit a 26-character
+ * field at all, and three fractional digits followed by four zeros produces 27 characters. Only two
+ * fractional digits plus {@code 0000} lands on 26, and a differently padded tail is a byte-level diff
+ * against the baseline. Because these columns are text, this entity is entirely insulated from JVM
  * time-zone drift; that is a property worth keeping alongside the project-wide setting that the
  * Hibernate JDBC time zone is UTC.
  *
@@ -295,11 +303,16 @@ import jakarta.persistence.Version;
  *   <li><strong>Blank but non-null text is valid.</strong> Every text column accepts a
  *       blank-but-non-null value; the 26-space {@code procTs} of the reference fixture is the canonical
  *       case. There is therefore no {@code @NotBlank} and no {@code @NotEmpty} anywhere in this class.
- *       Null is what is rejected, by {@code nullable = false} on every column.</li>
- *   <li><strong>No error handling of its own.</strong> The entity throws nothing on its own behalf.
- *       Argument checks, where present, use {@code java.lang.IllegalArgumentException} naming the
- *       offending field; importing the project exception hierarchy from a model class is deliberately
- *       avoided so that the model layer depends on nothing.</li>
+ *       Null is what is rejected, and it is rejected on assignment by the constructor and by every
+ *       setter as well as by {@code nullable = false} on every column - the two guards are
+ *       complementary, the first naming the property and the second covering the provider's own
+ *       reflective writes.</li>
+ *   <li><strong>No error handling of its own.</strong> The entity catches nothing, logs nothing and
+ *       performs no I/O, so it has no failure of its own to handle. What it does do is refuse a value the
+ *       copybook cannot represent, through {@code java.lang.IllegalArgumentException} naming the offending
+ *       property, its COBOL field and that field's picture clause; importing the project exception
+ *       hierarchy from a model class is deliberately avoided so that the model layer depends on
+ *       nothing.</li>
  * </ul>
  *
  * <h2>Blocker: fixed-width CHAR columns need an explicit JDBC type code</h2>
@@ -340,13 +353,19 @@ import jakarta.persistence.Version;
  * blank 26-space processing timestamp survives a database round trip precisely <em>because</em> the
  * column is {@code CHAR(26)}.
  *
- * <h2>Not available: the schema migration did not exist when this entity was authored</h2>
- * <strong>Not available</strong> - {@code src/main/resources/db/migration/V1__create_schema.sql} did
- * not exist at the time this class was written, so its column definitions could not be read and
- * conformed to. Because {@code spring.jpa.hibernate.ddl-auto: validate} is set in every profile, any
- * mismatch of column name, SQL type, precision, scale or nullability fails application-context startup
- * outright rather than degrading quietly. <strong>The field table above is therefore the normative
- * column contract, and {@code V1} must converge upon it.</strong>
+ * <h2>The schema migration now exists and its agreement is machine-verified</h2>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} <strong>exists</strong> and declares the
+ * {@code transaction} table with fourteen columns. An earlier revision of this paragraph
+ * recorded that the migration did not exist when this class was authored; that is no longer true and the
+ * claim is withdrawn. Agreement between this field table and {@code V1} is not taken on trust: it is
+ * asserted mechanically by {@code SchemaStructureTest}, which parses the DDL and cross-checks column
+ * widths and primary-key order against {@code app/cpy/CVTRA05Y.cpy}. Because
+ * {@code spring.jpa.hibernate.ddl-auto: validate} is set in every profile, any residual mismatch of
+ * column name, SQL type, precision, scale or nullability would fail application-context startup outright
+ * rather than degrading quietly. <strong>The field table above remains the normative column contract, so
+ * any future divergence is resolved by changing {@code V1}, not this table.</strong> What is still absent
+ * is {@code V2__create_indexes.sql}: {@code V1} declares no {@code CREATE INDEX}, so the B-tree index on
+ * {@code tran_proc_ts} that replaces {@code TRANSACT.VSAM.AIX} is <strong>planned</strong>, not present.
  *
  * <p>What is needed from {@code V1__create_schema.sql} is precisely this table:
  *
@@ -392,9 +411,9 @@ import jakarta.persistence.Version;
  *
  * <h2>How to build, run and test</h2>
  * <pre>
- *   mvn -B clean compile        compiles this class under -Xlint:all -Werror on Java 25
- *   mvn -B clean test           runs the unit tests, including the model contract tests
- *   mvn -B clean verify         adds the coverage floor and the dependency vulnerability scan
+ *   ./mvnw -B clean compile     compiles this class under -Xlint:all -Werror on Java 25
+ *   ./mvnw -B clean test        runs the unit tests, including the model contract tests
+ *   ./mvnw -B clean verify      adds the coverage floor and the dependency vulnerability scan
  *   docker compose up -d        brings up PostgreSQL 16 so Flyway and validate have a target
  * </pre>
  *
@@ -425,11 +444,111 @@ import jakarta.persistence.Version;
  *       an enum. It is a ten-character string, and {@code OPERATOR} arrives by pass-through.</li>
  * </ul>
  *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing
+ * object's JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. An entity is
+ * a bean with public accessors, so without the barrier the default behaviour of returning this type from
+ * a controller, or holding a field of it on a response object, is to publish the card number alongside
+ * the amount and the full merchant detail. With the barrier in place Jackson finds no properties and its
+ * default {@code FAIL_ON_EMPTY_BEANS} setting turns that mistake into a loud failure at the first request
+ * rather than a silent disclosure. Nothing legitimate is lost: outbound representations are built by
+ * {@code com.cardemo.model.dto.TransactionDto}, inbound JSON targets
+ * {@code com.cardemo.model.dto.TransactionAddRequest}, and persistence is unaffected because Hibernate
+ * reads and writes the annotated fields reflectively and never consults Jackson visibility.
+ *
  * @see #toString()
  */
 @Entity
 @Table(name = "transaction")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class Transaction {
+
+    /**
+     * Character widths of the ten alphanumeric fields of {@code app/cpy/CVTRA05Y.cpy}, in record order.
+     * The copybook is the authority for every one of these numbers; the same values appear on the
+     * {@code @Column} declarations below, and {@code ddl-auto: validate} refuses to start the application
+     * if either drifts from the migration.
+     */
+    private static final int TRANSACTION_ID_WIDTH = 16;
+
+    /** Width of {@code TRAN-TYPE-CD PIC X(02)} at {@code app/cpy/CVTRA05Y.cpy:L6}. */
+    private static final int TYPE_CODE_WIDTH = 2;
+
+    /** Width of {@code TRAN-SOURCE PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8}. */
+    private static final int TRANSACTION_SOURCE_WIDTH = 10;
+
+    /** Width of {@code TRAN-DESC PIC X(100)} at {@code app/cpy/CVTRA05Y.cpy:L9}. */
+    private static final int DESCRIPTION_WIDTH = 100;
+
+    /** Width of {@code TRAN-MERCHANT-NAME PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy:L12}. */
+    private static final int MERCHANT_NAME_WIDTH = 50;
+
+    /** Width of {@code TRAN-MERCHANT-CITY PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy:L13}. */
+    private static final int MERCHANT_CITY_WIDTH = 50;
+
+    /** Width of {@code TRAN-MERCHANT-ZIP PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L14}. */
+    private static final int MERCHANT_ZIP_WIDTH = 10;
+
+    /** Width of {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}. */
+    private static final int CARD_NUMBER_WIDTH = 16;
+
+    /** Width of {@code TRAN-ORIG-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16}. */
+    private static final int ORIG_TS_WIDTH = 26;
+
+    /** Width of {@code TRAN-PROC-TS PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L17}. */
+    private static final int PROC_TS_WIDTH = 26;
+
+    /**
+     * Smallest value {@code TRAN-CAT-CD PIC 9(04)} at {@code app/cpy/CVTRA05Y.cpy:L7} can represent. The
+     * picture clause carries no {@code S}, so the domain is unsigned and starts at zero.
+     */
+    private static final int MIN_CATEGORY_CODE = 0;
+
+    /** Largest value {@code TRAN-CAT-CD PIC 9(04)} can represent: four unsigned display digits. */
+    private static final int MAX_CATEGORY_CODE = 9999;
+
+    /**
+     * Smallest value {@code TRAN-MERCHANT-ID PIC 9(09)} at {@code app/cpy/CVTRA05Y.cpy:L11} can
+     * represent, the picture clause again being unsigned.
+     */
+    private static final long MIN_MERCHANT_ID = 0L;
+
+    /** Largest value {@code TRAN-MERCHANT-ID PIC 9(09)} can represent: nine unsigned display digits. */
+    private static final long MAX_MERCHANT_ID = 999_999_999L;
+
+    /**
+     * Integer digit count of {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}: nine.
+     * This is the {@code S9(09)V99} tier, not the {@code S9(10)V99} tier the account entity's money
+     * fields use.
+     */
+    private static final int AMOUNT_INTEGER_DIGITS = 9;
+
+    /** Decimal digit count of {@code TRAN-AMT PIC S9(09)V99}: the two digits after the implied {@code V}. */
+    private static final int AMOUNT_SCALE = 2;
+
+    /** Total precision of the mapped {@code NUMERIC} column: nine integer digits plus two decimal digits. */
+    private static final int AMOUNT_PRECISION = AMOUNT_INTEGER_DIGITS + AMOUNT_SCALE;
+
+    /**
+     * Largest value {@code TRAN-AMT PIC S9(09)V99} can represent, and equally the largest
+     * {@code NUMERIC(11,2)} can hold. Built from a string literal so the bound is exact.
+     */
+    private static final BigDecimal MAX_AMOUNT = new BigDecimal("999999999.99");
+
+    /**
+     * Smallest value {@code TRAN-AMT PIC S9(09)V99} can represent. The picture clause carries an
+     * {@code S}, so the domain is symmetric about zero: {@code app/data/ASCII/dailytran.txt} carries
+     * close-brace overpunch characters, the zoned-decimal encoding of a negative zero digit, and
+     * therefore genuinely negative amounts.
+     */
+    private static final BigDecimal MIN_AMOUNT = MAX_AMOUNT.negate();
 
     /**
      * Transaction identifier - the primary key.
@@ -450,210 +569,110 @@ public class Transaction {
      */
     @Id
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_id", nullable = false, length = 16, columnDefinition = "CHAR(16)")
+    @Column(name = "tran_id", nullable = false, length = TRANSACTION_ID_WIDTH, columnDefinition = "CHAR(16)")
     private String transactionId;
 
     /**
-     * Transaction type code.
-     *
-     * <p>Source {@code TRAN-TYPE-CD}, {@code app/cpy/CVTRA05Y.cpy:L6}, {@code PIC X(02)}, bytes 17-18.
-     * A plain scalar column: no association is modelled to the transaction-type table even though the
-     * schema declares a foreign key over it.
+     * Transaction type code: {@code TRAN-TYPE-CD}, {@code PIC X(02)} at {@code app/cpy/CVTRA05Y.cpy:L6},
+     * bytes 17-18.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_type_cd", nullable = false, length = 2, columnDefinition = "CHAR(2)")
+    @Column(name = "tran_type_cd", nullable = false, length = TYPE_CODE_WIDTH, columnDefinition = "CHAR(2)")
     private String typeCode;
 
     /**
-     * Transaction category code.
-     *
-     * <p>Source {@code TRAN-CAT-CD}, {@code app/cpy/CVTRA05Y.cpy:L7}, {@code PIC 9(04)}, bytes 19-22.
-     * Unsigned four-digit numeric, so {@code Integer} over {@code NUMERIC(4)}. Together with
-     * {@code typeCode} this forms the natural key of the transaction-category table, but as with
-     * {@code typeCode} no association is modelled.
-     *
-     * <p>{@code @JdbcTypeCode(SqlTypes.NUMERIC)} is required so that schema validation expects
-     * {@code NUMERIC} rather than the {@code INTEGER} an {@code Integer} attribute would otherwise imply.
+     * Transaction category code: {@code TRAN-CAT-CD}, {@code PIC 9(04)} at {@code app/cpy/CVTRA05Y.cpy:L7},
+     * bytes 19-22.
      */
     @JdbcTypeCode(SqlTypes.NUMERIC)
     @Column(name = "tran_cat_cd", nullable = false, columnDefinition = "NUMERIC(4)")
     private Integer categoryCode;
 
     /**
-     * Origin of the transaction, as free ten-character text.
-     *
-     * <p>Source {@code TRAN-SOURCE}, {@code app/cpy/CVTRA05Y.cpy:L8}, {@code PIC X(10)}, bytes 23-32.
-     *
-     * <p><strong>Blocker-class contract: this is a {@code String}, never an enum.</strong>
-     * {@code app/cbl/CBTRN02C.cbl:L428} moves the staging record's source into this field without
-     * examining it, so the column can hold any ten characters. The reference fixture proves the point:
-     * a census of bytes 23-32 across the 300 rows of {@code app/data/ASCII/dailytran.txt} yields 250
-     * rows of {@code "POS TERM  "} and 50 rows of {@code "OPERATOR  "}, and {@code OPERATOR} has no
-     * literal assignment site anywhere in the corpus. Narrowing this column to an enumerated type would
-     * reject a fifth of the reference data.
+     * Origin of the transaction: {@code TRAN-SOURCE}, {@code PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L8},
+     * bytes 23-32. Free text rather than an enumeration, because the corpus writes literals into it.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_source", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "tran_source", nullable = false, length = TRANSACTION_SOURCE_WIDTH, columnDefinition = "CHAR(10)")
     private String transactionSource;
 
     /**
-     * Free-text transaction description.
-     *
-     * <p>Source {@code TRAN-DESC}, {@code app/cpy/CVTRA05Y.cpy:L9}, {@code PIC X(100)}, bytes 33-132.
-     * The widest column in the record. Not a {@code @Lob}: it is a fixed hundred-character field, and
-     * mapping it as a large object would change both the storage shape and the fetch behaviour.
+     * Transaction description: {@code TRAN-DESC}, {@code PIC X(100)} at {@code app/cpy/CVTRA05Y.cpy:L9},
+     * bytes 33-132.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_desc", nullable = false, length = 100, columnDefinition = "CHAR(100)")
+    @Column(name = "tran_desc", nullable = false, length = DESCRIPTION_WIDTH, columnDefinition = "CHAR(100)")
     private String description;
 
     /**
-     * Signed transaction amount.
-     *
-     * <p>Source {@code TRAN-AMT}, {@code app/cpy/CVTRA05Y.cpy:L10}, {@code PIC S9(09)V99}, bytes
-     * 133-143 - eleven bytes, being nine integer digits plus two decimal digits with a trailing
-     * zoned-decimal overpunch sign.
-     *
-     * <p><strong>Blocker-class contract: {@code NUMERIC(11,2)}, not {@code NUMERIC(12,2)}.</strong>
-     * The declared {@code precision = 11, scale = 2} follows directly from {@code S9(09)V99}. The
-     * account money fields are {@code S9(10)V99} and therefore {@code NUMERIC(12,2)}; the two tiers must
-     * never be collapsed.
-     *
-     * <p><strong>The value may legitimately be negative</strong> - 50 of the 300 reference fixture rows
-     * carry a negative overpunch sign - and negatives feed the cycle-debit accumulator at
-     * {@code app/cbl/CBTRN02C.cbl:L551}. No sign constraint and no absolute-value normalisation is
-     * applied here or permitted downstream. Compare amounts with {@code compareTo} rather than
-     * {@code equals}, because {@code BigDecimal.equals} also compares scale.
-     *
-     * <p>This attribute deliberately carries no {@code @JdbcTypeCode}: a {@code BigDecimal} already
-     * expects {@code NUMERIC}, so the declared {@code precision} and {@code scale} are sufficient for
-     * schema validation to agree.
+     * Signed transaction amount: {@code TRAN-AMT}, {@code PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10},
+     * bytes 133-143, so the column is {@code NUMERIC(11,2)}. Negative values are legitimate and are never
+     * normalised.
      */
-    @Column(name = "tran_amt", nullable = false, precision = 11, scale = 2)
+    @Column(name = "tran_amt", nullable = false,
+            precision = AMOUNT_PRECISION, scale = AMOUNT_SCALE)
     private BigDecimal amount;
 
     /**
-     * Merchant identifier.
-     *
-     * <p>Source {@code TRAN-MERCHANT-ID}, {@code app/cpy/CVTRA05Y.cpy:L11}, {@code PIC 9(09)}, bytes
-     * 144-152. Unsigned nine-digit numeric, which exceeds the range of a signed 32-bit integer at its
-     * upper end, so {@code Long} over {@code NUMERIC(9)}. {@code @JdbcTypeCode(SqlTypes.NUMERIC)} is
-     * required so that validation expects {@code NUMERIC} rather than the {@code BIGINT} a {@code Long}
-     * would otherwise imply.
+     * Merchant identifier: {@code TRAN-MERCHANT-ID}, {@code PIC 9(09)} at {@code app/cpy/CVTRA05Y.cpy:L11},
+     * bytes 144-152.
      */
     @JdbcTypeCode(SqlTypes.NUMERIC)
     @Column(name = "tran_merchant_id", nullable = false, columnDefinition = "NUMERIC(9)")
     private Long merchantId;
 
     /**
-     * Merchant name.
-     *
-     * <p>Source {@code TRAN-MERCHANT-NAME}, {@code app/cpy/CVTRA05Y.cpy:L12}, {@code PIC X(50)}, bytes
-     * 153-202. Deliberately excluded from {@link #toString()} - not because it is sensitive, but because
-     * it adds no diagnostic value and would inflate every log line.
+     * Merchant name: {@code TRAN-MERCHANT-NAME}, {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy:L12},
+     * bytes 153-202.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_merchant_name", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "tran_merchant_name", nullable = false, length = MERCHANT_NAME_WIDTH, columnDefinition = "CHAR(50)")
     private String merchantName;
 
     /**
-     * Merchant city.
-     *
-     * <p>Source {@code TRAN-MERCHANT-CITY}, {@code app/cpy/CVTRA05Y.cpy:L13}, {@code PIC X(50)}, bytes
-     * 203-252. Excluded from {@link #toString()} for the same reason as {@link #getMerchantName()}.
+     * Merchant city: {@code TRAN-MERCHANT-CITY}, {@code PIC X(50)} at {@code app/cpy/CVTRA05Y.cpy:L13},
+     * bytes 203-252.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_merchant_city", nullable = false, length = 50, columnDefinition = "CHAR(50)")
+    @Column(name = "tran_merchant_city", nullable = false, length = MERCHANT_CITY_WIDTH, columnDefinition = "CHAR(50)")
     private String merchantCity;
 
     /**
-     * Merchant postal code.
-     *
-     * <p>Source {@code TRAN-MERCHANT-ZIP}, {@code app/cpy/CVTRA05Y.cpy:L14}, {@code PIC X(10)}, bytes
-     * 253-262. Text rather than numeric: postal codes are labels, and the legacy field is a character
-     * field that the interest job fills with spaces. Excluded from {@link #toString()}.
+     * Merchant postal code: {@code TRAN-MERCHANT-ZIP}, {@code PIC X(10)} at {@code app/cpy/CVTRA05Y.cpy:L14},
+     * bytes 253-262.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_merchant_zip", nullable = false, length = 10, columnDefinition = "CHAR(10)")
+    @Column(name = "tran_merchant_zip", nullable = false, length = MERCHANT_ZIP_WIDTH, columnDefinition = "CHAR(10)")
     private String merchantZip;
 
     /**
-     * Card number the transaction was made against.
-     *
-     * <p>Source {@code TRAN-CARD-NUM}, {@code app/cpy/CVTRA05Y.cpy:L15}, {@code PIC X(16)}, bytes
-     * 263-278. The offset is corroborated twice over: {@code app/proc/TRANREPT.prc:L39} declares
-     * {@code TRAN-CARD-NUM,263,16,ZD} and {@code app/jcl/CREASTMT.JCL:L53} sorts on
-     * {@code FIELDS=(263,16,CH,A,...)}.
-     *
-     * <p>Those two declarations disagree about the <em>type</em> - {@code ZD} against {@code CH} - and
-     * the copybook settles it: {@code PIC X(16)} means {@code CHAR(16)} and {@code String}. Do not
-     * convert this column to a numeric type on the strength of the {@code ZD} entry; leading zeros are
-     * significant in a card number.
-     *
-     * <p><strong>High-severity handling rule: this value must never be emitted.</strong> It is excluded
-     * from {@link #toString()} by design, and no masking or debug-rendering helper is provided.
+     * Card number the transaction was made against: {@code TRAN-CARD-NUM}, {@code PIC X(16)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L15}, bytes 263-278. Sensitive: never rendered by {@link #toString()}.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_card_num", nullable = false, length = 16, columnDefinition = "CHAR(16)")
+    @Column(name = "tran_card_num", nullable = false, length = CARD_NUMBER_WIDTH, columnDefinition = "CHAR(16)")
     private String cardNumber;
 
     /**
-     * Originating timestamp, as 26 characters of text.
-     *
-     * <p>Source {@code TRAN-ORIG-TS}, {@code app/cpy/CVTRA05Y.cpy:L16}, {@code PIC X(26)}, bytes
-     * 279-304.
-     *
-     * <p><strong>Blocker-class contract: text, never a temporal type.</strong> The copybook declares a
-     * character field, and {@code app/cbl/CBTRN02C.cbl:L436} copies whatever text arrived on the staging
-     * record straight into it without examining it. All 300 rows of
-     * {@code app/data/ASCII/dailytran.txt} carry {@code 2022-06-10 19:27:53.000000} here - a
-     * space-separated form with a six-digit fraction - whereas the batch generator produces a
-     * dash-separated form. Two incompatible formats in one column cannot be represented by one temporal
-     * type, so no parsing, no format validation and no conversion happens here.
+     * Originating timestamp: {@code TRAN-ORIG-TS}, {@code PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L16},
+     * bytes 279-304, held as text because more than one producer format reaches this column.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_orig_ts", nullable = false, length = 26, columnDefinition = "CHAR(26)")
+    @Column(name = "tran_orig_ts", nullable = false, length = ORIG_TS_WIDTH, columnDefinition = "CHAR(26)")
     private String origTs;
 
     /**
-     * Processing timestamp, as 26 characters of text.
-     *
-     * <p>Source {@code TRAN-PROC-TS}, {@code app/cpy/CVTRA05Y.cpy:L17}, {@code PIC X(26)}, bytes
-     * 305-330.
-     *
-     * <p><strong>This field backs the alternate index.</strong>
-     * {@code app/catlg/LISTCAT.txt:L3672} defines {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX} and
-     * {@code :L3674} reports {@code KEYLEN 26}; {@code :L3676} reports {@code AXRKP 304}, a zero-based
-     * displacement that resolves to 1-based byte 305 - this field. The index is replaced by a finder
-     * derived from this property on the transaction repository plus a <em>non-unique</em> B-tree index
-     * on {@code tran_proc_ts} in {@code V2__create_indexes.sql}. Non-unique is not a choice:
-     * {@code :L3678} declares the alternate index {@code NONUNIQKEY}, and every row of the reference
-     * fixture shares one value here.
-     *
-     * <p><strong>Blocker-class contract: text, never a temporal type.</strong> In the reference fixture
-     * this field is 26 spaces in all 300 rows - blank, and therefore unparseable as a timestamp in any
-     * format - because the staging dataset is written before posting assigns a processing time. Blank
-     * but non-null is a valid, expected value, which is why no blank-rejecting constraint appears here.
-     * When the batch layer does generate a value it must format to millisecond precision followed by
-     * four literal zeros, matching {@code app/cbl/CBTRN02C.cbl:L700-L701} and the format comment at
-     * {@code :L149}; nanosecond precision does not fit 26 characters and would diverge from the
-     * baseline byte for byte.
+     * Processing timestamp: {@code TRAN-PROC-TS}, {@code PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L17},
+     * bytes 305-330, held as text because it arrives blank on inbound rows and the report filter compares its
+     * first ten characters lexically.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "tran_proc_ts", nullable = false, length = 26, columnDefinition = "CHAR(26)")
+    @Column(name = "tran_proc_ts", nullable = false, length = PROC_TS_WIDTH, columnDefinition = "CHAR(26)")
     private String procTs;
 
     /**
-     * Optimistic-locking version counter.
-     *
-     * <p>No COBOL counterpart: the legacy program held a read-for-update lock for the duration of a
-     * CICS task instead. This is the store-level guard only - it proves that no concurrent write
-     * intervened, but it does not reproduce the legacy business-level change detection, which compares
-     * specific field values against a snapshot. See the class documentation for why both layers are
-     * required.
-     *
-     * <p>No {@code @JdbcTypeCode} is needed here: a {@code Long} already expects {@code BIGINT}, which is
-     * exactly what the column is.
+     * Optimistic-locking version counter. No counterpart in {@code app/cpy/CVTRA05Y.cpy}; added by the
+     * migration as the store-level guard.
      */
     @Version
     @Column(name = "version", nullable = false, columnDefinition = "BIGINT")
@@ -662,11 +681,6 @@ public class Transaction {
     /**
      * No-argument constructor required by the JPA specification so that the persistence provider can
      * instantiate the entity before populating it.
-     *
-     * <p>Declared {@code protected} rather than {@code public} on purpose: the provider and subclasses
-     * can reach it, but application code cannot use it to create a half-built transaction that would
-     * violate the not-null contract on every column. Application code uses the all-columns constructor
-     * instead.
      */
     protected Transaction() {
         // Intentionally empty. The persistence provider assigns every field after construction.
@@ -675,33 +689,19 @@ public class Transaction {
     /**
      * Creates a fully populated transaction.
      *
-     * <p>The parameters appear in {@code app/cpy/CVTRA05Y.cpy} declaration order, so the argument list
-     * reads in the same sequence as the 350-byte record and as the offset map in the class
-     * documentation. {@code version} is deliberately not a parameter: it is owned by the persistence
-     * provider, which assigns it on first flush and increments it on every subsequent update.
-     *
-     * <p>No argument is validated, normalised, trimmed, upper-cased or reformatted. That is a deliberate
-     * parity decision rather than an omission: the legacy record accepts blank text - the 26-space
-     * processing timestamp of the reference fixture is the canonical case - and it accepts negative
-     * amounts, so a constructor that rejected or normalised either would be unable to represent valid
-     * legacy data. Null rejection is enforced by the database through {@code nullable = false} on every
-     * column, at the point where it can be enforced consistently for both this constructor and the
-     * setters.
-     *
-     * @param transactionId     {@code TRAN-ID}, {@code X(16)}, bytes 1-16; the primary key
-     * @param typeCode          {@code TRAN-TYPE-CD}, {@code X(02)}, bytes 17-18
-     * @param categoryCode      {@code TRAN-CAT-CD}, {@code 9(04)}, bytes 19-22
-     * @param transactionSource {@code TRAN-SOURCE}, {@code X(10)}, bytes 23-32; free text, not an enum
-     * @param description       {@code TRAN-DESC}, {@code X(100)}, bytes 33-132
-     * @param amount            {@code TRAN-AMT}, {@code S9(09)V99}, bytes 133-143; signed, may be
-     *                          negative
-     * @param merchantId        {@code TRAN-MERCHANT-ID}, {@code 9(09)}, bytes 144-152
-     * @param merchantName      {@code TRAN-MERCHANT-NAME}, {@code X(50)}, bytes 153-202
-     * @param merchantCity      {@code TRAN-MERCHANT-CITY}, {@code X(50)}, bytes 203-252
-     * @param merchantZip       {@code TRAN-MERCHANT-ZIP}, {@code X(10)}, bytes 253-262
-     * @param cardNumber        {@code TRAN-CARD-NUM}, {@code X(16)}, bytes 263-278; never logged
-     * @param origTs            {@code TRAN-ORIG-TS}, {@code X(26)}, bytes 279-304; text, not temporal
-     * @param procTs            {@code TRAN-PROC-TS}, {@code X(26)}, bytes 305-330; text, may be blank
+     * @param transactionId {@code TRAN-ID}, {@code X(16)}, bytes 1-16.
+     * @param typeCode {@code TRAN-TYPE-CD}, {@code X(02)}, bytes 17-18
+     * @param categoryCode {@code TRAN-CAT-CD}, {@code 9(04)}, bytes 19-22
+     * @param transactionSource {@code TRAN-SOURCE}, {@code X(10)}, bytes 23-32.
+     * @param description {@code TRAN-DESC}, {@code X(100)}, bytes 33-132
+     * @param amount {@code TRAN-AMT}, {@code S9(09)V99}, bytes 133-143.
+     * @param merchantId {@code TRAN-MERCHANT-ID}, {@code 9(09)}, bytes 144-152
+     * @param merchantName {@code TRAN-MERCHANT-NAME}, {@code X(50)}, bytes 153-202
+     * @param merchantCity {@code TRAN-MERCHANT-CITY}, {@code X(50)}, bytes 203-252
+     * @param merchantZip {@code TRAN-MERCHANT-ZIP}, {@code X(10)}, bytes 253-262
+     * @param cardNumber {@code TRAN-CARD-NUM}, {@code X(16)}, bytes 263-278.
+     * @param origTs {@code TRAN-ORIG-TS}, {@code X(26)}, bytes 279-304.
+     * @param procTs {@code TRAN-PROC-TS}, {@code X(26)}, bytes 305-330.
      */
     public Transaction(String transactionId,
                        String typeCode,
@@ -716,26 +716,35 @@ public class Transaction {
                        String cardNumber,
                        String origTs,
                        String procTs) {
-        this.transactionId = transactionId;
-        this.typeCode = typeCode;
-        this.categoryCode = categoryCode;
-        this.transactionSource = transactionSource;
-        this.description = description;
-        this.amount = amount;
-        this.merchantId = merchantId;
-        this.merchantName = merchantName;
-        this.merchantCity = merchantCity;
-        this.merchantZip = merchantZip;
-        this.cardNumber = cardNumber;
-        this.origTs = origTs;
-        this.procTs = procTs;
+        // Every check is a private static helper, so this constructor invokes no overridable method and
+        // cannot publish a partially built instance to a subclass override. JPA forbids a final entity, so
+        // the hazard is real and -Xlint:all -Werror reports it as this-escape.
+        this.transactionId = requireWidth(transactionId,
+                "transactionId", "TRAN-ID PIC X(16)", TRANSACTION_ID_WIDTH);
+        this.typeCode = requireWidth(typeCode, "typeCode", "TRAN-TYPE-CD PIC X(02)", TYPE_CODE_WIDTH);
+        this.categoryCode = requireCategoryCode(categoryCode);
+        this.transactionSource = requireWidth(transactionSource,
+                "transactionSource", "TRAN-SOURCE PIC X(10)", TRANSACTION_SOURCE_WIDTH);
+        this.description = requireWidth(description,
+                "description", "TRAN-DESC PIC X(100)", DESCRIPTION_WIDTH);
+        this.amount = requireAmount(amount);
+        this.merchantId = requireMerchantId(merchantId);
+        this.merchantName = requireWidth(merchantName,
+                "merchantName", "TRAN-MERCHANT-NAME PIC X(50)", MERCHANT_NAME_WIDTH);
+        this.merchantCity = requireWidth(merchantCity,
+                "merchantCity", "TRAN-MERCHANT-CITY PIC X(50)", MERCHANT_CITY_WIDTH);
+        this.merchantZip = requireWidth(merchantZip,
+                "merchantZip", "TRAN-MERCHANT-ZIP PIC X(10)", MERCHANT_ZIP_WIDTH);
+        this.cardNumber = requireWidth(cardNumber,
+                "cardNumber", "TRAN-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
+        this.origTs = requireWidth(origTs, "origTs", "TRAN-ORIG-TS PIC X(26)", ORIG_TS_WIDTH);
+        this.procTs = requireWidth(procTs, "procTs", "TRAN-PROC-TS PIC X(26)", PROC_TS_WIDTH);
     }
 
     /**
      * Returns the transaction identifier.
      *
-     * @return {@code TRAN-ID}, {@code app/cpy/CVTRA05Y.cpy:L5}, {@code PIC X(16)}, bytes 1-16; the
-     *         primary key, a zero-padded sixteen-character string
+     * @return {@code TRAN-ID}, {@code app/cpy/CVTRA05Y.cpy:L5}, {@code PIC X(16)}, bytes 1-16.
      */
     public String getTransactionId() {
         return transactionId;
@@ -744,13 +753,11 @@ public class Transaction {
     /**
      * Sets the transaction identifier.
      *
-     * <p>Changing the primary key of a persistent instance is not supported by JPA; this setter exists
-     * for the provider and for constructing detached instances.
-     *
      * @param transactionId {@code TRAN-ID}, {@code PIC X(16)}, bytes 1-16
      */
     public void setTransactionId(String transactionId) {
-        this.transactionId = transactionId;
+        this.transactionId = requireWidth(transactionId,
+                "transactionId", "TRAN-ID PIC X(16)", TRANSACTION_ID_WIDTH);
     }
 
     /**
@@ -768,7 +775,8 @@ public class Transaction {
      * @param typeCode {@code TRAN-TYPE-CD}, {@code PIC X(02)}, bytes 17-18
      */
     public void setTypeCode(String typeCode) {
-        this.typeCode = typeCode;
+        this.typeCode = requireWidth(typeCode, "typeCode", "TRAN-TYPE-CD PIC X(02)",
+                TYPE_CODE_WIDTH);
     }
 
     /**
@@ -786,15 +794,13 @@ public class Transaction {
      * @param categoryCode {@code TRAN-CAT-CD}, {@code PIC 9(04)}, bytes 19-22
      */
     public void setCategoryCode(Integer categoryCode) {
-        this.categoryCode = categoryCode;
+        this.categoryCode = requireCategoryCode(categoryCode);
     }
 
     /**
      * Returns the transaction source as free text.
      *
-     * @return {@code TRAN-SOURCE}, {@code app/cpy/CVTRA05Y.cpy:L8}, {@code PIC X(10)}, bytes 23-32; any
-     *         ten characters, since the posting path passes the staging value through unexamined at
-     *         {@code app/cbl/CBTRN02C.cbl:L428}
+     * @return {@code TRAN-SOURCE}, {@code app/cpy/CVTRA05Y.cpy:L8}, {@code PIC X(10)}, bytes 23-32.
      */
     public String getTransactionSource() {
         return transactionSource;
@@ -803,12 +809,11 @@ public class Transaction {
     /**
      * Sets the transaction source.
      *
-     * <p>Accepts any ten-character text. No enumeration is applied, by design.
-     *
      * @param transactionSource {@code TRAN-SOURCE}, {@code PIC X(10)}, bytes 23-32
      */
     public void setTransactionSource(String transactionSource) {
-        this.transactionSource = transactionSource;
+        this.transactionSource = requireWidth(transactionSource,
+                "transactionSource", "TRAN-SOURCE PIC X(10)", TRANSACTION_SOURCE_WIDTH);
     }
 
     /**
@@ -826,17 +831,15 @@ public class Transaction {
      * @param description {@code TRAN-DESC}, {@code PIC X(100)}, bytes 33-132
      */
     public void setDescription(String description) {
-        this.description = description;
+        this.description = requireWidth(description,
+                "description", "TRAN-DESC PIC X(100)", DESCRIPTION_WIDTH);
     }
 
     /**
      * Returns the signed transaction amount.
      *
-     * <p>Compare the returned value with {@code compareTo} rather than {@code equals}, because
-     * {@code BigDecimal.equals} also compares scale and would report 2.0 and 2.00 as different.
-     *
-     * @return {@code TRAN-AMT}, {@code app/cpy/CVTRA05Y.cpy:L10}, {@code PIC S9(09)V99}, bytes 133-143,
-     *         scale 2; may be negative, and negatives must not be normalised
+     * @return {@code TRAN-AMT}, {@code app/cpy/CVTRA05Y.cpy:L10}, {@code PIC S9(09)V99}, bytes 133-143, scale
+     * 2.
      */
     public BigDecimal getAmount() {
         return amount;
@@ -845,20 +848,16 @@ public class Transaction {
     /**
      * Sets the signed transaction amount.
      *
-     * <p>The value is stored exactly as supplied. No sign normalisation, no rescaling and no rounding
-     * happens here; where rounding is unavoidable elsewhere it must use {@code RoundingMode.HALF_EVEN}.
-     *
-     * @param amount {@code TRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143; negative values are valid
+     * @param amount {@code TRAN-AMT}, {@code PIC S9(09)V99}, bytes 133-143.
      */
     public void setAmount(BigDecimal amount) {
-        this.amount = amount;
+        this.amount = requireAmount(amount);
     }
 
     /**
      * Returns the merchant identifier.
      *
-     * @return {@code TRAN-MERCHANT-ID}, {@code app/cpy/CVTRA05Y.cpy:L11}, {@code PIC 9(09)}, bytes
-     *         144-152
+     * @return {@code TRAN-MERCHANT-ID}, {@code app/cpy/CVTRA05Y.cpy:L11}, {@code PIC 9(09)}, bytes 144-152
      */
     public Long getMerchantId() {
         return merchantId;
@@ -870,14 +869,13 @@ public class Transaction {
      * @param merchantId {@code TRAN-MERCHANT-ID}, {@code PIC 9(09)}, bytes 144-152
      */
     public void setMerchantId(Long merchantId) {
-        this.merchantId = merchantId;
+        this.merchantId = requireMerchantId(merchantId);
     }
 
     /**
      * Returns the merchant name.
      *
-     * @return {@code TRAN-MERCHANT-NAME}, {@code app/cpy/CVTRA05Y.cpy:L12}, {@code PIC X(50)}, bytes
-     *         153-202
+     * @return {@code TRAN-MERCHANT-NAME}, {@code app/cpy/CVTRA05Y.cpy:L12}, {@code PIC X(50)}, bytes 153-202
      */
     public String getMerchantName() {
         return merchantName;
@@ -889,14 +887,14 @@ public class Transaction {
      * @param merchantName {@code TRAN-MERCHANT-NAME}, {@code PIC X(50)}, bytes 153-202
      */
     public void setMerchantName(String merchantName) {
-        this.merchantName = merchantName;
+        this.merchantName = requireWidth(merchantName,
+                "merchantName", "TRAN-MERCHANT-NAME PIC X(50)", MERCHANT_NAME_WIDTH);
     }
 
     /**
      * Returns the merchant city.
      *
-     * @return {@code TRAN-MERCHANT-CITY}, {@code app/cpy/CVTRA05Y.cpy:L13}, {@code PIC X(50)}, bytes
-     *         203-252
+     * @return {@code TRAN-MERCHANT-CITY}, {@code app/cpy/CVTRA05Y.cpy:L13}, {@code PIC X(50)}, bytes 203-252
      */
     public String getMerchantCity() {
         return merchantCity;
@@ -908,14 +906,14 @@ public class Transaction {
      * @param merchantCity {@code TRAN-MERCHANT-CITY}, {@code PIC X(50)}, bytes 203-252
      */
     public void setMerchantCity(String merchantCity) {
-        this.merchantCity = merchantCity;
+        this.merchantCity = requireWidth(merchantCity,
+                "merchantCity", "TRAN-MERCHANT-CITY PIC X(50)", MERCHANT_CITY_WIDTH);
     }
 
     /**
      * Returns the merchant postal code.
      *
-     * @return {@code TRAN-MERCHANT-ZIP}, {@code app/cpy/CVTRA05Y.cpy:L14}, {@code PIC X(10)}, bytes
-     *         253-262
+     * @return {@code TRAN-MERCHANT-ZIP}, {@code app/cpy/CVTRA05Y.cpy:L14}, {@code PIC X(10)}, bytes 253-262
      */
     public String getMerchantZip() {
         return merchantZip;
@@ -927,15 +925,12 @@ public class Transaction {
      * @param merchantZip {@code TRAN-MERCHANT-ZIP}, {@code PIC X(10)}, bytes 253-262
      */
     public void setMerchantZip(String merchantZip) {
-        this.merchantZip = merchantZip;
+        this.merchantZip = requireWidth(merchantZip,
+                "merchantZip", "TRAN-MERCHANT-ZIP PIC X(10)", MERCHANT_ZIP_WIDTH);
     }
 
     /**
      * Returns the card number the transaction was made against.
-     *
-     * <p><strong>Handle as sensitive.</strong> The returned value is a primary account number. It is
-     * excluded from {@link #toString()} on purpose, and callers must not place it into a log message, an
-     * exception message, a metric tag or a span attribute.
      *
      * @return {@code TRAN-CARD-NUM}, {@code app/cpy/CVTRA05Y.cpy:L15}, {@code PIC X(16)}, bytes 263-278
      */
@@ -946,17 +941,15 @@ public class Transaction {
     /**
      * Sets the card number.
      *
-     * @param cardNumber {@code TRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278; sensitive, never logged
+     * @param cardNumber {@code TRAN-CARD-NUM}, {@code PIC X(16)}, bytes 263-278.
      */
     public void setCardNumber(String cardNumber) {
-        this.cardNumber = cardNumber;
+        this.cardNumber = requireWidth(cardNumber,
+                "cardNumber", "TRAN-CARD-NUM PIC X(16)", CARD_NUMBER_WIDTH);
     }
 
     /**
      * Returns the originating timestamp as text.
-     *
-     * <p>The value is 26 characters of text in one of several mutually incompatible legacy formats. Do
-     * not assume it parses; do not convert it to a temporal type.
      *
      * @return {@code TRAN-ORIG-TS}, {@code app/cpy/CVTRA05Y.cpy:L16}, {@code PIC X(26)}, bytes 279-304
      */
@@ -967,18 +960,14 @@ public class Transaction {
     /**
      * Sets the originating timestamp text.
      *
-     * @param origTs {@code TRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304; stored verbatim
+     * @param origTs {@code TRAN-ORIG-TS}, {@code PIC X(26)}, bytes 279-304.
      */
     public void setOrigTs(String origTs) {
-        this.origTs = origTs;
+        this.origTs = requireWidth(origTs, "origTs", "TRAN-ORIG-TS PIC X(26)", ORIG_TS_WIDTH);
     }
 
     /**
      * Returns the processing timestamp as text.
-     *
-     * <p>The value is 26 characters of text and may legitimately be entirely blank - it is 26 spaces in
-     * every row of the reference staging fixture. Do not assume it parses; do not convert it to a
-     * temporal type. This is the property behind the alternate-index replacement finder.
      *
      * @return {@code TRAN-PROC-TS}, {@code app/cpy/CVTRA05Y.cpy:L17}, {@code PIC X(26)}, bytes 305-330
      */
@@ -989,21 +978,16 @@ public class Transaction {
     /**
      * Sets the processing timestamp text.
      *
-     * <p>A generated value must carry millisecond precision followed by four literal zeros, per
-     * {@code app/cbl/CBTRN02C.cbl:L700-L701}. Blank is valid.
-     *
-     * @param procTs {@code TRAN-PROC-TS}, {@code PIC X(26)}, bytes 305-330; stored verbatim
+     * @param procTs {@code TRAN-PROC-TS}, {@code PIC X(26)}, bytes 305-330.
      */
     public void setProcTs(String procTs) {
-        this.procTs = procTs;
+        this.procTs = requireWidth(procTs, "procTs", "TRAN-PROC-TS PIC X(26)", PROC_TS_WIDTH);
     }
 
     /**
      * Returns the optimistic-locking version counter.
      *
-     * <p>{@code null} on a transient instance that has never been flushed.
-     *
-     * @return the version counter maintained by the persistence provider; no COBOL counterpart
+     * @return the version counter maintained by the persistence provider.
      */
     public Long getVersion() {
         return version;
@@ -1011,10 +995,6 @@ public class Transaction {
 
     /**
      * Sets the optimistic-locking version counter.
-     *
-     * <p>Present for the persistence provider and for tests that need to construct a detached instance
-     * with a known version. Application code has no reason to call it: assigning a version by hand
-     * defeats the guard it exists to provide.
      *
      * @param version the version counter, or {@code null} for a transient instance
      */
@@ -1025,19 +1005,8 @@ public class Transaction {
     /**
      * Compares two transactions by primary key alone.
      *
-     * <p>Only {@code transactionId} participates. Two reasons, both deliberate. First, the identifier is
-     * the record's identity in the legacy store, so two instances bearing the same identifier denote the
-     * same transaction regardless of any field that has since been edited. Second, including
-     * {@code amount} would make equality scale-sensitive, because {@code BigDecimal.equals} treats 2.0
-     * and 2.00 as different; a monetary comparison must use {@code compareTo}, which is not what an
-     * {@code equals} contract can offer.
-     *
-     * <p>A consequence worth stating: two instances that have not yet been assigned an identifier are
-     * equal to each other under this definition. Entities are compared after their key is set.
-     *
      * @param other the object to compare with, possibly {@code null}
-     * @return {@code true} if {@code other} is a {@code Transaction} with an equal
-     *         {@code transactionId}
+     * @return {@code true} if {@code other} is a {@code Transaction} with an equal {@code transactionId}
      */
     @Override
     public boolean equals(Object other) {
@@ -1051,12 +1020,7 @@ public class Transaction {
     }
 
     /**
-     * Returns a hash code derived from the primary key alone, consistent with
-     * {@link #equals(Object)}.
-     *
-     * <p>Because it depends only on {@code transactionId}, which does not change over the life of a
-     * persistent instance, the hash code is stable while the entity sits in a collection - which a hash
-     * code computed over mutable business fields would not be.
+     * Returns a hash code derived from the primary key alone, consistent with {@link #equals(Object)}.
      *
      * @return a hash code over {@code transactionId}
      */
@@ -1076,23 +1040,164 @@ public class Transaction {
      * they are not sensitive, but they contribute nothing diagnostically and would triple the length of
      * every rendered line. The description is omitted for the same reason.
      *
-     * <p>Included: {@code transactionId}, {@code typeCode}, {@code categoryCode},
-     * {@code transactionSource}, {@code amount}, {@code origTs}, {@code procTs} and {@code version} -
-     * enough to identify the record, see how it was classified and routed, and reason about optimistic
-     * locking. No companion method rendering the full record is provided, deliberately.
+     * <p><strong>The amount is excluded too, and that is a change from an earlier, wider form of this
+     * method.</strong> A transaction amount is customer financial data. On its own it may look innocuous,
+     * but this rendering also carries the transaction identifier, so a log estate that holds both holds a
+     * per-transaction amount ledger keyed by a value that joins straight back to the row - which is the
+     * substance of the account activity, reconstructable without any database access at all. The same
+     * reasoning removes {@code origTs} and {@code procTs}: paired with the amount they turn that ledger
+     * into a timeline, and neither timestamp identifies a row that {@code transactionId} does not already
+     * identify. {@code typeCode}, {@code categoryCode} and {@code transactionSource} are removed under
+     * least privilege - they are classification state a reader should obtain from the row, where the
+     * access is authorised and audited, rather than recover from a log line.
      *
-     * @return a single-line rendering containing no sensitive field
+     * <p>Included: {@code transactionId} and {@code version} - the minimum that identifies which row a
+     * log line refers to and distinguishes two readings of it. No companion method rendering the full
+     * record is provided, deliberately.
+     *
+     * @return a single-line rendering of the transaction identifier and version, never containing a card
+     *         number, an amount, a timestamp or merchant detail
      */
     @Override
     public String toString() {
-        return "Transaction{transactionId=" + transactionId
-                + ", typeCode=" + typeCode
-                + ", categoryCode=" + categoryCode
-                + ", transactionSource=" + transactionSource
-                + ", amount=" + amount
-                + ", origTs=" + origTs
-                + ", procTs=" + procTs
-                + ", version=" + version
-                + '}';
+        return "Transaction{transactionId=" + transactionId + ", version=" + version + '}';
+    }
+
+    /**
+     * Validates a candidate character value against the width of the COBOL field it comes from and returns
+     * it unchanged.
+     *
+     * <p>Rejects {@code null}, because every character column here is {@code NOT NULL} and because a fixed
+     * width COBOL field cannot be null in the first place, and rejects any value longer than the picture
+     * clause declares, because the {@code CHAR} column would refuse or truncate it and the resulting
+     * diagnostic would name only a column. Everything the picture clause admits is accepted: a value of
+     * only spaces - the 26-space {@code TRAN-PROC-TS} of the reference fixture is exactly that - a shorter
+     * value that the {@code CHAR} column blank pads, and any character content whatever.
+     *
+     * <p><strong>The failure message reports the length and never the value.</strong> Two of the ten
+     * character fields guarded here, {@code TRAN-CARD-NUM} and {@code TRAN-ID}, are sensitive or
+     * identifying, and a validation message is exactly the kind of string that ends up in a log.
+     *
+     * <p>Declared {@code private static} so that the constructor can call it without invoking an
+     * overridable method, which would otherwise publish a partially initialised instance; the JPA
+     * specification forbids a final entity, so the hazard is real and {@code -Xlint:all -Werror} reports it
+     * as {@code this-escape}.
+     *
+     * @param value      the candidate value, possibly {@code null}
+     * @param property   the Java property name, used in the failure message
+     * @param cobolField the originating COBOL field name and picture clause, used in the failure message
+     * @param width      the declared width of that field in characters
+     * @return {@code value}, unchanged and never trimmed, padded or case folded
+     * @throws IllegalArgumentException if {@code value} is {@code null} or longer than {@code width}
+     */
+    private static String requireWidth(String value, String property, String cobolField, int width) {
+        if (value == null) {
+            throw new IllegalArgumentException(property + " (" + cobolField
+                    + ") must not be null: it maps to a NOT NULL CHAR(" + width
+                    + ") column of table transaction");
+        }
+        if (value.length() > width) {
+            throw new IllegalArgumentException(property + " (" + cobolField + ") must be at most " + width
+                    + " characters but was " + value.length());
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate category code against {@code TRAN-CAT-CD PIC 9(04)} and returns it unchanged.
+     *
+     * <p>Rejects {@code null} and any value outside 0 through 9999 inclusive, which is what four unsigned
+     * display digits and equally a {@code NUMERIC(4)} column can hold. No membership check against the
+     * transaction-category table happens here: that is a referential rule and belongs to the schema's
+     * foreign key and to the service layer, not to a field guard. Declared {@code private static} for the
+     * reason given on {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value the candidate category code, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, or greater than 9999
+     */
+    private static Integer requireCategoryCode(Integer value) {
+        if (value == null) {
+            throw new IllegalArgumentException("categoryCode (TRAN-CAT-CD PIC 9(04)) must not be null: it "
+                    + "maps to a NOT NULL NUMERIC(4) column of table transaction");
+        }
+        if (value.intValue() < MIN_CATEGORY_CODE || value.intValue() > MAX_CATEGORY_CODE) {
+            throw new IllegalArgumentException("categoryCode (TRAN-CAT-CD PIC 9(04)) must be between "
+                    + MIN_CATEGORY_CODE + " and " + MAX_CATEGORY_CODE + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate merchant identifier against {@code TRAN-MERCHANT-ID PIC 9(09)} and returns it
+     * unchanged.
+     *
+     * <p>Rejects {@code null} and any value outside 0 through 999999999 inclusive, which is what nine
+     * unsigned display digits and equally a {@code NUMERIC(9)} column can hold. Zero is accepted and is
+     * not a sentinel to reject: {@code app/cbl/CBACT04C.cbl:L473-L516} builds its synthetic interest
+     * transactions with a merchant identifier of zero. Declared {@code private static} for the reason given
+     * on {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value the candidate merchant identifier, possibly {@code null}
+     * @return {@code value}, unchanged
+     * @throws IllegalArgumentException if {@code value} is {@code null}, negative, or greater than
+     *                                  999999999
+     */
+    private static Long requireMerchantId(Long value) {
+        if (value == null) {
+            throw new IllegalArgumentException("merchantId (TRAN-MERCHANT-ID PIC 9(09)) must not be null: "
+                    + "it maps to a NOT NULL NUMERIC(9) column of table transaction");
+        }
+        if (value.longValue() < MIN_MERCHANT_ID || value.longValue() > MAX_MERCHANT_ID) {
+            throw new IllegalArgumentException("merchantId (TRAN-MERCHANT-ID PIC 9(09)) must be between "
+                    + MIN_MERCHANT_ID + " and " + MAX_MERCHANT_ID + " inclusive but was " + value);
+        }
+        return value;
+    }
+
+    /**
+     * Validates a candidate amount against the domain {@code TRAN-AMT PIC S9(09)V99} can represent and
+     * returns it unchanged.
+     *
+     * <p>Three things are checked and nothing else. {@code null} is rejected, because the column is
+     * {@code NOT NULL} and a packed numeric field always holds a value. A scale greater than two is
+     * rejected, because {@code V99} declares exactly two decimal positions and PostgreSQL rounds a
+     * {@code NUMERIC(11,2)} insert half away from zero rather than refusing it - a silent alteration, and
+     * by a rounding mode that is not the {@code RoundingMode.HALF_EVEN} the batch layer uses. A magnitude
+     * outside -999999999.99 through 999999999.99 is rejected, because nine integer digits cannot hold it.
+     *
+     * <p><strong>What is deliberately not checked:</strong> the sign, because the picture clause carries an
+     * {@code S} and {@code app/cbl/CBTRN02C.cbl:L547-L552} adds a negative amount to the cycle debit
+     * accumulator, which is precisely why the over-limit formula subtracts it; zero; and a scale smaller
+     * than two, since {@code 2} and {@code 2.00} denote the same amount. <strong>No absolute value, no
+     * rescaling and no rounding is applied anywhere in this class.</strong>
+     *
+     * <p>Declared {@code private static} for the reason given on
+     * {@link #requireWidth(String, String, String, int)}.
+     *
+     * @param value the candidate amount, possibly {@code null}
+     * @return {@code value}, unchanged and unrescaled
+     * @throws IllegalArgumentException if {@code value} is {@code null}, has more than two decimal digits,
+     *                                  or falls outside the representable range
+     */
+    private static BigDecimal requireAmount(BigDecimal value) {
+        if (value == null) {
+            throw new IllegalArgumentException("amount (TRAN-AMT PIC S9(09)V99) must not be null: it maps "
+                    + "to a NOT NULL NUMERIC(" + AMOUNT_PRECISION + "," + AMOUNT_SCALE
+                    + ") column of table transaction");
+        }
+        if (value.scale() > AMOUNT_SCALE) {
+            throw new IllegalArgumentException("amount (TRAN-AMT PIC S9(09)V99) must carry at most "
+                    + AMOUNT_SCALE + " decimal digits but had a scale of " + value.scale()
+                    + "; rescale it explicitly with RoundingMode.HALF_EVEN rather than letting the NUMERIC("
+                    + AMOUNT_PRECISION + "," + AMOUNT_SCALE + ") column round it");
+        }
+        if (value.compareTo(MIN_AMOUNT) < 0 || value.compareTo(MAX_AMOUNT) > 0) {
+            throw new IllegalArgumentException("amount (TRAN-AMT PIC S9(09)V99) must be between "
+                    + MIN_AMOUNT.toPlainString() + " and " + MAX_AMOUNT.toPlainString()
+                    + " inclusive, which is what " + AMOUNT_INTEGER_DIGITS
+                    + " signed integer digits can hold, but was " + value.toPlainString());
+        }
+        return value;
     }
 }

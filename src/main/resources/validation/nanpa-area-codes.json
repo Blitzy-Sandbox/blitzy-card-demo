@@ -159,8 +159,8 @@
       "howToBuildAndTest": [
         "No build step: this is a static classpath resource copied verbatim into",
         "target/classes by the standard resources phase, with no property filtering.",
-        "Build with 'mvn -B clean compile' and run the unit suite with",
-        "'mvn -B clean test'. The assertions for this resource live under",
+        "Build with './mvnw -B clean compile' and run the unit suite with",
+        "'./mvnw -B clean test'. The assertions for this resource live under",
         "src/test/java/com/cardemo/unit/ and cover the three element counts, the",
         "first and last value of each table, interior index checkpoints, the",
         "disjointness of the two subsets and the concatenation identity."

@@ -28,58 +28,68 @@
  */
 
 /**
- * Composite JPA identifiers for the three CardDemo VSAM KSDS clusters whose primary key is a COBOL group
- * item rather than a single field.
+ * Composite JPA identifiers for the three CardDemo VSAM KSDS clusters whose primary key is a COBOL group item
+ * rather than a single field.
  *
- * <h2>What it does</h2>
- *
- * <p>This package holds exactly three {@code @Embeddable} composite identifiers. Each one replaces the
- * record key of a single VSAM KSDS cluster and is consumed through {@code @EmbeddedId} by the matching
- * entity in the sibling {@code com.cardemo.model.entity} package.
- *
- * <p>All three are pure value types. They carry only their key components, expose value based
- * {@code equals} and {@code hashCode}, perform no I/O, hold no collaborators and reference nothing else in
- * the model. The package imports nothing from any other {@code com.cardemo} package, which makes it a
- * foundational leaf of the dependency graph and keeps it free of cycles by construction. Its only
- * compile dependencies are {@code jakarta.persistence} mapping annotations and the JDK.
+ * <p><strong>What it does.</strong> Exactly three {@code @Embeddable} value types, each replacing the record
+ * key of one cluster and consumed through {@code @EmbeddedId} by the matching entity in
+ * {@code com.cardemo.model.entity}. They carry only their key components, expose value-based {@code equals}
+ * and {@code hashCode}, perform no I/O and hold no collaborator. The package imports nothing from any other
+ * {@code com.cardemo} package, so it is a cycle-free leaf of the dependency graph whose only compile
+ * dependencies are {@code jakarta.persistence} and the JDK.
  *
  * <ul>
- *   <li>{@link TransactionCategoryBalanceId} from {@code app/cpy/CVTRA01Y.cpy}. Key length
- *       <strong>17</strong> bytes, catalogued at {@code app/catlg/LISTCAT.txt:L1371}
- *       ({@code KEYLEN----------------17}), cluster {@code AWS.M2.CARDDEMO.TCATBALF.VSAM.KSDS}.
- *       Declared under the COBOL group {@code TRAN-CAT-KEY}, components in COBOL order
- *       {@code TRANCAT-ACCT-ID} {@code 9(11)}, then {@code TRANCAT-TYPE-CD} {@code X(02)}, then
- *       {@code TRANCAT-CD} {@code 9(04)}.</li>
- *   <li>{@link DisclosureGroupId} from {@code app/cpy/CVTRA02Y.cpy}. Key length <strong>16</strong>
- *       bytes, catalogued at {@code app/catlg/LISTCAT.txt:L896} ({@code KEYLEN----------------16}),
- *       cluster {@code AWS.M2.CARDDEMO.DISCGRP.VSAM.KSDS}. Declared under the COBOL group
- *       {@code DIS-GROUP-KEY}, components in COBOL order {@code DIS-ACCT-GROUP-ID} {@code X(10)}, then
- *       {@code DIS-TRAN-TYPE-CD} {@code X(02)}, then {@code DIS-TRAN-CAT-CD} {@code 9(04)}.</li>
- *   <li>{@link TransactionCategoryId} from {@code app/cpy/CVTRA04Y.cpy}. Key length <strong>6</strong>
- *       bytes, catalogued at {@code app/catlg/LISTCAT.txt:L1475} ({@code KEYLEN-----------------6}),
- *       cluster {@code AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}. Declared under the COBOL group
- *       {@code TRAN-CAT-KEY}, components in COBOL order {@code TRAN-TYPE-CD} {@code X(02)}, then
- *       {@code TRAN-CAT-CD} {@code 9(04)}.</li>
+ *   <li>{@link TransactionCategoryBalanceId} - {@code app/cpy/CVTRA01Y.cpy} group {@code TRAN-CAT-KEY},
+ *       components {@code TRANCAT-ACCT-ID 9(11)}, {@code TRANCAT-TYPE-CD X(02)}, {@code TRANCAT-CD 9(04)};
+ *       key length 17 ({@code app/catlg/LISTCAT.txt:L1371}).</li>
+ *   <li>{@link DisclosureGroupId} - {@code app/cpy/CVTRA02Y.cpy} group {@code DIS-GROUP-KEY}, components
+ *       {@code DIS-ACCT-GROUP-ID X(10)}, {@code DIS-TRAN-TYPE-CD X(02)}, {@code DIS-TRAN-CAT-CD 9(04)}; key
+ *       length 16 ({@code :L896}).</li>
+ *   <li>{@link TransactionCategoryId} - {@code app/cpy/CVTRA04Y.cpy} group {@code TRAN-CAT-KEY}, components
+ *       {@code TRAN-TYPE-CD X(02)}, {@code TRAN-CAT-CD 9(04)}; key length 6 ({@code :L1475}).</li>
  * </ul>
  *
- * <p>Every key length above was corroborated two independent ways, so each may be treated as settled fact
- * rather than inference: by summing the COBOL field widths declared in the copybook, and by reading
- * {@code KEYLEN} from the VSAM catalogue. The two agree in all three cases, at 11 + 2 + 4 = 17,
- * 10 + 2 + 4 = 16 and 2 + 4 = 6. All three clusters additionally report {@code RKP--------------------0}
- * on the line following their {@code KEYLEN}, so in each case the key is the record prefix and no field
- * precedes it.
+ * <p>Each key length was corroborated two ways, by summing the copybook field widths and by reading
+ * {@code KEYLEN} from the catalogue, and the two agree at {@code 11 + 2 + 4 = 17}, {@code 10 + 2 + 4 = 16}
+ * and {@code 2 + 4 = 6}. All three clusters report {@code RKP 0}, so in each case the key is the record
+ * prefix.
  *
- * <h2>Design constraint: the {@code TRAN-CAT-KEY} name collision</h2>
+ * <p>Two constraints are load-bearing. First, the COBOL group name {@code TRAN-CAT-KEY} is declared in two
+ * different copybooks - 17 bytes over three {@code TRANCAT-} fields keying {@code TCATBALF}, and 6 bytes over
+ * two {@code TRAN-} fields keying {@code TRANCATG} - so the shared name must not be read as a shared concept.
+ * There is deliberately no base class, interface, marker type or shared helper here: unifying the two would
+ * silently give one cluster a key of the wrong width. Second, component order reproduces the copybook exactly
+ * and is never alphabetised, because a VSAM browse proceeds in key order and the interest job's account-level
+ * control break works only while {@code TRANCAT-ACCT-ID} leads the key. Primary-key column order in the
+ * schema must follow the same sequence.
  *
- * <p>WARNING. The COBOL group name {@code TRAN-CAT-KEY} is declared in <em>two</em> different copybooks,
- * and a repository wide search of {@code app/cpy} returns exactly those two declarations, at
- * {@code app/cpy/CVTRA01Y.cpy:5} and {@code app/cpy/CVTRA04Y.cpy:5}:
+ * <p><strong>How to run, build and test.</strong> This package has no entry point and is compiled as part of
+ * the single application artifact by {@code ./mvnw clean verify} under {@code -Xlint:all -Werror}. Its unit
+ * tests live in {@code src/test/java/com/cardemo/unit/model} and assert component order, the three key
+ * lengths, the width checks and the equality contract.
+ *
+ * <p><strong>Key configuration and defaults.</strong> These types read no property. They depend on one
+ * setting owned elsewhere, {@code spring.jpa.hibernate.ddl-auto: validate} in every profile, which turns any
+ * drift between a component's column mapping and the Flyway schema into an application-context startup
+ * failure rather than a latent fault. Fixed-width components map to {@code CHAR(n)} so blank padding survives
+ * the round trip, and numeric components keep the width their picture clause declares.
+ *
+ * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
- *   <li>In {@code app/cpy/CVTRA01Y.cpy} it is <strong>17</strong> bytes over <strong>three</strong>
- *       fields, all carrying the {@code TRANCAT-} prefix, keying the {@code TCATBALF} cluster.</li>
- *   <li>In {@code app/cpy/CVTRA04Y.cpy} it is <strong>6</strong> bytes over <strong>two</strong> fields,
- *       carrying the {@code TRAN-} prefix, keying the {@code TRANCATG} cluster.</li>
+ *   <li>Sequential category-balance processing produces wrong account totals - the components were reordered,
+ *       so the account identifier no longer leads the key and the control break no longer groups an
+ *       account's rows together.</li>
+ *   <li>A repository lookup by composite key silently misses - a component was trimmed, padded or
+ *       case-folded. These classes normalise nothing; the stored values are already padded to their picture
+ *       widths, and the interest job's {@code DEFAULT} group fallback depends on the full-width form.</li>
+ *   <li>Context startup fails with a schema-validation error naming a key column - a component's column
+ *       name, type or width diverges from {@code V1__create_schema.sql}. Reconcile against the copybook
+ *       picture clause, which is authoritative for both sides.</li>
+ *   <li>Two rows that should differ compare equal, or a map lookup misses - {@code equals} or
+ *       {@code hashCode} was narrowed to a subset of components. All components participate in both.</li>
+ *   <li>A width check rejects a legitimate value - the check was tightened beyond the picture width. It
+ *       bounds length only, and deliberately imposes no digit pattern or character class.</li>
  * </ul>
  *
  * <p>These are entirely different keys that merely share a COBOL group name, over different clusters with
@@ -95,8 +105,20 @@
  * <p>A VSAM browse proceeds in key order, so the byte layout of a composite key <em>is</em> its sort
  * order. {@code app/cbl/CBACT04C.cbl:L188-L222} browses the transaction category balance file
  * sequentially and detects an <strong>account level control break</strong> by testing
- * {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM}, flushing the interest accumulated for the previous
- * account through {@code 1050-UPDATE-ACCOUNT} on each break and once more when end of file is reached.
+ * {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM} at {@code :L194}, flushing the interest accumulated
+ * for the previous account through {@code 1050-UPDATE-ACCOUNT} at {@code :L196} on each break, guarded
+ * by the first record test at {@code :L195-L199}.
+ *
+ * <p><strong>Correction: the source never flushes the final account.</strong> An earlier revision of this
+ * document said the update ran "once more when end of file is reached". It does not. The apparent final
+ * flush is {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code :L219-L220}, whose {@code ELSE} belongs to
+ * {@code IF END-OF-FILE = 'N'} at {@code :L189}; it is therefore reachable only when
+ * {@code END-OF-FILE} is already {@code 'Y'}, which is precisely the state in which the enclosing
+ * test-before {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. The branch is
+ * dead code, so the last account in key order silently loses its accrued interest and keeps its stale
+ * cycle accumulators. The Java implementation performs the flush on the end of data condition, which is
+ * a <strong>labelled deviation</strong> from source behaviour and not parity; it is recorded as such
+ * rather than presented as equivalence.
  *
  * <p>That control break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component
  * of the key. Reordering the components, for instance alphabetising them, would change the iteration
@@ -114,21 +136,31 @@
  *   <li><strong>Build.</strong> {@code ./mvnw clean verify} from the repository root. The wrapper pins
  *       Maven 3.9.11 and the build targets {@code maven.compiler.release} 25 with no preview features.</li>
  *   <li><strong>Warnings are errors.</strong> {@code maven-compiler-plugin} is configured with
- *       {@code -Xlint:all} and {@code -Werror}, and additionally with {@code failOnWarning}. An unused
- *       import, a raw type, a deprecation or a missing {@code serialVersionUID} on a
+ *       {@code -Xlint:all} and {@code -Werror}, and additionally with {@code failOnWarning}. A raw type, a
+ *       deprecation, a removal or a missing {@code serialVersionUID} on a
  *       {@link java.io.Serializable} type is therefore a <strong>build failure</strong>, not a warning to
- *       be triaged later.</li>
+ *       be triaged later. An <em>unused import</em> is not in that set: {@code javac} 25.0.3 publishes no
+ *       lint key for one, as {@code javac --help-lint} shows, and no Checkstyle or Error Prone analyser is
+ *       in the pinned dependency set, so Rule 1 Clause B's prohibition on unused imports and dead code is
+ *       enforced by review rather than by the compiler.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor at
  *       the {@code verify} phase, with <strong>no exclusions</strong> for this package. Coverage must come
  *       from meaningful assertions on {@code equals}, {@code hashCode} and component validation; padding
  *       the figure by calling getters is not acceptable. This file is documentation only and contributes
- *       no executable lines, so it neither helps nor harms the figure and must not be "covered".</li>
- *   <li><strong>Toolchain actually present.</strong> Verified on this environment: {@code java} and
- *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code mvn} reports Apache Maven
- *       <strong>3.9.11</strong>, and Docker Engine <strong>29.7.0</strong> with
- *       {@code docker compose} <strong>v5.3.1</strong> is available and is what provisions PostgreSQL 16
- *       and LocalStack for the integration tiers. Any claim that the Java toolchain or the container
- *       runtime is absent is stale and must not be repeated.</li>
+ *       no executable lines, so it neither helps nor harms the figure and must not be "covered".
+ *       <strong>Not available, measured 1 August 2026:</strong> none of the three identifier types has a
+ *       test class, and none is referenced anywhere under {@code src/test/java}. This package therefore
+ *       contributes <strong>zero</strong> covered lines today, and no coverage figure quoted anywhere may
+ *       be read as evidence about it.</li>
+ *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on
+ *       that date after {@code source /etc/profile.d/10-carddemo-toolchain.sh}: {@code java} and
+ *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache
+ *       Maven <strong>3.9.11</strong> from the pinned wrapper distribution, and Docker Engine
+ *       <strong>29.7.0</strong> with {@code docker compose} <strong>v5.3.1</strong> is available and is
+ *       what provisions PostgreSQL 16 and LocalStack for the integration tiers. Every figure here is a
+ *       reading taken on 1 August 2026 rather than a requirement, so re-measure instead of quoting it
+ *       after a host change. Any claim that the Java toolchain or the container runtime is absent is
+ *       stale and must not be repeated.</li>
  *   <li><strong>Tests.</strong> Tests for these three types belong in the sibling test tree at
  *       {@code src/test/java/com/cardemo/unit/model}, never in this package. They must assert the three
  *       key lengths of 17, 16 and 6, the COBOL component order of each key, and the full
@@ -193,34 +225,32 @@
  *       6 bytes over two fields for {@code app/cpy/CVTRA04Y.cpy}.</li>
  * </ul>
  *
- * <h2>Not available: the authoritative column contract</h2>
+ * <h2>The authoritative column contract now exists</h2>
  *
- * <p><strong>Not available.</strong> The authoritative SQL column contract for these three keys cannot be
- * stated at this commit. {@code src/main/resources/db/migration/} does not exist yet, so
- * {@code V1__create_schema.sql} is unwritten and there is no authored SQL type, length or constraint to
- * cite. No SQL type is invented here to fill the gap.
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} <strong>exists</strong> and declares
+ * the composite primary keys these three value types stand for. An earlier revision of this paragraph
+ * said the migration directory did not exist yet; that is no longer true and the claim is withdrawn. The
+ * three catalogued key lengths are corroborated column by column by {@code SchemaStructureTest} against
+ * the copybooks: {@code transaction_category_balance} at 17 bytes from {@code CVTRA01Y},
+ * {@code disclosure_group} at 16 from {@code CVTRA02Y} and {@code transaction_category} at 6 from
+ * {@code CVTRA04Y}, each with its primary-key column order matching COBOL field order exactly. No SQL
+ * type is invented here.
  *
- * <p><strong>Severity: Medium.</strong> It is not a Blocker, because the module compiles and these three
- * value types are complete and self consistent without the migration. It is not Low, because
- * {@code ddl-auto: validate} means the very first real application boot will fail until the migration
- * exists and agrees with these mappings.
+ * <p><strong>What remains absent is {@code V2__create_indexes.sql}</strong>, which has never existed;
+ * {@code V1} declares no {@code CREATE INDEX}, so any reference to a secondary index on these tables
+ * describes <strong>planned</strong> work. Because {@code ddl-auto: validate} is set in every profile, a
+ * disagreement between these mappings and {@code V1} would fail the first real application boot outright,
+ * which is why the agreement is asserted by a test rather than by inspection.
  *
- * <p><strong>What is needed to close it</strong> (four artefacts, none of which is this package's
- * responsibility):
+ * <p><strong>What is still not available.</strong> {@code V2__create_indexes.sql},
+ * {@code V3__seed_data.sql} and all four {@code application*.yml} profile files. Severity remains
+ * <strong>Medium</strong> for that residue: not a Blocker, because the module compiles and these three
+ * value types are complete and self consistent, and the schema they must validate against now exists and
+ * agrees with them; not Low, because {@code ddl-auto: validate} cannot be exercised until a profile
+ * exists to boot with.
  *
- * <ol>
- *   <li>{@code src/main/resources/db/migration/V1__create_schema.sql}, authored with the three tables and
- *       their composite primary keys.</li>
- *   <li>{@code com.cardemo.model.entity.TransactionCategoryBalance}, which consumes
- *       {@link TransactionCategoryBalanceId}.</li>
- *   <li>{@code com.cardemo.model.entity.DisclosureGroup}, which consumes {@link DisclosureGroupId}.</li>
- *   <li>{@code com.cardemo.model.entity.TransactionCategory}, which consumes
- *       {@link TransactionCategoryId}.</li>
- * </ol>
- *
- * <p><strong>Remediation for whoever authors the migration.</strong> Until those exist, the normative
- * contract is the one derived from the copybooks and {@code app/catlg/LISTCAT.txt}, and the migration must
- * be written to match it rather than the reverse:
+ * <p><strong>The contract itself</strong>, derived from the copybooks and corroborated against
+ * {@code app/catlg/LISTCAT.txt} and now against {@code V1}:
  *
  * <pre>
  * transaction_category_balance : acct_id       9(11)
@@ -286,4 +316,5 @@
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
+
 package com.cardemo.model.key;

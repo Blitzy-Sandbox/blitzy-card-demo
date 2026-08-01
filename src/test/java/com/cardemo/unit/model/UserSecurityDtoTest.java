@@ -44,6 +44,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import com.cardemo.model.dto.UserSecurityDto;
+import com.cardemo.model.dto.UserSecurityDto.UserDeleteScreen;
 import com.cardemo.model.dto.UserSecurityDto.UserRow;
 import com.cardemo.model.enums.UserType;
 
@@ -257,10 +258,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ol>
- *   <li><b>The build fails on an unused import or a raw type.</b> The compiler runs with
+ *   <li><b>The build fails on a raw type or a deprecation.</b> The compiler runs with
  *       {@code -Xlint:all -Werror} at {@code release 25} and that configuration reaches test
- *       compilation, so a single unused import, raw type or deprecation warning is a hard build failure,
- *       not a warning. Remove the import rather than suppressing the warning.</li>
+ *       compilation, so a single raw type or deprecation warning is a hard build failure, not a warning.
+ *       Fix the expression rather than suppressing the warning. An <em>unused</em> import is a separate
+ *       matter: {@code javac} 25.0.3 publishes no lint key for one, so it will not fail the build and is
+ *       caught at review - remove it there.</li>
  *   <li><b>A password or hash component is added for symmetry with the add and update maps.</b> This is
  *       the highest-severity regression available here. The write maps have {@code PASSWDI}; this read
  *       map does not, and the assertions in the security group fail loudly if one appears.</li>
@@ -299,12 +302,13 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       class-level cross-field constraint. <em>Remediation:</em> take each figure from the program that
  *       owns it, keep the header fields declared inline, and gate any cross-field rule the way
  *       {@code app/cbl/COACTUPC.cbl}:1665-1669 gates its own.</li>
- *   <li><b>Medium</b> - the migration plan's prose states 460 input fields across the seventeen
- *       symbolic maps while a direct count totals <b>441</b>, and its own per-map table sums to 440.
- *       Separately, the plan attributes paging metadata to {@code app/cpy/COCOM01Y.cpy}, which declares
+ *   <li><b>Medium, closed</b> - prior-generation plan prose stated 460 input fields across the seventeen
+ *       symbolic maps while a direct count totals <b>441</b>, and its own per-map table summed to 440.
+ *       Separately, that prose attributed paging metadata to {@code app/cpy/COCOM01Y.cpy}, which declares
  *       no such field. This map's own count is unaffected and independently verified at <b>59</b>.
- *       <em>Remediation:</em> correct the census and the provenance in the plan; no code change
- *       follows.</li>
+ *       <em>Remediation, applied:</em> {@code docs/technical-specifications.md} now publishes 441 and
+ *       re-attributes the paging fields to the program WORKING-STORAGE and COMMAREA extensions that
+ *       actually declare them, verified on 1 August 2026; no code change follows.</li>
  *   <li><b>Low</b> - the {@code USRSEC} record carries 57 populated bytes in an 80-byte slot; the
  *       23-byte named filler at {@code app/cpy/CSUSR01Y.cpy}:23 is not modelled, because no screen field
  *       occupies it. <em>Remediation:</em> none required.</li>
@@ -323,6 +327,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code V1__create_schema.sql} is planned, so no column-level schema assertion is made here.
  *       <em>What would be needed:</em> the generated DDL, which is a database-tier concern and outside
  *       this pure-JVM tier in any case.</li>
+ *   <li><b>The production owner of the row-selection rule.</b> {@code isSelected} classifies a row
+ *       marker exactly as {@code app/cbl/COUSR00C.cbl}:152-179 classifies it, but it is a test-local
+ *       oracle rather than a delegation. The services that will own that rule,
+ *       {@code UserListService} from {@code app/cbl/COUSR00C.cbl} and {@code UserDeleteService} from
+ *       {@code app/cbl/COUSR03C.cbl}, do not exist at this checkpoint, so the oracle is retained
+ *       deliberately to record the contract rather than lose it, and this entry is its tracking record.
+ *       <em>What would be needed:</em> those two services; the moment either arrives, re-point every
+ *       assertion that calls {@code isSelected} at the production method and delete the oracle.</li>
  * </ul>
  *
  * @see UserSecurityDto
@@ -334,63 +346,60 @@ final class UserSecurityDtoTest {
     /**
      * The eight-character screen rendering of a page number, {@code PAGENUMI PIC X(8)} at
      * {@code app/cpy-bms/COUSR00.CPY}:60. {@code app/cbl/COUSR00C.cbl}:327 moves
-     * {@code CDEMO-CU00-PAGE-NUM PIC 9(08)} into it, so the on-screen form is a zero-padded eight-digit
-     * value rather than a trimmed number.
+     * {@code CDEMO-CU00-PAGE-NUM PIC 9(08)} into it, so the on-screen form is a zero-padded eight-digit value
+     * rather than a trimmed number.
      */
     private static final String PAGE_ONE = "00000001";
 
-    /** The eight-character program name the user-list screen reports, {@code PGMNAMEI PIC X(8)}. */
+    /**
+     * The eight-character program name the user-list screen reports, {@code PGMNAMEI PIC X(8)}.
+     */
     private static final String PROGRAM_NAME = "COUSR00C";
 
-    /** The four-character transaction identifier of the user list, {@code TRNNAMEI PIC X(4)}. */
+    /**
+     * The four-character transaction identifier of the user list, {@code TRNNAMEI PIC X(4)}.
+     */
     private static final String TRANSACTION_NAME = "CU00";
 
     /**
-     * A single space: the value a fixed-width screen field carries when the operator supplied nothing.
-     * Distinct from {@code null} and from the empty string, per {@code app/cbl/COUSR00C.cbl}:218.
+     * A single space: the value a fixed-width screen field carries when the operator supplied nothing. Distinct
+     * from {@code null} and from the empty string, per {@code app/cbl/COUSR00C.cbl}:218.
      */
     private static final String BLANK = " ";
 
     /**
-     * A single binary zero: the Java rendering of COBOL {@code LOW-VALUES}. The driving program treats
-     * it as "not supplied" alongside spaces - {@code app/cbl/COUSR00C.cbl}:152 tests
+     * A single binary zero: the Java rendering of COBOL {@code LOW-VALUES}. The driving program treats it as
+     * "not supplied" alongside spaces - {@code app/cbl/COUSR00C.cbl}:152 tests
      * {@code NOT = SPACES AND LOW-VALUES} - while keeping it a distinct byte value.
      */
     private static final String LOW_VALUES = "\u0000";
 
     /**
-     * Recognises the shape of a BCrypt digest: a version tag, a two-digit cost factor and a
-     * 53-character radix-64 payload.
+     * Recognises the shape of a BCrypt digest: a version tag, a two-digit cost factor and a 53-character
+     * radix-64 payload.
      *
-     * <p>This is a detector, never an example. It exists so the security assertions can prove that no
-     * component of a fully populated instance is capable of holding a digest, without any digest literal
-     * being written into this file. The migrated credential column is a 60-character digest at strength
-     * 10, replacing {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy}:21.
+     * <p>A detector, never an example: it lets the security assertions prove that no component of a fully
+     * populated instance can hold a digest without any digest literal appearing in this file. The migrated
+     * credential column is 60 characters wide, against {@code SEC-USR-PWD PIC X(08)} at
+     * {@code app/cpy/CSUSR01Y.cpy:L21}, so the two cannot be confused by width either.
      */
     private static final Pattern BCRYPT_SHAPE = Pattern.compile("^\\$2[abxy]\\$\\d{2}\\$[./A-Za-z0-9]{53}$");
 
     /**
      * Component and accessor names that would indicate a credential had reached this projection.
-     *
-     * <p>Matched case-insensitively against every record component and every declared method of both
-     * {@link UserSecurityDto} and {@link UserRow}.
      */
     private static final List<String> CREDENTIAL_NAME_FRAGMENTS =
             List.of("passwd", "password", "pwd", "secret", "credential", "hash", "digest", "token", "salt");
 
     /**
      * The three methods of the {@link Object} contract that every record generates.
-     *
-     * <p>Excluded by exact name from the credential-accessor scan only. {@code hashCode} contains the
-     * {@code hash} fragment but computes value identity over the components rather than reading a
-     * credential, and the component-level assertions already prove no component is one.
      */
     private static final List<String> OBJECT_CONTRACT_METHODS = List.of("equals", "hashCode", "toString");
 
     /**
      * Legacy COMMAREA field names whose presence would reintroduce server-side session state.
      *
-     * <p>Drawn from {@code app/cpy/COCOM01Y.cpy}:21-24, :29 and :43-44. Matched case-insensitively with
+     * <p>Drawn from {@code app/cpy/COCOM01Y.cpy}:21-24, :29 and :43-44. Matched case insensitively with
      * separators removed, so {@code fromTranId}, {@code from_tran_id} and {@code FROMTRANID} all match.
      */
     private static final List<String> SESSION_STATE_NAME_FRAGMENTS =
@@ -399,7 +408,7 @@ final class UserSecurityDtoTest {
     /**
      * Names, in declaration order, of the fields the ten row groups repeat.
      *
-     * <p>{@code SEL000nI}, {@code USRIDnnI}, {@code FNAMEnnI}, {@code LNAMEnnI}, {@code UTYPEnnI} at
+     * <p>{@code SEL0001I}, {@code USRID01I}, {@code FNAME01I}, {@code LNAME01I} and {@code UTYPE01I} at
      * {@code app/cpy-bms/COUSR00.CPY}:72, :78, :84, :90 and :96 for row one.
      */
     private static final List<String> ROW_COMPONENT_NAMES =
@@ -407,50 +416,48 @@ final class UserSecurityDtoTest {
 
     /**
      * Names, in declaration order, of the projection's ten components.
-     *
-     * <p>Mirrors the map's declaration order: the six header fields, the page number, the search key,
-     * the row collection standing for the fifty row fields, then the error line.
      */
     private static final List<String> DTO_COMPONENT_NAMES = List.of(
             "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
             "pageNumber", "userIdInput", "rows", "errorMessage");
 
     /**
-     * The ten seeded user identifiers, in the order the card images appear at
-     * {@code app/jcl/DUSRSECJ.jcl}:35-44: five administrators then five standard users. Each is exactly
-     * eight characters, matching the {@code KEYS(8,0)} cluster key at :65.
+     * Ten <strong>synthetic</strong> stand-ins for the seeded user identifiers, in the order the card
+     * images appear at {@code app/jcl/DUSRSECJ.jcl}:35-44: five administrators then five standard users.
+     * Each is exactly eight characters, matching the {@code KEYS(8,0)} cluster key at :65.
+     *
+     * <p>No seeded identity is transcribed under {@code src/}. These fixtures carry the structure the
+     * tests assert - key width, ordering, distinctness - and nothing else; the real values are reachable
+     * by citation at {@code app/jcl/DUSRSECJ.jcl:L35-L44}.
      */
     private static final List<String> SEEDED_USER_IDS = List.of(
-            "ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
-            "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+            "ADMNUSR1", "ADMNUSR2", "ADMNUSR3", "ADMNUSR4", "ADMNUSR5",
+            "STDUSR01", "STDUSR02", "STDUSR03", "STDUSR04", "STDUSR05");
 
     /**
-     * The given names of the ten seeded users, positionally aligned with {@link #SEEDED_USER_IDS}. Names
-     * are identifying but are not secrets; the credential the card images also carry is deliberately
-     * absent from this file.
+     * The given names of the ten seeded users, positionally aligned with {@link #SEEDED_USER_IDS}. Names are
+     * identifying but are not secrets; the credential the card images also carry is deliberately absent from
+     * this file.
      */
     private static final List<String> SEEDED_FIRST_NAMES = List.of(
-            "MARGARET", "RUSSELL", "RAYMOND", "EMMANUEL", "GRANVILLE",
-            "LAWRENCE", "AJITH", "LAURITZ", "AVERARDO", "LEE");
+            "FNAMEAA1", "FNAMEA2", "FNAMEA3", "FNAMEAA4", "FNAMEAAA5",
+            "FNAMEAA6", "FNAM7", "FNAMEA8", "FNAMEAA9", "FN0");
 
-    /** The family names of the ten seeded users, positionally aligned with {@link #SEEDED_USER_IDS}. */
+    /**
+     * The family names of the ten seeded users, positionally aligned with {@link #SEEDED_USER_IDS}.
+     */
     private static final List<String> SEEDED_LAST_NAMES = List.of(
-            "GOLD", "RUSSELL", "WHITMORE", "CASGRAIN", "LACHAPELLE",
-            "THOMAS", "KUMAR", "ALME", "MAZZI", "TING");
+            "LNM1", "LNAMEA2", "LNAMEAA3", "LNAMEAA4", "LNAMEAAAA5",
+            "LNAME6", "LNAM7", "LNM8", "LNAM9", "LN10");
 
     /**
      * Builds one row, leaving every value exactly as supplied.
      *
-     * <p>A pure function over immutable inputs: no trimming, no padding, no case folding and no
-     * coercion between {@code null} and the empty string, because those are the very distinctions the
-     * assertions rely on.
-     *
-     * @param selectionFlag the row marker, {@code SEL000nI PIC X(1)}; may be {@code null}
-     * @param userId        the identifier, {@code USRIDnnI PIC X(8)}; may be {@code null}
-     * @param firstName     the given name, {@code FNAMEnnI PIC X(20)}; may be {@code null}
-     * @param lastName      the family name, {@code LNAMEnnI PIC X(20)}; may be {@code null}
-     * @param userType      the raw one-character type code, {@code UTYPEnnI PIC X(1)}; may be
-     *                      {@code null}
+     * @param selectionFlag the row marker, {@code SEL000nI PIC X(1)}.
+     * @param userId the identifier, {@code USRIDnnI PIC X(8)}.
+     * @param firstName the given name, {@code FNAMEnnI PIC X(20)}.
+     * @param lastName the family name, {@code LNAMEnnI PIC X(20)}.
+     * @param userType the raw one-character type code, {@code UTYPEnnI PIC X(1)}.
      * @return the row, never {@code null}
      */
     private static UserRow row(final String selectionFlag, final String userId, final String firstName,
@@ -476,11 +483,8 @@ final class UserSecurityDtoTest {
     /**
      * Builds a projection carrying the supplied rows beneath a canonical, deterministic header.
      *
-     * <p>The header date and time are derived from {@link FixedClockProvider#canonicalClock()}, so the
-     * instance is byte-identical on every run and on every host.
-     *
      * @param rows the page's rows; passed through to the canonical constructor unchanged, including
-     *             {@code null}, so that its validation can be exercised
+     * {@code null}, so that its validation can be exercised
      * @return the projection, when the constructor accepts {@code rows}
      */
     private static UserSecurityDto pageOf(final List<UserRow> rows) {
@@ -491,10 +495,9 @@ final class UserSecurityDtoTest {
     /**
      * Renders the fixed clock as {@code CURDATEI PIC X(8)}.
      *
-     * <p>Reproduces {@code WS-CURDATE-MM-DD-YY} at {@code app/cpy/CSDAT01Y.cpy}:30-35, a group of
-     * {@code MM}, a literal solidus, {@code DD}, a second solidus and {@code YY} - eight characters -
-     * which {@code app/cbl/COUSR00C.cbl}:575 moves into the header field. The value comes from the
-     * injected clock, never from the wall clock, and the pattern is resolved against {@link Locale#ROOT}.
+     * <p>Reproduces {@code WS-CURDATE-MM-DD-YY} at {@code app/cpy/CSDAT01Y.cpy}:30-35, which
+     * {@code app/cbl/COUSR00C.cbl}:575 moves into the header field. The value comes from the injected clock,
+     * never the wall clock, and the pattern resolves against {@link Locale#ROOT}.
      *
      * @return the eight-character header date, never {@code null}
      */
@@ -507,10 +510,9 @@ final class UserSecurityDtoTest {
     /**
      * Renders the fixed clock as {@code CURTIMEI PIC X(8)}.
      *
-     * <p>Reproduces {@code WS-CURTIME-HH-MM-SS} at {@code app/cpy/CSDAT01Y.cpy}:36-41, a group of
-     * {@code HH}, a literal colon, {@code MM}, a second colon and {@code SS} - eight characters - which
-     * {@code app/cbl/COUSR00C.cbl}:581 moves into the header field. Eight is this map's width; the
-     * sign-on map alone declares nine.
+     * <p>Reproduces {@code WS-CURTIME-HH-MM-SS} at {@code app/cpy/CSDAT01Y.cpy}:36-41, which
+     * {@code app/cbl/COUSR00C.cbl}:581 moves into the header field. Eight is this map's width; the sign-on map
+     * alone declares nine.
      *
      * @return the eight-character header time, never {@code null}
      */
@@ -523,11 +525,7 @@ final class UserSecurityDtoTest {
     /**
      * Reduces an identifier to lower case with separators removed, for tolerant name matching.
      *
-     * <p>Uses {@link Locale#ROOT} so the reduction cannot vary with the platform locale - a
-     * locale-sensitive fold would map a dotted capital I to a form that no longer matches, and the whole
-     * point of these checks is that they cannot be defeated by the environment.
-     *
-     * @param identifier the component or method name to reduce; must not be {@code null}
+     * @param identifier the component or method name to reduce.
      * @return the reduced form, never {@code null}
      */
     private static String canonicalName(final String identifier) {
@@ -537,14 +535,7 @@ final class UserSecurityDtoTest {
     /**
      * Decides whether a method name indicates an accessor capable of reading a credential.
      *
-     * <p>Matches any of {@link #CREDENTIAL_NAME_FRAGMENTS} case-insensitively, after excluding the three
-     * methods of the {@link Object} contract that every record generates. That exclusion is necessary and
-     * narrow: {@code hashCode} contains the fragment {@code hash} yet is a value-identity computation over
-     * the record's components, not a credential reader, and the component-level assertions already prove
-     * that none of those components is a credential. Nothing else is excluded, so a genuine
-     * {@code passwordHash()} or {@code getPasswd()} accessor is still caught.
-     *
-     * @param methodName the declared method name to classify; must not be {@code null}
+     * @param methodName the declared method name to classify.
      * @return {@code true} when the name indicates a credential accessor
      */
     private static boolean isCredentialAccessorName(final String methodName) {
@@ -558,11 +549,6 @@ final class UserSecurityDtoTest {
     /**
      * Classifies a row marker the way {@code app/cbl/COUSR00C.cbl}:152-179 classifies it.
      *
-     * <p>The program's predicate is {@code WHEN SEL000nI OF COUSR0AI NOT = SPACES AND LOW-VALUES},
-     * repeated verbatim for all ten rows, so a marker of spaces and a marker of binary zeros are both
-     * "not selected" and anything else is a selection. An absent marker is treated as not selected too,
-     * since a field the response never carried cannot have been marked by an operator.
-     *
      * @param marker the raw marker value; may be {@code null}
      * @return {@code true} only when the marker is a genuine selection
      */
@@ -573,11 +559,11 @@ final class UserSecurityDtoTest {
     /**
      * Returns the record component of {@code recordType} with the given name.
      *
-     * @param recordType the record class to inspect; must be a record
-     * @param name       the component name to find
+     * @param recordType the record class to inspect.
+     * @param name the component name to find
      * @return the matching component, never {@code null}
-     * @throws IllegalArgumentException if {@code recordType} declares no component of that name, which
-     *                                 means the field contract has drifted
+     * @throws IllegalArgumentException if {@code recordType} declares no component of that name, which means
+     * the field contract has drifted
      */
     private static RecordComponent componentOf(final Class<?> recordType, final String name) {
         for (final RecordComponent component : recordType.getRecordComponents()) {
@@ -589,7 +575,9 @@ final class UserSecurityDtoTest {
                 + name + "'; the field contract of app/cpy-bms/COUSR00.CPY has drifted");
     }
 
-    /** Component names of {@code recordType} in declaration order. */
+    /**
+     * Component names of {@code recordType} in declaration order.
+     */
     private static List<String> componentNamesOf(final Class<?> recordType) {
         final List<String> names = new ArrayList<>();
         for (final RecordComponent component : recordType.getRecordComponents()) {
@@ -601,12 +589,9 @@ final class UserSecurityDtoTest {
     /**
      * Every non-null textual value a projection and its rows expose, for leak and shape scanning.
      *
-     * <p>Absent values are skipped rather than collected: a component that was never populated cannot
-     * leak and cannot carry a digest, and collecting {@code null} would say nothing about either.
-     *
-     * @param page the projection to harvest; must not be {@code null}
-     * @return the values in traversal order - the projection's own components first, then each row's
-     *         five components in row order - never {@code null}
+     * @param page the projection to harvest.
+     * @return the values in traversal order - the projection's own components first, then each row's five
+     * components in row order - never {@code null}
      */
     private static List<String> allTextValuesOf(final UserSecurityDto page) {
         final List<String> values = new ArrayList<>();
@@ -629,7 +614,9 @@ final class UserSecurityDtoTest {
         return List.copyOf(values);
     }
 
-    /** Collects {@code value} only when it is present, keeping the harvested list free of nulls. */
+    /**
+     * Collects {@code value} only when it is present, keeping the harvested list free of nulls.
+     */
     private static void addIfPresent(final List<String> target, final String value) {
         if (value != null) {
             target.add(value);
@@ -637,9 +624,35 @@ final class UserSecurityDtoTest {
     }
 
     /**
-     * The field contract of {@code app/cpy-bms/COUSR00.CPY}, input group {@code COUSR0AI}: exactly 59
-     * data fields, in declaration order, at their declared widths.
+     * Reads the field of {@code request} at the given map position.
+     *
+     * @param request the request to read
+     * @param index   the zero-based map position, 0 for {@code TRNNAMEI} through 10 for {@code ERRMSGI}
+     * @return the field value, which may be {@code null}
      */
+    private static String valueOf(final UserDeleteScreen request, final int index) {
+        return switch (index) {
+            case 0 -> request.transactionName();
+            case 1 -> request.title01();
+            case 2 -> request.currentDate();
+            case 3 -> request.programName();
+            case 4 -> request.title02();
+            case 5 -> request.currentTime();
+            case 6 -> request.userIdInput();
+            case 7 -> request.firstName();
+            case 8 -> request.lastName();
+            case 9 -> request.userType();
+            case 10 -> request.errorMessage();
+            default -> throw new IllegalArgumentException(
+                    "app/cpy-bms/COUSR03.CPY declares 11 fields, so there is no position " + index);
+        };
+    }
+
+    /**
+     * The field contract of {@code app/cpy-bms/COUSR00.CPY}, input group {@code COUSR0AI}: exactly 59 data
+     * fields, in declaration order, at their declared widths.
+     */
+
     @Nested
     @DisplayName("Field contract: 59 input fields of COUSR0AI")
     class FieldContract {
@@ -823,18 +836,29 @@ final class UserSecurityDtoTest {
         }
 
         @Test
-        @DisplayName("carries an eight-character header time, and a nine-character one verbatim too")
-        void carriesEightCharacterHeaderTimeAndDoesNotNormaliseNine() {
+        @DisplayName("carries an eight-character header time and refuses the sign-on map's nine")
+        void carriesEightCharacterHeaderTimeAndRefusesNine() {
             final UserSecurityDto eight = pageOf(List.of());
             assertThat(eight.currentTime()).as("CURTIMEI PIC X(8) at COUSR00.CPY:54").hasSize(8);
+            assertThat(UserSecurityDto.TIME_WIDTH).isEqualTo(8);
 
             final String nine = "19:27:53 ";
-            final UserSecurityDto widened = new UserSecurityDto(null, null, null, null, null, nine, null,
-                    null, List.of(), null);
-            assertThat(widened.currentTime())
-                    .as("the nine-character width of COSGN00.CPY:54 is carried, never trimmed to this map's eight")
-                    .isEqualTo(nine)
-                    .hasSize(9);
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, null, null, nine, null,
+                    null, List.of(), null))
+                    .as("this is the sharpest available proof that no shared header abstraction exists: "
+                            + "CURTIMEI is X(8) at COUSR00.CPY:54 and X(9) at COSGN00.CPY:54, so a "
+                            + "nine-character time did not come from this map's field, and accepting it - "
+                            + "or trimming it to eight - would each be a data error rather than a kindness")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("currentTime")
+                    .hasMessageContaining("PIC X(8)")
+                    .hasMessageContaining("9")
+                    .hasNoCause();
+
+            assertThatCode(() -> new UserSecurityDto(null, null, null, null, null, "19:27:53", null, null,
+                    List.of(), null))
+                    .as("eight is the boundary and is accepted, so the bound is not off by one")
+                    .doesNotThrowAnyException();
         }
 
         @Test
@@ -864,8 +888,8 @@ final class UserSecurityDtoTest {
     }
 
     /**
-     * Page size, the page-number field and the two paging constructs this projection deliberately does
-     * not carry.
+     * Page size, the page-number field and the two paging constructs this projection deliberately does not
+     * carry.
      */
     @Nested
     @DisplayName("Pagination: ten rows, raw page number, no sentinel, no session state")
@@ -980,9 +1004,6 @@ final class UserSecurityDtoTest {
 
     /**
      * The security contract: no credential is carried, and the diagnostic renderings disclose nothing.
-     *
-     * <p>Every assertion here is structural. None uses a credential literal, and none uses a digest
-     * literal - digest shape is recognised by {@link #BCRYPT_SHAPE}, never by example.
      */
     @Nested
     @DisplayName("Security: no password, no hash, no disclosure")
@@ -1043,13 +1064,6 @@ final class UserSecurityDtoTest {
 
         /**
          * Asserts that no method {@code recordType} declares can read a credential.
-         *
-         * <p>The three methods of the {@link Object} contract that every record generates - {@code equals},
-         * {@code hashCode} and {@code toString} - are excluded by exact name. {@code hashCode} would
-         * otherwise match the {@code hash} fragment, which is a false positive: it computes a value
-         * identity over the components, and the assertions above already prove none of those components is
-         * a credential. Every other declared method is scanned, so a genuine
-         * {@code passwordHash()} accessor is still caught, as the companion test proves.
          */
         private void assertThatNoCredentialAccessorIsDeclaredBy(final Class<?> recordType) {
             for (final Method declared : recordType.getDeclaredMethods()) {
@@ -1233,10 +1247,18 @@ final class UserSecurityDtoTest {
 
             assertThatThrownBy(() -> UserType.requireFromCode(unrecognised.charAt(0)))
                     .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessageContaining("'" + unrecognised + "'")
+                    .hasMessageContaining("code point 0x58")
                     .hasMessageContaining("app/cpy/COCOM01Y.cpy")
-                    .as("the guard names the offending code; there is no silent fallback to USER or ADMIN")
+                    .as("the guard names the offending code by its code point; there is no silent "
+                            + "fallback to USER or ADMIN, and no echo of the rejected character either. "
+                            + "The value reaches this guard from a persisted column, so a control "
+                            + "character among those bytes reproduced verbatim in a message bound for a "
+                            + "log would let corrupt data forge a log entry")
                     .hasNoCause();
+            assertThatThrownBy(() -> UserType.requireFromCode(unrecognised.charAt(0)))
+                    .as("the quoted raw character is absent, which is the form a reader would copy out "
+                            + "of a log")
+                    .hasMessageNotContaining("'" + unrecognised + "'");
         }
 
         @Test
@@ -1295,8 +1317,8 @@ final class UserSecurityDtoTest {
     }
 
     /**
-     * Absent, empty, blank and low-values are four distinct states, and no value is trimmed, padded or
-     * case folded on ingest.
+     * Absent, empty, blank and low-values are four distinct states, and no value is trimmed, padded or case
+     * folded on ingest.
      */
     @Nested
     @DisplayName("Field states: absent, empty, blank and low-values stay distinct")
@@ -1377,8 +1399,8 @@ final class UserSecurityDtoTest {
         @Test
         @DisplayName("preserves trailing space padding exactly, on the key and on a row")
         void preservesTrailingSpacePaddingExactly() {
-            final String padded = "USER1   ";
-            final UserRow only = row(BLANK, padded, "LEE                 ", "TING                ", "U");
+            final String padded = "STDU1   ";
+            final UserRow only = row(BLANK, padded, "FN0                 ", "LN10                ", "U");
             final UserSecurityDto page = new UserSecurityDto(TRANSACTION_NAME, null, null, PROGRAM_NAME,
                     null, null, PAGE_ONE, padded, List.of(only), null);
 
@@ -1394,12 +1416,12 @@ final class UserSecurityDtoTest {
         @Test
         @DisplayName("applies no case folding on ingest, and folds only with Locale.ROOT when asked to")
         void appliesNoCaseFoldingOnIngest() {
-            final String mixedCase = "aDmIn001";
-            final UserRow only = row(BLANK, mixedCase, "Margaret", "Gold", "a");
+            final String mixedCase = "aDmNuSr1";
+            final UserRow only = row(BLANK, mixedCase, "Fnameaa1", "Lnm1", "a");
             final UserRow carried = pageOf(List.of(only)).rows().get(0);
 
             assertThat(carried.userId()).as("no upper-casing on ingest").isEqualTo(mixedCase);
-            assertThat(carried.firstName()).isEqualTo("Margaret");
+            assertThat(carried.firstName()).isEqualTo("Fnameaa1");
             assertThat(carried.userType())
                     .as("a lower-case type code is out of domain and is carried, not repaired")
                     .isEqualTo("a");
@@ -1408,10 +1430,12 @@ final class UserSecurityDtoTest {
             assertThat(carried.userId().toUpperCase(Locale.ROOT))
                     .as("the sign-on program upper-cases both identifier and credential, so any case "
                             + "operation must pass Locale.ROOT to stay host-independent")
-                    .isEqualTo("ADMIN001");
+                    .isEqualTo("ADMNUSR1");
         }
 
-        /** Builds a row with only {@code component} set to {@code value}, and returns that value back. */
+        /**
+         * Builds a row with only {@code component} set to {@code value}, and returns that value back.
+         */
         private String rowValueOf(final String component, final String value) {
             final UserRow only = switch (component) {
                 case "selectionFlag" -> row(value, null, null, null, null);
@@ -1433,7 +1457,9 @@ final class UserSecurityDtoTest {
         }
     }
 
-    /** The row collection: rejection, ordering, immutability and defensive copying. */
+    /**
+     * The row collection: rejection, ordering, immutability and defensive copying.
+     */
     @Nested
     @DisplayName("Row collection: validated, ordered, immutable")
     class RowCollection {
@@ -1488,9 +1514,9 @@ final class UserSecurityDtoTest {
         @Test
         @DisplayName("preserves insertion order and never sorts or hashes the rows")
         void preservesInsertionOrderAndNeverSortsOrHashes() {
-            final UserRow third = row(BLANK, "USER0003", "LAURITZ", "ALME", "U");
-            final UserRow first = row(BLANK, "ADMIN001", "MARGARET", "GOLD", "A");
-            final UserRow second = row(BLANK, "USER0001", "LAWRENCE", "THOMAS", "U");
+            final UserRow third = row(BLANK, "STDUSR03", "FNAMEA8", "LNM8", "U");
+            final UserRow first = row(BLANK, "ADMNUSR1", "FNAMEAA1", "LNM1", "A");
+            final UserRow second = row(BLANK, "STDUSR01", "FNAMEAA6", "LNAME6", "U");
 
             final UserSecurityDto page = pageOf(List.of(third, first, second));
 
@@ -1498,7 +1524,7 @@ final class UserSecurityDtoTest {
                     .as("row position is meaningful; a sorted or hash-ordered collection would reorder these")
                     .containsExactly(third, first, second);
             assertThat(page.rows().stream().map(UserRow::userId).toList())
-                    .containsExactly("USER0003", "ADMIN001", "USER0001");
+                    .containsExactly("STDUSR03", "ADMNUSR1", "STDUSR01");
         }
 
         @Test
@@ -1530,7 +1556,7 @@ final class UserSecurityDtoTest {
         @DisplayName("exposes an unmodifiable row collection")
         void exposesAnUnmodifiableRowCollection() {
             final List<UserRow> exposed = pageOf(seededRows(2)).rows();
-            final UserRow extra = row(BLANK, "USER0005", "LEE", "TING", "U");
+            final UserRow extra = row(BLANK, "STDUSR05", "FN0", "LN10", "U");
 
             assertThatThrownBy(() -> exposed.add(extra))
                     .isInstanceOf(UnsupportedOperationException.class);
@@ -1544,40 +1570,67 @@ final class UserSecurityDtoTest {
     }
 
     /**
-     * Hostile and out-of-contract input. Every case is carried verbatim: this is an outbound projection,
-     * so it validates no width, and asserting that explicitly is what would catch a future silent
-     * truncation.
+     * Hostile and out-of-contract input. Every case is carried verbatim: this is an outbound projection, so it
+     * validates no width, and asserting that explicitly is what would catch a future silent truncation.
      */
     @Nested
-    @DisplayName("Hostile input: carried verbatim, never silently truncated")
+    @DisplayName("Hostile input: refused when over-wide, carried verbatim when within width")
     class HostileInput {
 
         @Test
-        @DisplayName("carries a nine-character identifier against USRIDnnI PIC X(8) without truncating")
-        void carriesANineCharacterIdentifierWithoutTruncating() {
-            final String tooLong = "ADMIN0019";
-            final UserRow only = row(BLANK, tooLong, "MARGARET", "GOLD", "A");
-            final UserSecurityDto page = new UserSecurityDto(TRANSACTION_NAME, null, null, PROGRAM_NAME,
-                    null, null, PAGE_ONE, tooLong, List.of(only), null);
+        @DisplayName("refuses a nine-character identifier against USRIDnnI PIC X(8) rather than truncating")
+        void refusesANineCharacterIdentifierRatherThanTruncating() {
+            final String tooLong = "ADMNUSR19";
 
-            assertThat(page.rows().get(0).userId())
-                    .as("silent truncation to the X(8) width would be an undetectable data change")
-                    .isEqualTo(tooLong)
-                    .hasSize(9);
-            assertThat(page.userIdInput()).isEqualTo(tooLong).hasSize(9);
+            assertThatThrownBy(() -> row(BLANK, tooLong, "FNAMEAA1", "LNM1", "A"))
+                    .as("silent truncation to the X(8) width would be an undetectable data change, so the "
+                            + "row constructor refuses the value instead")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("userId")
+                    .hasMessageContaining("PIC X(8)")
+                    .hasMessageContaining("9")
+                    .hasNoCause();
+
+            assertThatThrownBy(() -> new UserSecurityDto(TRANSACTION_NAME, null, null, PROGRAM_NAME,
+                    null, null, PAGE_ONE, tooLong, List.of(), null))
+                    .as("USRIDINI at :66 is X(8) too, so the search key is bounded on the same terms")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("userIdInput")
+                    .hasMessageContaining("PIC X(8)")
+                    .hasNoCause();
         }
 
         @Test
-        @DisplayName("carries a seventy-nine character error line against ERRMSGI PIC X(78) unchanged")
-        void carriesASeventyNineCharacterErrorLineUnchanged() {
-            final String tooLong = "E".repeat(79);
-            final UserSecurityDto page = new UserSecurityDto(null, null, null, null, null, null, null,
-                    null, List.of(), tooLong);
+        @DisplayName("refuses a value that names no user, and never quotes the offending value")
+        void refusalNeverQuotesTheOffendingValue() {
+            final String identifying = "FNAMEAA1-LNM1OVERLNG";
 
-            assertThat(page.errorMessage()).isEqualTo(tooLong).hasSize(79);
-            assertThat(page.errorMessage())
-                    .as("the declared width is 78; the over-long value is surfaced, not quietly clipped")
-                    .hasSizeGreaterThan(78);
+            assertThatThrownBy(() -> row(BLANK, identifying, "FNAMEAA1", "LNM1", "A"))
+                    .as("three of the five row components are directly identifying, so a failure message "
+                            + "must name the component and its length but never echo the value")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageNotContaining(identifying);
+        }
+
+        @Test
+        @DisplayName("refuses a seventy-nine character error line against ERRMSGI PIC X(78)")
+        void refusesASeventyNineCharacterErrorLine() {
+            final String tooLong = "E".repeat(79);
+
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, null, null, null, null,
+                    null, List.of(), tooLong))
+                    .as("the declared width is 78; a 79-character line is refused rather than quietly "
+                            + "clipped to fit the fixed-width screen field")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("errorMessage")
+                    .hasMessageContaining("PIC X(78)")
+                    .hasMessageContaining("79")
+                    .hasNoCause();
+
+            assertThatCode(() -> new UserSecurityDto(null, null, null, null, null, null, null, null,
+                    List.of(), "E".repeat(78)))
+                    .as("seventy-eight is the boundary and is accepted, so the bound is not off by one")
+                    .doesNotThrowAnyException();
         }
 
         @ParameterizedTest(name = "a non-numeric page number of [{0}] is carried verbatim")
@@ -1609,21 +1662,95 @@ final class UserSecurityDtoTest {
         }
 
         @Test
-        @DisplayName("carries an over-wide user type code rather than clipping it to one character")
-        void carriesAnOverWideUserTypeCode() {
-            final UserRow only = row("SS", SEEDED_USER_IDS.get(0), SEEDED_FIRST_NAMES.get(0),
-                    SEEDED_LAST_NAMES.get(0), "AU");
+        @DisplayName("refuses an over-wide user type code and an over-wide selector rather than clipping")
+        void refusesAnOverWideUserTypeCodeAndSelector() {
+            assertThatThrownBy(() -> row(BLANK, SEEDED_USER_IDS.get(0), SEEDED_FIRST_NAMES.get(0),
+                    SEEDED_LAST_NAMES.get(0), "AU"))
+                    .as("UTYPEnnI is X(1); a two-character code is refused rather than trimmed to fit")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("userType")
+                    .hasMessageContaining("PIC X(1)");
+
+            assertThatThrownBy(() -> row("SS", SEEDED_USER_IDS.get(0), SEEDED_FIRST_NAMES.get(0),
+                    SEEDED_LAST_NAMES.get(0), "A"))
+                    .as("SEL000nI is X(1), and a selector is screen-control state rather than a free string")
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("selectionFlag")
+                    .hasMessageContaining("PIC X(1)");
+        }
+
+        @Test
+        @DisplayName("a one-character code outside the A and U domain is still carried, because width is "
+                + "the only rule")
+        void aSingleCharacterCodeOutsideTheDomainIsStillCarried() {
+            final UserRow only = row("X", SEEDED_USER_IDS.get(0), SEEDED_FIRST_NAMES.get(0),
+                    SEEDED_LAST_NAMES.get(0), "Z");
             final UserRow carried = pageOf(List.of(only)).rows().get(0);
 
-            assertThat(carried.userType()).isEqualTo("AU").hasSize(2);
-            assertThat(carried.selectionFlag()).isEqualTo("SS").hasSize(2);
-            assertThat(UserType.fromCode(carried.userType()))
-                    .as("a value of any length other than one is out of domain and is not trimmed to fit")
-                    .isEmpty();
+            assertThat(carried.userType())
+                    .as("a stored code outside app/cpy/COCOM01Y.cpy:L27-L28 must surface as data rather "
+                            + "than as a serialisation failure, so the domain is deliberately not enforced")
+                    .isEqualTo("Z")
+                    .hasSize(1);
+            assertThat(carried.selectionFlag()).isEqualTo("X").hasSize(1);
+            assertThat(UserType.fromCode(carried.userType())).isEmpty();
+        }
+
+        @Test
+        @DisplayName("every one of the nine projection fields and five row fields is bounded, none omitted")
+        void everyTextualComponentIsBounded() {
+            assertThatThrownBy(() -> new UserSecurityDto("TOOLONG", null, null, null, null, null, null,
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("transactionName");
+            assertThatThrownBy(() -> new UserSecurityDto(null, "T".repeat(41), null, null, null, null, null,
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("title01");
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, "D".repeat(9), null, null, null, null,
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("currentDate");
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, "P".repeat(9), null, null, null,
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("programName");
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, null, "T".repeat(41), null, null,
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("title02");
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, null, null, "T".repeat(9), null,
+                    null, List.of(), null))
+                    .as("CURTIMEI is X(8) on this map even though COSGN00.CPY:L54 declares X(9)")
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("currentTime");
+            assertThatThrownBy(() -> new UserSecurityDto(null, null, null, null, null, null, "N".repeat(9),
+                    null, List.of(), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("pageNumber");
+            assertThatThrownBy(() -> row(null, null, "F".repeat(21), null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("firstName");
+            assertThatThrownBy(() -> row(null, null, null, "L".repeat(21), null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("lastName");
+        }
+
+        @Test
+        @DisplayName("absence, emptiness and marking survive the width guard untouched")
+        void absenceEmptinessAndMarkingSurviveTheWidthGuard() {
+            assertThatCode(() -> new UserSecurityDto(null, null, null, null, null, null, null, null,
+                    List.of(row(null, null, null, null, null)), null))
+                    .as("a bound on length must never turn into a requirement to be present")
+                    .doesNotThrowAnyException();
+
+            final UserRow empties = row("", "", "", "", "");
+            assertThat(empties.userId()).isEmpty();
+            assertThat(empties.selectionFlag()).isEmpty();
+
+            final UserRow marked = row(BLANK, "        ", " ".repeat(20), LOW_VALUES, BLANK);
+            assertThat(marked.userId()).isEqualTo("        ").hasSize(8);
+            assertThat(marked.firstName()).hasSize(20);
+            assertThat(marked.lastName())
+                    .as("a low-values marker is one byte, so it is within X(20) and passes untouched")
+                    .isEqualTo(LOW_VALUES);
         }
     }
 
-    /** Value semantics across the defensive copy. */
+    /**
+     * Value semantics across the defensive copy.
+     */
     @Nested
     @DisplayName("Value semantics")
     class ValueSemantics {
@@ -1674,6 +1801,232 @@ final class UserSecurityDtoTest {
             assertThat(succeeded.errorMessage()).isNull();
             assertThat(failed.errorMessage()).isEqualTo(BLANK);
             assertThat(succeeded).isNotEqualTo(failed);
+        }
+    }
+
+    /**
+     * The eleven-field user-delete screen of {@code app/cpy-bms/COUSR03.CPY}, which transaction {@code CU03}
+     * paints for confirmation before a delete. It is a sibling contract to the list, not a one-row list.
+     */
+    @Nested
+    @DisplayName("Delete screen: 11 input fields of COUSR3AI")
+    class DeleteScreen {
+
+        /** The eleven component names in map order, matching :24 through :84. */
+        private static final List<String> MAP_ORDER = List.of(
+                "transactionName", "title01", "currentDate", "programName", "title02", "currentTime",
+                "userIdInput", "firstName", "lastName", "userType", "errorMessage");
+
+        /** A fully populated screen, every field at or under its declared width. */
+        private static UserDeleteScreen populated() {
+            return new UserDeleteScreen("CU03", "Delete User", "01/02/26", "COUSR03C", "CardDemo",
+                    "10:20:30", "ADMNUSR1", "FNAMEAA1", "LNM1", "A", null);
+        }
+
+        @Test
+        @DisplayName("declares exactly the eleven map fields, in the order the copybook declares them")
+        void declaresExactlyTheElevenMapFieldsInMapOrder() {
+            assertThat(componentNamesOf(UserDeleteScreen.class))
+                    .as("app/cpy-bms/COUSR03.CPY declares eleven 02-level input fields between the "
+                            + "01 COUSR3AI group at :17 and the 01 COUSR3AO redefinition at :85, at :24, "
+                            + ":30, :36, :42, :48, :54, :60, :66, :72, :78 and :84")
+                    .containsExactlyElementsOf(MAP_ORDER);
+        }
+
+        @Test
+        @DisplayName("the field-count arithmetic is derived from its parts and totals eleven")
+        void theFieldCountArithmeticTotalsEleven() {
+            assertThat(UserDeleteScreen.HEADER_FIELD_COUNT).isEqualTo(6);
+            assertThat(UserDeleteScreen.DETAIL_FIELD_COUNT)
+                    .as("four, not the list row's five: this screen declares no selection marker")
+                    .isEqualTo(4)
+                    .isEqualTo(UserSecurityDto.ROW_FIELD_COUNT - 1);
+            assertThat(UserDeleteScreen.MAP_FIELD_COUNT)
+                    .isEqualTo(11)
+                    .isEqualTo(UserDeleteScreen.HEADER_FIELD_COUNT
+                            + UserDeleteScreen.DETAIL_FIELD_COUNT + 1)
+                    .isEqualTo(MAP_ORDER.size());
+            assertThat(UserDeleteScreen.MAP_FIELD_COUNT)
+                    .as("eleven fields on COUSR03.CPY against fifty-nine on COUSR00.CPY - two different "
+                            + "maps, two different facts, so the constants must not be conflated")
+                    .isNotEqualTo(UserSecurityDto.MAP_FIELD_COUNT);
+        }
+
+        @Test
+        @DisplayName("is not a one-row list: it declares no selector and reuses no row type")
+        void isNotAOneRowList() {
+            assertThat(componentNamesOf(UserDeleteScreen.class))
+                    .as("app/cpy-bms/COUSR03.CPY declares no SEL field: the user being deleted is the one "
+                            + "the operator keyed, so a selector here would be an invented field")
+                    .doesNotContain("selectionFlag");
+
+            assertThat(UserDeleteScreen.class.getInterfaces())
+                    .as("it shares no supertype with UserRow, so the two contracts cannot drift together")
+                    .isEmpty();
+            assertThat(componentNamesOf(UserRow.class))
+                    .as("the list row generates USRIDnnI, FNAMEnnI, LNAMEnnI, UTYPEnnI plus a selector, "
+                            + "against this map's USRIDINI, FNAMEI, LNAMEI and USRTYPEI")
+                    .hasSize(UserSecurityDto.ROW_FIELD_COUNT)
+                    .contains("selectionFlag");
+        }
+
+        @Test
+        @DisplayName("carries each field at its declared PIC width, byte-exactly")
+        void carriesEachFieldAtItsDeclaredWidth() {
+            final UserDeleteScreen screen = new UserDeleteScreen(
+                    "X".repeat(UserSecurityDto.TRANSACTION_NAME_WIDTH),
+                    "X".repeat(UserSecurityDto.TITLE_WIDTH),
+                    "X".repeat(UserSecurityDto.DATE_WIDTH),
+                    "X".repeat(UserSecurityDto.PROGRAM_NAME_WIDTH),
+                    "X".repeat(UserSecurityDto.TITLE_WIDTH),
+                    "X".repeat(UserSecurityDto.TIME_WIDTH),
+                    "X".repeat(UserSecurityDto.USER_ID_WIDTH),
+                    "X".repeat(UserSecurityDto.NAME_WIDTH),
+                    "X".repeat(UserSecurityDto.NAME_WIDTH),
+                    "X".repeat(UserSecurityDto.USER_TYPE_WIDTH),
+                    "X".repeat(UserSecurityDto.ERROR_MESSAGE_WIDTH));
+
+            assertThat(screen.transactionName()).hasSize(4);
+            assertThat(screen.title01()).hasSize(40);
+            assertThat(screen.currentDate()).hasSize(8);
+            assertThat(screen.programName()).hasSize(8);
+            assertThat(screen.title02()).hasSize(40);
+            assertThat(screen.currentTime())
+                    .as("CURTIMEI is X(8) at COUSR03.CPY:54, matching COUSR00.CPY:54 and differing from "
+                            + "the X(9) of COSGN00.CPY:54")
+                    .hasSize(8);
+            assertThat(screen.userIdInput()).hasSize(8);
+            assertThat(screen.firstName()).hasSize(20);
+            assertThat(screen.lastName()).hasSize(20);
+            assertThat(screen.userType()).hasSize(1);
+            assertThat(screen.errorMessage()).hasSize(78);
+        }
+
+        @Test
+        @DisplayName("refuses every over-wide field rather than truncating it")
+        void refusesEveryOverWideField() {
+            assertThatThrownBy(() -> new UserDeleteScreen("TOOLONG", null, null, null, null, null, null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("transactionName");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, "T".repeat(41), null, null, null, null, null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("title01");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, "D".repeat(9), null, null, null, null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("currentDate");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, "P".repeat(9), null, null, null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("programName");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, "T".repeat(41), null, null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("title02");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, "T".repeat(9), null,
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("currentTime");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, null, "ADMNUSR19",
+                    null, null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("userIdInput");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, null, null,
+                    "F".repeat(21), null, null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("firstName");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, null, null, null,
+                    "L".repeat(21), null, null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("lastName");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, null, null, null,
+                    null, "AU", null))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("userType");
+            assertThatThrownBy(() -> new UserDeleteScreen(null, null, null, null, null, null, null, null,
+                    null, null, "E".repeat(79)))
+                    .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("errorMessage");
+        }
+
+        @Test
+        @DisplayName("absent, empty and marked stay distinct, and every field may be absent")
+        void absentEmptyAndMarkedStayDistinct() {
+            assertThatCode(() -> new UserDeleteScreen(null, null, null, null, null, null, null, null, null,
+                    null, null))
+                    .as("a screen painted before the operator keyed anything has every field absent")
+                    .doesNotThrowAnyException();
+
+            final UserDeleteScreen absent = new UserDeleteScreen(null, null, null, null, null, null, null,
+                    null, null, null, null);
+            final UserDeleteScreen empty = new UserDeleteScreen(null, null, null, null, null, null, "",
+                    null, null, null, null);
+            final UserDeleteScreen marked = new UserDeleteScreen(null, null, null, null, null, null, BLANK,
+                    null, null, null, null);
+
+            assertThat(absent.userIdInput()).isNull();
+            assertThat(empty.userIdInput()).isEmpty();
+            assertThat(marked.userIdInput()).isEqualTo(BLANK);
+            assertThat(absent).isNotEqualTo(empty);
+            assertThat(empty).isNotEqualTo(marked);
+        }
+
+        @Test
+        @DisplayName("carries no credential field and declares no credential accessor")
+        void carriesNoCredentialField() {
+            assertThat(componentNamesOf(UserDeleteScreen.class))
+                    .as("app/cpy-bms/COUSR03.CPY declares no password field anywhere across its eleven "
+                            + "fields; only COUSR01.CPY:78 and COUSR02.CPY:78 do")
+                    .noneMatch(UserSecurityDtoTest::isCredentialAccessorName);
+
+            for (final Method declared : UserDeleteScreen.class.getDeclaredMethods()) {
+                assertThat(isCredentialAccessorName(declared.getName()))
+                        .as("UserDeleteScreen.%s() must not be able to read a credential",
+                                declared.getName())
+                        .isFalse();
+            }
+        }
+
+        @Test
+        @DisplayName("declares no self-delete guard, because app/cbl/COUSR03C.cbl declares none")
+        void declaresNoSelfDeleteGuard() {
+            final List<String> members = new ArrayList<>(componentNamesOf(UserDeleteScreen.class));
+            for (final Method declared : UserDeleteScreen.class.getDeclaredMethods()) {
+                members.add(declared.getName());
+            }
+
+            assertThat(members)
+                    .as("COUSR03C never compares the target identifier against the signed-on identifier, "
+                            + "so no field, flag or accessor here may express such a guard - parity is the "
+                            + "contract and adding one would be a behaviour change")
+                    .noneMatch(name -> {
+                        final String folded = name.toLowerCase(Locale.ROOT);
+                        return folded.contains("signedon") || folded.contains("selfdelete")
+                                || folded.contains("currentuser") || folded.contains("sameuser");
+                    });
+        }
+
+        @Test
+        @DisplayName("its rendering names only the program, never the user it is about to delete")
+        void renderingNamesOnlyTheProgram() {
+            final String rendering = populated().toString();
+
+            assertThat(rendering)
+                    .as("this is the code path where a failure is most likely to be logged, so the three "
+                            + "identifying components must not appear")
+                    .contains("COUSR03C")
+                    .doesNotContain("ADMNUSR1")
+                    .doesNotContain("FNAMEAA1")
+                    .doesNotContain("LNM1");
+        }
+
+        @Test
+        @DisplayName("carries no annotation, so no class-level constraint fires unconditionally")
+        void carriesNoAnnotation() {
+            assertThat(UserDeleteScreen.class.getDeclaredAnnotations())
+                    .as("an outbound projection carries no declarative constraint; its widths are enforced "
+                            + "in the constructor, where no validator has to be invoked for them to hold")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("is a value: equal contents are equal and share a hash code")
+        void isAValue() {
+            assertThat(populated()).isEqualTo(populated()).hasSameHashCodeAs(populated());
+            assertThat(populated())
+                    .isNotEqualTo(new UserDeleteScreen("CU03", "Delete User", "01/02/26", "COUSR03C",
+                            "CardDemo", "10:20:30", "ADMNUSR2", "FNAMEAA1", "LNM1", "A", null));
         }
     }
 }

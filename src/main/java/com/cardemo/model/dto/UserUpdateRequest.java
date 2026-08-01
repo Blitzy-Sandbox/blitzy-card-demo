@@ -29,35 +29,29 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Size;
 
 /**
- * Inbound request payload for the user-update transaction, translated field-for-field from the BMS symbolic
- * map {@code app/cpy-bms/COUSR02.CPY}, which declares <strong>exactly 12 input fields</strong>. The count is
+ * Inbound request payload for the user-update transaction, translated field-for-field from the BMS symbolic map
+ * {@code app/cpy-bms/COUSR02.CPY}, which declares <strong>exactly 12 input fields</strong>. The count is
  * verified rather than assumed: the input group {@code 01 COUSR2AI} begins at line 17 and its last data field
  * {@code ERRMSGI} sits at line 90, after which the output group {@code 01 COUSR2AO REDEFINES COUSR2AI} begins
  * at line 91. The behavioural counterpart is {@code app/cbl/COUSR02C.cbl}, the CICS program whose declared
  * function is to update a user in the {@code USRSEC} file, and whose persisted record layout is
  * {@code app/cpy/CSUSR01Y.cpy}.
  *
- * <p>This type is a pure data holder. It performs no hashing, no change detection, no normalisation, no
- * mapping and no arithmetic, because every one of those is a service concern. In particular the change
- * detection that {@code app/cbl/COUSR02C.cbl} performs at lines 219 to 234 - comparing the submitted first
- * name, last name, password and user type against the record just read and setting {@code USR-MODIFIED-YES}
- * when any of them differs - belongs to the update service and is deliberately absent here.</p>
+ * <p>This type is a pure data holder. It performs no hashing, no change detection, no normalisation, no mapping
+ * and no arithmetic, because every one of those is a service concern. In particular the change detection that
+ * {@code app/cbl/COUSR02C.cbl} performs at lines 219 to 234 - comparing the submitted first name, last name,
+ * password and user type against the record just read and setting {@code USR-MODIFIED-YES} when any of them
+ * differs - belongs to the update service and is deliberately absent here.
  *
- * <p><strong>Two divergences from the sibling add map, both preserved.</strong> The add map
- * {@code app/cpy-bms/COUSR01.CPY} also carries 12 input fields, but they are not the same 12:</p>
- * <ul>
- *   <li><em>Field order differs.</em> This map leads with the identifier, {@code USRIDINI} at
- *       {@code app/cpy-bms/COUSR02.CPY:60}, which is appropriate for a read-modify-write flow that must
- *       locate the record before it can present anything. The add map places the names first,
- *       {@code FNAMEI} at {@code app/cpy-bms/COUSR01.CPY:60} and {@code LNAMEI} at
- *       {@code app/cpy-bms/COUSR01.CPY:66}, and the identifier third at
- *       {@code app/cpy-bms/COUSR01.CPY:72}. Each map keeps its own order; the two are never harmonised.</li>
- *   <li><em>The identifier field name differs.</em> This map declares the input-suffixed
- *       {@code USRIDINI}, which is also what the user-list map declares at
- *       {@code app/cpy-bms/COUSR00.CPY:66} and the delete map at {@code app/cpy-bms/COUSR03.CPY:60}. The
- *       add map alone declares {@code USERIDI}, so the add map is the outlier and {@code USRIDINI} is the
- *       correct citation for this type.</li>
- * </ul>
+ * <p>The user identifier is declared under a different name and at a different position on each user map:
+ * {@code USRIDINI} at {@code app/cpy-bms/COUSR02.CPY:60}, ahead of the two name fields, but {@code USERIDI} at
+ * {@code app/cpy-bms/COUSR01.CPY:72}, behind them. <strong>No shared base type, interface or mixin therefore
+ * exists across the user data transfer objects</strong>; such an abstraction would be factually wrong rather
+ * than merely redundant. The same reasoning applies to the six recurring terminal header fields, which are
+ * declared
+ * inline on every map rather than extracted: {@code CURTIMEI} is {@code PIC X(8)} here at line 54, but
+ * {@code app/cpy-bms/COSGN00.CPY:54} alone declares it {@code PIC X(9)}, so a shared header helper could not
+ * carry a single correct width.
  *
  * <p>Because the order and the name genuinely differ, <strong>no shared base type, interface or mixin
  * exists across the user data transfer objects</strong>; such an abstraction would be factually wrong
@@ -212,8 +206,8 @@ import jakarta.validation.constraints.Size;
  * <ul>
  *   <li><em>High</em> - {@code app/cbl/COUSR02C.cbl:169} echoes the stored plaintext password onto the
  *       screen. Remediation applied: the password is write-only here and no response type carries it.</li>
- *   <li><em>Medium</em> - the input-field census. The specification prose totals 460 input fields across
- *       the 17 symbolic maps, while its own per-map table sums to 440 and a direct recount of
+ *   <li><em>Medium, closed</em> - the input-field census. Prior-generation plan prose totalled 460 input
+ *       fields across the 17 symbolic maps, while its own per-map table summed to 440 and a direct recount of
  *       {@code app/cpy-bms} yields 441. The single discrepancy is {@code app/cpy-bms/COACTVW.CPY:60}, which
  *       declares {@code ACCTSIDI PIC 99999999999} longhand, so any count driven by a parenthesised picture
  *       clause misses it. This map contributes 12 fields under every reading, so nothing here changes;
@@ -309,27 +303,15 @@ public record UserUpdateRequest(
 
     /**
      * Rejects any JSON property that is not one of the twelve fields declared by
-     * {@code app/cpy-bms/COUSR02.CPY}, so that a request carrying an unexpected property fails loudly
-     * instead of being bound with that property silently discarded.
+     * {@code app/cpy-bms/COUSR02.CPY}, so that a request carrying an unexpected property fails loudly instead
+     * of being bound with that property silently discarded.
      *
-     * <p>This guard exists because the declarative alternative does not hold. Jackson's type-level
-     * unknown-property setting is consulted only when the object mapper still has failure on unknown
-     * properties enabled, and the framework disables it by default; a type-level annotation would
-     * therefore be inert here, which is worse than absent because it would read as protection that is not
-     * in force. An always-effective rejection makes the behaviour independent of mapper configuration.</p>
-     *
-     * <p>Neither the offending property name nor its value is reproduced in the thrown message. Both are
-     * untrusted input, and copying either into a message that reaches a log record would allow a caller to
-     * forge log content; the same rule is what keeps a rejected credential out of the logs. The message
-     * instead names this type and its source map, which is what a caller needs in order to correct the
-     * payload. Nothing is stored: this type is immutable, and the method exists only to fail.</p>
-     *
-     * @param name  the unrecognised property name supplied by the caller, deliberately neither stored nor
-     *              reproduced in the thrown message
+     * @param name the unrecognised property name supplied by the caller, deliberately neither stored nor
+     * reproduced in the thrown message
      * @param value the unrecognised property value supplied by the caller, deliberately neither stored nor
-     *              reproduced in the thrown message
+     * reproduced in the thrown message
      * @throws IllegalArgumentException always, because an unrecognised property is never acceptable on this
-     *                                 request
+     * request
      */
     @JsonAnySetter
     void rejectUnrecognisedProperty(String name, Object value) {
@@ -341,18 +323,6 @@ public record UserUpdateRequest(
 
     /**
      * Returns a rendering that is safe to place in a log record or an exception message.
-     *
-     * <p>An override is required rather than merely tidy. The compiler-generated rendering for a record
-     * lists every component, which would put the presented credential and both personal names into any log
-     * line that interpolated this object - precisely the disclosure this type exists to prevent. Only the
-     * user identifier and the originating program name are emitted, both of which the source itself
-     * displayed in clear. The password is never emitted, not even masked or truncated, because a mask still
-     * discloses length; the personal names are omitted as well, since they are personal data with no
-     * diagnostic value.</p>
-     *
-     * <p>Equality and hash code are left as the compiler generates them. They consider every component,
-     * including the password, which is correct for value semantics and discloses nothing, because neither
-     * renders a value.</p>
      *
      * @return a rendering containing only the user identifier and the originating program name
      */

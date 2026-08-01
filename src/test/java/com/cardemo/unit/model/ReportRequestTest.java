@@ -33,10 +33,10 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardemo.model.dto.ReportRequest;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
 import java.lang.annotation.Annotation;
@@ -50,13 +50,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneOffset;
 import java.time.temporal.Temporal;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -182,12 +182,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       pass or fail depending on the day the suite runs. No {@code now()} overload, no
  *       {@code System.currentTimeMillis()}, no default zone and no default locale appears anywhere in
  *       this file; every zone is stated and every format uses {@link Locale#ROOT}.</li>
- *   <li><strong>Bean validation runs for real, and is instance scoped.</strong> A single
- *       {@link ValidatorFactory} is opened once per test class instance and closed afterwards, under
- *       {@link TestInstance.Lifecycle#PER_CLASS} so the lifecycle hooks are instance methods. There is
- *       consequently no static mutable field, no shared cache and nothing a test could perturb for
- *       another. Hibernate Validator 8.0.3 and an expression language implementation arrive on the
- *       test classpath through the project's validation starter; nothing is added for this file.</li>
+ *   <li><strong>Bean validation runs for real, through one shared validator.</strong> Every violation
+ *       set in this class comes from {@link ValidationSupport}, which owns a single immutable,
+ *       thread-safe validator for the whole test JVM. This class therefore declares no validator field
+ *       and no validation lifecycle hook of its own, and holds no static mutable field, no shared cache
+ *       and nothing a test could perturb for another. Hibernate Validator 8.0.3 and an expression
+ *       language implementation arrive on the test classpath through the project's validation starter;
+ *       nothing is added for this file.</li>
  *   <li><strong>Mockito is deliberately unused.</strong> {@code mockito-core} 5.17.0 is available and
  *       its strict stubs policy would apply, but {@link ReportRequest} has no collaborator to double
  *       and the oracles are pure functions of their arguments. Introducing a mock here would fabricate
@@ -217,27 +218,32 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>6. Findings, classified</h2>
  *
- * <p><strong>Medium - the plan describes the monthly period as month to date. The source computes a
- * full calendar month.</strong> {@code app/cbl/CORPT00C.cbl:L217-L219} sets the start to the current
+ * <p><strong>Medium, closed - prior-generation plan prose described the monthly period as month to date.
+ * The source computes a full calendar month.</strong> {@code app/cbl/CORPT00C.cbl:L217-L219} sets the
+ * start to the current
  * year and month with day {@code '01'}. {@code :L223-L230} then sets the day to 1, adds one to the
  * month, rolls the year when the month passes 12, and subtracts one day from the packed year month
  * day value. Because {@code app/cpy/CSDAT01Y.cpy:L23} declares {@code WS-CURDATE-N REDEFINES
  * WS-CURDATE PIC 9(08)} over the very year, month and day subfields that {@code :L223-L227} has just
  * overwritten, the moves at {@code :L232-L234} emit the <strong>last day of the current month</strong>
  * - not the clock's day. The December rollover settles it: month 13 becomes January of the following
- * year, and one day less is the 31st of December of the original year. The plan's own yearly period
- * being a full calendar year is the consistent reading. <em>Remediation</em>: the service must
- * implement {@code :L223-L234}, not the prose. Recorded here because the prose and the source
- * disagree and the source is the authority.</p>
+ * year, and one day less is the 31st of December of the original year. That prose's own yearly period
+ * being a full calendar year is the consistent reading, and the current
+ * {@code docs/technical-specifications.md} now describes a full calendar month.
+ * <em>Remediation still owed by the service layer</em>: {@code ReportSubmissionService} must implement
+ * {@code :L223-L234}, not the prose; that bean is <strong>not available</strong>, so the obligation is
+ * recorded here rather than asserted as met.</p>
  *
- * <p><strong>Medium - the plan totals 460 symbolic map input fields.</strong> This map's own figure of
- * 17 is correct in both the plan and on disk, so nothing here is affected; the corpus total needs
- * correcting in the evidence artefacts. <em>Remediation</em>: recount from the input groups.</p>
+ * <p><strong>Medium, closed - prior-generation plan prose totalled 460 symbolic map input fields.</strong>
+ * This map's own figure of 17 was correct in that prose and on disk, so nothing here is affected; the
+ * corpus total now reads <strong>441</strong> in {@code docs/technical-specifications.md}, recounted from
+ * the input groups and verified on 1 August 2026.</p>
  *
- * <p><strong>Medium - the plan describes eighteen job deck card images.</strong>
+ * <p><strong>Medium, closed - prior-generation plan prose described eighteen job deck card images.</strong>
  * {@code app/cbl/CORPT00C.cbl:L83-L125} declares <strong>seventeen</strong>: fourteen plain
- * {@code PIC X(80)} literals plus the three named multi part groups. <em>Remediation</em>: correct the
- * count where the deck is described. No impact here, since this type carries no card array.</p>
+ * {@code PIC X(80)} literals plus the three named multi part groups. The specification no longer states a
+ * card count at all - it describes the deck as a run of eighty-byte literal constants - so nothing there
+ * now contradicts the seventeen counted here. No impact on this type, which carries no card array.</p>
  *
  * <p><strong>Low - the confirmation gate is not the billing screen's gate.</strong> Two differences,
  * both verified. {@code app/cbl/CORPT00C.cbl:L464-L474} handles blank <em>outside</em> the
@@ -295,8 +301,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <ul>
  *   <li><em>The build fails on something trivial.</em> Compilation runs with {@code -Xlint:all},
- *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one unused
- *       import, raw type or deprecation is a hard error. Reproduce with {@code ./mvnw -q test-compile}.</li>
+ *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one raw type or
+ *       one deprecation is a hard error. An unused import is not - {@code javac} 25.0.3 publishes no lint
+ *       key for one - so that is a review matter. Reproduce with {@code ./mvnw -q test-compile}.</li>
  *   <li><em>A monthly assertion fails only in some months.</em> Month to date was implemented instead
  *       of the full calendar month, or a wall clock leaked in. The December and February cases fail
  *       first.</li>
@@ -324,13 +331,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("ReportRequest - app/cpy-bms/CORPT00.CPY + app/cbl/CORPT00C.cbl @ 7756d89")
 class ReportRequestTest {
 
-    // ================================================================================================
-    // The field contract, taken component by component from app/cpy-bms/CORPT00.CPY, group CORPT0AI.
-    // Names are the record component names; widths are the PIC clause of the data field. Both lists
-    // are indexed identically and are asserted against reflection rather than trusted.
-    // ================================================================================================
-
-    /** The 17 component names in symbolic map declaration order, {@code app/cpy-bms/CORPT00.CPY:24-120}. */
+    /**
+     * The 17 component names in symbolic map declaration order, {@code app/cpy-bms/CORPT00.CPY:24-120}.
+     */
     private static final List<String> COMPONENT_NAMES = List.of(
             "transactionName",  // 1  TRNNAMEI  PIC X(4)   :24  header
             "title01",          // 2  TITLE01I  PIC X(40)  :30  header
@@ -350,65 +353,94 @@ class ReportRequestTest {
             "confirmation",     // 16 CONFIRMI  PIC X(1)  :114  four state handshake
             "errorMessage");    // 17 ERRMSGI   PIC X(78) :120  screen message line
 
-    /** The declared width of each component above, in the same order. */
+    /**
+     * The declared width of each component above, in the same order.
+     */
     private static final List<Integer> COMPONENT_WIDTHS =
             List.of(4, 40, 8, 8, 40, 8, 1, 1, 1, 2, 2, 4, 2, 2, 4, 1, 78);
 
-    /** The six recurring header fields, declared inline because {@code CURTIMEI} widths diverge. */
+    /**
+     * The six recurring header fields, declared inline because {@code CURTIMEI} widths diverge.
+     */
     private static final List<String> HEADER_COMPONENT_NAMES =
             List.of("transactionName", "title01", "currentDate", "programName", "title02", "currentTime");
 
-    /** The three independent one character period selectors, {@code app/cpy-bms/CORPT00.CPY:60,66,72}. */
+    /**
+     * The three independent one character period selectors, {@code app/cpy-bms/CORPT00.CPY:60,66,72}.
+     */
     private static final List<String> SELECTOR_COMPONENT_NAMES =
             List.of("monthlySelected", "yearlySelected", "customSelected");
 
     /**
-     * The six custom range components in <strong>month, day, year</strong> declaration order - which is
-     * also the emptiness cascade order at {@code app/cbl/CORPT00C.cbl:L259-L300}, not year month day.
+     * The six custom range components in <strong>month, day, year</strong> declaration order - which is also
+     * the emptiness cascade order at {@code app/cbl/CORPT00C.cbl:L259-L300}, not year month day.
      */
     private static final List<String> CUSTOM_RANGE_COMPONENT_NAMES = List.of(
             "startDateMonth", "startDateDay", "startDateYear",
             "endDateMonth", "endDateDay", "endDateYear");
 
-    // ================================================================================================
-    // Message literals. Every one is transcribed byte for byte from app/cbl/CORPT00C.cbl. They are
-    // compared byte for byte by the parity gates, so the capitalisation is reproduced exactly as
-    // written - including the upper case NOT of the emptiness family and the lower case "date" of the
-    // two whole date messages. Do not normalise.
-    // ================================================================================================
-
-    /** {@code app/cbl/CORPT00C.cbl:L261}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L261}.
+     */
     private static final String START_DATE_MONTH_EMPTY = "Start Date - Month can NOT be empty...";
-    /** {@code app/cbl/CORPT00C.cbl:L268}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L268}.
+     */
     private static final String START_DATE_DAY_EMPTY = "Start Date - Day can NOT be empty...";
-    /** {@code app/cbl/CORPT00C.cbl:L275}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L275}.
+     */
     private static final String START_DATE_YEAR_EMPTY = "Start Date - Year can NOT be empty...";
-    /** {@code app/cbl/CORPT00C.cbl:L282}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L282}.
+     */
     private static final String END_DATE_MONTH_EMPTY = "End Date - Month can NOT be empty...";
-    /** {@code app/cbl/CORPT00C.cbl:L289}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L289}.
+     */
     private static final String END_DATE_DAY_EMPTY = "End Date - Day can NOT be empty...";
-    /** {@code app/cbl/CORPT00C.cbl:L296}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L296}.
+     */
     private static final String END_DATE_YEAR_EMPTY = "End Date - Year can NOT be empty...";
 
-    /** {@code app/cbl/CORPT00C.cbl:L331}, guarded by {@code :L329-L330}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L331}, guarded by {@code :L329-L330}.
+     */
     private static final String START_DATE_MONTH_INVALID = "Start Date - Not a valid Month...";
-    /** {@code app/cbl/CORPT00C.cbl:L340}, guarded by {@code :L338-L339}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L340}, guarded by {@code :L338-L339}.
+     */
     private static final String START_DATE_DAY_INVALID = "Start Date - Not a valid Day...";
-    /** {@code app/cbl/CORPT00C.cbl:L348}, guarded by {@code :L347} - no range test on the year. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L348}, guarded by {@code :L347} - no range test on the year.
+     */
     private static final String START_DATE_YEAR_INVALID = "Start Date - Not a valid Year...";
-    /** {@code app/cbl/CORPT00C.cbl:L357}, guarded by {@code :L355-L356}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L357}, guarded by {@code :L355-L356}.
+     */
     private static final String END_DATE_MONTH_INVALID = "End Date - Not a valid Month...";
-    /** {@code app/cbl/CORPT00C.cbl:L366}, guarded by {@code :L364-L365}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L366}, guarded by {@code :L364-L365}.
+     */
     private static final String END_DATE_DAY_INVALID = "End Date - Not a valid Day...";
-    /** {@code app/cbl/CORPT00C.cbl:L374}, guarded by {@code :L373}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L374}, guarded by {@code :L373}.
+     */
     private static final String END_DATE_YEAR_INVALID = "End Date - Not a valid Year...";
 
-    /** {@code app/cbl/CORPT00C.cbl:L400} - lower case {@code date}, deliberately unlike the tier above. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L400} - lower case {@code date}, deliberately unlike the tier above.
+     */
     private static final String START_DATE_WHOLE_INVALID = "Start Date - Not a valid date...";
-    /** {@code app/cbl/CORPT00C.cbl:L420} - lower case {@code date}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L420} - lower case {@code date}.
+     */
     private static final String END_DATE_WHOLE_INVALID = "End Date - Not a valid date...";
 
-    /** All fourteen custom range literals, in source order. */
+    /**
+     * All fourteen custom range literals, in source order.
+     */
     private static final List<String> CUSTOM_RANGE_MESSAGES = List.of(
             START_DATE_MONTH_EMPTY, START_DATE_DAY_EMPTY, START_DATE_YEAR_EMPTY,
             END_DATE_MONTH_EMPTY, END_DATE_DAY_EMPTY, END_DATE_YEAR_EMPTY,
@@ -416,140 +448,182 @@ class ReportRequestTest {
             END_DATE_MONTH_INVALID, END_DATE_DAY_INVALID, END_DATE_YEAR_INVALID,
             START_DATE_WHOLE_INVALID, END_DATE_WHOLE_INVALID);
 
-    /** {@code app/cbl/CORPT00C.cbl:L438-L439} - the {@code WHEN OTHER} branch, no selector ticked. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L438-L439} - the {@code WHEN OTHER} branch, no selector ticked.
+     */
     private static final String NO_REPORT_TYPE_SELECTED = "Select a report type to print report...";
 
-    /** {@code app/cbl/CORPT00C.cbl:L531-L532}, inside the misspelled {@code WIRTE-JOBSUB-TDQ}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L531-L532}, inside the misspelled {@code WIRTE-JOBSUB-TDQ}.
+     */
     private static final String QUEUE_WRITE_FAILED = "Unable to Write TDQ (JOBS)...";
 
-    /** {@code app/cbl/COBIL00C.cbl:L187} - the billing screen's wording, cited only for contrast. */
+    /**
+     * {@code app/cbl/COBIL00C.cbl:L187} - the billing screen's wording, cited only for contrast.
+     */
     private static final String BILLING_SCREEN_INVALID_CONFIRMATION =
             "Invalid value. Valid values are (Y/N)...";
 
-    // ================================================================================================
-    // Literals and widths from the working storage and linkage declarations.
-    // ================================================================================================
-
-    /** {@code app/cbl/CORPT00C.cbl:L72} - {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L72} - {@code WS-DATE-FORMAT PIC X(10) VALUE 'YYYY-MM-DD'}.
+     */
     private static final String DATE_FORMAT_LITERAL = "YYYY-MM-DD";
 
-    /** {@code app/cbl/CORPT00C.cbl:L214} - the monthly report name, before padding. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L214} - the monthly report name, before padding.
+     */
     private static final String MONTHLY_LITERAL = "Monthly";
-    /** {@code app/cbl/CORPT00C.cbl:L240} - the yearly report name, before padding. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L240} - the yearly report name, before padding.
+     */
     private static final String YEARLY_LITERAL = "Yearly";
-    /** {@code app/cbl/CORPT00C.cbl:L433} - the custom report name, before padding. It IS set. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L433} - the custom report name, before padding. It IS set.
+     */
     private static final String CUSTOM_LITERAL = "Custom";
 
-    /** {@code app/cbl/CORPT00C.cbl:L58} - {@code WS-REPORT-NAME PIC X(10)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L58} - {@code WS-REPORT-NAME PIC X(10)}.
+     */
     private static final int REPORT_NAME_WIDTH = 10;
-    /** {@code app/cbl/CORPT00C.cbl:L39} - {@code WS-MESSAGE PIC X(80)}, two bytes wider than X(78). */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L39} - {@code WS-MESSAGE PIC X(80)}, two bytes wider than X(78).
+     */
     private static final int MESSAGE_WORK_AREA_WIDTH = 80;
-    /** {@code app/cpy-bms/CORPT00.CPY:120} - {@code ERRMSGI PIC X(78)}, the width on the wire. */
+    /**
+     * {@code app/cpy-bms/CORPT00.CPY:120} - {@code ERRMSGI PIC X(78)}, the width on the wire.
+     */
     private static final int SCREEN_MESSAGE_WIDTH = 78;
 
-    /** {@code app/cbl/CORPT00C.cbl:L61,L67} - the year subfield of each assembled date. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L61,L67} - the year subfield of each assembled date.
+     */
     private static final int ASSEMBLED_YEAR_WIDTH = 4;
-    /** {@code app/cbl/CORPT00C.cbl:L63,L65,L69,L71} - the month and day subfields. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L63,L65,L69,L71} - the month and day subfields.
+     */
     private static final int ASSEMBLED_MONTH_DAY_WIDTH = 2;
-    /** {@code app/cbl/CORPT00C.cbl:L62,L64,L68,L70} - {@code FILLER PIC X(01) VALUE '-'}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L62,L64,L68,L70} - {@code FILLER PIC X(01) VALUE '-'}.
+     */
     private static final String ASSEMBLED_DATE_SEPARATOR = "-";
-    /** 4 + 1 + 2 + 1 + 2, the total width of {@code WS-START-DATE} and {@code WS-END-DATE}. */
+    /**
+     * 4 + 1 + 2 + 1 + 2, the total width of {@code WS-START-DATE} and {@code WS-END-DATE}.
+     */
     private static final int ASSEMBLED_DATE_WIDTH = 10;
-    /** The rendering of an assembled date whose components are still at their {@code VALUE SPACES}. */
+    /**
+     * The rendering of an assembled date whose components are still at their {@code VALUE SPACES}.
+     */
     private static final String UNPOPULATED_ASSEMBLED_DATE = "    -  -  ";
 
-    /** {@code app/cbl/CORPT00C.cbl:L130} - {@code CSUTLDTC-DATE PIC X(10)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L130} - {@code CSUTLDTC-DATE PIC X(10)}.
+     */
     private static final int CSUTLDTC_DATE_WIDTH = 10;
-    /** {@code app/cbl/CORPT00C.cbl:L131} - {@code CSUTLDTC-DATE-FORMAT PIC X(10)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L131} - {@code CSUTLDTC-DATE-FORMAT PIC X(10)}.
+     */
     private static final int CSUTLDTC_FORMAT_WIDTH = 10;
-    /** {@code app/cbl/CORPT00C.cbl:L133} - {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L133} - {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)}.
+     */
     private static final int CSUTLDTC_SEVERITY_WIDTH = 4;
-    /** {@code app/cbl/CORPT00C.cbl:L134} - the unnamed {@code FILLER PIC X(11)} gap. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L134} - the unnamed {@code FILLER PIC X(11)} gap.
+     */
     private static final int CSUTLDTC_GAP_WIDTH = 11;
-    /** {@code app/cbl/CORPT00C.cbl:L135} - {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L135} - {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)}.
+     */
     private static final int CSUTLDTC_MESSAGE_NUMBER_WIDTH = 4;
-    /** {@code app/cbl/CORPT00C.cbl:L136} - {@code CSUTLDTC-RESULT-MSG PIC X(61)}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L136} - {@code CSUTLDTC-RESULT-MSG PIC X(61)}.
+     */
     private static final int CSUTLDTC_MESSAGE_WIDTH = 61;
-    /** {@code app/cbl/CORPT00C.cbl:L396} - the severity code that means "accepted". */
     private static final String CSUTLDTC_ACCEPTED_SEVERITY = "0000";
-    /** {@code app/cbl/CORPT00C.cbl:L399,L419} - the one message number tolerated despite a severity. */
     private static final String CSUTLDTC_TOLERATED_MESSAGE_NUMBER = "2513";
 
-    /** {@code app/csd/CARDDEMO.CSD:L502} - {@code RECORDSIZE(80)} on {@code DEFINE TDQUEUE(JOBS)}. */
+    /**
+     * {@code app/csd/CARDDEMO.CSD:L502} - {@code RECORDSIZE(80)} on {@code DEFINE TDQUEUE(JOBS)}.
+     */
     private static final int QUEUE_RECORD_SIZE = 80;
-    /** {@code app/cbl/CORPT00C.cbl:L119} - the single {@code FILLER PIC X VALUE SPACE} separator. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L119} - the single {@code FILLER PIC X VALUE SPACE} separator.
+     */
     private static final int DATEPARM_SEPARATOR_WIDTH = 1;
-    /** {@code app/cbl/CORPT00C.cbl:L121} - the trailing {@code FILLER PIC X(59)} of the DATEPARM card. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L121} - the trailing {@code FILLER PIC X(59)} of the DATEPARM card.
+     */
     private static final int DATEPARM_TRAILING_FILLER_WIDTH = 59;
 
-    /** {@code app/cbl/CORPT00C.cbl:L330,L356} - the month ceiling, compared as characters. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L330,L356} - the month ceiling, compared as characters.
+     */
     private static final String MONTH_CEILING = "12";
-    /** {@code app/cbl/CORPT00C.cbl:L339,L365} - the day ceiling, compared as characters. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L339,L365} - the day ceiling, compared as characters.
+     */
     private static final String DAY_CEILING = "31";
-    /** {@code app/cbl/CORPT00C.cbl:L219,L245-L246} - the literal {@code '01'} moves. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L219,L245-L246} - the literal {@code '01'} moves.
+     */
     private static final String FIRST_DAY_LITERAL = "01";
-    /** {@code app/cbl/CORPT00C.cbl:L250} - the literal {@code '12'} move. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L250} - the literal {@code '12'} move.
+     */
     private static final String LAST_MONTH_LITERAL = "12";
-    /** {@code app/cbl/CORPT00C.cbl:L251} - the literal {@code '31'} move. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L251} - the literal {@code '31'} move.
+     */
     private static final String LAST_DAY_LITERAL = "31";
 
-    /** {@code app/cbl/CORPT00C.cbl:L478} - both letter cases are separate {@code WHEN} operands. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L478} - both letter cases are separate {@code WHEN} operands.
+     */
     private static final List<String> AFFIRMATIVE_CONFIRMATIONS = List.of("Y", "y");
-    /** {@code app/cbl/CORPT00C.cbl:L480} - both letter cases are separate {@code WHEN} operands. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L480} - both letter cases are separate {@code WHEN} operands.
+     */
     private static final List<String> NEGATIVE_CONFIRMATIONS = List.of("N", "n");
 
-    /** The COBOL figurative constant {@code LOW-VALUES} for a character field. */
+    /**
+     * The COBOL figurative constant {@code LOW-VALUES} for a character field.
+     */
     private static final char LOW_VALUE = '\u0000';
-    /** The COBOL figurative constant {@code SPACES} for a character field. */
+    /**
+     * The COBOL figurative constant {@code SPACES} for a character field.
+     */
     private static final char SPACE = ' ';
 
     /**
      * The largest year a {@code PIC 9(04)} field can hold, {@code app/cpy/CSDAT01Y.cpy:L20}.
-     *
-     * <p>Used as the upper bound of the {@code FUNCTION INTEGER-OF-DATE} argument at
-     * {@code app/cbl/CORPT00C.cbl:L229-L230}. The intrinsic's own lower bound is <strong>Not
-     * available</strong> from this repository, so only the field width bound is asserted; that is
-     * evidence rather than an assumption.
      */
     private static final int MAX_FOUR_DIGIT_YEAR = 9999;
 
-    /** {@code app/cbl/CORPT00C.cbl:L223} - {@code MOVE 1 TO WS-CURDATE-DAY}. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L223} - {@code MOVE 1 TO WS-CURDATE-DAY}.
+     */
     private static final int FIRST_DAY_OF_MONTH = 1;
-    /** {@code app/cbl/CORPT00C.cbl:L225} - the month ceiling of the rollover guard. */
+    /**
+     * {@code app/cbl/CORPT00C.cbl:L225} - the month ceiling of the rollover guard.
+     */
     private static final int LAST_MONTH_OF_YEAR = 12;
 
-    /** Component name fragments that would betray a secret, a credential or personal data. */
+    /**
+     * Component name fragments that would betray a secret, a credential or personal data.
+     */
     private static final List<String> FORBIDDEN_NAME_FRAGMENTS = List.of(
             "password", "passwd", "secret", "credential", "signingkey", "apikey", "accesskey",
             "privatekey", "bearer", "authorization", "sessionid", "ssn", "socialsecurity",
             "cardnumber", "dateofbirth", "governmentid", "queueurl", "endpoint", "connectionstring");
 
-    /** Component name fragments that would betray leaked session, navigation or batch state. */
+    /**
+     * Component name fragments that would betray leaked session, navigation or batch state.
+     */
     private static final List<String> FORBIDDEN_STATE_FRAGMENTS = List.of(
             "fromtranid", "totranid", "fromprogram", "toprogram", "pgmcontext", "reenter",
             "lastmap", "lastmapset", "commarea", "cursor", "attribute", "page", "lines",
             "jobdeck", "joblines", "jclrecord", "cardimage", "queue", "topic");
-
-    // ================================================================================================
-    // Bean validation lifecycle. Instance scoped under PER_CLASS, so no static mutable state exists.
-    // ================================================================================================
-
-    /** Opened once per test class instance and closed in {@link #closeValidatorFactory()}. */
-    private ValidatorFactory validatorFactory;
-
-    /** Derived from {@link #validatorFactory}; immutable and thread safe once obtained. */
-    private Validator validator;
-
-    @BeforeAll
-    void openValidatorFactory() {
-        validatorFactory = Validation.buildDefaultValidatorFactory();
-        validator = validatorFactory.getValidator();
-    }
-
-    @AfterAll
-    void closeValidatorFactory() {
-        validatorFactory.close();
-    }
 
     /**
      * Validates a request with the real Jakarta Validation engine.
@@ -558,40 +632,50 @@ class ReportRequestTest {
      * @return the raised violations, empty when the request satisfies every declared constraint
      */
     private Set<ConstraintViolation<ReportRequest>> violationsOf(final ReportRequest request) {
-        return validator.validate(Objects.requireNonNull(request, "request must not be null"));
+        return ValidationSupport.violationsOf(request, "request");
     }
 
-    // ================================================================================================
-    // REFERENCE ORACLES
-    //
-    // One private static function per source paragraph, each citing its locator. They consume nothing
-    // but this record's own components and an injected fixed clock, and they are the executable
-    // specification the service tier must reproduce. They are NOT a service: no state, no collaborator,
-    // no export. The one collaborator the source does consult - CALL 'CSUTLDTC' - arrives as a boolean
-    // parameter rather than a stub, so the tier boundary stays visible in the signature.
-    // ================================================================================================
-
-    /** The outcome of the period cascade, {@code app/cbl/CORPT00C.cbl:L212-L442}. */
+    /**
+     * The outcome of the period cascade, {@code app/cbl/CORPT00C.cbl:L212-L442}.
+     */
     private enum PeriodSelection {
-        /** {@code app/cbl/CORPT00C.cbl:L213} - evaluated first, so it wins over the other two. */
+        /**
+         * {@code app/cbl/CORPT00C.cbl:L213} - evaluated first, so it wins over the other two.
+         */
         MONTHLY,
-        /** {@code app/cbl/CORPT00C.cbl:L239} - evaluated second. */
+        /**
+         * {@code app/cbl/CORPT00C.cbl:L239} - evaluated second.
+         */
         YEARLY,
-        /** {@code app/cbl/CORPT00C.cbl:L256} - evaluated third. */
+        /**
+         * {@code app/cbl/CORPT00C.cbl:L256} - evaluated third.
+         */
         CUSTOM,
-        /** {@code app/cbl/CORPT00C.cbl:L437} - the {@code WHEN OTHER} branch; there is no default. */
+        /**
+         * {@code app/cbl/CORPT00C.cbl:L437} - the {@code WHEN OTHER} branch; there is no default.
+         */
         NONE
     }
 
-    /** The four outcomes of the confirmation handshake, {@code app/cbl/CORPT00C.cbl:L464-L494}. */
+    /**
+     * The four outcomes of the confirmation handshake, {@code app/cbl/CORPT00C.cbl:L464-L494}.
+     */
     private enum ConfirmationOutcome {
-        /** {@code :L464} - spaces or low values. Unlike {@code COBIL00C}, this branch IS an error. */
+        /**
+         * {@code :L464} - spaces or low values. Unlike {@code COBIL00C}, this branch IS an error.
+         */
         BLANK,
-        /** {@code :L478} - {@code 'Y'} or {@code 'y'}; submission proceeds. */
+        /**
+         * {@code :L478} - {@code 'Y'} or {@code 'y'}; submission proceeds.
+         */
         AFFIRMATIVE,
-        /** {@code :L480} - {@code 'N'} or {@code 'n'}; the fields and the message are cleared. */
+        /**
+         * {@code :L480} - {@code 'N'} or {@code 'n'}; the fields and the message are cleared.
+         */
         NEGATIVE,
-        /** {@code :L484} - any other character; the value is quoted back to the caller. */
+        /**
+         * {@code :L484} - any other character; the value is quoted back to the caller.
+         */
         INVALID
     }
 
@@ -599,22 +683,21 @@ class ReportRequestTest {
      * A resolved reporting period: the padded report name and the two assembled ten character dates.
      *
      * @param reportName the {@code WS-REPORT-NAME PIC X(10)} value, {@code app/cbl/CORPT00C.cbl:L58}
-     * @param startDate  the assembled {@code WS-START-DATE}, {@code app/cbl/CORPT00C.cbl:L60-L65}
-     * @param endDate    the assembled {@code WS-END-DATE}, {@code app/cbl/CORPT00C.cbl:L66-L71}
+     * @param startDate the assembled {@code WS-START-DATE}, {@code app/cbl/CORPT00C.cbl:L60-L65}
+     * @param endDate the assembled {@code WS-END-DATE}, {@code app/cbl/CORPT00C.cbl:L66-L71}
      */
     private record ReportPeriod(String reportName, String startDate, String endDate) {
     }
 
     /**
-     * Reproduces a COBOL alphanumeric {@code MOVE} into a {@code PIC X(n)} receiving field: the sending
-     * value is left justified, space filled to the receiving width and truncated on the right.
+     * Reproduces a COBOL alphanumeric {@code MOVE} into a {@code PIC X(n)} receiving field: the sending value
+     * is left justified, space filled to the receiving width and truncated on the right.
      *
-     * <p>A {@code null} sending value models a field still holding its {@code VALUE SPACES} initial
-     * state, {@code app/cbl/CORPT00C.cbl:L61-L71}. It is <em>not</em> conflated with a supplied blank
-     * anywhere in the record itself; see the tri-state assertions.
+     * <p>A {@code null} sending value models a field still holding its {@code VALUE SPACES} initial state,
+     * {@code app/cbl/CORPT00C.cbl:L61-L71}. It is never conflated with a supplied blank in the record itself.
      *
-     * @param sendingField   the sending value, or {@code null} for an uninitialised field
-     * @param receivingWidth the {@code PIC X(n)} width of the receiving field; must be positive
+     * @param sendingField the sending value, or {@code null} for an uninitialised field
+     * @param receivingWidth the {@code PIC X(n)} width of the receiving field.
      * @return exactly {@code receivingWidth} characters
      */
     private static String alphanumericMove(final String sendingField, final int receivingWidth) {
@@ -629,16 +712,16 @@ class ReportRequestTest {
      * Reproduces a {@code MOVE} from a {@code PIC 9(n)} display numeric sender into a {@code PIC X(n)}
      * receiver: the value is rendered zero filled to the sender's own width.
      *
-     * <p>{@code app/cbl/CORPT00C.cbl:L217-L218} and {@code :L232-L234} move
-     * {@code WS-CURDATE-YEAR PIC 9(04)}, {@code WS-CURDATE-MONTH PIC 9(02)} and
-     * {@code WS-CURDATE-DAY PIC 9(02)} - declared at {@code app/cpy/CSDAT01Y.cpy:L20-L22} - into the
-     * {@code PIC X(04)} and {@code PIC X(02)} subfields of the assembled dates.
+     * <p>{@code app/cbl/CORPT00C.cbl:L217-L218} and {@code :L232-L234} move {@code WS-CURDATE-YEAR PIC 9(04)},
+     * {@code WS-CURDATE-MONTH PIC 9(02)} and {@code WS-CURDATE-DAY PIC 9(02)} - declared at
+     * {@code app/cpy/CSDAT01Y.cpy:L20-L22} - into the {@code PIC X(04)} and {@code PIC X(02)} subfields of the
+     * assembled dates.
      *
      * @param value the numeric value; must be representable in {@code width} digits
      * @param width the sender's declared digit count
      * @return exactly {@code width} digit characters
-     * @throws IllegalArgumentException when the value cannot be held by a {@code PIC 9(width)} field,
-     *         which no clock the source could ever have read would produce
+     * @throws IllegalArgumentException when the value cannot be held by a {@code PIC 9(width)} field, which no
+     * clock the source could ever have read would produce
      */
     private static String zonedDecimalMove(final int value, final int width) {
         if (value < 0) {
@@ -657,14 +740,9 @@ class ReportRequestTest {
     /**
      * Assembles {@code WS-START-DATE} or {@code WS-END-DATE}, {@code app/cbl/CORPT00C.cbl:L60-L71}.
      *
-     * <p>The group is a four character year, a {@code FILLER PIC X(01) VALUE '-'}, a two character
-     * month, a second dash filler and a two character day. The dashes are fixed group members, not a
-     * formatting choice, so the result is always exactly ten characters and always carries a dash at
-     * index 4 and index 7 - even when every component is blank.
-     *
-     * @param year  the four character year subfield, or {@code null} for its initial spaces
+     * @param year the four character year subfield, or {@code null} for its initial spaces
      * @param month the two character month subfield, or {@code null} for its initial spaces
-     * @param day   the two character day subfield, or {@code null} for its initial spaces
+     * @param day the two character day subfield, or {@code null} for its initial spaces
      * @return exactly ten characters in {@code YYYY-MM-DD} shape
      */
     private static String assembleDate(final String year, final String month, final String day) {
@@ -676,8 +754,8 @@ class ReportRequestTest {
     }
 
     /**
-     * Pads a report name literal into {@code WS-REPORT-NAME PIC X(10)},
-     * {@code app/cbl/CORPT00C.cbl:L58}, as {@code :L214}, {@code :L240} and {@code :L433} do.
+     * Pads a report name literal into {@code WS-REPORT-NAME PIC X(10)}, {@code app/cbl/CORPT00C.cbl:L58}, as
+     * {@code :L214}, {@code :L240} and {@code :L433} do.
      *
      * @param literal the unpadded literal
      * @return exactly ten characters
@@ -687,9 +765,9 @@ class ReportRequestTest {
     }
 
     /**
-     * Reproduces {@code STRING ... DELIMITED BY SPACE}: the sending value contributes only the
-     * characters before its first space. Used at {@code app/cbl/CORPT00C.cbl:L449}, {@code :L468} and
-     * {@code :L487}, which is how a padded ten character report name renders as a bare word.
+     * Reproduces {@code STRING ... DELIMITED BY SPACE}: the sending value contributes only the characters
+     * before its first space. Used at {@code app/cbl/CORPT00C.cbl:L449}, {@code :L468} and {@code :L487}, which
+     * is how a padded ten character report name renders as a bare word.
      *
      * @param sendingField the sending value, or {@code null}
      * @return the prefix before the first space, or the empty string when the value is {@code null}
@@ -706,11 +784,6 @@ class ReportRequestTest {
      * Reproduces the COBOL relation {@code = SPACES OR LOW-VALUES}, used at
      * {@code app/cbl/CORPT00C.cbl:L259-L295} and, negated as the abbreviated combined relation
      * {@code NOT = SPACES AND LOW-VALUES}, at {@code :L213}, {@code :L239} and {@code :L256}.
-     *
-     * <p>The comparison is against a figurative constant, so the <em>whole</em> field must be spaces or
-     * the whole field must be low values; a field mixing the two equals neither. {@code null} models a
-     * component absent from the payload altogether and an empty string models an unpopulated field;
-     * both satisfy the relation, while remaining distinguishable on the record itself.
      *
      * @param screenField the raw screen value
      * @return {@code true} when the field satisfies {@code = SPACES OR LOW-VALUES}
@@ -733,9 +806,9 @@ class ReportRequestTest {
 
     /**
      * Reproduces the COBOL {@code NUMERIC} class test on an alphanumeric item, as used at
-     * {@code app/cbl/CORPT00C.cbl:L329}, {@code :L338}, {@code :L347}, {@code :L355}, {@code :L364}
-     * and {@code :L373}. Every character must be a digit: no sign, no space and no separator qualifies,
-     * and an empty field is not numeric.
+     * {@code app/cbl/CORPT00C.cbl:L329}, {@code :L338}, {@code :L347}, {@code :L355}, {@code :L364} and
+     * {@code :L373}. Every character must be a digit: no sign, no space and no separator qualifies, and an
+     * empty field is not numeric.
      *
      * @param screenField the raw screen value
      * @return {@code true} when every character is a decimal digit and the field is not empty
@@ -755,38 +828,47 @@ class ReportRequestTest {
 
     /**
      * Reproduces the numeric normalisation of {@code app/cbl/CORPT00C.cbl:L305-L327}: each component is
-     * converted with {@code FUNCTION NUMVAL-C} into {@code WS-NUM-99} or {@code WS-NUM-9999}
-     * ({@code :L74-L75}) and then moved straight back into the screen field, which re-renders it zero
-     * filled to the field's width.
+     * converted with {@code FUNCTION NUMVAL-C} into {@code WS-NUM-99} or {@code WS-NUM-9999} ({@code :L74-L75})
+     * and then moved straight back into the screen field, which re-renders it zero filled to the field's width.
      *
-     * <p>The behaviour of {@code FUNCTION NUMVAL-C} on a non numeric argument is <strong>Not
-     * available</strong> from this repository. The source's own guard is the {@code IS NOT NUMERIC} test
-     * that immediately follows at {@code :L329}, so a non numeric value is passed through unchanged
-     * here and left for that test to reject - which is the conservative reading and cannot mask a
-     * failure the source would report.
+     * <p>Surrounding space characters (0x20, the only pad a BMS field emits) are removed before the class
+     * test, because {@code NUMVAL-C} tolerates them and a
+     * 3270 field blank pads whatever the operator typed. Without that tolerance a single digit month could
+     * never be entered at all: the padded value would fail the numeric class test, be returned unchanged, and
+     * assemble into a malformed date. A genuinely non-numeric value is still returned unchanged, so nothing
+     * the source rejects becomes accepted here.
      *
      * @param screenField the raw screen value
-     * @param digits      the digit count of the intermediate {@code PIC 9(n)} item
+     * @param digits the digit count of the intermediate {@code PIC 9(n)} item
      * @return the re-rendered value, or the original characters when they are not numeric
      */
     private static String numericRedisplay(final String screenField, final int digits) {
-        if (!isNumericClass(screenField)) {
-            return screenField == null ? "" : screenField;
+        if (screenField == null) {
+            return "";
+        }
+        int begin = 0;
+        int end = screenField.length();
+        while (begin < end && screenField.charAt(begin) == SPACE) {
+            begin++;
+        }
+        while (end > begin && screenField.charAt(end - 1) == SPACE) {
+            end--;
+        }
+        final String withoutSurroundingSpaces = screenField.substring(begin, end);
+        if (!isNumericClass(withoutSurroundingSpaces) || withoutSurroundingSpaces.isEmpty()) {
+            return screenField;
         }
         long ceiling = 1L;
         for (int power = 0; power < digits; power++) {
             ceiling = ceiling * 10L;
         }
-        final long truncated = Long.parseLong(screenField) % ceiling;
+        final long truncated = Long.parseLong(withoutSurroundingSpaces) % ceiling;
         return String.format(Locale.ROOT, "%0" + digits + "d", truncated);
     }
 
     /**
-     * Reads the injected clock, standing in for {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA}
-     * at {@code app/cbl/CORPT00C.cbl:L215} and {@code :L241}.
-     *
-     * <p>The zone comes from the clock itself, never from the host default, so the resolved date is a
-     * property of the test rather than of the machine that runs it.
+     * Reads the injected clock, standing in for {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} at
+     * {@code app/cbl/CORPT00C.cbl:L215} and {@code :L241}.
      *
      * @param clock an injected fixed clock, obtained from {@link FixedClockProvider}
      * @return the date the clock reports in its own zone
@@ -799,12 +881,12 @@ class ReportRequestTest {
     }
 
     /**
-     * Bounds the {@code FUNCTION INTEGER-OF-DATE} argument of
-     * {@code app/cbl/CORPT00C.cbl:L229-L230} by the width of the field that supplies it.
+     * Bounds the {@code FUNCTION INTEGER-OF-DATE} argument of {@code app/cbl/CORPT00C.cbl:L229-L230} by the
+     * width of the field that supplies it.
      *
-     * @param year  the four digit year subfield after the rollover of {@code :L225-L228}
+     * @param year the four digit year subfield after the rollover of {@code :L225-L228}
      * @param month the month subfield after the rollover
-     * @param day   the day subfield, always 1 at this point ({@code :L223})
+     * @param day the day subfield, always 1 at this point ({@code :L223})
      * @return the composed date
      * @throws DateTimeException when the composition is not a date a {@code PIC 9(04)} year could hold
      */
@@ -821,19 +903,10 @@ class ReportRequestTest {
     /**
      * Transliterates the monthly branch, {@code app/cbl/CORPT00C.cbl:L213-L238}.
      *
-     * <p><strong>The period is the complete calendar month, first day through last day.</strong> The
-     * start is the clock's year and month with the literal day {@code '01'} ({@code :L217-L219}). The
-     * end is then produced in place: the day is set to 1 ({@code :L223}), the month is advanced by one
-     * ({@code :L224}), the year rolls when the month passes 12 ({@code :L225-L228}), and one day is
-     * subtracted from the packed year month day value ({@code :L229-L230}). Because
-     * {@code app/cpy/CSDAT01Y.cpy:L23} declares {@code WS-CURDATE-N REDEFINES WS-CURDATE PIC 9(08)}
-     * over the same three subfields, the moves at {@code :L232-L234} read the decremented values - the
-     * last day of the clock's own month, not the clock's day.
-     *
      * @param clock an injected fixed clock
      * @return the padded report name and both assembled dates
      * @throws IllegalStateException when the rolled forward date is unusable, wrapping the underlying
-     *         {@link DateTimeException} so the root cause survives
+     * {@link DateTimeException} so the root cause survives
      */
     private static ReportPeriod monthlyPeriod(final Clock clock) {
         final LocalDate today = currentDate(clock);
@@ -874,11 +947,6 @@ class ReportRequestTest {
     /**
      * Transliterates the yearly branch, {@code app/cbl/CORPT00C.cbl:L239-L255}.
      *
-     * <p>Only the year is read from the clock ({@code :L243-L244}). Every other component is a literal
-     * two character move - {@code '01'} into both start subfields ({@code :L245-L246}), then
-     * {@code '12'} ({@code :L250}) and {@code '31'} ({@code :L251}) - so the end of the period is never
-     * computed and never depends on the length of any month.
-     *
      * @param clock an injected fixed clock
      * @return the padded report name and both assembled dates
      */
@@ -892,11 +960,6 @@ class ReportRequestTest {
 
     /**
      * Transliterates the period cascade, {@code app/cbl/CORPT00C.cbl:L212-L442}.
-     *
-     * <p>It is a single {@code EVALUATE TRUE} whose branches are tested in declaration order, so the
-     * first selector that is neither spaces nor low values wins and the remaining selectors are carried
-     * without complaint. There is deliberately <strong>no mutual exclusivity test</strong> and no
-     * default period: an untouched screen reaches {@code WHEN OTHER} at {@code :L437}.
      *
      * @param request the request carrying the three raw selector characters
      * @return the selected period, or {@link PeriodSelection#NONE}
@@ -918,22 +981,9 @@ class ReportRequestTest {
     /**
      * Transliterates the three tier custom range edit, {@code app/cbl/CORPT00C.cbl:L258-L426}.
      *
-     * <p>Every failing branch performs {@code SEND-TRNRPT-SCREEN}, which ends with
-     * {@code GO TO RETURN-TO-CICS} at {@code :L580} and therefore issues {@code EXEC CICS RETURN}
-     * without ever returning to its caller. The consequence is decisive and is what this function
-     * models: <strong>the first failing edit is the only one reported</strong>, across all three tiers,
-     * and nothing is aggregated. With a blank start month the reported failure is the emptiness message
-     * and never the whole date one, because the whole date tier is unreachable.
-     *
-     * <p>The two boolean parameters stand in for the {@code CALL 'CSUTLDTC'} verdicts at
-     * {@code :L396-L406} and {@code :L416-L426}, namely whether the severity code is
-     * {@code '0000'} or the message number is the tolerated {@code '2513'}. They are supplied
-     * directly so that this pure JVM tier never instantiates, invokes or doubles
-     * {@code DateValidationService}, which belongs to the validation tier.
-     *
-     * @param request                  the request carrying the six raw custom range components
+     * @param request the request carrying the six raw custom range components
      * @param startDateAcceptedByUtility the date utility's verdict on the assembled start date
-     * @param endDateAcceptedByUtility   the date utility's verdict on the assembled end date
+     * @param endDateAcceptedByUtility the date utility's verdict on the assembled end date
      * @return the single reported message, or empty when every tier passes
      */
     private static Optional<String> firstCustomRangeFailure(final ReportRequest request,
@@ -1000,11 +1050,8 @@ class ReportRequestTest {
     }
 
     /**
-     * Assembles the custom period from the six raw components, {@code app/cbl/CORPT00C.cbl:L381-L386}
-     * and {@code :L433}.
-     *
-     * <p>The screen collects month, day then year, while the assembled group is year, month then day.
-     * That asymmetry is the whole reason the record carries six components rather than two dates.
+     * Assembles the custom period from the six raw components, {@code app/cbl/CORPT00C.cbl:L381-L386} and
+     * {@code :L433}.
      *
      * @param request the request carrying the six raw custom range components
      * @return the padded report name and both assembled dates
@@ -1019,11 +1066,6 @@ class ReportRequestTest {
 
     /**
      * Transliterates the confirmation handshake, {@code app/cbl/CORPT00C.cbl:L464-L494}.
-     *
-     * <p>Four outcomes, each with its own message and cursor behaviour. Blank is handled first and
-     * outside the {@code EVALUATE} ({@code :L464-L474}); the affirmative and negative branches list
-     * both letter cases as separate operands ({@code :L478}, {@code :L480}); anything else falls to
-     * {@code WHEN OTHER} ({@code :L484-L493}).
      *
      * @param confirmation the raw one character screen value
      * @return the outcome the source would take
@@ -1044,14 +1086,8 @@ class ReportRequestTest {
     /**
      * Builds the message each confirmation outcome reports.
      *
-     * <p>Blank: {@code :L465-L470}, naming the report through {@code DELIMITED BY SPACE}. Invalid:
-     * {@code :L485-L490}, quoting the offending character back. Negative: {@code :L481} performs
-     * {@code INITIALIZE-ALL-FIELDS}, which clears {@code WS-MESSAGE} at {@code :L646}, so the outcome
-     * is a cleared screen carrying no message. Affirmative: no message is set at this point; the
-     * success text is built later at {@code :L449-L452}.
-     *
-     * @param outcome      the outcome from {@link #confirmationOutcome(String)}
-     * @param paddedName   the {@code WS-REPORT-NAME PIC X(10)} value
+     * @param outcome the outcome from {@link #confirmationOutcome(String)}
+     * @param paddedName the {@code WS-REPORT-NAME PIC X(10)} value
      * @param confirmation the raw one character screen value
      * @return the reported message, empty where the source leaves {@code WS-MESSAGE} blank
      */
@@ -1065,8 +1101,8 @@ class ReportRequestTest {
     }
 
     /**
-     * Builds the success message of {@code app/cbl/CORPT00C.cbl:L449-L452}, reached only when the error
-     * flag is still off after the cascade and the submission loop.
+     * Builds the success message of {@code app/cbl/CORPT00C.cbl:L449-L452}, reached only when the error flag is
+     * still off after the cascade and the submission loop.
      *
      * @param paddedName the {@code WS-REPORT-NAME PIC X(10)} value
      * @return the message the screen displays in green ({@code :L448})
@@ -1076,15 +1112,15 @@ class ReportRequestTest {
     }
 
     /**
-     * Builds a request carrying only the six custom range components and the custom selector, leaving
-     * every other component {@code null} so that an absent value is never confused with a supplied one.
+     * Builds a request carrying only the six custom range components and the custom selector, leaving every
+     * other component {@code null} so that an absent value is never confused with a supplied one.
      *
      * @param startMonth the raw {@code SDTMMI} value
-     * @param startDay   the raw {@code SDTDDI} value
-     * @param startYear  the raw {@code SDTYYYYI} value
-     * @param endMonth   the raw {@code EDTMMI} value
-     * @param endDay     the raw {@code EDTDDI} value
-     * @param endYear    the raw {@code EDTYYYYI} value
+     * @param startDay the raw {@code SDTDDI} value
+     * @param startYear the raw {@code SDTYYYYI} value
+     * @param endMonth the raw {@code EDTMMI} value
+     * @param endDay the raw {@code EDTDDI} value
+     * @param endYear the raw {@code EDTYYYYI} value
      * @return a request suitable for driving the custom range oracles
      */
     private static ReportRequest customRangeRequest(final String startMonth, final String startDay,
@@ -1099,8 +1135,8 @@ class ReportRequestTest {
      * Builds a request carrying only the three period selectors.
      *
      * @param monthly the raw {@code MONTHLYI} value
-     * @param yearly  the raw {@code YEARLYI} value
-     * @param custom  the raw {@code CUSTOMI} value
+     * @param yearly the raw {@code YEARLYI} value
+     * @param custom the raw {@code CUSTOMI} value
      * @return a request suitable for driving {@link #selectedPeriod(ReportRequest)}
      */
     private static ReportRequest selectorRequest(final String monthly, final String yearly,
@@ -1112,8 +1148,8 @@ class ReportRequestTest {
     }
 
     /**
-     * Builds a request whose every component is {@code null}, the shape a payload carrying no field at
-     * all deserialises into.
+     * Builds a request whose every component is {@code null}, the shape a payload carrying no field at all
+     * deserialises into.
      *
      * @return an entirely empty request
      */
@@ -1140,8 +1176,8 @@ class ReportRequestTest {
     }
 
     /**
-     * Resolves the private final field a record component is compiled into, failing the test rather
-     * than propagating a checked reflection failure.
+     * Resolves the private final field a record component is compiled into, failing the test rather than
+     * propagating a checked reflection failure.
      *
      * @param componentName the record component name
      * @return the backing field
@@ -1157,16 +1193,6 @@ class ReportRequestTest {
 
     /**
      * Reads the {@link Size#max()} a component declares, which must equal its {@code PIC X(n)} width.
-     *
-     * <p><strong>Where the annotation actually lives.</strong> {@code jakarta.validation-api} 3.0.2 -
-     * the version the build pins - declares {@code @Size} with
-     * {@code @Target({METHOD, FIELD, ANNOTATION_TYPE, CONSTRUCTOR, PARAMETER, TYPE_USE})}. That
-     * artefact predates {@code ElementType.RECORD_COMPONENT}, so the annotation is <em>not</em>
-     * applicable to record components and {@code RecordComponent.getAnnotation(Size.class)} returns
-     * {@code null}. Under the record propagation rules of JLS 8.10.1 it is instead copied onto the
-     * backing field, the accessor method and the canonical constructor parameter, which is how
-     * Hibernate Validator discovers it. Both surviving copies are read here and required to agree, so
-     * the width contract cannot drift between the two.
      *
      * @param componentName the record component name
      * @return the declared maximum length
@@ -1191,16 +1217,14 @@ class ReportRequestTest {
         return onAccessor.max();
     }
 
-    /** @return the 17 component names, lower cased, for substring screening. */
+    /**
+     * @return the 17 component names, lower cased, for substring screening.
+     */
     private static List<String> lowerCasedComponentNames() {
         return List.of(ReportRequest.class.getRecordComponents()).stream()
                 .map(component -> component.getName().toLowerCase(Locale.ROOT))
                 .toList();
     }
-
-    // ================================================================================================
-    // GROUP 1 - the field contract of app/cpy-bms/CORPT00.CPY, group CORPT0AI, lines 24 to 120.
-    // ================================================================================================
 
     @Nested
     @DisplayName("1. Field contract - app/cpy-bms/CORPT00.CPY group CORPT0AI")
@@ -1462,10 +1486,6 @@ class ReportRequestTest {
         }
     }
 
-    // ================================================================================================
-    // GROUP 2 - the monthly period, app/cbl/CORPT00C.cbl:L213-L238. A FULL CALENDAR MONTH.
-    // ================================================================================================
-
     @Nested
     @DisplayName("2. Monthly period - app/cbl/CORPT00C.cbl:L213-L238, a full calendar month")
     class MonthlyPeriod {
@@ -1489,8 +1509,7 @@ class ReportRequestTest {
             assertThat(period.endDate())
                     .as("app/cbl/CORPT00C.cbl:L223-L230 sets the day to 1, advances the month and "
                             + "subtracts one day in place over the redefinition at "
-                            + "app/cpy/CSDAT01Y.cpy:L23, so the end is 30 June - NOT the clock's 10th. "
-                            + "The plan's month-to-date description is a Medium severity defect")
+                            + "app/cpy/CSDAT01Y.cpy:L23, so the end is 30 June - NOT the clock's 10th")
                     .isEqualTo("2022-06-30");
             assertThat(period.endDate())
                     .as("month-to-date would have produced the clock's own day")
@@ -1663,10 +1682,6 @@ class ReportRequestTest {
         }
     }
 
-    // ================================================================================================
-    // GROUP 3 - the yearly branch and the first-match-wins cascade, app/cbl/CORPT00C.cbl:L212-L442.
-    // ================================================================================================
-
     @Nested
     @DisplayName("3. Yearly period and the period cascade - app/cbl/CORPT00C.cbl:L212-L442")
     class YearlyPeriodAndCascade {
@@ -1828,10 +1843,6 @@ class ReportRequestTest {
         }
     }
 
-    // ================================================================================================
-    // GROUP 4 - the fourteen custom range message literals, app/cbl/CORPT00C.cbl:L258-L426.
-    // ================================================================================================
-
     @Nested
     @DisplayName("4. Custom range message literals - app/cbl/CORPT00C.cbl:L258-L426")
     class CustomRangeMessageLiterals {
@@ -1986,12 +1997,28 @@ class ReportRequestTest {
 
         @ParameterizedTest(name = "start month [{0}] -> component message")
         @DisplayName("rejects a month above the character ceiling '12' and a non numeric month")
-        @ValueSource(strings = {"13", "99", "ab", "1a", "a1", "-1", "+1", "1.", " 1"})
+        @ValueSource(strings = {"13", "99", "ab", "1a", "a1", "-1", "+1", "1."})
         void rejectsAnInvalidMonth(final String month) {
             assertThat(firstCustomRangeFailure(
                     customRangeRequest(month, "01", "2022", "12", "31", "2022"), true, true))
                     .as("app/cbl/CORPT00C.cbl:L329-L330 tests IS NOT NUMERIC OR > '12' as characters")
                     .contains(START_DATE_MONTH_INVALID);
+        }
+
+        @ParameterizedTest(name = "start month [{0}] survives the NUMVAL-C round trip")
+        @DisplayName("accepts a space padded digit run, the only single digit form a 2 byte field delivers")
+        @ValueSource(strings = {" 1", "1 ", " 2", "9 "})
+        void acceptsASpacePaddedMonth(final String month) {
+            assertThat(firstCustomRangeFailure(
+                    customRangeRequest(month, "01", "2022", "12", "31", "2022"), true, true))
+                    .as("app/cbl/CORPT00C.cbl:L305-L307 converts the field with FUNCTION NUMVAL-C, which "
+                            + "tolerates surrounding spaces, and moves the resulting WS-NUM-99 (:L74) back "
+                            + "into it zero filled, so the class test at :L329 never sees a space. Were the "
+                            + "spaces rejected instead, no single digit month could ever be entered")
+                    .isEmpty();
+            assertThat(numericRedisplay(month, ASSEMBLED_MONTH_DAY_WIDTH))
+                    .as("and the field the operator sees back is the zero filled form the MOVE renders")
+                    .isEqualTo("0" + month.trim());
         }
 
         @ParameterizedTest(name = "start day [{0}] -> component message")
@@ -2127,10 +2154,6 @@ class ReportRequestTest {
                     .isEmpty();
         }
     }
-
-    // ================================================================================================
-    // GROUP 5 - the assembled date group item, app/cbl/CORPT00C.cbl:L60-L71.
-    // ================================================================================================
 
     @Nested
     @DisplayName("5. Assembled date geometry - app/cbl/CORPT00C.cbl:L60-L71")
@@ -2274,10 +2297,6 @@ class ReportRequestTest {
         }
     }
 
-    // ================================================================================================
-    // GROUP 6 - the date validation parameter block, app/cbl/CORPT00C.cbl:L129-L136.
-    // ================================================================================================
-
     @Nested
     @DisplayName("6. Date validation parameter block - app/cbl/CORPT00C.cbl:L129-L136")
     class DateValidationParameterBlock {
@@ -2393,10 +2412,6 @@ class ReportRequestTest {
                     .contains(START_DATE_WHOLE_INVALID);
         }
     }
-
-    // ================================================================================================
-    // GROUP 7 - the submission boundary: the embedded deck collapses into one typed queue message.
-    // ================================================================================================
 
     @Nested
     @DisplayName("7. Submission boundary - app/cbl/CORPT00C.cbl:L82-L127, :L498-L535")
@@ -2576,10 +2591,6 @@ class ReportRequestTest {
         }
     }
 
-    // ================================================================================================
-    // GROUP 8 - the confirmation handshake, the tri-state model and the boundary and security screens.
-    // ================================================================================================
-
     @Nested
     @DisplayName("8. Confirmation, tri-state and boundaries - app/cbl/CORPT00C.cbl:L464-L494")
     class ConfirmationAndTriState {
@@ -2636,8 +2647,8 @@ class ReportRequestTest {
                     .as("app/cbl/CORPT00C.cbl:L464 handles the figurative constants BEFORE the "
                             + "EVALUATE, sets the error flag at :L471 and re-displays. This DIFFERS from "
                             + "app/cbl/COBIL00C.cbl:L182-L184, where WHEN SPACES and WHEN LOW-VALUES "
-                            + "fall through to READ-ACCTDAT-FILE as a non error third branch. Low "
-                            + "severity finding, recorded rather than harmonised")
+                            + "fall through to READ-ACCTDAT-FILE as a non error third branch. The two "
+                            + "screens are reproduced as written rather than harmonised")
                     .isEqualTo(ConfirmationOutcome.BLANK);
             assertThat(confirmationMessage(ConfirmationOutcome.BLANK, reportName(MONTHLY_LITERAL), blank))
                     .as("app/cbl/CORPT00C.cbl:L465-L470 strings the prompt around the report name, "
@@ -2828,6 +2839,152 @@ class ReportRequestTest {
         }
 
         @Test
+        @DisplayName("the rendering discloses no submitted value on any of the seventeen components")
+        void theRenderingDisclosesNoSubmittedValue() {
+            final String[] markers = new String[COMPONENT_NAMES.size()];
+            for (int index = 0; index < markers.length; index++) {
+                // Each marker is unique and none is a substring of another, so a single leaked component
+                // is attributable rather than merely detectable.
+                markers[index] = "MARKER" + (char) ('A' + index) + "VALUE";
+            }
+            final ReportRequest populated = new ReportRequest(markers[0], markers[1], markers[2],
+                    markers[3], markers[4], markers[5], markers[6], markers[7], markers[8], markers[9],
+                    markers[10], markers[11], markers[12], markers[13], markers[14], markers[15],
+                    markers[16]);
+
+            final String rendered = populated.toString();
+
+            for (int index = 0; index < markers.length; index++) {
+                assertThat(rendered)
+                        .as("the compiler generated rendering emitted every component verbatim, which is "
+                                + "how all seventeen untrusted members reached a log through ordinary "
+                                + "parameter interpolation. The override must emit none of them. "
+                                + "Component %s carried marker index %d",
+                                COMPONENT_NAMES.get(index), index)
+                        .doesNotContain(markers[index]);
+            }
+            assertThat(rendered)
+                    .as("nor may any fragment of a marker survive")
+                    .doesNotContain("MARKER")
+                    .doesNotContain("VALUE");
+        }
+
+        @Test
+        @DisplayName("the rendering cannot forge a log line, whatever control bytes are submitted")
+        void theRenderingCannotForgeALogLine() {
+            final String forgery = "\r\nWARN attacker composed this line\u0000\u001b[31m\t\u007f";
+            final ReportRequest hostile = new ReportRequest(forgery, forgery, forgery, forgery, forgery,
+                    forgery, forgery, forgery, forgery, forgery, forgery, forgery, forgery, forgery,
+                    forgery, forgery, forgery);
+
+            final String rendered = hostile.toString();
+
+            assertThat(rendered.chars().filter(codePoint -> codePoint < 0x20 || codePoint == 0x7f).count())
+                    .as("not one control character may reach the output. A carriage return and line feed "
+                            + "inside any component would terminate the current log line and let the "
+                            + "caller compose the next one in a sink that stores one event per line, and "
+                            + "the escape sequence would reach whatever terminal rendered the file. The "
+                            + "guarantee here is structural rather than achieved by escaping: the output "
+                            + "is built only from fixed literals, decimal lengths and hexadecimal digits, "
+                            + "so it cannot carry a control character at all. Rendered: [%s]", rendered)
+                    .isZero();
+            assertThat(rendered.lines().count())
+                    .as("and the whole rendering is exactly one line")
+                    .isEqualTo(1L);
+            assertThat(rendered)
+                    .as("no fragment of the forged text survives either")
+                    .doesNotContain("attacker")
+                    .doesNotContain("WARN");
+        }
+
+        @Test
+        @DisplayName("the rendering still diagnoses a fault: selector code points and component widths")
+        void theRenderingStillDiagnosesAFault() {
+            final ReportRequest custom = new ReportRequest("CR00", "Report Submission", "06/10/22",
+                    "CORPT00C", "CardDemo", "19:27:53", " ", " ", "S", "06", "10", "2022", "07", "04",
+                    "2023", "Y", "");
+
+            final String rendered = custom.toString();
+
+            assertThat(rendered)
+                    .as("the three selectors decide which period branch the service takes at "
+                            + "app/cbl/CORPT00C.cbl:L213, :L239 and :L256, so their code points are the "
+                            + "whole of the useful signal - and a code point tells a blank (0x20) from a "
+                            + "low value byte where printing the character could not. Rendered: [%s]",
+                            rendered)
+                    .contains("monthly=0x20")
+                    .contains("yearly=0x20")
+                    .contains("custom=0x53")
+                    .contains("confirmation=0x59");
+            assertThat(rendered)
+                    .as("the six custom range components are reported by width, which is what catches "
+                            + "the fixed width error that actually happens - a two character month "
+                            + "arriving with one, or a year with three - without disclosing the range "
+                            + "the caller asked for")
+                    .contains("startDate=2 chars/2 chars/4 chars")
+                    .contains("endDate=2 chars/2 chars/4 chars");
+            assertThat(rendered)
+                    .as("an empty message is reported as empty rather than as a zero width, keeping the "
+                            + "three states the custom range cascade at :L259-L300 depends on apart")
+                    .contains("errorMessage=empty");
+            assertThat(rendered)
+                    .as("and the six presentation members are omitted outright rather than shaped, "
+                            + "because a screen title carries no diagnostic signal")
+                    .contains("header=<6 presentation members omitted>")
+                    .doesNotContain("CR00")
+                    .doesNotContain("CORPT00C")
+                    .doesNotContain("CardDemo");
+        }
+
+        @Test
+        @DisplayName("the rendering is null safe and keeps absent distinct from empty")
+        void theRenderingIsNullSafeAndKeepsAbsentDistinctFromEmpty() {
+            assertThatCode(() -> emptyRequest().toString())
+                    .as("an untouched screen must still be loggable")
+                    .doesNotThrowAnyException();
+
+            assertThat(emptyRequest().toString())
+                    .as("every component of an untouched payload is absent, and absent is reported as "
+                            + "such rather than as an empty string or a zero width")
+                    .contains("monthly=absent")
+                    .contains("confirmation=absent")
+                    .contains("errorMessage=absent")
+                    .contains("startDate=absent/absent/absent");
+
+            final ReportRequest empties = new ReportRequest("", "", "", "", "", "", "", "", "", "", "",
+                    "", "", "", "", "", "");
+            assertThat(empties.toString())
+                    .as("an empty component is a different state from an absent one throughout this "
+                            + "corpus, so the rendering must not conflate them")
+                    .contains("monthly=empty")
+                    .contains("confirmation=empty")
+                    .doesNotContain("absent");
+        }
+
+        @Test
+        @DisplayName("the rendering is bounded by its own shape rather than by the submitted size")
+        void theRenderingIsBoundedByItsOwnShape() {
+            final String oversized = "x".repeat(100_000);
+            final ReportRequest huge = new ReportRequest(oversized, oversized, oversized, oversized,
+                    oversized, oversized, oversized, oversized, oversized, oversized, oversized,
+                    oversized, oversized, oversized, oversized, oversized, oversized);
+
+            final String rendered = huge.toString();
+
+            assertThat(rendered.length())
+                    .as("a rendering whose size tracked its input would itself be a denial of service "
+                            + "against every log sink downstream. This one reports a decimal length, so "
+                            + "it grows only with the number of digits in that length. Rendered %d "
+                            + "characters for a payload of %d", rendered.length(), oversized.length() * 17)
+                    .isLessThan(400);
+            assertThat(rendered)
+                    .as("an over width single character code falls back to a shape rather than rendering "
+                            + "a hundred thousand code points, which bounds the selector rendering too")
+                    .contains("monthly=100000 chars")
+                    .doesNotContain("0x78");
+        }
+
+        @Test
         @DisplayName("formats and parses locale independently, never under the ambient locale")
         void formatsAndParsesLocaleIndependently() {
             assertThat(String.format(Locale.forLanguageTag("ar-EG-u-nu-arab"), "%04d", 2022))
@@ -2875,5 +3032,219 @@ class ReportRequestTest {
                     .isInstanceOf(NullPointerException.class)
                     .hasMessageContaining("request must not be null");
         }
+    }
+
+    @Nested
+    @DisplayName("9. Containment - redacted rendering and refusal of an undeclared property")
+    class Containment {
+
+        @Test
+        @DisplayName("overrides toString rather than inheriting the generated one")
+        void overridesToStringRatherThanInheritingIt() {
+            assertThat(List.of(ReportRequest.class.getDeclaredMethods()).stream()
+                    .map(Method::getName)
+                    .filter("toString"::equals)
+                    .toList())
+                    .as("a record's generated toString emits every component. On this payload that means "
+                            + "the six custom-range date subfields, which together describe exactly which "
+                            + "window of a customer's activity someone asked to see")
+                    .containsExactly("toString");
+        }
+
+        @Test
+        @DisplayName("emits a fixed structural form that names members but never their content")
+        void emitsAFixedStructuralFormAndNoContent() {
+            // The transaction name and the program name are withheld along with the rest of the
+            // presentation header. They are constructor arguments on this record, so they are
+            // caller supplied: rendering either verbatim let a caller embed a line break and forge a
+            // log entry, and no masking configuration exists to catch it downstream. The rendering
+            // therefore describes the SHAPE of every member - absent, empty, a code point for a single
+            // byte, or a character count - and discloses no byte of any submitted value.
+            assertThat(populatedCustomRangeRequest().toString())
+                    .as("the whole rendering is pinned, so any future widening that reintroduced a "
+                            + "value would fail here rather than silently reach a log")
+                    .isEqualTo("ReportRequest[monthly=0x20, yearly=0x20, custom=0x53, "
+                            + "startDate=2 chars/2 chars/4 chars, endDate=2 chars/2 chars/4 chars, "
+                            + "confirmation=0x59, errorMessage=17 chars, "
+                            + "header=<6 presentation members omitted>]");
+        }
+
+        @Test
+        @DisplayName("emits no date subfield, no selector and no confirmation")
+        void emitsNoDateSubfieldNoSelectorAndNoConfirmation() {
+            final String rendered = populatedCustomRangeRequest().toString();
+
+            assertThat(rendered)
+                    .as("the assembled range at app/cbl/CORPT00C.cbl:60-71 is built from these six "
+                            + "subfields, so emitting them discloses the requested window")
+                    .doesNotContain("2022")
+                    .doesNotContain("2023")
+                    .doesNotContain("06")
+                    .doesNotContain("07");
+            assertThat(rendered)
+                    .as("the confirmation and the error message are caller controlled, and copying "
+                            + "either into a log record would let a caller forge log content")
+                    .doesNotContain("Y")
+                    .doesNotContain("SYNTHETIC");
+        }
+
+        @Test
+        @DisplayName("discloses nothing when interpolated into a message")
+        void disclosesNothingWhenInterpolated() {
+            assertThat("report submission failed: " + populatedCustomRangeRequest())
+                    .as("implicit toString through concatenation is the path by which a generated "
+                            + "rendering reaches a log without anyone deciding that it should")
+                    .doesNotContain("2022")
+                    .doesNotContain("SYNTHETIC");
+        }
+
+        @Test
+        @DisplayName("keeps every value readable through its accessor, so nothing was lost")
+        void keepsEveryValueReadableThroughItsAccessor() {
+            final ReportRequest request = populatedCustomRangeRequest();
+
+            assertThat(request.startDateYear()).isEqualTo("2022");
+            assertThat(request.endDateYear()).isEqualTo("2023");
+            assertThat(request.confirmation())
+                    .as("redacting the rendering must not redact the data the service acts on")
+                    .isEqualTo("Y");
+        }
+
+        @Test
+        @DisplayName("refuses an unrecognised property under a lenient mapper as well as a strict one")
+        void refusesAnUnrecognisedPropertyUnderEitherMapperPosture() {
+            final String body = "{\"customSelected\":\"S\",\"reportName\":\"DALYREPT\"}";
+
+            final ObjectMapper lenient = new ObjectMapper()
+                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+            final ObjectMapper strict = new ObjectMapper()
+                    .enable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            assertThat(refusalOf(() -> lenient.readValue(body, ReportRequest.class)))
+                    .as("this repository publishes no application*.yml, so the framework default of "
+                            + "ignoring unknown properties is the posture that actually ships. The guard "
+                            + "is declared on the type so it holds regardless of mapper configuration")
+                    .isNotNull();
+            assertThat(refusalOf(() -> strict.readValue(body, ReportRequest.class)))
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("states the field count and the copybook, and echoes neither name nor value")
+        void statesTheContractAndEchoesNeitherNameNorValue() {
+            final String offendingName = "accountId";
+            final String offendingValue = "00000000001";
+            final String body = "{\"" + offendingName + "\":\"" + offendingValue + "\"}";
+
+            final IllegalArgumentException refusal =
+                    refusalOf(() -> new ObjectMapper().readValue(body, ReportRequest.class));
+
+            assertThat(refusal).isNotNull();
+            assertThat(refusal.getMessage())
+                    .as("the message must state the declared field count and cite the map, which is what "
+                            + "a caller needs in order to correct the payload")
+                    .contains("17")
+                    .contains("app/cpy-bms/CORPT00.CPY");
+            assertThat(refusal.getMessage())
+                    .as("the map declares no account or card field, so a caller trying to scope a report "
+                            + "to one account is asking for behaviour the source cannot express - and "
+                            + "echoing their input back would place chosen text into the logs")
+                    .doesNotContain(offendingName)
+                    .doesNotContain(offendingValue);
+        }
+
+        @ParameterizedTest(name = "a misspelling of {0} is refused rather than dropped")
+        @CsvSource({"customSelected, customSelcted", "confirmation, confirmatoin",
+            "startDateYear, startYear"})
+        @DisplayName("a misspelled property is refused, so a typo cannot read as an absent field")
+        void aMisspelledPropertyIsRefused(final String declared, final String misspelling) {
+            final String body = "{\"" + misspelling + "\":\"Y\"}";
+
+            assertThat(refusalOf(() -> new ObjectMapper().readValue(body, ReportRequest.class)))
+                    .as("silently dropping '%s' would leave '%s' absent. On this payload that is "
+                            + "particularly damaging: the three period selectors are evaluated in order at "
+                            + "app/cbl/CORPT00C.cbl:213, :239 and :256, so a dropped selector silently "
+                            + "selects a different reporting period from the one requested",
+                            misspelling, declared)
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("accepts a body naming only declared properties, so it refuses nothing it should "
+                + "admit")
+        void acceptsABodyNamingOnlyDeclaredProperties() throws Exception {
+            final ObjectMapper mapper = new ObjectMapper();
+            final ReportRequest original = populatedCustomRangeRequest();
+
+            assertThat(mapper.readValue(mapper.writeValueAsString(original), ReportRequest.class))
+                    .as("a round trip of this type's own output names only declared properties and must "
+                            + "pass the guard untouched")
+                    .isEqualTo(original);
+        }
+
+        @Test
+        @DisplayName("emits exactly the seventeen map fields and nothing invented")
+        void emitsExactlyTheSeventeenMapFields() throws Exception {
+            final ObjectMapper mapper = new ObjectMapper();
+
+            final Map<String, Object> emitted = mapper.readValue(
+                    mapper.writeValueAsString(populatedCustomRangeRequest()),
+                    new TypeReference<LinkedHashMap<String, Object>>() { });
+
+            assertThat(emitted.keySet())
+                    .as("the wire contract is the map's seventeen fields; a derived period or an "
+                            + "assembled date would publish a field the screen never had")
+                    .containsExactlyInAnyOrderElementsOf(COMPONENT_NAMES);
+        }
+    }
+
+    /**
+     * Builds a fully populated custom-range request whose values are distinctive enough that a leak
+     * through the diagnostic rendering is unambiguous.
+     *
+     * @return a valid, fully populated custom-range request
+     */
+    private static ReportRequest populatedCustomRangeRequest() {
+        return new ReportRequest("CR00", "SYNTHETIC TITLE ONE", "06/10/22", "CORPT00C",
+                "SYNTHETIC TITLE TWO", "19:27:53", " ", " ", "S", "06", "10", "2022", "07", "04", "2023",
+                "Y", "SYNTHETIC MESSAGE");
+    }
+
+    /**
+     * Runs an action expected to be refused and returns the {@link IllegalArgumentException} behind the
+     * refusal, or {@code null} if none appears in the cause chain.
+     *
+     * <p>The chain is walked rather than asserted on directly because Jackson wraps an exception thrown
+     * from an any-setter, and how deeply it nests it is an implementation detail of the databind version.
+     *
+     * @param action the action expected to be refused
+     * @return the refusal, or {@code null} if the action was not refused for that reason
+     */
+    private static IllegalArgumentException refusalOf(final ThrowingAction action) {
+        try {
+            action.run();
+            return null;
+        } catch (final Throwable thrown) {
+            Throwable cursor = thrown;
+            for (int depth = 0; cursor != null && depth < 16; depth++) {
+                if (cursor instanceof IllegalArgumentException refusal) {
+                    return refusal;
+                }
+                cursor = cursor.getCause();
+            }
+            return null;
+        }
+    }
+
+    /** An action that may throw any exception, so that {@link #refusalOf} can invoke it. */
+    @FunctionalInterface
+    private interface ThrowingAction {
+
+        /**
+         * Runs the action.
+         *
+         * @throws Exception if the action fails, which is the case under test
+         */
+        void run() throws Exception;
     }
 }

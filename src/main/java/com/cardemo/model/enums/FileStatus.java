@@ -3,8 +3,9 @@
  * Program     : FileStatus.java
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 enumeration
- * Function    : Typed COBOL FILE STATUS values and the four-character
- *               IO-STATUS-04 rendering.
+ * Function    : Typed COBOL FILE STATUS values, the byte-exact
+ *               four-character IO-STATUS-04 rendering, and the
+ *               log-safe encoded rendering used for diagnostics.
  * Source      : app/cbl/CBTRN02C.cbl:L131-L144,L714-L727 @ 7756d89
  *               app/cbl/CBSTM03A.CBL:L736,L748 @ 7756d89
  * ******************************************************************
@@ -32,9 +33,9 @@ import java.util.Map;
 import java.util.Optional;
 
 /**
- * Typed representation of the COBOL {@code FILE STATUS} values that the CardDemo batch corpus tests,
- * together with the byte exact four character {@code IO-STATUS-04} rendering that the corpus writes to
- * SYSOUT whenever an input or output guard fails.
+ * Typed representation of the COBOL {@code FILE STATUS} values that the CardDemo batch corpus tests, together
+ * with the byte exact four character {@code IO-STATUS-04} rendering that the corpus writes to SYSOUT whenever
+ * an input or output guard fails.
  *
  * <h2>What this type does, and what it deliberately refuses to do</h2>
  *
@@ -182,10 +183,11 @@ import java.util.Optional;
  * <h2>Build and test</h2>
  *
  * <p>This type is compiled by the root {@code pom.xml} for Java 25 with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so an unused import, a raw type, a switch fall through or a missing
- * {@code serialVersionUID} is a build failure rather than a warning. Build with
- * {@code mvn -B clean compile}, run the unit suite with {@code mvn -B clean test} and gate coverage with
- * {@code mvn -B verify}, which enforces an eighty percent line floor. The type adds no dependency, needs
+ * {@code failOnWarning}, so a raw type, a switch fall through or a missing {@code serialVersionUID} is a
+ * build failure rather than a warning. An unused import is not - {@code javac} 25.0.3 publishes no lint
+ * key for one, so Rule 1 Clause B's prohibition on it is enforced by review. Build with
+ * {@code ./mvnw -B clean compile}, run the unit suite with {@code ./mvnw -B clean test} and gate coverage with
+ * {@code ./mvnw -B verify}, which enforces an eighty percent line floor. The type adds no dependency, needs
  * no annotation processor and does not use Lombok. Its unit tests belong in
  * {@code src/test/java/com/cardemo/unit/model} and must cover both rendering branches, every constant and
  * the malformed input cases, because the rendering is compared byte for byte against the legacy baseline.
@@ -224,247 +226,167 @@ import java.util.Optional;
  *   <li>{@link #classify(String)} returning {@link #IO_ERROR} for a value such as {@code "90"} is correct
  *       and not a bug: the corpus's branch predicate is an inclusive or, so a first byte of {@code '9'}
  *       wins even when the pair is entirely numeric.</li>
+ *   <li>A diagnostic record that appears to have been split in two, or that ends earlier than the message
+ *       that produced it, means a raw status byte reached it. Remediation: the caller used
+ *       {@link #renderIoStatus04(String)} where it needed
+ *       {@link #renderIoStatus04ForDiagnostics(String)}. See the choice below.</li>
+ *   <li>A diagnostic reading {@code \\u0009010} is not a defect. That is the encoded form of a tab, and it
+ *       is what {@link #renderIoStatus04ForDiagnostics(String)} is for.</li>
  * </ul>
  *
+ * <h2>Choosing between the two renderings</h2>
+ *
+ * <p>This class owns two renderings of a status and the choice between them is not stylistic:
+ *
+ * <ul>
+ *   <li>Use {@link #renderIoStatus04(String)} when reproducing the legacy {@code DISPLAY} line, whose
+ *       bytes the end to end parity gate compares against the baseline. It copies malformed bytes through
+ *       unaltered, because that is what the corpus does.</li>
+ *   <li>Use {@link #renderIoStatus04ForDiagnostics(String)} for every log line, exception message and
+ *       stored diagnostic field. It encodes anything that is not printable ASCII, and for every status the
+ *       corpus actually produces its output is character for character identical to the parity
+ *       rendering.</li>
+ * </ul>
+ *
+ * <p>If both are needed at one site, emit the parity line and carry the encoded form in the message; they
+ * are not alternatives to each other and neither is a replacement for the other.
+ *
  * @see #renderIoStatus04(String)
+ * @see #renderIoStatus04ForDiagnostics(String)
  */
 public enum FileStatus {
 
     /**
-     * File status {@code '00'}, the normal successful completion of an input or output operation.
-     *
-     * <p>Provenance: 88 literal occurrences of {@code '00'} in {@code app/cbl}, which makes it the most
-     * frequently tested literal in the corpus. The canonical site is {@code app/cbl/CBTRN02C.cbl:L239},
-     * {@code IF DALYTRAN-STATUS = '00'}, the success arm of the guard idiom quoted on this type. The same
-     * comparison opens the lenient read guard at {@code app/cbl/CBTRN02C.cbl:L481}.
-     *
-     * <p>This constant asserts only that the operation reported normal completion. Whether normal
-     * completion is what a particular call site wanted is not decided here.
+     * File status {@code '00'}, the normal successful completion of an input or output operation. The most
+     * frequently tested literal in the corpus; the canonical site is {@code IF DALYTRAN-STATUS = '00'} at
+     * {@code app/cbl/CBTRN02C.cbl:239}, the success arm of the guard idiom this type exists to replace.
      */
     SUCCESS("00"),
 
     /**
-     * File status {@code '04'}, a successful operation reported with a secondary condition, accepted as
-     * success at the statement generation file service call sites and nowhere else in the corpus.
-     *
-     * <p>Provenance: 9 literal occurrences, all of them in {@code app/cbl/CBSTM03A.CBL}, in the form
-     * {@code IF WS-M03B-RC = '00' OR '04'} at L736, L748, L771, L789, L807, L862, L879, L895 and L911.
-     * L736 and L748 are the open and the read of {@code 8100-TRNXFILE-OPEN}, whose paragraph begins at
-     * L730 and whose else branch displays {@code 'ERROR OPENING TRNXFILE'} and abends at L739 to L741.
-     *
-     * <p>Two properties of this value are worth stating because they are easy to over generalise.
-     * <strong>First, the tolerance is site conditional.</strong> The same program tests
-     * {@code EVALUATE WS-M03B-RC} at L353, L379, L403 and L837 and there accepts {@code '00'} alone.
-     * <strong>Second, the tolerance is defensive.</strong> The literal {@code '04'} does not appear even
-     * once in the callee {@code app/cbl/CBSTM03B.CBL}, which simply copies each file status into
-     * {@code LK-M03B-RC PIC X(02)}, declared at {@code app/cbl/CBSTM03B.CBL:L109} and assigned at L152,
-     * L176, L201 and L226, so the caller is guarding against a value its callee never produces.
-     *
-     * <p>Because the tolerance varies by site, this constant carries no notion of being acceptable. The
-     * caller decides, which is precisely why no {@code isSuccess} convenience predicate exists on this
-     * type.
+     * File status {@code '04'}, a successful operation reported with a secondary condition, accepted as success
+     * at the statement generation file service call sites and nowhere else in the corpus. Every occurrence is
+     * the form {@code IF WS-M03B-RC = '00' OR '04'} in {@code app/cbl/CBSTM03A.CBL}, at L736, L748, L771, L789,
+     * L807, L862, L879, L895 and L911. The tolerance is defensive: the callee {@code app/cbl/CBSTM03B.cbl}
+     * never produces this value, so the caller accepts a status it cannot in practice receive.
      */
     SUCCESS_SECONDARY("04"),
 
     /**
-     * File status {@code '10'}, end of file. <strong>This is loop termination and not an error.</strong>
-     *
-     * <p>Provenance: 11 literal occurrences of {@code '10'} in {@code app/cbl}. The canonical site is
-     * {@code app/cbl/CBTRN02C.cbl:L351}, {@code IF DALYTRAN-STATUS = '10'}, whose arm moves 16 into
-     * {@code APPL-RESULT} at L352 so that the {@code APPL-EOF} condition name declared at
-     * {@code app/cbl/CBTRN02C.cbl:L144} becomes true and the driving loop stops without reaching the
-     * abend guard. The remaining sites are {@code app/cbl/CBTRN01C.cbl:L207},
-     * {@code app/cbl/CBACT01C.cbl:L98}, {@code app/cbl/CBACT02C.cbl:L98},
-     * {@code app/cbl/CBACT03C.cbl:L98}, {@code app/cbl/CBACT04C.cbl:L330},
-     * {@code app/cbl/CBCUS01C.cbl:L98}, {@code app/cbl/CBTRN03C.cbl:L225},
-     * {@code app/cbl/CBTRN03C.cbl:L254}, {@code app/cbl/CBSTM03A.CBL:L356} and
-     * {@code app/cbl/CBSTM03A.CBL:L841}.
-     *
-     * <p>Treating this value as a failure is the single most damaging misreading of the corpus available,
-     * because it would turn every normal end of input into an abend. It is nevertheless still the caller
-     * that decides, since a read that reports end of file where a record was mandatory is a different
-     * matter from a driving loop reaching the end of its input.
+     * File status {@code '10'}, end of file. <strong>This is loop termination and not an error.</strong> The
+     * canonical site is {@code IF DALYTRAN-STATUS = '10'} at {@code app/cbl/CBTRN02C.cbl:351}, whose arm makes
+     * the {@code APPL-EOF} condition name declared at {@code app/cbl/CBTRN02C.cbl:144} true so that the driving
+     * loop stops without reaching the abend guard.
      */
     END_OF_FILE("10"),
 
     /**
-     * File status {@code '22'}, an attempt to add a record whose key duplicates an existing one.
-     *
-     * <p><strong>Provenance, stated precisely because the obvious citation does not exist.</strong> There
-     * are <em>zero</em> literal occurrences of {@code '22'} anywhere in {@code app/cbl}. The batch
-     * programs never test it, because they either write to sequential output or accept a not found status
-     * on the upsert path. The value is grounded instead in the online programs, which run under the
-     * transaction monitor and test the equivalent response codes rather than a file status. Those
-     * response codes are real, and these are their lines:
-     * <ul>
-     *   <li>{@code app/cbl/COUSR01C.cbl:L260-L261}, the canonical site, stacks
-     *       {@code WHEN DFHRESP(DUPKEY)} and {@code WHEN DFHRESP(DUPREC)} on the user add write and
-     *       answers both with the message {@code 'User ID already exist...'} at L263.</li>
-     *   <li>{@code app/cbl/COTRN02C.cbl:L735-L736} stacks the same two and answers with
-     *       {@code 'Tran ID already exist...'} at L738.</li>
-     *   <li>{@code app/cbl/COBIL00C.cbl:L533-L534} stacks the same two on the bill payment write.</li>
-     *   <li>{@code app/cbl/COCRDLIC.cbl:L1158}, {@code app/cbl/COCRDLIC.cbl:L1209},
-     *       {@code app/cbl/COCRDLIC.cbl:L1306} and {@code app/cbl/COCRDLIC.cbl:L1334} each carry
-     *       {@code WHEN DFHRESP(DUPREC)}.</li>
-     * </ul>
-     * The census over {@code app/cbl} is {@code DFHRESP(DUPREC)} 7 sites and {@code DFHRESP(DUPKEY)} 3
-     * sites. No literal {@code '22'} citation is offered anywhere in this file, because none would be
-     * true.
+     * File status {@code '22'}, an attempt to add a record whose key duplicates an existing one. The corpus
+     * never writes the literal; the online programs express the same condition as a CICS response code, and the
+     * canonical site stacks {@code WHEN DFHRESP(DUPKEY)} and {@code WHEN DFHRESP(DUPREC)} on the user add write
+     * at {@code app/cbl/COUSR01C.cbl:260-261}, answering both with one message.
      */
     DUPLICATE_KEY("22"),
 
     /**
-     * File status {@code '23'}, record not found, or an invalid or duplicate key on a random read.
-     *
-     * <p>Provenance: exactly 3 literal occurrences in {@code app/cbl}, and all three matter.
-     * {@code app/cbl/CBTRN02C.cbl:L481} reads {@code IF TCATBALF-STATUS = '00'  OR '23'};
-     * {@code app/cbl/CBACT04C.cbl:L422} reads {@code IF DISCGRP-STATUS  = '00'  OR '23'}; and
-     * {@code app/cbl/CBACT04C.cbl:L436} reads {@code IF DISCGRP-STATUS  = '23'}. Two of the three are
-     * leniency guards and the third is the specific test that triggers the default disclosure group
-     * substitution. The online programs express the same condition as {@code DFHRESP(NOTFND)}, which
-     * occurs 23 times in {@code app/cbl}.
-     *
-     * <p>The consequence for the caller is stated on this type under the heading about the three lenient
-     * sites: at those sites this value is an accepted control path, and everywhere else it is an error
-     * that reaches the abend guard. This constant does not encode which case applies, because that is
-     * exactly the decision reserved for {@code com.cardemo.service.shared.FileStatusMapper}.
+     * File status {@code '23'}, record not found, or an invalid or duplicate key on a random read. All three
+     * literal occurrences matter: {@code IF TCATBALF-STATUS = '00' OR '23'} at {@code app/cbl/CBTRN02C.cbl:481}
+     * and {@code IF DISCGRP-STATUS = '00' OR '23'} at {@code app/cbl/CBACT04C.cbl:422} accept it as success,
+     * while {@code IF DISCGRP-STATUS = '23'} at {@code app/cbl/CBACT04C.cbl:436} selects the default group
+     * retry. The online programs express the same condition as {@code DFHRESP(NOTFND)}.
      */
     RECORD_NOT_FOUND("23"),
 
     /**
-     * File status {@code '35'}, an attempt to open a file that is unavailable, most usually because it
-     * does not exist.
-     *
-     * <p><strong>Not available.</strong> This value has no grounding whatsoever in the frozen corpus.
-     * There are zero literal occurrences of {@code '35'} anywhere under {@code app/}, and the response
-     * code the online programs would use for the same condition, {@code DFHRESP(NOTOPEN)}, is confirmed
-     * absent as well: a search of the entire {@code app/} tree for {@code NOTOPEN} returns no results.
-     * For completeness, the full response code census over {@code app/cbl} is {@code DFHRESP(NORMAL)} 43,
-     * {@code DFHRESP(NOTFND)} 23, {@code DFHRESP(ENDFILE)} 8, {@code DFHRESP(DUPREC)} 7,
-     * {@code DFHRESP(DUPKEY)} 3 and {@code DFHRESP(NOTOPEN)} 0. No {@code app/} line citation is offered
-     * for this constant, because inventing one would be a false citation.
-     *
-     * <p>The value is therefore <strong>specification derived</strong>. It is present for two stated
-     * reasons: it completes the six family status taxonomy the migration specification mandates, and it
-     * gives {@code com.cardemo.exception.FileUnavailableException} a typed antecedent so that the
-     * exception hierarchy is not the only place the condition is named.
-     *
-     * <p><strong>Finding, severity Medium.</strong> A constant that no source line justifies is a
-     * traceability gap rather than a correctness defect: nothing in the corpus can produce it, so no
-     * parity comparison can disagree about it, but equally no test derived from the corpus can prove it
-     * behaves correctly. What would be needed to close the gap is precisely one of two artefacts, neither
-     * of which exists at commit {@code 7756d89}: a literal {@code '35'} comparison in a COBOL program, or
-     * a {@code DFHRESP(NOTOPEN)} handler in an online program. Remediation, should the gap ever need
-     * closing: re-run the two searches against the frozen tree and, if they still return nothing, keep
-     * this constant documented as specification derived rather than promoting it to a cited value.
+     * File status {@code '35'}, an attempt to open a file that is unavailable, most usually because it does not
+     * exist. The frozen corpus never tests this condition: neither the literal {@code '35'} nor
+     * {@code DFHRESP(NOTOPEN)} occurs anywhere under {@code app/}. It is carried because the status contract
+     * names it and the Java layer must represent an unreachable datasource, bucket or queue, so no source line
+     * is cited for it.
      */
     FILE_UNAVAILABLE("35"),
 
     /**
-     * The {@code '9x'} family: a physical or logical input or output error, whose first byte is
-     * {@code '9'} and whose second byte carries an implementation defined subcode.
-     *
-     * <p><strong>This constant is a family and not an exact value.</strong> It is the only such constant
-     * on this type. {@link #code()} returns an empty {@link Optional} for it, {@link #isFamily()} returns
-     * {@code true}, {@link #isExactValue()} returns {@code false}, and {@link #fromCode(String)} never
-     * returns it. Nothing may assume that it can be converted back into a two character string, because
-     * the corpus itself never writes one: there is no literal {@code '9x'} pair anywhere.
-     *
-     * <p>Provenance: the corpus tests the first byte alone. The direct evidence is the guard
-     * {@code IO-STAT1 = '9'} at {@code app/cbl/CBTRN02C.cbl:L716}, replicated verbatim at eight sites in
-     * total, the remaining seven being {@code app/cbl/CBTRN01C.cbl:L478},
-     * {@code app/cbl/CBTRN03C.cbl:L635}, {@code app/cbl/CBACT01C.cbl:L178},
-     * {@code app/cbl/CBACT02C.cbl:L163}, {@code app/cbl/CBACT03C.cbl:L163},
-     * {@code app/cbl/CBACT04C.cbl:L637} and {@code app/cbl/CBCUS01C.cbl:L163}. Eight sites across eight
-     * programs is every program that contains the renderer, which makes the idiom universal rather than
-     * incidental.
-     *
-     * <p>The reason the corpus singles this family out is the rendering, not the classification. A
-     * {@code '9x'} status carries a binary subcode in its second byte, so the byte cannot be displayed
-     * directly and is instead expanded into three decimal digits. That expansion is
-     * {@link #renderIoStatus04(String)} branch A, and it is the whole purpose of the
-     * {@code TWO-BYTES-BINARY} and {@code TWO-BYTES-ALPHA} redefinition declared at
-     * {@code app/cbl/CBTRN02C.cbl:L134-L137}.
+     * The {@code '9x'} family: a physical or logical input or output error, whose first byte is {@code '9'} and
+     * whose second byte carries an implementation defined subcode. The guard is {@code IO-STAT1 = '9'} at
+     * {@code app/cbl/CBTRN02C.cbl:716}, and the subcode expansion it selects is the reason the
+     * {@code TWO-BYTES-BINARY} over {@code TWO-BYTES-ALPHA} redefinition at
+     * {@code app/cbl/CBTRN02C.cbl:134-137} exists.
      */
     IO_ERROR("");
 
     /**
-     * The exact literal that {@code app/cbl/CBTRN02C.cbl:L721} and {@code app/cbl/CBTRN02C.cbl:L725}
-     * place in front of the rendered status, reproduced byte for byte at twenty characters with the
-     * stray placeholder intact.
-     *
-     * <p><strong>Preserved legacy quirk. Do not repair this.</strong> COBOL's
-     * {@code DISPLAY 'literal' identifier} concatenates its operands with no separator whatsoever. The
-     * literal in the corpus is {@code FILE STATUS IS: NNNN}, which already contains the placeholder text
-     * {@code NNNN}, and the four real characters of {@code IO-STATUS-04} are appended <em>after</em> it
-     * rather than substituted into it. The line the legacy system emits for status {@code '23'} is
-     * therefore, exactly:
-     *
-     * <pre>
-     * FILE STATUS IS: NNNN0023
-     * </pre>
-     *
-     * and <em>not</em> {@code FILE STATUS IS: 0023}. The stray {@code NNNN} is a placeholder the original
-     * author left in the message while also appending the real value. The end to end parity gate compares
-     * log output byte for byte against the legacy baseline, so removing the placeholder, inserting a
-     * separator or substituting the value into the placeholder each produce a diff. All three are
-     * forbidden.
-     *
-     * <p><strong>How to use this constant.</strong> The full legacy line is this prefix immediately
-     * followed by {@link #renderIoStatus04(String)}, with nothing between them:
-     *
-     * <pre>
-     * String line = FileStatus.DISPLAY_MESSAGE_PREFIX + FileStatus.renderIoStatus04(status);
-     * </pre>
-     *
-     * <p><strong>Warning against double prefixing.</strong> The caller must not add any file status
-     * wording of its own. This constant already contains the whole of it, including the colon, the single
-     * following space and the placeholder. Prepending another {@code FILE STATUS} phrase, wrapping the
-     * value in a structured logging field whose name repeats the phrase, or passing the prefix through a
-     * message formatter that trims or collapses whitespace will all break the byte comparison.
-     *
-     * <p>This constant exists so that the byte exact text lives in exactly one place in the codebase.
-     * There is deliberately no method here that assembles or emits the line, because emitting it is
-     * logging and this type does not log.
+     * The exact literal that {@code app/cbl/CBTRN02C.cbl:L721} and {@code app/cbl/CBTRN02C.cbl:L725} place in
+     * front of the rendered status, reproduced byte for byte at twenty characters with the stray placeholder
+     * intact.
      */
     public static final String DISPLAY_MESSAGE_PREFIX = "FILE STATUS IS: NNNN";
 
     /**
-     * The width of a COBOL file status field, two characters, fixed by
-     * {@code app/cbl/CBTRN02C.cbl:L131-L133} where {@code IO-STATUS} is a group of two
-     * {@code PIC X} items, and independently by {@code app/cbl/CBSTM03B.CBL:L109} where the file service
-     * return code is declared {@code LK-M03B-RC PIC X(02)}.
+     * The width of a COBOL file status field, two characters, fixed by {@code app/cbl/CBTRN02C.cbl:L131-L133}
+     * where {@code IO-STATUS} is a group of two {@code PIC X} items, and independently by
+     * {@code app/cbl/CBSTM03B.CBL:L109} where the file service return code is declared
+     * {@code LK-M03B-RC PIC X(02)}.
      */
     public static final int STATUS_CODE_LENGTH = 2;
 
     /**
-     * The width of the rendered status, four characters, fixed by {@code app/cbl/CBTRN02C.cbl:L138-L140}
-     * where {@code IO-STATUS-04} is a group of {@code PIC 9} followed by {@code PIC 999}. Every value
-     * returned by {@link #renderIoStatus04(String)} is exactly this long.
+     * The width of the rendered status, four characters, fixed by {@code app/cbl/CBTRN02C.cbl:L138-L140} where
+     * {@code IO-STATUS-04} is a group of {@code PIC 9} followed by {@code PIC 999}. Every value returned by
+     * {@link #renderIoStatus04(String)} is exactly this long.
      */
     public static final int RENDERED_STATUS_LENGTH = 4;
 
     /**
-     * The first byte that identifies the {@link #IO_ERROR} family, taken from the guard
-     * {@code IO-STAT1 = '9'} at {@code app/cbl/CBTRN02C.cbl:L716}. The second byte of such a status is
-     * unconstrained, which is why {@link #IO_ERROR} is a family rather than a value.
+     * The first byte that identifies the {@link #IO_ERROR} family, taken from the guard {@code IO-STAT1 = '9'}
+     * at {@code app/cbl/CBTRN02C.cbl:L716}. The second byte of such a status is unconstrained, which is why
+     * {@link #IO_ERROR} is a family rather than a value.
      */
     public static final char IO_ERROR_FIRST_BYTE = '9';
 
     /**
-     * The character a COBOL {@code MOVE} into an alphanumeric item uses to pad on the right when the
-     * sending item is shorter than the receiving one. Used by the fixed width normalisation that
+     * The character a COBOL {@code MOVE} into an alphanumeric item uses to pad on the right when the sending
+     * item is shorter than the receiving one. Used by the fixed width normalisation that
      * {@link #renderIoStatus04(String)} applies before it reproduces the two display branches.
      */
     private static final char COBOL_FILL_CHARACTER = ' ';
 
     /**
      * Mask that reduces a Java {@code char} to its low order byte, reproducing the one byte
-     * {@code MOVE IO-STAT2 TO TWO-BYTES-RIGHT} at {@code app/cbl/CBTRN02C.cbl:L719}. Because the result
-     * is necessarily in the range 0 to 255 it also guarantees the three digit width of
+     * {@code MOVE IO-STAT2 TO TWO-BYTES-RIGHT} at {@code app/cbl/CBTRN02C.cbl:L719}. Because the result is
+     * necessarily in the range 0 to 255 it also guarantees the three digit width of
      * {@code IO-STATUS-0403 PIC 999}, so no further truncation step is required or present.
      */
     private static final int LOW_ORDER_BYTE_MASK = 0xFF;
+
+    /**
+     * Lowest character {@link #escapeForDiagnostics(String)} passes through unaltered, the ASCII space at
+     * {@code 0x20}. Every character below it is a control character, and a control character reaching a log
+     * record can terminate it early or begin a forged one.
+     */
+    private static final char PRINTABLE_ASCII_MIN = ' ';
+
+    /**
+     * Highest character {@link #escapeForDiagnostics(String)} passes through unaltered, the ASCII tilde at
+     * {@code 0x7E}. This deliberately excludes {@code DEL} at {@code 0x7F} and everything above it, so the
+     * C1 control range and every high bit byte are encoded rather than emitted.
+     */
+    private static final char PRINTABLE_ASCII_MAX = '~';
+
+    /**
+     * The character that introduces an escape produced by {@link #escapeForDiagnostics(String)}, and which
+     * is itself doubled so that the encoding is injective. See that method for why the doubling is
+     * load bearing rather than cosmetic.
+     */
+    private static final char DIAGNOSTIC_ESCAPE_CHARACTER = '\\';
+
+    /**
+     * Spare capacity given to the buffer in {@link #escapeForDiagnostics(String)}. Sized so that the
+     * common case - a well formed status of {@value #STATUS_CODE_LENGTH} characters, or its
+     * {@value #RENDERED_STATUS_LENGTH} character rendering, neither of which needs any escape - never
+     * reallocates, without over allocating for a value that needs no encoding at all.
+     */
+    private static final int ESCAPE_HEADROOM = 8;
 
     /**
      * Immutable index from an exact two character code to its constant, built once at class
@@ -479,18 +401,14 @@ public enum FileStatus {
 
     /**
      * The exact two character COBOL file status this constant represents, or the empty string for
-     * {@link #IO_ERROR}, which is a family and has no single code. Never {@code null}: the empty string is
-     * used as the family marker so that no field, accessor or map entry in this type can ever be null.
+     * {@link #IO_ERROR}, which is a family and has no single code. Never {@code null}: the empty string is used
+     * as the family marker so that no field, accessor or map entry in this type can ever be null.
      */
     private final String code;
 
     /**
-     * Binds a constant to its exact two character code, or to the empty string when the constant denotes
-     * a family.
-     *
-     * <p>The empty string is written as a literal at the {@link #IO_ERROR} declaration rather than being
-     * referenced through a named constant, because an enum constant's arguments may not refer to a static
-     * field of the enum being declared.
+     * Binds a constant to its exact two character code, or to the empty string when the constant denotes a
+     * family.
      *
      * @param code the exact two character status, or the empty string for a family constant
      */
@@ -501,21 +419,16 @@ public enum FileStatus {
     /**
      * Returns the exact two character COBOL file status this constant represents.
      *
-     * <p>Pure function; no side effect, no state read or written beyond this constant's own immutable
-     * field.
-     *
      * @return the two character code for one of the six exact constants, or an empty {@link Optional} for
-     *         {@link #IO_ERROR}, which is a family and has no single canonical code. Never {@code null}
+     * {@link #IO_ERROR}, which is a family and has no single canonical code.
      */
     public Optional<String> code() {
         return this.code.isEmpty() ? Optional.empty() : Optional.of(this.code);
     }
 
     /**
-     * Reports whether this constant stands for one exact two character value, which is true of every
-     * constant except {@link #IO_ERROR}.
-     *
-     * <p>Pure function; no side effect.
+     * Reports whether this constant stands for one exact two character value, which is true of every constant
+     * except {@link #IO_ERROR}.
      *
      * @return {@code true} when {@link #code()} yields a value, {@code false} for the family constant
      */
@@ -524,10 +437,8 @@ public enum FileStatus {
     }
 
     /**
-     * Reports whether this constant stands for a family of statuses matched on their first byte alone
-     * rather than for one exact value. Only {@link #IO_ERROR} is such a family.
-     *
-     * <p>Pure function; no side effect.
+     * Reports whether this constant stands for a family of statuses matched on their first byte alone rather
+     * than for one exact value. Only {@link #IO_ERROR} is such a family.
      *
      * @return {@code true} for {@link #IO_ERROR}, {@code false} for the six exact constants
      */
@@ -538,22 +449,9 @@ public enum FileStatus {
     /**
      * Reports whether the supplied raw file status belongs to this constant.
      *
-     * <p>For the six exact constants the test is equality against the two character code. For
-     * {@link #IO_ERROR} the test is the corpus's own test, namely that the first byte equals
-     * {@value #IO_ERROR_FIRST_BYTE}, exactly as {@code IO-STAT1 = '9'} at
-     * {@code app/cbl/CBTRN02C.cbl:L716} does; the second byte is unconstrained.
-     *
-     * <p><strong>This method is strict and does not normalise its argument.</strong> Anything that is not
-     * exactly {@value #STATUS_CODE_LENGTH} characters long, including {@code null}, is a miss rather than
-     * a value to be coerced into shape, because silently reshaping an untrusted value before classifying
-     * it is how a malformed status ends up misclassified as a success. The deliberately different, total
-     * treatment applied by {@link #renderIoStatus04(String)} is explained there.
-     *
-     * <p>Pure function; no side effect.
-     *
      * @param ioStatus the raw two character file status, which may be {@code null}
-     * @return {@code true} when the status belongs to this constant, {@code false} otherwise, including
-     *         for {@code null} and for any length other than {@value #STATUS_CODE_LENGTH}
+     * @return {@code true} when the status belongs to this constant, {@code false} otherwise, including for
+     * {@code null} and for any length other than {@value #STATUS_CODE_LENGTH}
      */
     public boolean matches(String ioStatus) {
         if (!isWellFormed(ioStatus)) {
@@ -565,18 +463,9 @@ public enum FileStatus {
     /**
      * Looks up the constant whose exact two character code equals the supplied value.
      *
-     * <p>This is an exact value lookup and nothing more. It <strong>never</strong> returns
-     * {@link #IO_ERROR}, because that constant is a family with no code to match; a {@code '9x'} status
-     * therefore yields an empty result here even though it is perfectly classifiable. Use
-     * {@link #classify(String)} or {@link #tryClassify(String)} when family matching is wanted.
-     *
-     * <p>The lookup is a single constant time query against an immutable map built once at class
-     * initialisation. Pure function; no side effect.
-     *
      * @param ioStatus the raw two character file status, which may be {@code null}
-     * @return the matching exact constant, or an empty {@link Optional} when the value is {@code null},
-     *         is not exactly {@value #STATUS_CODE_LENGTH} characters long, or is not one of the six exact
-     *         codes. Never {@code null}
+     * @return the matching exact constant, or an empty {@link Optional} when the value is {@code null}, is not
+     * exactly {@value #STATUS_CODE_LENGTH} characters long, or is not one of the six exact codes.
      */
     public static Optional<FileStatus> fromCode(String ioStatus) {
         if (!isWellFormed(ioStatus)) {
@@ -586,23 +475,13 @@ public enum FileStatus {
     }
 
     /**
-     * Classifies a raw file status without ever raising an exception, matching the six exact codes first
-     * and then the {@link #IO_ERROR} family.
-     *
-     * <p><strong>An empty result is meaningful and is not an error signal.</strong> It corresponds exactly
-     * to the else branch of the corpus's guard idiom and to the {@code WHEN OTHER} arm of its
-     * {@code EVALUATE} form: a status the legacy programs do not recognise, which they answer by
-     * abending with code 999 and process return code 12 as described on this type. This method reports
-     * that condition and deliberately does not act on it, because acting on it is the caller's decision.
-     *
-     * <p>Prefer this method wherever the input is untrusted or where an unrecognised value is an expected
-     * outcome to be handled, and prefer {@link #classify(String)} where an unrecognised value would be a
-     * programming error. Pure function; no side effect; never returns {@code null}.
+     * Classifies a raw file status without ever raising an exception, matching the six exact codes first and
+     * then the {@link #IO_ERROR} family.
      *
      * @param ioStatus the raw two character file status, which may be {@code null}
      * @return the matching constant, or an empty {@link Optional} when the value is {@code null}, is not
-     *         exactly {@value #STATUS_CODE_LENGTH} characters long, or matches neither an exact code nor
-     *         the family first byte
+     * exactly {@value #STATUS_CODE_LENGTH} characters long, or matches neither an exact code nor the family
+     * first byte
      */
     public static Optional<FileStatus> tryClassify(String ioStatus) {
         if (!isWellFormed(ioStatus)) {
@@ -616,22 +495,13 @@ public enum FileStatus {
     }
 
     /**
-     * Classifies a raw file status, matching the six exact codes first and then the {@link #IO_ERROR}
-     * family, and refuses anything it cannot classify.
-     *
-     * <p>Note that a numeric pair beginning with {@value #IO_ERROR_FIRST_BYTE}, such as {@code "90"},
-     * classifies as {@link #IO_ERROR} rather than as an unrecognised value. That follows the corpus, whose
-     * branch predicate at {@code app/cbl/CBTRN02C.cbl:L715-L716} is an inclusive or between the value not
-     * being numeric and its first byte being {@code '9'}.
-     *
-     * <p>This method never returns {@code null} and never silently absorbs an unusable input. Pure
-     * function; no side effect beyond the thrown exception's construction.
+     * Classifies a raw file status, matching the six exact codes first and then the {@link #IO_ERROR} family,
+     * and refuses anything it cannot classify.
      *
      * @param ioStatus the raw two character file status, which may be {@code null}
      * @return the matching constant, never {@code null}
      * @throws IllegalArgumentException when the value is {@code null}, is not exactly
-     *         {@value #STATUS_CODE_LENGTH} characters long, or matches neither an exact code nor the
-     *         family first byte. The message quotes the offending value and names every recognised form
+     * {@value #STATUS_CODE_LENGTH} characters long, or matches neither an exact code nor the family first byte.
      */
     public static FileStatus classify(String ioStatus) {
         return tryClassify(ioStatus).orElseThrow(() -> new IllegalArgumentException(
@@ -729,13 +599,23 @@ public enum FileStatus {
      * immediately followed by this rendering with no separator, and for the preserved placeholder quirk
      * that makes the line for status {@code '23'} read {@code FILE STATUS IS: NNNN0023}.
      *
+     * <p><strong>This rendering is for the parity line, not for a log message.</strong> Branch A copies the
+     * first status byte through unaltered and branch B copies both, so a malformed status containing a tab,
+     * a newline or a high bit byte is reproduced verbatim - which is exactly right for a byte comparison
+     * against the baseline and exactly wrong for a diagnostic record, where such a byte can truncate the
+     * record or forge a second one. Any log line, exception message or stored diagnostic field must use
+     * {@link #renderIoStatus04ForDiagnostics(String)} instead; for every status the corpus actually
+     * produces the two return identical text, so the safe choice costs nothing.
+     *
      * <p>Pure function; no side effect; deterministic; independent of the platform default locale, charset
      * and time zone.
      *
      * @param ioStatus the raw file status, ordinarily exactly {@value #STATUS_CODE_LENGTH} characters, and
-     *                 tolerated when {@code null}, shorter or longer as described above
+     * tolerated when {@code null}, shorter or longer, in which case it is first normalised to exactly
+     * {@value #STATUS_CODE_LENGTH} characters
      * @return the four character rendering, never {@code null} and always exactly
      *         {@value #RENDERED_STATUS_LENGTH} characters long
+     * @see #renderIoStatus04ForDiagnostics(String)
      */
     public static String renderIoStatus04(String ioStatus) {
         String field = normaliseToStatusField(ioStatus);
@@ -748,12 +628,106 @@ public enum FileStatus {
     }
 
     /**
+     * Renders the status for a <strong>log line or an exception message</strong>, encoding anything that
+     * is not printable ASCII.
+     *
+     * <p>This is the log safe counterpart of {@link #renderIoStatus04(String)} and the two are
+     * deliberately separate methods rather than one method with a flag. They answer different questions
+     * and are compared against different things:
+     *
+     * <ul>
+     *   <li>{@link #renderIoStatus04(String)} answers <em>what would the legacy program have displayed</em>.
+     *       Its output is a byte for byte parity contract, so it copies the first status byte through
+     *       unaltered - including a tab, a newline or a high bit byte - because that is what
+     *       {@code MOVE IO-STAT1 TO IO-STATUS-0401} at {@code app/cbl/CBTRN02C.cbl:L718} does. It must
+     *       never be changed.</li>
+     *   <li>This method answers <em>what may safely be written into a diagnostic record</em>. A status is
+     *       not always well formed: it can arrive from a store or adapter layer that this corpus does not
+     *       control, and a control character reaching a log can terminate the record early, forge a second
+     *       record, or drive a terminal escape sequence. Encoding removes that possibility.</li>
+     * </ul>
+     *
+     * <p>Worked examples, showing that the encoding is a <strong>no operation for every status the corpus
+     * actually produces</strong> and differs only for malformed input:
+     *
+     * <pre>
+     * "00"    -&gt;  "0000"              identical to the parity rendering
+     * "23"    -&gt;  "0023"              identical
+     * "9A"    -&gt;  "9065"              identical; the expansion is already ASCII digits
+     * "\t\n"  -&gt;  "\\u0009010"        the parity rendering is "\t010", a raw tab in a log line
+     * "\u00ff\u00ff" -&gt; "\\u00ff255"  the parity rendering starts with a raw 0xFF byte
+     * null    -&gt;  " 032"              identical; a space is printable
+     * </pre>
+     *
+     * <p>Because the corpus statuses are {@code "00"}, {@code "04"}, {@code "10"}, {@code "22"},
+     * {@code "23"}, {@code "35"} and the {@code '9'} family, every legitimate value renders identically
+     * through both methods. The two therefore diverge only where divergence is the point.
+     *
+     * <p>Total and never throws, for the same reason {@link #renderIoStatus04(String)} is: it runs where
+     * something has already failed, and throwing would destroy the root cause it exists to report.
+     *
+     * <p>Pure function; no side effect; deterministic; independent of the platform default locale, charset
+     * and time zone. This method does not log - it renders text for a caller that does.
+     *
+     * @param ioStatus the raw file status, tolerated when {@code null}, shorter or longer
+     * @return the encoded rendering, never {@code null}, containing printable ASCII only. Exactly
+     *         {@value #RENDERED_STATUS_LENGTH} characters when the status is well formed, and longer only
+     *         when a byte had to be encoded
+     */
+    public static String renderIoStatus04ForDiagnostics(String ioStatus) {
+        return escapeForDiagnostics(renderIoStatus04(ioStatus));
+    }
+
+    /**
+     * Encodes every character that is not printable ASCII, so that untrusted text cannot forge or corrupt
+     * a diagnostic record.
+     *
+     * <p>This is the one place the encoding rule is defined, so that no caller invents a second one that
+     * drifts from it. The rule is deliberately an allow list rather than a block list of known offenders:
+     * a character passes only when it is in the inclusive range {@code 0x20} to {@code 0x7E}, and
+     * everything else - control characters, the {@code DEL} byte, the C1 range, high bit bytes and every
+     * non ASCII code point - is replaced by a {@code \\uXXXX} escape of four lowercase hexadecimal digits.
+     * An allow list cannot be outflanked by a character nobody thought to block.
+     *
+     * <p>The backslash is itself encoded, as {@code \\\\}. That is not decoration: without it a value
+     * containing the literal seven characters {@code \\u000a} would render indistinguishably from a real
+     * newline that this method had encoded, which is precisely the ambiguity an attacker would exploit to
+     * make a forged record look like a sanitised one. Encoding the backslash makes the mapping injective,
+     * so the original value can always be recovered by inspection and never confused with another.
+     *
+     * <p>Nothing is trimmed, folded, collapsed or truncated: the value's length and content remain fully
+     * determinable from the output. This is an encoding, not a filter, so no information is lost and no
+     * root cause is obscured - which is the whole reason a diagnostic exists.
+     *
+     * <p>Pure function; no side effect; deterministic; consults no locale, charset or clock. Total: it
+     * never throws, and a {@code null} argument yields the empty string rather than the four characters
+     * {@code null}, which would otherwise become indistinguishable from a status that literally read
+     * {@code "nu"}.
+     *
+     * @param value the text to encode, which may be {@code null}, empty, or of any length
+     * @return the encoded text, never {@code null} and containing printable ASCII only
+     */
+    public static String escapeForDiagnostics(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder encoded = new StringBuilder(value.length() + ESCAPE_HEADROOM);
+        for (int position = 0; position < value.length(); position++) {
+            char character = value.charAt(position);
+            if (character == DIAGNOSTIC_ESCAPE_CHARACTER) {
+                encoded.append(DIAGNOSTIC_ESCAPE_CHARACTER).append(DIAGNOSTIC_ESCAPE_CHARACTER);
+            } else if (character < PRINTABLE_ASCII_MIN || character > PRINTABLE_ASCII_MAX) {
+                encoded.append(String.format(Locale.ROOT, "\\u%04x", (int) character));
+            } else {
+                encoded.append(character);
+            }
+        }
+        return encoded.toString();
+    }
+
+    /**
      * Builds the immutable exact code index from a single pass over the constants, so that the codes are
      * declared in exactly one place, namely the enum constants themselves.
-     *
-     * <p>{@link #values()} is called once here, at class initialisation, and never from a loop or from a
-     * request path. The family constant is skipped because it has no code. The returned map is
-     * unmodifiable and is only ever queried by key.
      *
      * @return an unmodifiable map from each exact two character code to its constant
      */
@@ -768,8 +742,8 @@ public enum FileStatus {
     }
 
     /**
-     * Reports whether a raw status is already exactly {@value #STATUS_CODE_LENGTH} characters long and so
-     * may be classified without being reshaped.
+     * Reports whether a raw status is already exactly {@value #STATUS_CODE_LENGTH} characters long and so may
+     * be classified without being reshaped.
      *
      * @param ioStatus the raw status, which may be {@code null}
      * @return {@code true} only when the value is non null and of exactly the status width
@@ -779,13 +753,9 @@ public enum FileStatus {
     }
 
     /**
-     * Reshapes an arbitrary value into the two character field that {@code IO-STATUS} declares, applying
-     * the rule a COBOL {@code MOVE} into {@code PIC X(02)} applies: left justify, pad on the right with
-     * spaces, truncate on the right.
-     *
-     * <p>A {@code null} argument is treated as an empty sender and therefore pads to two spaces. This is
-     * used only by {@link #renderIoStatus04(String)}, which must be total; the classification methods
-     * deliberately reject malformed input instead of reshaping it.
+     * Reshapes an arbitrary value into the two character field that {@code IO-STATUS} declares, applying the
+     * rule a COBOL {@code MOVE} into {@code PIC X(02)} applies: left justify, pad on the right with spaces,
+     * truncate on the right.
      *
      * @param ioStatus the raw status, which may be {@code null}, shorter or longer than the field
      * @return a string of exactly {@value #STATUS_CODE_LENGTH} characters, never {@code null}
@@ -806,14 +776,9 @@ public enum FileStatus {
     }
 
     /**
-     * Applies the COBOL {@code NUMERIC} class test to an alphanumeric item: the item is numeric when every
-     * one of its characters is a decimal digit. This is the {@code IO-STATUS NOT NUMERIC} half of the
-     * branch predicate at {@code app/cbl/CBTRN02C.cbl:L715}.
-     *
-     * <p>The comparison is written against the characters {@code '0'} and {@code '9'} on purpose.
-     * {@code java.lang.Character#isDigit} would also accept non ASCII decimal digits, so a status
-     * containing one would be routed through the wrong branch and rendered differently from the legacy
-     * baseline.
+     * Applies the COBOL {@code NUMERIC} class test to an alphanumeric item: the item is numeric when every one
+     * of its characters is a decimal digit. This is the {@code IO-STATUS NOT NUMERIC} half of the branch
+     * predicate at {@code app/cbl/CBTRN02C.cbl:L715}.
      *
      * @param statusField a value of exactly {@value #STATUS_CODE_LENGTH} characters, never {@code null}
      * @return {@code true} when every character is an ASCII decimal digit
@@ -829,10 +794,9 @@ public enum FileStatus {
     }
 
     /**
-     * Applies the {@code IO-STAT1 = '9'} half of the branch predicate at
-     * {@code app/cbl/CBTRN02C.cbl:L716}, which is also the whole of the {@link #IO_ERROR} family test.
-     * The second byte is deliberately not examined, because in the corpus it carries an implementation
-     * defined subcode and is unconstrained.
+     * Applies the {@code IO-STAT1 = '9'} half of the branch predicate at {@code app/cbl/CBTRN02C.cbl:L716},
+     * which is also the whole of the {@link #IO_ERROR} family test. The second byte is deliberately not
+     * examined, because in the corpus it carries an implementation defined subcode and is unconstrained.
      *
      * @param statusField a value of exactly {@value #STATUS_CODE_LENGTH} characters, never {@code null}
      * @return {@code true} when the first character is {@value #IO_ERROR_FIRST_BYTE}

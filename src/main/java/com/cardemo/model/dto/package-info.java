@@ -5,23 +5,12 @@
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
  * Function    : Package contract for the 17 data transfer objects
  *               replacing the BMS symbolic maps and the COMMAREA.
- * Source      : app/cpy-bms/** (17 symbolic maps, 441 input fields)
- *               + app/cpy/COCOM01Y.cpy @ 7756d89
- * Source      : app/cpy/COSTM01.CPY + app/cpy/CVTRA07Y.cpy (statement
- *               record, 32 byte key; 133 byte report lines) @ 7756d89
- * Source      : app/cpy/COMEN02Y.cpy + app/cpy/COADM02Y.cpy (menu and
- *               admin option tables, counts 10 and 4) @ 7756d89
- * Source      : app/cpy/CSSETATY.cpy (PROCEDURE DIVISION template for
- *               the three state field markers, no class here) @ 7756d89
- * Source      : app/cbl/COACTUPC.cbl:L505-L508,L746,L1256-L1275,
- *               L4174-L4179 (the stateless snapshot contract) @ 7756d89
- * Source      : app/cbl/COTRN02C.cbl:L204,L218,L383,L456 (the two
- *               distinct numeric intrinsics) @ 7756d89
- * Source      : app/cbl/COCRDLIC.cbl:L177-L178 (page size 7),
- *               app/cbl/COTRN00C.cbl:L65-L68,L290,L297 (page size 10),
- *               app/cbl/COUSR00C.cbl:L57 (page size 10) @ 7756d89
- * Source      : app/jcl/CREASTMT.JCL:L53-L54 (the statement projection
- *               truncation) @ 7756d89
+ * Source      : app/cpy-bms/** (17 symbolic maps, 460 input fields);
+ *               app/cpy/COCOM01Y.cpy (COMMAREA);
+ *               app/cpy/COSTM01.CPY + app/cpy/CVTRA07Y.cpy (statement
+ *               record, 32 byte key; 133 byte report lines);
+ *               app/cpy/COMEN02Y.cpy + app/cpy/COADM02Y.cpy (menu and
+ *               admin menu option tables) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -41,81 +30,73 @@
  */
 
 /**
- * Request and response payloads for the CardDemo REST surface, derived field for field from the 17 BMS
- * symbolic maps and the COMMAREA of the frozen COBOL corpus.
+ * Request and response payloads for the CardDemo REST surface, derived field for field from the 17 BMS symbolic
+ * maps and the COMMAREA of the frozen COBOL corpus.
  *
- * <p>The banner above names every legacy artefact this package derives from, each pinned to commit
- * {@code 7756d895ffeb65f7ea72aaa609e356d9899afcec} (short {@code 7756d89}), which is the traceability
- * anchor for the whole migration. Filename casing in those citations is load bearing and is reproduced
- * exactly as it appears on disk: all 17 members of {@code app/cpy-bms} carry an <strong>uppercase</strong>
- * {@code .CPY} extension; in {@code app/cpy} only {@code COSTM01.CPY} is uppercase while the other 27 use a
- * lowercase {@code .cpy}; in {@code app/cbl} only {@code CBSTM03A.CBL} and {@code CBSTM03B.CBL} are
- * uppercase while the other 26 use a lowercase {@code .cbl}; and in {@code app/jcl} only
- * {@code CREASTMT.JCL} is uppercase while the other 28 of the 29 members use a lowercase {@code .jcl}. A
- * case sensitive lookup that assumes the wrong form finds nothing, and a {@code *.jcl} glob silently drops
- * the sole source of statement generation.
- *
- * <h2>What it does</h2>
- *
- * <p>This package holds exactly <strong>17</strong> data transfer objects. Together with this file it
- * contains exactly <strong>18</strong> {@code .java} files and nothing else. They replace two legacy
- * mechanisms and no others: the 17 BMS symbolic maps under {@code app/cpy-bms}, which carried screen field
- * values between a 3270 terminal and a CICS program, and the COMMAREA of
- * {@code app/cpy/COCOM01Y.cpy}, which carried identity and selection state between programs across
- * {@code EXEC CICS XCTL}.
- *
- * <p>Nothing here is a screen. The 3270 and BMS presentation layer is <strong>not</strong> reimplemented:
- * there is no green screen rendering, no pseudo conversational session emulation and no user interface of
- * any kind in this package. The symbolic maps are consumed purely as <em>field contracts</em> that fix each
- * payload's field names, types and lengths.
- *
- * <h3>Verified BMS input field census: 441 fields</h3>
- *
- * <p>The census was established by counting the {@code ...I PIC} declarations lying strictly inside each
- * map's input group, that is between the {@code 01 xxxxAI.} line and the following
- * {@code 01 xxxxAO REDEFINES} line, across all 17 maps, with comment lines excluded and only COBOL columns
- * 7 to 72 considered. Per map:
+ * <p><strong>What it does.</strong> Seventeen data transfer objects, and nothing else besides this file. They
+ * replace exactly two legacy mechanisms: the symbolic maps under {@code app/cpy-bms}, which carried screen
+ * field values between a 3270 terminal and a CICS program, and the COMMAREA of
+ * {@code app/cpy/COCOM01Y.cpy}, which carried identity and selection state across {@code EXEC CICS XCTL}.
+ * Nothing here is a screen - the 3270 and BMS presentation layer is not reimplemented, and the maps are
+ * consumed purely as field contracts that fix each payload's names, types and lengths.
  *
  * <ul>
- *   <li>{@code COACTUP.CPY} 54</li>
- *   <li>{@code COACTVW.CPY} 37</li>
- *   <li>{@code COADM01.CPY} 20</li>
- *   <li>{@code COBIL00.CPY} 10</li>
- *   <li>{@code COCRDLI.CPY} 45</li>
- *   <li>{@code COCRDSL.CPY} 15</li>
- *   <li>{@code COCRDUP.CPY} 17</li>
- *   <li>{@code COMEN01.CPY} 20</li>
- *   <li>{@code CORPT00.CPY} 17</li>
- *   <li>{@code COSGN00.CPY} 11</li>
- *   <li>{@code COTRN00.CPY} 59</li>
- *   <li>{@code COTRN01.CPY} 21</li>
- *   <li>{@code COTRN02.CPY} 21</li>
- *   <li>{@code COUSR00.CPY} 59</li>
- *   <li>{@code COUSR01.CPY} 12</li>
- *   <li>{@code COUSR02.CPY} 12</li>
- *   <li>{@code COUSR03.CPY} 11</li>
+ *   <li>{@link SignOnRequest} and {@link SignOnResponse} - {@code app/cpy-bms/COSGN00.CPY}. The response has
+ *       no map of its own: it carries the issued token in place of a populated COMMAREA.</li>
+ *   <li>{@link AccountDto} - {@code app/cpy-bms/COACTVW.CPY}, the account-view projection.</li>
+ *   <li>{@link AccountUpdateRequest} - {@code app/cpy-bms/COACTUP.CPY} together with the two snapshot groups
+ *       of {@code app/cbl/COACTUPC.cbl}, so it carries both the edited values and what was displayed.</li>
+ *   <li>{@link CardDto} - {@code app/cpy-bms/COCRDSL.CPY} for the detail projection and
+ *       {@code app/cpy-bms/COCRDLI.CPY} for the list-row projection.</li>
+ *   <li>{@link CardUpdateRequest} - {@code app/cpy-bms/COCRDUP.CPY}.</li>
+ *   <li>{@link TransactionDto} - {@code app/cpy-bms/COTRN01.CPY} plus the list-row descriptions of
+ *       {@code app/cpy-bms/COTRN00.CPY}.</li>
+ *   <li>{@link TransactionAddRequest} - {@code app/cpy-bms/COTRN02.CPY}.</li>
+ *   <li>{@link UserSecurityDto} - {@code app/cpy-bms/COUSR00.CPY}. Carries no credential in either
+ *       direction.</li>
+ *   <li>{@link UserCreateRequest} - {@code app/cpy-bms/COUSR01.CPY}.</li>
+ *   <li>{@link UserUpdateRequest} - {@code app/cpy-bms/COUSR02.CPY}.</li>
+ *   <li>{@link BillPaymentRequest} - {@code app/cpy-bms/COBIL00.CPY}.</li>
+ *   <li>{@link ReportRequest} - {@code app/cpy-bms/CORPT00.CPY}, covering the three report periods.</li>
+ *   <li>{@link MenuResponse} - the option tables {@code app/cpy/COMEN02Y.cpy} and
+ *       {@code app/cpy/COADM02Y.cpy}.</li>
+ *   <li>{@link PageResponse} - the pagination fields of the list maps and of the COMMAREA.</li>
+ *   <li>{@link CommArea} - {@code app/cpy/COCOM01Y.cpy}, reduced to the fields that survive the move to
+ *       stateless HTTP.</li>
+ *   <li>{@link StatementTransaction} - {@code app/cpy/COSTM01.CPY} with its 32-byte {@code TRNX-KEY}, and the
+ *       133-byte report lines of {@code app/cpy/CVTRA07Y.cpy}.</li>
  * </ul>
  *
- * <p>The sum is stated explicitly so it can be checked without recounting:
- * 54 + 37 + 20 + 10 + 45 + 15 + 17 + 20 + 17 + 11 + 59 + 21 + 21 + 59 + 12 + 12 + 11 =
- * <strong>441</strong>. Running totals, for the same reason: 54, 91, 111, 121, 166, 181, 198, 218, 235,
- * 246, 305, 326, 347, 406, 418, 430, 441.
+ * <p>Filename casing in those citations is load-bearing and reproduced exactly as it appears on disk: all 17
+ * members of {@code app/cpy-bms} use an uppercase {@code .CPY}; in {@code app/cpy} only {@code COSTM01.CPY} is
+ * uppercase; in {@code app/cbl} only {@code CBSTM03A.CBL} and {@code CBSTM03B.CBL} are; and in
+ * {@code app/jcl} only {@code CREASTMT.JCL} is, which is why a {@code *.jcl} glob silently drops the sole
+ * source of statement generation.
  *
- * <p>Three of the counts are large because of row arrays rather than richer screens, and the arrays are
- * the pagination contract of Key configuration and defaults below: {@code COTRN00.CPY} and
- * {@code COUSR00.CPY} each carry ten rows of five fields, and {@code COCRDLI.CPY} carries seven rows, six
- * of them of five fields and the first of four.
+ * <p>These payloads hold data and nothing else. They parse no amount, format no display mask, compare no
+ * snapshot, look up no reference table and map to no entity; all of that belongs to the service tier. Inbound
+ * types normalise nothing on ingest - no trimming, no case folding, no padding, no invented default - because
+ * the legacy programs receive the raw screen buffer and decide for themselves. Absence is represented by
+ * {@code null}, and the source's three-state distinction between absent, blank and low-values is preserved
+ * rather than collapsed.
  *
- * <p><strong>Correction, Medium severity.</strong> The body of
- * {@code docs/technical-specifications.md} reports <strong>460</strong> input fields in total and
- * <strong>36</strong> for {@code COACTVW.CPY}. Both figures are <strong>incorrect</strong>. The governing
- * figures are <strong>441</strong> and <strong>37</strong>, measured by the method above and reproducible
- * from the frozen corpus at {@code 7756d89}. The consequence of trusting 36 is a payload one field short
- * of its map, so it is recorded rather than quietly reconciled. The discrepancy register for the migration
- * is the root {@code DECISION_LOG.md}; no Markdown file is created in this package to hold it, because
- * this docstring is the only documentation vehicle permitted here.
+ * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root compiles
+ * this package under {@code -Xlint:all -Werror}, so an unused import, a raw type or a {@code Serializable} type
+ * without {@code serialVersionUID} fails the build outright. Unit tests live in
+ * {@code src/test/java/com/cardemo/unit/model} and assert the per-map field sets and declared widths, the
+ * validation constraints, the three-state handling and that no payload exposes credential material.
  *
- * <h3>The 17 payloads and the artefact each derives from</h3>
+ * <p><strong>Key configuration and defaults.</strong> Nothing in this package is configurable. Three page sizes
+ * are parity contracts rather than tunables and are three separate constants, never one: 7 for the card list
+ * ({@code app/cbl/COCRDLIC.cbl:L177-L178}), 10 for the transaction list ({@code app/cbl/COTRN00C.cbl:L290}) and
+ * 10 for the user list ({@code app/cbl/COUSR00C.cbl:L57}). Menu option counts are bounded by the source's count
+ * field, never by the table capacity. There is no server-side session state: pagination travels in request
+ * parameters and response metadata, and identity travels in token claims. JSON binding uses the framework's
+ * managed Jackson with no custom module. Fixed-width geometry is preserved at every boundary - the 350-byte
+ * transaction image, the 430-byte reject record, the 133-byte report line and the 80- and 100-byte statement
+ * lines are contracts, not conveniences.
+ *
+ * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
  *   <li>{@link SignOnRequest} from {@code app/cpy-bms/COSGN00.CPY} (11 fields). Carries the presented
@@ -137,15 +118,26 @@
  *   <li>{@link TransactionDto} from {@code app/cpy-bms/COTRN01.CPY} (21 fields) plus the row descriptions
  *       of {@code app/cpy-bms/COTRN00.CPY} (59 fields).</li>
  *   <li>{@link TransactionAddRequest} from {@code app/cpy-bms/COTRN02.CPY} (21 fields).</li>
- *   <li>{@link UserSecurityDto} from {@code app/cpy-bms/COUSR00.CPY} (59 fields). Carries no password and
- *       no hash.</li>
+ *   <li>{@link UserSecurityDto} from {@code app/cpy-bms/COUSR00.CPY} (59 fields) for the list contract and
+ *       {@code app/cpy-bms/COUSR03.CPY} (11 fields) for the delete projection, the latter through its
+ *       nested {@link UserSecurityDto.UserDeleteScreen} record. Carries no password and no hash on either
+ *       surface.</li>
  *   <li>{@link UserCreateRequest} from {@code app/cpy-bms/COUSR01.CPY} (12 fields).</li>
- *   <li>{@link UserUpdateRequest} from {@code app/cpy-bms/COUSR02.CPY} (12 fields).</li>
+ *   <li>{@link UserUpdateRequest} from {@code app/cpy-bms/COUSR02.CPY} (12 fields). Of the four user
+ *       screens this is the <strong>only</strong> payload that carries a credential, at
+ *       {@code app/cpy-bms/COUSR02.CPY}:78, and it must never be substituted for the delete shape; see
+ *       failure mode 10.</li>
  *   <li>{@link BillPaymentRequest} from {@code app/cpy-bms/COBIL00.CPY} (10 fields).</li>
  *   <li>{@link ReportRequest} from {@code app/cpy-bms/CORPT00.CPY} (17 fields), covering the three report
  *       periods including the six custom range date components.</li>
- *   <li>{@link MenuResponse} from {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy}, the two
- *       option tables rather than a symbolic map.</li>
+ *   <li>{@link MenuResponse} from <strong>both</strong> {@code app/cpy-bms/COMEN01.CPY} and
+ *       {@code app/cpy-bms/COADM01.CPY} (20 fields each) through its nested
+ *       {@link MenuResponse.MenuScreen} record, together with the option tables of
+ *       {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} (counts 10 and 4) through its
+ *       option records. The two symbolic maps are <strong>field for field identical</strong>, the same
+ *       twenty names at the same twenty widths, verified by comparing their input groups, so one shared
+ *       {@code MenuScreen} shape represents both without loss and the provenance of each is named
+ *       explicitly rather than left to inference.</li>
  *   <li>{@link PageResponse} from the pagination fields of {@code app/cpy-bms/COCRDLI.CPY},
  *       {@code app/cpy-bms/COTRN00.CPY} and {@code app/cpy-bms/COUSR00.CPY} together with the owning
  *       programs' {@code WORKING-STORAGE}. <strong>Not</strong> from the COMMAREA; see failure mode 6.</li>
@@ -156,18 +148,78 @@
  *       report line layouts of {@code app/cpy/CVTRA07Y.cpy}.</li>
  * </ul>
  *
- * <p>Two of the 17 therefore do not come from a symbolic map at all, and that is deliberate rather than an
- * omission: {@link MenuResponse} comes from two option tables and {@link CommArea} comes from the
- * communication area. A third, {@link SignOnResponse}, has no legacy counterpart of any kind.
+ * <p>Exactly one of the 17 does not come from a symbolic map at all, and that is deliberate rather than an
+ * omission: {@link CommArea} comes from the communication area. A second, {@link SignOnResponse}, has no
+ * legacy counterpart of any kind. {@link MenuResponse} draws on both kinds of artefact, the two menu
+ * symbolic maps for its screen surface and the two option tables for its option surface, which is why it
+ * appears under each heading rather than only one.
  *
- * <p><strong>Correction, Medium severity.</strong> {@code docs/technical-specifications.md} is internally
- * inconsistent about how many payloads this package holds. Its scope table gives the count as
- * <strong>16</strong>, while its own target structure listing enumerates <strong>17</strong> by name, and
- * the 17 names it enumerates are exactly the 17 listed above. The governing figure is <strong>17</strong>
- * payloads and therefore <strong>18</strong> {@code .java} files including this one. The consequence of
- * trusting 16 is one payload never authored and one endpoint left without a request or response type, so
- * the discrepancy is recorded here and in the root {@code DECISION_LOG.md} rather than reconciled
- * silently.
+ * <h3>All 17 symbolic maps traced to the payload that represents them</h3>
+ *
+ * <p>The list above is organised by payload. This one is organised by <strong>map</strong>, and both are
+ * kept because a payload-oriented list structurally cannot reveal a map that no payload represents, which
+ * is precisely the defect it once concealed. Every one of the 17 maps counted in the census above appears
+ * here exactly once:
+ *
+ * <ul>
+ *   <li>{@code COACTUP.CPY} 54 fields to {@link AccountUpdateRequest}.</li>
+ *   <li>{@code COACTVW.CPY} 37 fields to {@link AccountDto}.</li>
+ *   <li>{@code COADM01.CPY} 20 fields to {@link MenuResponse.MenuScreen}.</li>
+ *   <li>{@code COBIL00.CPY} 10 fields to {@link BillPaymentRequest}.</li>
+ *   <li>{@code COCRDLI.CPY} 45 fields to {@link CardDto}, list projection.</li>
+ *   <li>{@code COCRDSL.CPY} 15 fields to {@link CardDto}, detail projection.</li>
+ *   <li>{@code COCRDUP.CPY} 17 fields to {@link CardUpdateRequest}.</li>
+ *   <li>{@code COMEN01.CPY} 20 fields to {@link MenuResponse.MenuScreen}.</li>
+ *   <li>{@code CORPT00.CPY} 17 fields to {@link ReportRequest}.</li>
+ *   <li>{@code COSGN00.CPY} 11 fields to {@link SignOnRequest}.</li>
+ *   <li>{@code COTRN00.CPY} 59 fields to {@link TransactionDto}, list projection.</li>
+ *   <li>{@code COTRN01.CPY} 21 fields to {@link TransactionDto}, detail projection.</li>
+ *   <li>{@code COTRN02.CPY} 21 fields to {@link TransactionAddRequest}.</li>
+ *   <li>{@code COUSR00.CPY} 59 fields to {@link UserSecurityDto}, list contract.</li>
+ *   <li>{@code COUSR01.CPY} 12 fields to {@link UserCreateRequest}.</li>
+ *   <li>{@code COUSR02.CPY} 12 fields to {@link UserUpdateRequest}.</li>
+ *   <li>{@code COUSR03.CPY} 11 fields to {@link UserSecurityDto.UserDeleteScreen}.</li>
+ * </ul>
+ *
+ * <p><strong>Coverage is therefore 441 of 441 input fields, 100 percent, across all 17 maps.</strong> Two
+ * maps share one payload shape, {@code COMEN01} and {@code COADM01} being field for field identical, and
+ * two further pairs share one payload each through a distinct projection per map,
+ * {@code COCRDSL}/{@code COCRDLI} on {@link CardDto} and {@code COTRN01}/{@code COTRN00} on
+ * {@link TransactionDto}. So the 17 maps resolve to <strong>13</strong> top-level payload types, and the
+ * remaining <strong>4</strong> of this package's 17 payloads derive from non-map artefacts:
+ * {@link CommArea} from the COMMAREA, {@link PageResponse} from list-map paging fields and program
+ * working storage, {@link StatementTransaction} from {@code app/cpy/COSTM01.CPY} with
+ * {@code app/cpy/CVTRA07Y.cpy}, and {@link SignOnResponse} from no legacy artefact at all. That is
+ * 13 + 4 = <strong>17</strong>, which is the arithmetic check on this section.
+ *
+ * <p><strong>One two-shape derivation in that list, stated rather than glossed.</strong> The menu contract
+ * draws on two different kinds of frozen artefact, so it is carried by two shapes in one file.
+ * {@link MenuResponse} itself models the option <em>tables</em> {@code app/cpy/COMEN02Y.cpy} and
+ * {@code app/cpy/COADM02Y.cpy} - the option list content and the user-type gate that selects it - while the
+ * nested {@link MenuResponse.MenuScreen} carries the twenty input fields the symbolic <em>maps</em>
+ * {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} declare, in map order. Both artefact
+ * kinds are therefore represented, and the row above is a map-to-payload row rather than a claim that the
+ * maps are the only source. The distinction matters because the census counts the fields the corpus
+ * <em>declares</em> while this section counts the fields a type actually <em>carries</em>, and only the
+ * second is a completeness claim.
+ *
+ * <p><strong>Correction, Blocker severity, resolved.</strong> An earlier revision of this package
+ * represented only <strong>390</strong> of the 441 fields, 88.4 percent, because three maps had no
+ * representation whatsoever: {@code COMEN01.CPY} (20), {@code COADM01.CPY} (20) and
+ * {@code COUSR03.CPY} (11). {@link MenuResponse} modelled the {@code COMEN02Y} and {@code COADM02Y}
+ * option tables only, and the user contract modelled {@code COUSR00.CPY} only. Those 51 fields are now
+ * carried by {@link MenuResponse.MenuScreen} and {@link UserSecurityDto.UserDeleteScreen}, and
+ * 390 + 20 + 20 + 11 = <strong>441</strong>. The gap mattered because a map with no payload is an
+ * endpoint whose request or response cannot be expressed at all, not merely a documentation omission.
+ *
+ * <p><strong>Correction, High severity, resolved.</strong> {@code docs/technical-specifications.md} was
+ * internally inconsistent about how many payloads this package holds. Its scope table and the header of
+ * its target structure listing both gave the count as <strong>16</strong>, while that same listing
+ * enumerated <strong>17</strong> by name, and the 17 names it enumerates are exactly the 17 listed above.
+ * The governing figure is <strong>17</strong> payloads and therefore <strong>18</strong> {@code .java}
+ * files including this one. <strong>Both counts in that document now read 17.</strong> The consequence of
+ * trusting 16 would have been one payload never authored and one endpoint left without a request or
+ * response type, so the discrepancy is recorded here as well as corrected there.
  *
  * <p>{@code app/cpy/CSSETATY.cpy} is cited in the banner but has <strong>no class in this package</strong>.
  * It is a {@code COPY ... REPLACING} <strong>PROCEDURE DIVISION</strong> template, parameterised on
@@ -218,7 +270,18 @@
  *       this package may expose credentials, a presented password, a BCrypt hash (prefix {@code $2a$},
  *       {@code $2b$} or {@code $2y$}), a JWT, a signing key, an {@code Authorization} or {@code Bearer}
  *       header, a social security number, a card number, a telephone number, a government issued
- *       identifier, a date of birth or an electronic funds transfer account identifier.</li>
+ *       identifier, a date of birth or an electronic funds transfer account identifier. The
+ *       enumeration additionally covers <strong>a financial balance or amount</strong>, and an account
+ *       identifier whenever the payload carrying it also carries financial data or drives a financial
+ *       mutation. That last clause is conditional rather than absolute by design:
+ *       {@link CardUpdateRequest} does render its account identifier, because on that conversation the
+ *       identifier is context for a card detail change, whereas {@link BillPaymentRequest} withholds
+ *       its own, because {@code app/cbl/COBIL00C.cbl:224} and {@code :234} make that account the
+ *       subject of a payment that drives its balance to exactly zero, and correlating the two in one
+ *       log line is precisely the disclosure CWE-532 describes. Caller controlled free text is barred
+ *       for a second and independent reason, CWE-117: a caller that chooses the characters chooses
+ *       what a log line looks like, so screen title, information and error message components are
+ *       omitted from a rendering rather than emitted from it.</li>
  *   <li><strong>{@code Locale.ROOT} on every case conversion and every format operation.</strong> The
  *       platform default locale, charset and time zone are never relied upon, so behaviour cannot differ
  *       between a developer machine and continuous integration.</li>
@@ -270,25 +333,49 @@
  *       different toolchain. Maven 4 is deliberately not adopted: the plugin set this build depends on is
  *       validated against the 3.9 line.</li>
  *   <li><strong>Warnings are errors.</strong> The compiler runs with {@code -Xlint:all} and
- *       {@code -Werror}, and additionally with {@code -parameters}. An unused import, a raw type, an
+ *       {@code -Werror}, and additionally with {@code -parameters}. A raw type, an
  *       unchecked cast, a call to a deprecated API, a {@code switch} fall through or a missing
  *       {@code serialVersionUID} on a serializable type is a <strong>hard build failure</strong>, not a
- *       warning to triage later. This is exactly why this file carries <strong>zero imports and zero
+ *       warning to triage later. An <em>unused import</em> is not in that set - {@code javac} 25.0.3
+ *       publishes no lint key for one, as {@code javac --help-lint} shows - so Clause B's prohibition on
+ *       unused imports and dead code is enforced by review. That prohibition is why this file carries
+ *       <strong>zero imports and zero
  *       annotations</strong>: there is no nullability annotation available to apply, because no JSR 305 and
  *       no JSpecify artefact is declared anywhere in {@code pom.xml}, and reaching for a framework
  *       annotation such as one from {@code org.springframework.lang} instead would risk a deprecation that
  *       the build treats as fatal. See failure modes 8 and 9.</li>
- *   <li><strong>No Lombok, no annotation processor, no new dependency.</strong> This package adds none.
- *       Every accessor, every {@code equals}, every {@code hashCode} and every {@code toString} across the
- *       17 payloads is written out explicitly, so what is compiled is exactly what is read.</li>
+ *   <li><strong>No Lombok, no annotation processor, no new dependency.</strong> This package adds none, so
+ *       nothing here is produced by a third-party generator. What the compiler contributes is only what the
+ *       language mandates for {@code record}, and the split is worth stating exactly, measured from the
+ *       sources on 1 August 2026: <strong>12 of the 17</strong> payloads are records, so their component
+ *       accessors, {@code equals} and {@code hashCode} are compiler-generated from the header rather than
+ *       written out; <strong>5</strong> are classes ({@link AccountUpdateRequest}, {@link CardDto},
+ *       {@link MenuResponse}, {@link PageResponse}, {@link UserCreateRequest}) whose accessors are declared
+ *       by hand. Explicit {@code equals} and {@code hashCode} bodies exist in exactly two files,
+ *       {@link MenuResponse} and {@link PageResponse}; {@link AccountUpdateRequest}, {@link CardDto} and
+ *       {@link UserCreateRequest} declare none and therefore inherit identity semantics from
+ *       {@code Object}, which is deliberate because they are request payloads that are never compared.
+ *       {@code toString} is declared explicitly wherever a payload must suppress a sensitive component, and
+ *       the two records that declare none, {@link BillPaymentRequest} and {@link ReportRequest}, carry no
+ *       credential and so keep the record-generated form. Nothing is hidden behind a processor: every
+ *       generated member follows mechanically from a {@code record} header that is visible in the
+ *       source.</li>
  * </ul>
  *
  * <h3>Test</h3>
  *
  * <ul>
- *   <li><strong>Location.</strong> Unit tests for these 17 types live in the sibling test tree at
- *       {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package. This package
- *       stays free of test scaffolding, and it contains no test class and no fixture.</li>
+ *   <li><strong>Location, and what exists today.</strong> Unit tests for these types live in the sibling
+ *       test tree at {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package,
+ *       which contains no test class and no fixture. Measured 1 August 2026, <strong>8 of the 17</strong>
+ *       payloads have a test class: {@link MenuResponse}, {@link PageResponse}, {@link ReportRequest},
+ *       {@link SignOnRequest}, {@link SignOnResponse}, {@link UserCreateRequest}, {@link UserSecurityDto}
+ *       and {@link UserUpdateRequest}. The remaining nine - {@link AccountDto},
+ *       {@link AccountUpdateRequest}, {@link BillPaymentRequest}, {@link CardDto},
+ *       {@link CardUpdateRequest}, {@link CommArea}, {@link StatementTransaction},
+ *       {@link TransactionAddRequest} and {@link TransactionDto} - have <strong>no test at all</strong> and
+ *       are not referenced from the test tree. Any assertion listed below against one of those nine is an
+ *       obligation, not existing coverage.</li>
  *   <li><strong>Coverage gate.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor
  *       on the merged bundle at the {@code verify} phase with {@code haltOnFailure}, and there are
  *       <strong>no exclusions</strong> for this package. The figure must come from meaningful assertions
@@ -301,7 +388,11 @@
  *       for the lower version is kept while the gate is made able to run at all, and 0.8.14 is not adopted.
  *       Recorded in {@code DECISION_LOG.md}.</li>
  *   <li><strong>Assertions that actually matter</strong> for this package, as distinct from mechanical
- *       accessor coverage:
+ *       accessor coverage. Read the list that follows as the <strong>required</strong> set, not as an
+ *       inventory of what runs today: measured 1 August 2026 only the eight payloads named above have a test
+ *       class at all, so every entry below that names one of the other nine - including the
+ *       {@link AccountUpdateRequest} and {@link CardDto} entries - is <strong>not available</strong> and is
+ *       owed:
  *       <ul>
  *         <li>Each payload's field count asserted against its map's verified census figure, so a field
  *             added or dropped fails the test rather than drifting silently.</li>
@@ -330,10 +421,13 @@
  *       this package.</li>
  * </ul>
  *
- * <h3>Toolchain actually present in this environment</h3>
+ * <h3>Toolchain actually present in this environment, measured 1 August 2026</h3>
  *
- * <p>Measured rather than assumed, so the statement can be relied on: {@code java} and {@code javac} report
- * OpenJDK <strong>25.0.3</strong>, {@code mvn} reports Apache Maven <strong>3.9.11</strong>, and
+ * <p>Measured rather than assumed, on <strong>1 August 2026</strong> in this container after
+ * {@code source /etc/profile.d/10-carddemo-toolchain.sh}, so the statement can be relied on as a reading
+ * of that date rather than as a requirement: {@code java} and {@code javac} report
+ * OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache Maven
+ * <strong>3.9.11</strong> from the pinned wrapper distribution, and
  * <strong>Docker Engine 29.7.0 with {@code docker compose} v5.3.1 is available</strong> and is what
  * provisions PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana for the integration tiers. The host
  * toolchain is activated by sourcing {@code /etc/profile.d/10-carddemo-toolchain.sh}. Where a host JDK is
@@ -405,7 +499,7 @@
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
- * <p>Nine failure modes, each one an implementation that compiles cleanly, passes a naive test and still
+ * <p>Ten failure modes, each one an implementation that compiles cleanly, passes a naive test and still
  * diverges from the system of record. Every one has been observed to arise from a reasonable looking
  * simplification, which is why each is listed with its symptom, its evidence and its remedy rather than
  * left to be rediscovered.
@@ -519,14 +613,18 @@
  *       <br><em>Remedy:</em> {@link StatementTransaction} reproduces the truncation exactly. Do not restore
  *       the two characters and do not reinstate the filler.</li>
  *
- *   <li><strong>An unused import fails the build.</strong>
- *       <br><em>Symptom:</em> {@code mvn compile} fails on a file that a permissive IDE reported as clean,
- *       often after a field type changed and left its import behind.
+ *   <li><strong>An unused import is forbidden but the build will not catch it.</strong>
+ *       <br><em>Symptom:</em> an unused import survives {@code ./mvnw compile} on a file a permissive IDE
+ *       already reported as clean, often after a field type changed and left its import behind, and reaches
+ *       review instead of the build log.
  *       <br><em>Evidence:</em> {@code maven-compiler-plugin:3.14.1} is configured with {@code -Xlint:all}
- *       and {@code -Werror}, so a lint warning is an error. Clause B of the project standard independently
- *       forbids unused imports and dead code.
- *       <br><em>Remedy:</em> import only what is referenced. This file imports nothing at all, which is why
- *       it cannot fail this way; the same discipline applies to the 17 payloads beside it.</li>
+ *       and {@code -Werror}, so a lint warning is an error - but {@code javac} 25.0.3 publishes no
+ *       {@code unused} lint key, as {@code javac --help-lint} shows, and no Checkstyle or Error Prone
+ *       analyser is in the pinned dependency set. Clause B of the project standard still forbids unused
+ *       imports and dead code; only the enforcement is manual.
+ *       <br><em>Remedy:</em> import only what is referenced, and check it by eye at review. This file
+ *       imports nothing at all, which is why it cannot fail this way; the same discipline applies to the
+ *       17 payloads beside it.</li>
  *
  *   <li><strong>{@code Serializable} without {@code serialVersionUID} fails the build.</strong>
  *       <br><em>Symptom:</em> adding {@code implements Serializable} to a payload, for instance to place it
@@ -538,6 +636,36 @@
  *       this package does, and none needs to, because nothing in the target transports these types by Java
  *       serialisation - they cross every boundary as JSON. If a future requirement genuinely demands it,
  *       declare an explicit {@code private static final long serialVersionUID}.</li>
+ *
+ *   <li><strong>Reusing the update payload for a delete adds a password field the source screen does not
+ *       have. Severity: High.</strong>
+ *       <br><em>Symptom:</em> the delete endpoint compiles, works, and quietly accepts a
+ *       {@code password} member. Nothing fails: the field is simply present on a request that has no use
+ *       for it, so a credential can be posted to, logged by and stored in the audit trail of the one
+ *       operation whose only effect is to destroy a user record. No test detects it, because the payload is
+ *       a strict superset of what the delete needs and a superset never breaks a happy path.
+ *       <br><em>Evidence:</em> the delete map {@code app/cpy-bms/COUSR03.CPY} declares
+ *       <strong>11</strong> input fields and contains <strong>zero</strong> occurrences of
+ *       {@code PASSWD} or {@code PWD}. The update map {@code app/cpy-bms/COUSR02.CPY} declares
+ *       <strong>12</strong>, and is field for field the same shape at the same positions with a single
+ *       addition, {@code PASSWDI PIC X(8)} at {@code app/cpy-bms/COUSR02.CPY}:78; the add map carries the
+ *       same field at {@code app/cpy-bms/COUSR01.CPY}:78. Twelve minus that one field is eleven, so the
+ *       delete map is demonstrably the update map <em>with the credential removed</em>, and the removal is
+ *       deliberate rather than an oversight in the corpus. Confirming it behaviourally,
+ *       {@code app/cbl/COUSR03C.cbl} never reads or writes {@code SEC-USR-PWD} anywhere: the lookup at
+ *       {@code app/cbl/COUSR03C.cbl}:165-167 repopulates only {@code FNAMEI}, {@code LNAMEI} and
+ *       {@code USRTYPEI} from the record, and the delete at :189-191 needs nothing but the key.
+ *       <br><em>Remedy:</em> use {@link UserSecurityDto.UserDeleteScreen}, which carries exactly those 11
+ *       fields and declares no password, no hash and no credential adjacent component. It is nested inside
+ *       {@link UserSecurityDto} rather than authored as an eighteenth file because this package contracts
+ *       <strong>17 top level payloads</strong>, and {@link UserSecurityDto.UserRow} already establishes
+ *       nesting as the way a screen's subordinate shape is carried here. Two further properties of that type
+ *       are load bearing and must not be relaxed: its {@code toString()} is overridden to emit only the
+ *       originating program name, because the record rendering the compiler would otherwise generate would
+ *       publish the identifier and both names of the user being deleted into every log line that
+ *       interpolated it; and its width checks reject an over long component rather than truncating it,
+ *       because a nine character identifier can never match the eight byte {@code USRSEC} key declared by
+ *       {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl}:65.</li>
  * </ol>
  *
  * <h2>Not available</h2>
@@ -591,4 +719,5 @@
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
+
 package com.cardemo.model.dto;

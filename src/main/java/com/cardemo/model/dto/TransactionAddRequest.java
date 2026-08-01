@@ -24,22 +24,33 @@
  */
 package com.cardemo.model.dto;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
+
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 
 import jakarta.validation.constraints.Size;
 
 /**
- * Inbound request payload for the transaction-add screen, CICS transaction {@code CT02}.
+ * Inbound request payload for the transaction-add screen, CICS transaction {@code CT02}, whose handler is
+ * {@code app/cbl/COTRN02C.cbl}. The 21 components below are transcribed from the generated symbolic map
+ * {@code app/cpy-bms/COTRN02.CPY} in its own declaration order, each citing its COBOL field, PIC clause and
+ * line.
  *
- * <h2>Purpose</h2>
+ * <p>Every value arrives as text, including the amount and the two dates, because the source receives them as
+ * screen characters and because the two numeric conversions it applies are <strong>not
+ * interchangeable</strong>: the account identifier and card number go through the strict conversion at
+ * {@code app/cbl/COTRN02C.cbl:204} and :218, which accepts digits only, while the amount goes through the
+ * currency-tolerant conversion at :383 and :456, which additionally admits a currency symbol and thousands
+ * separators. Binding either field to a numeric type here would collapse that distinction and would accept or
+ * reject input the legacy screen did not.
  *
- * <p>Transports the 21 input fields of the BMS symbolic map {@code app/cpy-bms/COTRN02.CPY}
- * (group {@code 01 COTRN2AI}) from an HTTP/JSON client to the transaction-add service, which
- * reproduces {@code app/cbl/COTRN02C.cbl}. The count of <strong>21</strong> is verified against the
- * map itself: every {@code 02 xxxI PIC} entry declared in the input group before
- * {@code 01 COTRN2AO REDEFINES COTRN2AI} is represented here exactly once, in declaration order,
- * under the name that <em>this</em> map declares.
+ * <p>The accepted amount is echoed back on the {@value #AMOUNT_DISPLAY_MASK} edited mask declared at
+ * {@code app/cbl/COTRN02C.cbl:59}, which is one integer digit narrower than the underlying
+ * {@code PIC S9(9)V99} field at :58 - hence the two distinct ceilings {@link #AMOUNT_MASK_MAX} and
+ * {@link #AMOUNT_VALUE_MAX}. This type performs neither parse: it holds the presented characters verbatim,
+ * applies no trimming, case folding or padding, and leaves both conversions, the two-phase confirmation gate
+ * and identifier generation to {@code TransactionAddService}.
  *
  * <p>This type is a pure transport record. It parses nothing, formats nothing, computes nothing,
  * generates no identifier and maps to no entity. Every one of the 21 components is carried as
@@ -192,8 +203,9 @@ import jakarta.validation.constraints.Size;
  * of them away:
  *
  * <ul>
- * <li>The generated timestamp's final four digits are always zeros - it is millisecond precision
- *     padded to 26 characters, not nanosecond precision.</li>
+ * <li>The generated timestamp's final four digits are always zeros - it is hundredths-of-a-second
+ *     precision padded to 26 characters, neither nanosecond nor millisecond precision, the fractional
+ *     field being {@code DB2-MIL PIC 9(002)} at {@code app/cbl/CBTRN02C.cbl:173}.</li>
  * <li>The batch expiry validation performs a <strong>string comparison</strong> on the first ten
  *     characters of the originating timestamp, not a temporal comparison.</li>
  * <li>The statement projection delivers a processing timestamp with only <strong>24</strong>
@@ -323,10 +335,13 @@ import jakarta.validation.constraints.Size;
  *
  * <ul>
  * <li><strong>Build.</strong> {@code ./mvnw -B clean compile}. The compiler runs with
- *     {@code -Xlint:all -Werror} and {@code failOnWarning}, so an unused import or a deprecation in
- *     this file is a hard build failure.</li>
- * <li><strong>Test.</strong> {@code ./mvnw -B clean test}. The unit contract for this type lives in
- *     {@code src/test/java/com/cardemo/unit/model} and asserts the component count of 21, that
+ *     {@code -Xlint:all -Werror} and {@code failOnWarning}, so a deprecation or a raw type in this file
+ *     is a hard build failure. An unused import is not - {@code javac} 25.0.3 publishes no lint key for
+ *     one - so that prohibition is review-enforced.</li>
+ * <li><strong>Test.</strong> {@code ./mvnw -B clean test}. The unit contract for this type belongs in
+ *     {@code src/test/java/com/cardemo/unit/model} - <strong>not available</strong>, measured
+ *     1 August 2026: no {@code TransactionAddRequestTest} exists and this type is not referenced anywhere
+ *     under {@code src/test/java}. That contract is to assert the component count of 21, that
  *     {@code amount} carries a currency-decorated value such as a dollar-prefixed thousands-separated
  *     figure without a binding failure while {@code accountId} and {@code cardNumber} are carried
  *     verbatim, that {@code accountId} round-trips {@code 00000000001} with its leading zeros intact,
@@ -334,11 +349,16 @@ import jakarta.validation.constraints.Size;
  *     failure, that {@code confirmation} distinguishes its five carried values, that no component is
  *     a floating-point, date or timestamp type, and that {@code toString()} leaks no card
  *     number.</li>
- * <li><strong>Key configuration.</strong> Two settings govern how this payload binds.
- *     {@code spring.jackson.deserialization.fail-on-unknown-properties} must be enabled so that an
- *     unknown JSON member is rejected rather than ignored; Spring Boot disables it by default, and it
- *     is set in {@code src/main/resources/application.yml} rather than annotated here, because a
- *     class-level annotation can only suppress the check, never enable it. Compilation must retain
+ * <li><strong>Key configuration.</strong> One setting governs how this payload binds, and one
+ *     behaviour that used to depend on configuration no longer does. Rejection of an unknown JSON
+ *     member is now enforced by this type itself, through {@link #rejectUnrecognisedProperty}, and not
+ *     by {@code spring.jackson.deserialization.fail-on-unknown-properties}. That is deliberate on two
+ *     grounds: the framework disables that setting by default and this repository publishes no
+ *     {@code application*.yml} in which to enable it, so relying on it would leave the payload open;
+ *     and a type-level guard cannot be switched off by a configuration change made elsewhere. It is
+ *     true that {@code @JsonIgnoreProperties} can only suppress the check and never enable it, which
+ *     is why that annotation is not used here - an any-setter that throws is the mechanism that
+ *     actually rejects. Compilation must retain
  *     formal parameter names, which {@code pom.xml} guarantees with the compiler's
  *     {@code parameters} flag, so that constraint-violation paths and binding both resolve component
  *     names.</li>
@@ -358,12 +378,25 @@ import jakarta.validation.constraints.Size;
  * financial field. The findings that do apply are recorded in full rather than summarised:
  *
  * <ul>
- * <li><strong>Medium - corpus census correction.</strong> The specification's aggregate of 460 BMS
- *     input fields is overstated. Counting the {@code 02 xxxI PIC} entries in the input group of each
- *     of the seventeen symbolic maps yields <strong>441</strong>, and the account-view map contributes
- *     37 rather than the 36 recorded. This map's own contribution of 21 is unaffected and is verified
- *     directly, so no field contract in this file depends on the aggregate. Remediation: correct the
- *     aggregate to 441 in the specification and the traceability matrix; no code change is
+ * <li><strong>Medium, resolved - unrecognised JSON properties were silently discarded.</strong> This
+ *     type previously relied on {@code spring.jackson.deserialization.fail-on-unknown-properties} to
+ *     reject a JSON member outside the 21-field contract. That reliance was misplaced: the framework
+ *     disables the setting by default and this repository publishes no {@code application*.yml} in
+ *     which it could be enabled, so an unrecognised property was in fact accepted and dropped. A
+ *     misspelled {@code confirmation} therefore bound as absent, which the program reads as "not yet
+ *     confirmed". Remediation applied: {@link #rejectUnrecognisedProperty} refuses any undeclared
+ *     property on the type itself, so the guard holds under a lenient mapper as well as a strict one
+ *     and cannot be disabled by configuration elsewhere.</li>
+ * <li><strong>Medium, closed - corpus census correction.</strong> The prior-generation plan prose
+ *     aggregate of 460 BMS input fields was overstated. Counting the {@code 02 xxxI PIC} entries in the
+ *     input group of each of the seventeen symbolic maps yields <strong>441</strong>, and the account-view
+ *     map contributes 37 rather than the 36 that prose recorded. This map's own contribution of 21 is
+ *     unaffected and is verified directly, so no field contract in this file depends on the aggregate.
+ *     The remediation has been applied to {@code docs/technical-specifications.md}, which cites 441 and 37
+ *     and records both supersessions in its section 0.2.2.1 corrections table, verified on 1 August 2026.
+ *     {@code TRACEABILITY_MATRIX.md} is <strong>not available</strong> - it is a planned artefact that has
+ *     not been authored - so it asserts neither figure. No test asserts either figure either: the e2e
+ *     {@code GateVerificationTest} named by the plan is <strong>not available</strong>. No code change is
  *     required.</li>
  * <li><strong>Low - mask and field width disagree by one digit.</strong> {@code WS-TRAN-AMT-N} admits
  *     nine integer digits and {@code WS-TRAN-AMT-E} renders eight
@@ -376,12 +409,13 @@ import jakarta.validation.constraints.Size;
  *     {@code TRAN-MERCHANT-CITY} is {@code X(50)}. The screen widths govern this record because it
  *     models the map, and the entity retains the wider record widths. Remediation: none; do not widen
  *     these components to the record widths, which would accept input the screen cannot supply.</li>
- * <li><strong>Not available - the package contract file.</strong>
- *     {@code src/main/java/com/cardemo/model/dto/package-info.java} was absent from the working tree
- *     when this file was authored, so its text could not be read. It declares no symbol, so nothing
- *     is imported from it and compilation is unaffected. What is needed to close this item: the
- *     generated {@code package-info.java}, so that its stated invariants can be cross-checked against
- *     the ones documented here.</li>
+ * <li><strong>Closed - the package contract file now exists.</strong>
+ *     {@code src/main/java/com/cardemo/model/dto/package-info.java} was absent when this file was
+ *     authored and is now present, so the earlier "not available" record is withdrawn. Its invariants
+ *     have been cross-checked against the ones documented here and they agree; the field-width contract
+ *     is additionally asserted against {@code app/cpy-bms/COTRN02.CPY} by the {@code BmsSymbolicMap}
+ *     test oracle rather than against this class's own constants. It declares no symbol, so nothing is
+ *     imported from it and compilation is unaffected either way.</li>
  * <li><strong>Not available - service-level objectives.</strong> The legacy corpus publishes no
  *     latency or throughput target for the transaction-add path, so none is asserted or invented for
  *     it. What is needed to close this item: a measured baseline from the performance gate.</li>
@@ -497,13 +531,8 @@ public record TransactionAddRequest(
         @Size(max = 78, message = "errorMessage must not exceed 78 characters") String errorMessage) {
 
     /**
-     * The legacy edited display mask for the transaction amount, {@code PIC +99999999.99}, declared
-     * at {@code app/cbl/COTRN02C.cbl:59} as {@code WS-TRAN-AMT-E}.
-     *
-     * <p>The mask carries a <strong>mandatory sign</strong>, exactly <strong>eight</strong> integer
-     * digits, a decimal point and two decimals. Reproducing it is the service's job, not this
-     * record's; the constant exists so that the service and its tests share one definition of the
-     * mask rather than two divergent literals.
+     * The legacy edited display mask for the transaction amount, {@code PIC +99999999.99}, declared at
+     * {@code app/cbl/COTRN02C.cbl:59} as {@code WS-TRAN-AMT-E}.
      */
     public static final String AMOUNT_DISPLAY_MASK = "+99999999.99";
 
@@ -514,86 +543,76 @@ public record TransactionAddRequest(
     public static final int AMOUNT_SCALE = 2;
 
     /**
-     * Precision of the persisted transaction amount: 11, giving the column type
-     * {@code NUMERIC(11,2)} for {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:10}.
-     *
-     * <p>This is the <strong>transaction</strong> money precision and it is deliberately
-     * <em>not</em> the account money precision. Account balances are {@code S9(10)V99} and therefore
-     * {@code NUMERIC(12,2)}; conflating the two silently widens or narrows a monetary field.
+     * Precision of the persisted transaction amount: 11, giving the column type {@code NUMERIC(11,2)} for
+     * {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:10}.
      */
     public static final int AMOUNT_PRECISION = 11;
 
     /**
      * The rounding mode mandated for every computation on a transaction amount.
-     *
-     * <p>Fixed-scale decimal arithmetic replaces the source's packed and zoned decimal arithmetic.
-     * No {@code float} and no {@code double} appears anywhere in this file or in any financial path,
-     * and amounts are compared with {@code BigDecimal.compareTo}, never with
-     * {@code BigDecimal.equals}, because {@code equals} additionally compares scale and would report
-     * {@code 1.0} and {@code 1.00} as different amounts.
      */
     public static final RoundingMode AMOUNT_ROUNDING_MODE = RoundingMode.HALF_EVEN;
 
     /**
-     * The largest magnitude the legacy edited mask {@code PIC +99999999.99} can render:
-     * {@code 99999999.99}, eight integer digits.
-     *
-     * <p>Paired with {@link #AMOUNT_VALUE_MAX} this constant records a verified width asymmetry in
-     * the source: the numeric field {@code WS-TRAN-AMT-N} is {@code PIC S9(9)V99} at
-     * {@code app/cbl/COTRN02C.cbl:58} and admits <strong>nine</strong> integer digits, while the
-     * edited field {@code WS-TRAN-AMT-E} at {@code app/cbl/COTRN02C.cbl:59} renders only
-     * <strong>eight</strong>. The round trip at {@code app/cbl/COTRN02C.cbl:385-386} moves the
-     * parsed value into the edited field and the edited field straight back into the screen field,
-     * so an amount above this magnitude loses its leading digit on the echo. The asymmetry is
-     * preserved, not repaired: the mask is not widened to nine digits.
+     * The largest magnitude the legacy edited mask {@code PIC +99999999.99} can render: {@code 99999999.99},
+     * eight integer digits.
      */
     public static final BigDecimal AMOUNT_MASK_MAX = new BigDecimal("99999999.99");
 
     /**
      * The largest magnitude the legacy numeric field {@code WS-TRAN-AMT-N PIC S9(9)V99} admits:
      * {@code 999999999.99}, nine integer digits, declared at {@code app/cbl/COTRN02C.cbl:58}.
-     *
-     * <p>See {@link #AMOUNT_MASK_MAX} for the eight-versus-nine digit asymmetry between the numeric
-     * field and the edited display mask.
      */
     public static final BigDecimal AMOUNT_VALUE_MAX = new BigDecimal("999999999.99");
 
     /**
-     * The date format literal the legacy program hands to its date-validation routine:
-     * {@code 'YYYY-MM-DD'}, declared as {@code WS-DATE-FORMAT PIC X(10)} at
-     * {@code app/cbl/COTRN02C.cbl:60} and moved into {@code CSUTLDTC-DATE-FORMAT} at
-     * {@code app/cbl/COTRN02C.cbl:390} before the {@code CALL 'CSUTLDTC'} at
+     * The date format literal the legacy program hands to its date-validation routine: {@code 'YYYY-MM-DD'},
+     * declared as {@code WS-DATE-FORMAT PIC X(10)} at {@code app/cbl/COTRN02C.cbl:60} and moved into
+     * {@code CSUTLDTC-DATE-FORMAT} at {@code app/cbl/COTRN02C.cbl:390} before the {@code CALL 'CSUTLDTC'} at
      * {@code app/cbl/COTRN02C.cbl:393-395}.
-     *
-     * <p>This is a <strong>legacy picture string, not a Java date-time pattern</strong>. It is
-     * passed to the date-validation service as data; it must never be fed to a
-     * {@code DateTimeFormatter}, whose year symbol is {@code u} or {@code y} in lower case and whose
-     * behaviour for {@code YYYY} is week-based-year. The screen message the source emits when the
-     * processing date fails its component checks quotes the same literal:
-     * {@code 'Proc Date should be in format YYYY-MM-DD'} at
-     * {@code app/cbl/COTRN02C.cbl:375-376}.
      */
     public static final String DATE_VALIDATION_FORMAT = "YYYY-MM-DD";
 
     /**
      * Returns a diagnostic rendering that deliberately omits every personally identifiable field.
      *
-     * <p><strong>Why this override exists.</strong> A record's implicitly generated
-     * {@code toString()} emits <em>every</em> component. That would place the primary account number
-     * carried by {@code cardNumber} (BMS {@code CARDNINI PIC X(16)},
-     * {@code app/cpy-bms/COTRN02.CPY:66}) into any log line, exception message, debugger view or
-     * crash dump that renders this object, which Rule 1 Clause D forbids. Suppressing the leak
-     * therefore requires an explicit override; leaving the generated one in place is not an option.
-     *
-     * <p>Only {@code accountId} and {@code programName} are emitted. The card number is omitted
-     * <strong>entirely</strong>: not masked, not truncated to a last four, not hashed. Log-side
-     * masking in {@code logback-spring.xml} is a second line of defence, and the first line of
-     * defence is never emitting the value at all.
-     *
      * @return a rendering containing only the account identifier and the originating program name
      */
     @Override
     public String toString() {
         return "TransactionAddRequest[accountId=" + accountId + ", programName=" + programName + "]";
+    }
+
+    /**
+     * Rejects any JSON property that is not one of the 21 this type declares.
+     *
+     * <p>{@code 01 COTRN2AI} declares exactly 21 input data items and the terminal could send nothing
+     * else, so the map is a closed field contract. Discarding an unrecognised property silently would
+     * break it in the direction that hides mistakes: a client that misspells {@code confirmation}
+     * would otherwise submit a transaction whose confirmation state is absent, which
+     * {@code app/cbl/COTRN02C.cbl} reads as "not yet confirmed" rather than as the malformed request it
+     * is.</p>
+     *
+     * <p>This guard is declared on the type rather than configured on the object mapper because a
+     * mapper-level setting is not in force here: this repository publishes no {@code application*.yml}
+     * at all, so the framework default - which is to ignore unknown properties - would otherwise
+     * apply. Declaring the guard here means it holds under a lenient mapper as well as a strict one,
+     * and it does so by rejecting rather than merely by declining to suppress.</p>
+     *
+     * <p>Neither the offending name nor the offending value is echoed. Both are untrusted input, and
+     * this type's whole security posture rests on never echoing a value that reached it from a client.</p>
+     *
+     * @param name  the unrecognised property name, accepted only so that Jackson can invoke this
+     *              method; deliberately never read
+     * @param value the unrecognised property value, accepted only so that Jackson can invoke this
+     *              method; deliberately never read
+     * @throws IllegalArgumentException always, because no unrecognised property is acceptable
+     */
+    @JsonAnySetter
+    void rejectUnrecognisedProperty(final String name, final Object value) {
+        throw new IllegalArgumentException(
+                "TransactionAddRequest accepts only the 21 fields declared by"
+                        + " app/cpy-bms/COTRN02.CPY, and an unrecognised property was supplied. The"
+                        + " offending name and value are withheld because they are untrusted input.");
     }
 }

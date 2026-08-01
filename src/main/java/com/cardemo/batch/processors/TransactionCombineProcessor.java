@@ -1,6 +1,6 @@
 /*
  * ******************************************************************
- * Component   : TransactionCombineProcessor.java
+ * Program     : TransactionCombineProcessor.java
  * Application : CardDemo
  * Type        : Spring Batch ItemProcessor (Java 25 / Spring Boot 3.5.11)
  * Function    : Merge/ordering semantics for the combined transaction stream.
@@ -312,12 +312,18 @@ import com.cardemo.model.entity.Transaction;
  * <p>Facts this class could not verify at authoring time, stated plainly rather than guessed:
  *
  * <ul>
- *   <li><strong>Not available</strong> - the name of the primary-key constraint that surfaces a
- *       collision. Its authority is {@code src/main/resources/db/migration/V1__create_schema.sql}, which
- *       does not exist yet. <em>Needed to resolve:</em> that migration. The table and column
- *       <em>are</em> verifiable and are used instead: {@code Transaction} maps
- *       {@code @Table(name = "transaction")} and {@code @Column(name = "tran_id")}. Where a constraint
- *       name is required by a constructor, {@code null} is passed rather than a fabricated identifier.</li>
+ *   <li><strong>Corrected 1 August 2026 - this item is no longer unavailable.</strong> Earlier
+ *       generations of this list recorded the primary-key constraint name as unavailable because the
+ *       declaring migration "does not exist yet". That is measurably wrong:
+ *       {@code src/main/resources/db/migration/V1__create_schema.sql} is present and declares
+ *       {@code pk_transaction} at {@code :L1260}, so the name is known. It is still not carried here,
+ *       but deliberately rather than for want of a source: neither diagnostic path using
+ *       {@link #RELATION} can establish which of that table's four named constraints failed, because
+ *       the per-record rejections throw before any insert is attempted and the store-failure
+ *       translation does not parse the driver-reported name. Where a constructor requires a constraint
+ *       name, {@code null} is passed rather than a fabricated identifier. The table and column remain
+ *       independently verifiable: {@code Transaction} maps {@code @Table(name = "transaction")} and
+ *       {@code @Column(name = "tran_id")}.</li>
  *   <li><strong>Not available</strong> - the concrete reader and writer type names and the step's chunk
  *       size. Neither {@code com.cardemo.batch.readers} nor {@code com.cardemo.batch.writers} exists
  *       yet. <em>Needed to resolve:</em> those packages and the batch configuration. Nothing here depends
@@ -345,80 +351,53 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
 
     /**
      * Diagnostic logger. Debug carries per-record flow, error is used only where this class rethrows.
-     *
-     * <p>Nothing sensitive is ever logged: the identifier is logged because it is an ordinal and not
-     * personal data, whereas {@code TRAN-CARD-NUM} at {@code app/cpy/CVTRA05Y.cpy:L15} and the record
-     * image as a whole are never logged in any form.
      */
     private static final Logger LOG = LoggerFactory.getLogger(TransactionCombineProcessor.class);
 
     /**
-     * Width of the sort key in characters: {@code 16}.
-     *
-     * <p>Fixed jointly by {@code app/jcl/COMBTRAN.jcl:L28} ({@code TRAN-ID,1,16,CH} - offset 1,
-     * length 16) and {@code app/cpy/CVTRA05Y.cpy:L5} ({@code TRAN-ID PIC X(16)}). The two agree, which is
-     * why the value is stated as a fact rather than derived at runtime.
+     * Width of the sort key in characters: {@code 16}. Fixed by the sort symbol
+     * {@code TRAN-ID,1,16,CH} at {@code app/jcl/COMBTRAN.jcl:28}.
      */
     public static final int TRAN_ID_LENGTH = 16;
 
     /**
-     * Length in bytes of one combined transaction record: {@code 350}.
-     *
-     * <p>{@code app/cpy/CVTRA05Y.cpy:L2} states {@code RECLN = 350} in the layout's own header, and
-     * {@code app/jcl/COMBTRAN.jcl:L35} propagates the input geometry to the output with
-     * {@code DCB=(*.SORTIN)}, so the merged stream is 350 bytes per record exactly as the inputs are.
-     * The interest-side input agrees independently: {@code app/jcl/INTCALC.jcl:L39} declares
-     * {@code DCB=(RECFM=F,LRECL=350,BLKSIZE=0)}.
+     * Length in bytes of one combined transaction record: {@code 350}. Declared by
+     * {@code RECLN = 350} at {@code app/cpy/CVTRA05Y.cpy:2} and fixed on the concatenated sort input by
+     * {@code DCB=(*.SORTIN)} at {@code app/jcl/COMBTRAN.jcl:35}.
      */
     public static final int COMBINED_RECORD_LENGTH = 350;
 
     /**
-     * Ascending order by transaction identifier - the direct translation of
-     * {@code SORT FIELDS=(TRAN-ID,A)} at {@code app/jcl/COMBTRAN.jcl:L30}.
-     *
-     * <p><strong>One key, ascending, compared as characters.</strong> The symbol it names is declared at
-     * {@code app/jcl/COMBTRAN.jcl:L28} as {@code TRAN-ID,1,16,CH}: offset 1, length 16, character. So the
-     * comparison delegates to {@link String#compareTo(String)} over
-     * {@link Transaction#getTransactionId()} and never parses the value to a number - the field is
-     * {@code PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L5}, and parsing would discard the leading zeros
-     * that every identifier in this corpus carries.
-     *
-     * <p><strong>No secondary key is added.</strong> {@code app/jcl/COMBTRAN.jcl:L30} names exactly one
-     * field, unlike the two-key {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} of
-     * {@code app/jcl/CREASTMT.JCL:L53}. Inventing a tie-breaker would order records the source leaves in
-     * their arrival order.
-     *
-     * <p><strong>Total, so it cannot fail mid-sort.</strong> DFSORT has no concept of a null: a 16-byte
-     * field always holds 16 bytes. Java does, so both levels are handled explicitly with
-     * {@link Comparator#nullsFirst(Comparator)} - a null element sorts before a non-null element, and a
-     * null identifier before a non-null identifier. This is defence in depth rather than a behaviour:
-     * {@link #process(Transaction)} rejects both cases before a record can reach a sort, and it is done
-     * this way so that the comparator is a total order for every possible input and can never throw
-     * {@link NullPointerException} from inside a sort.
-     *
-     * <p>Immutable and stateless, therefore safe to publish and to share across threads.
+     * Ascending order by transaction identifier - the direct translation of {@code SORT FIELDS=(TRAN-ID,A)} at
+     * {@code app/jcl/COMBTRAN.jcl:L30}.
      */
     public static final Comparator<Transaction> TRAN_ID_ASCENDING =
             Comparator.nullsFirst(Comparator.comparing(Transaction::getTransactionId,
                     Comparator.nullsFirst(Comparator.<String>naturalOrder())));
 
     /**
-     * Legacy logical name of the keyed cluster this step loads: {@code TRANSACT}.
-     *
-     * <p>It is the DD name at {@code app/jcl/COMBTRAN.jcl:L43} and also the CICS file name for
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}. Reported on a collision so that a diagnostic reads the
-     * way the corpus reads rather than naming a relational table.
+     * Legacy logical name of the keyed cluster this step loads: {@code TRANSACT}, the DD name at
+     * {@code app/jcl/COMBTRAN.jcl:43} that the {@code REPRO} of {@code :48} targets.
      */
     private static final String LOGICAL_FILE = "TRANSACT";
 
     /**
      * Relation the load targets: {@code transaction}.
-     *
-     * <p>Verified from {@code com.cardemo.model.entity.Transaction}, which declares
-     * {@code @Table(name = "transaction")}. The <em>constraint</em> name is Not available, because the
-     * schema migration that declares it does not exist yet.
      */
     private static final String RELATION = "transaction";
+
+    /**
+     * Name of the primary-key constraint a duplicate identifier violates: {@code pk_transaction}.
+     *
+     * <p>Read from {@code src/main/resources/db/migration/V1__create_schema.sql}, which declares
+     * {@code CONSTRAINT pk_transaction PRIMARY KEY (tran_id)}. It is named explicitly there rather than
+     * left to the database's default, which is what makes it quotable at all.
+     *
+     * <p>Only the duplicate-key branch may use this. A collision on {@code tran_id} can violate nothing
+     * else, so attributing it to this constraint is a deduction rather than a guess. The generic
+     * integrity branch must not use it, because any of the three foreign keys could be the cause there.
+     */
+    private static final String PRIMARY_KEY_CONSTRAINT = "pk_transaction";
 
     /**
      * Culprit reported on an abend: {@code COMBTRAN}.
@@ -430,87 +409,35 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     private static final String ABEND_CULPRIT = "COMBTRAN";
 
     /**
-     * Largest magnitude representable by {@code TRAN-AMT PIC S9(09)V99}: {@code 999999999.99}.
-     *
-     * <p>Nine integer digits and two decimal digits, from {@code app/cpy/CVTRA05Y.cpy:L10}, which the
-     * entity stores as {@code NUMERIC(11,2)}. Held as {@link BigDecimal} because no monetary value in
-     * this migration is ever a {@code float} or a {@code double}, and compared with
-     * {@link BigDecimal#compareTo(BigDecimal)} rather than {@link BigDecimal#equals(Object)} so that
-     * scale does not affect the outcome.
+     * Largest magnitude representable by {@code TRAN-AMT PIC S9(09)V99}: {@code 999999999.99}. Declared
+     * at {@code app/cpy/CVTRA05Y.cpy:10}.
      */
     private static final BigDecimal TRAN_AMT_MAX = new BigDecimal("999999999.99");
 
-    /** Maximum decimal places {@code TRAN-AMT PIC S9(09)V99} can carry: {@code 2}. */
+    /**
+     * Maximum decimal places {@code TRAN-AMT PIC S9(09)V99} can carry: {@code 2}.
+     */
     private static final int TRAN_AMT_SCALE = 2;
 
-    /** Inclusive upper bound of {@code TRAN-CAT-CD PIC 9(04)}, unsigned: {@code 9999}. */
+    /**
+     * Inclusive upper bound of {@code TRAN-CAT-CD PIC 9(04)}, unsigned: {@code 9999}.
+     */
     private static final long TRAN_CAT_CD_MAX = 9999L;
 
-    /** Inclusive upper bound of {@code TRAN-MERCHANT-ID PIC 9(09)}, unsigned: {@code 999999999}. */
-    private static final long TRAN_MERCHANT_ID_MAX = 999_999_999L;
-
     /**
-     * Creates a stateless processor.
-     *
-     * <p>Declared explicitly rather than left implicit so that it carries documentation and so that the
-     * absence of injected collaborators is visible rather than inferred. There is deliberately no
-     * constructor parameter: a per-record duplicate probe would mean one query per record, which is an
-     * obvious inefficiency, and it is unnecessary because the primary-key constraint surfaces a collision
-     * at the load with no extra round trip. Should a collaborator ever genuinely be needed, it must
-     * arrive through this constructor - never through field injection and never through a static.
+     * Inclusive upper bound of {@code TRAN-MERCHANT-ID PIC 9(09)}, unsigned: {@code 999999999}.
      */
-    public TransactionCombineProcessor() {
-        // Intentionally empty: this component holds no state and injects no collaborator.
-    }
+    private static final long TRAN_MERCHANT_ID_MAX = 999_999_999L;
 
     /**
      * Validates one record of the concatenated stream and passes it through unchanged.
      *
-     * <p><strong>Purpose.</strong> To reproduce, per record, everything
-     * {@code app/jcl/COMBTRAN.jcl} STEP05R and STEP10 require of a record before it can be ordered by
-     * {@code SORT FIELDS=(TRAN-ID,A)} ({@code app/jcl/COMBTRAN.jcl:L30}) and then bulk loaded by
-     * {@code REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)} ({@code app/jcl/COMBTRAN.jcl:L48}). Three
-     * checks run, in this order, each delegated to its own method and each citing the control card it
-     * translates: the sort key, the fixed-width geometry, then the load precondition.
-     *
-     * <p><strong>Input.</strong> One {@link Transaction} decoded from either
-     * {@code AWS.M2.CARDDEMO.TRANSACT.BKUP(0)} or {@code AWS.M2.CARDDEMO.SYSTRAN(0)}
-     * ({@code app/jcl/COMBTRAN.jcl:L23-L26}). Which of the two it came from is deliberately not
-     * inspected: the DD statements are concatenated, so DFSORT sees one undifferentiated stream, and
-     * both datasets carry the same 350-byte geometry. The geometry is asserted; the provenance is not,
-     * because the source cannot distinguish it either.
-     *
-     * <p><strong>Output.</strong> The very same instance, always. Never {@code null}, never a copy and
-     * never a mutated record. {@code app/jcl/COMBTRAN.jcl} carries no {@code INCLUDE}, {@code OMIT},
-     * {@code SKIPREC} or {@code STOPAFT} card, so nothing may be filtered - and Spring Batch reads a
-     * {@code null} return as a filter instruction, which is why {@code null} is never returned. It
-     * carries no {@code INREC}, {@code OUTREC} or {@code OUTFIL} card either, so nothing may be
-     * rewritten - unlike {@code app/jcl/CREASTMT.JCL:L54}, which does reshape its records. Nothing here
-     * trims, pads, upper-cases, re-scales, rounds or re-orders any field.
-     *
-     * <p><strong>Side effects: none.</strong> No query, no insert, no object-storage call, no queue
-     * call, no file handle, no clock read and no state change of any kind. The one observable effect is
-     * a debug log line, emitted through an SLF4J parameterised message so that the text is assembled
-     * only when the debug level is actually enabled - which is why no {@code isDebugEnabled} guard
-     * wraps it: the guard would add a branch that buys nothing and cannot be exercised.
-     *
-     * <p><strong>Boundary cases, handled explicitly.</strong> A {@code null} record is rejected. A
-     * {@code null}, blank or wrong-length identifier is rejected. A field wider than its {@code PIC}
-     * clause is rejected. A <strong>negative</strong> amount is <em>accepted</em>: debits are genuinely
-     * negative in this corpus and no absolute value is ever taken. A {@code null} non-key field is
-     * accepted here and left to the schema's {@code NOT NULL} constraints, because duplicating those
-     * checks in application code would put the same rule in two places that can drift apart. An empty
-     * input stream never reaches this method at all - the reader signals end of stream, this method is
-     * not invoked, and the step completes normally with zero records.
-     *
-     * @param item the record to validate and pass through; must not be {@code null}
+     * @param item the record to validate and pass through.
      * @return {@code item} itself, unchanged and never {@code null}
-     * @throws DataIntegrityException if the record is {@code null}, if its identifier is absent, blank
-     *                                or not exactly {@value #TRAN_ID_LENGTH} characters, if any
-     *                                character field exceeds its {@code PIC} width, or if any numeric
-     *                                field falls outside its {@code PIC} range - in every case the
-     *                                record cannot be loaded into a
-     *                                {@value #COMBINED_RECORD_LENGTH}-byte keyed cluster
+     * @throws DataIntegrityException if the record is {@code null}, if its identifier is absent, blank or not
+     * exactly {@value #TRAN_ID_LENGTH} characters, if any character field exceeds its {@code PIC} width, or if
+     * any numeric field falls outside its {@code PIC} range - in every case the record cannot be loaded into a
+     * {@value #COMBINED_RECORD_LENGTH}-byte keyed cluster
      */
     @Override
     public Transaction process(Transaction item) {
@@ -522,7 +449,8 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
         verifyFixedWidthGeometry(item, transactionId);
         verifyReproLoadPrecondition(item, transactionId);
 
-        LOG.debug("Combine step accepted transaction id {} for the TRAN-ID ascending bulk load", transactionId);
+        LOG.debug("Combine step accepted transaction id {} for the TRAN-ID ascending bulk load",
+                renderKey(transactionId));
         return item;
     }
 
@@ -540,10 +468,29 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
      * purpose of the step. The value is returned exactly as found: not trimmed, not padded and not case
      * folded, so no locale is involved.
      *
+     * <p>A control character is refused as well, and that refusal is a security boundary rather than a
+     * geometry one. Every other check here asks whether the value is the field the sort card names; this
+     * one asks whether reporting the value can corrupt the report. A sixteen-character, non-blank
+     * identifier carrying {@code CR} or {@code LF} satisfies every other rule on this method and, once
+     * interpolated into a log record, splits that record in two - the second half being attacker-chosen
+     * text that a log reader cannot distinguish from a line this application emitted. The corpus gives
+     * no reason to accept such a value: all 300 identifiers in {@code app/data/ASCII/dailytran.txt}
+     * bytes 1-16 are decimal digits, and both generators produce digits only - the descending-browse
+     * maximum-plus-one of {@code app/cbl/COTRN02C.cbl:L444-L451} and the date-plus-suffix concatenation
+     * of {@code app/cbl/CBACT04C.cbl:L473-L516}. Refusing a control character therefore cannot refuse a
+     * legitimate record, which is the test a parity-preserving guard has to pass.
+     *
+     * <p>The check is placed after the length check so that a wrong-length value is still reported as a
+     * geometry failure, which is its primary defect. Ordering is a diagnostics choice only, not a safety
+     * one: {@link #renderKey(String)} escapes at the point of rendering, so every message on every path
+     * is already safe regardless of which branch produces it. A value of sixteen newlines, for instance,
+     * is {@link String#isBlank()} and so is reported by the blank branch - accurately, and safely.
+     *
      * @param item the record being validated, already known to be non-{@code null}
      * @return the identifier, exactly as held by the record
-     * @throws DataIntegrityException if the identifier is {@code null}, blank, or not exactly
-     *                                {@value #TRAN_ID_LENGTH} characters
+     * @throws DataIntegrityException if the identifier is {@code null}, blank, not exactly
+     *                                {@value #TRAN_ID_LENGTH} characters, or contains a control
+     *                                character
      */
     private static String extractSortKey(Transaction item) {
         String transactionId = item.getTransactionId();
@@ -558,42 +505,21 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
                     "TRAN-ID is %d characters but the sort symbol TRAN-ID,1,16,CH fixes it at %d",
                     transactionId.length(), TRAN_ID_LENGTH));
         }
+        if (containsControlCharacter(transactionId)) {
+            throw unloadable(transactionId,
+                    "TRAN-ID contains a control character, which no identifier in the frozen corpus does "
+                            + "and which would break one log record into two if it were reported raw");
+        }
         return transactionId;
     }
 
     /**
      * Verifies the 350-byte fixed-width geometry that both inputs share.
      *
-     * <p>The two DD statements at {@code app/jcl/COMBTRAN.jcl:L23-L26} are concatenated, so both
-     * datasets must present the identical record shape, and {@code DCB=(*.SORTIN)} at
-     * {@code app/jcl/COMBTRAN.jcl:L35} propagates that shape to the output rather than declaring a new
-     * one. The shape is {@code app/cpy/CVTRA05Y.cpy:L5-L18}, whose header at
-     * {@code app/cpy/CVTRA05Y.cpy:L2} states {@code RECLN = 350}; the interest-side input agrees
-     * independently at {@code app/jcl/INTCALC.jcl:L39}, {@code DCB=(RECFM=F,LRECL=350,BLKSIZE=0)}.
-     * Record length is preserved byte-exactly across the step, so a field that cannot fit its declared
-     * {@code PIC} width would push the record past 350 bytes and is rejected here.
-     *
-     * <p>Every one of the twelve non-key fields is checked, in copybook declaration order, so that the
-     * method reads against {@code app/cpy/CVTRA05Y.cpy} line by line. Three deliberate leniencies, each
-     * a decision rather than an oversight:
-     *
-     * <ul>
-     *   <li><strong>Shorter than the declared width is accepted.</strong> A fixed-width writer pads to
-     *       width on emission, so a short value is representable. Only an over-long value is
-     *       unrepresentable, and only that is rejected.</li>
-     *   <li><strong>{@code null} is accepted.</strong> Whether a column may be absent is declared by the
-     *       schema, whose authority is
-     *       {@code src/main/resources/db/migration/V1__create_schema.sql}. Re-asserting those
-     *       constraints here would duplicate a rule that can then drift.</li>
-     *   <li><strong>A negative amount is accepted.</strong> {@code TRAN-AMT} is {@code PIC S9(09)V99} at
-     *       {@code app/cpy/CVTRA05Y.cpy:L10} - the {@code S} is a sign, and debits are genuinely
-     *       negative in this corpus. Only the magnitude and the scale are bounded.</li>
-     * </ul>
-     *
-     * @param item          the record being validated, already known to be non-{@code null}
+     * @param item the record being validated, already known to be non-{@code null}
      * @param transactionId the identifier, reported in any failure so the record can be located
-     * @throws DataIntegrityException if any character field exceeds its {@code PIC} width, or any
-     *                                numeric field falls outside its {@code PIC} range
+     * @throws DataIntegrityException if any character field exceeds its {@code PIC} width, or any numeric field
+     * falls outside its {@code PIC} range
      */
     private static void verifyFixedWidthGeometry(Transaction item, String transactionId) {
         requireWidth(transactionId, item.getTypeCode(), "TRAN-TYPE-CD X(02) app/cpy/CVTRA05Y.cpy:L6", 2);
@@ -620,34 +546,10 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     /**
      * Verifies the precondition for the IDCAMS {@code REPRO} bulk load.
      *
-     * <p>{@code app/jcl/COMBTRAN.jcl:L48} loads the sorted sequential file into
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS} with
-     * {@code REPRO INFILE(TRANSACT) OUTFILE(TRANVSAM)}. The target is a <em>keyed</em> cluster, so the
-     * record must carry the key the cluster indexes on. Notably that is the <strong>same sixteen
-     * bytes</strong> the sort ordered by: the cluster's key begins at relative byte position 0 with a
-     * key length of 16, and the sort symbol at {@code app/jcl/COMBTRAN.jcl:L28} names offset 1 length
-     * 16. Stating the identity explicitly is the point of this method, because it is why ordering the
-     * stream by the sort key is exactly what makes the sequential load into a keyed cluster valid.
-     *
-     * <p>What is checked is that the value the load will key on is still the value the sort ordered by.
-     * That holds trivially today, and it is asserted rather than assumed for two reasons. First,
-     * {@code app/jcl/COMBTRAN.jcl} has no {@code OUTREC} card, so no reshaping may occur between STEP05R
-     * and STEP10 - unlike {@code app/jcl/CREASTMT.JCL:L54}, where reshaping does occur and does move the
-     * key. Second, every byte reaching this step is untrusted, and an accessor that ever began trimming
-     * or normalising would silently break the ordering guarantee the load depends on. This is a live
-     * guard on an invariant, not unreachable code.
-     *
-     * <p><strong>Uniqueness is deliberately not probed here.</strong> {@code REPRO} into a keyed cluster
-     * fails on a duplicate key, and that is the one precondition this method cannot evaluate per record
-     * without a query. Issuing one query per record would be an obvious inefficiency for no benefit,
-     * because the primary-key constraint detects the collision at the load with no extra round trip.
-     * The collision is translated by {@link #translateLoadFailure(Transaction, DataAccessException)}.
-     *
-     * @param item          the record being validated, already known to be non-{@code null}
+     * @param item the record being validated, already known to be non-{@code null}
      * @param transactionId the identifier returned by {@link #extractSortKey(Transaction)}
-     * @throws DataIntegrityException if the record's current key differs from the key the stream was
-     *                                ordered by, which would mean the record was reshaped between the
-     *                                sort and the load
+     * @throws DataIntegrityException if the record's current key differs from the key the stream was ordered
+     * by, which would mean the record was reshaped between the sort and the load
      */
     private static void verifyReproLoadPrecondition(Transaction item, String transactionId) {
         if (!transactionId.equals(item.getTransactionId())) {
@@ -660,71 +562,33 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     /**
      * Translates a store failure raised by the bulk load into the migration's typed exception hierarchy.
      *
-     * <p><strong>Purpose.</strong> The load itself belongs to the step's writer, which performs the
-     * {@code REPRO} of {@code app/jcl/COMBTRAN.jcl:L48} as a batched insert. This method is the
-     * translation the writer needs: it maps the store's own exception onto the tree-wide
-     * status-to-exception map and <strong>always</strong> throws. It never returns normally, so the
-     * failure can never be swallowed at the call site:
+     * <p><strong>The cause is always preserved and its message is never copied into the message built
+     * here.</strong> A driver's constraint-violation text commonly embeds the offending key value, which
+     * on this record could be a card number; echoing it would put that value in a log line. Each message
+     * is written for this application, names only the identifier, and never includes the record image.
      *
-     * <pre>
-     * catch (DataAccessException ex) {
-     *     processor.translateLoadFailure(item, ex);
-     * }
-     * </pre>
+     * <p>No retry, backoff or identifier regeneration; no upsert, merge or on-conflict handling; no
+     * database sequence or generated identity. Each would change values the boundary parity comparison
+     * is measured against.
      *
-     * <p><strong>Branch order is load-bearing.</strong> {@link DuplicateKeyException} is a subclass of
-     * {@link DataIntegrityViolationException}, so the duplicate test must come first. Reversing the two
-     * would classify every collision as a generic integrity violation and lose the duplicate outcome
-     * that this step exists to surface.
-     *
-     * <ul>
-     *   <li>{@link DuplicateKeyException} - the {@code FILE STATUS '22'} row of the map. A colliding
-     *       identifier, raised as {@link DuplicateRecordException} carrying the logical file
-     *       {@code TRANSACT} ({@code app/jcl/COMBTRAN.jcl:L43}) and the colliding key. This is the
-     *       designed outcome of re-running the interest job with an already-used date parameter, and it
-     *       must fail the step: exit code {@code 8}. It is <strong>not</strong> exit code {@code 4},
-     *       which belongs solely to the posting job's reject count at
-     *       {@code app/cbl/CBTRN02C.cbl:L230}.</li>
-     *   <li>{@link DataIntegrityViolationException} - any other constraint violation, such as a
-     *       referential failure, raised as {@link DataIntegrityException}.</li>
-     *   <li>Anything else, including a {@code null} cause - the "anything else" row of the map, raised
-     *       as {@link FatalProcessingException} with abend code
-     *       {@value FatalProcessingException#BATCH_ABEND_CODE} and return code
-     *       {@value FatalProcessingException#BATCH_RETURN_CODE}. Those two values are referenced from
-     *       {@link FatalProcessingException}, never redeclared here.</li>
-     * </ul>
-     *
-     * <p><strong>The cause is always preserved</strong> and its message is never copied into the
-     * message this method builds. A driver's constraint-violation text commonly embeds the offending
-     * key value, which on this record could be a card number; echoing it would leak that value into the
-     * log. Each message is written for this application, names only the identifier - an ordinal, not
-     * personal data - and never includes the record image.
-     *
-     * <p><strong>Three prohibitions are honoured.</strong> No retry, backoff or identifier regeneration;
-     * no upsert, merge or on-conflict handling; no database sequence or generated identity. Each would
-     * change values the boundary parity comparison is measured against.
-     *
-     * <p>Side effects: one log line at error level, then a throw. Nothing is read or written.
-     *
-     * @param item  the record whose load failed; may be {@code null}, in which case the identifier is
-     *              reported as {@code Not available}
-     * @param cause the failure reported by the load path; may be {@code null}, which routes to the
-     *              fatal branch and is always retained on the thrown exception
-     * @throws DuplicateRecordException  if {@code cause} reports a duplicate key
-     * @throws DataIntegrityException    if {@code cause} reports any other constraint violation
-     * @throws FatalProcessingException  in every other case, including a {@code null} {@code cause}
+     * @param item the record whose load failed.
+     * @param cause the failure reported by the load path.
+     * @throws DuplicateRecordException if {@code cause} reports a duplicate key
+     * @throws DataIntegrityException if {@code cause} reports any other constraint violation
+     * @throws FatalProcessingException in every other case, including a {@code null} {@code cause}
      */
     public void translateLoadFailure(Transaction item, DataAccessException cause) {
         String transactionId = item == null ? null : item.getTransactionId();
-        String reportedKey = transactionId == null ? "Not available" : transactionId;
+        String reportedKey = renderKey(transactionId);
 
         if (cause instanceof DuplicateKeyException) {
             String message = String.format(Locale.ROOT,
-                    "Duplicate TRAN-ID %s rejected by the combine bulk load into %s (relation %s). "
-                            + "The IDCAMS REPRO of app/jcl/COMBTRAN.jcl:L48 loads a keyed cluster, so a "
-                            + "repeated identifier fails the step. Re-drive the pipeline with an unused "
-                            + "date parameter; do not retry, upsert or substitute a sequence.",
-                    reportedKey, LOGICAL_FILE, RELATION);
+                    "Duplicate TRAN-ID %s rejected by the combine bulk load into %s (relation %s, "
+                            + "constraint %s). The IDCAMS REPRO of app/jcl/COMBTRAN.jcl:L48 loads a keyed "
+                            + "cluster, so a repeated identifier fails the step. Re-drive the pipeline "
+                            + "with an unused date parameter; do not retry, upsert or substitute a "
+                            + "sequence.",
+                    reportedKey, LOGICAL_FILE, RELATION, PRIMARY_KEY_CONSTRAINT);
             LOG.error(message);
             throw new DuplicateRecordException(message, LOGICAL_FILE, transactionId, cause);
         }
@@ -732,9 +596,11 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
         if (cause instanceof DataIntegrityViolationException) {
             String message = String.format(Locale.ROOT,
                     "Constraint violation rejected the combine bulk load of TRAN-ID %s into relation %s. "
-                            + "The violated constraint is Not available because "
-                            + "src/main/resources/db/migration/V1__create_schema.sql declares it and is "
-                            + "the only authority for its name.",
+                            + "The exception does not name the constraint in a portable field, so it is one of "
+                            + "the four that V1__create_schema.sql declares on this relation - pk_transaction, "
+                            + "fk04_transaction_card, fk05_transaction_type and fk06_transaction_category - with "
+                            + "a duplicate key excluded because that condition is handled above. The retained "
+                            + "cause carries the driver's own constraint detail.",
                     reportedKey, RELATION);
             LOG.error(message);
             throw new DataIntegrityException(message, null, RELATION, cause);
@@ -754,26 +620,13 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     /**
      * Builds the exception used for every per-record rejection in this step.
      *
-     * <p>A single factory so that the wording, the citations and the constructor arguments are decided
-     * in one place. The relation is the verified {@code @Table} name of
-     * {@code com.cardemo.model.entity.Transaction}. The constraint name is passed as {@code null}
-     * rather than a fabricated identifier, because the only authority for constraint names is
-     * {@code src/main/resources/db/migration/V1__create_schema.sql} and it does not exist yet - the name
-     * is therefore Not available, and inventing one would put a value in a diagnostic field that no
-     * schema would ever confirm.
-     *
-     * <p>Pure: it builds a message with {@link Locale#ROOT} so the text is identical on every machine,
-     * logs nothing - these are first throws, not rethrows - and reads no state beyond its arguments and
-     * this class's immutable constants. No record image and no card number ever reaches the message.
-     *
-     * @param transactionId the identifier if one could be read, otherwise {@code null}, which is
-     *                      reported as {@code Not available}
-     * @param detail        what specifically makes the record unloadable; must not contain a record
-     *                      image, a card number or any other sensitive value
+     * @param transactionId the identifier if one could be read, otherwise {@code null}, for which the
+     * message reports a fixed placeholder in place of an identifier
+     * @param detail what specifically makes the record unloadable.
      * @return the exception to throw, never {@code null}
      */
     private static DataIntegrityException unloadable(String transactionId, String detail) {
-        String reportedKey = transactionId == null ? "Not available" : transactionId;
+        String reportedKey = renderKey(transactionId);
         String message = String.format(Locale.ROOT,
                 "Combine step rejected a record for TRAN-ID %s: %s. Sources: "
                         + "app/jcl/COMBTRAN.jcl:L28 sort symbol TRAN-ID,1,16,CH; :L35 DCB=(*.SORTIN) "
@@ -783,18 +636,97 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     }
 
     /**
+     * Renders an identifier so that it can appear in a log record or a message without being able to
+     * alter that record's structure.
+     *
+     * <p>This exists because the identifier is the one piece of attacker-influenced text this class
+     * handles. It arrives as sixteen bytes lifted from a fixed-width record image, and until it has been
+     * validated nothing is known about its contents. Interpolating it raw is what turns a data defect
+     * into a log-integrity defect: a {@code CR} or {@code LF} inside it ends the current log line and
+     * begins one that the reader will attribute to this application.
+     *
+     * <p>No encoder stands between this class and the log file. {@code logback-spring.xml} is planned but
+     * absent from the repository at this commit, so there is no JSON encoder to escape a newline into
+     * {@code \n} on the way out, and no masking rule to fall back on. The escaping therefore has to
+     * happen here, at the point of rendering, and it is applied there rather than at each call site so
+     * that adding a message later cannot forget it.
+     *
+     * <p>The rendering is total: every input produces a safe output, including inputs the validation
+     * boundary would have refused, because this method is also used to report those refusals. Anything
+     * outside printable ASCII is escaped, not merely the control characters that
+     * {@link #containsControlCharacter(String)} refuses - the guard is deliberately narrow so it cannot
+     * refuse a legitimate record, while the rendering is deliberately broad so that a character the
+     * guard permits still cannot forge a line. {@code U+2028} is the case that makes the difference
+     * matter: it is not an {@linkplain Character#isISOControl(char) ISO control} character, yet several
+     * readers treat it as a line break.
+     *
+     * <p>A legitimate identifier is unchanged apart from the surrounding quotes: all sixteen characters
+     * of every corpus identifier are decimal digits, so the diagnostic value an operator needs - the key
+     * to go and look for - survives intact. The quotes are not decoration; they make a trailing space
+     * visible, and a space-padded key is a real condition in a fixed-width record.
+     *
+     * @param transactionId the identifier, possibly {@code null} and possibly not yet validated
+     * @return {@code Not available} when the identifier is {@code null}, otherwise the identifier
+     *         quoted, with every character outside printable ASCII escaped; never {@code null}
+     */
+    private static String renderKey(String transactionId) {
+        if (transactionId == null) {
+            return "Not available";
+        }
+        StringBuilder rendered = new StringBuilder(transactionId.length() + 2);
+        rendered.append('\'');
+        for (int index = 0; index < transactionId.length(); index++) {
+            char character = transactionId.charAt(index);
+            switch (character) {
+                case '\n' -> rendered.append("\\n");
+                case '\r' -> rendered.append("\\r");
+                case '\t' -> rendered.append("\\t");
+                default -> {
+                    if (character < ' ' || character > '~') {
+                        rendered.append(String.format(Locale.ROOT, "\\u%04X", (int) character));
+                    } else {
+                        rendered.append(character);
+                    }
+                }
+            }
+        }
+        rendered.append('\'');
+        return rendered.toString();
+    }
+
+    /**
+     * Reports whether a value contains a character that must never reach a diagnostic.
+     *
+     * <p>{@link Character#isISOControl(char)} is the exact predicate, covering {@code U+0000-U+001F} and
+     * {@code U+007F-U+009F}. That range contains every character a log reader or a line-oriented tool
+     * treats as a record boundary, including {@code U+0085 NEL}, which is easy to miss because it lies
+     * outside the familiar C0 range.
+     *
+     * <p>Deliberately no wider than that. A broader rule - digits only, say - would match this corpus and
+     * would still be wrong to impose, because {@code TRAN-ID PIC X(16)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L5} declares a character field, and narrowing a field's domain beyond
+     * what the copybook declares risks refusing a record the legacy system would have posted. The
+     * asymmetry is intentional and is the point of having two methods: refuse narrowly, render broadly.
+     *
+     * @param value the value to inspect; must not be {@code null}
+     * @return {@code true} if any character is an ISO control character
+     */
+    private static boolean containsControlCharacter(String value) {
+        for (int index = 0; index < value.length(); index++) {
+            if (Character.isISOControl(value.charAt(index))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Rejects a character field longer than the width its {@code PIC} clause declares.
      *
-     * <p>{@code null} passes, because column nullability is the schema's declaration and not this
-     * class's. A value shorter than the width passes, because a fixed-width writer pads on emission. A
-     * value longer than the width cannot be written into its slot without pushing the record past the
-     * {@value #COMBINED_RECORD_LENGTH} bytes that {@code app/jcl/COMBTRAN.jcl:L35} fixes, so it is
-     * rejected. No trimming, padding or case folding is applied, so no locale affects the comparison.
-     *
      * @param transactionId the record's identifier, reported on failure
-     * @param value         the field value, possibly {@code null}
-     * @param field         the COBOL field name, its {@code PIC} clause and its copybook line
-     * @param width         the number of characters the {@code PIC} clause allows
+     * @param value the field value, possibly {@code null}
+     * @param field the COBOL field name, its {@code PIC} clause and its copybook line
+     * @param width the number of characters the {@code PIC} clause allows
      * @throws DataIntegrityException if {@code value} is longer than {@code width}
      */
     private static void requireWidth(String transactionId, String value, String field, int width) {
@@ -808,17 +740,10 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     /**
      * Rejects an unsigned numeric field outside the range its {@code PIC} clause declares.
      *
-     * <p>Applies to {@code TRAN-CAT-CD PIC 9(04)} and {@code TRAN-MERCHANT-ID PIC 9(09)}. Neither
-     * carries an {@code S}, so neither is signed and a negative value is not representable - which is
-     * the opposite of {@code TRAN-AMT PIC S9(09)V99}, where a negative value is entirely legitimate.
-     * Zero is valid and occurs in practice: the interest job sets the merchant identifier to zero on the
-     * transactions it generates. {@code null} passes, for the same reason as in
-     * {@link #requireWidth(String, String, String, int)}.
-     *
      * @param transactionId the record's identifier, reported on failure
-     * @param value         the field value, possibly {@code null}; an {@code Integer} or a {@code Long}
-     * @param field         the COBOL field name, its {@code PIC} clause and its copybook line
-     * @param maxInclusive  the largest value the {@code PIC} clause can hold
+     * @param value the field value, possibly {@code null}.
+     * @param field the COBOL field name, its {@code PIC} clause and its copybook line
+     * @param maxInclusive the largest value the {@code PIC} clause can hold
      * @throws DataIntegrityException if {@code value} is negative or above {@code maxInclusive}
      */
     private static void requireUnsignedRange(String transactionId, Number value, String field, long maxInclusive) {
@@ -836,31 +761,10 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
     /**
      * Rejects an amount that {@code TRAN-AMT PIC S9(09)V99} cannot represent.
      *
-     * <p>The field is declared at {@code app/cpy/CVTRA05Y.cpy:L10} with nine integer digits and two
-     * decimal digits, stored by the entity as {@code NUMERIC(11,2)}. Two bounds follow, and one
-     * non-bound:
-     *
-     * <ul>
-     *   <li><strong>Magnitude.</strong> Compared against {@code 999999999.99} with
-     *       {@link BigDecimal#compareTo(BigDecimal)}, never {@link BigDecimal#equals(Object)}, so that
-     *       two values differing only in scale compare as the same number. The comparison is on
-     *       {@link BigDecimal#abs()} because the bound applies to both signs.</li>
-     *   <li><strong>Scale.</strong> Trailing zeros are stripped before the scale is read, so
-     *       {@code 12.3400} passes - it needs only two decimal places - while {@code 12.3456} is
-     *       rejected, because storing it would silently round a monetary value.</li>
-     *   <li><strong>Sign is not bounded.</strong> A negative amount is valid and must flow through: the
-     *       {@code S} in the {@code PIC} clause is a sign, debits are negative in this corpus, and
-     *       nothing here takes an absolute value or normalises a sign.</li>
-     * </ul>
-     *
-     * <p>No arithmetic is performed and no value is re-scaled, so no rounding mode is applied anywhere
-     * in this class. The type is {@link BigDecimal} throughout; no {@code float} or {@code double}
-     * appears in this file.
-     *
      * @param transactionId the record's identifier, reported on failure
-     * @param amount        the amount, possibly {@code null}
+     * @param amount the amount, possibly {@code null}
      * @throws DataIntegrityException if the magnitude exceeds {@code 999999999.99} or more than
-     *                                {@value #TRAN_AMT_SCALE} decimal places are significant
+     * {@value #TRAN_AMT_SCALE} decimal places are significant
      */
     private static void requireAmountGeometry(String transactionId, BigDecimal amount) {
         if (amount == null) {

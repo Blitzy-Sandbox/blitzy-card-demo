@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : UserUpdateRequestTest.java
- * Component   : Unit test tier, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM tier, no container, no
  *               Spring context, no database, no live AWS endpoint
@@ -47,9 +45,6 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
 import java.lang.annotation.Annotation;
@@ -66,7 +61,6 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
-import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -151,9 +145,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * and the {@code Test} suffix must not be changed.</p>
  *
  * <pre>{@code
- * mvn -B clean test                                  # this tier only
- * mvn -B -Dtest=UserUpdateRequestTest clean test     # this class only
- * mvn -B clean verify                                # adds coverage and the dependency audit
+ * ./mvnw -B clean test                               # this tier only
+ * ./mvnw -B -Dtest=UserUpdateRequestTest clean test  # this class only
+ * ./mvnw -B clean verify                             # adds coverage and the dependency audit
  * }</pre>
  *
  * <p>Compilation is by {@code maven-compiler-plugin} 3.14.1 at {@code release} 25 with
@@ -179,10 +173,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       strict stubbing, which fails a test on an unnecessary stub. This class declares no mock at all,
  *       because the type under test has no collaborator to stub; introducing one would be an unused stub and
  *       strict stubbing would rightly reject it.</li>
- *   <li><strong>No global mutable state.</strong> The validator and its factory are {@code static final}
- *       references to immutable, thread-safe objects, bootstrapped once and released deterministically in
- *       {@link #releaseValidatorFactory()}. Every other fixture is either an immutable constant or a fresh
- *       local built by a pure factory method, so no test can observe a value another test wrote.</li>
+ *   <li><strong>No global mutable state.</strong> Validation now runs through
+ *       {@link ValidationSupport#violationsOf(Object, String)}, which holds the one immutable, thread-safe
+ *       {@code Validator} shared by the DTO test tier; this class no longer bootstraps or releases a factory
+ *       of its own. Every other fixture is either an immutable constant or a fresh local built by a pure
+ *       factory method, so no test can observe a value another test wrote.</li>
  *   <li><strong>No environment coupling.</strong> No host, port, JDBC URL or cloud endpoint appears
  *       anywhere in this file, and nothing here opens a socket, starts a container or reads a file.</li>
  * </ul>
@@ -215,9 +210,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>Common failure modes</h2>
  *
  * <ul>
- *   <li><strong>An unused import or a raw type fails the build, not the test.</strong> Under
+ *   <li><strong>A raw type or a deprecation fails the build, not the test.</strong> Under
  *       {@code -Werror} with {@code failOnWarning} the compiler is the first gate, so a warning here is a
- *       build failure with no test report at all.</li>
+ *       build failure with no test report at all. An <em>unused</em> import behaves differently:
+ *       {@code javac} 25.0.3 publishes no lint key for one, so it compiles cleanly and is caught at review
+ *       instead.</li>
  *   <li><strong>Reading a constraint from the wrong reflective element returns null.</strong> On a record,
  *       {@code @Size} and {@code @JsonProperty} are propagated to the private final field, the accessor and
  *       the constructor parameter, but <em>not</em> retained on the {@link RecordComponent}, because neither
@@ -262,8 +259,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>High</strong> - the update cascade's order differs from the add cascade's. Remediation
  *       applied: the update order is asserted explicitly and its inequality with the add order is asserted
  *       as well.</li>
- *   <li><strong>Medium</strong> - the specification's input-field census reports 460 fields across the
- *       seventeen symbolic maps while its own per-map table sums lower. The discrepancy is confined to a
+ *   <li><strong>Medium, closed</strong> - prior-generation plan prose reported 460 input fields across
+ *       the seventeen symbolic maps while its own per-map table summed lower; the specification now
+ *       publishes 441. The discrepancy is confined to a
  *       longhand picture clause on an unrelated map; this map contributes twelve fields under every reading,
  *       so nothing here is affected. Remediation is documentation only.</li>
  *   <li><strong>Low</strong> - the specification cites the gated cross-field edit in
@@ -314,14 +312,9 @@ import org.junit.jupiter.params.provider.ValueSource;
 @DisplayName("UserUpdateRequest - app/cpy-bms/COUSR02.CPY + app/cbl/COUSR02C.cbl")
 final class UserUpdateRequestTest {
 
-    // ---------------------------------------------------------------------------------------------
-    // The field contract of app/cpy-bms/COUSR02.CPY, group 01 COUSR2AI.
-    // Both lists are ordered, and the order IS the assertion: it is the update map's own order, which
-    // leads with the identifier at line 60, before FNAMEI at 66 and LNAMEI at 72. The add map at
-    // app/cpy-bms/COUSR01.CPY places its identifier third instead, at line 72.
-    // ---------------------------------------------------------------------------------------------
-
-    /** The twelve component names in the declaration order of {@code app/cpy-bms/COUSR02.CPY}. */
+    /**
+     * The twelve component names in the declaration order of {@code app/cpy-bms/COUSR02.CPY}.
+     */
     private static final List<String> COMPONENTS_IN_MAP_ORDER = List.of(
             "transactionName",  // TRNNAMEI PIC X(4)  - app/cpy-bms/COUSR02.CPY:24
             "title01",          // TITLE01I PIC X(40) - app/cpy-bms/COUSR02.CPY:30
@@ -336,204 +329,260 @@ final class UserUpdateRequestTest {
             "userType",         // USRTYPEI PIC X(1)  - app/cpy-bms/COUSR02.CPY:84
             "errorMessage");    // ERRMSGI  PIC X(78) - app/cpy-bms/COUSR02.CPY:90
 
-    /** The picture width of each component, positionally aligned with {@link #COMPONENTS_IN_MAP_ORDER}. */
+    /**
+     * The picture width of each component, positionally aligned with {@link #COMPONENTS_IN_MAP_ORDER}.
+     */
     private static final List<Integer> WIDTHS_IN_MAP_ORDER =
             List.of(4, 40, 8, 8, 40, 8, 8, 20, 20, 8, 1, 78);
 
-    /** The census the map yields, asserted rather than assumed. */
+    /**
+     * The census the map yields, asserted rather than assumed.
+     */
     private static final int DECLARED_FIELD_COUNT = 12;
 
-    /** {@code ERRMSGI PIC X(78)} - the wire width, narrower than the work area that feeds it. */
+    /**
+     * {@code ERRMSGI PIC X(78)} - the wire width, narrower than the work area that feeds it.
+     */
     private static final int ERRMSGI_WIDTH = 78;
 
-    /** {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR02C.cbl:L38} - the work-area width. */
+    /**
+     * {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR02C.cbl:L38} - the work-area width.
+     */
     private static final int WS_MESSAGE_WIDTH = 80;
 
-    /** {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21} and {@code PASSWDI PIC X(8)}. */
+    /**
+     * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21} and {@code PASSWDI PIC X(8)}.
+     */
     private static final int PASSWDI_WIDTH = 8;
 
-    /** The target column width of the stored digest, which is why the eight-byte carrier cannot hold one. */
+    /**
+     * The target column width of the stored digest, which is why the eight-byte carrier cannot hold one.
+     */
     private static final int STORED_DIGEST_WIDTH = 60;
 
-    /** {@code SEC-USER-DATA} is an 80-byte record: 8 + 20 + 20 + 8 + 1 populated, plus a named 23-byte
-     * filler - {@code app/cpy/CSUSR01Y.cpy:L17-L23}, corroborated by {@code RECORDSIZE(80,80)} at
-     * {@code app/jcl/DUSRSECJ.jcl:L66}. */
+    /**
+     * {@code SEC-USER-DATA} is an 80-byte record: 8 + 20 + 20 + 8 + 1 populated, plus a named 23-byte filler -
+     * {@code app/cpy/CSUSR01Y.cpy:L17-L23}, corroborated by {@code RECORDSIZE(80,80)} at
+     * {@code app/jcl/DUSRSECJ.jcl:L66}.
+     */
     private static final int SEC_USER_DATA_LENGTH = 80;
 
-    /** {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65} - the cluster key length. */
+    /**
+     * {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65} - the cluster key length.
+     */
     private static final int USRSEC_KEY_LENGTH = 8;
 
-    // ---------------------------------------------------------------------------------------------
-    // Message literals, transcribed byte for byte. The parity gates compare these as bytes, so the
-    // inconsistent spacing before the ellipses and the inconsistent capitalisation of "lookup" against
-    // "Update" and "update" are the contract and are never normalised.
-    // ---------------------------------------------------------------------------------------------
-
-    /** {@code app/cbl/COUSR02C.cbl:L148} and, verbatim again, {@code :L182}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L148} and, verbatim again, {@code :L182}.
+     */
     private static final String USER_ID_EMPTY = "User ID can NOT be empty...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L188}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L188}.
+     */
     private static final String FIRST_NAME_EMPTY = "First Name can NOT be empty...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L194}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L194}.
+     */
     private static final String LAST_NAME_EMPTY = "Last Name can NOT be empty...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L200}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L200}.
+     */
     private static final String PASSWDI_EMPTY = "Password can NOT be empty...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L206}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L206}.
+     */
     private static final String USER_TYPE_EMPTY = "User Type can NOT be empty...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L239} - lower-case {@code update}, and a space before the dots. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L239} - lower-case {@code update}, and a space before the dots.
+     */
     private static final String NOTHING_MODIFIED = "Please modify to update ...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L336} - a space before the dots. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L336} - a space before the dots.
+     */
     private static final String SAVE_PROMPT = "Press PF5 key to save your updates ...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L342}, and the same literal again at {@code :L379}. No space. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L342}, and the same literal again at {@code :L379}. No space.
+     */
     private static final String USER_ID_NOT_FOUND = "User ID NOT found...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L349} - lower-case {@code lookup}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L349} - lower-case {@code lookup}.
+     */
     private static final String LOOKUP_FAILED = "Unable to lookup User...";
 
-    /** {@code app/cbl/COUSR02C.cbl:L386} - capital {@code Update}. */
+    /**
+     * {@code app/cbl/COUSR02C.cbl:L386} - capital {@code Update}.
+     */
     private static final String REWRITE_FAILED = "Unable to Update User...";
 
-    /** First operand of the {@code STRING} at {@code app/cbl/COUSR02C.cbl:L372}. */
+    /**
+     * First operand of the {@code STRING} at {@code app/cbl/COUSR02C.cbl:L372}.
+     */
     private static final String COMPOSED_PREFIX = "User ";
 
-    /** Third operand of the {@code STRING} at {@code app/cbl/COUSR02C.cbl:L374}. */
+    /**
+     * Third operand of the {@code STRING} at {@code app/cbl/COUSR02C.cbl:L374}.
+     */
     private static final String COMPOSED_UPDATE_SUFFIX = " has been updated ...";
 
-    /** The add program's counterpart at {@code app/cbl/COUSR01C.cbl:L257}, held for contrast only. */
+    /**
+     * The add program's counterpart at {@code app/cbl/COUSR01C.cbl:L257}, held for contrast only.
+     */
     private static final String COMPOSED_ADD_SUFFIX = " has been added ...";
 
-    /** {@code app/cbl/COUSR01C.cbl:L263}, where {@code DUPKEY} and {@code DUPREC} collapse into one
-     * message. Held for contrast only: the update path has no duplicate branch to model. Note the source
-     * spelling {@code exist} rather than {@code exists}. */
+    /**
+     * {@code app/cbl/COUSR01C.cbl:L263}, where {@code DUPKEY} and {@code DUPREC} collapse into one message.
+     * Held for contrast only: the update path has no duplicate branch to model. Note the source spelling
+     * {@code exist} rather than {@code exists}.
+     */
     private static final String ADD_ONLY_DUPLICATE = "User ID already exist...";
 
-    /** The five update-path cascade messages in the source's own order,
-     * {@code app/cbl/COUSR02C.cbl:L179-L213}. */
+    /**
+     * The five update-path cascade messages in the source's own order, {@code app/cbl/COUSR02C.cbl:L179-L213}.
+     */
     private static final List<String> UPDATE_CASCADE_MESSAGES = List.of(
             USER_ID_EMPTY, FIRST_NAME_EMPTY, LAST_NAME_EMPTY, PASSWDI_EMPTY, USER_TYPE_EMPTY);
 
-    /** The components the update cascade tests, in the order it tests them. */
+    /**
+     * The components the update cascade tests, in the order it tests them.
+     */
     private static final List<String> UPDATE_CASCADE_ORDER =
             List.of("userId", "firstName", "lastName", "password", "userType");
 
-    /** The add screen's order at {@code app/cbl/COUSR01C.cbl:L118,124,130,136,142}, held for contrast. */
+    /**
+     * The add screen's order at {@code app/cbl/COUSR01C.cbl:L118,124,130,136,142}, held for contrast.
+     */
     private static final List<String> ADD_CASCADE_ORDER =
             List.of("firstName", "lastName", "userId", "password", "userType");
 
-    /** The four components compared at {@code app/cbl/COUSR02C.cbl:L219,223,227,231}. The identifier is
-     * absent by design: it is the key moved into {@code SEC-USR-ID} at line 216 before the read. */
+    /**
+     * The four components compared at {@code app/cbl/COUSR02C.cbl:L219,223,227,231}. The identifier is absent
+     * by design: it is the key moved into {@code SEC-USR-ID} at line 216 before the read.
+     */
     private static final List<String> CHANGE_DETECTED_COMPONENTS =
             List.of("firstName", "lastName", "password", "userType");
 
-    // ---------------------------------------------------------------------------------------------
-    // Names that must NOT appear on this carrier.
-    // ---------------------------------------------------------------------------------------------
-
-    /** Lower-cased fragments of the COMMAREA navigation fields at {@code app/cpy/COCOM01Y.cpy:L21-L24},
-     * {@code :L29} and {@code :L43-L44}. Routing is by URL, so none of these may surface on a payload. */
+    /**
+     * Lower-cased fragments of the COMMAREA navigation fields at {@code app/cpy/COCOM01Y.cpy:L21-L24},
+     * {@code :L29} and {@code :L43-L44}. Routing is by URL, so none of these may surface on a payload.
+     */
     private static final List<String> FORBIDDEN_SESSION_FRAGMENTS = List.of(
             "fromtranid", "totranid", "fromprogram", "toprogram", "pgmcontext", "context",
             "lastmap", "lastmapset", "commarea", "reenter", "session");
 
-    /** Lower-cased fragments of a screen-time snapshot group. Only {@code app/cbl/COACTUPC.cbl} has one. */
+    /**
+     * Lower-cased fragments of a screen-time snapshot group. Only {@code app/cbl/COACTUPC.cbl} has one.
+     */
     private static final List<String> FORBIDDEN_SNAPSHOT_FRAGMENTS = List.of(
             "olddetails", "newdetails", "snapshot", "original", "previous", "priorvalue", "baseline");
 
-    /** Lower-cased fragments of a stored-digest or comparison concern, which belongs to the service. */
+    /**
+     * Lower-cased fragments of a stored-digest or comparison concern, which belongs to the service.
+     */
     private static final List<String> FORBIDDEN_DIGEST_FRAGMENTS = List.of(
             "hash", "digest", "bcrypt", "encoded", "encrypt", "cipher", "salt", "verify", "matches");
 
-    /** Lower-cased fragments of a self-delete guard. {@code app/cbl/COUSR03C.cbl} has none, so neither has
-     * this carrier - the absent guard is preserved deliberately. */
+    /**
+     * Lower-cased fragments of a self-delete guard. {@code app/cbl/COUSR03C.cbl} has none, so neither has this
+     * carrier - the absent guard is preserved deliberately.
+     */
     private static final List<String> FORBIDDEN_ACTOR_FRAGMENTS = List.of(
             "signedon", "signedonuser", "currentuser", "actinguser", "invoker", "principal");
 
-    // ---------------------------------------------------------------------------------------------
-    // Baseline values. Every one is valid for its width, so a test that perturbs a single component
-    // produces exactly one violation and the failure names exactly one field.
-    // ---------------------------------------------------------------------------------------------
-
-    /** {@code WS-TRANID} at {@code app/cbl/COUSR02C.cbl:L37}, four characters. */
+    /**
+     * {@code WS-TRANID} at {@code app/cbl/COUSR02C.cbl:L37}, four characters.
+     */
     private static final String BASE_TRANSACTION_NAME = "CU02";
 
-    /** {@code WS-PGMNAME} at {@code app/cbl/COUSR02C.cbl:L36}, eight characters. */
+    /**
+     * {@code WS-PGMNAME} at {@code app/cbl/COUSR02C.cbl:L36}, eight characters.
+     */
     private static final String BASE_PROGRAM_NAME = "COUSR02C";
 
-    /** One of the ten seeded identifiers at {@code app/jcl/DUSRSECJ.jcl:L35-L44}. Identifiers are not
-     * secret; only the shared credential is, and it appears nowhere in this file. */
-    private static final String BASE_USER_ID = "USER0001";
+    /**
+     * A <strong>synthetic</strong> eight character identifier standing in for one of the ten seeded rows
+     * at {@code app/jcl/DUSRSECJ.jcl:L35-L44}. The seeded identity is not transcribed here, and neither
+     * is the shared credential; what this fixture supplies is the eight character key width the composed
+     * message arithmetic depends on.
+     */
+    private static final String BASE_USER_ID = "STDUSR01";
 
-    /** The given name paired with {@link #BASE_USER_ID} in the same card image. */
-    private static final String BASE_FIRST_NAME = "LAWRENCE";
+    /** A synthetic given name paired with {@link #BASE_USER_ID}; the seeded value is not reproduced. */
+    private static final String BASE_FIRST_NAME = "FNAMEAA6";
 
-    /** The family name paired with {@link #BASE_USER_ID} in the same card image. */
-    private static final String BASE_LAST_NAME = "THOMAS";
+    /** A synthetic family name paired with {@link #BASE_USER_ID}; the seeded value is not reproduced. */
+    private static final String BASE_LAST_NAME = "LNAME6";
 
-    /** {@code CDEMO-USRTYP-USER VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:L28}. */
+    /**
+     * {@code CDEMO-USRTYP-USER VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:L28}.
+     */
     private static final String BASE_USER_TYPE = "U";
 
-    /** A synthetic eight-character credential. Lower case and hyphenated, so it cannot be the upper-case
-     * literal that every seeded card image carries. */
+    /**
+     * A synthetic eight-character credential. Lower case and hyphenated, so it cannot be the upper-case literal
+     * that every seeded card image carries.
+     */
     private static final String SYNTHETIC_CREDENTIAL = "pw-fake1";
 
-    /** A second synthetic credential, distinct from the first, for change-detection assertions. */
+    /**
+     * A second synthetic credential, distinct from the first, for change-detection assertions.
+     */
     private static final String OTHER_SYNTHETIC_CREDENTIAL = "pw-fake2";
 
-    /** The first screen title line; any value within {@code X(40)} serves. */
+    /**
+     * The first screen title line; any value within {@code X(40)} serves.
+     */
     private static final String BASE_TITLE_01 = "Update User";
 
-    /** The second screen title line; any value within {@code X(40)} serves. */
+    /**
+     * The second screen title line; any value within {@code X(40)} serves.
+     */
     private static final String BASE_TITLE_02 = "CardDemo";
 
-    /** {@code MAIN-PARA} clears the message at {@code app/cbl/COUSR02C.cbl:L87-L88}, so an empty error
-     * line is the baseline the screen actually starts from. */
+    /**
+     * {@code MAIN-PARA} clears the message at {@code app/cbl/COUSR02C.cbl:L87-L88}, so an empty error line is
+     * the baseline the screen actually starts from.
+     */
     private static final String BASE_ERROR_MESSAGE = "";
 
-    // ---------------------------------------------------------------------------------------------
-    // Deterministic time. app/cbl/COUSR02C.cbl:L296-L315 moves WS-CURDATE-MM-DD-YY into CURDATEO and
-    // WS-CURTIME-HH-MM-SS into CURTIMEO; both groups are eight characters wide in app/cpy/CSDAT01Y.cpy.
-    // The renderings below come from the injected fixed clock, never from the ambient one.
-    // ---------------------------------------------------------------------------------------------
-
-    /** {@code WS-CURDATE-MM-DD-YY} in {@link Locale#ROOT}: two digits, slash, two, slash, two. */
+    /**
+     * {@code WS-CURDATE-MM-DD-YY} in {@link Locale#ROOT}: two digits, slash, two, slash, two.
+     */
     private static final DateTimeFormatter HEADER_DATE_FORMAT =
             DateTimeFormatter.ofPattern("MM/dd/yy", Locale.ROOT);
 
-    /** {@code WS-CURTIME-HH-MM-SS} in {@link Locale#ROOT}: two digits, colon, two, colon, two. */
+    /**
+     * {@code WS-CURTIME-HH-MM-SS} in {@link Locale#ROOT}: two digits, colon, two, colon, two.
+     */
     private static final DateTimeFormatter HEADER_TIME_FORMAT =
             DateTimeFormatter.ofPattern("HH:mm:ss", Locale.ROOT);
 
-    /** The canonical moment of this tier, read from {@link FixedClockProvider#canonicalClock()}. */
+    /**
+     * The canonical moment of this tier, read from {@link FixedClockProvider#canonicalClock()}.
+     */
     private static final ZonedDateTime FIXED_MOMENT = momentOfCanonicalClock();
 
-    /** The header date the fixed clock yields, eight characters as {@code CURDATEI PIC X(8)} requires. */
+    /**
+     * The header date the fixed clock yields, eight characters as {@code CURDATEI PIC X(8)} requires.
+     */
     private static final String FIXED_HEADER_DATE = HEADER_DATE_FORMAT.format(FIXED_MOMENT);
 
-    /** The header time the fixed clock yields, eight characters as {@code CURTIMEI PIC X(8)} requires. */
+    /**
+     * The header time the fixed clock yields, eight characters as {@code CURTIMEI PIC X(8)} requires.
+     */
     private static final String FIXED_HEADER_TIME = HEADER_TIME_FORMAT.format(FIXED_MOMENT);
 
     // ---------------------------------------------------------------------------------------------
     // Bean validation. Both references are final and both targets are immutable and thread-safe, so this
     // is shared constant state rather than shared mutable state. One bootstrap, released deterministically.
     // ---------------------------------------------------------------------------------------------
-
-    /** The validator factory, bootstrapped once and closed in {@link #releaseValidatorFactory()}. */
-    private static final ValidatorFactory VALIDATOR_FACTORY = Validation.buildDefaultValidatorFactory();
-
-    /** The validator derived from {@link #VALIDATOR_FACTORY}; immutable and thread-safe. */
-    private static final Validator VALIDATOR = VALIDATOR_FACTORY.getValidator();
-
-    /** Releases the validator factory once the class has finished, so the resource is not merely dropped. */
-    @AfterAll
-    static void releaseValidatorFactory() {
-        VALIDATOR_FACTORY.close();
-    }
 
     // ---------------------------------------------------------------------------------------------
     // Pure helpers. Each models one COBOL construct so that the carrier can be asserted against the
@@ -551,18 +600,17 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Reproduces a COBOL {@code MOVE} of an alphanumeric sending field into a {@code PIC X(width)}
-     * receiving field: the value is truncated on the right when it is too long and padded on the right with
-     * spaces when it is too short. This is the mechanism behind the two-byte loss when
-     * {@code WS-MESSAGE PIC X(80)} reaches {@code ERRMSGO PIC X(78)}.
+     * Reproduces a COBOL {@code MOVE} of an alphanumeric sending field into a {@code PIC X(width)} receiving
+     * field: the value is truncated on the right when it is too long and padded on the right with spaces when
+     * it is too short. This is the mechanism behind the two-byte loss when {@code WS-MESSAGE PIC X(80)} reaches
+     * {@code ERRMSGO PIC X(78)}.
      *
-     * @param sendingField the value being moved; must not be {@code null}, since a COBOL sending field is
-     *                     never absent - use {@code ""} for a field of spaces
-     * @param width        the receiving field's picture width; must be positive
+     * @param sendingField the value being moved; must not be {@code null}, since a COBOL sending field is never
+     * absent - use {@code ""} for a field of spaces
+     * @param width the receiving field's picture width.
      * @return a value of exactly {@code width} characters
      * @throws IllegalArgumentException if {@code sendingField} is {@code null} or {@code width} is not
-     *                                 positive, rather than substituting a default that would hide the
-     *                                 caller's mistake
+     * positive, rather than substituting a default that would hide the caller's mistake
      */
     private static String moveAlphanumeric(final String sendingField, final int width) {
         if (sendingField == null) {
@@ -581,8 +629,8 @@ final class UserUpdateRequestTest {
     /**
      * Reproduces the combined predicate {@code = SPACES OR LOW-VALUES} that both cascades of
      * {@code app/cbl/COUSR02C.cbl} apply. The two states are one predicate in the source, so they yield one
-     * message; a {@code null} reference stands for {@code LOW-VALUES}, and a {@code NUL} character is
-     * treated as low-values as well, which is what {@code X'00'} is in a character field.
+     * message; a {@code null} reference stands for {@code LOW-VALUES}, and a {@code NUL} character is treated
+     * as low-values as well, which is what {@code X'00'} is in a character field.
      *
      * @param field the carried value, possibly {@code null}
      * @return {@code true} when the source would consider the field empty
@@ -595,9 +643,9 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Reproduces cascade two, the update path at {@code app/cbl/COUSR02C.cbl:L179-L213}, in the source's
-     * own order: identifier, then given name, then family name, then credential, then type. The first
-     * failing test wins and the rest are never reached, exactly as {@code EVALUATE TRUE} behaves.
+     * Reproduces cascade two, the update path at {@code app/cbl/COUSR02C.cbl:L179-L213}, in the source's own
+     * order: identifier, then given name, then family name, then credential, then type. The first failing test
+     * wins and the rest are never reached, exactly as {@code EVALUATE TRUE} behaves.
      *
      * @param request the carrier under test
      * @return the message the source would raise, or empty when no field is empty
@@ -623,8 +671,8 @@ final class UserUpdateRequestTest {
 
     /**
      * Reproduces cascade one, the lookup path at {@code app/cbl/COUSR02C.cbl:L145-L155}, which tests the
-     * identifier and nothing else. Its single {@code WHEN} raises the same literal as the update path's
-     * first {@code WHEN}, so the literal alone does not identify which path produced it.
+     * identifier and nothing else. Its single {@code WHEN} raises the same literal as the update path's first
+     * {@code WHEN}, so the literal alone does not identify which path produced it.
      *
      * @param request the carrier under test
      * @return the message the source would raise, or empty when the identifier is populated
@@ -662,8 +710,8 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Returns the twelve baseline values in map order. A fresh array is returned on every call, so no test
-     * can mutate a fixture another test observes.
+     * Returns the twelve baseline values in map order. A fresh array is returned on every call, so no test can
+     * mutate a fixture another test observes.
      *
      * @return a mutable array of twelve valid values, positionally aligned with the record's components
      */
@@ -687,12 +735,12 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Builds a request that is valid in every component except the named one, which carries the supplied
-     * value. The component is located by name against {@link #COMPONENTS_IN_MAP_ORDER}, so a typo fails
-     * loudly instead of silently perturbing nothing.
+     * Builds a request that is valid in every component except the named one, which carries the supplied value.
+     * The component is located by name against {@link #COMPONENTS_IN_MAP_ORDER}, so a typo fails loudly instead
+     * of silently perturbing nothing.
      *
      * @param componentName one of the twelve component names
-     * @param value         the value to place in that component, possibly {@code null}
+     * @param value the value to place in that component, possibly {@code null}
      * @return the perturbed request
      * @throws IllegalArgumentException if {@code componentName} is not one of the twelve
      */
@@ -711,12 +759,6 @@ final class UserUpdateRequestTest {
 
     /**
      * Reads the {@code @Size(max)} actually in force for a component.
-     *
-     * <p>The annotation is read from the accessor rather than from the {@link RecordComponent}. On a record,
-     * {@code @Size} is propagated to the private final field, the accessor and the constructor parameter,
-     * but it is not retained on the record component itself, because {@code RECORD_COMPONENT} is not among
-     * its declared targets. Reading it from the component returns {@code null} and would make every width
-     * assertion vacuous.</p>
      *
      * @param componentName one of the twelve component names
      * @return the declared maximum width
@@ -745,7 +787,7 @@ final class UserUpdateRequestTest {
      * @return the violations, empty when the request satisfies every constraint
      */
     private static Set<ConstraintViolation<UserUpdateRequest>> violationsOf(final UserUpdateRequest request) {
-        return VALIDATOR.validate(request);
+        return ValidationSupport.violationsOf(request, "request");
     }
 
     /**
@@ -762,8 +804,8 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Builds a request in which every one of the twelve components holds a field of spaces at its own
-     * picture width, which is the state the source sees when an operator transmits an untouched screen.
+     * Builds a request in which every one of the twelve components holds a field of spaces at its own picture
+     * width, which is the state the source sees when an operator transmits an untouched screen.
      *
      * @return a request whose every component is empty by the source's own predicate
      */
@@ -777,18 +819,14 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Supplies the twelve component indices, so that every boundary test covers every field without the
-     * index list being restated at each use site.
+     * Supplies the twelve component indices, so that every boundary test covers every field without the index
+     * list being restated at each use site.
      *
      * @return the indices {@code 0} through {@code 11}
      */
     private static IntStream componentIndices() {
         return IntStream.range(0, DECLARED_FIELD_COUNT);
     }
-
-    // =============================================================================================
-    // Field contract - app/cpy-bms/COUSR02.CPY, group 01 COUSR2AI
-    // =============================================================================================
 
     @Test
     @DisplayName("the map declares exactly 12 input fields and the carrier declares exactly 12 components")
@@ -882,10 +920,6 @@ final class UserUpdateRequestTest {
                 .isEmpty();
     }
 
-    // =============================================================================================
-    // Map identity - the update map and the add map are not interchangeable
-    // =============================================================================================
-
     @Test
     @DisplayName("the identifier derives from USRIDINI and precedes both name fields, as the map does")
     void theIdentifierComponentDerivesFromUsridiniAndPrecedesBothNameFields() {
@@ -935,10 +969,6 @@ final class UserUpdateRequestTest {
         // ingress it needs.
         assertThat(Serializable.class.isAssignableFrom(UserUpdateRequest.class)).isFalse();
     }
-
-    // =============================================================================================
-    // The two validation cascades - app/cbl/COUSR02C.cbl:L145-L155 and :L179-L213
-    // =============================================================================================
 
     @Test
     @DisplayName("with every field blank the update cascade reports the identifier, not the first name")
@@ -1054,10 +1084,6 @@ final class UserUpdateRequestTest {
         }
     }
 
-    // =============================================================================================
-    // Change detection - app/cbl/COUSR02C.cbl:L215-L245, four NOT = comparisons and one key
-    // =============================================================================================
-
     @Test
     @DisplayName("exactly four components take part in change detection, and the identifier is not one")
     void exactlyFourComponentsTakePartInChangeDetectionAndTheIdentifierIsNotOne() {
@@ -1136,8 +1162,8 @@ final class UserUpdateRequestTest {
     @Test
     @DisplayName("comparison applies no trimming, so leading and trailing spaces are significant")
     void comparisonAppliesNoTrimming() {
-        final String leading = " THOMAS";
-        final String trailing = "THOMAS ";
+        final String leading = " LNAME6";
+        final String trailing = "LNAME6 ";
         assertThat(withComponent("lastName", leading).lastName()).isEqualTo(leading);
         assertThat(withComponent("lastName", trailing).lastName()).isEqualTo(trailing);
         assertThat(leading).isNotEqualTo(leading.strip());
@@ -1250,15 +1276,10 @@ final class UserUpdateRequestTest {
         assertThat(request.password()).isEqualTo(SYNTHETIC_CREDENTIAL);
         assertThat(violationsOf(request)).isEmpty();
         // No minimum length, no character class and no complexity rule: app/cbl/COUSR02C.cbl imposes
-        // none, and adding one would reject input the legacy system accepts. Not available: any
-        // credential policy at all; nothing in the corpus supplies one.
+        // none, and adding one would reject input the legacy system accepts.
         assertThat(violationsOf(withComponent("password", "a"))).isEmpty();
         assertThat(violationsOf(withComponent("password", "1"))).isEmpty();
     }
-
-    // =============================================================================================
-    // The 80-byte work area truncated onto the 78-byte wire field - app/cbl/COUSR02C.cbl:L38
-    // =============================================================================================
 
     @Test
     @DisplayName("an 80-character work area is truncated to 78, not rejected and not widened")
@@ -1323,10 +1344,6 @@ final class UserUpdateRequestTest {
                 .hasMessageContaining("positive width");
     }
 
-    // =============================================================================================
-    // The remaining message literals - app/cbl/COUSR02C.cbl:L336, :L342, :L349, :L379, :L386
-    // =============================================================================================
-
     @ParameterizedTest(name = "[{index}] \"{0}\"")
     @ValueSource(strings = {USER_ID_EMPTY, FIRST_NAME_EMPTY, LAST_NAME_EMPTY, PASSWDI_EMPTY,
         USER_TYPE_EMPTY, USER_ID_NOT_FOUND, LOOKUP_FAILED, REWRITE_FAILED, ADD_ONLY_DUPLICATE})
@@ -1371,8 +1388,8 @@ final class UserUpdateRequestTest {
         assertThat(NOTHING_MODIFIED).contains("update").doesNotContain("Update");
         assertThat(USER_ID_NOT_FOUND).contains("NOT found").doesNotContain("not found");
         assertThat(SAVE_PROMPT).contains("PF5").contains("your updates");
-        // The add program's duplicate literal spells the verb without its final s. That is a source sic,
-        // it belongs to the add path only, and it is recorded here so nobody "corrects" it later.
+        // The add program's duplicate literal spells the verb without its final s. That is a source sic
+        // belonging to the add path only, and it is pinned as written rather than normalised.
         assertThat(ADD_ONLY_DUPLICATE).contains("already exist").doesNotContain("already exists");
     }
 
@@ -1404,11 +1421,11 @@ final class UserUpdateRequestTest {
     @DisplayName("the composed success message trims the identifier at its first space")
     void theComposedSuccessMessageTrimsTheIdentifierAtItsFirstSpace() {
         // app/cbl/COUSR02C.cbl:L373 copies SEC-USR-ID DELIMITED BY SPACE, so a short identifier is not
-        // padded into the message. For the eight-character USER0001 the composed text is exact.
+        // padded into the message. For the eight-character STDUSR01 the composed text is exact.
         final String storedIdentifier = moveAlphanumeric(BASE_USER_ID, USRSEC_KEY_LENGTH);
         assertThat(storedIdentifier).isEqualTo(BASE_USER_ID).hasSize(USRSEC_KEY_LENGTH);
         assertThat(composeUpdateSuccessMessage(storedIdentifier))
-                .isEqualTo("User USER0001 has been updated ...");
+                .isEqualTo("User STDUSR01 has been updated ...");
         // A shorter identifier is trimmed at its first space rather than carrying the padding through.
         final String shortIdentifier = moveAlphanumeric("ADM1", USRSEC_KEY_LENGTH);
         assertThat(shortIdentifier).isEqualTo("ADM1    ").hasSize(USRSEC_KEY_LENGTH);
@@ -1454,10 +1471,6 @@ final class UserUpdateRequestTest {
         assertThat(composeUpdateSuccessMessage(BASE_USER_ID))
                 .isNotEqualTo(COMPOSED_PREFIX + BASE_USER_ID + COMPOSED_ADD_SUFFIX);
     }
-
-    // =============================================================================================
-    // Credential confidentiality - PASSWDI PIC X(8) at app/cpy-bms/COUSR02.CPY:78
-    // =============================================================================================
 
     @Test
     @DisplayName("toString renders neither the credential nor either personal name")
@@ -1544,9 +1557,9 @@ final class UserUpdateRequestTest {
         // security requirement actually needs, and it holds unconditionally.
         assertThat(String.valueOf(first.hashCode())).doesNotContain(SYNTHETIC_CREDENTIAL);
         assertThat(String.valueOf(first.equals(second))).doesNotContain(SYNTHETIC_CREDENTIAL);
-        // Recorded, not wished away: the carrier leaves both members as the compiler generates them, so
-        // both consider all twelve components including the credential. Classified Low, because no value
-        // is rendered; remediation if exclusion is ever required is to hand-write both members.
+        // Both members are left as the compiler generates them, so both consider all twelve components
+        // including the credential. Excluding it would require hand-writing both, which is unnecessary
+        // here precisely because neither can render a value.
         assertThat(first).isNotEqualTo(second);
         assertThat(first).isEqualTo(withComponent("password", SYNTHETIC_CREDENTIAL));
         assertThat(first).hasSameHashCodeAs(withComponent("password", SYNTHETIC_CREDENTIAL));
@@ -1590,13 +1603,9 @@ final class UserUpdateRequestTest {
             assertThat(synthetic).isNotEqualTo(synthetic.toUpperCase(Locale.ROOT));
         }
         assertThat(SYNTHETIC_CREDENTIAL).isNotEqualTo(OTHER_SYNTHETIC_CREDENTIAL);
-        // Not available: any usrsec fixture. The ten rows exist only as inline SYSUT1 card images fed
-        // through IEBGENER, so no fixture loader is used by this class and none is needed.
+        // There is no usrsec fixture to load: the ten seed rows exist only as inline SYSUT1 card images
+        // fed through IEBGENER at app/jcl/DUSRSECJ.jcl:35-44, so this class reads no fixture at all.
     }
-
-    // =============================================================================================
-    // The user-type code - USRTYPEI PIC X(1), domain from app/cpy/COCOM01Y.cpy:L26-L28
-    // =============================================================================================
 
     @Test
     @DisplayName("the user-type component is a raw one-character code and not the enum")
@@ -1647,12 +1656,18 @@ final class UserUpdateRequestTest {
     }
 
     @Test
-    @DisplayName("an unrecognised code raises an exception naming the offending code")
+    @DisplayName("an unrecognised code raises an exception naming the offending code point")
     void anUnrecognisedCodeRaisesAnExceptionNamingTheOffendingCode() {
+        // The code point is named rather than the character. The value arrives in this payload from a
+        // request body, so it is caller supplied; a carriage return or line feed among those bytes copied
+        // verbatim into a message that then reaches a log would terminate the current line and let the
+        // caller compose the next one. The hexadecimal rendering distinguishes every character from every
+        // other, so withholding the character costs nothing diagnostically.
         assertThatThrownBy(() -> UserType.requireFromCode('X'))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasNoCause()
-                .hasMessageContaining("X")
+                .hasMessageContaining("code point 0x58")
+                .hasMessageNotContaining("'X'")
                 .hasMessageContaining("app/cpy/COCOM01Y.cpy");
         // Never a silent fallback: the two defined codes resolve and everything else fails loudly.
         assertThat(UserType.requireFromCode('A')).isEqualTo(UserType.ADMIN);
@@ -1698,10 +1713,6 @@ final class UserUpdateRequestTest {
         assertThat(declared).filteredOn(name -> name.contains("user")).containsExactly(
                 "userid", "usertype");
     }
-
-    // =============================================================================================
-    // Boundaries, the tri-state model and the absence of session state
-    // =============================================================================================
 
     @Test
     @DisplayName("absent, blank and populated remain three distinct states")
@@ -1797,7 +1808,7 @@ final class UserUpdateRequestTest {
         // X(20), a seventy-nine-character message against X(78) and a two-character type against X(1).
         final UserUpdateRequest hostile = new UserUpdateRequest(
                 "CU023", BASE_TITLE_01, FIXED_HEADER_DATE, BASE_PROGRAM_NAME, BASE_TITLE_02,
-                FIXED_HEADER_TIME, "USER00012", "N".repeat(21), "M".repeat(21),
+                FIXED_HEADER_TIME, "STDUSR012", "N".repeat(21), "M".repeat(21),
                 SYNTHETIC_CREDENTIAL + "z", "UU", "y".repeat(ERRMSGI_WIDTH + 1));
         final Set<ConstraintViolation<UserUpdateRequest>> violations = violationsOf(hostile);
         final List<String> offendingPaths = new ArrayList<>(violations.size());
@@ -1827,7 +1838,7 @@ final class UserUpdateRequestTest {
         // none of them originates from a class-level constraint, whose path would be empty.
         final UserUpdateRequest multiplyInvalid = new UserUpdateRequest(
                 "CU023", BASE_TITLE_01, FIXED_HEADER_DATE, BASE_PROGRAM_NAME, BASE_TITLE_02,
-                FIXED_HEADER_TIME, "USER00012", BASE_FIRST_NAME, BASE_LAST_NAME, SYNTHETIC_CREDENTIAL,
+                FIXED_HEADER_TIME, "STDUSR012", BASE_FIRST_NAME, BASE_LAST_NAME, SYNTHETIC_CREDENTIAL,
                 "UU", BASE_ERROR_MESSAGE);
         final Set<ConstraintViolation<UserUpdateRequest>> violations = violationsOf(multiplyInvalid);
         assertThat(violations).hasSize(3);
@@ -1933,8 +1944,8 @@ final class UserUpdateRequestTest {
         assertThat(declaredWidthOf("lastName")).isEqualTo(20);
         assertThat(declaredWidthOf("password")).isEqualTo(PASSWDI_WIDTH);
         assertThat(declaredWidthOf("userType")).isEqualTo(1);
-        // Not available: an optimistic-lock column on this record. Version columns are carried by the
-        // account, card, customer and transaction entities only, so nothing is asserted about one here.
+        // This record carries no optimistic-lock column: version columns belong to the account, card,
+        // customer and transaction entities only, so nothing is asserted about one here.
     }
 
     @Test
@@ -1953,11 +1964,11 @@ final class UserUpdateRequestTest {
     }
 
     /**
-     * Reads the component at the given position from a request, by position rather than by reflection, so
-     * the positional contract of the canonical constructor is exercised as well as the accessor.
+     * Reads the component at the given position from a request, by position rather than by reflection, so the
+     * positional contract of the canonical constructor is exercised as well as the accessor.
      *
      * @param request the carrier to read
-     * @param index   the component position, {@code 0} through {@code 11}, in map order
+     * @param index the component position, {@code 0} through {@code 11}, in map order
      * @return the carried value, possibly {@code null}
      * @throws IllegalArgumentException if the index is outside the twelve declared positions
      */

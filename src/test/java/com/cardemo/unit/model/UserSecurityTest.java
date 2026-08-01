@@ -1,8 +1,6 @@
 /*
  * ******************************************************************
  * Program     : UserSecurityTest.java
- * Component   : Unit test tier, resident at
- *               src/test/java/com/cardemo/unit/model
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM tier, no container, no
  *               Spring context, no database, no live endpoint
@@ -45,16 +43,24 @@ package com.cardemo.unit.model;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.entity.UserSecurity.UserTypeConverter;
 import com.cardemo.model.enums.UserType;
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonAutoDetect.Visibility;
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.InvalidDefinitionException;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AnnotatedElement;
 import java.lang.reflect.Constructor;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -66,6 +72,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -81,6 +88,8 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 
@@ -145,9 +154,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li>{@code source /etc/profile.d/10-carddemo-toolchain.sh} - OpenJDK 25.0.3 and Maven 3.9.11, the
  *       exact pair {@code maven-enforcer-plugin} asserts;</li>
- *   <li>{@code mvn -B clean test} - compiles and runs this tier;</li>
- *   <li>{@code mvn -B test -Dtest=UserSecurityTest} - this class alone;</li>
- *   <li>{@code mvn -B clean verify} - adds the 80 percent line coverage floor and the vulnerability
+ *   <li>{@code ./mvnw -B clean test} - compiles and runs this tier;</li>
+ *   <li>{@code ./mvnw -B test -Dtest=UserSecurityTest} - this class alone;</li>
+ *   <li>{@code ./mvnw -B clean verify} - adds the 80 percent line coverage floor and the vulnerability
  *       scan.</li>
  * </ul>
  *
@@ -305,13 +314,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>6. What is Not available</h2>
  *
  * <ul>
- *   <li><b>Not available: the schema text.</b> {@code src/main/resources/db/migration} has no planned
- *       children, so {@code V1__create_schema.sql} could not be read and the check constraint that
- *       restricts {@code sec_usr_type} to {@code 'A'} and {@code 'U'} - one of the migration's five -
- *       cannot be asserted as SQL. No DDL is invented here. What is asserted instead is the enforceable
- *       Java side counterpart: {@link UserTypeConverter} accepts those two codes and rejects every
- *       other, which is the same domain expressed where this test can reach it. To assert the constraint
- *       itself, the migration would have to be supplied and read.</li>
+ *   <li><b>Closed: the schema text is now available.</b> This bullet previously recorded that
+ *       {@code src/main/resources/db/migration} had no children and that the check constraint restricting
+ *       {@code sec_usr_type} to {@code 'A'} and {@code 'U'} could not be asserted as SQL. Both statements
+ *       are withdrawn: {@code V1__create_schema.sql} exists, declares {@code user_security},
+ *       and {@code ck_user_security_type} is one of its five {@code CHECK} constraints. That constraint is
+ *       now asserted as SQL - by {@code SchemaStructureTest}, which parses the migration and pins the
+ *       check census at exactly five, so a sixth could not be added unnoticed. This class continues to
+ *       assert the enforceable Java side counterpart rather than duplicating that work: {@link
+ *       UserTypeConverter} accepts those two codes and rejects every other, which is the same domain
+ *       expressed where a unit test can reach it without a database. No DDL is invented here.</li>
  *   <li><b>Not available: a {@code usrsec.txt} fixture.</b> The user records exist only as the in stream
  *       {@code SYSUT1 DD *} data at {@code app/jcl/DUSRSECJ.jcl:L34-L45}. Nothing needs to be supplied,
  *       because the in stream data is the authority, but no fixture derived assertion is possible and
@@ -329,73 +341,73 @@ import org.junit.jupiter.params.provider.ValueSource;
  */
 final class UserSecurityTest {
 
-    // ==================================================================
-    // Field contract transcribed from app/cpy/CSUSR01Y.cpy:L17-L23.
-    // Every width is a literal taken from a PIC clause, so an assertion
-    // is against the copybook and never against the production constant
-    // it is checking.
-    // ==================================================================
-
-    /** {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18}: bytes 1 to 8, and the key. */
+    /**
+     * {@code SEC-USR-ID PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L18}: bytes 1 to 8, and the key.
+     */
     private static final int USER_ID_PIC_WIDTH = 8;
 
-    /** {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L19}: bytes 9 to 28. */
+    /**
+     * {@code SEC-USR-FNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L19}: bytes 9 to 28.
+     */
     private static final int FIRST_NAME_PIC_WIDTH = 20;
 
-    /** {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L20}: bytes 29 to 48. */
+    /**
+     * {@code SEC-USR-LNAME PIC X(20)} at {@code app/cpy/CSUSR01Y.cpy:L20}: bytes 29 to 48.
+     */
     private static final int LAST_NAME_PIC_WIDTH = 20;
 
     /**
      * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21}: bytes 49 to 56.
-     *
-     * <p>This width belongs to the <em>source record</em> and never to the column. It is kept because it
-     * is what makes the 80 byte arithmetic close, and because asserting that the column width differs
-     * from it is how the {@code CHAR(8)} Blocker is caught.
-     *
-     * <p>Named for the <em>credential</em> rather than for the source field's own noun, deliberately.
-     * The single shared plaintext value at {@code app/jcl/DUSRSECJ.jcl:L35-L44} happens to be the
-     * ordinary English word for the thing it protects, so a constant named after that noun in upper case
-     * would contain the secret as a substring and would be reported by any mechanical secret scan -
-     * a false positive, but one indistinguishable from a real leak at the point of triage. Renaming
-     * costs nothing and keeps a grep for the literal at exactly zero hits across this file, which is
-     * what makes Rule 1 clause D provable rather than merely asserted. Do not rename it back.
      */
     private static final int SOURCE_CREDENTIAL_PIC_WIDTH = 8;
 
-    /** {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}: byte 57. */
+    /**
+     * {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22}: byte 57.
+     */
     private static final int USER_TYPE_PIC_WIDTH = 1;
 
     /**
      * {@code SEC-USR-FILLER PIC X(23)} at {@code app/cpy/CSUSR01Y.cpy:L23}: bytes 58 to 80.
-     *
-     * <p>Unusually for this corpus the filler is <em>named</em>; every other record layout pads with an
-     * anonymous {@code FILLER}. A name does not make it data, and it is still not modelled: it carries
-     * nothing in any of the ten seeded rows and no program in the corpus references it. Its only
-     * function is to pad the record to the catalogued 80 bytes, which is why the width lives here in a
-     * test constant and nowhere in the schema.
      */
     private static final int FILLER_PIC_WIDTH = 23;
 
     /**
      * The catalogued record length: {@code AVGLRECL 80} at {@code app/catlg/LISTCAT.txt:L3883},
-     * {@code MAXLRECL 80} at {@code :L3884}, and {@code RECORDSIZE(80,80)} at
-     * {@code app/jcl/DUSRSECJ.jcl:L66}.
+     * {@code MAXLRECL 80} at {@code :L3884}, and {@code RECORDSIZE(80,80)} at {@code app/jcl/DUSRSECJ.jcl:L66}.
      */
     private static final int CATALOGUED_RECORD_LENGTH = 80;
 
     /**
-     * The catalogued key length: {@code KEYLEN 8} at {@code app/catlg/LISTCAT.txt:L3883} and
-     * {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl:L65}. The second element of that {@code KEYS}
-     * pair is the relative key position, which {@code app/catlg/LISTCAT.txt:L3884} reports as
-     * {@code RKP 0} - so the key is the leading field and key order coincides with physical order.
+     * The catalogued key length: {@code KEYLEN 8} at {@code app/catlg/LISTCAT.txt:L3883} and {@code KEYS(8,0)}
+     * at {@code app/jcl/DUSRSECJ.jcl:L65}. The second element of that {@code KEYS} pair is the relative key
+     * position, which {@code app/catlg/LISTCAT.txt:L3884} reports as {@code RKP 0} - so the key is the leading
+     * field and key order coincides with physical order.
      */
     private static final int CATALOGUED_KEY_LENGTH = 8;
 
-    /** {@code REC-TOTAL 10} at {@code app/catlg/LISTCAT.txt:L3888}, matching the ten in stream rows. */
+    /**
+     * {@code REC-TOTAL 10} at {@code app/catlg/LISTCAT.txt:L3888}, matching the ten in stream rows.
+     */
     private static final int CATALOGUED_RECORD_COUNT = 10;
 
-    /** The number of modelled members: the five elementary items, the named filler excluded. */
+    /**
+     * The number of modelled members: the five elementary items, the named filler excluded.
+     */
     private static final int MODELLED_MEMBER_COUNT = 5;
+
+    /**
+     * The four non public members beyond the accessors and the {@link Object} overrides: the three
+     * static boundary guards {@code requireBcryptStrength10Digest}, {@code requireWidth} and
+     * {@code requireUserType}, plus the instance write callback
+     * {@code assertCredentialInvariantBeforeWrite} that re-asserts the credential invariant at the
+     * database boundary.
+     *
+     * <p>Named as a constant rather than written as a literal so that the method count assertion reads
+     * as a statement about what the entity holds. The count is deliberately small and deliberately fixed:
+     * a fifth member appearing here would mean a business rule had grown on a data holder, which is
+     * exactly what {@link #declaresOnlyAccessorsAndTheObjectOverrides()} exists to catch.
+     */
+    private static final int NON_PUBLIC_GUARD_MEMBER_COUNT = 4;
 
     /** Width of the credential column - the exact length of a BCrypt hash, and never the PIC width. */
     private static final int BCRYPT_HASH_WIDTH = 60;
@@ -406,119 +418,83 @@ final class UserSecurityTest {
      */
     private static final String ADMIN_CODE = "A";
 
-    /** The code that {@code 88 CDEMO-USRTYP-USER VALUE 'U'.} binds at {@code app/cpy/COCOM01Y.cpy:L28}. */
+    /**
+     * The code that {@code 88 CDEMO-USRTYP-USER VALUE 'U'.} binds at {@code app/cpy/COCOM01Y.cpy:L28}.
+     */
     private static final String USER_CODE = "U";
 
     /**
      * The ten {@code SEC-USR-TYPE} bytes of the seeded records, in record order, read from position 57 of
-     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}: five administrators on {@code :L35-L39} then five standard
-     * users on {@code :L40-L44}.
-     *
-     * <p>A {@link String} rather than a {@code char[]}, because a {@code static final} array is mutable
-     * content behind an immutable reference - the global mutable state Rule 1 clause B forbids - whereas
-     * a string constant cannot be altered by one test and observed by another.
-     *
-     * <p><b>Only the type bytes are encoded.</b> Position 57 is derived rather than sliced from a record:
-     * {@code SEC-USR-ID PIC X(08)} plus {@code SEC-USR-FNAME PIC X(20)} plus
-     * {@code SEC-USR-LNAME PIC X(20)} plus {@code SEC-USR-PWD PIC X(08)} occupy the 56 preceding bytes.
-     * Reproducing a whole record here would place a credential in a test file.
+     * {@code app/jcl/DUSRSECJ.jcl:L35-L44}: five administrators on {@code :L35-L39} then five standard users on
+     * {@code :L40-L44}.
      */
     private static final String SEEDED_TYPE_BYTES = "AAAAAUUUUU";
 
-    /** Seeded records per user class - five on {@code :L35-L39} and five on {@code :L40-L44}. */
+    /**
+     * Seeded records per user class - five on {@code :L35-L39} and five on {@code :L40-L44}.
+     */
     private static final int SEEDED_RECORDS_PER_TYPE = 5;
 
     /**
-     * The eight CICS file names that {@code app/csd/CARDDEMO.CSD} defines, in the order the member
-     * declares them: {@code ACCTDAT} at {@code :L1}, {@code CARDAIX} at {@code :L13}, {@code CARDDAT} at
-     * {@code :L25}, {@code CCXREF} at {@code :L37}, {@code CUSTDAT} at {@code :L50}, {@code CXACAIX} at
-     * {@code :L63}, {@code TRANSACT} at {@code :L76} and {@code USRSEC} at {@code :L88}.
-     *
-     * <p>The membership of {@code USRSEC} in this set is the evidence that this cluster is on the online
-     * request path rather than batch only: {@code TCATBALF}, {@code DISCGRP}, {@code TRANCATG} and
-     * {@code TRANTYPE} appear nowhere in the CSD. That is why four user administration screens exist and
-     * why the sign on program reads this table on every authentication.
+     * The eight CICS file names that {@code app/csd/CARDDEMO.CSD} defines, in the order the member declares
+     * them: {@code ACCTDAT} at {@code :L1}, {@code CARDAIX} at {@code :L13}, {@code CARDDAT} at {@code :L25},
+     * {@code CCXREF} at {@code :L37}, {@code CUSTDAT} at {@code :L50}, {@code CXACAIX} at {@code :L63},
+     * {@code TRANSACT} at {@code :L76} and {@code USRSEC} at {@code :L88}.
      */
     private static final List<String> CSD_FILE_NAMES = List.of(
             "ACCTDAT", "CARDAIX", "CARDDAT", "CCXREF", "CUSTDAT", "CXACAIX", "TRANSACT", "USRSEC");
 
     /**
      * The catalogue's alternate index and path totals at {@code app/catlg/LISTCAT.txt:L3938} and
-     * {@code :L3946}: {@code AIX 3} and {@code PATH 3}, all three belonging to the card, cross reference
-     * and transaction clusters, so none belongs to {@code USRSEC}.
+     * {@code :L3946}: {@code AIX 3} and {@code PATH 3}, all three belonging to the card, cross reference and
+     * transaction clusters, so none belongs to {@code USRSEC}.
      */
     private static final int CATALOGUED_ALTERNATE_INDEX_COUNT = 3;
 
     /**
      * The page size of the user list screen: {@code 02 USER-REC OCCURS 10 TIMES.} at
-     * {@code app/cbl/COUSR00C.cbl:L57}. Context for {@code UserSecurityDto} and for the list service;
-     * asserted here only to prove that the entity itself carries no such member.
+     * {@code app/cbl/COUSR00C.cbl:L57}. Context for {@code UserSecurityDto} and for the list service; asserted
+     * here only to prove that the entity itself carries no such member.
      */
     private static final int USER_LIST_PAGE_SIZE = 10;
 
-    // ==================================================================
-    // Synthetic credential material. Nothing here is, or resembles, a
-    // real credential: the values are shaped so that the assertions can
-    // be about the shape, and are visibly synthetic so that no reader
-    // can mistake one for a secret.
-    // ==================================================================
-
     /**
-     * The BCrypt version and cost prefix, seven characters: a dollar, the version tag {@code 2a}, a
-     * dollar, the two digit cost field {@code 10} and a dollar.
-     *
-     * <p>The cost field is the pinned BCrypt strength. It is a literal rather than a formatted number so
-     * that a change of strength has to be made deliberately here and in the shape pattern together.
+     * The BCrypt version and cost prefix, seven characters: a dollar, the version tag {@code 2a}, a dollar, the
+     * two digit cost field {@code 10} and a dollar.
      */
     private static final String BCRYPT_PREFIX = "$2a$10$";
 
     /**
-     * A synthetic 22 character salt, every character drawn from BCrypt's own {@code ./A-Za-z0-9}
-     * alphabet, and named so that it reads as synthetic wherever it surfaces.
+     * A synthetic 22 character salt, every character drawn from BCrypt's own {@code ./A-Za-z0-9} alphabet, and
+     * named so that it reads as synthetic wherever it surfaces.
      */
     private static final String SYNTHETIC_SALT = "SyntheticSaltForTests.";
 
     /**
-     * The first 29 characters of a synthetic 31 character digest. Two more characters are appended per
-     * user so that ten distinct, equally well formed values can be produced without a random source.
+     * The first 29 characters of a synthetic 31 character digest. Two more characters are appended per user so
+     * that ten distinct, equally well formed values can be produced without a random source.
      */
     private static final String SYNTHETIC_DIGEST_STEM = "SyntheticDigestNotARealDigest";
 
     /**
-     * The shape of a BCrypt hash at the pinned strength: the version and cost prefix, then 53 characters
-     * of salt and digest drawn from BCrypt's alphabet, for exactly 60 characters in total.
-     *
-     * <p>The cost field is pinned to {@code 10} inside the pattern, so a hash produced at any other work
-     * factor fails it. This is the only thing about a stored credential that this tier can and should
-     * assert: the shape and the width. Verifying a hash needs an encoder, and computing one needs a work
-     * factor - both belong to the security configuration.
+     * The shape of a BCrypt hash at the pinned strength: the version and cost prefix, then 53 characters of
+     * salt and digest drawn from BCrypt's alphabet, for exactly 60 characters in total.
      */
     private static final Pattern BCRYPT_SHAPE = Pattern.compile("^\\$2[abxy]\\$10\\$[./A-Za-z0-9]{53}$");
 
-    // ==================================================================
-    // Reflection and class file scanning support.
-    // ==================================================================
-
-    /** The simple name of the entity's table, from {@code @Table} - asserted, not assumed. */
+    /**
+     * The simple name of the entity's table, from {@code @Table} - asserted, not assumed.
+     */
     private static final String EXPECTED_TABLE_NAME = "user_security";
 
     /**
      * The five column names, in the declaration order of {@code app/cpy/CSUSR01Y.cpy:L18-L22}.
-     *
-     * <p>{@code sec_usr_pwd} keeps the COBOL provenance of the field it replaces even though the Java
-     * member is named for what the value actually is; the mapping has to stay traceable in the schema,
-     * which is where a migration author looks.
      */
     private static final List<String> EXPECTED_COLUMN_NAMES = List.of(
             "sec_usr_id", "sec_usr_fname", "sec_usr_lname", "sec_usr_pwd", "sec_usr_type");
 
     /**
      * The five member names, in the same declaration order.
-     *
-     * <p>Four keep their COBOL derived names so the mapping back to the copybook is mechanical. The
-     * credential member breaks the pattern on purpose: it is {@code passwordHash} and not
-     * {@code secUsrPwd}, because the field it replaces held plaintext and this member never can, and a
-     * name that suggested otherwise would invite a caller to compare it against a presented password.
      */
     private static final List<String> EXPECTED_MEMBER_NAMES = List.of(
             "secUsrId", "secUsrFname", "secUsrLname", "passwordHash", "secUsrType");
@@ -531,6 +507,16 @@ final class UserSecurityTest {
      * type reference rather than a coincidence inside a string literal. Source comments do not survive
      * compilation at all, which is what makes the scan stronger than reading the imports: an import can
      * be absent while a fully qualified reference in a method body is not.
+     *
+     * <p><b>{@code com/fasterxml/jackson} was previously in this list and has been removed, for the same
+     * reason the annotation set no longer forbids {@code JsonIgnore}.</b> The serialisation barrier this
+     * class carries is expressed in Jackson's own annotation types, so a reference to them in the
+     * compiled form is now required rather than forbidden, and
+     * {@link #carriesTheJsonSerialisationBarrier()} asserts it positively. The layering concern the entry
+     * expressed is untouched: those three annotation types are declarative metadata with no behaviour, so
+     * this entity still calls nothing, constructs nothing and depends on no serialiser. What it must not
+     * do is define an outbound shape, and {@link #carriesNoForbiddenAnnotationAnywhere()} still enforces
+     * that by keeping {@code JsonProperty} and {@code JsonInclude} out.
      */
     private static final List<String> FORBIDDEN_INTERNAL_NAMES = List.of(
             "org/springframework",
@@ -542,7 +528,6 @@ final class UserSecurityTest {
             "java/util/logging",
             "java/math/BigDecimal",
             "jakarta/validation",
-            "com/fasterxml/jackson",
             "com/cardemo/exception",
             "com/cardemo/repository",
             "com/cardemo/service",
@@ -563,25 +548,31 @@ final class UserSecurityTest {
      * asserted absent - which is itself the unused surface Rule 1 clause B discourages. The three whose
      * absence is a stated finding - the version, generation and enumerated mappings - are additionally
      * asserted by type literal elsewhere, where a typo cannot pass unnoticed.
+     *
+     * <p><b>The Jackson entries draw a line that is easy to misread, so it is stated explicitly:
+     * annotations that SHAPE an outbound payload are forbidden, annotations that SUPPRESS one are
+     * required.</b> {@code JsonProperty} and {@code JsonInclude} remain forbidden because either would
+     * make this entity define how it appears on the wire, which is the data transfer object's job and
+     * nobody else's. {@code JsonIgnore} was previously in this set and has been removed, because it is
+     * the opposite kind of annotation: it removes a property from serialisation and can never add one.
+     * It is now present on the credential accessor deliberately, as part of the serialisation barrier
+     * this class carries, and {@link #carriesTheJsonSerialisationBarrier()} asserts it positively. A set
+     * that forbade suppression alongside shaping would have forced the barrier to be expressed as an
+     * externally registered mix-in, which protects only the one object mapper it is registered on and
+     * leaves every other mapper on the classpath free to serialise the credential.
      */
     private static final Set<String> FORBIDDEN_ANNOTATION_SIMPLE_NAMES = Set.of(
             "OneToMany", "ManyToOne", "OneToOne", "ManyToMany", "JoinColumn", "JoinColumns", "JoinTable",
             "ElementCollection", "CollectionTable", "MapsId", "SecondaryTable", "Embedded", "EmbeddedId",
             "MappedSuperclass", "Inheritance", "DiscriminatorColumn", "DiscriminatorValue",
-            "PrePersist", "PostPersist", "PreUpdate", "PostUpdate", "PreRemove", "PostRemove", "PostLoad",
+            "PostPersist", "PostUpdate", "PreRemove", "PostRemove", "PostLoad",
             "EntityListeners", "NamedQuery", "NamedQueries", "SqlResultSetMapping",
             "NotNull", "NotBlank", "NotEmpty", "Size", "Pattern", "Email", "Valid",
-            "JsonProperty", "JsonIgnore", "JsonInclude", "Transient");
+            "JsonProperty", "JsonInclude", "Transient");
 
     /**
-     * Lower case fragments that must not occur in any member name of the entity, covering the personal
-     * data the customer and user layouts carry and the authorisation state a security principal would
-     * add.
-     *
-     * <p>{@code hash} is deliberately absent from this list: {@code passwordHash} is the required name of
-     * the credential member, and the point of that name is that it says what the value is. Matching is
-     * performed after folding with {@link Locale#ROOT} so the check cannot change behaviour on a host
-     * whose case rules differ, such as a Turkish locale where {@code I} does not fold to {@code i}.
+     * Lower case fragments that must not occur in any member name of the entity, covering the personal data the
+     * customer and user layouts carry and the authorisation state a security principal would add.
      */
     private static final List<String> FORBIDDEN_MEMBER_NAME_FRAGMENTS = List.of(
             "plaintext", "cleartext", "secret", "credential", "token", "salt", "cipher",
@@ -590,17 +581,14 @@ final class UserSecurityTest {
             "filler", "reserved", "version", "page", "logger", "log");
 
     /**
-     * The four entities that carry {@code @Version}, cross checked so that "this entity is not one of the
-     * four versioned entities" is asserted against the package rather than against a comment.
+     * The four entities that carry {@code @Version}, cross checked so that "this entity is not one of the four
+     * versioned entities" is asserted against the package rather than against a comment.
      */
     private static final List<String> VERSIONED_ENTITY_NAMES = List.of(
             "Account", "Card", "Customer", "Transaction");
 
     /**
      * The other ten entities of {@code com.cardemo.model.entity}, one per remaining VSAM cluster.
-     *
-     * <p>Named rather than discovered by classpath scanning: a scan would silently pass on an empty
-     * result, whereas a missing name here fails with the name in the message.
      */
     private static final List<String> SIBLING_ENTITY_NAMES = List.of(
             "Account", "Card", "CardCrossReference", "Customer", "DailyTransaction", "DisclosureGroup",
@@ -609,90 +597,109 @@ final class UserSecurityTest {
     /**
      * The ten seeded user identifiers, in the order IEBGENER reads them from the inline stream at
      * {@code app/jcl/DUSRSECJ.jcl:L35-L44}: five administrators then five standard users.
-     *
-     * <p>Identifiers, given names and family names are structural record content and are reproduced.
-     * The credential column of those same ten rows is <em>not</em>: see {@link #syntheticHash(int)}.
      */
     private static final List<String> SEEDED_USER_IDS = List.of(
-            "ADMIN001", "ADMIN002", "ADMIN003", "ADMIN004", "ADMIN005",
-            "USER0001", "USER0002", "USER0003", "USER0004", "USER0005");
+            "ADMNUSR1", "ADMNUSR2", "ADMNUSR3", "ADMNUSR4", "ADMNUSR5",
+            "STDUSR01", "STDUSR02", "STDUSR03", "STDUSR04", "STDUSR05");
 
-    /** Given names of the ten seeded rows, bytes 9 to 28 of each 80 byte record. */
+    /**
+     * Given names of the ten seeded rows, bytes 9 to 28 of each 80 byte record.
+     */
     private static final List<String> SEEDED_FIRST_NAMES = List.of(
-            "MARGARET", "RUSSELL", "RAYMOND", "EMMANUEL", "GRANVILLE",
-            "LAWRENCE", "AJITH", "LAURITZ", "AVERARDO", "LEE");
+            "FNAMEAA1", "FNAMEA2", "FNAMEA3", "FNAMEAA4", "FNAMEAAA5",
+            "FNAMEAA6", "FNAM7", "FNAMEA8", "FNAMEAA9", "FN0");
 
-    /** Family names of the ten seeded rows, bytes 29 to 48 of each 80 byte record. */
+    /**
+     * Family names of the ten seeded rows, bytes 29 to 48 of each 80 byte record.
+     */
     private static final List<String> SEEDED_LAST_NAMES = List.of(
-            "GOLD", "RUSSELL", "WHITMORE", "CASGRAIN", "LACHAPELLE",
-            "THOMAS", "KUMAR", "ALME", "MAZZI", "TING");
+            "LNM1", "LNAMEA2", "LNAMEAA3", "LNAMEAA4", "LNAMEAAAA5",
+            "LNAME6", "LNAM7", "LNM8", "LNAM9", "LN10");
 
-    // ------------------------------------------------------------------
-    // Class file constant pool tags, from the JVM specification table
-    // 4.4-B. Named rather than written as bare numbers in the switch of
-    // stringConstantsOf, so that the entry widths can be read against
-    // the specification instead of trusted.
-    // ------------------------------------------------------------------
-
-    /** {@code CONSTANT_Utf8}: two length bytes then that many bytes of modified UTF-8. */
+    /**
+     * {@code CONSTANT_Utf8}: two length bytes then that many bytes of modified UTF-8.
+     */
     private static final int CONSTANT_UTF8 = 1;
 
-    /** {@code CONSTANT_Integer}: four bytes. */
+    /**
+     * {@code CONSTANT_Integer}: four bytes.
+     */
     private static final int CONSTANT_INTEGER = 3;
 
-    /** {@code CONSTANT_Float}: four bytes. */
+    /**
+     * {@code CONSTANT_Float}: four bytes.
+     */
     private static final int CONSTANT_FLOAT = 4;
 
-    /** {@code CONSTANT_Long}: eight bytes, and occupies two pool slots. */
+    /**
+     * {@code CONSTANT_Long}: eight bytes, and occupies two pool slots.
+     */
     private static final int CONSTANT_LONG = 5;
 
-    /** {@code CONSTANT_Double}: eight bytes, and occupies two pool slots. */
+    /**
+     * {@code CONSTANT_Double}: eight bytes, and occupies two pool slots.
+     */
     private static final int CONSTANT_DOUBLE = 6;
 
-    /** {@code CONSTANT_Class}: a two byte name index. */
+    /**
+     * {@code CONSTANT_Class}: a two byte name index.
+     */
     private static final int CONSTANT_CLASS = 7;
 
-    /** {@code CONSTANT_String}: a two byte index of the UTF-8 entry holding the literal. */
+    /**
+     * {@code CONSTANT_String}: a two byte index of the UTF-8 entry holding the literal.
+     */
     private static final int CONSTANT_STRING = 8;
 
-    /** {@code CONSTANT_Fieldref}: four bytes. */
+    /**
+     * {@code CONSTANT_Fieldref}: four bytes.
+     */
     private static final int CONSTANT_FIELDREF = 9;
 
-    /** {@code CONSTANT_Methodref}: four bytes. */
+    /**
+     * {@code CONSTANT_Methodref}: four bytes.
+     */
     private static final int CONSTANT_METHODREF = 10;
 
-    /** {@code CONSTANT_InterfaceMethodref}: four bytes. */
+    /**
+     * {@code CONSTANT_InterfaceMethodref}: four bytes.
+     */
     private static final int CONSTANT_INTERFACE_METHODREF = 11;
 
-    /** {@code CONSTANT_NameAndType}: four bytes. */
+    /**
+     * {@code CONSTANT_NameAndType}: four bytes.
+     */
     private static final int CONSTANT_NAME_AND_TYPE = 12;
 
-    /** {@code CONSTANT_MethodHandle}: one reference kind byte then a two byte index. */
+    /**
+     * {@code CONSTANT_MethodHandle}: one reference kind byte then a two byte index.
+     */
     private static final int CONSTANT_METHOD_HANDLE = 15;
 
-    /** {@code CONSTANT_MethodType}: a two byte descriptor index. */
+    /**
+     * {@code CONSTANT_MethodType}: a two byte descriptor index.
+     */
     private static final int CONSTANT_METHOD_TYPE = 16;
 
-    /** {@code CONSTANT_Dynamic}: four bytes. Emitted for a condy-backed constant. */
+    /**
+     * {@code CONSTANT_Dynamic}: four bytes. Emitted for a condy-backed constant.
+     */
     private static final int CONSTANT_DYNAMIC = 17;
 
-    /** {@code CONSTANT_InvokeDynamic}: four bytes. Emitted for indified string concatenation. */
+    /**
+     * {@code CONSTANT_InvokeDynamic}: four bytes. Emitted for indified string concatenation.
+     */
     private static final int CONSTANT_INVOKE_DYNAMIC = 18;
 
-    /** {@code CONSTANT_Module}: a two byte name index. */
+    /**
+     * {@code CONSTANT_Module}: a two byte name index.
+     */
     private static final int CONSTANT_MODULE = 19;
 
-    /** {@code CONSTANT_Package}: a two byte name index. */
+    /**
+     * {@code CONSTANT_Package}: a two byte name index.
+     */
     private static final int CONSTANT_PACKAGE = 20;
-
-    // ==================================================================
-    // Movement 1 - record geometry. An 80 byte record on an 8 byte
-    // leading key, five modelled members and a named filler that stays
-    // out of the schema.
-    // Source: app/cpy/CSUSR01Y.cpy:L17-L23,
-    //         app/catlg/LISTCAT.txt:L3881-L3888,
-    //         app/jcl/DUSRSECJ.jcl:L65-L66 @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("is a JPA entity mapped to user_security, with no index or unique constraint declared")
@@ -930,14 +937,6 @@ final class UserSecurityTest {
                 .doesNotContain("serialVersionUID");
     }
 
-    // ==================================================================
-    // Movement 2 - the user type converter. The database stores one
-    // character; the model holds a named constant; neither @Enumerated
-    // mode bridges the two, and nothing may be guessed.
-    // Source: app/cpy/CSUSR01Y.cpy:L22, app/cpy/COCOM01Y.cpy:L26-L28,
-    //         app/cbl/COSGN00C.cbl:L227 @ 7756d89
-    // ==================================================================
-
     @Test
     @DisplayName("declares the converter as a nested public static class beside the field it serves")
     void converterIsANestedPublicStaticClass() {
@@ -1133,18 +1132,71 @@ final class UserSecurityTest {
         "X", "a", "u", "Z", "1", "0", "9", "$", "-", "*", "@", "?", "b",
         "AA", "AU", "UA", "UU", "Ax", "A U", "A1", "ADMIN", "USER", "admin", "user"
     })
-    @DisplayName("rejects every other code by name, and never defaults to a privilege class")
+    @DisplayName("rejects every other code by code point, without echoing the rejected value")
     void rejectsEveryOtherCodeByName(final String stored) {
         final UserTypeConverter converter = new UserTypeConverter();
+        final String trimmed = stored.trim();
+        final StringBuilder expectedCodePoints = new StringBuilder();
+        for (int index = 0; index < trimmed.length(); index++) {
+            if (index > 0) {
+                expectedCodePoints.append(' ');
+            }
+            expectedCodePoints.append("0x").append(Integer.toHexString(trimmed.charAt(index)));
+        }
 
         assertThatExceptionOfType(IllegalArgumentException.class)
                 .as("guessing a privilege class is the one mistake a role store must never make, so an "
                         + "unrecognised code is raised rather than absorbed")
                 .isThrownBy(() -> converter.convertToEntityAttribute(stored))
-                .withMessageContaining("'" + stored.trim() + "'")
+                .withMessageContaining(expectedCodePoints.toString())
+                .withMessageContaining(trimmed.length() + " UTF-16 code unit(s)")
                 .withMessageContaining("sec_usr_type")
                 .withMessageContaining("COCOM01Y")
                 .withNoCause();
+    }
+
+    @ParameterizedTest(name = "the rejection of \"{0}\" quotes no part of the rejected value")
+    @ValueSource(strings = {
+        "X", "a", "u", "Z", "1", "0", "9", "$", "-", "*", "@", "?", "b",
+        "AA", "AU", "UA", "UU", "Ax", "A U", "A1", "ADMIN", "USER", "admin", "user",
+        "A\r\nsec_usr_type=U", "U\nADMIN", "A\u0000U", "\u001b[31m", "\u00a0"
+    })
+    @DisplayName("never reproduces the rejected value in the message, so corrupt data cannot forge a log")
+    void neverEchoesTheRejectedCodeIntoTheMessage(final String stored) {
+        final UserTypeConverter converter = new UserTypeConverter();
+        final String trimmed = stored.trim();
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> converter.convertToEntityAttribute(stored))
+                .satisfies(thrown -> {
+                    final String message = thrown.getMessage();
+                    assertThat(message)
+                            .as("the previous implementation emitted the rejected value in single quotes "
+                                    + "and that exact rendering is what must be gone. Asserting the "
+                                    + "quoted form rather than the bare value is deliberate: the message "
+                                    + "is a sentence of English that legitimately contains most single "
+                                    + "characters and the words ADMIN and USER, so a bare containment "
+                                    + "check would report a leak that is not one and would prove nothing "
+                                    + "about the values that matter. Rejected value: %s", trimmed)
+                            .doesNotContain("'" + trimmed + "'");
+                    assertThat(message)
+                            .as("and no control character may reach the message by any route at all - "
+                                    + "this is the assertion that actually closes the log forging path, "
+                                    + "because a carriage return or line feed would terminate the line "
+                                    + "in any sink that stores one event per line and an escape sequence "
+                                    + "would reach a terminal that renders it")
+                            .doesNotContain("\r")
+                            .doesNotContain("\n")
+                            .doesNotContain("\t")
+                            .doesNotContain("\u001b")
+                            .doesNotContain("\u0000")
+                            .doesNotContain("\u00a0");
+                    assertThat(message)
+                            .as("what remains must still be diagnosable: the code point rendering "
+                                    + "identifies the value completely and distinguishes a blank, a low "
+                                    + "value byte and a non breaking space, which all print as nothing")
+                            .contains("0x" + Integer.toHexString(trimmed.charAt(0)));
+                });
     }
 
     @ParameterizedTest(name = "the printable code {0} outside 'A' and 'U' is rejected")
@@ -1235,14 +1287,6 @@ final class UserSecurityTest {
                     .doesNotContain(enumPackage);
         }
     }
-
-    // ==================================================================
-    // Movement 3 - the credential. A BCrypt hash over a 60 character
-    // VARCHAR, never the 8 byte plaintext the source held, and never a
-    // literal anywhere.
-    // Source: app/cpy/CSUSR01Y.cpy:L21, app/cbl/COSGN00C.cbl:L223,
-    //         app/jcl/DUSRSECJ.jcl:L35-L44 @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("names the credential member passwordHash, so no caller can mistake it for a password")
@@ -1377,17 +1421,37 @@ final class UserSecurityTest {
         assertThat(combined)
                 .as("producing a hash belongs to the authentication service and verifying one to the "
                         + "security configuration; a data holder that could do either would be a "
-                        + "second place for the work factor to be chosen")
+                        + "second place for the work factor to be chosen. The assertion is on the "
+                        + "referenced types rather than on the word BCrypt, because the entity now names "
+                        + "the algorithm in its shape rule and in the diagnostics that rule throws - and "
+                        + "naming an encoding is not implementing one. What must stay absent is any type "
+                        + "that could compute or compare a digest")
                 .doesNotContain("PasswordEncoder")
-                .doesNotContain("BCrypt")
+                .doesNotContain("crypto/bcrypt")
+                .doesNotContain("BCrypt.")
                 .doesNotContain("MessageDigest")
                 .doesNotContain("javax/crypto")
-                .doesNotContain("java/security");
+                .doesNotContain("java/security")
+                .doesNotContain("springframework");
 
         assertThat(UserSecurity.class.getDeclaredMethods())
                 .as("and no method may look like a comparison helper that takes a presented password")
                 .noneSatisfy(method -> assertThat(method.getName().toLowerCase(Locale.ROOT))
                         .containsAnyOf("matches", "verify", "encode", "check", "authenticate"));
+
+        assertThat(UserSecurity.class.getDeclaredMethods())
+                .as("the shape rule must be a structural check over the encoding, so it takes and returns "
+                        + "one value and cannot be handed a presented password to compare against")
+                .filteredOn(method -> "requireBcryptStrength10Digest".equals(method.getName()))
+                .singleElement()
+                .satisfies(method -> {
+                    assertThat(method.getParameterCount())
+                            .as("a verifier would need two arguments: a presented password and a digest")
+                            .isEqualTo(1);
+                    assertThat(method.getReturnType())
+                            .as("it returns the value it validated, not a boolean verdict")
+                            .isEqualTo(String.class);
+                });
     }
 
     @Test
@@ -1414,12 +1478,6 @@ final class UserSecurityTest {
                 .hasSize(2);
     }
 
-    // ==================================================================
-    // Movement 4 - value semantics. A rendering narrow enough to be safe
-    // in a log line, and identity over the natural key alone.
-    // Source: app/cpy/CSUSR01Y.cpy:L18-L22 @ 7756d89
-    // ==================================================================
-
     @Test
     @DisplayName("renders the identifier and the user class, and nothing else")
     void renderingCarriesOnlyTheIdentifierAndUserClass() {
@@ -1444,7 +1502,7 @@ final class UserSecurityTest {
     @DisplayName("never renders the credential: no hash, no version prefix, no accessor name")
     void renderingNeverCarriesTheCredential() {
         final String hash = syntheticHash(3);
-        final UserSecurity user = new UserSecurity("USER0003", "LAURITZ", "ALME", hash, UserType.USER);
+        final UserSecurity user = new UserSecurity("STDUSR03", "FNAMEA8", "LNM8", hash, UserType.USER);
 
         assertThat(user.toString())
                 .as("a rendering is exactly how credential material escapes into a log aggregator, an "
@@ -1460,15 +1518,15 @@ final class UserSecurityTest {
     @DisplayName("never renders the two name fields, which are personal data a log line does not need")
     void renderingNeverCarriesPersonalData() {
         final UserSecurity user = new UserSecurity(
-                "ADMIN004", "EMMANUEL", "CASGRAIN", syntheticHash(4), UserType.ADMIN);
+                "ADMNUSR4", "FNAMEAA4", "LNAMEAA4", syntheticHash(4), UserType.ADMIN);
 
         assertThat(user.toString())
                 .as("the names are omitted under least privilege: they add nothing the primary key does "
                         + "not already identify. This is why the rendering is narrower than the "
                         + "reference data entities', which render every column they hold. User: %s",
                         user.getSecUsrId())
-                .doesNotContain("EMMANUEL")
-                .doesNotContain("CASGRAIN")
+                .doesNotContain("FNAMEAA4")
+                .doesNotContain("LNAMEAA4")
                 .doesNotContain("secUsrFname")
                 .doesNotContain("secUsrLname");
     }
@@ -1476,10 +1534,12 @@ final class UserSecurityTest {
     @Test
     @DisplayName("renders a transient instance without throwing, showing nulls rather than substitutes")
     void renderingIsNullSafe() {
-        final UserSecurity blank = new UserSecurity(null, null, null, null, null);
+        final UserSecurity blank = providerMaterialisedUser();
 
         assertThatCode(blank::toString)
-                .as("an instance the provider has not yet populated must still be loggable")
+                .as("an instance the provider has not yet populated must still be loggable. It is built "
+                        + "through the provider's own no argument route, because the all columns "
+                        + "constructor now rejects a null credential by design")
                 .doesNotThrowAnyException();
         assertThat(blank.toString())
                 .as("nulls are shown rather than replaced by a default, which would misreport the state")
@@ -1490,12 +1550,12 @@ final class UserSecurityTest {
     @DisplayName("renders the identifier exactly as held, so fixed width padding stays visible")
     void renderingDoesNotTrimTheIdentifier() {
         final UserSecurity padded = new UserSecurity(
-                "USER1   ", "LEE", "TING", syntheticHash(5), UserType.USER);
+                "STDU1   ", "FN0", "LN10", syntheticHash(5), UserType.USER);
 
         assertThat(padded.toString())
                 .as("a rendering that trimmed would hide the very padding a fixed width defect shows up "
                         + "as. User: [%s]", padded.getSecUsrId())
-                .contains("secUsrId=USER1   ,");
+                .contains("secUsrId=STDU1   ,");
     }
 
     @Test
@@ -1505,16 +1565,16 @@ final class UserSecurityTest {
 
         assertThat(user.equals(user)).as("reflexive").isTrue();
         assertThat(user.equals(null)).as("null safe, never a NullPointerException").isFalse();
-        assertThat(user.equals("ADMIN001")).as("unequal to an unrelated type").isFalse();
+        assertThat(user.equals("ADMNUSR1")).as("unequal to an unrelated type").isFalse();
     }
 
     @Test
     @DisplayName("compares on secUsrId alone, ignoring the names, the credential and the user class")
     void equalityIsComputedOverTheIdentifierAlone() {
         final UserSecurity first = new UserSecurity(
-                "ADMIN001", "MARGARET", "GOLD", syntheticHash(1), UserType.ADMIN);
+                "ADMNUSR1", "FNAMEAA1", "LNM1", syntheticHash(1), UserType.ADMIN);
         final UserSecurity rotated = new UserSecurity(
-                "ADMIN001", "MARGARET", "PLATINUM", syntheticHash(9), UserType.USER);
+                "ADMNUSR1", "FNAMEAA1", "PLATINUM", syntheticHash(9), UserType.USER);
 
         assertThat(first)
                 .as("the identifier is a natural key that arrives from the seed rather than a generated "
@@ -1534,7 +1594,7 @@ final class UserSecurityTest {
     void equalityIsSymmetricAndTransitive() {
         final UserSecurity first = seededUser(6);
         final UserSecurity second = new UserSecurity(
-                first.getSecUsrId(), "AJITH", "KUMAR", syntheticHash(2), UserType.USER);
+                first.getSecUsrId(), "FNAM7", "LNAM7", syntheticHash(2), UserType.USER);
         final UserSecurity third = new UserSecurity(
                 first.getSecUsrId(), "OTHER", "NAME", syntheticHash(8), UserType.ADMIN);
 
@@ -1549,8 +1609,8 @@ final class UserSecurityTest {
     @DisplayName("distinguishes two different identifiers even when every other member matches")
     void equalityDistinguishesDifferentIdentifiers() {
         final String hash = syntheticHash(1);
-        final UserSecurity admin = new UserSecurity("ADMIN001", "SAME", "SAME", hash, UserType.ADMIN);
-        final UserSecurity other = new UserSecurity("ADMIN002", "SAME", "SAME", hash, UserType.ADMIN);
+        final UserSecurity admin = new UserSecurity("ADMNUSR1", "SAME", "SAME", hash, UserType.ADMIN);
+        final UserSecurity other = new UserSecurity("ADMNUSR2", "SAME", "SAME", hash, UserType.ADMIN);
 
         assertThat(admin)
                 .as("users %s and %s are distinct rows", admin.getSecUsrId(), other.getSecUsrId())
@@ -1570,9 +1630,11 @@ final class UserSecurityTest {
                 .isEqualTo(first)
                 .isEqualTo(user.getSecUsrId().hashCode());
 
-        final UserSecurity unkeyed = new UserSecurity(null, null, null, null, null);
+        final UserSecurity unkeyed = providerMaterialisedUser();
         assertThatCode(unkeyed::hashCode)
-                .as("a transient instance whose key is still null must hash rather than throw")
+                .as("a transient instance whose key is still null must hash rather than throw. The "
+                        + "credential is supplied because it is guarded on the way in, and it takes no "
+                        + "part in the hash, which is what the assertion below proves")
                 .doesNotThrowAnyException();
         assertThat(unkeyed.hashCode()).isZero();
     }
@@ -1618,13 +1680,6 @@ final class UserSecurityTest {
                         seededUser(0).getSecUsrId(), "DIFFERENT", "DIFFERENT",
                         syntheticHash(7), UserType.USER));
     }
-
-    // ==================================================================
-    // Movement 5 - layering. A data holder, not a security principal:
-    // the adaptation to Spring Security lives one package out, and the
-    // dependency runs that way and not this way.
-    // Source: app/csd/CARDDEMO.CSD:L88, app/cbl/COSGN00C.cbl @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("implements no interface at all, so it cannot be a Spring Security principal")
@@ -1673,11 +1728,217 @@ final class UserSecurityTest {
         assertThat(present)
                 .as("the source record has no relationship to any other cluster, so there is no "
                         + "association and therefore no cascade, no lazy loading and no N+1 pattern; no "
-                        + "lifecycle callback exists that could hash, mutate or normalise the credential "
-                        + "on persist or load; and no bean validation constraint exists that would "
+                        + "callback exists on the read or delete path that could hash, mutate or "
+                        + "normalise the credential; and no bean validation constraint exists that would "
                         + "reject the blank but non null values a fixed width source legitimately holds")
                 .isNotEmpty()
                 .doesNotContainAnyElementsOf(FORBIDDEN_ANNOTATION_SIMPLE_NAMES);
+    }
+
+    /**
+     * A bean declaring the entity as a property, used to prove the type level barrier removes it.
+     *
+     * <p>Declared here rather than reached for in production code deliberately: the property this holder
+     * exists to demonstrate is that <em>any</em> object anywhere that happens to declare a persistence
+     * entity as a field loses that field on serialisation, and a holder written for the test is the
+     * clearest way to show that without depending on some particular response object continuing to have
+     * that shape.
+     */
+    private static final class EntityHolder {
+
+        /** The entity under test, held as a declared property so that Jackson can discover it. */
+        private final UserSecurity user;
+
+        /**
+         * Wraps the supplied entity.
+         *
+         * @param user the entity to hold, never {@code null} in this test
+         */
+        EntityHolder(final UserSecurity user) {
+            this.user = user;
+        }
+
+        /**
+         * A conventional bean accessor, which is what makes the property discoverable.
+         *
+         * @return the held entity
+         */
+        public UserSecurity getUser() {
+            return user;
+        }
+    }
+
+    @Test
+    @DisplayName("carries the JSON serialisation barrier, so no route through Jackson discloses a column")
+    void carriesTheJsonSerialisationBarrier() throws Exception {
+        assertThat(UserSecurity.class.getDeclaredAnnotation(JsonIgnoreType.class))
+                .as("the type level ignore is what removes this entity wherever it appears as a property "
+                        + "of something else, which is the disclosure route that does not require anybody "
+                        + "to have written a controller returning the entity directly")
+                .isNotNull();
+
+        final JsonAutoDetect autoDetect = UserSecurity.class.getDeclaredAnnotation(JsonAutoDetect.class);
+        assertThat(autoDetect)
+                .as("and the visibility override is what removes every property when the entity is the "
+                        + "root value, where the type level ignore does not reach")
+                .isNotNull();
+        assertThat(autoDetect.getterVisibility()).as("getter visibility").isEqualTo(Visibility.NONE);
+        assertThat(autoDetect.isGetterVisibility()).as("is-getter visibility").isEqualTo(Visibility.NONE);
+        assertThat(autoDetect.setterVisibility()).as("setter visibility").isEqualTo(Visibility.NONE);
+        assertThat(autoDetect.creatorVisibility()).as("creator visibility").isEqualTo(Visibility.NONE);
+        assertThat(autoDetect.fieldVisibility())
+                .as("field visibility must be NONE as well, because the provider uses field access on "
+                        + "this class and a serialiser configured to read fields would otherwise reach "
+                        + "every column the getters no longer expose")
+                .isEqualTo(Visibility.NONE);
+
+        assertThat(UserSecurity.class.getDeclaredMethod("getPasswordHash")
+                .getDeclaredAnnotation(JsonIgnore.class))
+                .as("the credential accessor carries its own ignore in addition to the two type level "
+                        + "annotations, so that the barrier survives a future subclass, mix-in or "
+                        + "visibility override that re-enables getters for this type")
+                .isNotNull();
+    }
+
+    @Test
+    @DisplayName("discloses no column through a real object mapper, at the root, in a list or as a field")
+    void disclosesNoColumnThroughARealObjectMapper() throws Exception {
+        final UserSecurity user = seededUser(3);
+        final ObjectMapper mapper = new ObjectMapper();
+
+        assertThat(mapper.writeValueAsString(user))
+                .as("serialised as the root value the entity yields an empty object: every property is "
+                        + "invisible, so there is nothing to write. This is the accidental disclosure the "
+                        + "finding described - a repository result handed straight back from a controller "
+                        + "or logged as JSON - and it now yields nothing at all. User: %s",
+                        user.getSecUsrId())
+                .isEqualTo("{}")
+                .doesNotContain(user.getSecUsrId())
+                .doesNotContain(user.getSecUsrFname())
+                .doesNotContain(user.getSecUsrLname())
+                .doesNotContain(user.getPasswordHash())
+                .doesNotContain("sec_usr");
+
+        assertThat(mapper.writeValueAsString(List.of(user)))
+                .as("and a collection of them, which is what a page of results actually is, yields a list "
+                        + "of empty objects rather than a list of credentials")
+                .isEqualTo("[{}]");
+
+        assertThatExceptionOfType(InvalidDefinitionException.class)
+                .as("held as a declared property the entity is removed outright by the type level ignore, "
+                        + "which leaves a holder whose only property was the entity with no properties at "
+                        + "all. Jackson reports that rather than writing an empty object, so a response "
+                        + "object that tried to embed a persistence entity fails loudly at the boundary "
+                        + "instead of quietly shipping the columns")
+                .isThrownBy(() -> mapper.writeValueAsString(new EntityHolder(user)))
+                .withMessageContaining("no properties discovered");
+    }
+
+    @ParameterizedTest(name = "{0} carries the barrier and serialises to an empty object")
+    @MethodSource("siblingEntityNames")
+    @DisplayName("every sibling entity in the package carries the same barrier, uniformly")
+    void everySiblingEntityCarriesTheSameBarrier(final String entityName) throws Exception {
+        final Class<?> entity = Class.forName("com.cardemo.model.entity." + entityName);
+
+        assertThat(entity.getDeclaredAnnotation(JsonIgnoreType.class))
+                .as("%s must carry the type level ignore. Applying the barrier to only the entities "
+                        + "whose columns are obviously sensitive would leave the control unverifiable by "
+                        + "inspection, and would leave the next entity added to the package silently "
+                        + "outside it; uniform application is what makes it checkable", entityName)
+                .isNotNull();
+
+        final JsonAutoDetect autoDetect = entity.getDeclaredAnnotation(JsonAutoDetect.class);
+        assertThat(autoDetect).as("%s must carry the visibility override", entityName).isNotNull();
+        assertThat(List.of(autoDetect.getterVisibility(), autoDetect.isGetterVisibility(),
+                        autoDetect.setterVisibility(), autoDetect.creatorVisibility(),
+                        autoDetect.fieldVisibility()))
+                .as("all five visibilities on %s must be NONE; leaving field visibility at its default "
+                        + "would readmit every column, because the provider maps this class by field",
+                        entityName)
+                .containsOnly(Visibility.NONE);
+
+        final Constructor<?> providerConstructor = entity.getDeclaredConstructor();
+        providerConstructor.setAccessible(true);
+        final Object instance = providerConstructor.newInstance();
+
+        assertThat(new ObjectMapper().writeValueAsString(instance))
+                .as("an instance of %s discloses nothing through a default object mapper. The instance "
+                        + "here is blank, and that is what makes the assertion meaningful rather than "
+                        + "vacuous: without the barrier every column would appear as an explicit null, "
+                        + "so an empty object proves the properties are invisible rather than merely "
+                        + "unset", entityName)
+                .isEqualTo("{}");
+    }
+
+    @Test
+    @DisplayName("carries exactly one lifecycle callback, on the write path only, and it mutates nothing")
+    void carriesOnlyANonMutatingWriteCallback() throws Exception {
+        final List<Method> callbacks = Arrays.stream(UserSecurity.class.getDeclaredMethods())
+                .filter(method -> method.isAnnotationPresent(PrePersist.class)
+                        || method.isAnnotationPresent(PreUpdate.class))
+                .toList();
+
+        assertThat(callbacks)
+                .as("one method serves both write events, which the specification permits and which is "
+                        + "what keeps insert and update asserting the identical invariant. Two methods "
+                        + "would be two places for the rule to drift")
+                .singleElement()
+                .satisfies(method -> {
+                    assertThat(method.isAnnotationPresent(PrePersist.class))
+                            .as("the invariant must hold on insert").isTrue();
+                    assertThat(method.isAnnotationPresent(PreUpdate.class))
+                            .as("and on update, which is the path a credential rotation takes").isTrue();
+                    assertThat(method.getReturnType())
+                            .as("a lifecycle callback returns void")
+                            .isEqualTo(void.class);
+                    assertThat(method.getParameterCount())
+                            .as("and takes no argument, so it can only read the state it is called on")
+                            .isZero();
+                    assertThat(Modifier.isPrivate(method.getModifiers()))
+                            .as("private, because the provider reaches it reflectively and nothing "
+                                    + "outside the entity has any business invoking it")
+                            .isTrue();
+                });
+
+        final UserSecurity user = seededUser(0);
+        final Map<String, Object> before = new LinkedHashMap<>();
+        for (final Field field : persistentFields()) {
+            field.setAccessible(true);
+            before.put(field.getName(), field.get(user));
+        }
+
+        final Method callback = callbacks.get(0);
+        callback.setAccessible(true);
+        callback.invoke(user);
+
+        for (final Field field : persistentFields()) {
+            field.setAccessible(true);
+            assertThat(field.get(user))
+                    .as("the callback asserts and returns: member %s must be byte for byte what it was "
+                            + "before the call. A callback that repaired, trimmed, re-encoded or "
+                            + "re-hashed anything would change stored data on every write, which is the "
+                            + "hazard the forbidden-annotation sweep exists to catch", field.getName())
+                    .isEqualTo(before.get(field.getName()));
+        }
+    }
+
+    @Test
+    @DisplayName("rejects an unpopulated instance at the write callback rather than at the NOT NULL column")
+    void rejectsAnUnpopulatedInstanceAtTheWriteCallback() throws Exception {
+        final UserSecurity unpopulated = providerMaterialisedUser();
+        final Method callback = UserSecurity.class.getDeclaredMethod(
+                "assertCredentialInvariantBeforeWrite");
+        callback.setAccessible(true);
+
+        assertThat(catchThrowable(() -> callback.invoke(unpopulated)))
+                .as("an instance the provider materialised and nothing populated must fail before the "
+                        + "insert statement exists, naming the invariant, rather than inside the driver "
+                        + "as a not-null violation naming a column")
+                .isInstanceOf(InvocationTargetException.class)
+                .cause()
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sec_usr_pwd")
+                .hasMessageContaining("was null");
     }
 
     @Test
@@ -1716,70 +1977,133 @@ final class UserSecurityTest {
                     .doesNotContain("Logger");
         }
 
-        assertThat(Arrays.stream(UserSecurity.class.getDeclaredFields())
+        final List<Field> staticFields = Arrays.stream(UserSecurity.class.getDeclaredFields())
                 .filter(field -> Modifier.isStatic(field.getModifiers()))
                 .filter(field -> !field.isSynthetic())
-                .map(Field::getType)
-                .toList())
-                .as("every static member of the entity is a primitive width constant, so no static "
-                        + "logger, cache or shared buffer exists - the global mutable state Rule 1 "
-                        + "clause B forbids")
-                .allSatisfy(type -> assertThat(type.isPrimitive()).isTrue());
+                .toList();
+
+        assertThat(staticFields)
+                .as("no static member may be writable, whatever its type: a non final static field is "
+                        + "precisely the global mutable state Rule 1 clause B forbids")
+                .isNotEmpty()
+                .allSatisfy(field -> assertThat(Modifier.isFinal(field.getModifiers()))
+                        .as("static member %s must be final", field.getName())
+                        .isTrue());
+
+        assertThat(staticFields)
+                .as("every static member is either a primitive width constant or the compiled credential "
+                        + "shape. A compiled Pattern is immutable and thread safe by specification, so it "
+                        + "is a constant in the same sense the widths are - which is exactly why it is "
+                        + "compiled once here instead of per call. No static logger, cache, buffer, "
+                        + "collection or counter exists")
+                .allSatisfy(field -> assertThat(field.getType())
+                        .as("static member %s has type %s", field.getName(), field.getType().getName())
+                        .satisfiesAnyOf(
+                                type -> assertThat(type.isPrimitive()).isTrue(),
+                                type -> assertThat(type).isEqualTo(Pattern.class)));
+
+        assertThat(staticFields)
+                .as("and none may be a logger, a mutable container or an accumulator by type")
+                .allSatisfy(field -> assertThat(field.getType().getName())
+                        .as("static member %s", field.getName())
+                        .doesNotContain("Logger")
+                        .doesNotContain("Collection")
+                        .doesNotContain("List")
+                        .doesNotContain("Map")
+                        .doesNotContain("Set")
+                        .doesNotContain("Buffer")
+                        .doesNotContain("Atomic")
+                        .doesNotContain("StringBuilder"));
     }
 
-    // ==================================================================
-    // Movement 6 - hostile input and boundary conditions. Every member
-    // accepts what the fixed width source can legitimately contain,
-    // verbatim: nothing validates, trims, folds or truncates.
-    // Source: app/cpy/CSUSR01Y.cpy:L18-L22, app/cbl/COSGN00C.cbl:L132,
-    //         :L135 @ 7756d89
-    // ==================================================================
-
     @ParameterizedTest(name = "an identifier of [{0}] is carried verbatim")
-    @ValueSource(strings = {"", "A", "USER1", "USER001", "USER0001", "USER00012", "user0001", "  A  ",
-        "USER0001OVERFLOW", "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
-    @DisplayName("carries any identifier verbatim: short, over long, blank, low value and mixed case")
+    @ValueSource(strings = {"", "A", "STDU1", "STDUSR1", "STDUSR01", "stdusr01", "  A  ",
+        "\u0000\u0000\u0000\u0000\u0000\u0000\u0000\u0000"})
+    @DisplayName("carries every identifier the picture clause admits verbatim: short, blank, low value "
+            + "and mixed case")
     void carriesAnyIdentifierVerbatim(final String identifier) {
+        assertThat(identifier.length())
+                .as("every value in this set is within PIC X(08), which is what makes it a value the "
+                        + "80 byte record can carry")
+                .isLessThanOrEqualTo(CATALOGUED_KEY_LENGTH);
+
         final UserSecurity user = new UserSecurity(
                 identifier, "FIRST", "LAST", syntheticHash(1), UserType.USER);
 
         assertThat(user.getSecUsrId())
-                .as("no validation, trimming or case folding happens here. A value longer than the "
-                        + "CHAR(8) column is rejected on flush by the column width, with full context "
-                        + "from the provider, and one shorter is blank padded by the column - neither "
-                        + "is the entity's business. The sign on program's own upper casing at "
-                        + "app/cbl/COSGN00C.cbl:L132 is service tier behaviour applied to input")
+                .as("no trimming, padding or case folding happens here: a shorter value is blank padded "
+                        + "by the CHAR(8) column on write, not by the entity, and a value of only low "
+                        + "values or only spaces is legitimate legacy data. The sign on program's own "
+                        + "upper casing at app/cbl/COSGN00C.cbl:L132 is service tier behaviour applied "
+                        + "to input")
                 .isEqualTo(identifier);
     }
 
-    @Test
-    @DisplayName("accepts a 7 character and a 9 character identifier without altering either")
-    void acceptsIdentifiersOnEitherSideOfTheKeyWidth() {
-        final String tooShort = "USER000";
-        final String tooLong = "USER00001";
+    @ParameterizedTest(name = "an identifier of [{0}] is refused because PIC X(08) cannot hold it")
+    @ValueSource(strings = {"STDUSR012", "STDUSR01OVERFLOW",
+        "                                        "})
+    @DisplayName("refuses an identifier wider than PIC X(08) instead of deferring to the column width")
+    void refusesAnIdentifierWiderThanTheKeyWidth(final String identifier) {
+        assertThat(identifier.length())
+                .as("each value in this set exceeds PIC X(08) at app/cpy/CSUSR01Y.cpy:L18, so no "
+                        + "80 byte source record could have produced it")
+                .isGreaterThan(CATALOGUED_KEY_LENGTH);
 
-        assertThat(tooShort).hasSize(CATALOGUED_KEY_LENGTH - 1);
-        assertThat(tooLong).hasSize(CATALOGUED_KEY_LENGTH + 1);
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("deferring this to the CHAR(8) column would report a column name from inside the "
+                        + "driver at flush time rather than naming the property at the call site that "
+                        + "supplied it, and on a CHAR column the failure mode is a truncation error "
+                        + "whose text does not distinguish a width overrun from a type mismatch")
+                .isThrownBy(() -> new UserSecurity(
+                        identifier, "FIRST", "LAST", syntheticHash(1), UserType.USER))
+                .withMessageContaining("secUsrId")
+                .withMessageContaining("SEC-USR-ID PIC X(08)")
+                .withMessageContaining(String.valueOf(identifier.length()));
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("and the message never quotes the value itself, holding the same line the "
+                        + "credential guard holds")
+                .isThrownBy(() -> new UserSecurity(
+                        identifier, "FIRST", "LAST", syntheticHash(1), UserType.USER))
+                .withMessageNotContaining(identifier.trim().isEmpty() ? "\u0000" : identifier);
+    }
+
+    @Test
+    @DisplayName("carries a 7 character identifier unpadded and refuses a 9 character one outright")
+    void treatsTheTwoSidesOfTheKeyWidthDifferently() {
+        final String shorterThanTheKey = "STDUSR0";
+        final String widerThanTheKey = "STDUSR001";
+
+        assertThat(shorterThanTheKey).hasSize(CATALOGUED_KEY_LENGTH - 1);
+        assertThat(widerThanTheKey).hasSize(CATALOGUED_KEY_LENGTH + 1);
 
         final UserSecurity shortId = new UserSecurity(
-                tooShort, "FIRST", "LAST", syntheticHash(1), UserType.USER);
-        final UserSecurity longId = new UserSecurity(
-                tooLong, "FIRST", "LAST", syntheticHash(1), UserType.USER);
+                shorterThanTheKey, "FIRST", "LAST", syntheticHash(1), UserType.USER);
 
-        assertThat(shortId.getSecUsrId()).isEqualTo(tooShort);
-        assertThat(longId.getSecUsrId())
-                .as("truncating to the key width here would silently create a different row; the column "
-                        + "width is the right place for that rejection")
-                .isEqualTo(tooLong)
-                .hasSize(CATALOGUED_KEY_LENGTH + 1);
+        assertThat(shortId.getSecUsrId())
+                .as("the two sides are not symmetric and must not be treated as though they were. A "
+                        + "value shorter than the key is inside PIC X(08) - the source pads it on write "
+                        + "and the CHAR(8) column pads it on read - so padding it here would put the "
+                        + "column's job in the entity and would make a round trip through the setter "
+                        + "return something other than what was set")
+                .isEqualTo(shorterThanTheKey)
+                .hasSize(CATALOGUED_KEY_LENGTH - 1);
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("a value wider than the key is outside PIC X(08) altogether, so no source record "
+                        + "produced it and there is nothing to preserve. Truncating it would silently "
+                        + "address a different row, which is why the guard refuses rather than repairs")
+                .isThrownBy(() -> new UserSecurity(
+                        widerThanTheKey, "FIRST", "LAST", syntheticHash(1), UserType.USER))
+                .withMessageContaining("must be at most " + CATALOGUED_KEY_LENGTH + " characters");
     }
 
     @ParameterizedTest(name = "a name of [{0}] is carried verbatim")
-    @ValueSource(strings = {"", " ", "                    ", "GOLD", "gold",
-        "LACHAPELLE          ", "A NAME WITH SPACES", "O'BRIEN", "\u0000"})
+    @ValueSource(strings = {"", " ", "                    ", "LNM1", "lnm1",
+        "LNAMEAAAA5          ", "A NAME WITH SPACES", "O'BRIEN", "\u0000"})
     @DisplayName("carries any name verbatim, because a name of only spaces is legitimate legacy data")
     void carriesAnyNameVerbatim(final String name) {
-        final UserSecurity user = new UserSecurity("USER0001", name, name, syntheticHash(1), UserType.USER);
+        final UserSecurity user = new UserSecurity("STDUSR01", name, name, syntheticHash(1), UserType.USER);
 
         assertThat(user.getSecUsrFname())
                 .as("a loading rule that rejected blankness would reject rows the source accepts, and a "
@@ -1790,45 +2114,151 @@ final class UserSecurityTest {
     }
 
     @Test
-    @DisplayName("accepts a null in every member, because the NOT NULL column is where that is caught")
-    void acceptsANullInEveryMember() {
-        final UserSecurity transientUser = new UserSecurity(null, null, null, null, null);
+    @DisplayName("refuses a null in every one of the five members, each naming its own property")
+    void refusesANullInEveryMember() {
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("COBOL has no null: PIC X(08) always holds eight characters, so a null identifier is "
+                        + "not a value the source could have produced. All five columns are NOT NULL, and "
+                        + "refusing here names the property at the call site instead of surfacing a "
+                        + "column name from inside the driver at flush time")
+                .isThrownBy(() -> new UserSecurity(
+                        null, "FIRST", "LAST", syntheticHash(1), UserType.USER))
+                .withMessageContaining("secUsrId")
+                .withMessageContaining("SEC-USR-ID PIC X(08)");
 
-        assertThat(transientUser.getSecUsrId()).isNull();
-        assertThat(transientUser.getSecUsrFname()).isNull();
-        assertThat(transientUser.getSecUsrLname()).isNull();
-        assertThat(transientUser.getPasswordHash())
-                .as("all five columns are NOT NULL in the schema and the provider reports a null on "
-                        + "flush with full context, so a constructor level check would only duplicate "
-                        + "that at the cost of rejecting a legitimate staged construction")
-                .isNull();
-        assertThat(transientUser.getSecUsrType()).isNull();
-    }
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> new UserSecurity(
+                        "STDUSR01", null, "LAST", syntheticHash(1), UserType.USER))
+                .withMessageContaining("secUsrFname")
+                .withMessageContaining("SEC-USR-FNAME PIC X(20)");
 
-    @ParameterizedTest(name = "a credential of {1} characters is carried verbatim")
-    @MethodSource("credentialBoundaryValues")
-    @DisplayName("carries a malformed credential verbatim rather than validating or padding it")
-    void carriesAnyCredentialVerbatim(final String credential, final int expectedLength) {
-        final UserSecurity user = new UserSecurity(
-                "USER0001", "FIRST", "LAST", credential, UserType.USER);
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .isThrownBy(() -> new UserSecurity(
+                        "STDUSR01", "FIRST", null, syntheticHash(1), UserType.USER))
+                .withMessageContaining("secUsrLname")
+                .withMessageContaining("SEC-USR-LNAME PIC X(20)");
 
-        assertThat(user.getPasswordHash())
-                .as("the setter performs no hashing, encoding, validation or normalisation: a caller "
-                        + "that passed a plaintext password would store a plaintext password, which is a "
-                        + "defect in the caller and one this class cannot detect without taking on the "
-                        + "hashing responsibility that belongs to the authentication service. User: %s",
-                        user.getSecUsrId())
-                .isEqualTo(credential)
-                .hasSize(expectedLength);
-        assertThat(user.getPasswordHash())
-                .as("and it must never be blank padded to the column width, because a padded hash fails "
-                        + "verification - which is exactly why the column is VARCHAR and not CHAR")
-                .isNotEqualTo(credential + " ");
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("a null credential is not a staging state, it is an unauthenticatable row")
+                .isThrownBy(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", null, UserType.USER))
+                .withMessageContaining("sec_usr_pwd")
+                .withMessageContaining("was null");
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("and the enumeration closes the domain to two codes, so null is the only value "
+                        + "outside it that can reach the constructor at all")
+                .isThrownBy(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", syntheticHash(1), null))
+                .withMessageContaining("secUsrType")
+                .withMessageContaining("SEC-USR-TYPE PIC X(01)");
     }
 
     @Test
-    @DisplayName("accepts a 59 and a 61 character credential, and neither satisfies the hash shape")
-    void acceptsCredentialsOnEitherSideOfTheHashWidth() {
+    @DisplayName("staged construction remains available, through the provider path rather than by "
+            + "weakening the all columns constructor")
+    void stagedConstructionRemainsAvailableThroughTheProviderPath() {
+        final UserSecurity staged = providerMaterialisedUser();
+
+        assertThat(staged.getSecUsrId())
+                .as("the no argument constructor the persistence provider requires is the staging path, "
+                        + "and it leaves every member null because populating them is the provider's job. "
+                        + "That is why refusing a null in the all columns constructor costs nothing: a "
+                        + "constructor that takes all five columns is by definition not a staged one")
+                .isNull();
+        assertThat(staged.getSecUsrFname()).isNull();
+        assertThat(staged.getSecUsrLname()).isNull();
+        assertThat(staged.getPasswordHash()).isNull();
+        assertThat(staged.getSecUsrType()).isNull();
+    }
+
+    @ParameterizedTest(name = "a credential that is {1} is rejected")
+    @MethodSource("malformedCredentialValues")
+    @DisplayName("rejects every malformed credential at construction rather than carrying it verbatim")
+    void rejectsEveryMalformedCredentialAtConstruction(final String credential, final String why) {
+        final Throwable thrown = catchThrowable(
+                () -> new UserSecurity("STDUSR01", "FIRST", "LAST", credential, UserType.USER));
+
+        assertThat(thrown)
+                .as("the entity must refuse to hold a value the verifier could never accept. Rejected "
+                        + "because %s", why)
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(thrown.getMessage())
+                .as("the message must name the column and the requirement that was not met, so that a "
+                        + "caller can fix the defect from the message alone. Case: %s", why)
+                .contains("sec_usr_pwd")
+                .contains("BCrypt strength 10 digest");
+        assertThat(credential.isEmpty() || !thrown.getMessage().contains(credential))
+                .as("and it must never reproduce the offending value - an exception message reaches the "
+                        + "structured logger, the trace and any rendered error response, so "
+                        + "interpolating credential shaped material into one is the very leak Rule 1 "
+                        + "clause D forbids. This is also why the value is rejected here rather than "
+                        + "downstream: BCryptPasswordEncoder.upgradeEncoding interpolates the offending "
+                        + "value into its own message. The empty candidate is excluded from the "
+                        + "containment question because every string contains the empty string, which "
+                        + "makes the question vacuous rather than interesting. Case: %s", why)
+                .isTrue();
+    }
+
+    @ParameterizedTest(name = "a credential that is {1} is rejected by the setter too")
+    @MethodSource("malformedCredentialValues")
+    @DisplayName("rejects every malformed credential at the setter, leaving the held value untouched")
+    void rejectsEveryMalformedCredentialAtTheSetter(final String credential, final String why) {
+        final UserSecurity user = seededUser(0);
+        final String held = user.getPasswordHash();
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the setter is the credential rotation path, so it must enforce the same rule as "
+                        + "construction. Rejected because %s", why)
+                .isThrownBy(() -> user.setPasswordHash(credential))
+                .withMessageContaining("sec_usr_pwd");
+        assertThat(user.getPasswordHash())
+                .as("and a rejected rotation must leave the previous digest in place: a half applied "
+                        + "credential change would lock the user out. User: %s", user.getSecUsrId())
+                .isEqualTo(held);
+    }
+
+    @ParameterizedTest(name = "a digest with the {0} version tag is accepted")
+    @ValueSource(strings = {"a", "b", "y"})
+    @DisplayName("accepts all three version tags the verifier accepts, and no others")
+    void acceptsExactlyTheVersionTagsTheVerifierAccepts(final String versionTag) {
+        final String digest = syntheticHash(1).replaceFirst("^\\$2.", "\\$2" + versionTag);
+
+        assertThat(digest).hasSize(BCRYPT_HASH_WIDTH).matches(BCRYPT_SHAPE);
+        assertThatCode(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", digest, UserType.USER))
+                .as("BCryptPasswordEncoder.BCryptVersion of spring-security-crypto 6.5.8 declares "
+                        + "exactly three constants, for the 2a, 2y and 2b tags, and "
+                        + "BCrypt.gensalt(String, int, SecureRandom) rejects any other third character "
+                        + "with IllegalArgumentException(\"Invalid prefix\"). Accepting exactly that set "
+                        + "is what makes the invariant correct rather than merely conventional")
+                .doesNotThrowAnyException();
+        assertThat(new UserSecurity("STDUSR01", "FIRST", "LAST", digest, UserType.USER)
+                .getPasswordHash())
+                .as("and the accepted digest is stored byte for byte, never padded to the column width, "
+                        + "because a padded digest fails verification - which is exactly why the column "
+                        + "is VARCHAR and not CHAR")
+                .isEqualTo(digest)
+                .hasSize(BCRYPT_HASH_WIDTH);
+    }
+
+    @Test
+    @DisplayName("rejects the historical 2x version tag, which the verifier can neither make nor check")
+    void rejectsTheHistoricalVersionTagTheVerifierCannotUse() {
+        final String tagged2x = syntheticHash(1).replaceFirst("^\\$2.", "\\$2x");
+
+        assertThat(tagged2x)
+                .as("it is the right length and the right alphabet, so only the version tag can be the "
+                        + "reason it is refused")
+                .hasSize(BCRYPT_HASH_WIDTH);
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("BCryptPasswordEncoder.BCRYPT_PATTERN admits only 2a, 2y and 2b, so a 2x digest "
+                        + "could never authenticate anybody. Storing one would store an unusable "
+                        + "credential and would look like valid data to every reader of the table")
+                .isThrownBy(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", tagged2x, UserType.USER))
+                .withMessageContaining("2a, 2b or 2y");
+    }
+
+    @Test
+    @DisplayName("rejects a 59 and a 61 character credential, on both the constructor and the setter")
+    void rejectsCredentialsOnEitherSideOfTheHashWidth() {
         final String wellFormed = syntheticHash(1);
         final String oneShort = wellFormed.substring(0, BCRYPT_HASH_WIDTH - 1);
         final String oneLong = wellFormed + "0";
@@ -1841,17 +2271,29 @@ final class UserSecurityTest {
         assertThat(BCRYPT_SHAPE.matcher(oneLong).matches())
                 .as("61 characters is one too many, and would be rejected by a VARCHAR(60) column")
                 .isFalse();
-        assertThat(new UserSecurity("USER0001", "FIRST", "LAST", oneLong, UserType.USER).getPasswordHash())
-                .as("the entity still carries it verbatim: detecting a malformed hash belongs to the "
-                        + "column width and to the encoder, not to a data holder")
-                .isEqualTo(oneLong);
+
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("the short case is the one a column width can never catch: VARCHAR(60) accepts 59 "
+                        + "characters happily, so leaving this to the schema would store a digest that "
+                        + "silently fails every verification attempt")
+                .isThrownBy(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", oneShort, UserType.USER))
+                .withMessageContaining("exactly " + BCRYPT_HASH_WIDTH + " characters")
+                .withMessageContaining(String.valueOf(BCRYPT_HASH_WIDTH - 1));
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("and the long case is caught here rather than at the column, so it fails before a "
+                        + "statement is built rather than as a driver level truncation error")
+                .isThrownBy(() -> new UserSecurity("STDUSR01", "FIRST", "LAST", oneLong, UserType.USER))
+                .withMessageContaining(String.valueOf(BCRYPT_HASH_WIDTH + 1));
     }
 
     @ParameterizedTest(name = "the accessor pair for {0} round trips without normalising")
-    @ValueSource(strings = {"secUsrId", "secUsrFname", "secUsrLname", "passwordHash"})
-    @DisplayName("round trips every character member through its setter without altering the value")
-    void everyCharacterMemberRoundTripsUnaltered(final String member) throws Exception {
-        final String awkward = "  MiXeD  ";
+    @ValueSource(strings = {"secUsrId", "secUsrFname", "secUsrLname"})
+    @DisplayName("round trips every fixed width member through its setter without altering the value")
+    void everyFixedWidthMemberRoundTripsUnaltered(final String member) throws Exception {
+        // The value must be awkward - leading and trailing spaces, mixed case - and must also fit the
+        // member's own picture clause, because a value the record cannot hold is refused rather than
+        // round tripped. PIC X(08) admits eight characters and PIC X(20) admits twenty.
+        final String awkward = "secUsrId".equals(member) ? " MiXeD  " : "  MiXeD  ";
         final UserSecurity user = seededUser(0);
         final String setterName = "set" + Character.toUpperCase(member.charAt(0)) + member.substring(1);
         final String getterName = "get" + Character.toUpperCase(member.charAt(0)) + member.substring(1);
@@ -1863,6 +2305,53 @@ final class UserSecurityTest {
                 .as("no accessor trims, folds case or normalises: trimming is a presentation concern "
                         + "belonging to the DTO layer. Member: %s", member)
                 .isEqualTo(awkward);
+    }
+
+    /**
+     * The credential is excluded from the source above and asserted here instead.
+     *
+     * <p>An awkwardly padded, mixed case value is exactly what the credential guard now refuses, so
+     * feeding it through the shared round trip would have asserted that the guard does not exist. The
+     * property under test is unchanged - a value that passes the guard is stored byte for byte, with no
+     * trimming and no case folding - so it is asserted with a value the guard admits.
+     */
+    @Test
+    @DisplayName("round trips the credential through its setter without trimming or folding its case")
+    void theCredentialRoundTripsUnalteredWhenItIsWellFormed() {
+        final UserSecurity user = seededUser(0);
+        final String replacement = syntheticHash(7);
+
+        user.setPasswordHash(replacement);
+
+        assertThat(user.getPasswordHash())
+                .as("normalising a hash would invalidate it: the radix 64 alphabet is case significant "
+                        + "and the trailing characters of a digest are as meaningful as the leading ones, "
+                        + "so trimming or folding would silently produce a credential that verifies "
+                        + "against nothing")
+                .isEqualTo(replacement)
+                .hasSize(BCRYPT_HASH_WIDTH);
+    }
+
+    @Test
+    @DisplayName("round trips a well formed credential through its setter without altering the value")
+    void theCredentialRoundTripsUnalteredWhenItSatisfiesTheInvariant() {
+        final UserSecurity user = seededUser(0);
+        final String rotated = syntheticHash(42);
+
+        assertThat(rotated)
+                .as("the rotation target must itself satisfy the invariant, or the assertion would be "
+                        + "about the guard rather than about normalisation")
+                .isNotEqualTo(user.getPasswordHash())
+                .matches(BCRYPT_SHAPE);
+
+        user.setPasswordHash(rotated);
+
+        assertThat(user.getPasswordHash())
+                .as("the guard rejects or admits; it never repairs. An admitted digest is stored byte "
+                        + "for byte, untrimmed, unpadded and unfolded, because every one of those "
+                        + "operations produces a value the verifier would refuse. User: %s",
+                        user.getSecUsrId())
+                .isEqualTo(rotated);
     }
 
     @Test
@@ -1878,20 +2367,15 @@ final class UserSecurityTest {
                 .isEqualTo(UserType.ADMIN);
         assertThat(standard.getSecUsrType()).isEqualTo(UserType.USER);
 
-        standard.setSecUsrType(null);
+        assertThatExceptionOfType(IllegalArgumentException.class)
+                .as("and that one remaining value outside the domain is refused rather than carried to "
+                        + "flush, so the failure names the property at the call site that set it")
+                .isThrownBy(() -> standard.setSecUsrType(null))
+                .withMessageContaining("secUsrType");
         assertThat(standard.getSecUsrType())
-                .as("a null is carried and refused by the NOT NULL column on flush, never substituted")
-                .isNull();
+                .as("a refused assignment must leave the previous value in place rather than clearing it")
+                .isEqualTo(UserType.USER);
     }
-
-    // ==================================================================
-    // Movement 7 - schema and ordering context. What the entity must
-    // NOT take on: the check constraint whose SQL is Not available, the
-    // page size that belongs to the DTO, and the self delete guard the
-    // source deliberately lacks.
-    // Source: app/csd/CARDDEMO.CSD:L1-L88, app/cbl/COUSR00C.cbl:L57,
-    //         app/cbl/COUSR03C.cbl, app/cbl/COSGN00C.cbl:L132 @ 7756d89
-    // ==================================================================
 
     @Test
     @DisplayName("the converter's closed domain is the enforceable Java side of the check constraint")
@@ -1918,11 +2402,9 @@ final class UserSecurityTest {
         }
 
         assertThat(accepted)
-                .as("V1__create_schema.sql is planned to carry a CHECK constraint restricting "
-                        + "sec_usr_type to 'A' or 'U' - one of five check constraints in that migration. "
-                        + "The migration has no planned children in this run, so the SQL text itself is "
-                        + "Not available and none is invented here. What IS assertable is the converter's "
-                        + "own domain, which admits exactly the same two codes and therefore enforces the "
+                .as("ck_user_security_type restricts sec_usr_type to 'A' or 'U' in the schema. This is "
+                        + "a pure JVM test that loads no migration, so what it asserts is the converter's "
+                        + "own domain: it admits exactly the same two codes and therefore enforces the "
                         + "same rule on the read path even where the constraint is absent or was written "
                         + "around")
                 .containsExactlyInAnyOrder(ADMIN_CODE, USER_CODE);
@@ -1983,8 +2465,8 @@ final class UserSecurityTest {
     }
 
     @Test
-    @DisplayName("declares exactly the ten accessors and the three Object overrides, and nothing else")
-    void declaresOnlyAccessorsAndTheObjectOverrides() {
+    @DisplayName("declares the ten accessors, the three Object overrides and the credential guard")
+    void declaresOnlyAccessorsAndTheObjectOverrides() throws NoSuchMethodException {
         final List<String> methodNames = Arrays.stream(UserSecurity.class.getDeclaredMethods())
                 .filter(method -> !method.isSynthetic())
                 .map(Method::getName)
@@ -1998,7 +2480,33 @@ final class UserSecurityTest {
                         + "preserved deliberately rather than repaired - the decision belongs to the "
                         + "service tier and is asserted there, not invented here. There is no "
                         + "authenticate, matches, verify or encode method. And there is no accessor for "
-                        + "the named filler")
+                        + "the named filler. The only four members beyond the accessors and the Object "
+                        + "overrides are the three boundary guards - the credential invariant, the fixed "
+                        + "width check and the user type check - and the write callback that asserts the "
+                        + "first of them. All four are non public, all four are static except the "
+                        + "callback, and none carries a business rule: each refuses only a value the "
+                        + "80 byte record layout at app/cpy/CSUSR01Y.cpy:L18-L22 cannot represent")
+                .containsExactlyInAnyOrder(
+                        "getSecUsrId", "setSecUsrId",
+                        "getSecUsrFname", "setSecUsrFname",
+                        "getSecUsrLname", "setSecUsrLname",
+                        "getPasswordHash", "setPasswordHash",
+                        "getSecUsrType", "setSecUsrType",
+                        "equals", "hashCode", "toString",
+                        "requireBcryptStrength10Digest", "requireWidth", "requireUserType",
+                        "assertCredentialInvariantBeforeWrite");
+        assertThat(methodNames)
+                .as("two accessors per modelled member, the three Object overrides, and the four non "
+                        + "public boundary guard members")
+                .hasSize(MODELLED_MEMBER_COUNT * 2 + 3 + NON_PUBLIC_GUARD_MEMBER_COUNT);
+
+        assertThat(Arrays.stream(UserSecurity.class.getDeclaredMethods())
+                .filter(method -> !method.isSynthetic())
+                .filter(method -> Modifier.isPublic(method.getModifiers()))
+                .map(Method::getName)
+                .toList())
+                .as("and the public surface is unchanged by the invariants: all four guard members are "
+                        + "private, so nothing outside the entity gained a way to call them")
                 .containsExactlyInAnyOrder(
                         "getSecUsrId", "setSecUsrId",
                         "getSecUsrFname", "setSecUsrFname",
@@ -2006,17 +2514,14 @@ final class UserSecurityTest {
                         "getPasswordHash", "setPasswordHash",
                         "getSecUsrType", "setSecUsrType",
                         "equals", "hashCode", "toString");
-        assertThat(methodNames)
-                .as("two accessors per modelled member, plus the three Object overrides")
-                .hasSize(MODELLED_MEMBER_COUNT * 2 + 3);
     }
 
     @Test
     @DisplayName("performs no case folding of its own, unlike the sign on program it feeds")
     void performsNoCaseFoldingOfItsOwn() {
-        final String mixedCaseId = "uSeR0001";
+        final String mixedCaseId = "sTdUsR01";
         final UserSecurity user = new UserSecurity(
-                mixedCaseId, "margaret", "gold", syntheticHash(1), UserType.ADMIN);
+                mixedCaseId, "fNameaa1", "lNm1", syntheticHash(1), UserType.ADMIN);
 
         assertThat(user.getSecUsrId())
                 .as("app/cbl/COSGN00C.cbl:L132 upper cases the identifier and :L135 upper cases the "
@@ -2026,8 +2531,8 @@ final class UserSecurityTest {
                         + "stored data on every load and would make the primary key ambiguous")
                 .isEqualTo(mixedCaseId)
                 .isNotEqualTo(mixedCaseId.toUpperCase(Locale.ROOT));
-        assertThat(user.getSecUsrFname()).isEqualTo("margaret");
-        assertThat(user.getSecUsrLname()).isEqualTo("gold");
+        assertThat(user.getSecUsrFname()).isEqualTo("fNameaa1");
+        assertThat(user.getSecUsrLname()).isEqualTo("lNm1");
     }
 
     @Test
@@ -2050,8 +2555,11 @@ final class UserSecurityTest {
 
     // ==================================================================
     // Movement 8 - the ten seeded users, and the fixture that does not
-    // exist. Names and types are public record; the shared plaintext is
-    // not, and never appears here in any form.
+    // exist. Identifiers and names are seeded identities and are NOT
+    // reproduced: the fixtures below are synthetic stand-ins carrying the
+    // structure only. The type bytes and the aggregate five-A/five-U split
+    // are structural and are asserted. The shared plaintext never appears
+    // here in any form.
     // Source: app/jcl/DUSRSECJ.jcl:L32-L48 (IEBGENER inline SYSUT1),
     //         app/catlg/LISTCAT.txt:L3888 @ 7756d89
     // ==================================================================
@@ -2174,16 +2682,12 @@ final class UserSecurityTest {
                 .as("nor under the alternative spelling")
                 .isNull();
         assertThat(UserSecurityTest.class.getResource("/USRSEC.PS"))
-                .as("and app/data/EBCDIC/USRSEC.PS is explicitly out of scope: no codepage conversion "
-                        + "is performed anywhere in this migration")
+                .as("and app/data/EBCDIC/AWS.M2.CARDDEMO.USRSEC.PS is explicitly out of scope: no "
+                        + "codepage conversion is performed anywhere in this migration. Note the member "
+                        + "name is fully qualified with the AWS.M2.CARDDEMO high level qualifiers - "
+                        + "there is no bare USRSEC.PS in that directory")
                 .isNull();
     }
-
-    // ==================================================================
-    // Argument providers. Pure functions over the constants above: no
-    // wall clock, no locale, no random source and no shared mutable
-    // state, so every run enumerates the same cases in the same order.
-    // ==================================================================
 
     /**
      * Every internal name that must not appear in the compiled entity or its nested converter.
@@ -2195,12 +2699,19 @@ final class UserSecurityTest {
     }
 
     /**
-     * The printable ASCII range with the two copybook codes removed.
+     * The other ten persistence entities in this package, as simple names.
      *
-     * <p>Runs from {@code '!'} (0x21) to {@code '~'} (0x7E) inclusive, which is 94 characters, less
-     * {@code 'A'} and {@code 'U'} - so 92 rejection cases. Space and the control characters are excluded
-     * because {@link UserSecurity.UserTypeConverter#convertToEntityAttribute(String)} maps a
-     * whitespace-only value to {@code null} by design and that branch is asserted separately.
+     * <p>Supplied as names rather than as class literals so that the consuming test resolves each one by
+     * reflection and therefore also proves the class is present under the expected fully qualified name.
+     *
+     * @return one argument per sibling entity, in declaration order
+     */
+    private static Stream<String> siblingEntityNames() {
+        return SIBLING_ENTITY_NAMES.stream();
+    }
+
+    /**
+     * The printable ASCII range with the two copybook codes removed.
      *
      * @return one argument per printable code outside the copybook's two-value domain
      */
@@ -2217,11 +2728,6 @@ final class UserSecurityTest {
 
     /**
      * Values that must never satisfy {@link #BCRYPT_SHAPE}, each paired with the reason it fails.
-     *
-     * <p>Built by deforming a synthetic well-formed hash rather than by writing candidate hashes out,
-     * so that no literal in this provider could ever be mistaken for real credential material. The
-     * reason string is carried into the assertion description, so a failure names the defect rather
-     * than printing the offending value on its own.
      *
      * @return {@code (candidate, why)} pairs covering width, version, cost and alphabet defects
      */
@@ -2250,25 +2756,6 @@ final class UserSecurityTest {
                                 + "every real hash to exactly this kind of garbage"));
     }
 
-    /**
-     * Credential values of assorted widths that the entity must carry verbatim.
-     *
-     * <p>Deliberately includes values the credential column would reject on flush: the point of the
-     * consuming test is that rejection happens at the column and at the encoder, not in a setter.
-     *
-     * @return {@code (candidate, expectedLength)} pairs spanning empty, short, exact and over-long
-     */
-    private static Stream<Arguments> credentialBoundaryValues() {
-        final String wellFormed = syntheticHash(1);
-        return Stream.of(
-                Arguments.of("", 0),
-                Arguments.of(" ", 1),
-                Arguments.of(BCRYPT_PREFIX, BCRYPT_PREFIX.length()),
-                Arguments.of(wellFormed.substring(0, BCRYPT_HASH_WIDTH - 1), BCRYPT_HASH_WIDTH - 1),
-                Arguments.of(wellFormed, BCRYPT_HASH_WIDTH),
-                Arguments.of(wellFormed + "0", BCRYPT_HASH_WIDTH + 1));
-    }
-
     // ==================================================================
     // Helpers. Reflection and class-file inspection, kept in one place
     // so that every structural assertion above reads as a statement
@@ -2277,10 +2764,6 @@ final class UserSecurityTest {
 
     /**
      * The entity's persistent members: every declared field that is neither static nor synthetic.
-     *
-     * <p>Static fields are the PIC width constants and synthetic fields are compiler artefacts such as
-     * the {@code $assertionsDisabled} flag; neither is mapped, and neither belongs in a count of
-     * modelled members.
      *
      * @return the persistent fields of {@link UserSecurity} in declaration order
      */
@@ -2293,10 +2776,6 @@ final class UserSecurityTest {
 
     /**
      * The {@code @Column} mapping of one named persistent member.
-     *
-     * <p>Resolves through {@link #persistentFields()} rather than {@code getDeclaredField}, so that a
-     * renamed or removed member fails as a missing-member assertion naming the member, instead of
-     * forcing every caller to declare {@code throws NoSuchFieldException}.
      *
      * @param member the Java property name, for example {@code secUsrId}
      * @return the column mapping declared on that member
@@ -2324,10 +2803,6 @@ final class UserSecurityTest {
     /**
      * The simple names of the annotations declared directly on one program element.
      *
-     * <p>Uses {@code getDeclaredAnnotations}, so an annotation inherited from a superclass is not
-     * reported - which is what makes "this entity declares exactly these annotations" a statement
-     * about this entity.
-     *
      * @param element a class, field, method or constructor
      * @return the declared annotation simple names, in reflection order
      */
@@ -2338,12 +2813,8 @@ final class UserSecurityTest {
     }
 
     /**
-     * Every annotation declared anywhere on a type: on the type itself, and on each of its declared
-     * fields, methods and constructors.
-     *
-     * <p>The whole-surface sweep is what lets a single assertion rule out a lifecycle callback, an
-     * association, an inheritance strategy and a bean validation constraint at once, wherever the
-     * annotation might have been placed.
+     * Every annotation declared anywhere on a type: on the type itself, and on each of its declared fields,
+     * methods and constructors.
      *
      * @param type the type to sweep
      * @return every declared annotation found on that type's own surface
@@ -2365,12 +2836,6 @@ final class UserSecurityTest {
     /**
      * One compiled class file, read from the test classpath as text.
      *
-     * <p>Decoded as ISO-8859-1 because that charset maps each of the 256 byte values to a distinct
-     * character with no replacement and no failure, which makes an ASCII substring search over the
-     * result exact. The class file is the authority the source text cannot be: an import may be absent
-     * while a fully qualified reference in a method body is not, and comments do not survive
-     * compilation at all - so a Javadoc mention of a forbidden package can never trip the scan.
-     *
      * @param simpleName the class file's simple name, nested classes written as {@code Outer$Nested}
      * @return the class file's bytes, one character per byte
      * @throws IOException if the class file cannot be read
@@ -2380,7 +2845,7 @@ final class UserSecurityTest {
             assertThat(compiled)
                     .as("no compiled class file %s.class sits beside "
                             + "com.cardemo.model.entity.UserSecurity on the test classpath; run "
-                            + "mvn -B test-compile first", simpleName)
+                            + "./mvnw -B test-compile first", simpleName)
                     .isNotNull();
             return new String(compiled.readAllBytes(), StandardCharsets.ISO_8859_1);
         }
@@ -2388,16 +2853,6 @@ final class UserSecurityTest {
 
     /**
      * The string literals embedded in one compiled class file.
-     *
-     * <p>Walks the constant pool of the class file format, collecting each {@code CONSTANT_String}
-     * entry resolved through the {@code CONSTANT_Utf8} entry it points at. Only genuine string
-     * literals are returned - not member names, type descriptors or signatures - which is what makes
-     * "no literal in this class could be a credential" a precise claim rather than a coincidence of
-     * substring matching.
-     *
-     * <p>An unrecognised pool tag fails loudly with the tag and slot, so a future class file format
-     * change surfaces as an explicit failure rather than as a silently short list that would let a
-     * committed credential through.
      *
      * @param simpleName the class file's simple name, nested classes written as {@code Outer$Nested}
      * @return every string literal in that class file, in constant pool order
@@ -2461,10 +2916,6 @@ final class UserSecurityTest {
     /**
      * Whether a character may appear inside a JVM internal type name.
      *
-     * <p>Letters, digits and the underscore only. {@code $} is excluded deliberately, so a reference to
-     * a nested type reads back as the outer simple name rather than as the two joined together, and
-     * {@code ;} terminates a descriptor as it should.
-     *
      * @param character the character under test
      * @return {@code true} if the character continues an internal name
      */
@@ -2474,14 +2925,6 @@ final class UserSecurityTest {
 
     /**
      * Whether a value has the shape of the shared plaintext credential the ten seeded rows carry.
-     *
-     * <p>The predicate is width and alphabet only - exactly {@value #SOURCE_CREDENTIAL_PIC_WIDTH}
-     * characters, every one an upper-case ASCII letter - which is how the compiled entity can be
-     * scanned for a committed credential without the literal itself ever appearing in this file. Rule 1
-     * clause D names tests explicitly, so the mechanical check has to be shape-based.
-     *
-     * <p>Scoped to the entity's own constant pool. Applied to arbitrary text it would also match an
-     * eight-letter upper-case name, which is precisely why it is never applied to anything else.
      *
      * @param candidate the string literal under test, never {@code null}
      * @return {@code true} if the candidate could be an eight-character upper-case plaintext
@@ -2494,14 +2937,7 @@ final class UserSecurityTest {
     }
 
     /**
-     * A synthetic value with the shape of a BCrypt hash at the pinned strength, and the substance of
-     * none.
-     *
-     * <p>Sixty characters: the {@code $2a$10$} prefix, then a salt and digest region built from
-     * self-describing text and the supplied ordinal. It satisfies {@link #BCRYPT_SHAPE} and it is not
-     * the digest of anything, so no test in this class ever needs a real hash - which is what keeps
-     * both the plaintext and any derived credential out of the repository. No BCrypt library is used:
-     * this tier pins its dependencies and computing a hash here would add one.
+     * A synthetic value with the shape of a BCrypt hash at the pinned strength, and the substance of none.
      *
      * @param ordinal a discriminator in the range 0 to 99, so that distinct rows get distinct values
      * @return a 60-character value matching the BCrypt shape at strength 10
@@ -2523,10 +2959,9 @@ final class UserSecurityTest {
     /**
      * One of the ten seeded users, carrying its catalogued identity and a synthetic credential.
      *
-     * <p>Rows 0 to 4 are the administrators and rows 5 to 9 the standard users, in the order IEBGENER
-     * reads them from {@code app/jcl/DUSRSECJ.jcl:L35-L44}. The user class is resolved through
-     * {@link UserType#requireFromCode(char)} from {@link #SEEDED_TYPE_BYTES}, so the mapping under test
-     * is exercised rather than restated. The credential is synthetic in every case.
+     * <p>Rows 0 to 4 are the administrators and rows 5 to 9 the standard users, in the order IEBGENER reads
+     * them from {@code app/jcl/DUSRSECJ.jcl:L35-L44}. The user class resolves through
+     * {@link UserType#requireFromCode(char)} so the mapping under test is exercised rather than restated.
      *
      * @param row the zero-based seed row, 0 to 9
      * @return a transient entity mirroring that seeded row
@@ -2542,5 +2977,36 @@ final class UserSecurityTest {
                 SEEDED_LAST_NAMES.get(row),
                 syntheticHash(row + 1),
                 UserType.requireFromCode(SEEDED_TYPE_BYTES.charAt(row)));
+    }
+
+    /**
+     * An instance in the state the persistence provider materialises: every member still null.
+     *
+     * <p>Built through the no argument constructor, which is the only route to that state and is exactly
+     * how the provider reaches it. The constructor is {@code protected} and this test lives in a
+     * different package, so reflection is required - and that requirement is itself part of the contract
+     * being relied on, because it is what stops application code creating a user with five null members
+     * by accident.
+     *
+     * <p>This helper exists because the all columns constructor can no longer produce this state. It
+     * enforces the credential invariant, so {@code new UserSecurity(null, null, null, null, null)} now
+     * throws by design - which is the point of the invariant. The tests that genuinely need an
+     * unpopulated instance are the ones asserting that rendering and hashing survive it, and they need
+     * the provider's route rather than the application's.
+     *
+     * @return a transient instance with all five members null
+     * @throws AssertionError if the no argument constructor is missing or is not reachable reflectively,
+     *                        either of which would break provider materialisation itself
+     */
+    private static UserSecurity providerMaterialisedUser() {
+        try {
+            final Constructor<UserSecurity> noArg = UserSecurity.class.getDeclaredConstructor();
+            noArg.setAccessible(true);
+            return noArg.newInstance();
+        } catch (ReflectiveOperationException cause) {
+            throw new AssertionError("the JPA specification requires a reachable no argument "
+                    + "constructor, and the provider materialises every row through it, so its absence "
+                    + "would break persistence outright", cause);
+        }
     }
 }

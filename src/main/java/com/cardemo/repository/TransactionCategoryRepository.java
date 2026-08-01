@@ -36,8 +36,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 /**
- * Transaction category reference data access: the relational replacement for the VSAM access verbs
- * over the KSDS cluster {@code AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}.
+ * Transaction category reference data access: the relational replacement for the VSAM access verbs over the
+ * KSDS cluster {@code AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS}.
  *
  * <p><b>What it does.</b> Resolves a transaction type and category pair — a two character type code
  * followed by a four digit category code, six bytes together — to the fifty character description
@@ -180,9 +180,9 @@ import org.springframework.stereotype.Repository;
  * verified one. This interface names no column and declares no query, so it constrains nothing
  * beyond what the entity and identifier already fix.
  *
- * <p><b>Medium: the three Flyway migrations are "Not available" at the time this interface was
- * authored.</b> See <i>Information gaps</i> below for the full disclosure and for the contract they
- * must satisfy.
+ * <p><b>Medium, narrowed: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are
+ * "Not available".</b> {@code V1__create_schema.sql} is present and declares this table. See
+ * <i>Information gaps</i> below for the full disclosure and for the contract {@code V1} declares.
  *
  * <p><b>Low: this is a batch only dataset, so it is granted no online surface.</b> Developed in the
  * next section; the consequence is an authorisation boundary, not a defect.
@@ -214,9 +214,13 @@ import org.springframework.stereotype.Repository;
  *       record never had would widen the attack surface beyond the legacy system's own, which is
  *       the concrete reading of Rule 1 clause D, "principle of least privilege for
  *       tokens/credentials/config", at the persistence boundary.</li>
- *   <li>The integration surface is correspondingly the batch tier: this repository is exercised
+ *   <li>The integration surface is correspondingly the batch tier: this repository is to be exercised
  *       through the transaction report job against a Testcontainers PostgreSQL 16 instance, not
- *       through the REST surface, because the REST surface has no path that reaches it.</li>
+ *       through the REST surface, because the REST surface has no path that reaches it.
+ *       <strong>Not available, measured 1 August 2026:</strong> neither
+ *       {@code com.cardemo.batch.jobs.TransactionReportJob} nor
+ *       {@code src/test/java/com/cardemo/integration} exists, so no tier exercises this repository at
+ *       all today - the sentence states the surface the tests are to take.</li>
  * </ul>
  *
  * <h2>Method surface: three inherited operations, nothing declared</h2>
@@ -419,7 +423,7 @@ import org.springframework.stereotype.Repository;
  *       {@code spring.batch.jdbc.initialize-schema}, never by a fourth Flyway migration and never as
  *       extra tables in {@code V1}.</li>
  *   <li><b>HikariCP connection pool tuning is explicitly out of scope</b> and is recorded as a
- *       residual risk in {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The defaults
+ *       residual risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The defaults
  *       are used as shipped. Stating the gap is the honest discharge of clause A's "justify
  *       tradeoffs only when needed"; inventing pool figures with no measured workload behind them
  *       would be the dishonest one.</li>
@@ -427,27 +431,34 @@ import org.springframework.stereotype.Repository;
  *
  * <h2>How to build and test</h2>
  *
- * <p>Build with {@code mvn -B clean compile} on the pinned toolchain, OpenJDK 25 with Maven 3.9.11,
+ * <p>Build with {@code ./mvnw -B clean compile} on the pinned toolchain, OpenJDK 25 with Maven 3.9.11,
  * against {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}. The compiler runs
- * {@code -Xlint:all -Werror} with {@code failOnWarning}, so an unused import in this file is a build
- * failure rather than a warning; the four imports above are each load bearing — two for the type
- * arguments, one for the supertype and one for the annotation. Unit tests run at
- * {@code mvn -B clean test}; the repository integration tier runs at {@code mvn -B verify} under
+ * {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning in a category {@code javac} 25
+ * publishes is a build failure rather than a warning. An unused import is not one of those categories, so
+ * the four imports above being each load bearing — two for the type arguments, one for the supertype and
+ * one for the annotation — is a review guarantee rather than a compiler one. Unit tests run at
+ * {@code ./mvnw -B clean test}; the repository integration tier runs at {@code ./mvnw -B verify} under
  * {@code src/test/java/com/cardemo/integration/repository}, against a Testcontainers PostgreSQL 16
- * container, and asserts the seeded row count of exactly 18 together with a six byte identifier
+ * container, and to assert the seeded row count of exactly 18 together with a six byte identifier
  * round trip through {@code equals} and {@code hashCode}. Testcontainers is pinned to 2.0.3 by
  * overriding the Boot managed version property rather than by importing a second bill of materials,
  * and only the prefixed artefact identifiers resolve at that version.
  *
- * <p><b>Verified at runtime</b> against a containerised PostgreSQL 16 seeded from
- * {@code app/data/ASCII/trancatg.txt}: the Spring Data proxy is created for this interface,
- * {@code findAll()} returns exactly 18 rows, the identifier paths {@code id.tranTypeCd} and
- * {@code id.tranCatCd} resolve in the Jakarta Persistence metamodel and sort the reference set into
- * VSAM key order, a transposed or absent pair yields an empty {@code Optional} rather than an error,
- * and {@code findById} emits
- * {@code select ... from transaction_category tc1_0 where (tc1_0.tran_cat_cd,tc1_0.tran_type_cd) in}
- * {@code ((?,?))} — a bound parameter row value predicate over both key components, touching no
- * column of the seventeen byte layout discussed in the High finding above.
+ * <p><b>Verified on 1 August 2026, and what is still owed.</b> Two things were established by execution.
+ * The schema and the mapping agree: applying {@code src/main/resources/db/migration/V1__create_schema.sql}
+ * into a throwaway schema on a PostgreSQL 16.10 instance produced 11 tables, 10 foreign keys and 5 check
+ * constraints, and bootstrapping Hibernate 6.6.42.Final over all eleven annotated entities against it with
+ * {@code hibernate.hbm2ddl.auto=validate} reported no mismatch, which covers
+ * {@code transaction_category} and this interface's two identifier components. And the reference set is
+ * the size the fixture dictates: {@code app/data/ASCII/trancatg.txt} holds exactly 18 records of 60 bytes.
+ * <b>Not available:</b> everything that needs a Spring Data proxy - that {@code findAll()} returns those 18
+ * rows through this interface, that {@code id.tranTypeCd} and {@code id.tranCatCd} sort the set into VSAM
+ * key order, that a transposed or absent pair yields an empty {@code Optional}, and that {@code findById}
+ * emits a bound-parameter row-value predicate over both key components. No repository, integration or
+ * end-to-end test tier exists and no {@code application*.yml} does either, so no proxy has ever been
+ * created. What is needed: a test bound to a Testcontainers PostgreSQL 16 instance seeded from that
+ * fixture, which would also confirm that the predicate touches no column of the seventeen byte layout
+ * discussed in the High finding above.
  *
  * <p><b>Common failure modes.</b> A startup failure naming a missing column on
  * {@code transaction_category} means the migration spelled a column differently from
@@ -468,13 +479,13 @@ import org.springframework.stereotype.Repository;
  * items are <b>Not available</b> at the time this interface was authored:
  *
  * <ol>
- *   <li><b>The three Flyway migrations are "Not available".</b> Neither
- *       {@code V1__create_schema.sql}, {@code V2__create_indexes.sql} nor
- *       {@code V3__seed_data.sql} exists yet; the directory
- *       {@code src/main/resources/db/migration} is absent. <i>What is needed:</i> those three files.
- *       Until they exist, this interface together with its entity and identifier is the normative
- *       contract that {@code V1} must satisfy, because {@code ddl-auto: validate} makes the match
- *       mandatory rather than advisory — table {@code transaction_category}, with a composite
+ *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
+ *       {@code V1__create_schema.sql} <b>is present</b> and declares
+ *       {@code CREATE TABLE transaction_category}; {@code V2__create_indexes.sql} and
+ *       {@code V3__seed_data.sql} do not exist. <i>What is needed:</i> those two remaining files.
+ *       Because {@code ddl-auto: validate} makes the match mandatory rather than advisory, the
+ *       contract restated here is what {@code V1} declares and what this interface together with its
+ *       entity and identifier is typed over — table {@code transaction_category}, with a composite
  *       primary key over {@code (tran_type_cd, tran_cat_cd)} <b>in that component order</b>,
  *       mirroring bytes 1 to 2 then bytes 3 to 6 of the copybook key, and the column
  *       {@code tran_cat_type_desc CHAR(50)} not null. The SQL types of the two key columns must be

@@ -35,19 +35,40 @@ import com.cardemo.model.enums.UserType;
 
 /**
  * The option payload of the two CardDemo menu screens: either the ten main-menu options transcribed from
- * {@code app/cpy/COMEN02Y.cpy} or the four admin-menu options transcribed from
- * {@code app/cpy/COADM02Y.cpy}, together with the count that bounds them.
+ * {@code app/cpy/COMEN02Y.cpy} or the four admin-menu options transcribed from {@code app/cpy/COADM02Y.cpy},
+ * together with the count that bounds them.
  *
- * <p>One response type serves both screens because the two tables were consumed by two structurally
- * parallel programs and by nothing else in the corpus: {@code app/cbl/COMEN01C.cbl:51} states
- * {@code COPY COMEN02Y} and {@code app/cbl/COADM01C.cbl:51} states {@code COPY COADM02Y}. The
- * {@link MenuType} discriminator keeps the two apart, so a consumer never has to infer which menu a
- * payload describes.</p>
+ * <p>One response type serves both screens because the two tables were consumed by two structurally parallel
+ * programs and by nothing else in the corpus: {@code app/cbl/COMEN01C.cbl:51} states {@code COPY COMEN02Y} and
+ * {@code app/cbl/COADM01C.cbl:51} states {@code COPY COADM02Y}. The {@link MenuType} discriminator keeps the
+ * two apart, so a consumer never has to infer which menu a payload describes.
  *
  * <p>This is a pure data holder. It performs no I/O, reads no configuration, logs nothing, and depends on
- * exactly one other CardDemo type, the {@code UserType} enumeration that gives the main-menu gate byte a
- * name. It carries no personally identifiable information and no credential material: a menu option is a
- * number, a caption, a program name and, on the main menu only, a one-character eligibility code.</p>
+ * exactly one other CardDemo type, the {@code UserType} enumeration that gives the main-menu gate byte a name.
+ * It carries no personally identifiable information and no credential material: a menu option is a number, a
+ * caption, a program name and, on the main menu only, a one-character eligibility code.
+ *
+ * <h2>Two different contracts live here, and conflating them loses fields</h2>
+ *
+ * <p>The option records transcribe the two {@code WORKING-STORAGE} <em>tables</em>. {@link MenuScreen}
+ * transcribes the two symbolic <em>maps</em>. These are not the same contract and neither substitutes for
+ * the other:</p>
+ *
+ * <ul>
+ *   <li><strong>The tables</strong> - {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} - hold
+ *       the option number, the {@code PIC X(35)} caption, the {@code PIC X(08)} program name and, on the
+ *       main menu only, the one-character eligibility code. They have no header, no error line and no
+ *       selection field, because they are data the program owns rather than a screen the terminal sees.</li>
+ *   <li><strong>The maps</strong> - {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} -
+ *       each declare <strong>twenty</strong> input fields: six recurring header fields, twelve
+ *       {@code PIC X(40)} caption slots, a {@code PIC X(2)} selection field and a {@code PIC X(78)} error
+ *       line. The slot is wider than the caption because {@code app/cbl/COMEN01C.cbl:243-246} prefixes the
+ *       option number and a {@code '. '} separator before moving the caption in.</li>
+ * </ul>
+ *
+ * <p>Representing only the tables therefore left all twenty map fields unrepresented, which is why
+ * {@link MenuScreen} exists. It is additive: nothing about the option records changed, and a caller that
+ * only needs the option list is unaffected.</p>
  *
  * <h2>The two source tables, quoted</h2>
  *
@@ -216,9 +237,9 @@ import com.cardemo.model.enums.UserType;
  *
  * <p>No configuration, no property and no environment variable influences this type. Its only defaults are
  * the two canonical tables, whose contents are fixed by the copybooks. It is built by the module's Maven
- * build with {@code mvn -B clean compile} under {@code -Xlint:all -Werror}, and its behaviour is asserted
+ * build with {@code ./mvnw -B clean compile} under {@code -Xlint:all -Werror}, and its behaviour is asserted
  * by the unit tests that belong in {@code src/test/java/com/cardemo/unit/model}, run with
- * {@code mvn -B test}. Those tests are the place to pin the two option counts, the fourteen caption and
+ * {@code ./mvnw -B test}. Those tests are the place to pin the two option counts, the fourteen caption and
  * program literals, the entry-shape asymmetry and the unmodifiability of {@link #getOptions()}.</p>
  *
  * <p>Common failure modes, every one of them reported at construction and every message naming the
@@ -240,18 +261,14 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * The declared width of an option caption, from {@code CDEMO-MENU-OPT-NAME PIC X(35)} at
      * {@code app/cpy/COMEN02Y.cpy:90} and {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at
      * {@code app/cpy/COADM02Y.cpy:47}.
-     *
-     * <p>Every caption in the canonical tables is exactly this long, blank-padded. The value is published
-     * so that the width contract is assertable rather than merely documented; it is not enforced as a
-     * validation rule, for the reason given on {@link MainMenuOption#optionName()}.</p>
      */
     public static final int OPTION_NAME_LENGTH = 35;
 
     /**
-     * The declared width of an option's target program name, from
-     * {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at {@code app/cpy/COMEN02Y.cpy:91} and
-     * {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at {@code app/cpy/COADM02Y.cpy:48}. All fourteen
-     * transcribed program names are exactly this long, so none is padded.
+     * The declared width of an option's target program name, from {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at
+     * {@code app/cpy/COMEN02Y.cpy:91} and {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
+     * {@code app/cpy/COADM02Y.cpy:48}. All fourteen transcribed program names are exactly this long, so none is
+     * padded.
      */
     public static final int PROGRAM_NAME_LENGTH = 8;
 
@@ -266,56 +283,38 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * The width of one caption slot on the display maps, {@code OPTN001I} through {@code OPTN012I}
      * {@code PIC X(40)} in both {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY}.
-     *
-     * <p>Published alongside {@link #OPTION_NAME_LENGTH} purely so the deliberate five-byte difference
-     * between the table caption and the screen slot is visible and assertable. No value in this type is
-     * ever this wide; the slot additionally holds the two-digit option number and the two-character
-     * {@code '. '} separator that {@code app/cbl/COMEN01C.cbl:243-246} concatenates in front of the
-     * caption.</p>
      */
     public static final int SCREEN_OPTION_SLOT_LENGTH = 40;
 
     /**
      * Which of the two menus a response describes, and the two figures that describe its source table.
-     *
-     * <p>The discriminator exists so that one response type can serve both legacy screens without a
-     * consumer having to infer the menu from the element type of the option list. Each constant binds the
-     * populated option count to the declared OCCURS capacity of its table, which is what makes the
-     * distinction between the two machine-checkable instead of merely documented.</p>
      */
     public enum MenuType {
 
         /**
-         * The main menu of {@code app/cbl/COMEN01C.cbl}, whose option table is
-         * {@code app/cpy/COMEN02Y.cpy}, copied in at {@code app/cbl/COMEN01C.cbl:51}.
-         *
-         * <p>Ten options are populated, from {@code CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10} at
-         * {@code app/cpy/COMEN02Y.cpy:21}, within a declared capacity of twelve, from
-         * {@code CDEMO-MENU-OPT OCCURS 12 TIMES} at {@code app/cpy/COMEN02Y.cpy:88}. Its entries carry a
-         * user type; see {@link MainMenuOption}.</p>
+         * The main menu of {@code app/cbl/COMEN01C.cbl}, whose option table is {@code app/cpy/COMEN02Y.cpy},
+         * copied in at {@code app/cbl/COMEN01C.cbl:51}.
          */
         MAIN(10, 12),
 
         /**
          * The administrator menu of {@code app/cbl/COADM01C.cbl}, whose option table is
          * {@code app/cpy/COADM02Y.cpy}, copied in at {@code app/cbl/COADM01C.cbl:51}.
-         *
-         * <p>Four options are populated, from {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4} at
-         * {@code app/cpy/COADM02Y.cpy:20}, within a declared capacity of nine, from
-         * {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES} at {@code app/cpy/COADM02Y.cpy:45}. Its entries carry no
-         * user type at all; see {@link AdminMenuOption}.</p>
          */
         ADMIN(4, 9);
 
         /**
-         * The value of the table's {@code PIC 9(02)} count field: 10 for the main menu, 4 for the
-         * administrator menu.
+         * The value of the table's {@code PIC 9(02)} count field: 10 from {@code CDEMO-MENU-OPT-COUNT} at
+         * {@code app/cpy/COMEN02Y.cpy:21}, or 4 from {@code CDEMO-ADMIN-OPT-COUNT} at
+         * {@code app/cpy/COADM02Y.cpy:20}.
          */
         private final int populatedOptionCount;
 
         /**
-         * The subscript extent of the table's {@code OCCURS} clause: 12 for the main menu, 9 for the
-         * administrator menu.
+         * The subscript extent of the table's {@code OCCURS} clause: 12 from
+         * {@code CDEMO-MENU-OPT OCCURS 12 TIMES} at {@code app/cpy/COMEN02Y.cpy:88}, or 9 from
+         * {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES} at {@code app/cpy/COADM02Y.cpy:45}. It exceeds the populated
+         * count on both menus, so the count is what bounds a scan, never the capacity.
          */
         private final int declaredCapacity;
 
@@ -323,9 +322,9 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
          * Binds a constant to the two figures its source table declares.
          *
          * @param populatedOptionCount the value of the table's count field, transcribed from
-         *                             {@code app/cpy/COMEN02Y.cpy:21} or {@code app/cpy/COADM02Y.cpy:20}
-         * @param declaredCapacity     the extent of the table's OCCURS clause, transcribed from
-         *                             {@code app/cpy/COMEN02Y.cpy:88} or {@code app/cpy/COADM02Y.cpy:45}
+         * {@code app/cpy/COMEN02Y.cpy:21} or {@code app/cpy/COADM02Y.cpy:20}
+         * @param declaredCapacity the extent of the table's OCCURS clause, transcribed from
+         * {@code app/cpy/COMEN02Y.cpy:88} or {@code app/cpy/COADM02Y.cpy:45}
          */
         private MenuType(final int populatedOptionCount, final int declaredCapacity) {
             this.populatedOptionCount = populatedOptionCount;
@@ -333,11 +332,8 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
         }
 
         /**
-         * Returns how many options this menu's source table actually populates, which is the only valid
-         * bound on an option list.
-         *
-         * <p>This is the {@code PIC 9(02)} count field the legacy programs loop to, and the upper bound the
-         * {@link MenuResponse} constructor enforces. A pure accessor: no side effects, cannot fail.</p>
+         * Returns how many options this menu's source table actually populates, which is the only valid bound
+         * on an option list.
          *
          * @return 10 for {@link #MAIN} or 4 for {@link #ADMIN}
          */
@@ -346,14 +342,8 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
         }
 
         /**
-         * Returns the subscript extent of this menu's OCCURS clause, which is <strong>never</strong> a
-         * valid bound on an option list.
-         *
-         * <p>Published only so the difference from {@link #getPopulatedOptionCount()} is assertable: two of
-         * the twelve main subscripts and five of the nine admin subscripts address storage that no
-         * {@code VALUE} literal populates, so their contents are unpopulated and not available. Iterating
-         * to this figure would read overlay bytes that were never options. A pure accessor: no side
-         * effects, cannot fail.</p>
+         * Returns the subscript extent of this menu's OCCURS clause, which is <strong>never</strong> a valid
+         * bound on an option list.
          *
          * @return 12 for {@link #MAIN} or 9 for {@link #ADMIN}
          */
@@ -365,20 +355,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * The three sub-fields a main-menu entry and an admin-menu entry genuinely share, at identical declared
      * widths, and nothing else.
-     *
-     * <p>The hierarchy is sealed to exactly {@link MainMenuOption} and {@link AdminMenuOption} because the
-     * corpus declares exactly two option tables. It bounds the {@link MenuResponse} type parameter, so no
-     * unrelated type can be carried as a menu option.</p>
-     *
-     * <p><strong>This interface deliberately declares no user-type accessor.</strong>
-     * {@code CDEMO-MENU-OPT-USRTYPE PIC X(01)} at {@code app/cpy/COMEN02Y.cpy:92} exists only on the main
-     * entry; the admin entry at {@code app/cpy/COADM02Y.cpy:46-48} has three sub-fields and stops at its
-     * program name. Declaring the gate here would invent an admin user type, so the asymmetry is expressed
-     * as the absence of a member and the compiler enforces it: only {@link MainMenuOption} offers
-     * {@link MainMenuOption#userTypeCode()}.</p>
-     *
-     * <p>Implementations are immutable records. No member of this interface validates, computes or
-     * fails.</p>
      */
     public sealed interface MenuOption permits MainMenuOption, AdminMenuOption {
 
@@ -386,8 +362,8 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
          * Returns the option's one-based display number.
          *
          * @return the value of {@code CDEMO-MENU-OPT-NUM PIC 9(02)} at {@code app/cpy/COMEN02Y.cpy:89} or
-         *         {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} at {@code app/cpy/COADM02Y.cpy:46}, between 0 and
-         *         {@link MenuResponse#OPTION_NUMBER_MAX_VALUE}
+         * {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} at {@code app/cpy/COADM02Y.cpy:46}, between 0 and
+         * {@link MenuResponse#OPTION_NUMBER_MAX_VALUE}
          */
         int optionNumber();
 
@@ -395,61 +371,29 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
          * Returns the option's caption exactly as held, including any blank padding.
          *
          * @return the value of {@code CDEMO-MENU-OPT-NAME PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90} or
-         *         {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}, never
-         *         {@code null}
+         * {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}, never {@code null}
          */
         String optionName();
 
         /**
          * Returns the name of the COBOL program the option transferred control to.
          *
-         * @return the value of {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at
-         *         {@code app/cpy/COMEN02Y.cpy:91} or {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
-         *         {@code app/cpy/COADM02Y.cpy:48}, never {@code null}
+         * @return the value of {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at {@code app/cpy/COMEN02Y.cpy:91} or
+         * {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at {@code app/cpy/COADM02Y.cpy:48}, never {@code null}
          */
         String programName();
     }
 
     /**
-     * One main-menu entry: the four sub-fields of {@code CDEMO-MENU-OPT} at
-     * {@code app/cpy/COMEN02Y.cpy:88-92}.
+     * One main-menu entry: the four sub-fields of {@code CDEMO-MENU-OPT} at {@code app/cpy/COMEN02Y.cpy:88-92}.
      *
-     * <p>The fourth sub-field is the eligibility gate that has no admin counterpart. This type
-     * <strong>carries</strong> it and never <strong>tests</strong> it: the legacy test is a statement in
-     * the menu program, {@code IF CDEMO-USRTYP-USER AND CDEMO-MENU-OPT-USRTYPE(WS-OPTION) = 'A'} at
-     * {@code app/cbl/COMEN01C.cbl:136-137}, and its Java home is
-     * {@code com.cardemo.service.menu.MainMenuService}.</p>
-     *
-     * <p>All ten populated entries carry {@code 'U'}, so as the tables stand the gate excludes nothing.
-     * That is data, not a rule: the gate is preserved because the field is real and a future table value of
-     * {@code 'A'} must keep working exactly as the legacy test would have made it work.</p>
-     *
-     * <p><strong>Validation.</strong> Only two conditions are rejected, both at construction and both
-     * naming the offending component: a {@code null} caption or program name, and an option number outside
-     * the {@code PIC 9(02)} range 0 through {@link MenuResponse#OPTION_NUMBER_MAX_VALUE}. Nothing else is
-     * rejected - see {@link #optionName()} for why width is documented but not enforced - and no accessor
-     * can fail.</p>
-     *
-     * <p><strong>Rendering.</strong> The record's generated {@code toString} is retained deliberately,
-     * unlike {@code UserSecurityDto.UserRow} which suppresses its own: every component here is a public
-     * caption, an option number, a program name or a one-character eligibility code, so a full rendering
-     * can disclose neither personal data nor a credential.</p>
-     *
-     * @param optionName   the caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} at
-     *                     {@code app/cpy/COMEN02Y.cpy:90}; the canonical table holds it blank-padded to
-     *                     {@link MenuResponse#OPTION_NAME_LENGTH} characters exactly as the {@code VALUE}
-     *                     literal declares it, and this type neither pads nor trims what it is given; must
-     *                     not be {@code null}, may be empty
+     * @param optionName the caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90}.
      * @param optionNumber the display number, {@code CDEMO-MENU-OPT-NUM PIC 9(02)} at
-     *                     {@code app/cpy/COMEN02Y.cpy:89}; 1 through 10 in the canonical table, and any
-     *                     value the two-digit field can represent is accepted
-     * @param programName  the target program, {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at
-     *                     {@code app/cpy/COMEN02Y.cpy:91}; all ten canonical values are exactly
-     *                     {@link MenuResponse#PROGRAM_NAME_LENGTH} characters; must not be {@code null}
+     * {@code app/cpy/COMEN02Y.cpy:89}.
+     * @param programName the target program, {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at
+     * {@code app/cpy/COMEN02Y.cpy:91}.
      * @param userTypeCode the eligibility gate, {@code CDEMO-MENU-OPT-USRTYPE PIC X(01)} at
-     *                     {@code app/cpy/COMEN02Y.cpy:92}; a single character because the field is a single
-     *                     byte that is always present, carried verbatim so a value outside the two-code
-     *                     domain round-trips rather than failing, and never tested here
+     * {@code app/cpy/COMEN02Y.cpy:92}.
      */
     public record MainMenuOption(
             int optionNumber,
@@ -458,34 +402,22 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
             char userTypeCode) implements MenuOption {
 
         /**
-         * Rejects the only two states the source cannot produce, naming the offending component.
+         * Rejects the three states the source cannot produce, naming the offending component.
          */
         public MainMenuOption {
             requireOptionNumberInRange(optionNumber, "optionNumber");
             requireNonNullField(optionName, "optionName");
+            requireWidthWithinLimit(optionName, OPTION_NAME_LENGTH, "optionName", "PIC X(35)");
             requireNonNullField(programName, "programName");
+            requireWidthWithinLimit(programName, PROGRAM_NAME_LENGTH, "programName", "PIC X(08)");
         }
 
         /**
          * Returns the named user class this option is gated on, or {@code null} when the carried code is
          * outside the domain the copybook defines.
          *
-         * <p>Derived from {@link #userTypeCode()} through {@code UserType.fromCode(char)}, whose two
-         * constants transcribe the condition names {@code CDEMO-USRTYP-ADMIN VALUE 'A'} and
-         * {@code CDEMO-USRTYP-USER VALUE 'U'} at {@code app/cpy/COCOM01Y.cpy:27-28} - the same one-byte
-         * domain this table's gate byte is drawn from.</p>
-         *
-         * <p>An unrecognised code yields {@code null} rather than an exception, so a table value the
-         * copybook never anticipated stays readable through {@link #userTypeCode()} instead of making the
-         * whole option unusable. This deliberately contrasts with {@code UserSecurityDto.UserRow}, which
-         * projects a <em>stored</em> type byte of unbounded provenance and therefore refuses to name it at
-         * all; here the byte is a compile-time literal from a frozen table, so naming it is safe.</p>
-         *
-         * <p>A pure derivation: no side effects, no state, cannot fail, and the result depends only on
-         * {@link #userTypeCode()}.</p>
-         *
          * @return {@code UserType.ADMIN} for {@code 'A'}, {@code UserType.USER} for {@code 'U'}, or
-         *         {@code null} for any other character
+         * {@code null} for any other character
          */
         public UserType userType() {
             return UserType.fromCode(this.userTypeCode).orElse(null);
@@ -496,28 +428,11 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * One admin-menu entry: the three sub-fields of {@code CDEMO-ADMIN-OPT} at
      * {@code app/cpy/COADM02Y.cpy:45-48}.
      *
-     * <p><strong>There is no user-type component, because the copybook declares none.</strong> The admin
-     * entry ends at {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} on line 48, and {@code app/cbl/COADM01C.cbl}
-     * contains no counterpart to the eligibility test that {@code app/cbl/COMEN01C.cbl:136-137} performs.
-     * Reaching the administrator menu is itself the authorisation decision, and reproducing it is the
-     * business of {@code com.cardemo.service.menu.AdminMenuService} and the security configuration, not of
-     * an invented field here.</p>
-     *
-     * <p><strong>Validation.</strong> Identical to {@link MainMenuOption}: a {@code null} caption or
-     * program name and an out-of-range option number are rejected at construction with the component
-     * named; nothing else is rejected and no accessor can fail. The record's generated {@code toString} is
-     * likewise retained, because no component can disclose personal data or a credential.</p>
-     *
-     * @param optionName   the caption, {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at
-     *                     {@code app/cpy/COADM02Y.cpy:47}; the canonical table holds it blank-padded to
-     *                     {@link MenuResponse#OPTION_NAME_LENGTH} characters, and the parenthesised
-     *                     {@code (Security)} suffix is part of all four captions; must not be
-     *                     {@code null}, may be empty
+     * @param optionName the caption, {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}.
      * @param optionNumber the display number, {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} at
-     *                     {@code app/cpy/COADM02Y.cpy:46}; 1 through 4 in the canonical table
-     * @param programName  the target program, {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
-     *                     {@code app/cpy/COADM02Y.cpy:48}; all four canonical values are exactly
-     *                     {@link MenuResponse#PROGRAM_NAME_LENGTH} characters; must not be {@code null}
+     * {@code app/cpy/COADM02Y.cpy:46}.
+     * @param programName the target program, {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
+     * {@code app/cpy/COADM02Y.cpy:48}.
      */
     public record AdminMenuOption(
             int optionNumber,
@@ -525,31 +440,300 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
             String programName) implements MenuOption {
 
         /**
-         * Rejects the only two states the source cannot produce, naming the offending component.
+         * Rejects the three states the source cannot produce, naming the offending component.
          */
         public AdminMenuOption {
             requireOptionNumberInRange(optionNumber, "optionNumber");
             requireNonNullField(optionName, "optionName");
+            requireWidthWithinLimit(optionName, OPTION_NAME_LENGTH, "optionName", "PIC X(35)");
             requireNonNullField(programName, "programName");
+            requireWidthWithinLimit(programName, PROGRAM_NAME_LENGTH, "programName", "PIC X(08)");
+        }
+    }
+
+    /**
+     * The rendered menu screen: all twenty input fields of {@code app/cpy-bms/COMEN01.CPY} and
+     * {@code app/cpy-bms/COADM01.CPY}, in map order.
+     *
+     * <p><strong>Why this type exists alongside the option tables.</strong> The two option records above
+     * transcribe the <em>source tables</em> {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy},
+     * which are working-storage data. They are not the wire contract of the screen. The screen contract is
+     * the symbolic map, and the map is a different shape: it carries six header fields the tables do not
+     * have, twelve forty-byte caption slots rather than twelve thirty-five-byte captions, a two-character
+     * selection field and a seventy-eight-character error line. Representing only the tables left the
+     * map's twenty fields unrepresented, which is what this record closes.</p>
+     *
+     * <p><strong>Both maps, one type.</strong> {@code app/cpy-bms/COMEN01.CPY} and
+     * {@code app/cpy-bms/COADM01.CPY} are byte-for-byte identical in shape: the same twenty field names,
+     * the same twenty {@code PICTURE} clauses, at the same twenty line numbers, differing only in the
+     * {@code 01} group name - {@code COMEN1AI} at {@code app/cpy-bms/COMEN01.CPY:17} against
+     * {@code COADM1AI} at {@code app/cpy-bms/COADM01.CPY:17}. One record therefore serves both screens
+     * faithfully, and {@link MenuResponse#getMenuType()} is what distinguishes which screen an instance
+     * describes. This is a proven identity, not an assumed one, and it is the only reason a single type is
+     * correct here.</p>
+     *
+     * <p><strong>The six header fields are declared inline, deliberately.</strong> They are not inherited
+     * from a base class, an interface or a mixin, because the corpus does not support a shared header
+     * abstraction: {@code CURTIMEI} is {@code PIC X(8)} on sixteen of the seventeen symbolic maps and
+     * {@code PIC X(9)} on {@code app/cpy-bms/COSGN00.CPY:54} alone, so any shared type would have to assert
+     * a single width the corpus does not have. {@code UserSecurityDto} reaches the same conclusion for the
+     * same reason, and both types resolve it the same way.</p>
+     *
+     * <p><strong>Null, blank and marked are three distinct states.</strong> Every component may be
+     * {@code null}, meaning the field was absent; an empty string means it was present and empty; and a
+     * value of spaces or low-values means the legacy screen marked it. Nothing is trimmed, padded,
+     * upper-cased or lower-cased, and {@code null} is never coerced to empty nor empty to {@code null}.</p>
+     *
+     * <p><strong>Validation.</strong> One rule, applied to all nineteen textual components: a non-{@code
+     * null} value wider than the {@code PICTURE} clause of the field it transcribes is rejected at
+     * construction, naming the component and quoting the clause. A {@code null} is accepted, nothing is
+     * truncated, and no accessor can fail.</p>
+     *
+     * <p><strong>Rendering.</strong> The generated {@code toString} is retained. Every component is a
+     * public caption, a header rendering, an option selection or an error line: none can disclose personal
+     * data, an account identifier or a credential, which is why this record does not suppress its own
+     * rendering the way {@code UserSecurityDto.UserRow} must.</p>
+     *
+     * @param transactionName the four-character transaction identifier, {@code TRNNAMEI PIC X(4)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:24}; may be {@code null} when absent
+     * @param title01         the first header title line, {@code TITLE01I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:30}; may be {@code null} when absent
+     * @param currentDate     the header date as the terminal rendered it, {@code CURDATEI PIC X(8)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:36}; may be {@code null} when absent
+     * @param programName     the eight-character name of the program that painted the screen,
+     *                        {@code PGMNAMEI PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY:42}; opaque
+     *                        legacy metadata that nothing dispatches on, and may be {@code null}
+     * @param title02         the second header title line, {@code TITLE02I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:48}; may be {@code null} when absent
+     * @param currentTime     the header time as the terminal rendered it, {@code CURTIMEI PIC X(8)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:54} - eight characters on this map, against the
+     *                        nine of {@code app/cpy-bms/COSGN00.CPY:54}; may be {@code null} when absent
+     * @param optionSlot01    the first rendered caption slot, {@code OPTN001I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:60}; may be {@code null} when unpainted
+     * @param optionSlot02    the second slot, {@code OPTN002I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:66}; may be {@code null} when unpainted
+     * @param optionSlot03    the third slot, {@code OPTN003I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:72}; may be {@code null} when unpainted
+     * @param optionSlot04    the fourth slot, {@code OPTN004I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:78}; may be {@code null} when unpainted
+     * @param optionSlot05    the fifth slot, {@code OPTN005I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:84}; may be {@code null} when unpainted
+     * @param optionSlot06    the sixth slot, {@code OPTN006I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:90}; may be {@code null} when unpainted
+     * @param optionSlot07    the seventh slot, {@code OPTN007I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:96}; may be {@code null} when unpainted
+     * @param optionSlot08    the eighth slot, {@code OPTN008I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:102}; may be {@code null} when unpainted
+     * @param optionSlot09    the ninth slot, {@code OPTN009I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:108}; may be {@code null} when unpainted
+     * @param optionSlot10    the tenth slot, {@code OPTN010I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:114}; may be {@code null} when unpainted
+     * @param optionSlot11    the eleventh slot, {@code OPTN011I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:120}; the main menu paints ten options and the
+     *                        admin menu four, so this slot is unpainted on both screens as the tables
+     *                        stand - it is declared because the map declares it, not because either menu
+     *                        fills it
+     * @param optionSlot12    the twelfth slot, {@code OPTN012I PIC X(40)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:126}; unpainted on both screens, for the same
+     *                        reason as the eleventh
+     * @param selectedOption  the operator's raw selection, {@code OPTIONI PIC X(2)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:132}; carried as the two characters the screen
+     *                        holds rather than as a number, because {@code app/cbl/COMEN01C.cbl:127-129}
+     *                        must be able to see a blank, a space-padded digit and a non-numeric value as
+     *                        three different inputs; may be {@code null} when nothing was typed
+     * @param errorMessage    the screen's error line, {@code ERRMSGI PIC X(78)} at
+     *                        {@code app/cpy-bms/COMEN01.CPY:138}; may be {@code null} when the request
+     *                        succeeded
+     */
+    public record MenuScreen(
+            String transactionName,
+            String title01,
+            String currentDate,
+            String programName,
+            String title02,
+            String currentTime,
+            String optionSlot01,
+            String optionSlot02,
+            String optionSlot03,
+            String optionSlot04,
+            String optionSlot05,
+            String optionSlot06,
+            String optionSlot07,
+            String optionSlot08,
+            String optionSlot09,
+            String optionSlot10,
+            String optionSlot11,
+            String optionSlot12,
+            String selectedOption,
+            String errorMessage) {
+
+        /**
+         * Declared width of {@code TRNNAMEI}, {@code PIC X(4)} at {@code app/cpy-bms/COMEN01.CPY}:24.
+         */
+        public static final int TRANSACTION_NAME_WIDTH = 4;
+
+        /**
+         * Declared width of {@code TITLE01I} and {@code TITLE02I}, {@code PIC X(40)} at
+         * {@code app/cpy-bms/COMEN01.CPY}:30 and :48. The two title lines share a width because the map
+         * declares the same clause twice, not because they are the same field.
+         */
+        public static final int TITLE_WIDTH = 40;
+
+        /**
+         * Declared width of {@code CURDATEI}, {@code PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY}:36.
+         */
+        public static final int DATE_WIDTH = 8;
+
+        /**
+         * Declared width of {@code PGMNAMEI}, {@code PIC X(8)} at {@code app/cpy-bms/COMEN01.CPY}:42.
+         *
+         * <p>Numerically equal to {@link MenuResponse#PROGRAM_NAME_LENGTH} but a different contract: that
+         * one bounds the table sub-field {@code CDEMO-MENU-OPT-PGMNAME}, this one bounds the screen header
+         * field. They are declared separately so that a future divergence in either source cannot silently
+         * change the other.</p>
+         */
+        public static final int PROGRAM_NAME_WIDTH = 8;
+
+        /**
+         * Declared width of {@code CURTIMEI} on this map, {@code PIC X(8)} at
+         * {@code app/cpy-bms/COMEN01.CPY}:54.
+         *
+         * <p>Sixteen of the seventeen symbolic maps agree on eight; {@code app/cpy-bms/COSGN00.CPY}:54
+         * alone declares nine. The disagreement is why no shared header type exists.</p>
+         */
+        public static final int TIME_WIDTH = 8;
+
+        /**
+         * Declared width of {@code OPTIONI}, {@code PIC X(2)} at {@code app/cpy-bms/COMEN01.CPY}:132.
+         */
+        public static final int SELECTION_WIDTH = 2;
+
+        /**
+         * Declared width of {@code ERRMSGI}, {@code PIC X(78)} at {@code app/cpy-bms/COMEN01.CPY}:138.
+         */
+        public static final int ERROR_MESSAGE_WIDTH = 78;
+
+        /**
+         * The number of recurring header fields the map declares ahead of the caption slots: six.
+         *
+         * <p>{@code TRNNAMEI}, {@code TITLE01I}, {@code CURDATEI}, {@code PGMNAMEI}, {@code TITLE02I} and
+         * {@code CURTIMEI}, at {@code app/cpy-bms/COMEN01.CPY}:24, :30, :36, :42, :48 and :54.
+         */
+        public static final int HEADER_FIELD_COUNT = 6;
+
+        /**
+         * The number of caption slots the map declares: twelve.
+         *
+         * <p>{@code OPTN001I} through {@code OPTN012I} at {@code app/cpy-bms/COMEN01.CPY}:60, :66, :72,
+         * :78, :84, :90, :96, :102, :108, :114, :120 and :126. Twelve is the <em>map's</em> arity and
+         * coincides with the {@code OCCURS 12 TIMES} arity of {@code app/cpy/COMEN02Y.cpy}:88; the
+         * populated table counts are ten and four, and those are published on {@link MenuType} instead.
+         */
+        public static final int OPTION_SLOT_COUNT = 12;
+
+        /**
+         * The total number of input fields each menu map declares: {@code 6 + 12 + 1 + 1 = 20}.
+         *
+         * <p>Derived from its parts rather than written as a literal, so the arithmetic that proves the
+         * field contract is visible in the source and cannot drift. Verified by direct count against both
+         * {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} at commit {@code 7756d89},
+         * which declare the identical twenty fields.
+         */
+        public static final int MAP_FIELD_COUNT = HEADER_FIELD_COUNT + OPTION_SLOT_COUNT + 1 + 1;
+
+        /**
+         * Rejects any component wider than the fixed-width map field it transcribes.
+         *
+         * <p>Nineteen checks, one per textual component, each naming its own field and quoting its own
+         * {@code PICTURE} clause so that a failure identifies the map line without further lookup. A
+         * {@code null} passes every check, because absence is a legitimate state of a screen field.
+         */
+        public MenuScreen {
+            requireScreenFieldWidth(transactionName, TRANSACTION_NAME_WIDTH, "transactionName", "PIC X(4)");
+            requireScreenFieldWidth(title01, TITLE_WIDTH, "title01", "PIC X(40)");
+            requireScreenFieldWidth(currentDate, DATE_WIDTH, "currentDate", "PIC X(8)");
+            requireScreenFieldWidth(programName, PROGRAM_NAME_WIDTH, "programName", "PIC X(8)");
+            requireScreenFieldWidth(title02, TITLE_WIDTH, "title02", "PIC X(40)");
+            requireScreenFieldWidth(currentTime, TIME_WIDTH, "currentTime", "PIC X(8)");
+            requireScreenFieldWidth(optionSlot01, SCREEN_OPTION_SLOT_LENGTH, "optionSlot01", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot02, SCREEN_OPTION_SLOT_LENGTH, "optionSlot02", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot03, SCREEN_OPTION_SLOT_LENGTH, "optionSlot03", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot04, SCREEN_OPTION_SLOT_LENGTH, "optionSlot04", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot05, SCREEN_OPTION_SLOT_LENGTH, "optionSlot05", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot06, SCREEN_OPTION_SLOT_LENGTH, "optionSlot06", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot07, SCREEN_OPTION_SLOT_LENGTH, "optionSlot07", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot08, SCREEN_OPTION_SLOT_LENGTH, "optionSlot08", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot09, SCREEN_OPTION_SLOT_LENGTH, "optionSlot09", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot10, SCREEN_OPTION_SLOT_LENGTH, "optionSlot10", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot11, SCREEN_OPTION_SLOT_LENGTH, "optionSlot11", "PIC X(40)");
+            requireScreenFieldWidth(optionSlot12, SCREEN_OPTION_SLOT_LENGTH, "optionSlot12", "PIC X(40)");
+            requireScreenFieldWidth(selectedOption, SELECTION_WIDTH, "selectedOption", "PIC X(2)");
+            requireScreenFieldWidth(errorMessage, ERROR_MESSAGE_WIDTH, "errorMessage", "PIC X(78)");
+        }
+
+        /**
+         * Returns the twelve caption slots in map order, slot one first.
+         *
+         * <p>A pure derivation over the twelve components, provided so that a caller iterating the slots
+         * does not have to name each one and so that positional order is assertable. The list has exactly
+         * {@link #OPTION_SLOT_COUNT} elements always, and an element is {@code null} when the
+         * corresponding slot was unpainted - which is why the list is built over a null-tolerant backing
+         * array rather than with {@code List.of}, whose elements may not be {@code null}.
+         *
+         * <p>Deliberately named without a {@code get} prefix so that it is not a bean property: it is a
+         * view over components that are already on the wire, and emitting it as well would put every
+         * caption on the payload twice. The same convention is used for the derived date-part accessors of
+         * {@code AccountUpdateRequest}.
+         *
+         * <p>No side effects, no state, cannot fail, and the result depends only on the twelve components.
+         *
+         * @return an unmodifiable, order-preserving list of exactly {@link #OPTION_SLOT_COUNT} slots, any
+         *         element of which may be {@code null}
+         */
+        public List<String> optionSlots() {
+            final List<String> slots = new ArrayList<>(OPTION_SLOT_COUNT);
+            slots.add(this.optionSlot01);
+            slots.add(this.optionSlot02);
+            slots.add(this.optionSlot03);
+            slots.add(this.optionSlot04);
+            slots.add(this.optionSlot05);
+            slots.add(this.optionSlot06);
+            slots.add(this.optionSlot07);
+            slots.add(this.optionSlot08);
+            slots.add(this.optionSlot09);
+            slots.add(this.optionSlot10);
+            slots.add(this.optionSlot11);
+            slots.add(this.optionSlot12);
+            return Collections.unmodifiableList(slots);
+        }
+
+        /**
+         * Rejects a non-{@code null} screen field wider than its declared {@code PICTURE} clause.
+         *
+         * <p>The null-tolerant counterpart of
+         * {@link MenuResponse#requireWidthWithinLimit(String, int, String, String)}, to which it delegates
+         * once it has established that there is a value to measure. Keeping the {@code null} test here
+         * rather than in the shared helper is what lets the option records treat {@code null} as a
+         * separate, separately reported failure while this record treats it as an accepted state.
+         *
+         * @param value     the value to check, or {@code null} when the field was absent
+         * @param maxLength the declared width of the map field
+         * @param fieldName the component name to name in the failure message
+         * @param picClause the source {@code PICTURE} clause to quote in the failure message
+         * @throws IllegalArgumentException if {@code value} is non-{@code null} and longer than
+         *                                  {@code maxLength}
+         */
+        private static void requireScreenFieldWidth(final String value, final int maxLength,
+                final String fieldName, final String picClause) {
+            if (value != null) {
+                requireWidthWithinLimit(value, maxLength, fieldName, picClause);
+            }
         }
     }
 
     /**
      * The ten main-menu options, transcribed from {@code CDEMO-MENU-OPTIONS-DATA} at
      * {@code app/cpy/COMEN02Y.cpy:25-84} in copybook order.
-     *
-     * <p><strong>Exactly ten entries, never twelve.</strong> The two remaining subscripts of
-     * {@code CDEMO-MENU-OPT OCCURS 12 TIMES} at {@code app/cpy/COMEN02Y.cpy:88} are unpopulated overlay
-     * storage: what they contain is not available, and nothing is invented for them.</p>
-     *
-     * <p>Every caption is the {@code VALUE} literal byte for byte, blank-padded to the
-     * {@link #OPTION_NAME_LENGTH} declared width; every program name is the eight-character literal;
-     * every gate byte is the literal {@code 'U'}, which all ten entries carry. Option 8 uses the live
-     * caption from {@code app/cpy/COMEN02Y.cpy:70} and not the commented-out variant on the line above
-     * it.</p>
-     *
-     * <p>The list is immutable, as are its elements, so the field is a genuine constant rather than a
-     * shared mutable array: it can be published, iterated and cached without copying.</p>
      */
     public static final List<MainMenuOption> MAIN_MENU_OPTIONS = List.of(
             new MainMenuOption(1, "Account View                       ", "COACTVWC", 'U'),
@@ -566,16 +750,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * The four admin-menu options, transcribed from {@code CDEMO-ADMIN-OPTIONS-DATA} at
      * {@code app/cpy/COADM02Y.cpy:24-42} in copybook order.
-     *
-     * <p><strong>Exactly four entries, never nine.</strong> The five remaining subscripts of
-     * {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES} at {@code app/cpy/COADM02Y.cpy:45} are unpopulated overlay
-     * storage: what they contain is not available, and nothing is invented for them.</p>
-     *
-     * <p>Every caption is the {@code VALUE} literal byte for byte - including the parenthesised
-     * {@code (Security)} suffix that all four carry - blank-padded to the {@link #OPTION_NAME_LENGTH}
-     * declared width. No entry carries a user type, because the copybook declares no such sub-field.</p>
-     *
-     * <p>The list is immutable, as are its elements.</p>
      */
     public static final List<AdminMenuOption> ADMIN_MENU_OPTIONS = List.of(
             new AdminMenuOption(1, "User List (Security)               ", "COUSR00C"),
@@ -584,40 +758,26 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
             new AdminMenuOption(4, "User Delete (Security)             ", "COUSR03C"));
 
     /**
-     * Which menu this response describes, so a consumer never has to infer it. Never {@code null}.
-     *
-     * <p>The legacy equivalent was the identity of the running program itself - {@code COMEN01C} against
-     * {@code COADM01C} - which a stateless payload cannot convey.</p>
+     * Which menu this response describes, so a consumer never has to infer it. Never {@code null}. The legacy
+     * system needed no such discriminator because the choice was made by which copybook a program copied,
+     * {@code app/cpy/COMEN02Y.cpy} or {@code app/cpy/COADM02Y.cpy}.
      */
     private final MenuType menuType;
 
     /**
-     * The options this response carries, in menu order, already defensively copied and wrapped
-     * unmodifiable. Never {@code null}; possibly empty.
-     *
-     * <p>A {@code List} is used because position is meaning: the option number is the operator's selection
-     * key and the display order. No hash-ordered collection may ever hold these, since its iteration order
-     * would be unrelated to {@code CDEMO-MENU-OPT-NUM}.</p>
-     *
-     * <p>The size never exceeds {@link MenuType#getPopulatedOptionCount()}, which the constructor
-     * enforces. It may be smaller: a main-menu service that applied the user-type gate of
-     * {@code app/cbl/COMEN01C.cbl:136-137} legitimately offers fewer than ten options.</p>
+     * The options this response carries, in menu order, already defensively copied and wrapped unmodifiable.
+     * Never {@code null}; possibly empty. The entries are the table rows of
+     * {@code CDEMO-MENU-OPT OCCURS 12 TIMES} at {@code app/cpy/COMEN02Y.cpy:88} or of
+     * {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES} at {@code app/cpy/COADM02Y.cpy:45}, bounded by the populated count.
      */
     private final List<T> options;
 
     /**
      * Constructs a response over a defensive copy of the supplied options.
      *
-     * <p>Private on purpose. The only way to obtain an instance is through one of the four factory
-     * methods, each of which pairs a {@link MenuType} with the matching option type, so it is impossible
-     * to label main-menu options as the admin menu or the reverse.</p>
-     *
-     * @param menuType which menu is being described; must not be {@code null}
-     * @param options  the options in menu order; must not be {@code null}, must not contain a
-     *                 {@code null} element, and must hold no more entries than
-     *                 {@link MenuType#getPopulatedOptionCount()} permits, but may be empty
-     * @throws IllegalArgumentException if any argument violates the conditions above; the message names
-     *                                  the offending field
+     * @param menuType which menu is being described.
+     * @param options the options in menu order.
+     * @throws IllegalArgumentException if any argument violates the conditions above.
      */
     private MenuResponse(final MenuType menuType, final List<T> options) {
 
@@ -657,10 +817,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Returns the complete main menu: all ten options of {@link #MAIN_MENU_OPTIONS}, unfiltered.
      *
-     * <p>This is the table as {@code app/cpy/COMEN02Y.cpy} declares it, before any eligibility decision.
-     * A service that must withhold options for a standard user applies the gate itself and calls
-     * {@link #ofMainMenu(List)} with what remains.</p>
-     *
      * @return a main-menu response carrying exactly ten options, never {@code null}
      */
     public static MenuResponse<MainMenuOption> mainMenu() {
@@ -670,13 +826,10 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Returns a main-menu response over the supplied options, which is how a filtered menu is built.
      *
-     * @param options the main-menu options to carry, in menu order; must not be {@code null}, must not
-     *                contain a {@code null} element, and must hold no more than the ten entries
-     *                {@code app/cpy/COMEN02Y.cpy:21} populates, but may be empty
+     * @param options the main-menu options to carry, in menu order.
      * @return a main-menu response over a defensive copy of {@code options}, never {@code null}
-     * @throws IllegalArgumentException if {@code options} is {@code null}, contains a {@code null}
-     *                                  element, or holds more than ten entries; the message names the
-     *                                  offending field
+     * @throws IllegalArgumentException if {@code options} is {@code null}, contains a {@code null} element, or
+     * holds more than ten entries.
      */
     public static MenuResponse<MainMenuOption> ofMainMenu(final List<MainMenuOption> options) {
         return new MenuResponse<>(MenuType.MAIN, options);
@@ -684,9 +837,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
 
     /**
      * Returns the complete administrator menu: all four options of {@link #ADMIN_MENU_OPTIONS}.
-     *
-     * <p>No filtering counterpart to the main menu's gate exists, because {@code app/cpy/COADM02Y.cpy}
-     * declares no user-type sub-field and {@code app/cbl/COADM01C.cbl} performs no eligibility test.</p>
      *
      * @return an admin-menu response carrying exactly four options, never {@code null}
      */
@@ -697,13 +847,10 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Returns an admin-menu response over the supplied options.
      *
-     * @param options the admin-menu options to carry, in menu order; must not be {@code null}, must not
-     *                contain a {@code null} element, and must hold no more than the four entries
-     *                {@code app/cpy/COADM02Y.cpy:20} populates, but may be empty
+     * @param options the admin-menu options to carry, in menu order.
      * @return an admin-menu response over a defensive copy of {@code options}, never {@code null}
-     * @throws IllegalArgumentException if {@code options} is {@code null}, contains a {@code null}
-     *                                  element, or holds more than four entries; the message names the
-     *                                  offending field
+     * @throws IllegalArgumentException if {@code options} is {@code null}, contains a {@code null} element, or
+     * holds more than four entries.
      */
     public static MenuResponse<AdminMenuOption> ofAdminMenu(final List<AdminMenuOption> options) {
         return new MenuResponse<>(MenuType.ADMIN, options);
@@ -721,12 +868,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Returns the options in menu order.
      *
-     * <p>The returned list is an unmodifiable view over this instance's private copy, so every mutating
-     * operation on it throws {@code UnsupportedOperationException} and no caller can alter the response.
-     * Order is exactly the order supplied, which for the unfiltered factories is copybook order. The list
-     * is never {@code null}; an empty list means the menu offers no options and is a distinct, meaningful
-     * state.</p>
-     *
      * @return an unmodifiable, order-preserving view of the options, never {@code null}
      */
     public List<T> getOptions() {
@@ -738,11 +879,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * {@code CDEMO-MENU-OPT-COUNT} at {@code app/cpy/COMEN02Y.cpy:21} or {@code CDEMO-ADMIN-OPT-COUNT} at
      * {@code app/cpy/COADM02Y.cpy:20}.
      *
-     * <p>Derived from the option list rather than stored, so the two can never disagree. For an unfiltered
-     * response it equals {@link MenuType#getPopulatedOptionCount()} - ten or four - and it is never
-     * greater; it is smaller only when the caller withheld options, as the main-menu gate at
-     * {@code app/cbl/COMEN01C.cbl:136-137} may require. It is never the OCCURS capacity.</p>
-     *
      * @return the number of options carried, between 0 and {@link MenuType#getPopulatedOptionCount()}
      */
     public int getOptionCount() {
@@ -752,13 +888,9 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Compares this response with another for value equality over the menu type and the options.
      *
-     * <p>Option comparison is order-sensitive, because the options are held in a {@code List} and their
-     * order is the menu order. The result is therefore deterministic and independent of any hash iteration
-     * order. The option count is derived from the option list, so it needs no separate comparison.</p>
-     *
      * @param other the object to compare with, which may be {@code null}
-     * @return {@code true} when {@code other} is a response for the same menu carrying equal options in
-     *         the same order
+     * @return {@code true} when {@code other} is a response for the same menu carrying equal options in the
+     * same order
      */
     @Override
     public boolean equals(final Object other) {
@@ -785,11 +917,6 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Returns a diagnostic rendering of the menu type and the option count.
      *
-     * <p>The options themselves are omitted for brevity rather than for safety: a menu option is a
-     * caption, a number, a program name and a one-character eligibility code, none of which identifies
-     * anyone or discloses a credential, and all of which are already public constants of this class.
-     * Formatting uses {@code Locale.ROOT} so the output cannot vary with the platform locale.</p>
-     *
      * @return a locale-independent summary carrying no personally identifiable information
      */
     @Override
@@ -801,16 +928,10 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Rejects an option number the two-digit source field could not hold.
      *
-     * <p>Shared by both option records so the one rule has one implementation. The bound is the field
-     * width, not the table content: {@code PIC 9(02)} is an unsigned two-digit display field, so 0 through
-     * {@link #OPTION_NUMBER_MAX_VALUE} is exactly what it represents, even though the two tables use only
-     * 1 through 10 and 1 through 4. Rejecting a zero <em>selection</em> is a separate, program-level rule
-     * at {@code app/cbl/COMEN01C.cbl:127-129} and is not applied here.</p>
-     *
      * @param optionNumber the value to check
-     * @param fieldName    the component name to name in the failure message
+     * @param fieldName the component name to name in the failure message
      * @throws IllegalArgumentException if {@code optionNumber} is negative or greater than
-     *                                  {@link #OPTION_NUMBER_MAX_VALUE}
+     * {@link #OPTION_NUMBER_MAX_VALUE}
      */
     private static void requireOptionNumberInRange(final int optionNumber, final String fieldName) {
         if (optionNumber < 0 || optionNumber > OPTION_NUMBER_MAX_VALUE) {
@@ -822,14 +943,7 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * Rejects a {@code null} text component, naming it.
      *
-     * <p>Only {@code null} is rejected. An empty string is accepted, because it is distinguishable from
-     * absence and is a state a caller may legitimately mean. Length is deliberately not checked: the
-     * declared widths are published as {@link #OPTION_NAME_LENGTH} and {@link #PROGRAM_NAME_LENGTH} and
-     * honoured by the canonical tables, but silently truncating a longer value would lose data and
-     * rejecting one would refuse input the 40-byte screen slot could carry, so this type stores exactly
-     * what it is given.</p>
-     *
-     * @param value     the value to check
+     * @param value the value to check
      * @param fieldName the component name to name in the failure message
      * @throws IllegalArgumentException if {@code value} is {@code null}
      */
@@ -837,6 +951,39 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
         if (value == null) {
             throw new IllegalArgumentException(fieldName
                     + " must not be null; supply the value the copybook literal declares, empty if genuinely absent");
+        }
+    }
+
+    /**
+     * Rejects a text component wider than the fixed-width source field it transcribes.
+     *
+     * <p>Shared by both option records so the one rule has one implementation. The bound is the declared
+     * {@code PICTURE} width, and it is a genuine upper bound rather than an exact requirement: a shorter
+     * value is accepted unchanged, because the canonical tables blank-pad their literals and a caller
+     * holding an unpadded caption is describing the same option. Nothing is padded, nothing is trimmed and
+     * nothing is case-folded - a fixed-width field cannot hold more bytes than it declares, so a longer
+     * value is refused outright rather than silently truncated, which would lose data, or silently
+     * accepted, which would let a value through that the source screen could never have carried.</p>
+     *
+     * <p>The failure message reports the declared limit and the offending length but never the offending
+     * value. Captions and program names are not sensitive, so the omission is not a privacy control here;
+     * it is uniformity with the rest of the DTO package, where the same helper shape guards values that
+     * are.</p>
+     *
+     * @param value      the value to check; must already have been checked for {@code null}
+     * @param maxLength  the declared width of the source field, either {@link #OPTION_NAME_LENGTH} or
+     *                   {@link #PROGRAM_NAME_LENGTH}
+     * @param fieldName  the component name to name in the failure message
+     * @param picClause  the source {@code PICTURE} clause to quote in the failure message, so the reason
+     *                   for the bound is legible without opening the copybook
+     * @throws IllegalArgumentException if {@code value} is longer than {@code maxLength}
+     */
+    private static void requireWidthWithinLimit(final String value, final int maxLength,
+            final String fieldName, final String picClause) {
+        if (value.length() > maxLength) {
+            throw new IllegalArgumentException(fieldName + " must be at most " + maxLength
+                    + " characters because the source field is " + picClause + ", but was "
+                    + value.length() + " characters long");
         }
     }
 }

@@ -114,10 +114,13 @@
  *       350 ({@code app/catlg/LISTCAT.txt:L3593}, the DATA-component attribute line), corroborated by
  *       {@code app/jcl/TRANFILE.jcl:L53-L54 KEYS(16 0) RECORDSIZE(350 350)}. Layout
  *       {@code app/cpy/CVTRA05Y.cpy}.</li>
- *   <li>{@link DailyTransactionRepository} over {@code DailyTransaction} keyed by {@code String} — the
+ *   <li>{@link DailyTransactionRepository} over {@code DailyTransaction} keyed by {@code Long} — the
  *       <strong>physical sequential</strong> staging dataset {@code AWS.M2.CARDDEMO.DALYTRAN.PS}, read by
  *       {@code app/jcl/POSTTRAN.jcl}. Record length 350; being sequential rather than keyed it has no
- *       {@code KEYLEN} and therefore no {@code LISTCAT} cluster entry. Layout
+ *       {@code KEYLEN} and therefore no {@code LISTCAT} cluster entry, which is exactly why this is the
+ *       one repository in the package whose key is <strong>not</strong> a COBOL record field: the
+ *       identifier is the ingestion ordinal {@code ingest_seq}, assigned by the loader in read order.
+ *       {@code DALYTRAN-ID} carries no uniqueness guarantee and is deliberately left non-unique. Layout
  *       {@code app/cpy/CVTRA06Y.cpy}.</li>
  *   <li>{@link TransactionCategoryBalanceRepository} over {@code TransactionCategoryBalance} keyed by the
  *       composite {@code TransactionCategoryBalanceId} — cluster

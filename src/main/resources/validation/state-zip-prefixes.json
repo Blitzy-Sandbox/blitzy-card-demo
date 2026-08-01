@@ -230,8 +230,8 @@
       "howToBuildAndTest": [
         "No build step: this is a static classpath resource copied verbatim into",
         "target/classes by the standard resources phase, with no property",
-        "filtering. Build with 'mvn -B clean compile' and run the unit suite with",
-        "'mvn -B clean test'. The assertions for this resource live under",
+        "filtering. Build with './mvnw -B clean compile' and run the unit suite with",
+        "'./mvnw -B clean test'. The assertions for this resource live under",
         "src/test/java/com/cardemo/unit/ and cover the element count of 240, the",
         "first and last values 'AA34' and 'WY83', the interior index checkpoints",
         "60 'KS66', 120 'NH33' and 180 'PR71', the preserved descending NY run at",

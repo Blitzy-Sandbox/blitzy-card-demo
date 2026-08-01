@@ -1,6 +1,6 @@
 /*
  * ******************************************************************
- * Package     : com.cardemo.model.entity
+ * Program     : package-info.java
  * Application : CardDemo
  * Type        : Java Package Documentation (JPA persistence model)
  * Function    : Package-level documentation for the 11 JPA entities
@@ -28,125 +28,14 @@
  */
 
 /**
- * JPA persistence model for CardDemo: the eleven entities that replace the ten VSAM KSDS clusters and the
- * one sequential staging dataset of the frozen legacy corpus.
+ * JPA persistence model for CardDemo: the eleven entities that replace the ten VSAM KSDS clusters and the one
+ * sequential staging dataset of the frozen legacy corpus under {@code app/}.
  *
- * <h2>What it does</h2>
- *
- * <p>This package holds exactly <strong>eleven</strong> {@code @Entity} classes and nothing else besides
- * this documentation file. Each one is the relational replacement for a single legacy dataset: ten of them
- * for the ten VSAM KSDS clusters catalogued in {@code app/catlg/LISTCAT.txt}, and one,
- * {@link DailyTransaction}, for the sequential {@code DALYTRAN} staging dataset that the daily posting job
- * reads.
- *
- * <p>They are <strong>pure data holders</strong>. An entity in this package maps columns, validates its own
- * field widths and compares itself for equality; it does not calculate interest, decide whether a
- * transaction is over limit, post a balance, read a file or reject a record. Every one of those behaviours
- * belongs to a service, a batch processor or a repository, so that the persistence model can be reasoned
- * about, and asserted against the copybooks, without dragging business logic into scope.
- *
- * <p>The table below is the field-contract evidence for the package. Every record length was obtained by
- * summing the {@code PIC} clauses of the named copybook, and every key length and record length was then
- * corroborated independently against the VSAM catalogue listing. The two agree in all ten catalogued cases,
- * so each row may be treated as settled fact rather than inference.
- *
- * <table>
- *   <caption>The eleven entities, their originating copybooks and their corroborating catalogue evidence</caption>
- *   <thead>
- *     <tr>
- *       <th scope="col">Entity</th>
- *       <th scope="col">Copybook</th>
- *       <th scope="col">Record length</th>
- *       <th scope="col">Key length</th>
- *       <th scope="col">Catalogue evidence in {@code app/catlg/LISTCAT.txt}</th>
- *     </tr>
- *   </thead>
- *   <tbody>
- *     <tr>
- *       <td>{@link Account}</td>
- *       <td>{@code app/cpy/CVACT01Y.cpy}</td>
- *       <td>300 B</td>
- *       <td>11</td>
- *       <td>{@code L57} cluster {@code ACCTDATA}, {@code L59} {@code KEYLEN 11} / {@code AVGLRECL 300}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link Card}</td>
- *       <td>{@code app/cpy/CVACT02Y.cpy}</td>
- *       <td>150 B</td>
- *       <td>16</td>
- *       <td>{@code L200} cluster {@code CARDDATA}, {@code L202} {@code KEYLEN 16} / {@code AVGLRECL 150}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link Customer}</td>
- *       <td>{@code app/cpy/CVCUS01Y.cpy} + {@code app/cpy/CUSTREC.cpy}</td>
- *       <td>500 B</td>
- *       <td>9</td>
- *       <td>{@code L630} cluster {@code CUSTDATA}, {@code L632} {@code KEYLEN 9} / {@code AVGLRECL 500}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link CardCrossReference}</td>
- *       <td>{@code app/cpy/CVACT03Y.cpy}</td>
- *       <td>36 populated B in a 50 B slot</td>
- *       <td>16</td>
- *       <td>{@code L401} cluster {@code CARDXREF}, {@code L403} {@code KEYLEN 16} / {@code AVGLRECL 50}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link Transaction}</td>
- *       <td>{@code app/cpy/CVTRA05Y.cpy}</td>
- *       <td>350 B</td>
- *       <td>16</td>
- *       <td>{@code L3591} cluster {@code TRANSACT}, {@code L3593} {@code KEYLEN 16} / {@code AVGLRECL 350}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link DailyTransaction}</td>
- *       <td>{@code app/cpy/CVTRA06Y.cpy}</td>
- *       <td>350 B</td>
- *       <td>none, a sequential PS dataset</td>
- *       <td>not catalogued as a cluster; see the note below</td>
- *     </tr>
- *     <tr>
- *       <td>{@link TransactionCategoryBalance}</td>
- *       <td>{@code app/cpy/CVTRA01Y.cpy}</td>
- *       <td>50 B</td>
- *       <td>17, composite</td>
- *       <td>{@code L1369} cluster {@code TCATBALF}, {@code L1371} {@code KEYLEN 17} / {@code AVGLRECL 50}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link DisclosureGroup}</td>
- *       <td>{@code app/cpy/CVTRA02Y.cpy}</td>
- *       <td>50 B</td>
- *       <td>16, composite</td>
- *       <td>{@code L894} cluster {@code DISCGRP}, {@code L896} {@code KEYLEN 16} / {@code AVGLRECL 50}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link TransactionType}</td>
- *       <td>{@code app/cpy/CVTRA03Y.cpy}</td>
- *       <td>60 B</td>
- *       <td>2</td>
- *       <td>{@code L3777} cluster {@code TRANTYPE}, {@code L3779} {@code KEYLEN 2} / {@code AVGLRECL 60}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link TransactionCategory}</td>
- *       <td>{@code app/cpy/CVTRA04Y.cpy}</td>
- *       <td>60 B</td>
- *       <td>6, composite</td>
- *       <td>{@code L1473} cluster {@code TRANCATG}, {@code L1475} {@code KEYLEN 6} / {@code AVGLRECL 60}</td>
- *     </tr>
- *     <tr>
- *       <td>{@link UserSecurity}</td>
- *       <td>{@code app/cpy/CSUSR01Y.cpy}, seeded from {@code app/jcl/DUSRSECJ.jcl}</td>
- *       <td>80 B</td>
- *       <td>8</td>
- *       <td>{@code L3881} cluster {@code USRSEC}, {@code L3883} {@code KEYLEN 8} / {@code AVGLRECL 80};
- *           corroborated by {@code app/jcl/DUSRSECJ.jcl:L65-L66} {@code KEYS(8,0)} /
- *           {@code RECORDSIZE(80,80)}</td>
- *     </tr>
- *   </tbody>
- * </table>
- *
- * <p>The following invariants hold across the whole package. They are recorded here rather than repeated in
- * eleven class comments, and every one of them is enforced by at least one test in
- * {@code src/test/java/com/cardemo/unit/model}.
+ * <p><strong>What it does.</strong> One entity per legacy dataset and nothing else besides this file. They are
+ * pure data holders: an entity maps columns, checks its own field widths and compares itself for equality, but
+ * it never calculates interest, decides whether a transaction is over limit, posts a balance, reads a file or
+ * rejects a record. Each record length below was obtained by summing the copybook {@code PIC} clauses and then
+ * corroborated against the VSAM catalogue listing, and the two agree in all ten catalogued cases.
  *
  * <ul>
  *   <li><strong>Eleven entities, and why it is eleven rather than ten or fourteen.</strong> Ten VSAM KSDS
@@ -161,7 +50,8 @@
  *       {@code CARDXREF.VSAM.AIX} ({@code L480} / {@code L482} {@code KEYLEN 11}) or
  *       {@code TRANSACT.VSAM.AIX} ({@code L3672} / {@code L3674} {@code KEYLEN 26}) becomes a class here.
  *       Each becomes a derived finder method on the matching interface in {@code com.cardemo.repository},
- *       backed by a non-unique B-tree index created in {@code V2__create_indexes.sql}. Adding an entity for
+ *       backed by a non-unique B-tree index to be created in {@code V2__create_indexes.sql} (planned; absent at this
+ * commit). Adding an entity for
  *       an alternate index would duplicate the base record and give it a second, divergent mapping.</li>
  *   <li><strong>{@link Customer} serves two proven-duplicate copybooks.</strong> Running
  *       {@code diff -w app/cpy/CVCUS01Y.cpy app/cpy/CUSTREC.cpy} yields exactly two hunks: the field name
@@ -224,15 +114,53 @@
  *       {@code .observability}. The only intra-project imports in the entire package are the three
  *       {@code @EmbeddedId} types from {@code com.cardemo.model.key}, used by
  *       {@link TransactionCategoryBalance}, {@link DisclosureGroup} and {@link TransactionCategory}, and
- *       {@code UserType} from {@code com.cardemo.model.enums}, used by {@link UserSecurity}. Everything
- *       else comes from {@code jakarta.persistence}, {@code jakarta.validation} or the JDK.</li>
+ *       {@code UserType} from {@code com.cardemo.model.enums}, used by {@link UserSecurity}. The external
+ *       surface, counted from the {@code import} statements on 1 August 2026, is {@code jakarta.persistence}
+ *       (51 imports), the JDK ({@code java.util} 11, {@code java.math} 5) and <strong>Hibernate</strong>:
+ *       {@code org.hibernate.annotations.JdbcTypeCode} and {@code org.hibernate.type.SqlTypes}, each imported
+ *       by the same nine entities that pin a JDBC type code. Hibernate is therefore a direct compile-time
+ *       dependency of this package, not merely the runtime provider behind {@code jakarta.persistence}, and
+ *       swapping the persistence provider would require editing those nine files. No
+ *       {@code jakarta.validation} type is imported anywhere in this package - the constraints live on the
+ *       DTOs.</li>
  * </ul>
  *
- * <h2>How to run, build and test</h2>
+ * <p>Five package-wide invariants hold, each because the source fixes it rather than by preference. Monetary
+ * precision is tiered and never collapsed - {@code NUMERIC(12,2)} for {@code S9(10)V99},
+ * {@code NUMERIC(11,2)} for {@code S9(09)V99}, {@code NUMERIC(6,2)} for {@code S9(04)V99} - carried as
+ * {@link java.math.BigDecimal} with no approximate type anywhere. The 26-character transaction timestamps are
+ * text over {@code CHAR(26)}, never a temporal type. Fixed-width text columns are {@code CHAR(n)} with an
+ * explicit JDBC type code, so blank-but-present values load and trailing padding survives the round trip.
+ * There is no JPA association in the package at all: foreign-key columns are plain scalars, and referential
+ * integrity belongs to the ten foreign keys in {@code V1__create_schema.sql}. And the {@code version} column
+ * on {@link Account}, {@link Card}, {@link Customer} and {@link Transaction} is the store-level optimistic
+ * guard only - the legacy account-update path also compares business field values against a snapshot, and
+ * that second layer lives in the service and DTO tiers.
  *
- * <p>This package has no executable entry point. It is compiled as part of the single CardDemo Spring Boot
- * module, the modular monolith described in the migration plan, and is exercised through the repositories,
- * services and batch steps that consume it.
+ * <p>The package depends inward only. Its sole intra-project imports are the three {@code @EmbeddedId} types
+ * from {@code com.cardemo.model.key} and {@code UserType} from {@code com.cardemo.model.enums}; everything
+ * else comes from {@code jakarta.persistence}, {@code jakarta.validation} or the JDK.
+ *
+ * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root
+ * compiles this package under {@code -Xlint:all -Werror}, so an unused import or a raw type here fails the
+ * build outright. Unit tests for these entities live in {@code src/test/java/com/cardemo/unit/model} and
+ * assert the record lengths, the key lengths, the three precision tiers, that the timestamp properties are
+ * declared {@code String}, and that no accessor or {@code toString} exposes credential material or personal
+ * data. The mapping itself is proved by starting the application against a Flyway-built schema.
+ *
+ * <p><strong>Key configuration and defaults.</strong> These entities hold no configuration, but three
+ * settings decide whether their mapping is accepted. {@code spring.jpa.hibernate.ddl-auto} is
+ * {@code validate} in every profile, so a missing column, a wrong name, type, precision or nullability fails
+ * application-context startup and names the offending table and column; it must never be {@code create},
+ * {@code create-drop} or {@code update}, because schema ownership belongs to Flyway. Exactly three migrations
+ * run - {@code V1__create_schema.sql} creating eleven tables with ten foreign keys and five check
+ * constraints, {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} - and the Spring Batch
+ * {@code BATCH_*} metadata tables come from the framework's own script rather than from a fourth migration.
+ * {@code spring.jpa.open-in-view} is {@code false}, and no profile enables SQL or bind-parameter logging,
+ * because these rows carry card numbers, national identifiers, telephone numbers, dates of birth and a
+ * password-hash column.
+ *
+ * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
  *   <li><strong>Build.</strong> {@code ./mvnw clean verify} from the repository root, or
@@ -242,29 +170,58 @@
  *       {@code org.springframework.boot:spring-boot-starter-parent:3.5.11}.</li>
  *   <li><strong>Warnings are errors, so a lint problem is a build failure.</strong>
  *       {@code maven-compiler-plugin} <strong>3.14.1</strong> is configured with {@code -Xlint:all},
- *       {@code -Werror} and {@code failOnWarning}. An unused import, a raw type, a deprecation or a missing
- *       {@code serialVersionUID} on a {@link java.io.Serializable} type therefore <strong>fails the
- *       build</strong> rather than producing a warning to triage later. This is the mechanism that enforces
- *       the no-dead-code and no-unused-import standard mechanically instead of by review, and it is why
- *       nothing in this package may be left speculatively unused.</li>
+ *       {@code -Werror} and {@code failOnWarning}. A raw type, a deprecation, a removal, an unchecked
+ *       conversion or a missing {@code serialVersionUID} on a {@link java.io.Serializable} type therefore
+ *       <strong>fails the build</strong> rather than producing a warning to triage later. An
+ *       <em>unused import</em> and an unreachable statement do <strong>not</strong>: {@code javac} 25.0.3
+ *       publishes no lint key for either, as {@code javac --help-lint} shows, and no Checkstyle or Error
+ *       Prone analyser is in the pinned dependency set. Rule 1 Clause B's no-dead-code and
+ *       no-unused-import standard is therefore enforced by <strong>review</strong>, not mechanically, and
+ *       nothing in this package may be left speculatively unused on that basis.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor at the
  *       {@code verify} phase, with <strong>no exclusions</strong> for this package. The plugin version and
  *       the floor are pinned in {@code pom.xml}, which is the single authority for both; at this commit the
  *       plugin is {@code 0.8.13} and the floor property is {@code 0.80}. Coverage must come from meaningful
  *       assertions on field widths, precision and equality semantics. Padding the number by calling getters
  *       in a loop is not acceptable and defeats the purpose of the gate. This file is documentation only,
- *       contributes no executable lines, and so neither helps nor harms the figure.</li>
+ *       contributes no executable lines, and so neither helps nor harms the figure.
+ *       <strong>Measured 1 August 2026:</strong> exactly <strong>one of the eleven</strong> entities has a
+ *       test class, {@code UserSecurityTest}. The other ten have none, so the floor has never been
+ *       evaluated against this package and no coverage figure quoted anywhere is evidence about it.</li>
+ *   <li><strong>Schema agreement, measured rather than asserted - 1 August 2026.</strong> The type-pairing
+ *       claims made throughout this package are reproducible from this tree without a Spring context, and
+ *       they were re-executed rather than inherited. Applying
+ *       {@code src/main/resources/db/migration/V1__create_schema.sql} into a throwaway schema on a
+ *       PostgreSQL 16.10 instance produced <strong>11 tables, 10 foreign keys and 5 check
+ *       constraints</strong>, and bootstrapping Hibernate 6.6.42.Final over all eleven annotated entities
+ *       against that schema with {@code hibernate.hbm2ddl.auto=validate} reported <strong>no
+ *       mismatch</strong>. The negative direction was measured too: mapping a plain {@code String} with
+ *       only a {@code length} attribute onto a {@code CHAR} column fails with
+ *       {@code Schema-validation: wrong column type encountered in column [tran_type] in table}
+ *       {@code [transaction_type]; found [bpchar (Types#CHAR)], but expecting [varchar(2)}
+ *       {@code (Types#VARCHAR)]}, which is why every fixed-width text column in this package declares its
+ *       JDBC type code explicitly. Neither check needs {@code application*.yml} or a
+ *       {@code @SpringBootApplication} entry point - only Hibernate's {@code MetadataSources} bootstrap
+ *       API and a JDBC connection - so both remain repeatable while the Spring layers are still to be
+ *       written.</li>
  *   <li><strong>Tests.</strong> Tests for these entities live in
  *       {@code src/test/java/com/cardemo/unit/model} and <strong>never in this package</strong>, which
- *       contains production classes only. They assert the eleven record lengths, the key lengths, the three
- *       precision tiers, that {@code origTs} and {@code procTs} are declared {@code String}, and that no
- *       accessor or {@code toString} exposes credential material or personal data.</li>
- *   <li><strong>Toolchain actually present.</strong> Verified on this environment: {@code java} and
- *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code mvn} reports Apache Maven
- *       <strong>3.9.11</strong>, and Docker Engine <strong>29.7.0</strong> with {@code docker compose}
+ *       contains production classes only. They are to assert the eleven record lengths, the key lengths, the
+ *       three precision tiers, that {@code origTs} and {@code procTs} are declared {@code String}, and that
+ *       no accessor or {@code toString} exposes credential material or personal data. Measured
+ *       1 August 2026 that set is <strong>largely not available</strong>: {@code UserSecurityTest} is the
+ *       only entity test that exists, so the record lengths, key lengths and precision tiers of the other
+ *       ten entities are asserted <strong>nowhere</strong>. Treat the sentence above as the specification of
+ *       the tests owed, not as a description of a suite that runs.</li>
+ *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on
+ *       that date after {@code source /etc/profile.d/10-carddemo-toolchain.sh}: {@code java} and
+ *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache
+ *       Maven <strong>3.9.11</strong> from the pinned wrapper distribution, and Docker Engine
+ *       <strong>29.7.0</strong> with {@code docker compose}
  *       <strong>v5.3.1</strong> is available and is what provisions PostgreSQL 16 and LocalStack for the
- *       integration tiers. Any claim that the Java toolchain or the container runtime is absent is stale and
- *       must not be repeated.</li>
+ *       integration tiers. Every figure here is a reading taken on 1 August 2026 rather than a
+ *       requirement, so re-measure instead of quoting it after a host change. Any claim that the Java
+ *       toolchain or the container runtime is absent is stale and must not be repeated.</li>
  *   <li><strong>No Lombok and no new dependency.</strong> This package introduces neither, and uses no
  *       annotation processor. Constructors, accessors, {@code equals}, {@code hashCode} and
  *       {@code toString} are written out explicitly, so what is compiled is exactly what is read here and a
@@ -442,39 +399,45 @@
  *   </tbody>
  * </table>
  *
- * <h2>Not available: the authoritative SQL column contract</h2>
+ * <h2>The SQL column contract: V1 exists and agrees; the index and seed migrations do not exist</h2>
  *
- * <p><strong>Not available.</strong> The authoritative SQL column contract for these eleven entities cannot
- * be cited at this commit. {@code src/main/resources/db/migration/} does not exist, so
- * {@code V1__create_schema.sql}, {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are all
- * unwritten and there is no authored SQL type, length, constraint or index to point at. No SQL is invented
- * here to fill the gap, and no column type is asserted as though it had been verified.
+ * <p><strong>{@code src/main/resources/db/migration/V1__create_schema.sql} exists</strong> and is the
+ * authoritative SQL column contract for these eleven entities. An earlier revision of this paragraph said
+ * the migration directory did not exist; that is no longer true and the claim is withdrawn. {@code V1}
+ * declares all eleven tables, 87 columns with {@code NOT NULL} on every one, eleven primary keys, exactly
+ * five {@code CHECK} constraints, exactly ten foreign keys and the four optimistic-lock version columns.
+ * Its agreement with the field tables in this package's class documentation is not asserted from reading
+ * either one: it is verified mechanically by {@code SchemaStructureTest}, which parses {@code V1} and
+ * cross-checks every table, primary-key column order and column width against the record-layout copybooks
+ * in {@code app/cpy} through the {@code RecordLayoutCopybook} oracle.
  *
- * <p><strong>Consequence, stated plainly so it is not mistaken for a detail.</strong> Because the migration
- * does not yet exist, the field tables in this package's class documentation are the <strong>normative
- * column contract</strong>, and {@code V1} must be written to converge on them rather than the reverse. That
- * direction is not a preference: these mappings were derived from the copybooks and corroborated against
- * {@code app/catlg/LISTCAT.txt}, so they carry evidence that an as-yet-unwritten migration cannot.
+ * <p><strong>Still genuinely absent: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}.</strong>
+ * Neither has ever existed in this repository, and {@code V1} contains zero {@code CREATE INDEX}
+ * statements, so the three VSAM alternate indexes recorded in {@code app/catlg/LISTCAT.txt} —
+ * {@code CARDDATA.VSAM.AIX}, {@code CARDXREF.VSAM.AIX} and {@code TRANSACT.VSAM.AIX} — have no relational
+ * counterpart yet, and no row of seed data has been loaded. Every reference below to those two files
+ * describes <strong>planned</strong> work. No SQL is invented here to fill either gap.
  *
- * <p><strong>Severity: Medium.</strong> Not a Blocker, because the module compiles and all eleven entities
- * are complete and internally consistent without the migration. Not Low, because {@code ddl-auto: validate}
- * means the first real application boot fails until the migration exists and agrees with these mappings.
+ * <p><strong>Direction of convergence, unchanged.</strong> These mappings were derived from the copybooks
+ * and corroborated against {@code app/catlg/LISTCAT.txt}, so where the field tables and a migration ever
+ * disagree, the tables carry the evidence and the migration is what changes.
  *
- * <p><strong>What is needed to close it.</strong> None of it is this package's responsibility:
+ * <p><strong>What is still not available.</strong> None of it is this package's responsibility:
  *
  * <ol>
- *   <li>{@code src/main/resources/db/migration/V1__create_schema.sql} containing the <strong>11
- *       {@code CREATE TABLE} statements</strong>, one per entity, with the exact column names, SQL types,
- *       precisions and {@code NOT NULL} constraints enumerated in each entity's Javadoc field table.</li>
- *   <li>The <strong>10 foreign keys</strong> and <strong>5 check constraints</strong> that {@code V1} is
- *       required to declare.</li>
- *   <li>The {@code @Version} columns on the four versioned entities {@link Account}, {@link Card},
- *       {@link Customer} and {@link Transaction}, without which optimistic locking cannot be enforced at
- *       the store level.</li>
  *   <li>{@code V2__create_indexes.sql} with the three non-unique B-tree indexes standing in for the three
- *       VSAM alternate indexes, and {@code V3__seed_data.sql} loading the nine ASCII fixtures with
- *       position-aware overpunch decoding and the ten seeded users stored only as BCrypt hashes.</li>
+ *       VSAM alternate indexes.</li>
+ *   <li>{@code V3__seed_data.sql} loading the nine ASCII fixtures with position-aware overpunch decoding
+ *       and the ten seeded users stored only as BCrypt hashes.</li>
+ *   <li>All four {@code application*.yml} profile files, which is why the {@code ddl-auto: validate}
+ *       behaviour cited throughout this package is the mandated configuration rather than an observed one,
+ *       and why no application boot has yet exercised the agreement described above.</li>
  * </ol>
+ *
+ * <p><strong>Severity: Medium.</strong> Not a Blocker, because the module compiles, all eleven entities are
+ * complete and internally consistent, and the schema they must validate against now exists and agrees with
+ * them. Not Low, because {@code ddl-auto: validate} means the first real application boot cannot be
+ * demonstrated until a profile exists to boot with.
  *
  * <h2>Package level constraints</h2>
  *
@@ -487,8 +450,14 @@
  *       module documentation, and keeping the same content in two places would guarantee that the two
  *       versions diverge.</li>
  *   <li><strong>No business logic.</strong> No interest calculation, no over-limit decision, no posting, no
- *       I/O and no framework lookup. An entity validates its own field widths and compares itself; anything
- *       that reasons about more than one record belongs in a service or a batch processor.</li>
+ *       I/O and no framework lookup. An entity validates its own field widths and numeric domains, and
+ *       compares itself; anything that reasons about more than one record, or that needs a second record to
+ *       reach a verdict, belongs in a service or a batch processor. The line is drawn at the record layout:
+ *       a value that the copybook cannot represent is refused here, while a value the copybook can represent
+ *       but the business would reject - an unknown state code, a card number with no cross-reference row, an
+ *       amount that will breach a credit limit, a credit score below 300 - is stored without complaint,
+ *       because refusing it here would pre-empt a decision that belongs elsewhere and, in the batch case,
+ *       would suppress the reject code the posting job is required to emit.</li>
  *   <li><strong>No secrets, and no credential value from the legacy corpus.</strong> The seed users in
  *       {@code app/jcl/DUSRSECJ.jcl} carry an inline plaintext password. That literal value is
  *       <strong>never</strong> reproduced in this package, in any test, in any comment or anywhere else
@@ -498,10 +467,32 @@
  *       constants such as field-width limits and {@code serialVersionUID}, together with private static
  *       pure helpers. There is no mutable static field anywhere in the package.</li>
  *   <li><strong>Explicit boundary handling.</strong> Null and empty inputs are handled deliberately rather
- *       than incidentally: {@code equals} tolerates {@code null} and a foreign type instead of throwing,
- *       and a field whose width or range is validated on assignment reports the failure through
- *       {@link IllegalArgumentException} naming the offending field. This package must not import
- *       {@code com.cardemo.exception}, which would invert the dependency direction of a model leaf.</li>
+ *       than incidentally, and the rule is uniform across all eleven entities. {@code equals} tolerates
+ *       {@code null} and a foreign type instead of throwing. Every application-facing constructor and every
+ *       mutator other than {@code setVersion} - which is provider-owned - refuses exactly three classes of
+ *       value and reports the failure through {@link IllegalArgumentException} naming the offending property
+ *       and its COBOL field: a {@code null}, because COBOL has no null and every mapped column is
+ *       {@code NOT NULL}; a character value wider than its picture clause, because the fixed-width record
+ *       cannot carry one; and a numeric outside the domain its picture clause declares, which for an
+ *       unsigned {@code PIC 9(n)} means a negative value or one above {@code n} digits and for a
+ *       {@code PIC S9(n)V99} means a scale above two or a magnitude beyond {@code n} integer digits. The
+ *       scale bound is not redundant with the column: PostgreSQL rounds an over-scaled {@code NUMERIC(p,2)}
+ *       insert half away from zero rather than refusing it, which would silently alter a posted amount and
+ *       by a rounding mode that is not the {@code RoundingMode.HALF_EVEN} the batch layer uses.</li>
+ *   <li><strong>What boundary handling deliberately does not do.</strong> It never rejects a blank value -
+ *       {@code ACCT-GROUP-ID}, {@code CUST-MIDDLE-NAME}, {@code CUST-ADDR-LINE-3} and
+ *       {@code TRAN-PROC-TS} are all legitimately spaces in the seed fixtures - never rejects zero, and
+ *       never rejects a negative amount, because every money picture clause carries an {@code S} and
+ *       {@code app/cbl/CBTRN02C.cbl:L547-L552} posts a negative amount to the cycle debit accumulator, which
+ *       is precisely why the over-limit expression subtracts that term. It never trims, pads, case folds,
+ *       rescales, rounds or sign-normalises: a value is returned exactly as supplied or refused outright,
+ *       because the fixed-width writers must re-emit the original image byte for byte. Every guard is a
+ *       {@code private static} method, because the JPA specification forbids a final entity and calling an
+ *       overridable method from a constructor would publish a partially initialised instance -
+ *       {@code -Xlint:all -Werror} rejects that as {@code this-escape}. This package must not import
+ *       {@code com.cardemo.exception}, which would invert the dependency direction of a model leaf, and a
+ *       guard message must never quote a sensitive value: a width failure on a card number, a transaction
+ *       identifier, a social security number or a postal code reports the received length only.</li>
  *   <li><strong>No unsafe deserialization, no dynamic execution, no string-built SQL.</strong> Nothing here
  *       accepts serialized bytes from outside the application, there is no
  *       {@link Runtime#exec(String)} or {@code ProcessBuilder} use, and no concatenated JPQL or SQL. Field
@@ -517,4 +508,5 @@
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
+
 package com.cardemo.model.entity;

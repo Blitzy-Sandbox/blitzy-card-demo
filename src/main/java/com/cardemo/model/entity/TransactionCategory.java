@@ -40,15 +40,18 @@ import org.hibernate.type.SqlTypes;
 
 import com.cardemo.model.key.TransactionCategoryId;
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect;
+import com.fasterxml.jackson.annotation.JsonIgnoreType;
+
 /**
  * Transaction category type reference row, replacing the VSAM KSDS cluster
  * {@code AWS.M2.CARDDEMO.TRANCATG.VSAM.KSDS} one record for one row.
  *
  * <p>The layout is {@code app/cpy/CVTRA04Y.cpy}, whose header comment at {@code :L2} reads
- * {@code Data-structure for transaction category type (RECLN = 60)}. A row names one
- * transaction category within one transaction type and supplies the description that the batch
- * transaction report prints; the only program in the corpus that consumes the layout is
- * {@code app/cbl/CBTRN03C.cbl}, which issues {@code COPY CVTRA04Y.} at {@code :L108}.
+ * {@code Data-structure for transaction category type (RECLN = 60)}. A row names one transaction category
+ * within one transaction type and supplies the description that the batch transaction report prints; the only
+ * program in the corpus that consumes the layout is {@code app/cbl/CBTRN03C.cbl}, which issues
+ * {@code COPY CVTRA04Y.} at {@code :L108}.
  *
  * <p>This is a pure data holder. It performs no I/O, reads no configuration, emits no log,
  * holds no static mutable state and depends on exactly one other CardDemo type, the composite
@@ -231,8 +234,9 @@ import com.cardemo.model.key.TransactionCategoryId;
  * {@code TRANSACT} and {@code USRSEC}. {@code TRANCATG} is not among them, so the dataset has no
  * online definition at all and is reached only from batch, exactly as {@code TCATBALF},
  * {@code DISCGRP} and {@code TRANTYPE} are. That shapes both the authorisation model, since no
- * REST endpoint fronts this table, and the integration test surface, since the table is exercised
- * through batch jobs rather than through controllers. It also has no alternate index:
+ * REST endpoint fronts this table, and the integration test surface, since the table is to be exercised
+ * through batch jobs rather than through controllers - a shape those tests are to take, since neither a
+ * batch job nor an integration tier exists at this commit. It also has no alternate index:
  * {@code app/catlg/LISTCAT.txt:L3938} reports {@code AIX -------------------3} and all three
  * belong to {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, at
  * {@code app/catlg/LISTCAT.txt:L254}, {@code :L455} and {@code :L3645} respectively. The second
@@ -330,11 +334,12 @@ import com.cardemo.model.key.TransactionCategoryId;
  *
  * <h2>Required schema, and what is Not available</h2>
  *
- * <p><b>Not available:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} did not
- * exist when this entity was authored, and neither did the directory that will contain it, so the
- * schema could not be read and this mapping could not be reconciled against it. This field
- * contract is therefore the normative column contract, and the migration must converge on it
- * rather than the reverse. What is needed, precisely:
+ * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
+ * <b>present</b> and declares {@code CREATE TABLE transaction_category}
+ * with 3 columns whose names are identical, as a set, to this class's {@code @Column(name = ...)}
+ * declaration taken together with the two components of {@link com.cardemo.model.key.TransactionCategoryId}.
+ * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not available</b>. What that
+ * migration declares, and what this mapping asserts, is precisely:
  *
  * <ul>
  *   <li>table {@code transaction_category} with, in this order,
@@ -357,7 +362,8 @@ import com.cardemo.model.key.TransactionCategoryId;
  *       {@code JdbcTypeCode(SqlTypes.CHAR)} mapping declared below;</li>
  *   <li>no version column;</li>
  *   <li>no index beyond the primary key;</li>
- *   <li>seeded by {@code V3__seed_data.sql} from {@code app/data/ASCII/trancatg.txt}, which is 18
+ *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit) from {@code
+ *       app/data/ASCII/trancatg.txt}, which is 18
  *       rows of 60 bytes each: bytes 1 to 2 the type code, 3 to 6 the category code, 7 to 56 the
  *       description and 57 to 60 a zero filled filler that is discarded.</li>
  * </ul>
@@ -370,15 +376,17 @@ import com.cardemo.model.key.TransactionCategoryId;
  *
  * <h2>Building, running and testing this component</h2>
  *
- * <p>Build and unit test with {@code mvn -B clean test}, which compiles under
+ * <p>Build and unit test with {@code ./mvnw -B clean test}, which compiles under
  * {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning this file introduces is a
- * build failure rather than console noise. Run the full gate with {@code mvn -B clean verify},
+ * build failure rather than console noise. Run the full gate with {@code ./mvnw -B clean verify},
  * which adds the coverage floor and the dependency vulnerability scan. The unit tests for this
- * entity live in {@code src/test/java/com/cardemo/unit/model} and assert the 60 byte record
+ * entity belong in {@code src/test/java/com/cardemo/unit/model} and are to assert the 60 byte record
  * arithmetic, the composite key length of 6, the table name {@code transaction_category}, that the
  * type is a class rather than an enum, and that no {@code AttributeOverride} and no duplicate key
- * column is declared. The repository tier is exercised against a Testcontainers PostgreSQL 16
- * instance from {@code src/test/java/com/cardemo/integration/repository}. There is no
+ * column is declared. The repository tier is to be exercised against a Testcontainers PostgreSQL 16
+ * instance from {@code src/test/java/com/cardemo/integration/repository}.
+ * <strong>Not available, measured 1 August 2026:</strong> no {@code TransactionCategoryTest} exists and
+ * that integration directory does not exist, so both sentences state coverage owed, not coverage run. There is no
  * configuration key and no default value specific to this class: it is a mapping, and every
  * setting that governs it, the datasource, the naming strategy and {@code ddl-auto: validate}, is
  * declared in the profile configuration.
@@ -418,103 +426,74 @@ import com.cardemo.model.key.TransactionCategoryId;
  *       report, not a mapping defect.</li>
  * </ul>
  *
+ * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
+ * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
+ * JSON, and {@link JsonAutoDetect} with every visibility set to {@code NONE} switches off bean
+ * introspection entirely, so no getter, no setter, no field and no creator is discoverable. This row is
+ * lookup reference data - a composite code and its description - and carries no credential, no personal
+ * data and no customer figure, so unlike {@link Card} or {@link Customer} it is not what the barrier was
+ * introduced to protect. It is applied here anyway, and deliberately without exception, because a barrier
+ * that covers every entity in the package is checkable by inspection, whereas one applied only where a
+ * reviewer judged it necessary has to be re-judged every time an entity is added or a column is widened.
+ * Persistence is unaffected: Hibernate reads and writes the annotated fields reflectively and never
+ * consults Jackson visibility.</p>
+ *
  * @see TransactionCategoryId
- * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */
 @Entity
 @Table(name = "transaction_category")
+@JsonIgnoreType
+@JsonAutoDetect(
+        getterVisibility = JsonAutoDetect.Visibility.NONE,
+        isGetterVisibility = JsonAutoDetect.Visibility.NONE,
+        setterVisibility = JsonAutoDetect.Visibility.NONE,
+        creatorVisibility = JsonAutoDetect.Visibility.NONE,
+        fieldVisibility = JsonAutoDetect.Visibility.NONE)
 public class TransactionCategory {
 
     /**
-     * Exact width, in characters, of {@code TRAN-CAT-TYPE-DESC}, whose picture clause is
-     * {@code PIC X(50)} at {@code app/cpy/CVTRA04Y.cpy:L8}. The source field is fixed width, so 50
-     * is simultaneously the column width, the blank padded width a database read returns and the
-     * upper bound the constructor and setter enforce.
+     * Exact width, in characters, of {@code TRAN-CAT-TYPE-DESC}, whose picture clause is {@code PIC X(50)} at
+     * {@code app/cpy/CVTRA04Y.cpy:L8}. The source field is fixed width, so 50 is simultaneously the column
+     * width, the blank padded width a database read returns and the upper bound the constructor and setter
+     * enforce.
      */
     private static final int CATEGORY_DESCRIPTION_LENGTH = 50;
 
     /**
-     * Composite primary key, from the {@code TRAN-CAT-KEY} group at
-     * {@code app/cpy/CVTRA04Y.cpy:L5}, occupying bytes 1 to 6 of the 60 byte record. That is the
-     * {@code KEYLEN 6} with {@code RKP 0} which {@code app/catlg/LISTCAT.txt:L1475-L1476} reports.
-     *
-     * <p>The two components, {@code TRAN-TYPE-CD PIC X(02)} and {@code TRAN-CAT-CD PIC 9(04)}, and
-     * both of their column mappings, belong to {@link TransactionCategoryId} and are deliberately
-     * not repeated here. This single annotation is the entire key mapping: see the Blocker finding
-     * in the class documentation for why adding an {@code AttributeOverride}, a duplicate
-     * {@code Column} or a second identity mechanism breaks the model.
+     * Composite primary key, from the {@code TRAN-CAT-KEY} group at {@code app/cpy/CVTRA04Y.cpy:L5}, occupying
+     * bytes 1 to 6 of the 60 byte record. That is the {@code KEYLEN 6} with {@code RKP 0} which
+     * {@code app/catlg/LISTCAT.txt:L1475-L1476} reports.
      */
     @EmbeddedId
     private TransactionCategoryId id;
 
     /**
-     * Category description, from {@code TRAN-CAT-TYPE-DESC PIC X(50)} at
-     * {@code app/cpy/CVTRA04Y.cpy:L8}, occupying bytes 7 to 56 of the 60 byte record. This is the
-     * only non-key column on the table; the four byte {@code FILLER} at {@code :L9} that completes
-     * the record is not modelled.
-     *
-     * <p>Stored and returned blank padded to the full 50 characters, which is the faithful fixed
-     * width image rather than an artefact, and deliberately not trimmed on the way out. Not
-     * nullable, and not constrained beyond its width, so a description of only spaces loads exactly
-     * as the source permits.
-     *
-     * <p>{@code JdbcTypeCode(SqlTypes.CHAR)} is required rather than decorative: without it
-     * Hibernate defaults a {@code String} to {@code VARCHAR} and schema validation rejects the
-     * {@code CHAR(50)} column outright at startup. See the second Blocker finding in the class
-     * documentation for the measured evidence.
+     * Category description, from {@code TRAN-CAT-TYPE-DESC PIC X(50)} at {@code app/cpy/CVTRA04Y.cpy:L8},
+     * occupying bytes 7 to 56 of the 60 byte record. This is the only non-key column on the table; the four
+     * byte {@code FILLER} at {@code :L9} that completes the record is not modelled.
      */
     @JdbcTypeCode(SqlTypes.CHAR)
     @Column(name = "tran_cat_type_desc", nullable = false, length = CATEGORY_DESCRIPTION_LENGTH)
     private String categoryDescription;
 
     /**
-     * No argument constructor required by Jakarta Persistence so a provider can instantiate a
-     * managed instance before populating its state by field reflection.
-     *
-     * <p>It is {@code protected} rather than {@code public} because application code has no
-     * legitimate use for an entity with neither identity nor description, and must instead use
-     * {@link #TransactionCategory(TransactionCategoryId, String)}, which validates both. Nothing is
-     * defaulted here: a synthetic default would be indistinguishable from a value genuinely read
-     * from the database, and validating here would reject the legitimate half-built instance a
-     * provider creates. This is a required specification hook, not an unfinished implementation.
+     * No argument constructor required by Jakarta Persistence so a provider can instantiate a managed instance
+     * before populating its state by field reflection.
      */
     protected TransactionCategory() {
-        // Intentionally empty. The persistence provider assigns the identifier and the description
-        // by field reflection immediately after instantiation, so defaulting or validating anything
-        // at this point would either fabricate state the source never held or reject a valid
-        // provider-created instance.
+        // Intentionally empty: the provider assigns both members reflectively after instantiation, so a
+        // default or a check here would fabricate state the source never held.
     }
 
     /**
-     * Creates a fully populated transaction category row, which is how application, batch and test
-     * code should build one.
+     * Creates a fully populated transaction category row, which is how application, batch and test code should
+     * build one.
      *
-     * <p>Both members are assigned through {@code private static} validators and never through the
-     * setters. That is not stylistic: the JPA specification forbids a {@code final} entity class, so
-     * a constructor that called an overridable instance method would leak {@code this} to a subclass
-     * override before construction completed. The compiler reports exactly that as a
-     * {@code this-escape} warning and {@code -Werror} turns it into a build failure.
-     *
-     * <p>Validation is confined to what the source field contract itself dictates and adds no
-     * restriction beyond it. The identifier is the row's identity and cannot be absent. The
-     * description cannot be absent because the column is not nullable, and cannot exceed 50
-     * characters because {@code PIC X(50)} physically cannot represent more; a longer value would
-     * otherwise surface only as a truncation error at flush, far from its cause. A blank or empty
-     * description is explicitly accepted, because the source accepts one.
-     *
-     * <p>The constructor performs no I/O, emits no log and has no side effect beyond initialising
-     * the two members.
-     *
-     * @param id                  the composite key, from the {@code TRAN-CAT-KEY} group at
-     *                            {@code app/cpy/CVTRA04Y.cpy:L5}; must not be {@code null}
+     * @param id the composite key, from the {@code TRAN-CAT-KEY} group at {@code app/cpy/CVTRA04Y.cpy:L5}.
      * @param categoryDescription the description for {@code tran_cat_type_desc}, from
-     *                            {@code TRAN-CAT-TYPE-DESC PIC X(50)}; must not be {@code null} and
-     *                            must be at most 50 characters, and is blank padded to 50 by the
-     *                            {@code CHAR(50)} column. May be blank or empty
-     * @throws IllegalArgumentException if {@code id} is {@code null}, or if
-     *                                  {@code categoryDescription} is {@code null} or longer than
-     *                                  50 characters; the message names the member, quotes its
-     *                                  source picture clause and reports what was received
+     * {@code TRAN-CAT-TYPE-DESC PIC X(50)}.
+     * @throws IllegalArgumentException if {@code id} is {@code null}, or if {@code categoryDescription} is
+     * {@code null} or longer than 50 characters.
      */
     public TransactionCategory(final TransactionCategoryId id, final String categoryDescription) {
         this.id = requireId(id);
@@ -523,12 +502,6 @@ public class TransactionCategory {
 
     /**
      * Validates a candidate composite key.
-     *
-     * <p>The method is {@code static} so that neither the constructor nor a setter invokes an
-     * overridable instance method; see the {@code this-escape} note on the constructor. It performs
-     * no validation of the key's own components, because {@link TransactionCategoryId} already
-     * validates both against their picture clauses when it is constructed, and duplicating that
-     * here would create a second copy of the same rule to drift out of step.
      *
      * @param value the candidate identifier exactly as supplied, possibly {@code null}
      * @return {@code value} unchanged when valid
@@ -545,15 +518,10 @@ public class TransactionCategory {
     /**
      * Validates a candidate description against its source picture clause {@code PIC X(50)}.
      *
-     * <p>The method is {@code static} for the same reason as {@link #requireId(TransactionCategoryId)}.
-     * Only absence and over-width are rejected. Blankness is not: a value of only spaces is a legal
-     * {@code PIC X(50)} image, and rejecting it would refuse data the system of record accepts. The
-     * value is returned unchanged, never trimmed or padded, so the fixed width geometry survives.
-     *
      * @param value the candidate description exactly as supplied, possibly {@code null}
      * @return {@code value} unchanged when valid, including when it is blank or empty
-     * @throws IllegalArgumentException if {@code value} is {@code null}, or is longer than the 50
-     *                                  characters the source field can hold
+     * @throws IllegalArgumentException if {@code value} is {@code null}, or is longer than the 50 characters
+     * the source field can hold
      */
     private static String requireCategoryDescription(final String value) {
         if (value == null) {
@@ -571,13 +539,8 @@ public class TransactionCategory {
      * Returns the composite primary key, from the {@code TRAN-CAT-KEY} group at
      * {@code app/cpy/CVTRA04Y.cpy:L5}.
      *
-     * <p>This is the only route to either key component: the transaction type code is
-     * {@code getId().getTranTypeCd()} and the category code is {@code getId().getTranCatCd()}. No
-     * pass-through accessor is provided here, deliberately, so that the key class remains the single
-     * definition of its own surface.
-     *
-     * @return the six byte composite key, or {@code null} on a transient instance that the no
-     *         argument constructor built and a provider has not yet populated
+     * @return the six byte composite key, or {@code null} on a transient instance that the no argument
+     * constructor built and a provider has not yet populated
      */
     public TransactionCategoryId getId() {
         return id;
@@ -586,14 +549,7 @@ public class TransactionCategory {
     /**
      * Replaces the composite primary key.
      *
-     * <p>Provided as the convenience mutator that the field contract calls for, but it changes the
-     * row's identity and therefore its {@link #equals(Object)} and {@link #hashCode()} results. It is
-     * safe on a transient instance being assembled before persisting. It must not be called on an
-     * instance already managed by a persistence context, where reassigning the identifier would
-     * corrupt the identity map, nor on an instance held in a hash based collection, which would then
-     * be filed under a stale hash.
-     *
-     * @param id the composite key to apply; must not be {@code null}
+     * @param id the composite key to apply.
      * @throws IllegalArgumentException if {@code id} is {@code null}
      */
     public void setId(final TransactionCategoryId id) {
@@ -604,10 +560,9 @@ public class TransactionCategory {
      * Returns the category description, from {@code TRAN-CAT-TYPE-DESC PIC X(50)} at
      * {@code app/cpy/CVTRA04Y.cpy:L8}.
      *
-     * @return the description exactly as stored, which after a database read is blank padded to 50
-     *         characters by the {@code CHAR(50)} column and is deliberately not trimmed, or
-     *         {@code null} on a transient instance that the no argument constructor built and a
-     *         provider has not yet populated
+     * @return the description exactly as stored, which after a database read is blank padded to 50 characters
+     * by the {@code CHAR(50)} column and is deliberately not trimmed, or {@code null} on a transient instance
+     * that the no argument constructor built and a provider has not yet populated
      */
     public String getCategoryDescription() {
         return categoryDescription;
@@ -616,11 +571,9 @@ public class TransactionCategory {
     /**
      * Replaces the category description.
      *
-     * @param categoryDescription the description to apply, from {@code TRAN-CAT-TYPE-DESC PIC X(50)};
-     *                            must not be {@code null} and must be at most 50 characters, and may
-     *                            be blank or empty
-     * @throws IllegalArgumentException if {@code categoryDescription} is {@code null} or longer than
-     *                                  50 characters
+     * @param categoryDescription the description to apply, from {@code TRAN-CAT-TYPE-DESC PIC X(50)}.
+     * @throws IllegalArgumentException if {@code categoryDescription} is {@code null} or longer than 50
+     * characters
      */
     public void setCategoryDescription(final String categoryDescription) {
         this.categoryDescription = requireCategoryDescription(categoryDescription);
@@ -629,24 +582,9 @@ public class TransactionCategory {
     /**
      * Compares this row with another object by primary key alone.
      *
-     * <p>Identity is the composite key and nothing else, so the description is deliberately excluded:
-     * two loads of the same row must compare equal even if one was mutated in memory, and a row whose
-     * description was corrected is still the same row. {@link TransactionCategoryId} already supplies
-     * value based equality over both of its components, so this method delegates to it rather than
-     * reaching into the key, which is what keeps the key's definition of equality in one place.
-     *
-     * <p>The comparison requires identical runtime classes rather than mere assignability, which keeps
-     * the relation symmetric in the presence of any subclass a provider might generate as a proxy.
-     *
-     * <p>An instance with no identifier yet, which is the transient state the no argument constructor
-     * leaves, is equal only to itself. Treating two such instances as equal would make every freshly
-     * built row collide in a hash based collection, so the {@code null} identifier case is
-     * deliberately not folded together.
-     *
      * @param other the object to compare with, possibly {@code null}
-     * @return {@code true} if {@code other} is a {@code TransactionCategory} with an equal, non
-     *         {@code null} composite key; {@code false} otherwise, including when {@code other} is
-     *         {@code null}, is of another class, or either identifier is absent
+     * @return {@code true} if {@code other} is a {@code TransactionCategory} with an equal, non {@code null}
+     * composite key.
      */
     @Override
     public boolean equals(final Object other) {
@@ -663,12 +601,6 @@ public class TransactionCategory {
     /**
      * Returns a hash consistent with {@link #equals(Object)}, derived from the composite key alone.
      *
-     * <p>The description is excluded so that mutating it cannot move a managed instance between hash
-     * buckets. A transient instance with no identifier hashes to zero, which is consistent with it
-     * being equal only to itself. The caveat that follows from that, and it is the standard one for
-     * every JPA entity, is that assigning an identifier to an instance already held in a hash based
-     * collection changes its hash and strands it; assign the key before filing the instance.
-     *
      * @return the hash of the composite key, or zero when no key has been assigned
      */
     @Override
@@ -679,20 +611,7 @@ public class TransactionCategory {
     /**
      * Returns a diagnostic rendering of the whole row, both the composite key and the description.
      *
-     * <p>Nothing on this row is secret, credential bearing or personal: a transaction type code, a
-     * transaction category code and a fixed reference description that the batch report already
-     * prints in clear. The full row is therefore rendered, unlike {@code Card}, {@code Customer} and
-     * {@code UserSecurity}, whose renderings are deliberately restricted because they carry card
-     * numbers, personally identifiable data and a password hash respectively. Rule 1 clause D is
-     * satisfied by there being nothing here to withhold rather than by withholding it.
-     *
-     * <p>This is for developer diagnostics only. It is not a log format and not a wire format, no
-     * caller may parse it, and it may change without notice. It applies no locale sensitive
-     * formatting, so it cannot vary with the platform default locale, and it does not zero pad the
-     * category code, so it must never be used to build a fixed width record image.
-     *
-     * @return the simple class name followed by the composite key and the description, never
-     *         {@code null}
+     * @return the simple class name followed by the composite key and the description, never {@code null}
      */
     @Override
     public String toString() {
