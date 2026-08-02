@@ -91,8 +91,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Key configuration and defaults</h2>
  *
  * <ul>
- *   <li>{@code carddemo.s3.output-bucket} - the destination bucket, backed by the
- *       {@code CARDDEMO_S3_OUTPUT_BUCKET} environment variable. <strong>There is deliberately no default.</strong>
+ *   <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket, declared at
+ *       {@code src/main/resources/application.yml:899} and backed by the
+ *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} environment variable that {@code .env.example:81} ships.
+ *       <strong>There is deliberately no default.</strong>
  *       A missing value fails the context at startup rather than silently writing somewhere unintended, which
  *       is the fail-fast standard this migration applies to every externalised setting.</li>
  *   <li>No endpoint, region or credential is read here. The object-storage client is injected already
@@ -168,8 +170,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>Context fails to start, unresolved placeholder {@code carddemo.s3.output-bucket}</strong> -
- *       the property is absent. Set {@code CARDDEMO_S3_OUTPUT_BUCKET}. This is intended behaviour.</li>
+ *   <li><strong>Context fails to start, unresolved placeholder
+ *       {@code carddemo.aws.s3.batch-output-bucket}</strong> - the property is absent. Set
+ *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. This is intended behaviour.</li>
  *   <li><strong>{@code FatalProcessingException} naming a field and a length</strong> - an entity field is
  *       longer than the picture clause allows, so no 430-byte record can be composed. The message names the
  *       field and reports lengths only; inspect the offending row by its transaction identifier.</li>
@@ -598,8 +601,8 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      *        {@code io.awspring.cloud.s3.S3Template}; must not be {@code null}
      * @param meterRegistry the registry holding the records-rejected counter; must not be {@code null}
      * @param fileStatusMapper the file-status-to-exception mapper; must not be {@code null}
-     * @param outputBucket the destination bucket from {@code carddemo.s3.output-bucket}, backed by
-     *        {@code CARDDEMO_S3_OUTPUT_BUCKET}; must not be {@code null}, and has no default so that an
+     * @param outputBucket the destination bucket from {@code carddemo.aws.s3.batch-output-bucket}, backed by
+     *        {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}; must not be {@code null}, and has no default so that an
      *        absent value fails the context rather than writing somewhere unintended
      * @param stepExecution the step this writer serves, supplied by the step scope. Permitted to be
      *        {@code null} so a unit test can construct the class directly; when it is {@code null} the object
@@ -610,7 +613,7 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
             final S3Operations s3Operations,
             final MeterRegistry meterRegistry,
             final FileStatusMapper fileStatusMapper,
-            @Value("${carddemo.s3.output-bucket}") final String outputBucket,
+            @Value("${carddemo.aws.s3.batch-output-bucket}") final String outputBucket,
             @Value("#{stepExecution}") final StepExecution stepExecution) {
         this.s3Operations = Objects.requireNonNull(s3Operations, "s3Operations must not be null");
         this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");

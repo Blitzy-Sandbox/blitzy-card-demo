@@ -168,7 +168,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <table border="1">
  *   <caption>Configuration read by this component</caption>
  *   <tr><th>Property</th><th>Environment variable</th><th>Default</th><th>Meaning</th></tr>
- *   <tr><td>{@code carddemo.s3.statements-bucket}</td><td>{@code CARDDEMO_S3_STATEMENTS_BUCKET}</td>
+ *   <tr><td>{@code carddemo.aws.s3.statements-bucket}</td><td>{@code CARDDEMO_S3_STATEMENTS_BUCKET}</td>
  *       <td>{@code carddemo-statements}</td>
  *       <td>Bucket that receives both statement objects. The default matches
  *           {@code .env.example:L82}, {@code docker-compose.yml:L99} and
@@ -911,7 +911,7 @@ public final class StatementWriter implements ItemWriter<StatementTransaction>, 
      * @param fileStatusMapper the injected status mapper that owns the status-to-exception decision; must
      * not be {@code null}
      * @param statementsBucket the bucket that receives both statement objects, from
-     * {@code carddemo.s3.statements-bucket} (environment {@code CARDDEMO_S3_STATEMENTS_BUCKET},
+     * {@code carddemo.aws.s3.statements-bucket} (environment {@code CARDDEMO_S3_STATEMENTS_BUCKET},
      * default {@code carddemo-statements}); must not be {@code null} or blank
      * @throws NullPointerException if any collaborator is {@code null}
      * @throws IllegalArgumentException if the bucket name is blank
@@ -920,14 +920,15 @@ public final class StatementWriter implements ItemWriter<StatementTransaction>, 
             S3Template s3Template,
             MeterRegistry meterRegistry,
             FileStatusMapper fileStatusMapper,
-            @Value("${carddemo.s3.statements-bucket:carddemo-statements}") String statementsBucket) {
+            @Value("${carddemo.aws.s3.statements-bucket:carddemo-statements}") String statementsBucket) {
         this.s3Template = Objects.requireNonNull(s3Template, "s3Template must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
         Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
         Objects.requireNonNull(statementsBucket, "statementsBucket must not be null");
         if (statementsBucket.isBlank()) {
             throw new IllegalArgumentException(
-                    "carddemo.s3.statements-bucket must not be blank; set CARDDEMO_S3_STATEMENTS_BUCKET");
+                    "carddemo.aws.s3.statements-bucket must not be blank; "
+                            + "set CARDDEMO_S3_STATEMENTS_BUCKET");
         }
         this.statementsBucket = statementsBucket;
         this.recordsProcessedCounter = meterRegistry.counter(RECORDS_PROCESSED_COUNTER);

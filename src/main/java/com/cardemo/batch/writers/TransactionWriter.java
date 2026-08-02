@@ -117,10 +117,13 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <h2>Key configuration and defaults</h2>
  *
  * <ul>
- * <li>{@code carddemo.s3.output-bucket} - the destination bucket. <strong>No default</strong>: the value is
- * required, and a context that does not supply it fails to start rather than silently writing somewhere
- * unintended. Supplied through {@code CARDDEMO_S3_OUTPUT_BUCKET} in the {@code application*.yml} profiles.</li>
- * <li>{@code carddemo.s3.transaction-object-prefix} - the base-name segment every key starts with. Defaults
+ * <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket. <strong>No default</strong>: the
+ * value is required, and a context that does not supply it fails to start rather than silently writing
+ * somewhere unintended. Declared at {@code src/main/resources/application.yml:899} and supplied through
+ * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}, the name {@code .env.example:81} ships and
+ * {@code localstack-init/init-aws.sh} provisions.</li>
+ * <li>{@code carddemo.aws.s3.transaction-object-prefix} - the base-name segment every key starts with.
+ * Defaults
  * to {@code transact}, the logical file name of {@code app/jcl/TRANFILE.jcl}.</li>
  * </ul>
  *
@@ -562,7 +565,7 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * meter of that name exists yet and returns the existing one otherwise. Nothing else.
      *
      * <p>Error modes: rejects a blank bucket or prefix, so a context that has not supplied
-     * {@code carddemo.s3.output-bucket} fails at startup rather than at the first write.
+     * {@code carddemo.aws.s3.batch-output-bucket} fails at startup rather than at the first write.
      *
      * @param transactionRepository the repository whose inherited {@code saveAllAndFlush} performs the
      *        insert. Never {@code null}
@@ -583,13 +586,13 @@ public class TransactionWriter implements ItemWriter<Transaction> {
             S3Operations objectStorage,
             FileStatusMapper fileStatusMapper,
             MeterRegistry meterRegistry,
-            @Value("${carddemo.s3.output-bucket}") String outputBucket,
-            @Value("${carddemo.s3.transaction-object-prefix:transact}") String objectPrefix) {
+            @Value("${carddemo.aws.s3.batch-output-bucket}") String outputBucket,
+            @Value("${carddemo.aws.s3.transaction-object-prefix:transact}") String objectPrefix) {
         this.transactionRepository = requireCollaborator(transactionRepository, "transactionRepository");
         this.objectStorage = requireCollaborator(objectStorage, "objectStorage");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
-        this.outputBucket = requireConfigured(outputBucket, "carddemo.s3.output-bucket");
-        this.objectPrefix = requireConfigured(objectPrefix, "carddemo.s3.transaction-object-prefix");
+        this.outputBucket = requireConfigured(outputBucket, "carddemo.aws.s3.batch-output-bucket");
+        this.objectPrefix = requireConfigured(objectPrefix, "carddemo.aws.s3.transaction-object-prefix");
         this.recordsProcessedCounter =
                 requireCollaborator(meterRegistry, "meterRegistry").counter(RECORDS_PROCESSED_COUNTER);
     }

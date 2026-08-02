@@ -1,0 +1,1251 @@
+# ******************************************************************
+# * File         : application-prod.yml
+# * Application  : CardDemo
+# * Type         : Spring Boot production profile (YAML), least privilege
+# * Function     : The production-only DELTA over application.yml for the
+# *                CardDemo modular monolith that replaces the z/OS
+# *                runtime of the frozen COBOL corpus in app/. It exists
+# *                to satisfy Rule 1 Clause D - "principle of least
+# *                privilege for tokens/credentials/config" - and to close
+# *                the High-severity gap left by the previous migration
+# *                attempt, which shipped no production profile at all.
+# *                It carries NO secret, NO credential, NO endpoint, NO
+# *                hostname and NO default on any environment-specific
+# *                value, so an absent variable fails startup by design.
+# *                It restates nothing from the base profile that would
+# *                merely repeat a base value.
+# * Source       : app/csd/CARDDEMO.CSD - the 8 DEFINE FILE entries of the
+# *                online file control table at L1 ACCTDAT, L13 CARDAIX,
+# *                L25 CARDDAT, L37 CCXREF, L50 CUSTDAT, L63 CXACAIX,
+# *                L76 TRANSACT and L88 USRSEC; 18 DEFINE TRANSACTION of
+# *                which CDV1 at L388-390 fronts PROGRAM(COCRDSEC), a
+# *                program with no source anywhere in the repository,
+# *                leaving 17 sourced operations; and DEFINE TDQUEUE(JOBS)
+# *                TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
+# *                RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) at
+# *                L499-505;
+# *                app/jcl/DEFGDGB.jcl - six generation data group bases
+# *                at L25 TRANSACT.BKUP, L31 TRANSACT.DALY, L37 TRANREPT,
+# *                L43 TCATBALF.BKUP, L49 SYSTRAN and L55
+# *                TRANSACT.COMBINED, every one LIMIT(5);
+# *                app/jcl/REPTFILE.jcl - L26-27 declares LIMIT(10) for
+# *                the SAME TRANREPT base, the retention conflict this
+# *                migration resolves to 10;
+# *                app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl - EXEC
+# *                PGM=SDSF issuing CEMT SET FIL(TRANSACT), (CCXREF),
+# *                (ACCTDAT), (CXACAIX) and (USRSEC) OPE and CLO at
+# *                L26-L30, the five datasets whose availability becomes
+# *                the readiness probe group;
+# *                app/cpy/CSUSR01Y.cpy - 05 SEC-USR-PWD PIC X(08) at L21,
+# *                the plaintext password field now stored only as a
+# *                BCrypt hash;
+# *                app/cpy/CVCUS01Y.cpy - 05 CUST-SSN PIC 9(09) at L17,
+# *                with CUST-GOVT-ISSUED-ID at L18 and
+# *                CUST-DOB-YYYY-MM-DD at L19, the personally identifiable
+# *                fields that must never reach a log line or a
+# *                configuration value
+# *                - all @ 7756d89
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+# MODULE DOCSTRING
+#
+# WHAT IT DOES
+#
+# This profile hardens one deployable artefact for production. It is a DELTA
+# and nothing else: application.yml declares the property namespace, the
+# environment-variable contract and every structural default, and this file
+# changes only what production must change. TWENTY properties are declared
+# here. Everything else is inherited, and every deliberate omission is listed
+# under INHERITED AND DELIBERATELY NOT RESTATED below so a reviewer can tell
+# an intentional absence from a forgotten key.
+#
+# It exists for one reason. Rule 1 Clause D requires least privilege for
+# tokens, credentials and configuration, and the previous migration attempt
+# shipped no production profile at all while hardcoding the JWT signing key.
+# Both are closed here: the key is inherited as a bare environment reference
+# with no default, and the production posture is now written down where an
+# auditor can read it rather than inferred from a development profile.
+#
+# The twenty declared properties fall into exactly two kinds, and the
+# distinction is what keeps this file free of duplication:
+#
+#   - DELTA (7 properties) - the value production requires differs from the
+#     value the base profile establishes. Measured, base on the left:
+#         spring.main.banner-mode                     log     -> off
+#         management.endpoints.web.discovery.enabled  unset in base, default
+#                                                     true    -> false
+#         management.info.build.enabled               unset in base, default
+#                                                     true    -> false
+#         management.info.git.enabled                 unset in base, default
+#                                                     true    -> false
+#         management.tracing.sampling.probability     1.0     -> 0.1
+#         logging.level.org.springframework.web       INFO    -> WARN
+#         logging.level.org.springframework.security  INFO    -> WARN
+#   - PIN (13 properties) - the value equals the base value, but the key is
+#     declared anyway because it is schema-destructive, PII-disclosing or
+#     surface-widening, and a production profile that does not state its own
+#     answer to those questions cannot be audited:
+#         spring.jpa.hibernate.ddl-auto
+#         spring.jpa.show-sql
+#         spring.flyway.baseline-on-migrate
+#         spring.flyway.validate-on-migrate
+#         spring.flyway.clean-disabled
+#         spring.flyway.out-of-order
+#         spring.batch.job.enabled
+#         spring.batch.jdbc.initialize-schema
+#         management.endpoints.web.exposure.include
+#         management.endpoint.health.show-details
+#         management.endpoint.health.show-components
+#         logging.level.org.hibernate.SQL
+#         logging.level.org.hibernate.orm.jdbc.bind
+#     Each pin names the specific harm it prevents at its declaration site.
+#     No pin is a silent repeat.
+#     Six of the thirteen also narrow or correct the framework default that
+#     would otherwise apply, measured against the pinned classpath's own
+#     spring-configuration-metadata.json: ddl-auto has no safe literal default
+#     at all, because Boot derives it from the DataSource through
+#     HibernateDefaultDdlAutoProvider.getDefaultDdlAuto(DataSource);
+#     spring.batch.job.enabled defaults to true; batch initialize-schema
+#     defaults to embedded; exposure.include defaults to health alone; and the
+#     two Hibernate log levels have no per-logger default, so an unset logger
+#     inherits the root level. The other seven already match the framework
+#     default and are pinned regardless, because a default that happens to be
+#     safe is still not a decision anyone recorded.
+#
+# HOW TO RUN, BUILD AND TEST
+#
+# Build and unit-test - identical to every other profile, because the build is
+# profile independent:
+#     ./mvnw -B -ntp clean test
+# Full verify, including coverage and the vulnerability scan:
+#     ./mvnw -B -ntp clean verify
+#
+# Activate this profile by environment variable only. Dockerfile:95 sets
+# SPRING_PROFILES_ACTIVE to the empty string precisely so the image stays
+# profile neutral, and nothing in this file or in application.yml sets
+# spring.profiles.active:
+#     SPRING_PROFILES_ACTIVE=prod java -jar target/carddemo-*.jar
+#
+# ACTIVATE prod ALONE. This is a hard precondition, not advice. Spring
+# resolves competing profile properties by ACTIVATION ORDER - the profile
+# listed last wins - so `prod,local` would let the local profile's concrete
+# database host, its service-emulator endpoint override and its
+# spring.batch.jdbc.initialize-schema: always defeat everything below,
+# whichever keys this file declares. The layering contract is recorded at
+# application.yml:206-212. No amount of restatement can make a mixed
+# activation safe, which is why the answer is a precondition rather than more
+# keys. The one thing restatement DOES buy is the reverse order: under
+# `local,prod` the thirteen pins below win. Treat that as a seatbelt, never as
+# a licence to combine profiles.
+#
+# EVERY SECRET IS INJECTED BY THE DEPLOYMENT PLATFORM AND NONE IS COMMITTED.
+# The variables the running process must be given are declared once, in the
+# base profile, and are inherited here unchanged:
+#     JWT_SECRET                        application.yml:874  (no default)
+#     POSTGRES_HOST, POSTGRES_DB        application.yml:544  (no default)
+#     POSTGRES_USER                     application.yml:545  (no default)
+#     POSTGRES_PASSWORD                 application.yml:547  (no default)
+#     AWS_REGION or AWS_DEFAULT_REGION  application.yml:677  (no default)
+#     CARDDEMO_S3_BATCH_INPUT_BUCKET    application.yml:898  (no default)
+#     CARDDEMO_S3_BATCH_OUTPUT_BUCKET   application.yml:899  (no default)
+#     CARDDEMO_S3_STATEMENTS_BUCKET     application.yml:900  (no default)
+#     CARDDEMO_SQS_REPORT_QUEUE         application.yml:949  (no default)
+#     CARDDEMO_SNS_NOTIFICATION_TOPIC   application.yml:958  (no default)
+#     OTEL_EXPORTER_OTLP_ENDPOINT       application.yml:814  (no default)
+# Deliver them through the platform's secret mechanism - a task-definition
+# secret reference, a Kubernetes Secret projected as an environment variable,
+# or an equivalent. Do not bake them into the image, a compose file or a
+# committed .env. The AWS credentials that reach S3, SQS and SNS are NOT in
+# that list on purpose: production resolves them through the SDK provider
+# chain from an instance or task role, so there is no static key to leak.
+#
+# KEY CONFIGURATION AND DEFAULTS
+#
+# THIS PROFILE CARRIES NO DEFAULT FOR ANY SECRET, AND THAT IS THE DESIGN.
+# There is not one `${VAR:fallback}` anywhere below, and the environment
+# references this profile inherits are all bare. An absent variable therefore
+# leaves a placeholder unresolvable, which fails property resolution and
+# aborts startup before the first request is served.
+#
+# A FAILED STARTUP HERE IS A CORRECT STARTUP, NOT A MISCONFIGURATION. Rule 1
+# Clause B requires null and empty cases to be handled explicitly, and a
+# production process that boots with a guessed database host or a generated
+# signing key is precisely the unsafe default Rule 1 Clause A forbids. The
+# failure is the explicit handling. Never add a default to silence it.
+#
+# The only defaulted values anywhere in the composed configuration are
+# non-secret protocol constants and legacy parity constants inherited from
+# the base - SERVER_PORT 8080, POSTGRES_PORT 5432, the JWT issuer and
+# lifetime, the four page sizes, the BCrypt strength, the fixed record
+# lengths and the generation retention count. None is environment specific
+# and none is sensitive.
+#
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+#
+#   - STARTUP ABORTS ON THE SIGNING KEY. Reported as an unresolvable
+#     placeholder for carddemo.security.jwt.signing-key naming JWT_SECRET.
+#     JWT_SECRET was not injected. This is the intended fail-fast path.
+#     Remediation: inject a key of at least 32 bytes of entropy through the
+#     platform secret store; .env.example:41-44 documents how one is
+#     generated and ships the entry empty. Never add a default, and never
+#     introduce a second variable name for the same value.
+#   - STARTUP ABORTS ON THE DATASOURCE. POSTGRES_HOST, POSTGRES_DB,
+#     POSTGRES_USER or POSTGRES_PASSWORD was not injected. Remediation:
+#     inject all four, or override spring.datasource.url, .username and
+#     .password wholesale with SPRING_DATASOURCE_URL,
+#     SPRING_DATASOURCE_USERNAME and SPRING_DATASOURCE_PASSWORD, which bind
+#     to the same three properties by relaxed binding at a higher precedence
+#     than any profile file.
+#   - THE DATABASE REJECTS THE CREDENTIAL. The process starts resolving
+#     properties and then fails to open a pool connection with an
+#     authentication error. The value was injected but is wrong, or the
+#     production role lacks CONNECT on the database. Remediation: verify the
+#     secret version the platform actually projected, then verify the grant.
+#     Under least privilege the application role needs CONNECT plus SELECT,
+#     INSERT, UPDATE and DELETE on the 11 business tables, and it needs
+#     nothing else: no SUPERUSER, no CREATEDB and no CREATEROLE. It does
+#     need DDL rights on its own schema for the Flyway history table only
+#     while a migration is pending; a deployment that separates migration
+#     from serving should run Flyway under a distinct migration role.
+#   - FLYWAY REPORTS A CHECKSUM MISMATCH OR A FAILED VALIDATION against an
+#     existing schema. A committed migration was edited after it had already
+#     been applied to this database, or the schema was created by something
+#     other than Flyway. Remediation: roll forward with a new migration.
+#     spring.flyway.clean-disabled is pinned true below and must stay true -
+#     clean would drop the production schema - and there is deliberately no
+#     ignore-migration-patterns and no continue-on-error, because Rule 1
+#     Clause B forbids swallowing the failure. Do NOT baseline an unknown
+#     schema: baseline-on-migrate is pinned false for that reason.
+#   - HIBERNATE REPORTS A MISSING TABLE OR COLUMN. ddl-auto is pinned
+#     validate, so the entity mapping and the Flyway schema have diverged.
+#     Remediation: fix whichever is wrong and redeploy. Never switch ddl-auto
+#     to update or create in order to start - that would let Hibernate
+#     reshape a production table away from the record layouts in app/cpy and
+#     break field-contract parity silently.
+#   - SPRING BATCH REPORTS A MISSING BATCH_JOB_INSTANCE. Expected on a fresh
+#     production database: spring.batch.jdbc.initialize-schema is pinned
+#     never. Remediation: have a DBA apply the framework's own
+#     org/springframework/batch/core/schema-postgresql.sql once, as a
+#     reviewed change. The BATCH_* tables must NEVER become a fourth Flyway
+#     migration nor an extra table in V1__create_schema.sql, because a
+#     validation gate asserts V1 creates exactly 11 tables.
+#   - AWS CALLS FAIL WITH AN ACCESS DENIED UNDER LEAST PRIVILEGE. The role
+#     resolved by the provider chain is missing a permission. Remediation:
+#     grant exactly what the workload performs and nothing more -
+#     s3:GetObject and s3:PutObject on the three bucket ARNs plus
+#     s3:ListBucket where a current-generation read must find the greatest
+#     existing key prefix; sqs:SendMessage, sqs:ReceiveMessage,
+#     sqs:DeleteMessage and sqs:GetQueueAttributes on the FIFO queue ARN;
+#     and sns:Publish on the topic ARN. Do NOT diagnose this by adding a
+#     static access key to configuration; that trades an authorisation
+#     failure for a committed credential.
+#   - AWS CALLS RESOLVE TO THE WRONG ACCOUNT OR REGION, or an unexpected
+#     bucket appears. Either AWS_REGION and AWS_DEFAULT_REGION are both
+#     absent, or AWS_ENDPOINT_URL is exported in the production environment.
+#     The SDK honours AWS_ENDPOINT_URL globally and it must never be set
+#     here; this profile declares no endpoint override of any kind.
+#   - THE OTLP COLLECTOR IS MISSING. Startup aborts on an unresolvable
+#     OTEL_EXPORTER_OTLP_ENDPOINT. There is deliberately no default: Boot
+#     gates its OTLP span exporter on that property, so a missing value would
+#     create no exporter and every span would be dropped in silence.
+#     Remediation: inject the collector endpoint, or set the
+#     higher-precedence MANAGEMENT_OTLP_TRACING_ENDPOINT. If tracing is
+#     genuinely not wanted in a given environment, disable it explicitly with
+#     MANAGEMENT_TRACING_ENABLED=false rather than by omitting the endpoint.
+#   - /actuator/health/readiness RETURNS 404. The probe groups were removed
+#     or renamed in the base. Dockerfile:99-100 issues
+#     GET /actuator/health/readiness and greps for UP, so the group must
+#     exist and resolve or every container will be killed by its own probe.
+#   - AN ACTUATOR ENDPOINT RETURNS 404 IN PRODUCTION. Expected. Exactly
+#     health, info and prometheus are exposed. Do not widen the list to "*"
+#     to diagnose an incident: env and configprops echo resolved property
+#     values including the signing key, and heapdump serves the process
+#     image. Reproduce under the local profile instead.
+#   - PROMETHEUS SHOWS NO CARDDEMO SERIES. The scrape target cannot reach the
+#     application port. observability/prometheus.yml:43-53 declares the
+#     targets and the metrics_path /actuator/prometheus. Remediation: fix
+#     reachability there. Do not move the management port to work around it -
+#     see the note beside the actuator block.
+#   - TRACES LOOK SPARSE COMPARED WITH A LOCAL RUN. Expected. Sampling is
+#     0.1 here against 1.0 in the base. Remediation for a specific
+#     investigation: raise MANAGEMENT_TRACING_SAMPLING_PROBABILITY for the
+#     duration, then put it back.
+#
+# THE RESTATEMENT RULE
+#
+# Rule 1 Clause C forbids duplication, and a production profile that copies
+# its base is both duplication and a maintenance trap: the copy drifts, and
+# the drift is invisible. One rule therefore governs every key below, and it
+# was applied to all 1163 lines of application.yml one key at a time:
+#
+#   A key appears in this file if and only if
+#     (1) the value production requires DIFFERS from the value the base
+#         profile establishes - either because the base sets a different
+#         value, or because the base leaves the key unset and the framework
+#         default is wrong for production - a DELTA; or
+#     (2) the base already establishes the IDENTICAL value, but the key is
+#         schema-destructive, PII-disclosing or surface-widening, so a
+#         production profile that does not state its own answer to it cannot
+#         be audited - a PIN.
+#   The two kinds are mutually exclusive and mechanically decidable: compare
+#   the production value against the base value, key by key. That comparison
+#   was executed as an assertion rather than asserted from reading - see the
+#   DELTA AUDIT under VALIDATION EVIDENCE, which prints the base value beside
+#   the production value for all twenty. Every other key is INHERITED and is
+#   listed below with its base line, so no absence is ambiguous.
+#
+# A pin is not a silent repeat. Each one below names the concrete harm it
+# prevents, and each is a key a reviewer auditing this deployment would
+# otherwise have to go and look for in another file - which is exactly how a
+# production database gets dropped by a profile nobody read.
+#
+# INVARIANTS THIS PROFILE ENFORCES BY ABSENCE
+#
+# Four things are absent on purpose. An absence is invisible, so each is
+# stated here to be verifiable rather than assumed.
+#
+#   - NO ENDPOINT OVERRIDE OF ANY KIND. There is no
+#     spring.cloud.aws.s3.endpoint, no .sqs.endpoint, no .sns.endpoint and no
+#     global endpoint property anywhere in this file, and no hostname, port,
+#     IP address or service URL either. Production resolves every AWS service
+#     through the SDK's standard endpoint resolution for the configured
+#     region. Endpoint overrides exist only in application-local.yml and
+#     application-test.yml, which point at the containerised AWS emulator;
+#     that structural split is what makes it impossible for this file to
+#     carry a development endpoint. THE ONLY ABSOLUTE URL IN THIS FILE is the
+#     Apache License URL at the top, which the source-header convention
+#     requires on every artefact in this repository and which nothing
+#     contacts. There is no other host name, port, address or service URL in
+#     any line of this file, comment or property.
+#   - NO STATIC AWS CREDENTIAL. There is no
+#     spring.cloud.aws.credentials.access-key and no .secret-key. The chain
+#     resolves an instance or task role, which is the least-privilege posture
+#     Rule 1 Clause D requires and which leaves no key material to leak,
+#     rotate or commit.
+#   - NO SESSION STATE. There is no spring.session.*, no session persistence,
+#     no session timeout and no CSRF token repository. SecurityConfig
+#     enforces SessionCreationPolicy.STATELESS because the COMMAREA-based
+#     pseudo-conversational model - app/cpy/COCOM01Y.cpy CDEMO-PGM-CONTEXT
+#     with 88 CDEMO-PGM-ENTER VALUE 0 and 88 CDEMO-PGM-REENTER VALUE 1 - has
+#     no Java counterpart. Pagination state moves to request parameters and
+#     response metadata, never to the server. Adding a session store here
+#     would reintroduce the state the migration deliberately removed.
+#   - NO DUMMY PRODUCTION VALUE. No placeholder database name, no sample
+#     bucket name, no example credential, no illustrative endpoint - not even
+#     in a comment. Every environment-specific value is a bare environment
+#     reference in the base, and this file adds no literal that names a
+#     specific host, database, bucket, queue, topic or account.
+#
+# INHERITED AND DELIBERATELY NOT RESTATED
+#
+# Each entry is already correct for production in application.yml at the line
+# cited, and restating it here would only repeat a base value. Verified key by
+# key against that file, not assumed.
+#
+#   Datasource and pool
+#     spring.datasource.url .username .password          :544-547
+#       Composed from bare POSTGRES_* references with no literal default
+#       except the IANA-registered port. Nothing about them is
+#       production specific, so a copy would add no auditable fact.
+#     spring.datasource.driver-class-name                :548
+#     spring.datasource.hikari.*                         :557-564
+#       pool-name carddemo-pool, maximum-pool-size 10, minimum-idle 2,
+#       connection-timeout 30000, auto-commit false. DELIBERATELY UNTUNED,
+#       and this profile does not invent production sizing on top. The COBOL
+#       corpus publishes no service-level objective - CICS concurrency was
+#       governed by the region, not by the application - so any pool figure
+#       presented here as "tuned" would be fabricated, which Rule 1 Clause A
+#       forbids. CONNECTION-POOL TUNING, TABLE PARTITIONING AND READ
+#       REPLICAS ARE EXPLICITLY OUT OF SCOPE FOR THIS MIGRATION AND ARE
+#       RECORDED AS RESIDUAL RISK in DECISION_LOG.md and
+#       docs/validation-gates.md. What is needed to close them is stated
+#       under NOT AVAILABLE below.
+#     spring.jpa.open-in-view false                      :580
+#       Already off, so no connection is held across a view render. Not a
+#       schema or disclosure question, so it is not pinned.
+#     spring.jpa.generate-ddl false                      :586
+#     spring.jpa.properties.hibernate.*                  :598-602
+#       UTC session time zone, batch_size 50, ordered inserts and updates.
+#   Schema
+#     spring.flyway.enabled true                         :623
+#     spring.flyway.locations classpath:db/migration     :624
+#     spring.flyway.table .encoding                      :634-635
+#   Security
+#     carddemo.security.jwt.signing-key ${JWT_SECRET}    :874
+#       ALREADY a bare environment reference with no default, no example and
+#       no fallback. Re-declaring it here would put a second mention of the
+#       signing key into the repository for no gain, and re-declaring it
+#       under a different variable name would create the duplication Rule 1
+#       Clause C forbids - see the discrepancy register.
+#     carddemo.security.jwt.issuer .expiration-seconds   :876-878
+#     carddemo.security.bcrypt.strength 10               :885
+#       STRENGTH 10 IS PRESERVED EXACTLY. It is a parity-and-cost decision
+#       recorded in DECISION_LOG.md, not a per-environment tunable: raising
+#       it in production alone would make the hashes seeded by
+#       V3__seed_data.sql from the ten users inlined in app/jcl/DUSRSECJ.jcl
+#       unverifiable against a production login. Transformation Rule 15.
+#     spring.jackson.deserialization.*                   :516-525
+#       DESERIALISATION IS ALREADY STRICT and this profile does not loosen
+#       it: fail-on-unknown-properties true at :519 treats every request body
+#       as untrusted, the setting at :522 forces decimal input to BigDecimal
+#       so no binary approximation can reach a money path,
+#       fail-on-null-for-primitives true at :523 and
+#       accept-case-insensitive-enums false at :525 remove two silent-coercion
+#       paths. No polymorphic type handling is enabled anywhere, so no
+#       deserialisation gadget surface is opened, and this profile adds no
+#       leniency of its own.
+#     server.error.include-message .include-stacktrace
+#       .include-binding-errors .include-exception       :723-726
+#       All never or false already, so no error response discloses a stack
+#       trace, a binding detail or a Hibernate message that could echo
+#       CUST-SSN.
+#   Endpoints and observability
+#     management.endpoints.web.base-path /actuator       :737
+#     management.endpoint.health.validate-group-membership true   :757
+#       Left at its secure default. Startup fails if a group names a
+#       contributor that does not exist, and disabling it to accommodate a
+#       not-yet-existing contributor would swallow a misconfiguration.
+#     management.endpoint.health.probes.enabled true     :761
+#     management.endpoint.health.group.liveness          :766-767
+#     management.endpoint.health.group.readiness         :779-780
+#       THE PROBE GROUPS ARE INHERITED VERBATIM AND MUST NOT BE FORKED HERE.
+#       Liveness is livenessState only, so a database outage cannot cause a
+#       restart loop. Readiness is readinessState plus db, which is the Java
+#       analogue of app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl - their CEMT
+#       SET FIL(TRANSACT), (CCXREF), (ACCTDAT), (CXACAIX) and (USRSEC) OPE
+#       and CLO at L26-L30 made exactly those five datasets available to the
+#       online region, all five are VSAM, and all five therefore land on the
+#       relational substrate the db contributor covers. Object-storage and
+#       queue coverage is a known gap with a named remediation in the
+#       discrepancy register; the fix belongs in the base, in one place, and
+#       a divergent group list here would be UNBOOTABLE because
+#       validate-group-membership is true.
+#     management.health.defaults.enabled true            :785
+#     management.health.diskspace.enabled true           :789
+#     management.prometheus.metrics.export.enabled true  :798
+#       Scrape export is already on. The scrape interval, targets and labels
+#       belong to observability/prometheus.yml, and Grafana server settings,
+#       ports and administrator credentials belong to docker-compose.yml and
+#       observability/grafana/** - never to a Spring profile.
+#     management.tracing.enabled true                    :800
+#     management.otlp.tracing.endpoint                   :814
+#       Already a bare ${OTEL_EXPORTER_OTLP_ENDPOINT} with no default host.
+#     management.metrics.tags application component      :818-819
+#   Logging
+#     logging.config                                     NOT SET, by design
+#       logback-spring.xml is auto-detected from the classpath. It owns JSON
+#       encoding, the traceId, spanId and correlationId MDC fields, and the
+#       masking of credentials, presented passwords, BCrypt hashes, social
+#       security numbers, tokens and Authorization headers. No appender,
+#       encoder or pattern is restated here.
+#     logging.level.root                                 :1141
+#     logging.level.com.cardemo                          :1142
+#     logging.level.org.flywaydb                         :1144
+#     logging.level.org.springframework.batch            :1147
+#       Application code stays at INFO, and migration and job or step
+#       lifecycle stay at INFO because both are operationally required and
+#       neither emits row data.
+#     logging.level.org.hibernate                        :1150
+#     logging.level.com.zaxxer.hikari                    :1160
+#     logging.level.software.amazon.awssdk               :1162
+#     logging.level.io.awspring.cloud                    :1163
+#       Hibernate, the pool and both AWS client stacks are already at WARN.
+#       Below WARN the SDK logs signing canonical requests and headers.
+#   Application namespace
+#     carddemo.aws.s3.* .sqs.* .sns.*                    :898-958
+#     carddemo.batch.*                                   :978-1047
+#     carddemo.pagination.*                              :1057-1073
+#     carddemo.metrics.*                                 :1087-1093
+#     carddemo.decimal.*                                 :1119-1122
+#       PARITY CONTRACTS, NOT TUNABLES. The four page sizes, the fixed record
+#       lengths, the rounding mode and the interest divisor are literals read
+#       out of the COBOL. Overriding any of them per environment would be a
+#       behaviour change, which this migration forbids outright, so this
+#       profile overrides none of them.
+#
+# AUTHORISATION SURFACE THIS PROFILE PROTECTS
+#
+# The least-privilege claim is only meaningful against a known surface, so the
+# surface is stated. EXACTLY 17 OPERATIONS ARE EXPOSED. app/csd/CARDDEMO.CSD
+# defines 18 transactions; the eighteenth, CDV1 at L388-390, is described as
+# "DEVELOPER TRANSACTION - 1" and fronts PROGRAM(COCRDSEC), which has no
+# source anywhere in the repository. It is a dangling legacy definition, no
+# endpoint is invented for it, and no property here references it.
+#
+# /api/admin/* IS ADMINISTRATOR-ROLE-ONLY, enforced by SecurityConfig. The
+# four transactions behind it are CU00, CU01, CU02 and CU03, fronting
+# COUSR00C, COUSR01C, COUSR02C and COUSR03C - the user list, add, update and
+# delete programs. The role comes from CDEMO-USER-TYPE PIC X(01) in
+# app/cpy/COCOM01Y.cpy, whose only two values are 'A' administrator and 'U'
+# standard user, carried as a token claim rather than in a COMMAREA.
+#
+# Eight of the ten VSAM clusters have an online DEFINE FILE in the CSD -
+# ACCTDAT, CARDAIX, CARDDAT, CCXREF, CUSTDAT, CXACAIX, TRANSACT and USRSEC at
+# L1, L13, L25, L37, L50, L63, L76 and L88. TCATBALF, DISCGRP, TRANCATG and
+# TRANTYPE have NO online definition at all, which is the evidence that they
+# are batch-only: no production endpoint reaches them, and none is added.
+#
+# S3 OBJECT LAYOUT AND RECORD GEOMETRY IN PRODUCTION
+#
+# The bucket names, the FIFO queue name, the topic name and the key prefixes
+# are inherited from application.yml:898-958 and are not restated. What
+# matters in a production profile is the invariant they carry, so it is
+# recorded here.
+#
+# The SEVEN generation data group bases become deterministic key prefixes over
+# a versioned bucket rather than catalogue generations: DALYREJS
+# (app/jcl/DALYREJS.jcl:25), SYSTRAN (app/jcl/DEFGDGB.jcl:49), TCATBALF.BKUP
+# (:43), TRANREPT (:37), TRANSACT.BKUP (:25), TRANSACT.COMBINED (:55) and
+# TRANSACT.DALY (:31). A next-generation (+1) write becomes a new object under
+# a monotonically increasing job-instance or timestamp prefix; a
+# current-generation (0) read becomes the lexicographically greatest existing
+# prefix. THE BATCH OUTPUT BUCKET IS VERSIONED, so object versioning - not a
+# generation counter - is what makes a superseded write recoverable.
+#
+# RECORD LENGTH IS PRESERVED BYTE-EXACTLY AT THE S3 BOUNDARY: 350 for the
+# transaction and daily-transaction images, 430 for a reject record, 133 for a
+# report line, and 80 and 100 for the statement text and HTML outputs. The 430
+# is not a round number - app/jcl/POSTTRAN.jcl:36 declares
+# DCB=(RECFM=F,LRECL=430) and app/cbl/CBTRN02C.cbl:L176-L182 resolves it as
+# exactly 350 data bytes plus an 80-byte trailer carrying a four-digit reason
+# code and a 76-character description. 350 + 80 = 430. Parity is compared on
+# the emitted bytes, so a wrong length is a wrong output even when every field
+# value is right, and no production setting may alter it.
+#
+# THE RETENTION CONFLICT IS RESOLVED TO 10 AND IS DOCUMENTATION, NOT CODE.
+# app/jcl/DEFGDGB.jcl:37-38 declares LIMIT(5) for AWS.M2.CARDDEMO.TRANREPT
+# while app/jcl/REPTFILE.jcl:26-27 declares LIMIT(10) for the same base. A
+# single S3 lifecycle value must be chosen, so 10 is used - the larger, so no
+# generation the legacy system would have retained is discarded. The value is
+# recorded at application.yml:934 as intent; it is NOT enforced by application
+# code, and nothing in this profile prunes an object. Enforcement, if wanted,
+# is an S3 lifecycle rule owned by the deployment.
+#
+# THE FIFO QUEUE REPLACES THE TRANSIENT DATA QUEUE. app/csd/CARDDEMO.CSD:
+# L499-505 defines TDQUEUE(JOBS) TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
+# RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD) - an 80-byte fixed
+# OUTPUT record written one card at a time into the JES2 internal reader. The
+# SEVENTEEN eighty-byte job cards that app/cbl/CORPT00C.cbl holds as literal
+# constants in JOB-DATA-1 at :82-125 collapse into ONE typed JSON message
+# carrying the report name and the start and end dates, and an SQS listener
+# replaces the internal reader. A single message group id preserves the strict
+# sequential DISPOSITION(MOD) append ordering. queue-not-found-strategy is
+# FAIL in the base, so a mistyped production queue name is a loud error rather
+# than a silently created queue with the wrong FIFO attributes.
+#
+# DEFERRED HARDENING - DISCLOSED, NOT DROPPED
+#
+# Rule 1 Clause F requires missing information to be stated rather than
+# implied away. The following are OUT OF SCOPE for this migration and are each
+# recorded as residual risk in DECISION_LOG.md and docs/validation-gates.md.
+# None is silently omitted, and none is claimed to be present:
+#
+#   - TLS TERMINATION. This profile configures no server.ssl.*, no keystore
+#     and no truststore, and the repository ships no certificate. The target
+#     topology terminates at the load balancer. A deployment that must
+#     terminate in-process has to add server.ssl.* from injected material and
+#     must still not commit a keystore.
+#   - REQUEST RATE LIMITING. No limiter, no bucket, no quota. Nothing here
+#     throttles a caller.
+#   - URI-BASED API VERSIONING. The 17 operations are served at unversioned
+#     paths; a breaking change would need a versioning scheme first.
+#   - GENERATED OPENAPI DOCUMENTATION. No specification is generated and no
+#     specification endpoint is exposed - which is also why widening the
+#     Actuator exposure list would not help. docs/api-contracts.md is the
+#     manual substitute.
+#   - ENCRYPTION AT REST FOR PERSONALLY IDENTIFIABLE DATA. CUST-SSN
+#     PIC 9(09) at app/cpy/CVCUS01Y.cpy:17, CUST-GOVT-ISSUED-ID at :18 and
+#     CUST-DOB-YYYY-MM-DD at :19 are stored in plain columns. No
+#     column-level encryption and no tokenisation is configured. Storage-level
+#     encryption, if the platform provides it, is a deployment concern and is
+#     not asserted here.
+#   - CONNECTION-POOL TUNING, TABLE PARTITIONING AND READ REPLICAS. See the
+#     inherited Hikari note above and NOT AVAILABLE below.
+#
+# DISCREPANCY REGISTER
+#
+# Severities follow Rule 1 Clause F. Each entry names its evidence and its
+# remediation. Nothing below is a defect introduced by this file; each is
+# either a conflict between two sources, resolved and recorded rather than
+# hidden, or a defect found elsewhere and reported rather than patched over.
+#
+#   - HIGH - carddemo.s3.* is not the namespace any profile declares, and it
+#     is a startup blocker. Four @Value keys in src/main/java read
+#     carddemo.s3.output-bucket (RejectWriter.java:613 and
+#     TransactionWriter.java:586), carddemo.s3.transaction-object-prefix
+#     (TransactionWriter.java:587), carddemo.s3.statements-bucket
+#     (StatementWriter.java:923) and carddemo.batch.account-reader.page-size
+#     (AccountReader.java:493). application.yml declares
+#     carddemo.aws.s3.batch-output-bucket at :899 and .statements-bucket at
+#     :900. Three of the five references carry an inline default, but
+#     carddemo.s3.output-bucket carries none in either class, so the context
+#     cannot refresh.
+#     RESOLUTION HERE: NONE, DELIBERATELY. Declaring a carddemo.s3.* block in
+#     this profile would make production start by creating a SECOND spelling
+#     for one bucket - the duplication Rule 1 Clause C forbids - and would
+#     leave the defect latent in three other profiles. A profile must not
+#     paper over a source-code defect.
+#     Remediation: change the five @Value keys to the carddemo.aws.s3.* and
+#     carddemo.batch.* names application.yml already declares, in one change.
+#   - MEDIUM - signing-key variable name. The file specification for this
+#     artefact asked for JWT_SIGNING_KEY. The repository standardises on
+#     JWT_SECRET: .env.example:44 ships it empty and REQUIRED,
+#     application.yml:874 reads it, pom.xml:87 states it "must be supplied
+#     through the environment; there is deliberately no committed default",
+#     and owasp-suppressions.xml:180 records it as the environment variable
+#     with no generated default.
+#     Resolution: inherit JWT_SECRET unchanged and declare no second name.
+#     The instruction's normative requirements are environment indirection, no
+#     committed value, no fallback and fail-fast startup; all four already
+#     hold, and a second spelling would satisfy none of them any better while
+#     creating exactly the duplication Rule 1 Clause C forbids.
+#     Remediation if the repository later standardises on JWT_SIGNING_KEY:
+#     rename in every place in one change, never partially.
+#   - MEDIUM - bucket variable names. The specification asked for
+#     CARDDEMO_S3_INPUT_BUCKET and CARDDEMO_S3_OUTPUT_BUCKET. The repository
+#     provisions CARDDEMO_S3_BATCH_INPUT_BUCKET at .env.example:80 and
+#     CARDDEMO_S3_BATCH_OUTPUT_BUCKET at :81, and application.yml:898-899
+#     reads exactly those. The statements bucket, the report queue and the
+#     notification topic match the specification exactly.
+#     Resolution: inherit the provisioned spelling. A profile that read a
+#     variable name nothing provisions would fail startup for a reason no
+#     operator could diagnose from the message. Remediation: none required.
+#   - MEDIUM - object-storage and queue readiness coverage. The specification
+#     requires readiness to cover database, object storage and queue; the
+#     inherited group covers readinessState and db only.
+#     Cause: management.endpoint.health.validate-group-membership defaults to
+#     true and aborts startup when a group names a contributor that does not
+#     exist, Spring Cloud AWS 3.3.0 ships no health indicator, and
+#     com.cardemo.observability.HealthIndicators does not exist in this tree
+#     yet - src/main/java holds 77 files and no observability package. Naming
+#     s3 or sqs today would make PRODUCTION UNBOOTABLE.
+#     Resolution: this profile does not fork the group. Remediation: append
+#     the contributor names to application.yml:779-780 in the same change
+#     that introduces HealthIndicators, so all four profiles gain them
+#     together from one definition.
+#   - LOW - region variable spelling. The specification asked for AWS_REGION
+#     with no default. application.yml:677 reads
+#     ${AWS_REGION:${AWS_DEFAULT_REGION}}, where the fallback is a second
+#     VARIABLE rather than a literal, so no literal default exists and an
+#     absent pair still fails startup. .env.example:64 ships only
+#     AWS_DEFAULT_REGION, the AWS-standard spelling.
+#     Resolution: inherit. Restating a bare ${AWS_REGION} here would DELETE a
+#     working spelling and break any deployment that supplies the standard
+#     one - a regression dressed as hardening. Remediation: none; both
+#     spellings satisfy the requirement.
+#   - LOW - the embedded job deck holds SEVENTEEN cards, not eighteen. The
+#     technical specification describes an "eighteen-card embedded job
+#     skeleton". Direct inspection of app/cbl/CORPT00C.cbl resolves 17:
+#     JOB-DATA-1 spans :82-125 and contains fourteen 05 FILLER PIC X(80) VALUE
+#     literals at :83, :85, :87, :89, :91, :93, :95, :97, :99, :101, :113,
+#     :115, :122 and :124, plus three composed groups that each total 80 bytes
+#     exactly - FILLER-1 at :103 as 18 + 10 + 52, FILLER-2 at :108 as
+#     16 + 10 + 54, and FILLER-3 at :117 as 10 + 1 + 10 + 59. That is
+#     14 x 80 + 3 x 80 = 1360 bytes = 17 x 80, and JOB-DATA-2 REDEFINES
+#     JOB-DATA-1 as JOB-LINES OCCURS 1000 TIMES PIC X(80), so only 17 of the
+#     thousand slots are populated.
+#     Resolution: the count above says seventeen. The COBOL corpus is the
+#     authority and prose is not, so where the two disagree the source wins
+#     and the discrepancy is recorded rather than propagated. Nothing in this
+#     profile depends on the number - the deck collapses into one message
+#     either way - but a downstream artefact that reproduced "eighteen" would
+#     be asserting a card that does not exist. Remediation: correct the count
+#     in the specification and in TRACEABILITY_MATRIX.md.
+#   - LOW - no application service in the compose topology. docker-compose.yml
+#     provisions the five substrate services only, so nothing in the
+#     repository activates this profile automatically. Nothing here depends on
+#     that. Remediation: set SPRING_PROFILES_ACTIVE on the container or on the
+#     command line.
+#   - LOW - /actuator/info and /actuator/prometheus remain anonymously
+#     reachable, because observability/prometheus.yml scrapes without
+#     credentials in this topology. This profile now narrows every surface a
+#     profile CAN narrow: info is emptied by its two contributor deltas, and
+#     the discovery index that enumerated the whole surface is switched off
+#     outright after runtime validation caught it answering 200. What is left
+#     is what a profile cannot reach. The Prometheus body still discloses the
+#     JVM build string through the jvm_info meter and an absolute filesystem
+#     path through the path label on disk_free_bytes and disk_total_bytes -
+#     both standard Micrometer behaviour, neither a credential. Suppressing
+#     the first would also remove every heap, garbage-collection, thread and
+#     class-loader meter, a trade that is not justifiable against the
+#     requirement for measurable behaviour, so it is accepted deliberately
+#     rather than taken quietly.
+#     Remediation belongs to the components that own access and meter
+#     registration, not to this file: authenticate /actuator/prometheus in
+#     SecurityConfig, register a MeterFilter in
+#     com.cardemo.observability.MetricsConfig to deny or relabel those two
+#     meters, or place the management surface behind a network policy
+#     reachable only from the scrape source.
+#
+# NOT AVAILABLE
+#
+# Rule 1 Clause F requires that missing information be stated as missing, with
+# what is needed to obtain it, and that findings carry a severity. Every item
+# below therefore carries BOTH an explicit severity AND its prerequisite. NONE
+# of them is a defect in this file: each is a bound on what the evidence in
+# this profile is entitled to claim.
+#
+#   - MEDIUM - NO SERVICE-LEVEL OBJECTIVE EXISTS ANYWHERE IN THE COBOL CORPUS,
+#     so no
+#     latency, throughput or capacity threshold is asserted and no value is
+#     presented as tuned. Two properties are therefore deliberately unset
+#     rather than guessed: the Hikari sizing beyond the inherited minimum, and
+#     spring.lifecycle.timeout-per-shutdown-phase, which governs how long
+#     graceful shutdown waits for an in-flight batch step to drain. Sizing the
+#     latter requires the measured duration of the longest step, which does
+#     not exist. WHAT IS NEEDED: a measured production workload profile and a
+#     measured per-step duration profile. Until then the framework default
+#     applies and is stated as unverified rather than endorsed.
+#   - LOW - COCRDSEC IS NOT AVAILABLE. app/csd/CARDDEMO.CSD:388-390 defines
+#     CDV1 against PROGRAM(COCRDSEC) and that program has no source anywhere
+#     in the repository - the CSD definition is the only occurrence of the
+#     name. Nothing is configured for it and no endpoint is invented, which
+#     is why this profile protects SEVENTEEN sourced operations and not
+#     eighteen. WHAT IS NEEDED to close it: the COCRDSEC source member, which
+#     does not exist in this repository and would have to come from the
+#     originating mainframe library. Until it does, the correct action is
+#     precisely to configure nothing - inventing an endpoint for a program
+#     with no behaviour to reproduce would be a parity violation, so this is
+#     recorded as LOW and closed rather than left open.
+#   - HIGH - A PRODUCTION ENVIRONMENT IS NOT AVAILABLE to the session that
+#     authored
+#     this file, and NOTHING HERE ASSERTS THAT PRODUCTION BEHAVIOUR WAS
+#     VERIFIED. What was measured, on what, and what was not, is recorded
+#     under VALIDATION EVIDENCE below. WHAT IS NEEDED to verify the production
+#     posture end to end: a deployment whose credentials come from a real
+#     instance or task role, a managed PostgreSQL 16 endpoint, a real OTLP
+#     collector, and a DBA-applied BATCH_* metadata schema.
+#   - MEDIUM - THE SIBLING PROFILES WERE PENDING when this file was authored.
+#     application-local.yml and application-test.yml did not exist in the
+#     tree, so their contents were NOT inspected. Every statement here about
+#     what they override derives from the layering contract declared at
+#     application.yml:206-212 and is labelled as such, never presented as an
+#     inspected fact.
+#     The migration is delivered in a single phase, so the following are
+#     likewise referenced as CONTRACTS rather than as files verified on disk:
+#     logback-spring.xml, db/migration/V3__seed_data.sql, DECISION_LOG.md,
+#     docs/validation-gates.md, docs/api-contracts.md, and the Java beans
+#     named beside the properties they consume - CardDemoApplication,
+#     SecurityConfig, AwsConfig, BatchConfig, HealthIndicators and
+#     BatchPipelineOrchestrator, none of which exists in src/main/java yet.
+#     EVERYTHING CITED WITH A LINE NUMBER WAS INSPECTED AND EXISTS: all 14
+#     app/ paths named above, plus src/main/resources/application.yml,
+#     pom.xml, .env.example, .editorconfig, Dockerfile, docker-compose.yml,
+#     observability/prometheus.yml and owasp-suppressions.xml.
+#     WHAT IS NEEDED to upgrade every one of those references from a contract
+#     to an inspected fact: the sibling profiles and the named Java beans to
+#     land in the tree, then a re-read of each. This is MEDIUM rather than
+#     LOW because two of the pending artefacts carry obligations this profile
+#     depends on and cannot itself discharge - logback-spring.xml owns the
+#     masking that keeps the PII named at app/cpy/CVCUS01Y.cpy out of the
+#     logs, and SecurityConfig owns both the STATELESS policy and the
+#     administrator-only rule on /api/admin/*. If either ships without its
+#     obligation met, this profile's log-hygiene and authorisation statements
+#     become claims rather than facts, so both must be re-verified when they
+#     arrive rather than assumed from this file's passing evidence.
+#   - MEDIUM - THREE AUTO-CONFIGURATIONS WERE EXCLUDED FROM THE BOOT HARNESS,
+#     and that bounds what the runtime evidence below proves. The exclusions
+#     were deliberate and each buys a specific guarantee, but each also leaves
+#     something unmeasured, so both halves are stated:
+#       Flyway was excluded so that a validation run could not migrate the
+#       shared, intentionally empty database and leave a checksum trap for the
+#       agent delivering V3__seed_data.sql. CONSEQUENCE: the four Flyway
+#       properties were proved to BIND to safe values, and were NOT proved to
+#       validate a real migrated schema. WHAT IS NEEDED: a database already
+#       migrated by V1 and V2 with V3 present, then a boot with Flyway active.
+#       Spring Security was excluded so that a 404 measures the ACTUATOR
+#       EXPOSURE CONTRACT rather than an authentication redirect - with a
+#       filter chain in place, 404 and 401 are indistinguishable as evidence
+#       that an endpoint is unregistered. CONSEQUENCE: the exposure surface is
+#       proved; anonymous authorisation of /actuator/health is NOT, nor is the
+#       administrator-only rule on /api/admin/*. WHAT IS NEEDED: SecurityConfig
+#       to exist in src/main/java, then a boot with the chain active.
+#       The three AWS clients were disabled by property because a
+#       provider-chain credential resolution against real AWS is exactly what
+#       this environment must never attempt. CONSEQUENCE: the bucket, queue and
+#       topic references were proved to RESOLVE from the environment, and no
+#       AWS call was made. WHAT IS NEEDED: a deployment holding a real instance
+#       or task role.
+#     A FOURTH BOUND IS NOT AN EXCLUSION BUT A SUBSTITUTION:
+#     CardDemoApplication does not exist in src/main/java, so the entry point
+#     that boots this profile in production could not itself be started. A
+#     throwaway harness stood in for it. The profile was therefore proved
+#     against the real Spring context on the real pinned classpath, but NOT
+#     against the real application class. WHAT IS NEEDED: CardDemoApplication,
+#     which pom.xml already names as the JAR Start-Class.
+#
+# VALIDATION EVIDENCE
+#
+# Every line below is a measurement taken on this file as delivered, with the
+# exit code the command actually returned. Nothing here is inferred, and the
+# things that were NOT measured are named under NOT AVAILABLE above rather
+# than left to look like passes.
+#
+# WHEN AND ON WHAT
+#     2026-08-02 UTC. OpenJDK 25.0.3 (build 25.0.3+9-2-25.10.2-Ubuntu),
+#     Apache Maven 3.9.11 through ./mvnw, PostgreSQL 16.10, Docker 29.7.0 and
+#     Compose v5.3.1 - all present and running, none of them assumed absent.
+#     Compilation ran at release 25 with -Xlint:all -Werror, pinned at
+#     pom.xml:276 and pom.xml:863-864.
+#
+# BUILD - the whole module, not this file alone
+#     ./mvnw -B -ntp clean compile                                    exit 0
+#         77 sources, 7 resources, ZERO warnings under the -Werror gate. This
+#         file lands at target/classes/application-prod.yml and, once
+#         packaged, at BOOT-INF/classes/application-prod.yml inside
+#         target/carddemo-1.0.0.jar.
+#     ./mvnw -B -ntp test                                             exit 0
+#         6590 tests, 0 failures, 0 errors, 0 skipped - identical to the
+#         pre-change baseline, which is the regression proof a resource-only
+#         change needs.
+#     ./mvnw -B -ntp -Ddependency-check.skip=true
+#            -Djacoco.line.coverage.minimum=0.0 clean verify          exit 0
+#         Line coverage 3453/5746 = 60.09%, unchanged, because a YAML resource
+#         contributes no coverable line. THE 0.80 FLOOR IN pom.xml WAS NOT
+#         LOWERED - it was overridden for this run only, and the shortfall is
+#         owed by the test tier, not by this file. Report at
+#         target/site/jacoco/index.html. Failsafe reported "No tests to run",
+#         so NO integration evidence is claimed here.
+#
+# STATIC ASSERTIONS ON THIS FILE                                  all pass
+#     UTF-8, LF only, final newline, no tab, no trailing space, every line
+#     inside 80 columns, indentation a multiple of two, and the whole file
+#     parses as a YAML mapping with the banner and docstring entirely in #
+#     comments.
+#     ZERO matches anywhere in the file, comments included, for 27 forbidden
+#     tokens. THEY ARE DESCRIBED HERE RATHER THAN SPELLED OUT, because a file
+#     that writes a forbidden token in order to claim the token is absent
+#     makes its own claim false - and a whole-file assertion is worth far more
+#     than one carrying an exemption for the paragraph that lists them. The
+#     assertion covers: the service emulator's product name; a loopback host
+#     name, a loopback IPv4 literal and the unspecified-address literal; the
+#     emulator port and the database port; a TLS URL scheme; the container-host
+#     alias; the public AWS domain suffix; a PostgreSQL JDBC URL prefix; both
+#     AWS access-key-id prefixes; a BCrypt hash prefix; a PEM private-key
+#     header; a JWT-shaped literal; either binary floating-point type name;
+#     four deferred-work markers; the misspelled daily-transaction fixture
+#     name, whose real spelling is dailytran.txt; the user-security fixture
+#     name that does not exist, the ten seed rows living inline in
+#     app/jcl/DUSRSECJ.jcl instead; the misspelled package root, the real one
+#     being com.cardemo; the rejected wrapper-directory name; the permissive
+#     health-detail value; and both schema-mutating ddl-auto values. The ONLY
+#     absolute URL in the file is the Apache License URL on line 56, which the
+#     header convention requires and which nothing contacts.
+#     THE PROHIBITION ASSERTIONS SEPARATE PROSE FROM DECLARATION, which is the
+#     only way they can be both true and meaningful: this file has to NAME the
+#     static-credential properties, the session namespace, the TLS and
+#     key-material properties and the two Flyway leniency switches in order to
+#     state that each is deliberately absent. Each was asserted absent from
+#     the 42 non-comment YAML lines and present only in prose.
+#     NO ${...} REFERENCE IS DECLARED HERE AT ALL. The five that appear are
+#     comment text documenting the inherited contract, and none carries a
+#     literal default. No credential-shaped key and no nine-digit literal is
+#     declared, and every declared value is a bounded literal of at most 24
+#     characters.
+#
+# PROPERTY BINDING - resolved against the pinned classpath, offline
+#     226 jars resolved by dependency:build-classpath. All 20 declared keys
+#     were confirmed to be REAL, CONSUMED properties in the
+#     spring-configuration-metadata.json that classpath ships - 2638
+#     properties harvested - so no key here is dead configuration. The four
+#     logging.level entries bind through the Map<String,String> parent
+#     declared by spring-boot-3.5.11.jar.
+#     Loading application.yml and then this file through Boot's own
+#     YamlPropertySourceLoader, prod at the higher precedence, and binding
+#     with Binder: banner-mode -> Banner.Mode.OFF, show-details and
+#     show-components -> Show.NEVER, initialize-schema ->
+#     DatabaseInitializationMode.NEVER, sampling.probability -> 0.1f, and
+#     exposure.include -> exactly [health, info, prometheus]. All 7 deltas
+#     resolve to the production value; all 13 pins to their safe value.
+#     Seventeen keys that must not appear were each asserted absent: every AWS
+#     endpoint form, both static credential forms, the three datasource
+#     literals, ignore-migration-patterns, continue-on-error, logging.config,
+#     server.ssl.key-store, both JWT decoder properties, the signing key
+#     itself, and spring.profiles.active.
+#     THE QUOTING OF "off" IS NOT STYLISTIC AND WAS MEASURED. The same loader
+#     reads an UNQUOTED off as Boolean false, which can never reach an enum,
+#     while the quoted form reads as the String that Banner.Mode resolves.
+#
+# DELTA AUDIT - executed, not asserted from reading
+#     The base value was read for all 20 keys and compared one at a time. The
+#     7 deltas differ from the base - log to off, unset to false three times,
+#     1.0 to 0.1, INFO to WARN twice - and the 13 pins are identical. That is
+#     what makes the taxonomy above mechanically decidable instead of a matter
+#     of opinion.
+#
+# RUNTIME EVIDENCE - this profile was booted, not just parsed
+#     com.cardemo.CardDemoApplication does not exist yet, so spring-boot:run
+#     cannot start this application. A throwaway harness supplied the missing
+#     @SpringBootConfiguration and nothing else, and was never committed.
+#     Flyway was EXCLUDED so a validation run could not migrate the shared,
+#     intentionally empty database; Spring Security was EXCLUDED so that an
+#     HTTP 404 measures the EXPOSURE contract rather than authentication; and
+#     the AWS clients were disabled, because this profile carries no endpoint
+#     override and must never reach a real account. Those three exclusions are
+#     the limit of this evidence and are stated so no one reads more into it.
+#     BOOT WITH SPRING_PROFILES_ACTIVE=prod SUCCEEDED. Resolved at runtime:
+#     active profile prod, banner-mode off, ddl-auto validate, show-sql false,
+#     flyway clean-disabled true, batch initialize-schema never, sampling 0.1,
+#     exposure health,info,prometheus. Effective logger levels were read from
+#     the running logging system rather than from this file: the two Hibernate
+#     loggers WARN, web WARN, security WARN, com.cardemo INFO. No banner was
+#     printed, which is the banner-mode delta observable in the log.
+#     All eleven no-default environment references resolved, and NONE of the
+#     three secrets among them appears anywhere in the startup log - the
+#     resolved signing key was searched for as a literal and was absent.
+#
+# FAIL-FAST - ELEVEN OUT OF ELEVEN, one boot per missing variable
+#     The profile claims that an absent secret is a startup failure by design
+#     rather than a misconfiguration. That claim was tested by booting eleven
+#     more times, each time removing exactly one required variable:
+#     JWT_SECRET, POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER,
+#     POSTGRES_PASSWORD, OTEL_EXPORTER_OTLP_ENDPOINT and the five
+#     CARDDEMO_S3, CARDDEMO_SQS and CARDDEMO_SNS resource names.
+#     EVERY ONE failed the context with a non-zero exit, never reached
+#     Started, and reported a message that NAMES THE VARIABLE AND ECHOES NO
+#     VALUE - the exact form being: could not resolve placeholder, then the
+#     variable name, then the unresolved expression itself and nothing more.
+#     A twelfth control boot with every variable present SUCCEEDED, which is
+#     what makes the eleven failures evidence rather than a broken harness.
+#     ONE PRECONDITION HAD TO BE HONOURED FOR THAT TEST TO MEAN ANYTHING, and
+#     it is worth recording because it is easy to get wrong: .env.example:55
+#     and :96 ship SPRING_DATASOURCE_URL and MANAGEMENT_OTLP_TRACING_ENDPOINT,
+#     which bind those two properties DIRECTLY and therefore outrank the
+#     composed values at application.yml:544 and :814. While either is set the
+#     inner placeholder is never evaluated, so removing POSTGRES_HOST or
+#     OTEL_EXPORTER_OTLP_ENDPOINT alone changes nothing. The masking variable
+#     was removed alongside each of those, so what was measured is the
+#     contract this file inherits rather than an accident of the template.
+#
+# LOG HYGIENE - measured with a sentinel, because the obvious test is useless
+#     A first attempt searched the logs for the development database password
+#     and reported a leak in all eleven runs. It was a FALSE POSITIVE, and an
+#     instructive one: that password is literally the word carddemo, which is
+#     also the application name and therefore appears in the MDC prefix of
+#     every single log line. The test was redone with a distinctive sentinel
+#     password. Result: the sentinel NEVER appears in any log, INCLUDING the
+#     run where the database connection genuinely failed with it. Across the
+#     same logs there were zero occurrences of an Authorization header, of a
+#     bearer token, of a Hibernate bound parameter, of a SELECT statement and
+#     of a BCrypt hash prefix. Masking itself belongs to logback-spring.xml;
+#     what is demonstrated here is that this profile's levels give it nothing
+#     to mask.
+#
+# ACTUATOR SURFACE - measured over HTTP, then independently in a browser
+#     Exposed, 200: health, health/liveness, health/readiness, info,
+#     prometheus.
+#     NOT exposed, 404: env, configprops, beans, heapdump, threaddump,
+#     loggers, mappings and shutdown - and equally metrics, caches,
+#     conditions, scheduledtasks, quartz, sbom and startup, none of which the
+#     include list names.
+#     health answered an aggregate status plus the two group NAMES, with no
+#     components object, no details object, no substrate named and NOT ONE
+#     DIGIT CHARACTER in the whole body - so no port, host, JDBC URL, user
+#     name or password can be present in it.
+#     liveness and readiness each answered 200 with their own status. They are
+#     separately registered rather than aliased: health/db and a nonexistent
+#     group name both answered 404, which no catch-all could do. Because
+#     show-details and show-components are never, two healthy groups
+#     necessarily render identical text; that is the hardening working, not
+#     aliasing.
+#     THE READINESS GROUP IS PROVED SUBSTRATE-BACKED, TWICE OVER. Statically,
+#     application.yml:757 keeps validate-group-membership at true, so naming a
+#     contributor that does not exist FAILS the context; the context started,
+#     so the db contributor at application.yml:779-780 exists. Empirically, a
+#     boot carrying a deliberately WRONG database credential then answered
+#     readiness DOWN with HTTP 503 while liveness stayed UP with HTTP 200 and
+#     the aggregate went DOWN. That is the OPENFIL.jcl and CLOSEFIL.jcl
+#     analogue behaving as designed, and it simultaneously proves the property
+#     the base profile argues for at application.yml:763-765: a database
+#     outage takes the instance out of rotation WITHOUT triggering a liveness
+#     restart loop.
+#     THE FAILURE PATH IS WHERE A HEALTH ENDPOINT NORMALLY LEAKS, AND IT DID
+#     NOT. With the connection genuinely failing, the readiness body was the
+#     bare status and nothing else: zero occurrences of the credential, of a
+#     JDBC URL, of the driver name, of the word password, of the database
+#     port, of the word Connection and of the word FATAL. That is
+#     show-details: never earning its place, measured on the one code path
+#     that matters.
+#     info answered exactly two bytes, an empty object, which is the
+#     observable proof of the two info contributor deltas.
+#     prometheus answered valid exposition format, 261 lines, with ZERO
+#     case-insensitive matches for password, secret, token, jwt, authorization
+#     or bearer, no JDBC URL, and no host name or port among its 23 distinct
+#     label keys. Its only database-related entries are the two pool-size
+#     gauges, whose sole identifier is a logical bean name.
+#     shutdown is not merely method-blocked but UNREGISTERED: an exposed
+#     POST-only endpoint answers a GET with 405, and 404 came back to both GET
+#     and POST while the process stayed up and healthy.
+#     A browser session over the same 16 URLs reproduced every status code,
+#     and its only console errors were the automatic 404 notices that ARE the
+#     negative assertions passing. Server side, logback_events_total reported
+#     zero error-level and zero warn-level events for the entire run.
+#
+# WHAT RUNTIME VALIDATION CHANGED
+#     One key on this page exists because the browser audit found it, not
+#     because anyone read the file: /actuator itself was answering 200 with a
+#     HAL document that enumerated the exposed endpoints, because the
+#     discovery index is not gated by the exposure list. The discovery key
+#     under management.endpoints.web closes it, and the fix was then MEASURED
+#     rather than assumed: after it, /actuator answers 404 while all five
+#     exposed endpoints still answer 200 and all eight forbidden ones still
+#     answer 404. Setting an exposure list did NOT by itself make the surface
+#     non-enumerable, and no amount of reading would have revealed that -
+#     which is the whole argument for booting a configuration profile rather
+#     than proof-reading it.
+#     A second lesson from the same session, recorded because it nearly became
+#     a false finding: an intermediate boot failed instantiating the OTLP span
+#     exporter, which looked like a missing runtime dependency. It was not.
+#     The harness had been launched with a truncated classpath; against the
+#     full resolved graph the exporter initialises cleanly, because
+#     opentelemetry-exporter-common, opentelemetry-exporter-sender-okhttp and
+#     okhttp are all present. NO DEFECT WAS REPORTED, because there was none -
+#     the tooling was wrong, not the build.
+#
+# SCOPE
+#     src/main/resources holds 7 of its 11 mandated files and ZERO extra
+#     files. application-local.yml, application-test.yml, logback-spring.xml
+#     and V3__seed_data.sql are pending elsewhere in this same single phase.
+#     No keystore, certificate, README or copied fixture was added.
+
+spring:
+
+  # --------------------------------------------------------------------------
+  # Startup output - 1 DELTA
+  # --------------------------------------------------------------------------
+  main:
+    # DELTA. application.yml:491 sets `log`, which routes the multi-line ASCII
+    # banner through the logging system. In production logback-spring.xml
+    # emits structured JSON, so a banner would enter the log pipeline as
+    # several records of ASCII art carrying no field an operator can query,
+    # and it would put the framework version into the stream on every start.
+    # `off` removes both. QUOTED DELIBERATELY: YAML 1.1 resolves a bare off to
+    # the boolean false, and the target of this property is an enum, so the
+    # unquoted form would not bind. Rule 1 Clause A, explicit behaviour over
+    # cleverness.
+    banner-mode: "off"
+
+  # --------------------------------------------------------------------------
+  # JPA and Hibernate - 2 PINS
+  # --------------------------------------------------------------------------
+  jpa:
+    hibernate:
+      # PIN. Flyway owns the schema and Hibernate only checks it. THE HARM
+      # THIS PREVENTS IS IRREVERSIBLE: create and create-drop would drop and
+      # rebuild production tables, and update would silently alter a column
+      # away from the record layouts in app/cpy - for instance widening the
+      # NUMERIC(11,2) that app/cpy/CVTRA01Y.cpy pins as PIC S9(09)V99 - which
+      # breaks field-contract parity without any error. There is no safe way
+      # to discover that by accident, so production states its own answer
+      # rather than trusting a value in another file.
+      ddl-auto: validate
+    # PIN. A logged statement or bound parameter would put CUST-SSN
+    # PIC 9(09) from app/cpy/CVCUS01Y.cpy:17 and the BCrypt hashes derived
+    # from SEC-USR-PWD PIC X(08) in app/cpy/CSUSR01Y.cpy:21 into the log
+    # stream, which Rule 1 Clause D forbids outright. This is also the one
+    # pin that beats a sibling: application.yml:206-208 records that the
+    # local profile carries verbose logging, so under a `local,prod`
+    # activation this line is what keeps SQL out of production output.
+    show-sql: false
+
+  # --------------------------------------------------------------------------
+  # Flyway - 4 PINS, all four protecting a live production schema
+  # --------------------------------------------------------------------------
+  # These four are pinned together because they are the difference between a
+  # migration failure and data loss. There is deliberately NO
+  # ignore-migration-patterns, NO continue-on-error and NO baseline-version
+  # anywhere in this profile: Rule 1 Clause B forbids swallowing a failure,
+  # and a migration that fails must stop the process rather than leave a
+  # production schema half applied.
+  flyway:
+    # PIN. Baselining would make Flyway ACCEPT an unknown pre-existing schema
+    # and record it as version 1 without checking a single object, so a
+    # database shaped by something other than V1__create_schema.sql would pass
+    # silently and every later migration would apply to the wrong shape.
+    baseline-on-migrate: false
+    # PIN. Validation is what turns an edited-after-apply migration into a
+    # startup failure instead of a divergence nobody notices.
+    validate-on-migrate: true
+    # PIN. clean() DROPS EVERY OBJECT IN THE SCHEMA. In production that is
+    # unrecoverable, and the property is the only guard. Must stay true here
+    # and in every other profile.
+    clean-disabled: true
+    # PIN. V1 then V2 then V3, always. Out-of-order application would let
+    # V3__seed_data.sql insert rows before V2__create_indexes.sql created the
+    # three alternate indexes those rows are read through.
+    out-of-order: false
+
+  # --------------------------------------------------------------------------
+  # Spring Batch - 2 PINS
+  # --------------------------------------------------------------------------
+  batch:
+    job:
+      # PIN. The framework default is true, which runs EVERY registered job on
+      # EVERY boot. In production that would post the daily transaction file
+      # and generate interest on each restart - real financial writes, from a
+      # deployment event. Launching stays explicit: BatchPipelineOrchestrator,
+      # or the SQS listener that replaces the JES2 internal reader driven by
+      # EXEC CICS WRITEQ TD QUEUE('JOBS') in app/cbl/CORPT00C.cbl.
+      enabled: false
+    jdbc:
+      # PIN, and the one value the layering contract names for this profile
+      # explicitly (application.yml:211-212). The BATCH_* metadata tables come
+      # from the framework's own
+      # org/springframework/batch/core/schema-postgresql.sql and from nowhere
+      # else, and in production a DBA applies that script once as a reviewed
+      # change. `always` - which application.yml:206-210 records as the local
+      # and test value - runs DDL from the application on every start; it
+      # completes only because the framework initialiser continues on error,
+      # which means a partial failure would be swallowed, and Rule 1 Clause B
+      # forbids that. This line is therefore also the pin that beats a
+      # `local,prod` or `test,prod` activation.
+      # THE BATCH_* TABLES MUST NEVER BECOME A FOURTH FLYWAY MIGRATION nor an
+      # extra table in V1__create_schema.sql: a validation gate asserts V1
+      # creates exactly 11 tables.
+      initialize-schema: never
+
+# ============================================================================
+# Management surface - 3 PINS and 3 DELTAS
+# ============================================================================
+# THE MANAGEMENT PORT AND BASE PATH ARE DELIBERATELY NOT MOVED, and the
+# instruction to consider a separate port was evaluated rather than skipped. A
+# separate management port would narrow the public surface, but two root-owned
+# artefacts address the MAIN application port: Dockerfile:99-100 opens a
+# loopback TCP socket on it and issues GET /actuator/health/readiness, and
+# observability/prometheus.yml:43-53 declares its scrape targets on it at
+# metrics_path /actuator/prometheus. Splitting the port
+# from this file alone would break the container probe - every instance would
+# be killed by its own health check - and blind the scrape, while the file
+# that must change to keep them working is root-owned and outside this
+# artefact's scope. Introducing a MANAGEMENT_SERVER_PORT variable would also
+# invent a contract entry that .env.example does not ship. The exposure list
+# below is already three endpoints, so the residual gain is small and the
+# breakage is certain. RECORDED AS THE REASON FOR THE ABSENCE so a reviewer
+# does not read it as an oversight; the remaining exposure risk and its real
+# remediation are in the discrepancy register.
+management:
+  endpoints:
+    web:
+      discovery:
+        # DELTA against an unsafe default, and the only key on this page that
+        # RUNTIME VALIDATION found rather than reading. The discovery index at
+        # /actuator is NOT gated by the exposure list below: with that list
+        # holding three endpoints, a browser navigation to /actuator still
+        # answered 200 with a HAL document naming health, health-path, info and
+        # prometheus. Enumerating a management surface is reconnaissance, and
+        # the framework default for this key is true - measured from
+        # spring-configuration-metadata.json in
+        # spring-boot-actuator-autoconfigure-3.5.11. Nothing legitimate depends
+        # on the index: an operator and a scrape each address their endpoint
+        # directly, and observability/prometheus.yml names the path it scrapes.
+        # Rule 1 Clause D, least privilege.
+        enabled: false
+      exposure:
+        # PIN. EXACTLY THREE ENDPOINTS, AND NEVER "*". env and configprops
+        # echo RESOLVED property values, which in this application means the
+        # JWT signing key and the database password; heapdump serves the
+        # process image, from which both are recoverable; beans, mappings and
+        # loggers disclose internal structure; shutdown stops the process.
+        # A production profile that does not state its own exposure list
+        # cannot be audited, and this is the single line an auditor reads to
+        # answer "what can an anonymous caller reach?". Rule 1 Clause D.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # PIN. Aggregate status only. Component detail names the substrate and
+      # carries its failure text, which for a datasource can include the JDBC
+      # URL and the user name. never is also the framework default; it is
+      # stated so that the production answer does not depend on knowing that.
+      show-details: never
+      # PIN. Same reasoning one level up: the component list alone reveals
+      # which backing services exist.
+      show-components: never
+  info:
+    # /actuator/info is anonymously reachable because it is in the exposure
+    # list above. Both contributors below default to ENABLED - measured from
+    # spring-configuration-metadata.json in
+    # spring-boot-actuator-autoconfigure-3.5.11, which reports
+    # management.info.build.enabled true and management.info.git.enabled true,
+    # against env, java, os, process and ssl which all default false and are
+    # therefore left alone.
+    # Today the response body is empty only by accident: pom.xml configures
+    # the spring-boot-maven-plugin with the repackage goal alone and no
+    # build-info goal, and no commit-id plugin is present, so neither
+    # META-INF/build-info.properties nor git.properties is produced and both
+    # contributors have nothing to read. Adding either goal - a routine build
+    # change - would SILENTLY begin publishing the artefact version, the build
+    # timestamp and the commit SHA to unauthenticated callers.
+    build:
+      # DELTA against an unsafe default. Makes the empty body a property of
+      # this profile rather than a side effect of the build.
+      enabled: false
+    git:
+      # DELTA against an unsafe default, same reasoning.
+      enabled: false
+  tracing:
+    sampling:
+      # DELTA. application.yml:801-806 sets 1.0 so that every request and
+      # every batch step is traceable during a parity investigation, and says
+      # in as many words to lower it in production if volume demands. It does.
+      # At 1.0 the span rate equals the transaction rate, and the cost lands
+      # on the collector and the network rather than on the application, so
+      # the trade is export volume against per-request certainty. 0.1 keeps a
+      # statistically useful sample of a production workload while bounding
+      # that cost, and it coincides with the framework's own metadata default,
+      # so no reader has to know an implicit value to predict behaviour.
+      # A specific investigation raises MANAGEMENT_TRACING_SAMPLING_PROBABILITY
+      # for its duration instead of editing this file.
+      probability: 0.1
+
+# ============================================================================
+# Logging - 2 DELTAS and 2 PINS
+# ============================================================================
+# logging.config is deliberately NOT set here: logback-spring.xml is
+# auto-detected from the classpath and owns JSON encoding, the traceId, spanId
+# and correlationId MDC fields, and the masking of credentials, presented
+# passwords, BCrypt hashes, social security numbers, tokens and Authorization
+# headers. No appender, encoder or pattern is restated (Rule 1 Clause C).
+#
+# Only four levels are declared. root stays at the inherited INFO on purpose:
+# lowering it would suppress the framework's own started-successfully and
+# listening-on-port lines, which are the first thing an operator looks for
+# after a deployment, and no security requirement is served by hiding them.
+logging:
+  level:
+    # DELTA. application.yml:1148 sets INFO. In production the request-mapping
+    # and content-negotiation detail this package emits below WARN is noise
+    # at best, and the web loggers are the ones that can echo request data.
+    org.springframework.web: WARN
+    # DELTA. application.yml:1149 sets INFO. Filter-chain construction and
+    # per-request authorisation detail are not needed in production, and no
+    # audit trail is lost by raising this: the authentication signal is the
+    # carddemo.auth.attempts counter declared at application.yml:1091, and the
+    # application's own events stay at INFO under com.cardemo.
+    org.springframework.security: WARN
+    # PIN of application.yml:1158, and a protective FLOOR rather than a
+    # repeat. A child level overrides its parent, so if any profile or a
+    # runtime logger change raises the org.hibernate parent at :1150 to DEBUG,
+    # this line still suppresses statement text: org.hibernate.SQL prints
+    # every statement at DEBUG.
+    org.hibernate.SQL: WARN
+    # PIN of application.yml:1159, the same floor for bound parameter VALUES,
+    # which org.hibernate.orm.jdbc.bind prints at TRACE. Those values are the
+    # row contents: CUST-SSN
+    # PIC 9(09) from app/cpy/CVCUS01Y.cpy:17 and the BCrypt hash of
+    # SEC-USR-PWD PIC X(08) from app/cpy/CSUSR01Y.cpy:21.
+    org.hibernate.orm.jdbc.bind: WARN

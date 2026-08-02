@@ -1,24 +1,30 @@
 /*
  * ******************************************************************
  * Program     : FileServiceTest.java
+ * Component   : FileServiceTest
  * Application : CardDemo
- * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11
+ * Type        : JUnit 5 unit test (Surefire tier, pure JVM)
  * Function    : Verifies the third collapse rule: the whole of the
  *               CBSTM03B call contract as one DD-name-keyed bean.
  *               Covers the twelve implemented cells of the four-file
- *               by six-operation matrix, the eight that are
+ *               by six-operation matrix, the twelve that are
  *               structurally unreachable, both latent defects the
- *               source carries, the key and key-length boundary, and
+ *               source carries, the key and key-length boundary, the
+ *               fourteen paragraph labels as fourteen methods, and
  *               the fact that neither a payload nor a key can reach a
  *               string representation.
- * Source      : app/cbl/CBSTM03B.CBL:30-53   (FILE-CONTROL, 2 SEQ + 2 RANDOM)
+ * Source      : app/cbl/CBSTM03B.CBL:30      (FILE-CONTROL.)
+ *               app/cbl/CBSTM03B.CBL:31-53   (4 SELECT: 2 SEQ, 2 RANDOM)
  *               app/cbl/CBSTM03B.CBL:58-78   (the four FD record layouts)
  *               app/cbl/CBSTM03B.CBL:100-112 (LK-M03B-AREA, 1040 bytes)
+ *               app/cbl/CBSTM03B.CBL:114     (PROCEDURE DIVISION USING)
  *               app/cbl/CBSTM03B.CBL:116-131 (0000-START, 9999-GOBACK)
  *               app/cbl/CBSTM03B.CBL:133-229 (the four handlers)
+ *               app/cbl/CBSTM03A.CBL:71-83   (caller-side shared area)
  *               app/cbl/CBSTM03A.CBL:347-364 (the caller's read idiom)
  *               app/cbl/CBSTM03A.CBL:736     (open: 00 OR 04)
- *               app/cbl/CBSTM03A.CBL:379     (keyed get: 00 only) @ 7756d89
+ *               app/cbl/CBSTM03A.CBL:379     (keyed get: 00 only)
+ *               app/cpy/COSTM01.CPY          (32-byte TRNX-KEY) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -29,23 +35,26 @@
  *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
- * implied. See the License for the specific language governing
- * permissions and limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
  * ******************************************************************
  */
 package com.cardemo.unit.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
+import static org.assertj.core.api.Assertions.catchThrowable;
 
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.service.shared.FileService;
@@ -66,24 +75,115 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.Mockito;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.AnnotationConfigApplicationContext;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.context.annotation.Import;
 
 /**
- * Unit tests for the statement file service.
+ * Unit tests for {@link FileService}, the Java replacement for the
+ * {@code CALL 'CBSTM03B' USING WS-M03B-AREA} file-access subprogram contract.
  *
- * <p>Every assertion is anchored to a locator in {@code app/cbl/CBSTM03B.CBL} or its caller
- * {@code app/cbl/CBSTM03A.CBL}, both read case-sensitively with the carriage return stripped. The two defects
- * the source carries are asserted as behaviour rather than merely documented, because a later well-meaning
- * change that "fixes" either one would break parity, and only a test can catch that.
+ * <h2>What it does</h2>
+ *
+ * <p>Asserts the whole of the {@code CBSTM03B} boundary as behaviour rather than as prose. Every assertion is
+ * anchored to a locator in {@code app/cbl/CBSTM03B.CBL} or its sole caller {@code app/cbl/CBSTM03A.CBL}, both
+ * read case-sensitively with the carriage return stripped. The two latent defects the source carries are
+ * asserted as behaviour precisely because a later well-meaning change that "fixed" either one would break
+ * parity, and only a test can catch that.
+ *
+ * <p>The verified locators this class pins, all at commit {@code 7756d89}:
+ *
+ * <ul>
+ *   <li>{@code CBSTM03B.CBL:L30} - {@code FILE-CONTROL.}, which maps to the four dataset bindings rather than
+ *       to a method, and is the fifteenth Area-A label that reconciles 15 against 14.</li>
+ *   <li>{@code CBSTM03B.CBL:L31-L53} - the four {@code SELECT} clauses: two {@code SEQUENTIAL} and two
+ *       {@code RANDOM}, the asymmetry that decides which read form each dataset implements.</li>
+ *   <li>{@code CBSTM03B.CBL:L58-L78} - the four {@code FD} layouts, widths 350, 50, 500 and 300.</li>
+ *   <li>{@code CBSTM03B.CBL:L100-L112} - {@code LK-M03B-AREA}, 8 + 1 + 2 + 25 + 4 + 1000 = 1040 bytes.</li>
+ *   <li>{@code CBSTM03B.CBL:L114} - {@code PROCEDURE DIVISION USING LK-M03B-AREA}, exactly one parameter.</li>
+ *   <li>{@code CBSTM03B.CBL:L116} and {@code L118} - {@code 0000-START.} and its {@code EVALUATE
+ *       LK-M03B-DD}.</li>
+ *   <li>{@code CBSTM03B.CBL:L127-L128} and {@code L130-L131} - {@code WHEN OTHER GO TO 9999-GOBACK}, and the
+ *       bare {@code GOBACK.} that assigns no return code. Defect B.</li>
+ *   <li>{@code CBSTM03B.CBL:L133}, {@code L141}, {@code L147}, {@code L152} - {@code TRNXFILE}: open, plain
+ *       read, close, then the status epilogue.</li>
+ *   <li>{@code CBSTM03B.CBL:L157}, {@code L165}, {@code L171}, {@code L176} - {@code XREFFILE}, same
+ *       shape.</li>
+ *   <li>{@code CBSTM03B.CBL:L181}, {@code L189-L190}, {@code L196}, {@code L200-L203} - {@code CUSTFILE}:
+ *       open, keyed read by reference modification, close, epilogue and terminator.</li>
+ *   <li>{@code CBSTM03B.CBL:L206}, {@code L214-L215}, {@code L221}, {@code L225-L228} - {@code ACCTFILE}, same
+ *       shape, but on a numeric record key.</li>
+ * </ul>
+ *
+ * <h2>How to run, build and test</h2>
+ *
+ * <p>This class is bound to <strong>Surefire</strong>, not Failsafe: the root {@code pom.xml} includes
+ * {@code **}{@code /*Test.java} and excludes only the {@code integration} and {@code e2e} trees, so a class
+ * placed anywhere outside {@code src/test/java/com/cardemo/unit/**} would match neither plugin's include set
+ * and would silently never run - a green build with the class recorded as uncovered. Run it with:
+ *
+ * <ul>
+ *   <li>{@code ./mvnw -B -ntp test -Dtest=FileServiceTest} for this class alone.</li>
+ *   <li>{@code ./mvnw -B -ntp test} for the whole unit tier.</li>
+ *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} for the gated build, which adds the
+ *       JaCoCo line-coverage floor. The skip property is hyphenated, not dotted.</li>
+ * </ul>
+ *
+ * <p>Test compilation runs under {@code -Xlint:all -Werror} at {@code release 25}, so an unused import or a
+ * doclint complaint is a build failure rather than a warning.
+ *
+ * <h2>Key configurations and defaults</h2>
+ *
+ * <ul>
+ *   <li><strong>Pure JVM.</strong> No container, no Spring context, no database, no network. The bean is
+ *       constructed directly, which is also the fastest way to prove the zero-binding case.</li>
+ *   <li><strong>Mockito strict stubs</strong> ({@link org.mockito.quality.Strictness#STRICT_STUBS}) for the
+ *       {@link FileStatusMapper} collaborator wherever delegation is the thing being proved, so an unused
+ *       stubbing fails the test instead of passing silently. Everything else uses the recording
+ *       {@code FakeDataset}, because proving that an unimplemented cell performs <em>no</em> input or output
+ *       needs a counter, not a mock.</li>
+ *   <li><strong>No clock and no fixture loader.</strong> Neither is imported: nothing here reads the wall
+ *       clock, the default locale or the default zone, and no test resource is loaded. Every value is a
+ *       literal, so the suite is order-independent and machine-independent.</li>
+ *   <li><strong>No personal data.</strong> Keys and records are obviously synthetic - repeated single
+ *       characters and sequential digits - never a plausible social security number, card number or date of
+ *       birth. The payload buffer and the key are never placed in an assertion message.</li>
+ * </ul>
+ *
+ * <h2>Common failure modes and troubleshooting</h2>
+ *
+ * <ul>
+ *   <li><strong>A lowercase glob drops the source.</strong> {@code CBSTM03B.CBL} and {@code CBSTM03A.CBL} use
+ *       an uppercase extension, so {@code app/cbl/*.cbl} silently matches neither and the contract appears to
+ *       have no source at all. Match {@code app/cbl/**} case-insensitively.</li>
+ *   <li><strong>Not stripping the carriage return drifts every citation.</strong> Both files are CRLF. Count
+ *       lines through {@code tr -d '\r'} or every locator above moves.</li>
+ *   <li><strong>Five specification locators are three too high.</strong> The {@code PROCEDURE DIVISION}
+ *       header is at L114 not L117, {@code 0000-START.} at L116 not L119, the {@code EVALUATE} at L118 not
+ *       L121, and {@code GO TO 9999-GOBACK.} at L128 not L131. The other eleven labels match exactly, so this
+ *       is not a systematic offset and nothing should be shifted wholesale.</li>
+ *   <li><strong>Collapsing the epilogue and terminator pairs loses defect A.</strong> {@code 1900-EXIT.} is
+ *       not a terminator: its body moves the file status into the return code, and it is reached whether or
+ *       not any input or output happened. {@code 1999-EXIT.} is the terminator. The same split recurs at
+ *       2900/2999, 3900/3999 and 4900/4999, giving eight distinct methods, not four.</li>
+ *   <li><strong>Assuming a 24-cell matrix.</strong> Six operations are declared but only three are implemented
+ *       per dataset, and the sets differ: the write and the rewrite exist nowhere, the plain read is absent
+ *       from the two random datasets, and the keyed read is absent from the two sequential ones. Twelve cells
+ *       are reachable, twelve are not.</li>
+ *   <li><strong>Expecting an abend from the subprogram itself.</strong> {@code CBSTM03B} declares no
+ *       {@code ABCODE} and calls no abend service, so it is outside the abend-999 contract. It reports a
+ *       status and returns; interpreting that status is the caller's job.</li>
+ * </ul>
  */
 @DisplayName("FileService: the CBSTM03B call contract as one DD-keyed bean")
 class FileServiceTest {
@@ -281,6 +381,15 @@ class FileServiceTest {
         }
     }
 
+    /**
+     * INTENTIONAL PRESERVATION of a source defect - not a bug in this code. Defect A is the silent stale-status
+     * fall-through: for a valid DD with an unimplemented operation none of the handler's three guarded blocks
+     * fires, so control reaches the epilogue, which unconditionally moves the file's status into the return code
+     * ({@code app/cbl/CBSTM03B.CBL:L152}, {@code L176}, {@code L201}, {@code L226}). No input or output
+     * happened, so the caller receives the file's stale prior status and no error is signalled. It is reproduced
+     * rather than repaired because behavioural parity is the contract; tracked in {@code DECISION_LOG.md} with
+     * severity High, and cited row by row in {@code TRACEABILITY_MATRIX.md}.
+     */
     @Nested
     @DisplayName("2. The twelve unimplemented cells perform no input or output - defect A")
     class UnimplementedCells {
@@ -408,6 +517,16 @@ class FileServiceTest {
         }
     }
 
+    /**
+     * INTENTIONAL PRESERVATION of a source defect - not a bug in this code. Defect B is the unknown-DD success
+     * report: {@code WHEN OTHER GO TO 9999-GOBACK.} ({@code app/cbl/CBSTM03B.CBL:L127-L128}) reaches a paragraph
+     * whose whole body is a bare {@code GOBACK.} ({@code L130-L131}). It performs no input or output and never
+     * assigns the return code, so because every caller pre-sets it to zero
+     * ({@code app/cbl/CBSTM03A.CBL:L349}) the caller observes success with an all-spaces payload. Reproduced
+     * rather than repaired for parity; tracked in {@code DECISION_LOG.md} with severity High. Note the scope
+     * limit: {@code CBSTM03B} declares no {@code ABCODE}, so this sits outside the abend-999 contract and the
+     * defect must not be generalised into one.
+     */
     @Nested
     @DisplayName("3. An unknown DD name reports success with a blank payload - defect B")
     class UnknownDdName {
@@ -576,11 +695,51 @@ class FileServiceTest {
         }
 
         @Test
+        @DisplayName("a blanket 25-byte key selects a different record from the length-aware key")
+        void aBlanketTwentyFiveByteKeySelectsADifferentRecord() {
+            final String searchField = "123456789";
+            final FakeDataset lengthAware = new FakeDataset(FileService.Dd.CUSTFILE);
+            lengthAware.stubKeyedRead(searchField,
+                    FileService.DatasetRead.of(OK, recordFor(FileService.Dd.CUSTFILE, 'W')));
+
+            serviceOver(lengthAware).execute(FileService.FileServiceRequest
+                    .keyed(FileService.Dd.CUSTFILE, searchField, searchField.length()));
+
+            assertThat(lengthAware.lastKey())
+                    .as("COMPUTE WS-M03B-KEY-LN = LENGTH OF XREF-CUST-ID at app/cbl/CBSTM03A.CBL:L374 yields "
+                            + "9, so MOVE LK-M03B-KEY (1:9) at app/cbl/CBSTM03B.CBL:L189 selects exactly the "
+                            + "nine character customer identifier")
+                    .isEqualTo(searchField)
+                    .hasSize(FileService.Dd.CUSTFILE.keyWidth());
+
+            final FakeDataset blanket = new FakeDataset(FileService.Dd.CUSTFILE);
+            final FileService blanketService = serviceOver(blanket);
+            final FileService.FileServiceRequest wholeField = FileService.FileServiceRequest
+                    .keyed(FileService.Dd.CUSTFILE, searchField, FileService.KEY_WIDTH);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .as("taking the whole 25 byte field instead of the computed length hands the dataset a "
+                            + "25 character key where its record key is 9. On the mainframe that silently "
+                            + "reads the wrong record; here it is refused outright, which is the only "
+                            + "difference and a deliberate one.")
+                    .isThrownBy(() -> blanketService.execute(wholeField))
+                    .withMessageContaining("record key width");
+
+            assertThat(blanket.totalCalls())
+                    .as("and the refusal happens before any input or output, so no wrong record is ever read")
+                    .isZero();
+            assertThat(blanket.lastKey())
+                    .as("the blanket key therefore selects no record at all, where the length-aware key "
+                            + "selected one")
+                    .isNull();
+        }
+
+        @Test
         @DisplayName("no abend message ever contains the key value")
         void noAbendMessageContainsTheKeyValue() {
             final FakeDataset binding = new FakeDataset(FileService.Dd.ACCTFILE);
             final FileService service = serviceOver(binding);
-            final String secretKey = "4111111111111";
+            final String secretKey = "9999900000777";
             final FileService.FileServiceRequest request =
                     FileService.FileServiceRequest.keyed(FileService.Dd.ACCTFILE, secretKey, 13);
 
@@ -875,6 +1034,15 @@ class FileServiceTest {
     @DisplayName("7. The shared-area contract as types")
     class SharedAreaContract {
 
+        /**
+         * INTENTIONAL RETENTION - not dead code. All six codes declared at
+         * {@code app/cbl/CBSTM03B.CBL:L103-L108} are kept even though only twelve of the twenty-four cells are
+         * reachable and no handler implements {@code 'W'} or {@code 'Z'} at all. Clause B of Rule 1 forbids
+         * dead code; the parity mandate requires the declared contract to survive intact. Parity governs, and
+         * Clause B is satisfied on its own terms because the prohibition is on artefacts without an owner or a
+         * tracking reference: this one is tracked in {@code DECISION_LOG.md} and carries a
+         * {@code TRACEABILITY_MATRIX.md} row against the source locator above.
+         */
         @Test
         @DisplayName("all six operation codes are retained, including the two no handler implements")
         void allSixOperationCodesAreRetained() {
@@ -887,6 +1055,15 @@ class FileServiceTest {
             assertThat(FileService.Operation.REWRITE.code()).isEqualTo('Z');
         }
 
+        /**
+         * INTENTIONAL RETENTION - not dead code. Proves the gap is total rather than per-dataset. The root
+         * cause is that every {@code OPEN} in the subprogram is an {@code OPEN INPUT}
+         * ({@code app/cbl/CBSTM03B.CBL:L136}, {@code L160}, {@code L184}, {@code L209}), so the subprogram is
+         * strictly read-only and no write path exists to implement. The two codes are kept declared rather than
+         * deleted for parity with {@code L107-L108}; tracked in {@code DECISION_LOG.md}. Severity of a
+         * regression here would be High, because exposing a write capability this boundary never had would
+         * widen the contract beyond the source.
+         */
         @Test
         @DisplayName("the write and the rewrite are implemented by no dataset at all")
         void theWriteAndRewriteAreImplementedByNoDataset() {
@@ -1321,110 +1498,557 @@ class FileServiceTest {
     }
 
     @Nested
-    @DisplayName("11. The bean wires in a live Spring container, bindings or not")
-    class SpringWiring {
+    @DisplayName("11. Injectability, asserted without standing up a container")
+    class Injectability {
 
         @Test
-        @DisplayName("the context starts with no dataset binding contributed at all")
-        void theContextStartsWithNoBindings() {
-            try (AnnotationConfigApplicationContext context =
-                    new AnnotationConfigApplicationContext(NoBindings.class)) {
-                final FileService service = context.getBean(FileService.class);
-
-                for (final FileService.Dd dd : FileService.Dd.values()) {
-                    assertThat(service.isBound(dd)).isFalse();
-                }
-            }
-        }
-
-        @Test
-        @DisplayName("exactly one constructor: this is what makes a zero-binding context startable")
+        @DisplayName("exactly one constructor, which is what makes a zero-binding context startable")
         void exactlyOneConstructorKeepsAZeroBindingContextStartable() {
             assertThat(FileService.class.getDeclaredConstructors())
-                    .as("Spring's ConstructorResolver substitutes an empty collection for an unsatisfied "
-                            + "collection argument ONLY when the class has a single constructor. Adding a "
-                            + "second one would make every context that has not yet contributed a Dataset "
-                            + "bean fail to start, which is exactly the state of the tree while the batch "
-                            + "bindings are still being built.")
+                    .as("a framework substitutes an empty collection for an unsatisfied collection argument "
+                            + "ONLY when the class has a single constructor. Adding a second one would make "
+                            + "every context that has not yet contributed a Dataset binding fail to start. "
+                            + "Asserted by reflection rather than by starting a container, because this tier "
+                            + "is pure JVM.")
                     .hasSize(1);
         }
 
         @Test
-        @DisplayName("contributed bindings are injected, the bean is a singleton, and it is not proxied")
-        void contributedBindingsAreInjectedIntoASingleton() {
-            try (AnnotationConfigApplicationContext context =
-                    new AnnotationConfigApplicationContext(TwoBindings.class)) {
-                final String[] names = context.getBeanNamesForType(FileService.class);
-                final FileService service = context.getBean(FileService.class);
+        @DisplayName("the sole constructor takes the mapper and a collection, so bindings can arrive empty")
+        void theSoleConstructorTakesTheMapperAndACollection() {
+            final Class<?>[] parameters = FileService.class.getDeclaredConstructors()[0].getParameterTypes();
 
-                assertThat(names).hasSize(1);
-                assertThat(context.getBean(names[0])).isExactlyInstanceOf(FileService.class);
-                assertThat(context.getBean(FileService.class)).isSameAs(service);
-                assertThat(service.isBound(FileService.Dd.CUSTFILE)).isTrue();
-                assertThat(service.isBound(FileService.Dd.ACCTFILE)).isTrue();
-                assertThat(service.isBound(FileService.Dd.TRNXFILE)).isFalse();
+            assertThat(parameters)
+                    .as("constructor injection only: no setter, no field injection, no static mutable state")
+                    .containsExactly(FileStatusMapper.class, List.class);
+        }
+
+        @Test
+        @DisplayName("a service built with no binding at all constructs and reports every DD unbound")
+        void aServiceWithNoBindingConstructsAndReportsEveryDdUnbound() {
+            final FileService service = new FileService(new FileStatusMapper(), List.of());
+
+            for (final FileService.Dd dd : FileService.Dd.values()) {
+                assertThat(service.isBound(dd))
+                        .as("%s must report unbound rather than provoking a failure at construction",
+                                dd.ddName())
+                        .isFalse();
             }
         }
 
         @Test
-        @DisplayName("dispatch, defect A and defect B all hold inside the Spring-managed instance")
-        void bothDefectsHoldUnderSpring() {
-            try (AnnotationConfigApplicationContext context =
-                    new AnnotationConfigApplicationContext(TwoBindings.class)) {
-                final FileService service = context.getBean(FileService.class);
+        @DisplayName("a partially bound service dispatches to what it has and reports the rest unbound")
+        void aPartiallyBoundServiceDispatchesToWhatItHas() {
+            final FakeDataset cust = new FakeDataset(FileService.Dd.CUSTFILE);
+            final FakeDataset acct = new FakeDataset(FileService.Dd.ACCTFILE);
+            final FileService service = serviceOver(cust, acct);
+
+            assertThat(service.isBound(FileService.Dd.CUSTFILE)).isTrue();
+            assertThat(service.isBound(FileService.Dd.ACCTFILE)).isTrue();
+            assertThat(service.isBound(FileService.Dd.TRNXFILE))
+                    .as("the partially-built state is legitimate, not an error")
+                    .isFalse();
+
+            service.open(FileService.Dd.CUSTFILE);
+
+            assertThat(cust.openCount()).isOne();
+            assertThat(acct.totalCalls()).isZero();
+        }
+
+        @Test
+        @DisplayName("both defects survive on an instance holding only some of the four bindings")
+        void bothDefectsHoldOnAPartiallyBoundInstance() {
+            final FileService service = serviceOver(new FakeDataset(FileService.Dd.ACCTFILE));
+
+            assertThat(service.execute(FileService.FileServiceRequest
+                    .of(FileService.Dd.ACCTFILE, FileService.Operation.OPEN)).returnCode())
+                    .isEqualTo(OK);
+            assertThat(service.execute(FileService.FileServiceRequest
+                    .raw(FileService.Dd.ACCTFILE.ddName(), FileService.Operation.WRITE, "", 0))
+                    .returnCode()).as("defect A republishes the open's status").isEqualTo(OK);
+
+            final FileService.FileServiceResult unknown = service.execute(
+                    FileService.FileServiceRequest.raw("NOSUCHDD", FileService.Operation.READ, "", 0));
+
+            assertThat(unknown.returnCode()).as("defect B").isEqualTo(OK);
+            assertThat(unknown.payload()).isEqualTo(" ".repeat(FileService.PAYLOAD_WIDTH));
+        }
+    }
+
+    @Nested
+    @DisplayName("12. The fourteen PROCEDURE DIVISION labels as fourteen methods")
+    class ParagraphMap {
+
+        /**
+         * The fourteen {@code PROCEDURE DIVISION} paragraph labels of {@code app/cbl/CBSTM03B.CBL}, paired
+         * with the private method each one maps to, in source order.
+         *
+         * <p>The line numbers are the verified ones, produced by scanning Area A with the carriage return
+         * stripped. Five of the specification's locators are three too high; these are not.
+         *
+         * @return one argument triple per paragraph: label, verified line, Java method name
+         */
+        static Stream<Arguments> paragraphs() {
+            return Stream.of(
+                    Arguments.of("0000-START", 116, "dispatch"),
+                    Arguments.of("9999-GOBACK", 130, "goback"),
+                    Arguments.of("1000-TRNXFILE-PROC", 133, "trnxfileProc"),
+                    Arguments.of("1900-EXIT", 151, "trnxfileStatusEpilogue"),
+                    Arguments.of("1999-EXIT", 154, "trnxfileTerminator"),
+                    Arguments.of("2000-XREFFILE-PROC", 157, "xreffileProc"),
+                    Arguments.of("2900-EXIT", 175, "xreffileStatusEpilogue"),
+                    Arguments.of("2999-EXIT", 178, "xreffileTerminator"),
+                    Arguments.of("3000-CUSTFILE-PROC", 181, "custfileProc"),
+                    Arguments.of("3900-EXIT", 200, "custfileStatusEpilogue"),
+                    Arguments.of("3999-EXIT", 203, "custfileTerminator"),
+                    Arguments.of("4000-ACCTFILE-PROC", 206, "acctfileProc"),
+                    Arguments.of("4900-EXIT", 225, "acctfileStatusEpilogue"),
+                    Arguments.of("4999-EXIT", 228, "acctfileTerminator"));
+        }
+
+        /**
+         * The declared method names of the class under test, resolved once per test.
+         *
+         * @return every declared method name, including the private ones
+         */
+        private static List<String> declaredMethodNames() {
+            return Arrays.stream(FileService.class.getDeclaredMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .toList();
+        }
+
+        @ParameterizedTest(name = "{0} at L{1} maps to {2}()")
+        @MethodSource("paragraphs")
+        @DisplayName("every one of the fourteen labels has its own private method")
+        void everyParagraphHasItsOwnMethod(final String label, final int line, final String method) {
+            assertThat(declaredMethodNames())
+                    .as("paragraph %s at app/cbl/CBSTM03B.CBL:L%d must map one-to-one onto %s(), because the "
+                            + "coverage gate is provable only if the correspondence is mechanical", label,
+                            line, method)
+                    .contains(method);
+        }
+
+        @Test
+        @DisplayName("the label set is exactly fourteen, which is what reconciles 15 Area-A labels against 14")
+        void theLabelSetIsExactlyFourteen() {
+            assertThat(paragraphs().toList())
+                    .as("the Area-A scan of app/cbl/CBSTM03B.CBL yields 15 labels: FILE-CONTROL. at L30, "
+                            + "which is ENVIRONMENT DIVISION and maps to the four dataset bindings rather "
+                            + "than to a method, plus these 14 PROCEDURE DIVISION labels. The reconciliation "
+                            + "is resolved, not unavailable.")
+                    .hasSize(14);
+        }
+
+        @Test
+        @DisplayName("the fourteen verified line numbers are the ones the Area-A scan produces")
+        void theFourteenVerifiedLineNumbersAreTheScannedOnes() {
+            final List<Integer> lines = paragraphs()
+                    .map(arguments -> (Integer) arguments.get()[1])
+                    .toList();
+
+            assertThat(lines)
+                    .as("tr -d '\\r' < app/cbl/CBSTM03B.CBL | grep -nE '^ {7}[A-Z0-9][A-Z0-9-]*\\.[ ]*$' "
+                            + "yields 30 for FILE-CONTROL. and then exactly these fourteen. Without the "
+                            + "carriage return stripped every one of them drifts.")
+                    .containsExactly(116, 130, 133, 151, 154, 157, 175, 178, 181, 200, 203, 206, 225, 228)
+                    .isSorted();
+        }
+
+        @Test
+        @DisplayName("the epilogue and the terminator are eight distinct methods, never four")
+        void theEpilogueAndTerminatorPairsAreEightDistinctMethods() {
+            // INTENTIONAL RETENTION - not duplication. Each nnnn-900-EXIT epilogue and its nnnn-999-EXIT
+            // terminator stay separate methods because they do different work: the epilogue body moves the
+            // file status into the return code and runs whether or not any input or output happened, which is
+            // the mechanism of defect A, while the terminator body is a bare EXIT. Collapsing the pair into
+            // one method would erase defect A silently. Tracked in DECISION_LOG.md, severity Medium.
+            final List<String> epilogues = List.of("trnxfileStatusEpilogue", "xreffileStatusEpilogue",
+                    "custfileStatusEpilogue", "acctfileStatusEpilogue");
+            final List<String> terminators = List.of("trnxfileTerminator", "xreffileTerminator",
+                    "custfileTerminator", "acctfileTerminator");
+
+            assertThat(declaredMethodNames())
+                    .as("1900-EXIT is NOT a terminator: its body is MOVE TRNXFILE-STATUS TO LK-M03B-RC at "
+                            + "app/cbl/CBSTM03B.CBL:L152, and it runs whether or not any input or output "
+                            + "happened - which is defect A. 1999-EXIT at L154 is the terminator, body EXIT. "
+                            + "The same split recurs at 2900/2999, 3900/3999 and 4900/4999. Collapsing a "
+                            + "pair would delete defect A.")
+                    .containsAll(epilogues)
+                    .containsAll(terminators);
+
+            assertThat(epilogues).doesNotContainAnyElementsOf(terminators);
+            assertThat(Stream.concat(epilogues.stream(), terminators.stream()).distinct().toList())
+                    .as("four epilogues plus four terminators, all distinct")
+                    .hasSize(8);
+        }
+
+        @ParameterizedTest(name = "{0} contributes a dataset binding rather than a paragraph method")
+        @EnumSource(FileService.Dd.class)
+        @DisplayName("FILE-CONTROL. at L30 maps to the four dataset bindings, not to a method")
+        void fileControlMapsToTheFourDatasetBindings(final FileService.Dd dd) {
+            final FakeDataset binding = new FakeDataset(dd);
+            final FileService service = serviceOver(binding);
+
+            assertThat(service.isBound(dd))
+                    .as("the SELECT for %s at app/cbl/CBSTM03B.CBL:L31-L53 becomes an injected binding, "
+                            + "which is why FILE-CONTROL. is the one Area-A label with no method", dd.ddName())
+                    .isTrue();
+            assertThat(dd.accessMode())
+                    .as("and the binding carries the ACCESS MODE that decides its read form")
+                    .isNotNull();
+        }
+
+        @Test
+        @DisplayName("no paragraph name survives as a public method: the whole contract is the shared area")
+        void noParagraphNameSurvivesAsAPublicMethod() {
+            final List<String> publicNames = Arrays.stream(FileService.class.getMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .toList();
+            final List<String> paragraphMethods = paragraphs()
+                    .map(arguments -> (String) arguments.get()[2])
+                    .toList();
+
+            assertThat(publicNames)
+                    .as("PROCEDURE DIVISION USING LK-M03B-AREA at app/cbl/CBSTM03B.CBL:L114 takes one "
+                            + "parameter and exposes one entry point, so every paragraph stays private")
+                    .doesNotContainAnyElementsOf(paragraphMethods);
+        }
+    }
+
+    @Nested
+    @DisplayName("13. CBSTM03B carries no abend of its own, and no write of any kind")
+    class NoAbendAndNoWrite {
+
+        @Test
+        @DisplayName("no return code makes execute throw: the subprogram declares no ABCODE")
+        void noReturnCodeMakesExecuteThrow() {
+            for (final String status : List.of(OK, SECONDARY, EOF, NOT_FOUND, "22", "35", "90", "97", "99")) {
+                final FakeDataset binding = new FakeDataset(FileService.Dd.TRNXFILE);
+                binding.openStatus(status);
+                final FileService service = serviceOver(binding);
 
                 assertThat(service.execute(FileService.FileServiceRequest
-                        .of(FileService.Dd.ACCTFILE, FileService.Operation.OPEN)).returnCode())
-                        .isEqualTo(OK);
-                assertThat(service.execute(FileService.FileServiceRequest
-                        .raw(FileService.Dd.ACCTFILE.ddName(), FileService.Operation.WRITE, "", 0))
-                        .returnCode()).as("defect A republishes the open's status").isEqualTo(OK);
-
-                final FileService.FileServiceResult unknown = service.execute(FileService.FileServiceRequest
-                        .raw("NOSUCHDD", FileService.Operation.READ, "", 0));
-                assertThat(unknown.returnCode()).as("defect B").isEqualTo(OK);
-                assertThat(unknown.payload()).isEqualTo(" ".repeat(FileService.PAYLOAD_WIDTH));
+                        .of(FileService.Dd.TRNXFILE, FileService.Operation.OPEN)).returnCode())
+                        .as("grep -ci 'ABCODE|CEE3ABD|ABEND' app/cbl/CBSTM03B.CBL is 0, so the subprogram "
+                                + "moves a FILE STATUS into LK-M03B-RC and returns. Status [%s] must "
+                                + "surface as a return code, never as an abend from this boundary.", status)
+                        .isEqualTo(status);
             }
         }
-    }
 
-    /**
-     * A context that imports the bean under test and its collaborator, contributing no dataset binding, so
-     * that Spring's own constructor resolution is exercised rather than a hand-built argument list.
-     */
-    @Configuration
-    @Import({FileStatusMapper.class, FileService.class})
-    static class NoBindings {
-    }
+        @Test
+        @DisplayName("the abends this class does raise are contract breaches, not status interpretations")
+        void theAbendsRaisedAreContractBreachesNotStatusInterpretations() {
+            final FileService unbound = new FileService(new FileStatusMapper(), List.of());
 
-    /**
-     * The same context with two of the four datasets bound, which is the partially-built state the tree is in
-     * while the remaining bindings are still being written.
-     */
-    @Configuration
-    @Import({FileStatusMapper.class, FileService.class})
-    static class TwoBindings {
+            final FatalProcessingException abend = catchAbend(() -> unbound.execute(
+                    FileService.FileServiceRequest.of(FileService.Dd.CUSTFILE, FileService.Operation.OPEN)));
 
-        /**
-         * Contributes the customer dataset binding.
-         *
-         * @return a binding for {@code CUSTFILE}
-         */
-        @Bean
-        FileService.Dataset custBinding() {
-            return new FakeDataset(FileService.Dd.CUSTFILE);
+            assertThat(abend.getAbendCulprit()).startsWith("CBSTM03B");
+            assertThat(abend.getAbendCode())
+                    .as("an absent binding is a wiring fault, so it carries no abend code: the 999 of "
+                            + "app/cbl/CBTRN02C.cbl belongs to the batch programs that declare it, and "
+                            + "CBSTM03B is outside that contract")
+                    .isEqualTo(FileStatusMapper.ABEND_CODE_UNSET);
         }
 
-        /**
-         * Contributes the account dataset binding.
-         *
-         * @return a binding for {@code ACCTFILE}
-         */
-        @Bean
-        FileService.Dataset acctBinding() {
-            return new FakeDataset(FileService.Dd.ACCTFILE);
+        @Test
+        @DisplayName("the dataset contract declares no write and no rewrite at all")
+        void theDatasetContractDeclaresNoWriteAndNoRewrite() {
+            final List<String> operations = Arrays.stream(FileService.Dataset.class.getDeclaredMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .toList();
+
+            assertThat(operations)
+                    .as("every OPEN in app/cbl/CBSTM03B.CBL is OPEN INPUT - L136, L160, L184, L209 - and the "
+                            + "program contains no WRITE, REWRITE or DELETE verb anywhere, so no write "
+                            + "capability may be exposed here either")
+                    .containsExactlyInAnyOrder("dd", "openInput", "close", "readNext", "readByKey")
+                    .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("write"))
+                    .noneMatch(name -> name.toLowerCase(Locale.ROOT).contains("delete"));
+        }
+
+        @Test
+        @DisplayName("the only open the contract offers is an input open, named as such")
+        void theOnlyOpenOfferedIsAnInputOpen() {
+            assertThat(Arrays.stream(FileService.Dataset.class.getDeclaredMethods())
+                    .map(java.lang.reflect.Method::getName)
+                    .filter(name -> name.toLowerCase(Locale.ROOT).startsWith("open"))
+                    .toList())
+                    .as("OPEN INPUT is the only form the source uses, so openInput is the only form offered")
+                    .containsExactly("openInput");
+        }
+
+        @Test
+        @DisplayName("an abend raised here carries no cause, because nothing was caught to be swallowed")
+        void anAbendRaisedHereCarriesNoCauseBecauseNothingWasCaught() {
+            final FileService service = serviceOver(new FakeDataset(FileService.Dd.ACCTFILE));
+            final FileService.FileServiceRequest badLength = FileService.FileServiceRequest
+                    .keyed(FileService.Dd.ACCTFILE, "12345678901", 0);
+
+            final FatalProcessingException abend = catchAbend(() -> service.execute(badLength));
+
+            assertThat(abend.getCause())
+                    .as("this boundary detects the breach itself rather than catching one, so there is no "
+                            + "root cause to preserve and none is fabricated. Asserting null is what proves "
+                            + "no exception was swallowed on the way here.")
+                    .isNull();
+            assertThat(abend.getAbendReason())
+                    .as("context travels in the four abend work-area fields of app/cpy/CSMSG02Y.cpy instead")
+                    .isNotBlank();
+            assertThat(abend.getAbendMessage()).isNotBlank();
+            assertThat(abend.getMessage()).isNotBlank();
+        }
+
+        @Test
+        @DisplayName("where a cause does exist the shared owner preserves it, rather than replacing it")
+        void whereACauseExistsTheSharedOwnerPreservesIt() {
+            final FileStatusMapper mapper = new FileStatusMapper();
+            final IllegalStateException root = new IllegalStateException("simulated driver failure");
+
+            final Throwable thrown = catchThrowable(
+                    () -> mapper.requireSuccess("35", "CUSTFILE", "OPEN", root));
+
+            assertThat(thrown)
+                    .as("clause B requires that context be added without losing the root cause")
+                    .isInstanceOf(CardDemoException.class)
+                    .hasMessageContaining("CUSTFILE")
+                    .hasCause(root);
+            assertThat(thrown.getCause())
+                    .as("the very same instance, not a copy and not a replacement")
+                    .isSameAs(root);
         }
     }
+
+    @Nested
+    @DisplayName("14. Return-code interpretation is delegated, never re-implemented")
+    @ExtendWith(MockitoExtension.class)
+    @MockitoSettings(strictness = Strictness.STRICT_STUBS)
+    class DelegationToTheStatusMapper {
+
+        /**
+         * The collaborator that owns every return-code decision, mocked under strict stubs so that an
+         * unnecessary stubbing fails the test rather than passing unnoticed.
+         */
+        @Mock
+        private FileStatusMapper mapper;
+
+        @Test
+        @DisplayName("open delegates to the scoped guard, passing the DD name and the operation")
+        void openDelegatesToTheScopedGuard() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.TRNXFILE);
+            binding.openStatus(SECONDARY);
+
+            new FileService(mapper, List.of(binding)).open(FileService.Dd.TRNXFILE);
+
+            Mockito.verify(mapper).requireFileServiceSuccess(SECONDARY, "TRNXFILE", "OPEN");
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("close delegates to the scoped guard with its own operation name")
+        void closeDelegatesToTheScopedGuard() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.XREFFILE);
+            binding.closeStatus(OK);
+
+            new FileService(mapper, List.of(binding)).close(FileService.Dd.XREFFILE);
+
+            Mockito.verify(mapper).requireFileServiceSuccess(OK, "XREFFILE", "CLOSE");
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("the priming read delegates to the lenient guard, which is the one that takes 04")
+        void thePrimingReadDelegatesToTheLenientGuard() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.TRNXFILE);
+            binding.queueSequentialRead(FileService.DatasetRead.of(SECONDARY,
+                    recordFor(FileService.Dd.TRNXFILE, 'T')));
+
+            final String payload = new FileService(mapper, List.of(binding))
+                    .readAcceptingSecondaryStatus(FileService.Dd.TRNXFILE);
+
+            assertThat(payload).hasSize(FileService.PAYLOAD_WIDTH);
+            Mockito.verify(mapper).requireFileServiceSuccess(SECONDARY, "TRNXFILE", "READ");
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("the get-next read delegates to the end-of-file aware guard instead")
+        void theGetNextReadDelegatesToTheEndOfFileAwareGuard() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.XREFFILE);
+            binding.queueSequentialRead(FileService.DatasetRead.withoutRecord(EOF));
+            Mockito.when(mapper.requireFileServiceSuccessOrEndOfFile(EOF, "XREFFILE", "READ"))
+                    .thenReturn(true);
+
+            final Optional<String> record = new FileService(mapper, List.of(binding))
+                    .readNext(FileService.Dd.XREFFILE);
+
+            assertThat(record)
+                    .as("the mapper reported end of file, so the loop terminates without an exception")
+                    .isEmpty();
+            Mockito.verify(mapper).requireFileServiceSuccessOrEndOfFile(EOF, "XREFFILE", "READ");
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("the keyed read delegates too, and the extracted key never reaches the mapper")
+        void theKeyedReadDelegatesAndTheKeyNeverReachesTheMapper() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.CUSTFILE);
+            binding.stubKeyedRead("CCCCCCCCC",
+                    FileService.DatasetRead.of(OK, recordFor(FileService.Dd.CUSTFILE, 'C')));
+
+            final String payload = new FileService(mapper, List.of(binding))
+                    .readByKey(FileService.Dd.CUSTFILE, "CCCCCCCCC", 9);
+
+            assertThat(payload).hasSize(FileService.PAYLOAD_WIDTH);
+            Mockito.verify(mapper).requireFileServiceSuccessOrEndOfFile(OK, "CUSTFILE", "READ_K");
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("the status rendering is never re-implemented here: only the mapper is asked")
+        void theStatusRenderingIsNeverReImplementedHere() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.ACCTFILE);
+            binding.openStatus("97");
+
+            new FileService(mapper, List.of(binding)).open(FileService.Dd.ACCTFILE);
+
+            Mockito.verify(mapper).requireFileServiceSuccess("97", "ACCTFILE", "OPEN");
+            Mockito.verify(mapper, Mockito.never()).displayIoStatus(Mockito.anyString());
+            Mockito.verifyNoMoreInteractions(mapper);
+        }
+
+        @Test
+        @DisplayName("a mocked guard cannot abend, which proves the decision is not taken here")
+        void aMockedGuardCannotAbendWhichProvesTheDecisionIsNotTakenHere() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.TRNXFILE);
+            binding.openStatus("35");
+
+            final FileService service = new FileService(mapper, List.of(binding));
+
+            assertThat(service.isBound(FileService.Dd.TRNXFILE)).isTrue();
+            service.open(FileService.Dd.TRNXFILE);
+
+            assertThat(binding.openCount())
+                    .as("status 35 would abend through the real mapper. That it does not abend through a "
+                            + "mock is the proof that FileService holds no copy of the status map: it "
+                            + "forwards the code and lets the single owner decide.")
+                    .isOne();
+            Mockito.verify(mapper).requireFileServiceSuccess("35", "TRNXFILE", "OPEN");
+        }
+
+        @Test
+        @DisplayName("the guard runs after the input or output, never before it")
+        void theGuardRunsAfterTheInputOrOutputNeverBeforeIt() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.XREFFILE);
+            binding.openStatus(OK);
+            binding.closeStatus(OK);
+            final FileService service = new FileService(mapper, List.of(binding));
+
+            service.open(FileService.Dd.XREFFILE);
+            service.close(FileService.Dd.XREFFILE);
+
+            final InOrder order = Mockito.inOrder(mapper);
+            order.verify(mapper).requireFileServiceSuccess(OK, "XREFFILE", "OPEN");
+            order.verify(mapper).requireFileServiceSuccess(OK, "XREFFILE", "CLOSE");
+            order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("execute asks the mapper nothing at all: interpretation is the caller's job")
+        void executeAsksTheMapperNothingAtAll() {
+            final FakeDataset binding = new FakeDataset(FileService.Dd.TRNXFILE);
+            binding.openStatus("90");
+
+            final FileService.FileServiceResult result = new FileService(mapper, List.of(binding))
+                    .execute(FileService.FileServiceRequest
+                            .of(FileService.Dd.TRNXFILE, FileService.Operation.OPEN));
+
+            assertThat(result.returnCode()).isEqualTo("90");
+            Mockito.verifyNoInteractions(mapper);
+        }
+    }
+
+    @Nested
+    @DisplayName("15. The 04 carve-out is scoped to this boundary and nowhere else")
+    class SecondaryStatusCarveOut {
+
+        /**
+         * The real mapper, because the point of this section is what the shared owner actually decides.
+         */
+        private final FileStatusMapper mapper = new FileStatusMapper();
+
+        @Test
+        @DisplayName("04 is accepted on the CBSTM03B-scoped guard")
+        void secondaryStatusIsAcceptedOnTheScopedGuard() {
+            assertThatNoException()
+                    .as("nine sites in app/cbl/CBSTM03A.CBL accept '00' OR '04' - L736, L748, L771, L789, "
+                            + "L807, L862, L879, L895, L911 - and every one of them is a CBSTM03B call site")
+                    .isThrownBy(() -> mapper.requireFileServiceSuccess(SECONDARY, "TRNXFILE", "OPEN"));
+        }
+
+        @Test
+        @DisplayName("04 is rejected on the general guard, so the carve-out cannot leak")
+        void secondaryStatusIsRejectedOnTheGeneralGuard() {
+            assertThatExceptionOfType(RuntimeException.class)
+                    .as("the general FILE STATUS map has no '04' entry. Adding one would silently accept a "
+                                    + "malformed status on every I/O path in the corpus, which is why the "
+                                    + "carve-out is exposed through a narrowly named method instead.")
+                    .isThrownBy(() -> mapper.requireSuccess(SECONDARY, "ACCTDAT", "READ"));
+        }
+
+        @Test
+        @DisplayName("04 is rejected even by the general end-of-file aware guard")
+        void secondaryStatusIsRejectedByTheGeneralEndOfFileGuard() {
+            assertThatExceptionOfType(RuntimeException.class)
+                    .as("'10' is the only non-success the general guard tolerates; '04' is not a second one")
+                    .isThrownBy(() -> mapper.requireSuccessOrEndOfFile(SECONDARY, "ACCTDAT", "READ"));
+        }
+
+        @Test
+        @DisplayName("the same 04 travels the two paths to opposite outcomes, from one shared owner")
+        void theSameSecondaryStatusTravelsTwoPathsToOppositeOutcomes() {
+            assertThatNoException()
+                    .isThrownBy(() -> mapper.requireFileServiceSuccess(SECONDARY, "XREFFILE", "READ"));
+            assertThatExceptionOfType(RuntimeException.class)
+                    .as("one owner, two scopes: this is what 'delegate, do not duplicate' buys")
+                    .isThrownBy(() -> mapper.requireSuccess(SECONDARY, "XREFFILE", "READ"));
+        }
+
+        @Test
+        @DisplayName("00 is accepted by both paths, so the split is about 04 alone")
+        void successIsAcceptedByBothPaths() {
+            assertThatNoException()
+                    .isThrownBy(() -> mapper.requireFileServiceSuccess(OK, "CUSTFILE", "OPEN"));
+            assertThatNoException()
+                    .isThrownBy(() -> mapper.requireSuccess(OK, "CUSTDAT", "READ"));
+        }
+
+        @Test
+        @DisplayName("the get-next guard rejects 04 while the priming guard accepts it")
+        void theGetNextGuardRejectsWhatThePrimingGuardAccepts() {
+            assertThatNoException()
+                    .as("app/cbl/CBSTM03A.CBL:L748, the priming read, accepts 00 OR 04")
+                    .isThrownBy(() -> mapper.requireFileServiceSuccess(SECONDARY, "TRNXFILE", "READ"));
+            assertThatExceptionOfType(RuntimeException.class)
+                    .as("app/cbl/CBSTM03A.CBL:L353, the get-next read, accepts 00 and 10 only. The two read "
+                            + "guards differ on 04 and that difference is behaviour.")
+                    .isThrownBy(() -> mapper.requireFileServiceSuccessOrEndOfFile(
+                            SECONDARY, "TRNXFILE", "READ"));
+        }
+
+        @Test
+        @DisplayName("10 terminates a read loop through the scoped guard without throwing")
+        void endOfFileTerminatesAReadLoopWithoutThrowing() {
+            assertThat(mapper.requireFileServiceSuccessOrEndOfFile(EOF, "XREFFILE", "READ"))
+                    .as("app/cbl/CBSTM03A.CBL:L356-L357 sets END-OF-FILE rather than abending")
+                    .isTrue();
+            assertThat(mapper.requireFileServiceSuccessOrEndOfFile(OK, "XREFFILE", "READ"))
+                    .as("and a successful read is not end of file")
+                    .isFalse();
+        }
+    }
+
 
     /**
      * A dataset binding under the test's control: the Java stand-in for one {@code SELECT} of

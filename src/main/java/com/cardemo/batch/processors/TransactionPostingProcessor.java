@@ -37,6 +37,7 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
@@ -667,9 +668,13 @@ public class TransactionPostingProcessor
     /**
      * Constructs the processor over its four datasets and the shared status mapper, defaulting the clock.
      *
-     * <p>This is the constructor the container uses. It is the only public one, so component scanning
-     * resolves it without an {@code @Autowired} marker, which matches the convention already established by
-     * the sibling services in this tree.
+     * <p>This is the constructor the container uses, and it is marked {@code @Autowired} to say so
+     * explicitly. The marker is load bearing rather than decorative: implicit constructor selection applies
+     * only when a bean declares exactly one candidate, and this class declares two - this one and the
+     * package-private test seam below. Faced with two unannotated candidates the container does not prefer
+     * the public one; it falls back to a no-argument constructor, finds none, and fails context refresh with
+     * {@code BeanInstantiationException: No default constructor found}. Removing the marker therefore breaks
+     * startup even though the class still compiles and every unit test still passes.
      *
      * <p>The clock is defaulted rather than contributed because no {@code Clock} bean exists in this
      * application and none should be required for this bean to wire.
@@ -689,6 +694,7 @@ public class TransactionPostingProcessor
      * @throws NullPointerException if any argument is {@code null}, which is a wiring defect rather than a
      *                             data condition and so is reported immediately
      */
+    @Autowired
     public TransactionPostingProcessor(
             final CardCrossReferenceRepository cardCrossReferenceRepository,
             final AccountRepository accountRepository,
