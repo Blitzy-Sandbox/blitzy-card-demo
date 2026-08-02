@@ -1,0 +1,1163 @@
+# ******************************************************************
+# * File         : application.yml
+# * Application  : CardDemo
+# * Type         : Spring Boot base configuration profile (YAML)
+# * Function     : Declares the property namespace, the environment-variable
+# *                contract and every structural default for the CardDemo
+# *                modular monolith that replaces the z/OS runtime of the
+# *                frozen COBOL corpus in app/. This is the BASE profile: it
+# *                holds structure only. application-local.yml,
+# *                application-test.yml and application-prod.yml layer
+# *                environment deltas on top and never restate structure.
+# *                It carries NO secret, NO credential, NO endpoint and NO
+# *                hostname; every environment-specific value is indirected
+# *                through an environment variable, and the JWT signing key
+# *                has no default at all so an absent key fails startup.
+# * Source       : app/csd/CARDDEMO.CSD (17 sourced transactions, 8 online
+# *                files, DEFINE TDQUEUE(JOBS) at L499-505);
+# *                app/cpy/COCOM01Y.cpy (CDEMO-USER-ID, CDEMO-USER-TYPE,
+# *                CDEMO-PGM-CONTEXT at L25-L31);
+# *                app/catlg/LISTCAT.txt (10 clusters, 3 AIX, 3 PATH, 7 GDG
+# *                bases at L3938-L3946);
+# *                app/jcl/POSTTRAN.jcl (CBTRN02C, reject LRECL 430 at L36);
+# *                app/jcl/INTCALC.jcl (CBACT04C, PARM='2022071800' at L22);
+# *                app/jcl/TRANREPT.jcl (CBTRN03C, report LRECL 133 at L78);
+# *                app/jcl/COMBTRAN.jcl (SORT + IDCAMS REPRO, no COBOL);
+# *                app/jcl/CREASTMT.JCL (5 steps, KEYS(32 0) at L30,
+# *                STMTFILE LRECL 80 at L89, HTMLFILE LRECL 100 at L94);
+# *                app/jcl/DEFGDGB.jcl, app/jcl/DALYREJS.jcl,
+# *                app/jcl/REPTFILE.jcl (the 7 GDG bases and the TRANREPT
+# *                LIMIT(5) versus LIMIT(10) retention conflict);
+# *                app/jcl/OPENFIL.jcl, app/jcl/CLOSEFIL.jcl (the five CEMT
+# *                SET FIL members at L26-L30, now composite health);
+# *                app/proc/TRANREPT.prc (SYMNAMES and INCLUDE COND at
+# *                L39-L46);
+# *                app/cbl/CBTRN02C.cbl (end-of-run counters at L227-L228,
+# *                RETURN-CODE 4 at L229-L231);
+# *                app/cbl/COCRDLIC.cbl:177, app/cbl/COTRN00C.cbl:290,
+# *                app/cbl/COUSR00C.cbl:57, app/cbl/CBTRN03C.cbl:131
+# *                (the four legacy page sizes) - all @ 7756d89
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+# MODULE DOCSTRING
+#
+# WHAT IT DOES
+#
+# This file is the single base Spring profile for one deployable artefact: a
+# stateless modular monolith, explicitly NOT microservices. The deployment
+# shape is forced by atomicity, not preference. app/cbl/COACTUPC.cbl:4098-4102
+# issues EXEC CICS SYNCPOINT ROLLBACK across an account rewrite and a customer
+# rewrite in one unit of work, and app/cbl/CBTRN02C.cbl:424-465 commits a
+# transaction-category-balance upsert, an account update and a transaction
+# insert together. Splitting those writes across services would require
+# compensating transactions and would forfeit behavioural parity, which is the
+# contract of this migration.
+#
+# It configures, and nothing else:
+#   - application identity and the embedded web layer;
+#   - the PostgreSQL 16 datasource that replaces the 10 VSAM KSDS clusters
+#     catalogued at app/catlg/LISTCAT.txt:L3940;
+#   - Hibernate in validate-only mode, because Flyway owns the schema;
+#   - Flyway over exactly three migrations;
+#   - Spring Batch with auto-launch disabled;
+#   - the JWT contract that replaces the COMMAREA identity of
+#     app/cpy/COCOM01Y.cpy;
+#   - S3, SQS FIFO and SNS logical names that replace the 7 GDG bases and
+#     DEFINE TDQUEUE(JOBS);
+#   - Actuator health, info and Prometheus only, with distinct liveness and
+#     readiness probe groups;
+#   - the legacy parity constants that must never drift.
+#
+# HOW TO RUN, BUILD AND TEST
+#
+# Build and unit-test (offline-capable; the local repository is warm):
+#     ./mvnw -B -o clean test
+# Full verify, including coverage and the vulnerability scan:
+#     ./mvnw -B clean verify
+# Bring up the substrate this profile expects (PostgreSQL 16, LocalStack,
+# Jaeger, Prometheus, Grafana) from the repository root:
+#     docker compose up -d
+# Run the application against that substrate, supplying the environment
+# contract below. The `local` profile carries the LocalStack endpoint override
+# and the concrete host values; this base profile carries neither:
+#     SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+# Container image and readiness probe: Dockerfile builds the single JAR and its
+# HEALTHCHECK at Dockerfile:99-100 issues GET /actuator/health/readiness and
+# greps for UP, so the readiness group declared below must exist and resolve.
+# Prometheus scrapes /actuator/prometheus every 15 seconds; the scrape
+# configuration is owned by observability/prometheus.yml and is deliberately
+# not duplicated here.
+#
+# KEY CONFIGURATION AND DEFAULTS
+#
+# One rule governs every value in this file, and it is applied without
+# exception:
+#
+#   - NO DEFAULT is given to a secret or to anything that names a specific
+#     host, database or cloud resource. Those are JWT_SECRET, POSTGRES_HOST,
+#     POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, the three bucket
+#     variables, the queue variable, the topic variable, the region pair and
+#     the OTLP endpoint. An absent value fails placeholder resolution and
+#     therefore fails startup. That is the intended behaviour, not a defect:
+#     Rule 1 Clause B requires null and empty cases to be handled explicitly,
+#     and silently booting with a guessed database host or a generated signing
+#     key is the unsafe default Rule 1 Clause A forbids.
+#   - A DOCUMENTED NON-SECRET DEFAULT is given only to protocol constants,
+#     IANA-registered ports and legacy parity constants: SERVER_PORT 8080,
+#     POSTGRES_PORT 5432, JWT_ISSUER, JWT_EXPIRATION_SECONDS, the tracing
+#     sample rate, the four page sizes, the BCrypt strength, the record
+#     lengths and the GDG retention count. None of these is environment
+#     specific and none is sensitive.
+#
+# Every framework value that affects behaviour is stated explicitly even where
+# it equals the framework default, so that a reader never has to know an
+# implicit default to predict behaviour. The overrides that genuinely change
+# framework behaviour are: spring.jpa.open-in-view false (framework default
+# true), spring.batch.job.enabled false (framework default true),
+# spring.batch.jdbc.initialize-schema never (framework default embedded),
+# management.endpoint.health.probes.enabled true (framework default false),
+# management.endpoints.web.exposure.include health,info,prometheus (framework
+# default health only) and spring.cloud.aws.sqs.queue-not-found-strategy FAIL
+# (library default CREATE).
+#
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+#
+#   - Startup aborts on the signing key, typically reported as an unresolvable
+#     placeholder for carddemo.security.jwt.signing-key. JWT_SECRET is absent.
+#     This is intended fail-fast behaviour. Export a key of at least 32 bytes
+#     of entropy; .env.example shows how to generate one and ships the entry
+#     empty. Never add a default here to make the message go away.
+#   - Startup aborts on the datasource URL or credentials. POSTGRES_HOST,
+#     POSTGRES_DB, POSTGRES_USER or POSTGRES_PASSWORD is absent. Supply them,
+#     or override spring.datasource.url, .username and .password directly,
+#     which SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and
+#     SPRING_DATASOURCE_PASSWORD do by relaxed binding at a higher precedence
+#     than this file.
+#   - Connection refused to PostgreSQL. The substrate is not running: use
+#     `docker compose up -d` and wait for the postgres service to report
+#     healthy. Parallel clones must export CLONE_INDEX so published ports do
+#     not collide.
+#   - Flyway reports a checksum mismatch or a failed validation. A committed
+#     migration was edited after it had been applied. Roll the database
+#     forward with a new migration or recreate the database volume;
+#     spring.flyway.clean-disabled is true and must stay true, and there is
+#     deliberately no ignore-migration-patterns and no continue-on-error,
+#     because Rule 1 Clause B forbids swallowing the failure.
+#   - Hibernate reports a missing table or column. spring.jpa.hibernate.
+#     ddl-auto is validate, so the entity mapping and the Flyway schema have
+#     diverged. Fix whichever is wrong; never switch ddl-auto to update or
+#     create, which would silently diverge from the copybook-derived DDL.
+#   - Spring Batch reports a missing BATCH_JOB_INSTANCE or similar. This base
+#     profile sets initialize-schema to never on purpose. Use the local or
+#     test profile, which enable the framework schema script, or have a DBA
+#     apply org/springframework/batch/core/schema-postgresql.sql. The
+#     BATCH_* tables must never enter a Flyway migration, because
+#     V1__create_schema.sql is asserted to create exactly 11 tables.
+#   - Batch metadata on restart. The framework script is not idempotent as
+#     SQL, so leaving initialize-schema at always across a restart on the same
+#     volume re-executes CREATE TABLE. It nevertheless completes, because the
+#     framework swallows the already-exists failures; the measured behaviour,
+#     the mechanism and the consequence are recorded verbatim under RUNTIME
+#     VALIDATION EVIDENCE below rather than asserted.
+#   - AWS calls fail to resolve, or an unexpected bucket or queue is created.
+#     This base profile declares no endpoint override by design, so the SDK
+#     resolves the real service. Activate the local or test profile, which
+#     point S3, SQS and SNS at LocalStack. Do not export AWS_ENDPOINT_URL
+#     globally: the SDK honours it and would redirect Testcontainers clients
+#     onto the shared LocalStack instance.
+#   - Queue not found. queue-not-found-strategy is FAIL, so a missing queue is
+#     a loud error rather than a silently auto-created one. Run
+#     localstack-init/init-aws.sh, which is idempotent.
+#   - Startup aborts on an unresolvable OTEL_EXPORTER_OTLP_ENDPOINT. The trace
+#     collector has not been declared. Export it - `docker compose up -d`
+#     publishes the Jaeger OTLP HTTP receiver - or set the higher-precedence
+#     MANAGEMENT_OTLP_TRACING_ENDPOINT, which .env.example:96 already ships.
+#     There is deliberately no default: Boot gates its OTLP span exporter on
+#     @ConditionalOnProperty for management.otlp.tracing.endpoint, so a missing
+#     value would create no exporter at all and every span would be dropped in
+#     silence. Failing loudly is the whole point.
+#   - /actuator/health/readiness returns 404. The liveness and readiness
+#     groups below were removed or renamed; Dockerfile:99-100 and the compose
+#     probe both depend on them.
+#   - An actuator endpoint returns 404. Only health, info and prometheus are
+#     exposed, deliberately. Do not widen the exposure list to "*".
+#
+# PROFILE LAYERING CONTRACT
+#
+# spring.profiles.active is deliberately ABSENT. The runtime supplies it:
+# Dockerfile:95 sets SPRING_PROFILES_ACTIVE to the empty string precisely so
+# the image stays neutral. Hardcoding an active profile here would make the
+# base profile non-neutral and fight the deployment contract. Overrides that
+# belong to the three sibling profiles and must NOT appear in this file:
+#   - local: concrete PostgreSQL host, the LocalStack endpoint override,
+#     spring.batch.jdbc.initialize-schema always, verbose logging.
+#   - test:  Testcontainers-supplied datasource and LocalStack endpoint,
+#     spring.batch.jdbc.initialize-schema always.
+#   - prod:  externalised secrets only, spring.batch.jdbc.initialize-schema
+#     never for a DBA-applied script, least-privilege credentials.
+#
+# DISCREPANCY REGISTER
+#
+# Severities follow Rule 1 Clause F. Each entry names its evidence and its
+# remediation. Nothing below is a defect introduced by this file; each is a
+# conflict between two sources, resolved here and recorded rather than hidden.
+#
+#   - MEDIUM - signing-key variable name. The file specification for this
+#     artefact asked for JWT_SIGNING_KEY on the stated grounds that
+#     .env.example defers to this file. It does not: .env.example:44 ships
+#     JWT_SECRET as the empty REQUIRED entry, and JWT_SECRET is also the name
+#     used by owasp-suppressions.xml:180, pom.xml:87, the Javadoc of
+#     src/main/java/com/cardemo/model/entity/CardCrossReference.java:256 and
+#     src/main/java/com/cardemo/repository/CardCrossReferenceRepository.java:
+#     372, and docs/technical-specifications.md:1030, :1040 and :2404, which
+#     state that JWT_SECRET must be present or startup fails fast.
+#     Resolution: the property key stays carddemo.security.jwt.signing-key,
+#     which is what SecurityConfig binds, and it reads the one committed
+#     variable JWT_SECRET with no default. Introducing a second name would
+#     create exactly the duplication Rule 1 Clause C forbids while satisfying
+#     none of the instruction's normative requirements any better - those
+#     requirements are environment indirection, no committed value, no
+#     fallback and fail-fast, all of which hold as written.
+#     Remediation if the repository later standardises on JWT_SIGNING_KEY:
+#     rename in all seven places in one change, never partially.
+#   - MEDIUM - object storage and queue readiness. The specification requires
+#     readiness to cover database, object storage and queue.
+#     management.endpoint.health.validate-group-membership defaults to true
+#     and fails startup when a group names a contributor that does not exist,
+#     and Spring Cloud AWS 3.3.0 ships no health indicator at all: no class
+#     matching Health exists in spring-cloud-aws-autoconfigure-3.3.0.jar,
+#     spring-cloud-aws-s3-3.3.0.jar or spring-cloud-aws-sqs-3.3.0.jar.
+#     Naming s3 or sqs today would therefore make the application unbootable.
+#     Resolution: the readiness group enumerates only contributors that exist
+#     on this classpath, and the group-membership validation is left at its
+#     secure default rather than disabled, because disabling it would swallow
+#     a misconfiguration.
+#     Remediation: com.cardemo.observability.HealthIndicators supplies the
+#     object-storage and queue contributors; append their contributor names to
+#     management.endpoint.health.group.readiness.include in the same change
+#     that introduces them.
+#   - MEDIUM - GDG retention conflict, inherited from the source.
+#     app/jcl/DEFGDGB.jcl:L37-38 declares LIMIT(5) for the TRANREPT
+#     generation data group and app/jcl/REPTFILE.jcl:L26-27 declares LIMIT(10)
+#     for the same base. A single S3 lifecycle value must be chosen.
+#     Resolution: 10, the larger, so no generation that the legacy system
+#     would have retained is discarded. Recorded under
+#     carddemo.aws.s3.gdg-retention-generations below.
+#   - LOW - the base profile expects a runtime-supplied active profile, and
+#     the committed docker-compose.yml provisions only the five substrate
+#     services, with no application service that would set
+#     SPRING_PROFILES_ACTIVE. Nothing in this file depends on that service
+#     existing; the neutrality requirement is unaffected. Remediation: set
+#     SPRING_PROFILES_ACTIVE on the command line, in .env, or on the
+#     application service when one is added to compose.
+#   - LOW - two variable names in the composed contract differ from the two
+#     this file reads. This file reads POSTGRES_HOST and
+#     OTEL_EXPORTER_OTLP_ENDPOINT, while .env.example ships neither and instead
+#     ships SPRING_DATASOURCE_URL at :55 and MANAGEMENT_OTLP_TRACING_ENDPOINT
+#     at :96. Those two supersede spring.datasource.url and
+#     management.otlp.tracing.endpoint outright, by relaxed binding at a higher
+#     precedence than this file, so the placeholders beneath them are never
+#     evaluated. Measured: a boot with the committed .env.example set alone and
+#     POSTGRES_HOST and OTEL_EXPORTER_OTLP_ENDPOINT deliberately unset started
+#     with exit 0, zero ERROR lines and Flyway at v1; a boot with neither the
+#     variable nor its superseding form failed fast, as intended. Both routes
+#     are therefore supported and neither is silent.
+#     Resolution: keep the decomposed POSTGRES_* and OTEL_* form here, because
+#     it is what makes the base profile free of any hostname, port or URL, and
+#     let the composed form win where a deployment prefers it. Remediation if
+#     one spelling should become canonical: add POSTGRES_HOST and
+#     OTEL_EXPORTER_OTLP_ENDPOINT to .env.example, or drop the composed
+#     entries - but never both spellings for the same value in one environment.
+#   - LOW - three legacy defects are preserved rather than repaired, because
+#     parity is the contract: the record-length mismatch for the statement
+#     HTML output between app/jcl/CREASTMT.JCL:L73 (LRECL 80 at pre-delete)
+#     and :L94 (LRECL 100 at execution); the corrupted STMTFILE DD line in
+#     the same member; and app/proc/TRANREPT.prc:L1, whose internal procedure
+#     name is REPROC while the member that EXEC PROC=TRANREPT resolves is
+#     TRANREPT. The record lengths below reproduce the execution-step values,
+#     which are the ones the program actually writes.
+#   - LOW - /actuator/prometheus discloses the exact JDK build and OS vendor.
+#     Browser-observed: jvm_info{runtime="OpenJDK Runtime Environment",
+#     vendor="Ubuntu",version="25.0.3+9-2-25.10.2-Ubuntu"}. This is not an
+#     assertion failure - /actuator/info is {} and the health bodies are
+#     status-only - but an anonymous scrape does reveal the patch level. The
+#     only lever is management.metrics.binders.jvm.enabled, whose metadata
+#     default is true and which is all-or-nothing: setting it false would also
+#     remove every heap, garbage-collection, thread and class-loader meter, and
+#     that trade is not justifiable against AAP goal G6 and Rule 1 Clause A,
+#     which require measurable behaviour. It is therefore left enabled and the
+#     disclosure is disclosed instead. Remediation belongs to the component
+#     that owns access rather than to this file: authenticate
+#     /actuator/prometheus in SecurityConfig, or move the management surface to
+#     a separate port reachable only from the scrape network.
+#   - LOW - disk_free_bytes and disk_total_bytes carry an absolute filesystem
+#     path in their path label. This file sets neither
+#     management.metrics.system.diskspace.paths nor any
+#     management.metrics.binders.* key, and that property's metadata default is
+#     the single entry "." - the process working directory. The long build path
+#     seen during validation was therefore the ad-hoc harness's working
+#     directory, confirmed against /proc/<pid>/cwd, and in the delivered image
+#     the same label resolves to the container WORKDIR. No repository path is
+#     baked into this file. Remediation if the label must be fixed regardless
+#     of where the process starts: set
+#     management.metrics.system.diskspace.paths explicitly.
+#
+# NOT AVAILABLE
+#
+#   - No service-level objective exists anywhere in the COBOL corpus, so no
+#     latency or throughput threshold is asserted here. Connection-pool
+#     sizing is therefore a documented minimum rather than a tuned value; see
+#     the note on spring.datasource.hikari below. What would be needed to set
+#     one: a measured production workload profile.
+#   - app/csd/CARDDEMO.CSD:L388-390 defines transaction CDV1 against
+#     PROGRAM(COCRDSEC), and COCRDSEC has no source anywhere in the
+#     repository. Nothing is configured for it and no endpoint is invented.
+#   - Companion artefacts are referenced throughout as CONTRACTS, not as files
+#     already on disk. The migration is delivered in a single phase, so at the
+#     time this profile was authored the following were still pending and every
+#     reference to them describes the interface they must honour rather than an
+#     inspected file: application-local.yml, application-test.yml,
+#     application-prod.yml, logback-spring.xml, V2__create_indexes.sql,
+#     V3__seed_data.sql, DECISION_LOG.md, docs/validation-gates.md, and the
+#     Java beans named beside the properties they consume -
+#     CardDemoApplication, SecurityConfig, BatchConfig, AwsConfig,
+#     ObservabilityConfig, MetricsConfig and HealthIndicators. Everything that
+#     WAS inspected is cited with a line number and was verified to exist: all
+#     41 app/ paths named here, plus pom.xml, .env.example, .editorconfig,
+#     Dockerfile, docker-compose.yml, observability/prometheus.yml,
+#     localstack-init/init-aws.sh and V1__create_schema.sql. Because no
+#     @ConfigurationProperties class exists yet, the runtime evidence below was
+#     obtained through a throwaway boot harness rather than through
+#     `mvn spring-boot:run`, which cannot work until CardDemoApplication lands.
+#
+# RUNTIME VALIDATION EVIDENCE
+#
+# Measured, not asserted. Recorded 2026-08-02 on OpenJDK 25.0.3, Maven 3.9.11,
+# Spring Boot 3.5.11 and PostgreSQL 16.10, booting this file on the pinned
+# classpath. Rule 1 Clause F requires evidence rather than a claim.
+#
+#   - Signing-key fail-fast, both directions. With JWT_SECRET unset the context
+#     refresh aborts with exit 1 and
+#     "PlaceholderResolutionException: Could not resolve placeholder
+#     'JWT_SECRET' in value \"${JWT_SECRET}\" <-- \"${carddemo.security.jwt.
+#     signing-key}\"", which names both the variable to set and the property
+#     that needs it. With the variable supplied externally the application
+#     starts, and the key value appears nowhere in stdout or stderr.
+#   - Actuator surface. "Exposing 3 endpoints beneath base path '/actuator'".
+#     /actuator/health returns {"status":"UP","groups":["liveness",
+#     "readiness"]} with no components key, so show-details never and
+#     show-components never both hold for an anonymous caller.
+#     /actuator/health/liveness resolves to livenessState only and
+#     /actuator/health/readiness to readinessState plus db, so the two groups
+#     are genuinely distinct and readiness really covers the database.
+#     /actuator/env, /beans, /configprops, /loggers, /metrics, /threaddump,
+#     /heapdump and /shutdown all return 404. /actuator/prometheus serves the
+#     scrape body carrying application=carddemo and component=modular-monolith.
+#   - Schema ownership. Flyway applied V1 and reported "now at version v1",
+#     leaving 11 business tables plus flyway_schema_history and zero BATCH_*
+#     tables, and Hibernate initialised with ddl-auto validate against them
+#     without a mapping error.
+#   - Both Flyway guards are enforced, not merely declared. Calling clean() on
+#     the configured Flyway bean was refused with "Unable to execute clean as
+#     it has been disabled with the 'flyway.cleanDisabled' property" and all 12
+#     tables survived. Corrupting the recorded checksum of version 1 in
+#     flyway_schema_history and restarting aborted the context with "Validate
+#     failed: Migrations have failed validation / Migration checksum mismatch
+#     for migration version 1" and exit 1 - the failure is raised, never
+#     swallowed, which is why ignore-migration-patterns is absent.
+#   - Batch metadata, measured. org/springframework/batch/core/
+#     schema-postgresql.sql holds 11 plain CREATE TABLE and CREATE SEQUENCE
+#     statements with no IF NOT EXISTS, so it is NOT idempotent as SQL. Boot
+#     still makes initialize-schema always restart-safe, because
+#     BatchDataSourceScriptDatabaseInitializer.getSettings() calls
+#     setContinueOnError(true): a second start on the same volume finished with
+#     exit 0 and no ERROR line, the already-exists failures being swallowed.
+#     Two consequences follow, and they are why this file states the value
+#     explicitly instead of inheriting it. First, always is restart-safe but
+#     silent about a partial failure, so it belongs only to local and test.
+#     Second, the framework default embedded creates NOTHING against a real
+#     PostgreSQL - a start with embedded left 0 BATCH_* tables - which would
+#     surface much later as a missing BATCH_JOB_INSTANCE when a job launches.
+#     Remediation for that error: activate local or test, or have a DBA apply
+#     the framework script; never add it to a Flyway migration.
+#   - OpenTelemetry logging. Boot builds otelSdkLoggerProvider and
+#     batchLogRecordProcessor whenever opentelemetry-sdk-logs is present, but
+#     no OtlpLoggingConnectionDetails and no log-record exporter bean is
+#     created, because management.otlp.logging.endpoint is deliberately unset -
+#     so the pipeline has no destination and no log data leaves the process.
+#     Setting management.logging.export.enabled to false was measured NOT to
+#     remove either bean, so declaring it here would be exactly the dead
+#     configuration Rule 1 Clause B forbids. It is therefore not declared.
+#     Only tracing has an exporter: otlpHttpSpanExporter, pointed at
+#     management.otlp.tracing.endpoint and at nothing else.
+#   - Environment neutrality. The AWS region chain resolves from either
+#     spelling: a boot with only AWS_REGION set reported region eu-west-1 and a
+#     boot with only AWS_DEFAULT_REGION set reported us-east-1. No endpoint
+#     override and no static credential is bound - the bean graph shows
+#     spring.cloud.aws.s3.endpoint and .sqs.endpoint null,
+#     spring.cloud.aws.credentials.access-key null, and credentialsProvider as
+#     the SDK's DefaultCredentialsProvider - while s3Client, s3Template,
+#     snsClient, snsTemplate, sqsAsyncClient and sqsTemplate are all present,
+#     so the three enable flags are genuinely consumed.
+#   - Batch launch neutrality. jobRepository, jobLauncher, jobRegistry, jobScope
+#     and stepScope exist, but no JobLauncherApplicationRunner and no batch
+#     schema initialiser bean does, which is spring.batch.job.enabled false and
+#     initialize-schema never taking effect rather than being merely declared.
+#
+# BROWSER-OBSERVED EVIDENCE FOR THE EXPOSURE CONTRACT
+#
+# The management surface below was additionally driven through a real headless
+# Chrome against a running context on 2026-08-02, because the least-privilege
+# claim in Rule 1 Clause D is only worth what an actual client can be shown to
+# see. Both sweeps passed with no assertion failing.
+#
+#   - Positive surface, 11 of 11 assertions. The /actuator discovery document
+#     advertises exactly self, health, health-path, info and prometheus and no
+#     sixth link, so management.endpoints.web.exposure.include is what the
+#     client observes and not merely what is written here. /actuator/health
+#     returned the 49-byte body {"status":"UP","groups":["liveness",
+#     "readiness"]}, and a recursive walk found "status" and "groups" to be the
+#     only keys at ANY depth - no components, no details, no database name, no
+#     validation query, no file path and no disk figure. That matters because
+#     the readiness group does include the db contributor and did resolve UP,
+#     so PostgreSQL was genuinely reached and the suppression is active rather
+#     than vacuous. /actuator/info served {} - no git commit, build coordinate,
+#     JDK version or profile. Every one of the 179 Prometheus sample lines
+#     carried both application="carddemo" and component="modular-monolith",
+#     confirming the two entries under management.metrics.tags are applied as
+#     true Micrometer common tags across framework meters too, and all 16
+#     hikaricp_connections* series carried pool="carddemo-pool", matching
+#     spring.datasource.hikari.pool-name below.
+#   - Group distinctness was proved rather than assumed. A control navigation to
+#     a deliberately non-existent health group returned 404 with a zero-byte
+#     body while liveness and readiness both returned 200, so the two probe
+#     paths are separately registered endpoints and not an artefact of the
+#     templated health-path route. This is also what proves probes.enabled
+#     true is in force; with probes off both paths would 404.
+#   - Negative surface, 20 of 20 not exposed. /actuator/env,
+#     /env/JWT_SECRET, /beans, /configprops, /loggers, /heapdump, /threaddump,
+#     /metrics, /caches, /mappings, /scheduledtasks, /sbom, /startup,
+#     /conditions, /httpexchanges, /shutdown, /flyway, /quartz, /auditevents
+#     and /integrationgraph each returned 404 with an identical 275-byte
+#     generic error page disclosing only a timestamp. A 17-token sweep over all
+#     20 bodies - covering the signing-key variable and property names, the
+#     database password and user, JDBC and PostgreSQL connection markers, the
+#     AWS access-key-id and secret-key prefixes, generic credential words such
+#     as secret, token and bearer, the BCrypt hash prefixes, and the run's
+#     sentinel key value - returned ZERO hits, verified
+#     twice over independently captured bytes. The test was capable of failing:
+#     the signing key and the database password were both confirmed resident in
+#     that process, so an exposed env, configprops or heapdump would have
+#     leaked them. /heapdump in particular returned no Content-Disposition, no
+#     octet-stream and 275 bytes rather than a process image. Ten bypass shapes
+#     - trailing slash, case variation, double slash, %2f, semicolon, .json
+#     suffix, path traversal and explicit property-name paths - disclosed
+#     nothing either.
+#   - Console and transport. Zero console messages of any type across every
+#     page, zero 5xx, and the only unexplained-looking 404 was the browser's
+#     own automatic favicon.ico request against an application that ships no
+#     user interface. Every response carried X-Content-Type-Options nosniff and
+#     X-Frame-Options DENY.
+
+spring:
+
+  # --------------------------------------------------------------------------
+  # Application identity
+  # --------------------------------------------------------------------------
+  # Used by Micrometer as the common metric tag and by tracing as the service
+  # name, so it must match the `service: carddemo` label that
+  # observability/prometheus.yml attaches to the scrape target.
+  application:
+    name: carddemo
+
+  main:
+    # One web application context. Fail loudly if two beans claim one name
+    # rather than silently letting the later definition win.
+    banner-mode: log
+    allow-bean-definition-overriding: false
+
+  # spring.profiles.active is intentionally NOT set. See the profile layering
+  # contract above.
+
+  # --------------------------------------------------------------------------
+  # JSON - deterministic DTO serialisation
+  # --------------------------------------------------------------------------
+  # The 17 BMS symbolic maps of app/cpy-bms contribute 460 field contracts, and
+  # every DTO field length and type derives from them. Serialisation must
+  # therefore be predictable rather than convenient.
+  jackson:
+    default-property-inclusion: always
+    serialization:
+      # Dates render as ISO-8601 text, never as an epoch number.
+      write-dates-as-timestamps: false
+      write-durations-as-timestamps: false
+      # BigDecimal renders in plain notation. Scientific notation would alter
+      # the text of a monetary amount without altering its value, and the
+      # parity comparison is made on text.
+      write-bigdecimal-as-plain: true
+      # A bean with no serialisable property is a mapping mistake, so surface
+      # it instead of emitting an empty object (Rule 1 Clause B).
+      fail-on-empty-beans: true
+    deserialization:
+      # Treat every request body as untrusted (Rule 1 Clause A). An unknown
+      # field is a client error, not something to ignore silently.
+      fail-on-unknown-properties: true
+      # Decimal input becomes BigDecimal, never a binary floating-point value.
+      # Transformation Rule 1 admits no float or double on any financial path.
+      use-big-decimal-for-floats: true
+      fail-on-null-for-primitives: true
+    mapper:
+      accept-case-insensitive-enums: false
+
+  # --------------------------------------------------------------------------
+  # Datasource - PostgreSQL 16 replacing the VSAM substrate
+  # --------------------------------------------------------------------------
+  # app/catlg/LISTCAT.txt:L3940 reports "CLUSTER --------------10". Those ten
+  # KSDS clusters plus the DALYTRAN physical sequential staging dataset become
+  # the eleven tables of db/migration/V1__create_schema.sql.
+  #
+  # The URL is composed from discrete variables so that no hostname, port or
+  # database name is hardcoded here (Rule 1 Clause C). POSTGRES_HOST and
+  # POSTGRES_DB carry no default because a guessed database target is an
+  # environment-specific assumption; POSTGRES_PORT defaults to the
+  # IANA-registered PostgreSQL port, which is neither environment specific nor
+  # sensitive. SPRING_DATASOURCE_URL, SPRING_DATASOURCE_USERNAME and
+  # SPRING_DATASOURCE_PASSWORD bind to these same three properties directly by
+  # relaxed binding at a higher precedence, so a deployment may replace the
+  # composed URL wholesale without this file changing.
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST}:${POSTGRES_PORT:5432}/${POSTGRES_DB}
+    username: ${POSTGRES_USER}
+    # No default, ever. An absent password must fail startup, not fall back.
+    password: ${POSTGRES_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      # MINIMAL, DELIBERATELY UNTUNED. Connection-pool tuning is explicitly out
+      # of scope for this migration and is recorded as residual risk in
+      # DECISION_LOG.md and docs/validation-gates.md. The COBOL corpus
+      # publishes no service-level objective - CICS concurrency was governed by
+      # the region, not by the application - so any pool size presented as
+      # "tuned" would be invented rather than justified, which Rule 1 Clause A
+      # forbids. These three values only make the pool's behaviour explicit.
+      pool-name: carddemo-pool
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+      # Spring manages transaction boundaries; the driver must not commit for
+      # us. app/cbl/COACTUPC.cbl:4098-4102 and app/cbl/CBTRN02C.cbl:424-465
+      # both require a multi-statement unit of work.
+      auto-commit: false
+
+  # --------------------------------------------------------------------------
+  # JPA and Hibernate
+  # --------------------------------------------------------------------------
+  jpa:
+    # Flyway owns the schema. validate compares the entity mapping against the
+    # copybook-derived DDL and fails on divergence. create, create-drop and
+    # update are all forbidden: each would let Hibernate reshape a table away
+    # from the record layouts in app/cpy, breaking field-contract parity
+    # silently. Rule 1 Clause A, "avoid unsafe defaults".
+    hibernate:
+      ddl-auto: validate
+    # No lazy loading outside a service transaction. The framework default is
+    # true, which would hold a connection for the whole request and hide N+1
+    # access behind the view layer.
+    open-in-view: false
+    # SQL is never logged. A logged statement or bind parameter would expose
+    # CUST-SSN, which app/cpy/CVCUS01Y.cpy declares PIC 9(09), and the BCrypt
+    # hashes of the ten users seeded from app/jcl/DUSRSECJ.jcl. Rule 1
+    # Clause D: no secrets in logs.
+    show-sql: false
+    generate-ddl: false
+    properties:
+      hibernate:
+        # Sessions run in UTC so a server time zone can never shift a stored
+        # value. NOTE: this affects genuine temporal columns only. The
+        # transaction timestamps are NOT temporal: TRAN-ORIG-TS and
+        # TRAN-PROC-TS are PIC X(26) in app/cpy/CVTRA05Y.cpy and are mapped
+        # CHAR(26) at db/migration/V1__create_schema.sql:L1066 and :L1070,
+        # because three different producers write mutually incompatible text
+        # into them and the generated form ends in four zero digits. Mapping
+        # them to a temporal type would normalise text that parity compares
+        # byte for byte.
+        jdbc:
+          time_zone: UTC
+          batch_size: 50
+        order_inserts: true
+        order_updates: true
+
+  # --------------------------------------------------------------------------
+  # Flyway - the schema is owned here and nowhere else
+  # --------------------------------------------------------------------------
+  # EXACTLY THREE migrations exist and a fourth is forbidden:
+  #   V1__create_schema.sql  - 11 tables, 5 CHECK constraints, 10 foreign keys
+  #   V2__create_indexes.sql - the 3 alternate indexes counted at
+  #                            app/catlg/LISTCAT.txt:L3938
+  #   V3__seed_data.sql      - the 9 ASCII fixtures with position-aware
+  #                            zoned-decimal overpunch decoding, plus the ten
+  #                            users inlined in app/jcl/DUSRSECJ.jcl, stored
+  #                            only as BCrypt hashes
+  # The Spring Batch BATCH_* metadata tables must NEVER be added as a fourth
+  # migration: a validation gate asserts V1 creates exactly 11 tables.
+  #
+  # There is deliberately no ignore-migration-patterns, no continue-on-error
+  # and no baseline-version. Rule 1 Clause B forbids swallowing a failure, and
+  # a migration that fails must stop the application rather than leave the
+  # schema half-applied.
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    # The schema must be empty or already under Flyway control. Baselining
+    # would silently accept an unknown pre-existing schema.
+    baseline-on-migrate: false
+    validate-on-migrate: true
+    # Destructive. Must stay true in every profile, including test.
+    clean-disabled: true
+    # V1 then V2 then V3, always. Out-of-order application would let V3 seed
+    # rows before V2 created the indexes they rely on.
+    out-of-order: false
+    table: flyway_schema_history
+    encoding: UTF-8
+
+  # --------------------------------------------------------------------------
+  # Spring Batch - the JES2 replacement
+  # --------------------------------------------------------------------------
+  batch:
+    job:
+      # Jobs must NOT auto-launch on startup. The framework default is true,
+      # which would run every job on every boot. Launching is explicit: either
+      # BatchPipelineOrchestrator, or the SQS listener that replaces the JES2
+      # internal reader driven by EXEC CICS WRITEQ TD QUEUE('JOBS') in
+      # app/cbl/CORPT00C.cbl.
+      enabled: false
+    jdbc:
+      # The BATCH_* metadata tables come from the framework's own
+      # org/springframework/batch/core/schema-postgresql.sql and from nowhere
+      # else. never is the conservative base value and is unconditional; the
+      # framework default, embedded, is conditional on the database being an
+      # embedded one, which is precisely the implicit behaviour Rule 1
+      # Clause A asks us to avoid. local and test set always; prod keeps never
+      # so a DBA applies the script.
+      initialize-schema: never
+      # table-prefix is deliberately left at the framework default BATCH_ so
+      # the framework script and the runtime agree without a second contract.
+      isolation-level-for-create: SERIALIZABLE
+
+  # --------------------------------------------------------------------------
+  # AWS - S3, SQS FIFO and SNS via Spring Cloud AWS 3.3.0
+  # --------------------------------------------------------------------------
+  # NO endpoint override and NO credentials appear in this base profile, by
+  # design. Endpoint overrides belong exclusively to the local and test
+  # profiles, which point at LocalStack; production uses the standard provider
+  # chain. That structural split is what makes it impossible for this file to
+  # carry a local endpoint or a dummy production credential (Rule 1 Clause D).
+  #
+  # AWS_REGION is the primary variable name; AWS_DEFAULT_REGION is the
+  # AWS-standard alternative that localstack-init/init-aws.sh also honours.
+  # Neither has a literal default, so an unspecified region fails startup
+  # rather than silently resolving to some other account's home region.
+  cloud:
+    aws:
+      region:
+        static: ${AWS_REGION:${AWS_DEFAULT_REGION}}
+      # Only the three services the migration actually uses are enabled.
+      # Nothing is declared for any other AWS service: the DynamoDB, Parameter
+      # Store, Secrets Manager and CloudWatch clients are absent from the
+      # classpath, so a property for them would be dead configuration that
+      # Rule 1 Clause B forbids.
+      s3:
+        enabled: true
+      sqs:
+        enabled: true
+        # The library default is CREATE, which would silently conjure a queue
+        # whose name was mistyped and whose FIFO attributes would then be
+        # wrong. FAIL surfaces the mistake. Provision queues with the
+        # idempotent localstack-init/init-aws.sh instead.
+        queue-not-found-strategy: FAIL
+      sns:
+        enabled: true
+
+# ============================================================================
+# Embedded web layer
+# ============================================================================
+# The 3270 terminals and the pseudo-conversational CICS conversation of the
+# legacy system become HTTP/1.1 with JSON bodies. 8 controllers expose the 17
+# sourced transactions of app/csd/CARDDEMO.CSD.
+#
+# STATELESSNESS (Transformation Rule 7). There is deliberately no spring.session
+# configuration, no session persistence and nothing that would create or track
+# an HTTP session. SecurityConfig enforces SessionCreationPolicy.STATELESS and
+# disables CSRF token state for the same reason: the COMMAREA-based
+# pseudo-conversational model - app/cpy/COCOM01Y.cpy:L29-L31, CDEMO-PGM-CONTEXT
+# with 88 CDEMO-PGM-ENTER VALUE 0 and 88 CDEMO-PGM-REENTER VALUE 1 - collapses
+# into stateless request handling and has no Java counterpart. Pagination state
+# moves to request parameters and response metadata, never to the server.
+server:
+  # A port is not a secret, so a documented non-secret default is acceptable.
+  # 8080 matches Dockerfile:92 EXPOSE and the observability/prometheus.yml
+  # scrape targets.
+  port: ${SERVER_PORT:8080}
+  # Drain in-flight requests, and let a running batch step finish, instead of
+  # dropping work on SIGTERM.
+  shutdown: graceful
+  error:
+    # An error response carries no message, no stack trace, no binding detail
+    # and no exception class. A stack trace would disclose the internal
+    # structure, and a Hibernate message can echo column values - which for
+    # CVCUS01Y means CUST-SSN. Rule 1 Clause D.
+    include-message: never
+    include-stacktrace: never
+    include-binding-errors: never
+    include-exception: false
+
+# ============================================================================
+# Observability - capability the COBOL corpus does not have at all
+# ============================================================================
+# The entire legacy instrumentation is DISPLAY to SYSOUT plus the four-character
+# renderer 9910-DISPLAY-IO-STATUS at app/cbl/CBTRN02C.cbl:L714-L731. Everything
+# in this section is therefore new capability rather than a translation.
+management:
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        # EXACTLY three endpoints. Never "*". env, beans, configprops,
+        # loggers, heapdump and threaddump each disclose configuration or
+        # memory contents, and configprops in particular would echo resolved
+        # property values including the signing key. Rule 1 Clause D,
+        # principle of least privilege.
+        include: health,info,prometheus
+  endpoint:
+    health:
+      # Aggregate status only. Component detail names the substrate and its
+      # failure text, which can include a JDBC URL with a username. never is
+      # both the framework default and the correct value; it is stated
+      # explicitly so the reader need not know the default.
+      show-details: never
+      show-components: never
+      # Left at its secure default true. Startup fails if a group below names
+      # a contributor that does not exist. Disabling this to accommodate a
+      # not-yet-existing contributor would swallow a misconfiguration, which
+      # Rule 1 Clause B forbids - see the discrepancy register.
+      validate-group-membership: true
+      probes:
+        # Framework default is false. Enabling it registers the livenessState
+        # and readinessState contributors and serves the two probe paths.
+        enabled: true
+      group:
+        # Liveness answers "is the JVM still able to serve?" and must NOT
+        # depend on any external substrate; a database outage must not cause a
+        # restart loop.
+        liveness:
+          include: livenessState
+        # Readiness is the Java analogue of app/jcl/OPENFIL.jcl and
+        # app/jcl/CLOSEFIL.jcl, whose CEMT SET FIL(...) OPE and CLO at L26-L30
+        # made TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC available to the
+        # online region. All five are VSAM datasets, so all five map to the
+        # relational substrate and are covered by the db contributor.
+        # Dockerfile:99-100 issues GET /actuator/health/readiness and greps for
+        # UP, so this group must exist and resolve.
+        # Object-storage and queue contributors come from
+        # com.cardemo.observability.HealthIndicators and must be appended here
+        # in the same change that introduces them; see the discrepancy
+        # register for why they cannot be named in advance.
+        readiness:
+          include: readinessState,db
+  health:
+    # Every contributor states its own participation rather than inheriting a
+    # blanket enable.
+    defaults:
+      enabled: true
+    diskspace:
+      # Deliberately NOT part of readiness: disk pressure is an operational
+      # alert, not a reason to take the instance out of rotation.
+      enabled: true
+  prometheus:
+    metrics:
+      export:
+        # observability/prometheus.yml scrapes /actuator/prometheus every 15
+        # seconds. The scrape configuration itself lives there and is NOT
+        # duplicated here (Rule 1 Clause C, avoid duplication). Grafana server
+        # settings, ports and admin credentials likewise belong to
+        # docker-compose.yml and observability/grafana/**, never to this file.
+        enabled: true
+  tracing:
+    enabled: true
+    sampling:
+      # Stated explicitly rather than left implicit. 1.0 makes every request
+      # and every batch step traceable, which is what a parity investigation
+      # needs; the local stack is the only consumer and there is no sampling
+      # cost objective to trade against. Lower it in prod if volume demands.
+      probability: 1.0
+  otlp:
+    tracing:
+      # Micrometer tracing is bridged to OpenTelemetry by the root pom.xml and
+      # exported to the Jaeger collector in the compose topology. No host is
+      # hardcoded. MANAGEMENT_OTLP_TRACING_ENDPOINT binds to this same property
+      # directly by relaxed binding at a higher precedence, so either variable
+      # works and neither is duplicated in this file.
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT}
+  metrics:
+    tags:
+      # Matches the service label attached by observability/prometheus.yml.
+      application: carddemo
+      component: modular-monolith
+
+# ============================================================================
+# carddemo - the application's own namespace
+# ============================================================================
+# Every key below is the declared contract for one named consumer. This file is
+# the single place the contract is written; the three sibling profiles override
+# values, never structure. The consumer of each block is named so that no key
+# here is orphaned (Rule 1 Clause B, no dead configuration).
+carddemo:
+
+  # --------------------------------------------------------------------------
+  # Security - consumed by SecurityConfig, JwtTokenProvider and
+  # CardDemoUserDetailsService
+  # --------------------------------------------------------------------------
+  # The JWT replaces the COMMAREA as the carrier of identity across what used
+  # to be EXEC CICS XCTL program transfers (app/cbl/COMEN01C.cbl:L153):
+  #   - the subject claim carries CDEMO-USER-ID, PIC X(08) at
+  #     app/cpy/COCOM01Y.cpy:L25;
+  #   - the role claim carries CDEMO-USER-TYPE, PIC X(01) at
+  #     app/cpy/COCOM01Y.cpy:L26, whose only two values are declared by the
+  #     condition names at :L27 and :L28 - 'A' administrator, 'U' standard
+  #     user.
+  # Authorisation follows from app/csd/CARDDEMO.CSD: /api/admin/* is restricted
+  # to the administrator role because transactions CU00, CU01, CU02 and CU03
+  # front COUSR00C, COUSR01C, COUSR02C and COUSR03C, the four user
+  # administration programs.
+  # Authentication reproduces app/cbl/COSGN00C.cbl exactly: BOTH the user
+  # identifier AND the password are upper-cased before comparison, and the
+  # plaintext SEC-USR-PWD PIC X(08) comparison of app/cpy/CSUSR01Y.cpy is
+  # replaced by a BCrypt verification.
+  security:
+    jwt:
+      # ======================================================================
+      # NO DEFAULT. NO EXAMPLE. NO FALLBACK. NO COMMITTED VALUE.
+      # ======================================================================
+      # An absent JWT_SECRET leaves this placeholder unresolvable, which fails
+      # property resolution and therefore fails startup. That is the required
+      # behaviour: a generated or committed default would let the application
+      # boot with a signing key an attacker already knows. The previous
+      # migration attempt hardcoded this value, and that is the High-severity
+      # defect this line closes.
+      # JWT_SECRET is the one variable name used across the repository -
+      # .env.example:44 ships it empty and REQUIRED, and
+      # owasp-suppressions.xml:180, pom.xml:87 and
+      # docs/technical-specifications.md:1030 all name it. A second name would
+      # be the duplication Rule 1 Clause C forbids; see the discrepancy
+      # register.
+      # NOTE: there is deliberately NO
+      # spring.security.oauth2.resourceserver.jwt.jwk-set-uri and NO
+      # public-key-location anywhere in this file. The root pom.xml pins
+      # spring-boot-starter-oauth2-resource-server and admits no separate JWT
+      # library, and a symmetric HMAC key has no built-in Boot property:
+      # SecurityConfig builds a NimbusJwtDecoder from this value. Emitting
+      # those two properties would be unreachable configuration.
+      signing-key: ${JWT_SECRET}
+      # Non-secret metadata, so documented defaults are acceptable.
+      issuer: ${JWT_ISSUER:carddemo}
+      # Seconds, matching .env.example:46 JWT_EXPIRATION_SECONDS=3600.
+      expiration-seconds: ${JWT_EXPIRATION_SECONDS:3600}
+    bcrypt:
+      # Transformation Rule 15. The ten users inlined in
+      # app/jcl/DUSRSECJ.jcl carry a literal plaintext password in the legacy
+      # corpus and are stored only as hashes here; V3__seed_data.sql performs
+      # the hashing. Strength 10 is a parity-and-cost decision recorded in
+      # DECISION_LOG.md, not a tunable.
+      strength: 10
+
+  # --------------------------------------------------------------------------
+  # AWS logical names - consumed by AwsConfig, the batch writers and
+  # ReportSubmissionService
+  # --------------------------------------------------------------------------
+  aws:
+    s3:
+      # The three buckets are provisioned idempotently by
+      # localstack-init/init-aws.sh:529-531 under exactly these variable names,
+      # which .env.example:80-82 also declares. None carries a literal default,
+      # so a missing bucket name fails startup instead of writing a statement
+      # run into whatever bucket happens to exist.
+      batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}
+      batch-output-bucket: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET}
+      statements-bucket: ${CARDDEMO_S3_STATEMENTS_BUCKET}
+      # GDG GENERATION SEMANTICS. app/catlg/LISTCAT.txt:L3942 reports
+      # "GDG -------------------7". Those seven bases become deterministic key
+      # prefixes over a versioned output bucket: a next-generation (+1) write
+      # becomes a new object under a monotonically increasing job-instance or
+      # timestamp prefix, and a current-generation (0) read becomes the
+      # lexicographically greatest existing prefix. RECORD LENGTH IS PRESERVED
+      # BYTE-EXACTLY AT THE S3 BOUNDARY - see carddemo.batch.record-length
+      # below. The batch-output bucket and the statements bucket are versioned.
+      gdg-prefixes:
+        # app/jcl/DALYREJS.jcl:L25 - the reject generations, 430 bytes each.
+        daly-rejs: gdg/dalyrejs
+        # app/jcl/DEFGDGB.jcl:L49 - the interest-generated transaction output
+        # of app/jcl/INTCALC.jcl, a fresh sequential generation per run.
+        systran: gdg/systran
+        # app/jcl/DEFGDGB.jcl:L43 - the category-balance backup.
+        tcatbalf-bkup: gdg/tcatbalf-bkup
+        # app/jcl/REPTFILE.jcl:L26 and app/jcl/DEFGDGB.jcl:L37 - the 133-byte
+        # report generations.
+        tranrept: gdg/tranrept
+        # app/proc/TRANREPT.prc:L21 STEP01R - the pre-report transaction
+        # backup.
+        transact-bkup: gdg/transact-bkup
+        # app/jcl/COMBTRAN.jcl:L41 STEP10 - the combined output.
+        transact-combined: gdg/transact-combined
+        # app/jcl/DEFGDGB.jcl:L31 - the daily transaction generations.
+        transact-daly: gdg/transact-daly
+      # RETENTION CONFLICT, RESOLVED. app/jcl/DEFGDGB.jcl:L37-38 declares
+      # LIMIT(5) for the TRANREPT base while app/jcl/REPTFILE.jcl:L26-27
+      # declares LIMIT(10) for the same base. A single lifecycle value must be
+      # chosen, so 10 is used - the larger, so nothing the legacy system would
+      # have kept is discarded. The other six bases all declare LIMIT(5), and
+      # object versioning supersedes generation counting in any case; the
+      # value is retained as documentation of intent.
+      gdg-retention-generations: 10
+    sqs:
+      # The 80-byte fixed-length OUTPUT transient data queue defined at
+      # app/csd/CARDDEMO.CSD:L499-505 - DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
+      # DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED)
+      # DISPOSITION(MOD) - becomes an SQS FIFO queue. The 18 eighty-byte job
+      # cards that app/cbl/CORPT00C.cbl:L80-L127 holds as literal constants and
+      # writes one at a time collapse into ONE typed JSON message carrying the
+      # report name and the start and end dates; an SQS listener replaces the
+      # JES2 internal reader.
+      # The logical contract is carddemo-report-jobs. AWS requires a .fifo
+      # suffix on the physical name, which is permitted and is what
+      # localstack-init/init-aws.sh:532 provisions and .env.example:84
+      # declares; init-aws.sh:548 records the same logical-versus-physical
+      # split.
+      report-queue: ${CARDDEMO_SQS_REPORT_QUEUE}
+      report-queue-logical-name: carddemo-report-jobs
+      # A single message group makes ordering deterministic across the whole
+      # queue, reproducing the strict sequential DISPOSITION(MOD) append
+      # semantics of the transient data queue.
+      report-message-group-id: carddemo-report-jobs
+    sns:
+      # Replaces operator notification. Provisioned by
+      # localstack-init/init-aws.sh:533; declared at .env.example:88.
+      notification-topic: ${CARDDEMO_SNS_NOTIFICATION_TOPIC}
+
+  # --------------------------------------------------------------------------
+  # Batch - consumed by BatchConfig and BatchPipelineOrchestrator
+  # --------------------------------------------------------------------------
+  # EXACTLY FIVE source-grounded jobs. There is no sixth, and there is
+  # deliberately no standalone CBTRN01C job: app/cbl/CBTRN01C.cbl has no JCL
+  # member of its own and its verb inventory is OPEN, READ, CLOSE and DISPLAY
+  # only - no WRITE, REWRITE or DELETE anywhere - so it is folded into the
+  # posting job as an explicitly labelled read-only pre-flight step. Inventing
+  # a job for it would invent a unit of work the source does not have.
+  #
+  # DFSORT and IDCAMS REPRO are implemented IN-PROCESS as java.util.Comparator
+  # and JdbcTemplate.batchUpdate. NO EXTERNAL SORT PROCESS IS SPAWNED.
+  # JCL COND=(0,NE) gating - for example app/jcl/CREASTMT.JCL:L56, :L66 and
+  # :L79 - becomes a JobExecutionDecider mapping return codes 0, 4, 8 and 12
+  # onto completed, completed-with-rejects, failed and abend. RETURN CODE 4 IS
+  # SET IF AND ONLY IF THE REJECT COUNT EXCEEDS ZERO: app/cbl/CBTRN02C.cbl:
+  # L229-L231 reads IF WS-REJECT-COUNT > 0 / MOVE 4 TO RETURN-CODE / END-IF,
+  # and there is no other determinant.
+  batch:
+    chunk-size: 100
+    jobs:
+      # app/jcl/POSTTRAN.jcl:L23 EXEC PGM=CBTRN02C, with app/cbl/CBTRN01C.cbl
+      # folded in as the read-only pre-flight step described above.
+      posttran:
+        name: POSTTRAN
+        enabled: true
+      # app/jcl/INTCALC.jcl:L22 EXEC PGM=CBACT04C,PARM='2022071800'.
+      intcalc:
+        name: INTCALC
+        enabled: true
+      # app/jcl/TRANREPT.jcl:L59 EXEC PGM=CBTRN03C, driven through
+      # app/proc/TRANREPT.prc.
+      tranrept:
+        name: TRANREPT
+        enabled: true
+      # app/jcl/COMBTRAN.jcl - SORT at :L22 then IDCAMS REPRO at :L41. NO
+      # COBOL PROGRAM EXISTS for this job; the JCL is the source of truth.
+      combtran:
+        name: COMBTRAN
+        enabled: true
+      # app/jcl/CREASTMT.JCL - five steps, DELDEF01 :L22, STEP010 :L44,
+      # STEP020 :L56, STEP030 :L66, STEP040 :L79 - running app/cbl/CBSTM03A.CBL
+      # which reaches its five datasets through app/cbl/CBSTM03B.CBL.
+      creastmt:
+        name: CREASTMT
+        enabled: true
+        steps: 5
+    # FIXED-WIDTH RECORD GEOMETRY. These are byte contracts, not preferences:
+    # the parity comparison is made on the emitted bytes, so a wrong length is
+    # a wrong output even when every field value is right.
+    record-length:
+      # app/cpy/CVTRA05Y.cpy and app/cpy/CVTRA06Y.cpy; also
+      # app/jcl/INTCALC.jcl:L39 and app/jcl/TRANREPT.jcl:L31.
+      transaction: 350
+      daily-transaction: 350
+      # app/jcl/POSTTRAN.jcl:L36 DCB=(RECFM=F,LRECL=430). Exactly 350 data
+      # bytes plus an 80-byte trailer, and the trailer is a four-digit reason
+      # code plus a 76-character description - app/cbl/CBTRN02C.cbl:L176-L182.
+      # 350 + 80 = 430 resolves the declared length precisely.
+      reject: 430
+      reject-data: 350
+      reject-trailer: 80
+      reject-reason-code: 4
+      reject-reason-description: 76
+      # app/jcl/TRANREPT.jcl:L78 and app/proc/TRANREPT.prc:L76,
+      # DCB=(LRECL=133,RECFM=FB); the layout is app/cpy/CVTRA07Y.cpy.
+      report-line: 133
+      # app/jcl/CREASTMT.JCL:L89 STMTFILE LRECL=80 and :L94 HTMLFILE
+      # LRECL=100, both at STEP040, the step that actually writes them. The
+      # 100-byte width is independently confirmed by the single
+      # hundred-character emission field of app/cbl/CBSTM03A.CBL:L149.
+      statement-text: 80
+      statement-html: 100
+      # app/csd/CARDDEMO.CSD:L502 RECORDSIZE(80) on DEFINE TDQUEUE(JOBS), and
+      # the DATEPARM control input the queue message reproduces.
+      queue-parameter: 80
+      # app/jcl/CREASTMT.JCL:L30 KEYS(32 0) on the statement work cluster; the
+      # 32 bytes are the 16-character card number plus the 16-character
+      # transaction identifier of app/cpy/COSTM01.CPY.
+      statement-work-key: 32
+    # app/jcl/INTCALC.jcl:L22 passes PARM='2022071800' - TEN numeric
+    # characters, being eight date digits followed by two zeros, with NO
+    # separators. It is NOT an ISO date, and the distinction matters because
+    # the value is concatenated ahead of a six-digit suffix to form the
+    # sixteen-digit generated transaction identifier.
+    intcalc-date-parameter:
+      length: 10
+      pattern: "yyyyMMdd00"
+
+  # --------------------------------------------------------------------------
+  # Pagination - PARITY CONTRACTS, NOT TUNABLES
+  # --------------------------------------------------------------------------
+  # Each value is a literal read out of the source. Changing one changes which
+  # rows a client receives on a given page, which is a behaviour change and is
+  # therefore forbidden. They are configuration only so that one place holds
+  # them and the traceability matrix can cite it; they must never be varied per
+  # environment, and the three sibling profiles must not override them.
+  pagination:
+    # app/cbl/COCRDLIC.cbl:177-178, WS-MAX-SCREEN-LINES PIC S9(4) COMP VALUE 7,
+    # corroborated by OCCURS 7 TIMES at :L76, :L86 and :L255 and enforced at
+    # :L1191 where WS-SCRN-COUNTER is compared to it.
+    card-list-page-size: 7
+    # app/cbl/COTRN00C.cbl:290 PERFORM VARYING WS-IDX FROM 1 BY 1 UNTIL
+    # WS-IDX > 10, with the backward path at :349 MOVE 10 TO WS-IDX and the
+    # forward guard at :297 UNTIL WS-IDX >= 11. The pagination state fields are
+    # at :L65-L68. Corroborated by the ten-row table TRNID01 to TRNID10 in
+    # app/cpy-bms/COTRN00.CPY.
+    transaction-list-page-size: 10
+    # app/cbl/COUSR00C.cbl:57, 02 USER-REC OCCURS 10 TIMES, with the loop
+    # bounds at :293 and :347.
+    user-list-page-size: 10
+    # app/cbl/CBTRN03C.cbl:131-132, WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20,
+    # consumed at :282 by FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0.
+    report-lines-per-page: 20
+
+  # --------------------------------------------------------------------------
+  # Metrics contract - consumed by MetricsConfig
+  # --------------------------------------------------------------------------
+  # Exactly four named counters, and these names are fixed by
+  # observability/prometheus.yml:9-12, which documents them as the replacement
+  # for the end-of-run DISPLAY statements. The legacy originals are
+  # app/cbl/CBTRN02C.cbl:227 DISPLAY 'TRANSACTIONS PROCESSED :' and :228
+  # DISPLAY 'TRANSACTIONS REJECTED  :' - note the two spaces before the colon
+  # on the rejected line, which is part of the emitted text and is preserved.
+  # The rejected counter is TAGGED BY REJECT CODE, whose only five values are
+  # 100, 101, 102, 103 and 109 per app/cbl/CBTRN02C.cbl; that tag is what turns
+  # five enum constants into an operable signal.
+  metrics:
+    counters:
+      records-processed: carddemo.batch.records.processed
+      records-rejected: carddemo.batch.records.rejected
+      authentication-attempts: carddemo.auth.attempts
+      transaction-amount-total: carddemo.transaction.amount.total
+    reject-code-tag: reject-code
+
+  # --------------------------------------------------------------------------
+  # Decimal policy - consumed by every service and processor on a money path
+  # --------------------------------------------------------------------------
+  # Transformation Rule 1. Every monetary and rate value is a java.math
+  # BigDecimal with RoundingMode.HALF_EVEN, and NO float or double appears on
+  # any financial path anywhere in the application. Equality is compareTo, never
+  # equals, because equals distinguishes 1.0 from 1.00.
+  #
+  # Three precisions exist and they are NOT interchangeable. The two that are
+  # not the common case are the ones most easily got wrong:
+  #   - account money fields are PIC S9(10)V99 in app/cpy/CVACT01Y.cpy, hence
+  #     NUMERIC(12,2);
+  #   - the transaction amount and the transaction-category balance are
+  #     PIC S9(09)V99 in app/cpy/CVTRA05Y.cpy and app/cpy/CVTRA01Y.cpy, hence
+  #     NUMERIC(11,2) - eleven digits, not twelve;
+  #   - the disclosure interest rate is PIC S9(04)V99 in app/cpy/CVTRA02Y.cpy,
+  #     hence NUMERIC(6,2).
+  # All three widths are realised in db/migration/V1__create_schema.sql.
+  #
+  # Interest is computed as balance multiplied by rate then divided by the
+  # literal 1200, exactly as app/cbl/CBACT04C.cbl:L462-L470 writes it. It must
+  # never be rewritten as a division by 100 followed by a division by 12, and
+  # the divisor must never become a decimal multiplier: either change alters
+  # the rounding.
+  decimal:
+    rounding-mode: HALF_EVEN
+    monetary-scale: 2
+    interest-divisor: 1200
+
+# ============================================================================
+# Logging
+# ============================================================================
+# logback-spring.xml is auto-detected from the classpath, so logging.config is
+# deliberately NOT set, and no encoder, appender or pattern is restated here
+# (Rule 1 Clause C, avoid duplication). That file owns JSON encoding, the
+# traceId, spanId and correlationId MDC fields, and the masking of credentials,
+# password hashes and social security numbers.
+#
+# Levels are conservative on purpose. Hibernate, Spring Security, the AWS SDK
+# and the web request loggers are NOT raised: at DEBUG or TRACE they emit SQL
+# text and bind parameters - which for app/cpy/CVCUS01Y.cpy means CUST-SSN
+# PIC 9(09) - along with Authorization headers, signing material and full
+# request bodies. Rule 1 Clause D forbids secrets in logs, so raising these
+# belongs to a local investigation, never to a committed profile.
+logging:
+  level:
+    root: INFO
+    com.cardemo: INFO
+    # Migration progress is operationally useful and emits no row data.
+    org.flywaydb: INFO
+    # Job and step lifecycle at INFO; the chunk-level detail below it is where
+    # record contents would appear.
+    org.springframework.batch: INFO
+    org.springframework.web: INFO
+    org.springframework.security: INFO
+    org.hibernate: WARN
+    # These two are NOT redundant with the parent above. They are a protective
+    # floor: a child level overrides its parent, so if someone raises
+    # org.hibernate to DEBUG while investigating, statement text and bound
+    # parameter values still stay suppressed. org.hibernate.SQL prints every
+    # statement at DEBUG, and org.hibernate.orm.jdbc.bind prints every bound
+    # parameter value at TRACE - which for app/cpy/CVCUS01Y.cpy means CUST-SSN
+    # and for app/cpy/CSUSR01Y.cpy means the password hash.
+    org.hibernate.SQL: WARN
+    org.hibernate.orm.jdbc.bind: WARN
+    com.zaxxer.hikari: WARN
+    # The SDK logs signing canonical requests and headers below WARN.
+    software.amazon.awssdk: WARN
+    io.awspring.cloud: WARN
