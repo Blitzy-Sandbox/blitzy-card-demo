@@ -217,15 +217,22 @@ class InitAwsScriptGuardTest {
                     .as("the guard logs the host it allowlisted, which is the positive evidence that it "
                             + "ran and passed rather than being skipped. Output:%n%s", result.output())
                     .contains("allowlisted");
-            assertThat(result.exitCode())
-                    .as("whatever happens afterwards - provisioning against a live edge, or failing at the "
-                            + "readiness gate because the name does not resolve here - must not be a "
-                            + "configuration rejection. Asserting 'not EXIT_CONFIG' rather than a fixed "
-                            + "code is deliberate: it holds whether or not an emulator is running")
-                    .isNotEqualTo(EXIT_CONFIG);
             assertThat(result.output())
+                    .as("and neither refusal diagnostic may appear. This pair is what pins the verdict, "
+                            + "because the refusal text also contains the word 'allowlisted' - in the form "
+                            + "'is not an allowlisted' - so the assertion above cannot discriminate on its "
+                            + "own. Together the three are decisive in every environment. Output:%n%s",
+                            result.output())
                     .doesNotContain("is not an allowlisted")
                     .doesNotContain("config:AWS_ENDPOINT_URL");
+            if (!stoppedForWantOfAnAwsCli(result)) {
+                assertThat(result.exitCode())
+                        .as("whatever happens afterwards - provisioning against a live edge, or failing at "
+                                + "the readiness gate because the name does not resolve here - must not be "
+                                + "a configuration rejection. Asserting 'not EXIT_CONFIG' rather than a "
+                                + "fixed code is deliberate: it holds whether or not an emulator is running")
+                        .isNotEqualTo(EXIT_CONFIG);
+            }
         }
 
         @Test
@@ -242,9 +249,13 @@ class InitAwsScriptGuardTest {
 
             assertThat(result.output())
                     .as("the documented default is the local edge on 4566, so an unset variable must not "
-                            + "be the one input the guard refuses")
-                    .contains("allowlisted");
-            assertThat(result.exitCode()).isNotEqualTo(EXIT_CONFIG);
+                            + "be the one input the guard refuses. Output:%n%s", result.output())
+                    .contains("allowlisted")
+                    .doesNotContain("is not an allowlisted")
+                    .doesNotContain("config:AWS_ENDPOINT_URL");
+            if (!stoppedForWantOfAnAwsCli(result)) {
+                assertThat(result.exitCode()).isNotEqualTo(EXIT_CONFIG);
+            }
         }
     }
 
@@ -330,7 +341,9 @@ class InitAwsScriptGuardTest {
                             + "unusable at the edge of the range. Output:%n%s", result.output())
                     .doesNotContain("outside the permitted range")
                     .doesNotContain("without a leading zero");
-            assertThat(result.exitCode()).isNotEqualTo(EXIT_CONFIG);
+            if (!stoppedForWantOfAnAwsCli(result)) {
+                assertThat(result.exitCode()).isNotEqualTo(EXIT_CONFIG);
+            }
         }
 
         @Test
@@ -350,11 +363,20 @@ class InitAwsScriptGuardTest {
                     GRACE_SECONDS);
 
             assertThat(result.output())
-                    .as("the gate logs 'up to <MAX_ATTEMPTS> attempts', so the ceiling appearing there is "
-                            + "proof the value survived validation. Output:%n%s", result.output())
-                    .contains("up to 3600 attempts")
+                    .as("a refused ceiling would have been rejected inside the validation block, naming the "
+                            + "range it fell outside. Output:%n%s", result.output())
                     .doesNotContain("outside the permitted range");
-            if (!result.timedOut()) {
+            assertThat(result.output())
+                    .as("and the run must be shown to have left the validation block behind. Either marker "
+                            + "proves that, both lying strictly downstream of it: the readiness gate "
+                            + "announces its accepted budget on entry, and the CLI-selection gate is reached "
+                            + "only once every configuration value has been accepted. Which of the two "
+                            + "appears depends on whether this host happens to have an AWS CLI, which is no "
+                            + "property of the ceiling under test. Output:%n%s", result.output())
+                    .satisfiesAnyOf(
+                            output -> assertThat(output).contains("up to 3600 attempts"),
+                            output -> assertThat(output).contains("config:cli"));
+            if (!result.timedOut() && !stoppedForWantOfAnAwsCli(result)) {
                 assertThat(result.exitCode()).isNotEqualTo(EXIT_CONFIG);
             }
         }
@@ -482,6 +504,30 @@ class InitAwsScriptGuardTest {
      * @param timedOut whether the grace period elapsed and the process was terminated rather than exiting
      */
     private record Result(int exitCode, String output, boolean timedOut) {
+    }
+
+    /**
+     * Whether the run stopped at the CLI-selection gate for want of an AWS CLI on {@code PATH}.
+     *
+     * <p>{@code init-aws.sh} selects {@code awslocal}, else {@code aws}, else refuses with {@code EXIT_CONFIG}
+     * tagged {@code config:cli}. That gate sits strictly after the whole configuration-validation block and
+     * strictly before the readiness gate, so reaching it is itself positive proof that validation accepted
+     * every value supplied - but it borrows the same exit code a rejection uses, which makes the bare code an
+     * ambiguous oracle for the acceptance cases below.
+     *
+     * <p>It reports an ambient property of the host rather than anything about the script's guards. In a
+     * JDK-only build container - which is where this suite runs during a container image build - neither
+     * command is present; dropping in a stub {@code aws} whose entire body is {@code exit 255} moves the very
+     * same run from code 2 to code 3 without one line of endpoint or range logic executing differently. The
+     * acceptance cases therefore rest on the script's own explicit verdict in its output, which is decisive in
+     * every environment, and consult the exit code only when this gate did not intercept the run. That keeps
+     * the suite true to its stated contract of needing no container and provisioning nothing.
+     *
+     * @param result the completed run to inspect
+     * @return {@code true} when the run ended at the CLI-selection gate rather than at a verdict on its input
+     */
+    private static boolean stoppedForWantOfAnAwsCli(final Result result) {
+        return result.output().contains("config:cli");
     }
 
     /**

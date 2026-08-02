@@ -1,15 +1,39 @@
 # ******************************************************************
 # * File         : prometheus.yml
 # * Application  : CardDemo
-# * Type         : Prometheus scrape configuration
-# * Function     : Scrapes the Spring Boot Actuator Prometheus endpoint every
-# *                15 seconds. Replaces the end-of-run DISPLAY counters of
-# *                app/cbl/CBTRN02C.cbl ('TRANSACTIONS PROCESSED :' and
-# *                'TRANSACTIONS REJECTED  :') with continuously scraped
-# *                metrics: carddemo.batch.records.processed,
-# *                carddemo.batch.records.rejected (tagged by reject code
-# *                100/101/102/103/109), carddemo.auth.attempts and
-# *                carddemo.transaction.amount.total.
+# * Type         : Prometheus server scrape configuration
+# * Function     : Scrapes the CardDemo Spring Boot application's Micrometer
+# *                exposition at /actuator/prometheus every 15 seconds, so the
+# *                measurements that replaced the legacy end-of-run reporting
+# *                are sampled continuously instead of once per job. Mounted
+# *                read-only into the `prometheus` service of the
+# *                repository-root docker-compose.yml and read by its
+# *                --config.file argument. This is the only scrape
+# *                configuration in the project.
+# * Replaces     : The DISPLAY-only instrumentation of the frozen COBOL corpus.
+# *                app/cbl/CBTRN02C.cbl:L227 emits
+# *                DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and
+# *                app/cbl/CBTRN02C.cbl:L228 emits
+# *                DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - note
+# *                the two spaces before the colon on the rejected line, which
+# *                is part of the emitted text. Both counters are declared at
+# *                app/cbl/CBTRN02C.cbl:L184-L186, incremented at :L206 and
+# *                :L214, and written to SYSOUT exactly once, after every file
+# *                has closed. There is no history and no way to observe a run
+# *                in flight. The same corpus offers nothing else: even the
+# *                interest calculator app/cbl/CBACT04C.cbl reports only
+# *                through DISPLAY.
+# * Scrapes      : /actuator/prometheus. That endpoint publishes the counters
+# *                declared by
+# *                src/main/java/com/cardemo/observability/MetricsConfig.java
+# *                together with the composite health surface owned by
+# *                src/main/java/com/cardemo/observability/HealthIndicators.java,
+# *                which replaces the CICS file-availability jobs
+# *                app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl. Those two
+# *                members drove `CEMT SET FIL(...) OPE` and `... CLO` through
+# *                SDSF for five files (app/jcl/OPENFIL.jcl:L26-L30); this file
+# *                only samples the replacement health surface and performs no
+# *                probing of its own.
 # ******************************************************************
 # * Copyright Amazon.com, Inc. or its affiliates.
 # * All Rights Reserved.
@@ -26,34 +50,193 @@
 # * either express or implied. See the License for the specific
 # * language governing permissions and limitations under the License
 # ******************************************************************
+#
+# ============================================================================
+# WHAT THIS FILE DOES
+# ============================================================================
+# One Prometheus server, one scrape job, one target. Every 15 seconds
+# Prometheus issues GET /actuator/prometheus against the running CardDemo
+# application and stores the exposition it returns. Grafana renders those
+# series through observability/grafana/provisioning/datasources/datasource.yml,
+# which declares the same 15s as its datasource timeInterval.
+#
+# Ownership boundary - four artefacts, four responsibilities, no overlap:
+#   * MetricsConfig.java DEFINES the measurements; their names are its own
+#     constants.
+#   * src/main/resources/application.yml and ObservabilityConfig.java REGISTER
+#     and EXPOSE them on the actuator surface.
+#   * THIS FILE SCRAPES that surface. It therefore names no measurement at all.
+#     A scrape configuration that enumerated names would duplicate
+#     MetricsConfig.java and go stale the moment one of its constants changed,
+#     so there is no allow-list, no deny-list and no metric_relabel_configs.
+#   * observability/grafana/dashboards/carddemo-dashboard.json DISPLAYS the
+#     result.
+# That boundary records ownership, not on-disk status. Two of the Java
+# artefacts named above and in the banner - ObservabilityConfig.java and
+# HealthIndicators.java - had not yet been created by their owners when
+# this file was written, so their content is Not available here and they
+# are cited for responsibility only. Nothing in this file depends on
+# either being present: a scrape configuration is inert until the endpoint
+# answers, and the target simply reports DOWN until it does.
+# For the same reason no `management.*` property is restated here. Those keys
+# belong exclusively to src/main/resources/application.yml, which records the
+# reciprocal statement at its own :102-104 and :793-796.
+#
+# ============================================================================
+# HOW TO RUN AND VALIDATE
+# ============================================================================
+#   Start      docker compose up -d prometheus
+#   Config     docker run --rm -v "$PWD/observability:/etc/prometheus:ro" \
+#                  <the prom/prometheus image pinned in docker-compose.yml> \
+#                  promtool check config /etc/prometheus/prometheus.yml
+#              Must exit 0 and print SUCCESS with no warning. Always use the
+#              pinned image rather than a locally installed promtool, so the
+#              validation matches the binary that will read the file.
+#   Targets    curl -fsS http://localhost:9090/api/v1/targets
+#              The carddemo-app target must report health "up", scrapeUrl
+#              http://host.docker.internal:8080/actuator/prometheus and
+#              scrapeInterval 15s.
+#   Served     curl -fsS http://localhost:9090/api/v1/status/config
+#              Confirms the read-only mount resolved to this file.
+#   Reload     the prometheus service runs with --web.enable-lifecycle, so
+#              curl -X POST http://localhost:9090/-/reload applies an edit
+#              without restarting the container.
+#   Port       the published port is ${PROMETHEUS_PORT:-9090} and the Compose
+#              project name is suffixed by CLONE_INDEX, so parallel stacks do
+#              not contend for 9090. Substitute accordingly.
+#
+# ============================================================================
+# KEY CONFIGURATION AND DEFAULTS
+# ============================================================================
+#   * scrape_interval 15s. Fixed by the migration plan and matched by the
+#     Grafana datasource timeInterval; the two must stay in step.
+#   * scrape_timeout 10s, strictly below the interval - see the note on the key
+#     itself.
+#   * One job, job_name carddemo-app. Treat it as a published name: it labels
+#     every stored series and any future query may select on it.
+#   * One target, host.docker.internal:8080 - see the note on the target for
+#     why that host and not a Compose service name.
+#   * metrics_path /actuator/prometheus. The base path comes from
+#     management.endpoints.web.base-path (src/main/resources/application.yml:737)
+#     and the endpoint is one of the three that
+#     management.endpoints.web.exposure.include permits, alongside health and
+#     info (application.yml:744). Exposure is never `*`, so there is no
+#     /actuator/metrics and no /metrics to scrape, and the
+#     configuration-bearing endpoints are absent by construction and are
+#     deliberately not requested here.
+#   * Port 8080 from server.port (application.yml:714), corroborated by
+#     Dockerfile:92 EXPOSE 8080. There is no separate management port in any
+#     profile, so the application and its actuator share one port.
+#   * scheme http. The scrape stays on the Compose bridge network; transport
+#     security is out of scope for the local topology, and this file carries no
+#     transport override and no authentication material of any kind.
+#   * Measurement names are NOT here - they are constants in
+#     MetricsConfig.java. Actuator settings are NOT here - they are in
+#     application.yml. Grafana settings are NOT here - they are in
+#     observability/grafana/**.
+#
+# ============================================================================
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+# ============================================================================
+#   * Target down, "connection refused". The application is not listening on
+#     host port 8080. Start it - `SPRING_PROFILES_ACTIVE=local ./mvnw
+#     spring-boot:run` - and confirm with
+#     `curl -fsS http://localhost:8080/actuator/prometheus | head`. Prometheus
+#     keeps retrying every 15s and recovers on its own once the endpoint
+#     answers, so no reload is needed.
+#   * Target down, "no such host" or a lookup failure. The host alias did not
+#     resolve inside the container. Confirm the prometheus service still
+#     carries extra_hosts host.docker.internal:host-gateway in
+#     docker-compose.yml, then check it from inside the container with
+#     `docker compose exec prometheus getent hosts host.docker.internal`. A
+#     Compose service name such as `app` fails here for the opposite reason:
+#     docker-compose.yml declares no application service, so the name has
+#     nothing to resolve to and the target would be down permanently.
+#   * Target up but HTTP 404. The actuator exposure list no longer includes
+#     prometheus, or the base path moved. Both live in application.yml, not
+#     here; fix them there rather than changing metrics_path.
+#   * Target up but HTTP 401 or 403. The security filter chain is not
+#     permitting anonymous access to the endpoint. That is a SecurityConfig
+#     concern; this file sends no authentication material and must not.
+#   * Target up and healthy but a panel is empty. A counter that has never
+#     been incremented is ABSENT from the exposition, not zero, so its series
+#     does not exist until the application has actually processed work. Drive
+#     the relevant flow, then re-query. `up{job="carddemo-app"}` is the
+#     control: if that returns 1, scraping is fine and the gap is upstream.
+#   * Prometheus refuses to start, complaining that a scrape timeout exceeds
+#     the scrape interval. Any scrape_timeout at or above scrape_interval is
+#     rejected at load. Keep it strictly below 15s.
+#   * An edit appears to have no effect. The mount is read-only and the file is
+#     read at start or on reload only. Either POST /-/reload or restart the
+#     service, and check /api/v1/status/config to see what the server actually
+#     holds.
 
 global:
+  # Fixed at 15 seconds. This is the cadence the migration plan specifies for
+  # /actuator/prometheus, and the Grafana datasource declares the same value as
+  # its timeInterval, so changing one without the other would misalign every
+  # rate() window on the dashboard.
   scrape_interval: 15s
+  # Strictly less than scrape_interval. Prometheus rejects a configuration
+  # whose timeout is greater than or equal to its interval, and bounding the
+  # request stops one unresponsive endpoint from stalling the 15s cadence.
   scrape_timeout: 10s
-  evaluation_interval: 15s
-  external_labels:
-    application: carddemo
-    environment: local
+
+# Deliberately absent, each because nothing would consume it:
+#   * rule_files and alerting - this project defines no alerting or recording
+#     rule artefact, so evaluation_interval is omitted too rather than
+#     configuring a rule evaluator with nothing to evaluate.
+#   * external_labels - they are attached only on federation, remote-write and
+#     alert egress, none of which exists here.
+#   * remote_write and remote_read - all traffic stays inside the local
+#     topology and no hosted or external endpoint is contacted.
+#   * service discovery of every kind - the topology is a single Docker Compose
+#     stack whose members are known at author time, so one static target is the
+#     deterministic choice.
 
 scrape_configs:
 
-  # CardDemo application metrics. `host.docker.internal` is mapped to the host
-  # gateway by docker-compose.yml, so this target works whether the JAR runs on
-  # the host (./mvnw spring-boot:run) or in a container joined to the network.
-  - job_name: carddemo
+  # --------------------------------------------------------------------------
+  # The CardDemo modular monolith - the only scrape job in this project
+  # --------------------------------------------------------------------------
+  # Deliberately the only job. Nothing consumes Prometheus self-metrics: the
+  # checked-in dashboard has no panel for them and selects no `job` label at
+  # all, so a self-scrape job would be a stanza no reader reads. Grafana,
+  # Jaeger, PostgreSQL and LocalStack have no exporter provisioned in
+  # docker-compose.yml, so a job for any of them would be permanently down and
+  # would make the integration sign-off evidence misleading rather than
+  # informative.
+  - job_name: carddemo-app
     metrics_path: /actuator/prometheus
     scheme: http
     static_configs:
+      # One static target. The repository-root docker-compose.yml runs the data
+      # and observability substrate in containers but declares NO application
+      # service - its services are postgres, localstack, jaeger, prometheus and
+      # grafana, and it contains no build stanza. The application runs on the
+      # host: src/main/resources/application-local.yml:384 defaults its
+      # datasource host to localhost, and its own notes at :326-328 say to run
+      # the application on the host or else add an application service to
+      # docker-compose.yml. To cross the container boundary the prometheus
+      # service declares extra_hosts host.docker.internal:host-gateway, which
+      # Docker resolves to the host gateway address at container start. That
+      # mapping exists for precisely this scrape and is the only name by which
+      # Prometheus can reach the application in the topology as committed, so
+      # it is the single target here. Should an application service later be
+      # added to docker-compose.yml, this becomes that service's name and port
+      # and the extra_hosts entry can go with it.
       - targets:
-          - "host.docker.internal:8080"
-          - "carddemo-app:8080"
+          - host.docker.internal:8080
         labels:
+          # The one target label, and a cross-file contract rather than a
+          # decoration: src/main/resources/application.yml:482-486 and :817
+          # both state that spring.application.name must match the `service`
+          # label attached here. Deliberately no `application` and no
+          # `component` label - the exposition already carries both as common
+          # tags (application.yml:815-819), and a target label of the same name
+          # would push the exposition's own value aside under an exported_
+          # prefix. Every label here is a fixed literal: nothing that varies
+          # per request or per record, and nothing identifying an account,
+          # card, customer, transaction or user, belongs in a label. Those
+          # values are carried by the application's structured logs.
           service: carddemo
-          component: modular-monolith
-
-  # Prometheus self-monitoring.
-  - job_name: prometheus
-    metrics_path: /metrics
-    static_configs:
-      - targets:
-          - "localhost:9090"

@@ -1,0 +1,2958 @@
+/*
+ * ******************************************************************
+ * Program     : CardUpdateServiceTest.java
+ * Application : CardDemo
+ * Type        : JUnit 5 unit test - Java 25 / Spring Boot 3.5.11 (Surefire tier)
+ * Function    : Parity guard for CardUpdateService. Pins the contracts a reader
+ *               cannot confirm by inspection: the ONE-SIDED embossed-name fold
+ *               and the snapshot refresh of 9300-CHECK-CHANGE-IN-REC, the
+ *               single-dataset write sequence of 9200-WRITE-PROCESSING, the
+ *               six-field edit cascade of 1200-EDIT-MAP-INPUTS, and every
+ *               outcome literal byte-for-byte.
+ * Source      : app/cbl/COCRDUPC.cbl (1,560 lines, 48 paragraphs),
+ *               app/cpy/CSSTRPFY.cpy (procedural YYYY-STORE-PFKEY) @ 7756d89
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.unit.service;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.catchThrowableOfType;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
+
+import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.ConcurrentUpdateException;
+import com.cardemo.exception.FatalProcessingException;
+import com.cardemo.exception.ValidationException;
+import com.cardemo.model.dto.CardUpdateRequest;
+import com.cardemo.model.entity.Card;
+import com.cardemo.repository.CardRepository;
+import com.cardemo.service.card.CardUpdateService;
+import com.cardemo.service.shared.FileStatusMapper;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
+
+/**
+ * Unit tests for {@link CardUpdateService}, the Java replacement for the COBOL CICS program
+ * {@code app/cbl/COCRDUPC.cbl} (1,560 lines, 48 paragraphs) fronting transaction {@code CCUP},
+ * at traceability anchor commit {@code 7756d89}.
+ *
+ * <p><strong>1. What it does.</strong> Every assertion below is derived from the COBOL source
+ * rather than from the Java implementation, so this suite is a parity guard and not a change
+ * detector. The verified locators it pins are the outcome literals at
+ * {@code COCRDUPC.cbl:178-214} and specifically {@code :205-210}; the mainline at {@code :367},
+ * {@code COMMON-RETURN} at {@code :546} and {@code 0000-MAIN-EXIT} at {@code :560};
+ * {@code 1000-PROCESS-INPUTS} at {@code :564}; {@code 1100-RECEIVE-MAP} at {@code :578};
+ * {@code 1200-EDIT-MAP-INPUTS} at {@code :641-717}; the six field edits at {@code :721-758},
+ * {@code :762-802}, {@code :806-841} with the convert-and-trim trick at {@code :822-828},
+ * {@code :845-874}, {@code :877-910} and {@code :913-945}; {@code 2000-DECIDE-ACTION} at
+ * {@code :948-1029}; the screen paragraphs at {@code :1035}, {@code :1052}, {@code :1082},
+ * {@code :1138}, {@code :1168} and {@code :1324}; {@code 9000-READ-DATA} at {@code :1343};
+ * {@code 9100-GETCARD-BYACCTCARD} at {@code :1376}; {@code 9200-WRITE-PROCESSING} at
+ * {@code :1420-1494}; {@code 9300-CHECK-CHANGE-IN-REC} at {@code :1498-1521}; the procedural
+ * {@code COPY 'CSSTRPFY'} at {@code :1526}; and {@code ABEND-ROUTINE} at {@code :1531-1554} whose
+ * CICS {@code ABCODE('9999')} sits at {@code :1551}. The abend field set comes from
+ * {@code app/cpy/CSMSG02Y.cpy:21-29} - internally titled {@code CABENDD.CPY} - whose group
+ * {@code ABEND-DATA} totals 134 bytes as {@code X(4)}, {@code X(8)}, {@code X(50)} and
+ * {@code X(72)}, every one {@code VALUE SPACES}.
+ *
+ * <p><strong>2. How to run, build and test.</strong> This class is bound to the <em>Surefire</em>
+ * tier. The root build binds Surefire {@code 3.5.4} to {@code **}{@code /*Test.java} while
+ * excluding {@code **}{@code /integration/**} and {@code **}{@code /e2e/**}, so a class named
+ * {@code *Test} under {@code src/test/java/com/cardemo/unit/} is collected, and a class placed
+ * outside that tree matches neither Surefire's nor Failsafe's include set and silently never runs.
+ *
+ * <pre>
+ * set -a; . ./.env; set +a
+ * ./mvnw -B -ntp test-compile
+ * ./mvnw -B -ntp test -Dtest=CardUpdateServiceTest
+ * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
+ * </pre>
+ *
+ * <p>All three were executed on 2026-08-02 against OpenJDK 25.0.3 and Maven 3.9.11 and exited 0
+ * with zero compiler warnings; the second reported this class's full test count with no failure,
+ * error or skip, and its report is written to
+ * {@code target/surefire-reports/com.cardemo.unit.service.CardUpdateServiceTest.txt}. Note that the
+ * report's root {@code tests} attribute reads {@code 0}: that is Surefire's convention for a class
+ * whose tests all live in {@code @Nested} inner classes, and the per-class counts carry the totals -
+ * it is not a collection failure.
+ *
+ * <p>The documentation was checked separately with
+ * {@code javadoc -Xdoclint:all -private --release 25}, which reports no error and no warning in the
+ * accessibility, HTML, reference and syntax groups. The one residual note it emits is
+ * {@code use of default constructor}, once for this class and once for each {@code @Nested} group.
+ * Silencing it would mean declaring eighteen explicit no-argument constructors that nothing calls,
+ * because the test engine instantiates these classes reflectively - dead code that clause B of the
+ * project rule forbids - so the note is accepted and recorded here instead of being suppressed.
+ *
+ * <p><strong>3. Key configuration and defaults.</strong> A pure-JVM tier: no Spring context, no
+ * container, no database and no network. {@link CardRepository} is a Mockito mock under
+ * {@link Strictness#STRICT_STUBS}, so each stubbing lives in the single test that consumes it and
+ * never in a shared {@code @BeforeEach}. The injected {@link Clock} is
+ * {@link Clock#fixed(Instant, java.time.ZoneId)} at {@link #FIXED_INSTANT} in
+ * {@link ZoneOffset#UTC}: the constructor requires a clock for the screen date and time, but
+ * <strong>no clock participates in any validation decision</strong>. In particular the expiry-year
+ * edit is a range test against the constants declared at {@code COCRDUPC.cbl:96-99}, where
+ * {@code 88 VALID-YEAR VALUES 1950 THRU 2099} fixes the bounds, so the current year is never
+ * consulted. Numeric comparison, where it arises, uses {@code BigDecimal} with
+ * {@code RoundingMode.HALF_EVEN} and {@code compareTo()} rather than {@code equals()}; this screen
+ * carries no money field, so no such comparison occurs here and no {@code float} or {@code double}
+ * appears anywhere.
+ *
+ * <p><strong>4. Common failure modes and troubleshooting.</strong> Five ways to get this wrong,
+ * each pinned by a test below and each carrying its own remediation, which in every case is to
+ * implement the cited paragraph exactly as the source writes it rather than as it reads more
+ * naturally in Java.
+ * <ul>
+ *   <li><strong>High - folding both sides of the embossed-name comparison.</strong>
+ *       {@code 9300} at {@code :1499-1501} applies {@code INSPECT CARD-EMBOSSED-NAME CONVERTING
+ *       LIT-LOWER TO LIT-UPPER} to the <em>live record only</em>; the snapshot
+ *       {@code CCUP-OLD-CRDNAME} is compared exactly as supplied. On the mainframe the snapshot
+ *       merely happened to be upper case because {@code 9000-READ-DATA} at {@code :1356-1358}
+ *       folded the live value before copying it, but a stateless server receives the snapshot from
+ *       the caller and never re-derives it. A symmetric port therefore accepts a different input
+ *       set, and {@link OneSidedFold#lowerCaseSnapshotIsDetectedAsChanged()} is the assertion it
+ *       fails.</li>
+ *   <li><strong>High - omitting the snapshot refresh.</strong> On mismatch {@code :1512-1517}
+ *       re-loads all six snapshot fields from the live record before branching to the write exit,
+ *       which {@code COACTUPC} does not do. Drop it and the rejected response echoes the caller's
+ *       stale values, so an immediate retry fails forever.</li>
+ *   <li><strong>High - comparing the expiry date as a whole string.</strong> The live field is
+ *       {@code CARD-EXPIRAION-DATE PIC X(10)} in dash-separated form and the snapshot holds three
+ *       separator-free components, so {@code :1505-1507} addresses the parts by reference
+ *       modification at offsets {@code (1:4)}, {@code (6:2)} and {@code (9:2)}. A whole-string
+ *       comparison reports a change on every request.</li>
+ *   <li><strong>High - relying on {@code @Version} alone.</strong> A version counter detects
+ *       <em>that</em> a row changed; {@code 9300} detects <em>which values</em> differ from what
+ *       the caller was shown. A concurrent write that restored a value passes {@code 9300} and
+ *       fails the version check, so both layers are load bearing.</li>
+ *   <li><strong>High - substituting {@code String.isBlank()} for the convert-and-trim name
+ *       test.</strong> {@code :822-828} converts every one of the 52 ASCII letters listed at
+ *       {@code :255-257} to a space and accepts the name only when the residue trims to zero
+ *       length. Spaces are therefore legal inside a name while a digit, hyphen, apostrophe or
+ *       accented character is not, and {@code trim().length() == 0} rather than
+ *       {@code length() == 0} is the equivalent.</li>
+ * </ul>
+ * <p>Three mechanical traps sit outside that list. A single unused import fails the build outright,
+ * because the compiler runs with {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}
+ * reaching test compilation. This class deliberately shares no change-detection helper with
+ * {@code AccountUpdateServiceTest}: the two comparisons use genuinely different case handling and
+ * only this one refreshes the snapshot, so a shared helper would have to be wrong for one of them.
+ * And - the trap this suite discovered while being written - the program contains
+ * <strong>two</strong> comparisons, not one, and they fold case differently. The group test inside
+ * {@code 1200-EDIT-MAP-INPUTS} at {@code :679-683} upper-cases <em>both</em> sides, so a case-only
+ * difference is invisible to it and the six field edits then never run at all; only
+ * {@code 9300} at {@code :1499-1501} folds one side. Conflating the two makes a lower-case status
+ * of {@code 'y'} appear to pass validation when in truth validation was skipped, which is why
+ * {@link CardStatusEdit#caseOnlyStatusChangeNeverReachesTheCaseSensitiveEdit()} exists alongside
+ * {@link CardStatusEdit#lowerCaseYesIsInvalid()}.
+ *
+ * <p><strong>Finding register.</strong> <em>Blocker</em> - a test class for this bean placed
+ * outside {@code src/test/java/com/cardemo/unit/} matches neither Surefire's include set nor
+ * Failsafe's, so it is collected by neither plugin and never runs: the build stays green, both
+ * plugins report success and the coverage report records the bean as untested, with no error and
+ * no warning anywhere to reveal it. Remediation - keep the class inside that tree with a
+ * {@code *Test} suffix, as this one is, and after every run confirm that
+ * {@code target/surefire-reports/TEST-com.cardemo.unit.service.CardUpdateServiceTest.xml} exists
+ * and carries the expected {@code testcase} count. <em>Medium</em> - importing {@code COACTUPC}'s
+ * asymmetric-rollback reasoning into this program is wrong, because {@code 9200} writes exactly
+ * one dataset and contains no {@code SYNCPOINT ROLLBACK} verb at all; collapsing the three write
+ * outcomes into one conflict status destroys information the legacy screen displayed; and treating
+ * the two case folds described above as one mechanism silently skips the field cascade.
+ * <em>Low</em> - {@code SEARCHED-ACCT-ZEROES} at {@code :189-190} and
+ * {@code SEARCHED-ACCT-NOT-NUMERIC} at {@code :191-192} carry byte-identical literals;
+ * {@code LIT-CCLISTMAP} at {@code :233-234} holds {@code 'CCRDSLA'}, the card <em>detail</em> map
+ * name, identical to {@code LIT-CARDDTLMAP} at {@code :249-250}, a copy-paste defect preserved
+ * rather than corrected; {@code LIT-THISMAPSET} at {@code :223-224} is {@code PIC X(8)} with a
+ * trailing space among {@code PIC X(7)} siblings; {@code CARD-EXPIRAION-DATE} is misspelled in
+ * {@code app/cpy/CVACT02Y.cpy:9} and the misspelling is part of the field contract;
+ * {@code 9300} ends with {@code END-IF EXIT} at {@code :1519} while
+ * {@code 9300-CHECK-CHANGE-IN-REC-EXIT} at {@code :1521} carries its own bare {@code EXIT}, so the
+ * in-paragraph one is a retained no-op; and the {@code LOW-VALUES} message guard at {@code :1533}
+ * is unreachable because {@code CSMSG02Y} initialises every abend field to {@code VALUE SPACES},
+ * whereas its Java counterpart is reachable - a resurrected branch, harmless but worth recording.
+ *
+ * <p><strong>Seven declared-but-never-SET outcome literals</strong> (<em>Low</em>) deserve their own
+ * note, because a reader comparing the two sources will otherwise think they were lost. Verified by
+ * scanning every line from {@code :261} onward - a deliberate superset, since the procedure division
+ * itself only begins at {@code :366} - {@code WS-EXIT-MESSAGE} {@code :175-176},
+ * {@code SEARCHED-ACCT-ZEROES} {@code :189-190}, {@code SEARCHED-ACCT-NOT-NUMERIC} {@code :191-192},
+ * {@code SEARCHED-CARD-NOT-NUMERIC} {@code :193-194}, {@code DID-NOT-FIND-ACCT-IN-CARDXREF}
+ * {@code :201-202}, {@code XREF-READ-ERROR} {@code :211-212} and {@code CODING-TO-BE-DONE}
+ * {@code :213-214} are never {@code SET} anywhere. Their correct Java counterpart is therefore
+ * <em>no counterpart at all</em>, and the filter edits report instead the literals the source
+ * actually {@code MOVE}s at {@code :745} and {@code :789}.
+ * {@link OutcomeLiterals#neverSetEightyEightLevelsHaveNoCounterpart()} and its two neighbours pin
+ * that distinction in both directions, so neither a spurious addition nor a genuine omission can
+ * pass unnoticed.
+ *
+ * <p><strong>Eight declared-but-never-referenced {@code WS-LITERALS} fields</strong> (<em>Low</em>)
+ * are the same finding one block further down - {@code 01 WS-LITERALS} spans {@code :218-263}, of
+ * which {@code :219-254} are the program, transaction, mapset, map and file-name literals - and they
+ * sharpen the copy-paste defect above. Counting references from {@code :366}, where the procedure
+ * division begins, {@code LIT-CCLISTTRANID} {@code :229-230}, {@code LIT-MENUMAPSET}
+ * {@code :239-240}, {@code LIT-MENUMAP} {@code :241-242}, {@code LIT-CARDDTLPGM} {@code :243-244},
+ * {@code LIT-CARDDTLTRANID} {@code :245-246}, {@code LIT-CARDDTLMAPSET} {@code :247-248},
+ * {@code LIT-CARDDTLMAP} {@code :249-250} and {@code LIT-CARDFILENAME-ACCT-PATH} {@code :253-254}
+ * are referenced exactly zero times, while every other field of the block is referenced between one
+ * and eight times. So the whole card-detail literal group is dead, and {@code LIT-CCLISTMAP} -
+ * referenced four times - is the live field carrying the dead group's {@code 'CCRDSLA'} value: the
+ * defect is not a stray duplicate but the surviving half of a transfer that was never wired up. The
+ * service correctly declares none of the eight values and every referenced one, which
+ * {@link OutcomeLiterals#neverReferencedLiteralFieldsHaveNoCounterpart()} asserts in both
+ * directions.
+ *
+ * <p><strong>Not available.</strong> {@code RecordNotFoundException} is unreachable from either
+ * public entry point of this bean and is therefore neither imported nor asserted here: an absent
+ * row inside {@code 9200} is reported as a lock failure, and the "did not find" message of
+ * {@code 9100} is reached only through the fetch path, which returns it on the screen rather than
+ * throwing. Likewise the {@code '0001'} {@code UNEXPECTED DATA SCENARIO} branch at
+ * {@code :1019-1026} cannot be driven from the public API, because every reachable
+ * {@code ChangeAction} is intercepted earlier. What is needed to assert either is a seam this bean
+ * does not expose; inventing one would be a production change, which this file must not make. A
+ * live {@code CARDDAT} table is equally out of reach from a pure-JVM tier - it needs a container
+ * runtime and belongs to the Failsafe integration tier, which this class must not duplicate.
+ *
+ * <p><strong>The documented conflict - parity governs.</strong> Rule 1 clause B forbids dead code
+ * while the migration mandate requires one-to-one control-flow parity. They collide on the
+ * retained bare-{@code EXIT} paragraphs, the redundant in-paragraph {@code EXIT} of {@code 9300}
+ * and the {@code LIT-CCLISTMAP} defect. Parity governs, and clause B is satisfied on its own
+ * terms: what it prohibits is an artefact <em>without an owner or tracking reference</em>, and each
+ * retained item carries the source locator cited above and an explicit intentional-no-op marker on
+ * the test that pins it. Deleting any of them would break the paragraph map the scope-coverage
+ * gate is proved against.
+ */
+@ExtendWith(MockitoExtension.class)
+@MockitoSettings(strictness = Strictness.STRICT_STUBS)
+@DisplayName("CardUpdateService - COCRDUPC / CICS transaction CCUP")
+final class CardUpdateServiceTest {
+
+    /**
+     * The instant the injected clock is frozen at. Any value works because no validation decision
+     * reads the clock; freezing it merely removes the screen date and time as a source of
+     * non-determinism.
+     */
+    private static final Instant FIXED_INSTANT = Instant.parse("2022-04-15T14:30:05Z");
+
+    /** Attention identifier for a plain Enter, {@code DFHENTER} of {@code app/cpy/CSSTRPFY.cpy}. */
+    private static final String AID_ENTER = "DFHENTER";
+
+    /** Attention identifier for {@code PF05}, the save key {@code 2000-DECIDE-ACTION} gates on. */
+    private static final String AID_PF05 = "DFHPF5";
+
+    /** Account filter, {@code ACCTSIDI PIC X(11)} of {@code app/cpy-bms/COCRDUP.CPY}. */
+    private static final String ACCOUNT_ID = "00000000001";
+
+    /**
+     * Card filter, {@code CARDSIDI PIC X(16)}. Deliberately a synthetic all-but-suffix-zero value:
+     * it is test data, never a credential, and it is never emitted into an assertion description.
+     */
+    private static final String CARD_NUMBER = "0000000000000011";
+
+    /** Stored verification value, {@code CARD-CVV-CD PIC 9(03)}. Never asserted into a message. */
+    private static final String STORED_CVV = "123";
+
+    /** Stored embossed name, {@code CARD-EMBOSSED-NAME PIC X(50)}, in upper case as stored. */
+    private static final String STORED_NAME = "JOHN SMITH";
+
+    /** Stored expiry date, {@code CARD-EXPIRAION-DATE PIC X(10)}, dash separated (sic). */
+    private static final String STORED_EXPIRY = "2026-05-17";
+
+    /** Component of {@link #STORED_EXPIRY} at offset {@code (1:4)}. */
+    private static final String STORED_YEAR = "2026";
+
+    /** Component of {@link #STORED_EXPIRY} at offset {@code (6:2)}. */
+    private static final String STORED_MONTH = "05";
+
+    /** Component of {@link #STORED_EXPIRY} at offset {@code (9:2)}. */
+    private static final String STORED_DAY = "17";
+
+    /** Stored status, {@code CARD-ACTIVE-STATUS PIC X(01)}. */
+    private static final String STORED_STATUS = "Y";
+
+    /**
+     * A submitted name that differs from {@link #STORED_NAME}, so the group test of
+     * {@code 1200-EDIT-MAP-INPUTS} at {@code :679-683} sees a change and the cascade proceeds.
+     */
+    private static final String SUBMITTED_NAME = "JANE SMITH";
+
+    /** Width of {@code ERRMSGI PIC X(80)}; the screen error message is padded to it. */
+    private static final int ERROR_MESSAGE_WIDTH = 80;
+
+    /** {@code 'No change detected with respect to values fetched.'} at {@code :187-188}. */
+    private static final String MSG_NO_CHANGES_DETECTED =
+            "No change detected with respect to values fetched.";
+
+    /** {@code 'Could not lock record for update'} at {@code :205-206}. */
+    private static final String MSG_COULD_NOT_LOCK = "Could not lock record for update";
+
+    /** {@code 'Record changed by some one else. Please review'} at {@code :207-208}. */
+    private static final String MSG_DATA_WAS_CHANGED = "Record changed by some one else. Please review";
+
+    /** {@code 'Update of record failed'} at {@code :209-210}. */
+    private static final String MSG_UPDATE_FAILED = "Update of record failed";
+
+    /** {@code 'Card name not provided'} at {@code :181-182}. */
+    private static final String MSG_NAME_NOT_PROVIDED = "Card name not provided";
+
+    /** {@code 'Card name can only contain alphabets and spaces'} at {@code :183-184}. */
+    private static final String MSG_NAME_MUST_BE_ALPHA = "Card name can only contain alphabets and spaces";
+
+    /** {@code 'Card Active Status must be Y or N'} at {@code :195-196}. */
+    private static final String MSG_STATUS_MUST_BE_YES_NO = "Card Active Status must be Y or N";
+
+    /** {@code 'Card expiry month must be between 1 and 12'} at {@code :197-198}. */
+    private static final String MSG_MONTH_NOT_VALID = "Card expiry month must be between 1 and 12";
+
+    /** {@code 'Invalid card expiry year'} at {@code :199-200}. */
+    private static final String MSG_YEAR_NOT_VALID = "Invalid card expiry year";
+
+    /** {@code 'Did not find cards for this search condition'} at {@code :203-204}. */
+    private static final String MSG_NO_ACCTCARD_COMBO = "Did not find cards for this search condition";
+
+    /** {@code 'Please enter Account and Card Number'} at {@code :162-163}. */
+    private static final String MSG_PROMPT_FOR_SEARCH_KEYS = "Please enter Account and Card Number";
+
+    /** {@code 'Changes validated.Press F5 to save'} at {@code :166-167}; note the missing space. */
+    private static final String MSG_PROMPT_FOR_CONFIRMATION = "Changes validated.Press F5 to save";
+
+    /** {@code 'Account number not provided'} at {@code :177-178}. */
+    private static final String MSG_ACCOUNT_NOT_PROVIDED = "Account number not provided";
+
+    /** {@code 'Card number not provided'} at {@code :179-180}. */
+    private static final String MSG_CARD_NOT_PROVIDED = "Card number not provided";
+
+    /** {@code 'No input received'} at {@code :185-186}. */
+    private static final String MSG_NO_INPUT_RECEIVED = "No input received";
+
+    /** {@code 'Details of selected card shown above'} at {@code :160-161}. */
+    private static final String INFO_FOUND_CARDS = "Details of selected card shown above";
+
+    /** {@code 'PF03 pressed.Exiting              '} at {@code :175-176}; never SET in the source. */
+    private static final String MSG_EXIT_NEVER_SET = "PF03 pressed.Exiting              ";
+
+    /** {@code :189-192}; carried by two 88-levels, neither ever SET in the source. */
+    private static final String MSG_ACCOUNT_NON_ZERO_ELEVEN_DIGITS =
+            "Account number must be a non zero 11 digit number";
+
+    /** {@code :193-194}; declared but never SET in the source. */
+    private static final String MSG_CARD_MUST_BE_SIXTEEN_DIGITS =
+            "Card number if supplied must be a 16 digit number";
+
+    /** {@code :201-202}; declared but never SET in the source. */
+    private static final String MSG_NO_ACCOUNT_IN_CARDS_DATABASE =
+            "Did not find this account in cards database";
+
+    /** {@code :211-212}; declared but never SET in the source. */
+    private static final String MSG_XREF_READ_ERROR_NEVER_SET = "Error reading Card Data File";
+
+    /** {@code 'Looks Good.... so far'} at {@code :213-214}, four dots; never SET in the source. */
+    private static final String MSG_LOOKS_GOOD_NEVER_SET = "Looks Good.... so far";
+
+    /** A valid status that differs from the stored one, so the group test always sees a change. */
+    private static final String CARD_STATUS_TOGGLED = "N";
+
+    /**
+     * The sole collaborator of the bean, mocked because this tier reaches no database. Strict stubs
+     * keep every stubbing inside the single test that consumes it.
+     */
+    @Mock
+    private CardRepository cardRepository;
+
+    /** The system under test, rebuilt before every test so no state can leak between them. */
+    private CardUpdateService service;
+
+    /**
+     * Builds the bean with the mocked repository and a fixed clock, so the screen date and time are
+     * reproducible and no validation outcome can depend on when the suite runs.
+     */
+    @BeforeEach
+    void createServiceUnderTest() {
+        service = new CardUpdateService(cardRepository, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Fixture builders. Deliberately private to this class: the account program's comparison
+    // folds case symmetrically and never refreshes its snapshot, so nothing here may be shared
+    // with AccountUpdateServiceTest without being wrong for one of the two.
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Builds the stored {@code CARD-RECORD} of {@code app/cpy/CVACT02Y.cpy} as the repository would
+     * return it under the update lock.
+     *
+     * @param embossedName {@code CARD-EMBOSSED-NAME PIC X(50)}
+     * @param expiraionDate {@code CARD-EXPIRAION-DATE PIC X(10)}, misspelling intentional
+     * @param activeStatus {@code CARD-ACTIVE-STATUS PIC X(01)}
+     * @param cvvCode {@code CARD-CVV-CD PIC 9(03)}
+     * @return a card whose primary key matches {@link #CARD_NUMBER}
+     */
+    private Card storedCard(final String embossedName, final String expiraionDate,
+                            final String activeStatus, final String cvvCode) {
+        final Card card = new Card(CARD_NUMBER, 1L, cvvCode, embossedName, expiraionDate, activeStatus);
+        card.setVersion(0L);
+        return card;
+    }
+
+    /**
+     * Builds the stored card in its unmodified fixture state.
+     *
+     * @return the card exactly as the fixture declares it, before any submitted change
+     */
+    private Card storedCard() {
+        return storedCard(STORED_NAME, STORED_EXPIRY, STORED_STATUS, STORED_CVV);
+    }
+
+    /**
+     * Builds a {@code CCUP-OLD-DETAILS} snapshot as the caller carries it in the request body,
+     * mirroring {@code COCRDUPC.cbl:291-301} leaf for leaf.
+     *
+     * @param cardholderName the snapshot embossed name, compared exactly as supplied
+     * @param expiryYear snapshot counterpart of the {@code (1:4)} component
+     * @param expiryMonth snapshot counterpart of the {@code (6:2)} component
+     * @param expiryDay snapshot counterpart of the {@code (9:2)} component
+     * @param cardStatusCode snapshot counterpart of {@code CARD-ACTIVE-STATUS}
+     * @param cvvCode snapshot counterpart of {@code CARD-CVV-CD}
+     * @return a populated snapshot group
+     */
+    private CardUpdateRequest.CardDetails snapshotOf(final String cardholderName,
+                                                     final String expiryYear,
+                                                     final String expiryMonth,
+                                                     final String expiryDay,
+                                                     final String cardStatusCode,
+                                                     final String cvvCode) {
+        return new CardUpdateRequest.CardDetails(ACCOUNT_ID, CARD_NUMBER, cvvCode,
+                new CardUpdateRequest.CardData(cardholderName,
+                        new CardUpdateRequest.ExpiraionDate(expiryYear, expiryMonth, expiryDay),
+                        cardStatusCode));
+    }
+
+    /**
+     * Builds the snapshot that agrees with {@link #storedCard()} field for field.
+     *
+     * @return a snapshot group over which {@code 9300} finds no difference
+     */
+    private CardUpdateRequest.CardDetails matchingSnapshot() {
+        return snapshotOf(STORED_NAME, STORED_YEAR, STORED_MONTH, STORED_DAY, STORED_STATUS,
+                STORED_CVV);
+    }
+
+    /**
+     * Builds a request carrying the submitted values in the flat screen fields, which
+     * {@code 1100-RECEIVE-MAP} prefers over the nested group, and the snapshot in
+     * {@code oldDetails}.
+     *
+     * @param oldDetails the {@code CCUP-OLD-DETAILS} snapshot, or {@code null} to omit it
+     * @param cardholderName submitted {@code CRDNAMEI PIC X(50)}
+     * @param cardStatusCode submitted {@code CRDSTCDI PIC X(1)}
+     * @param expiryMonth submitted {@code EXPMONI PIC X(2)}
+     * @param expiryYear submitted {@code EXPYEARI PIC X(4)}
+     * @param expiryDay submitted {@code EXPDAYI PIC X(2)}
+     * @return a request with the seventeen screen components and the snapshot group
+     */
+    private CardUpdateRequest requestWith(final CardUpdateRequest.CardDetails oldDetails,
+                                          final String cardholderName,
+                                          final String cardStatusCode,
+                                          final String expiryMonth,
+                                          final String expiryYear,
+                                          final String expiryDay) {
+        return new CardUpdateRequest(null, null, null, null, null, null,
+                ACCOUNT_ID, CARD_NUMBER, cardholderName, cardStatusCode,
+                expiryMonth, expiryYear, expiryDay,
+                null, null, null, null, oldDetails, null);
+    }
+
+    /**
+     * Builds a request whose submitted name differs from the stored name, so the group test sees a
+     * change, with every other submitted field agreeing with the stored record.
+     *
+     * @param oldDetails the snapshot to carry
+     * @return a request that reaches the write path once confirmed
+     */
+    private CardUpdateRequest changedNameRequest(final CardUpdateRequest.CardDetails oldDetails) {
+        return requestWith(oldDetails, SUBMITTED_NAME, STORED_STATUS, STORED_MONTH, STORED_YEAR,
+                STORED_DAY);
+    }
+
+    /**
+     * Drives the confirmation leg of {@code 2000-DECIDE-ACTION} at {@code :948-1029}, the only route
+     * that reaches {@code 9200-WRITE-PROCESSING}: re-entry, a populated snapshot and {@code PF05}.
+     *
+     * @param request the request to submit
+     * @return the screen and navigation result the mainline returns
+     */
+    private CardUpdateService.CardUpdateResult confirmSave(final CardUpdateRequest request) {
+        return service.processRequest(request, AID_PF05, CardUpdateService.EntryMode.REENTER);
+    }
+
+    /**
+     * Drives the validation leg: re-entry with a populated snapshot under plain Enter, which runs the
+     * whole edit cascade of {@code 1200-EDIT-MAP-INPUTS} and touches the repository not at all.
+     *
+     * @param request the request to submit
+     * @return the screen result carrying the surviving return message
+     */
+    private CardUpdateService.CardUpdateResult validateOnly(final CardUpdateRequest request) {
+        return service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+    }
+
+    /**
+     * Extracts the screen error message with the {@code ERRMSGI PIC X(80)} padding removed, so a test
+     * can compare against the source literal byte for byte.
+     *
+     * @param result the mainline result
+     * @return the unpadded return message
+     */
+    private static String errorMessageOf(final CardUpdateService.CardUpdateResult result) {
+        return result.screen().getErrorMessage().strip();
+    }
+
+    /**
+     * Pins the six comparison clauses of {@code 9300-CHECK-CHANGE-IN-REC} at
+     * {@code COCRDUPC.cbl:1498-1521} over their four logical fields, one assertion per clause and
+     * none consolidated.
+     */
+    @Nested
+    @DisplayName("9300-CHECK-CHANGE-IN-REC :1498-1521 - six clauses over four logical fields")
+    class ChangeDetection {
+
+        /**
+         * Clause one of {@code 9300} at {@code COCRDUPC.cbl:1503}: a differing {@code CARD-CVV-CD} alone abandons the
+         * rewrite, proving the verification value participates in the comparison even though it sits outside the group
+         * test of {@code :679-683}.
+         */
+        @Test
+        @DisplayName("a live CVV code differing from the snapshot is detected - clause 1 of 6")
+        void cvvCodeChangeIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, STORED_STATUS, "456")));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Clause two at {@code COCRDUPC.cbl:1504}: a differing {@code CARD-EMBOSSED-NAME} alone abandons the rewrite.
+         */
+        @Test
+        @DisplayName("a live embossed name differing from the snapshot is detected - clause 2 of 6")
+        void embossedNameChangeIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard("JOHN JONES", STORED_EXPIRY, STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Clause six at {@code COCRDUPC.cbl:1508}: a differing {@code CARD-ACTIVE-STATUS} alone abandons the rewrite.
+         */
+        @Test
+        @DisplayName("a live active status differing from the snapshot is detected - clause 6 of 6")
+        void activeStatusChangeIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The three date clauses at {@code COCRDUPC.cbl:1505-1507} acting together: a wholly different expiry date
+         * abandons the rewrite.
+         */
+        @Test
+        @DisplayName("a wholly different live expiry date is detected - the third logical field")
+        void expiryDateChangeIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard(STORED_NAME, "2031-11-02", STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Clause three in isolation, the reference modification {@code CARD-EXPIRAION-DATE(1:4)} at {@code
+         * COCRDUPC.cbl:1505}, asserted separately because the source never compares the date as one string.
+         */
+        @Test
+        @DisplayName("only the (1:4) year component differs - clause 3 of 6, asserted alone")
+        void expiryYearComponentAloneIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard(STORED_NAME, "2027-05-17", STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            assertThat(result.refreshedSnapshot().cardData().expiraionDate().expiryYear())
+                    .isEqualTo("2027");
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Clause four in isolation, {@code CARD-EXPIRAION-DATE(6:2)} at {@code COCRDUPC.cbl:1506}.
+         */
+        @Test
+        @DisplayName("only the (6:2) month component differs - clause 4 of 6, asserted alone")
+        void expiryMonthComponentAloneIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard(STORED_NAME, "2026-06-17", STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            assertThat(result.refreshedSnapshot().cardData().expiraionDate().expiryMonth())
+                    .isEqualTo("06");
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Clause five in isolation, {@code CARD-EXPIRAION-DATE(9:2)} at {@code COCRDUPC.cbl:1507}.
+         */
+        @Test
+        @DisplayName("only the (9:2) day component differs - clause 5 of 6, asserted alone")
+        void expiryDayComponentAloneIsDetected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard(STORED_NAME, "2026-05-18", STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_DATA_WAS_CHANGED);
+            assertThat(result.refreshedSnapshot().cardData().expiraionDate().expiryDay())
+                    .isEqualTo("18");
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Drives all three components at once and shows the outcome is identical to changing them singly, so a whole-
+         * string comparison cannot be substituted for the three offsets.
+         */
+        @Test
+        @DisplayName("the expiry date is addressed by component, never compared whole")
+        void expiryDateIsNeverComparedAsAWholeString() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            final CardUpdateRequest.CardDetails snapshot = matchingSnapshot();
+            final CardUpdateRequest.ExpiraionDate parts = snapshot.cardData().expiraionDate();
+            final String reassembled =
+                    parts.expiryYear() + parts.expiryMonth() + parts.expiryDay();
+            assertThat(reassembled)
+                    .as("the snapshot carries three separator-free components")
+                    .isNotEqualTo(STORED_EXPIRY)
+                    .hasSize(STORED_EXPIRY.length() - 2);
+            assertThat(errorMessageOf(result))
+                    .as("a whole-string comparison would have reported a change here")
+                    .isNotEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository).save(any(Card.class));
+        }
+
+        /**
+         * The negative control for the whole group: when all six clauses agree, {@code 9300} falls through to the
+         * {@code REWRITE} at {@code COCRDUPC.cbl:1466-1472} and the row is persisted.
+         */
+        @Test
+        @DisplayName("an agreeing snapshot passes all six clauses and the rewrite proceeds")
+        void anAgreeingSnapshotPassesAndTheRewriteProceeds() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(result.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE);
+            verify(cardRepository).save(any(Card.class));
+        }
+    }
+
+    /**
+     * Pins the one-sided case fold of {@code COCRDUPC.cbl:1499-1501}, where the live record
+     * alone is converted to upper case and the caller's snapshot is compared exactly as supplied.
+     */
+    @Nested
+    @DisplayName(":1499-1501 - the fold is ONE-SIDED and mutates the live side only")
+    class OneSidedFold {
+
+        /**
+         * With an upper-case snapshot the fold at {@code COCRDUPC.cbl:1499-1501} makes a case-only live difference
+         * invisible, which is the mainframe's incidental behaviour because {@code 9000-READ-DATA} folded the value
+         * before copying it.
+         */
+        @Test
+        @DisplayName("a case-only live difference is NOT detected when the snapshot is upper case")
+        void upperCaseSnapshotAbsorbsACaseOnlyLiveDifference() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard("john smith", STORED_EXPIRY, STORED_STATUS, STORED_CVV)));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result))
+                    .as("folding the live side makes the case difference invisible")
+                    .isNotEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository).save(any(Card.class));
+        }
+
+        /**
+         * The decisive assertion a symmetric port fails: with a lower-case snapshot the one-sided fold makes the very
+         * same live value differ, because only the live side is converted.
+         */
+        @Test
+        @DisplayName("a case-only difference IS detected when the snapshot is lower case")
+        void lowerCaseSnapshotIsDetectedAsChanged() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final CardUpdateRequest.CardDetails lowerCaseSnapshot = snapshotOf(
+                    STORED_NAME.toLowerCase(Locale.ROOT), STORED_YEAR, STORED_MONTH, STORED_DAY,
+                    STORED_STATUS, STORED_CVV);
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(lowerCaseSnapshot));
+
+            assertThat(errorMessageOf(result))
+                    .as("the snapshot receives no conversion, so a symmetric port fails here")
+                    .isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * Pins {@code Locale.ROOT} semantics by installing a Turkish default locale, under which a locale-sensitive
+         * fold would map {@code i} to a dotted capital and silently change the comparison.
+         */
+        @Test
+        @DisplayName("the fold uses Locale.ROOT, so a Turkish default locale changes nothing")
+        void foldIsLocaleRootUnderATurkishDefaultLocale() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard("iris irwin", STORED_EXPIRY, STORED_STATUS, STORED_CVV)));
+            final CardUpdateRequest.CardDetails snapshot = snapshotOf("IRIS IRWIN", STORED_YEAR,
+                    STORED_MONTH, STORED_DAY, STORED_STATUS, STORED_CVV);
+            // Locale.getDefault() is read here solely as a restore guard for the finally block, never
+            // as an input to a decision; the fold under test is pinned to Locale.ROOT by construction.
+            final Locale callerLocale = Locale.getDefault();
+            try {
+                Locale.setDefault(Locale.forLanguageTag("tr"));
+                assertThat("iris".toUpperCase(Locale.getDefault()))
+                        .as("the Turkish locale really is active, so the guard is meaningful")
+                        .isNotEqualTo("IRIS");
+
+                final CardUpdateService.CardUpdateResult result =
+                        confirmSave(changedNameRequest(snapshot));
+
+                assertThat(errorMessageOf(result))
+                        .as("a default-locale fold would emit a dotted capital and report a change")
+                        .isNotEqualTo(MSG_DATA_WAS_CHANGED);
+            } finally {
+                Locale.setDefault(callerLocale);
+            }
+            verify(cardRepository).save(any(Card.class));
+        }
+    }
+
+    /**
+     * Pins the six refreshing {@code MOVE} statements of {@code COCRDUPC.cbl:1512-1517}, which
+     * reload the snapshot from the live record before the write exit so that an immediate retry can
+     * succeed.
+     */
+    @Nested
+    @DisplayName(":1512-1517 - the snapshot is refreshed from the live record on mismatch")
+    class SnapshotRefresh {
+
+        /**
+         * The six refreshing {@code MOVE} statements at {@code COCRDUPC.cbl:1512-1517}: the rejected response echoes
+         * the live values, not the stale ones the caller sent.
+         */
+        @Test
+        @DisplayName("the rejected response echoes the refreshed, not the submitted, snapshot")
+        void rejectedResponseCarriesTheRefreshedSnapshot() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard("olive brand", "2029-08-04", "N", "456")));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            final CardUpdateRequest.CardDetails refreshed = result.refreshedSnapshot();
+            assertThat(refreshed.cardData().cardholderName().strip())
+                    .as("the live name arrives folded, because the fold precedes the refresh")
+                    .isEqualTo("OLIVE BRAND");
+            assertThat(refreshed.cardData().expiraionDate().expiryYear()).isEqualTo("2029");
+            assertThat(refreshed.cardData().expiraionDate().expiryMonth()).isEqualTo("08");
+            assertThat(refreshed.cardData().expiraionDate().expiryDay()).isEqualTo("04");
+            assertThat(refreshed.cardData().cardStatusCode()).isEqualTo("N");
+            assertThat(refreshed.cvvCode())
+                    .as("the verification value is deliberately withheld from the echo")
+                    .isNull();
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The observable consequence of the refresh: feeding the returned snapshot straight back succeeds, whereas
+         * omitting the refresh would make every retry fail forever.
+         */
+        @Test
+        @DisplayName("an immediate retry with the refreshed snapshot succeeds")
+        void retryWithTheRefreshedSnapshotSucceeds() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(
+                    Optional.of(storedCard("OLIVE BRAND", "2029-08-04", "N", "456")));
+
+            final CardUpdateService.CardUpdateResult rejected =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+            assertThat(errorMessageOf(rejected)).isEqualTo(MSG_DATA_WAS_CHANGED);
+
+            final CardUpdateRequest.CardDetails refreshed = rejected.refreshedSnapshot();
+            final CardUpdateRequest.CardDetails retrySnapshot = snapshotOf(
+                    refreshed.cardData().cardholderName(),
+                    refreshed.cardData().expiraionDate().expiryYear(),
+                    refreshed.cardData().expiraionDate().expiryMonth(),
+                    refreshed.cardData().expiraionDate().expiryDay(),
+                    refreshed.cardData().cardStatusCode(), "456");
+
+            final CardUpdateService.CardUpdateResult accepted =
+                    confirmSave(changedNameRequest(retrySnapshot));
+
+            assertThat(errorMessageOf(accepted))
+                    .as("dropping the refresh would make this retry fail forever")
+                    .isNotEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository).save(any(Card.class));
+        }
+
+        /**
+         * The refreshed group re-renders its key components at the {@code PIC 9(11)} and {@code PIC X(16)} widths of
+         * {@code app/cpy/CVACT02Y.cpy}, so a retry carries a byte-identical key.
+         */
+        @Test
+        @DisplayName("the refreshed key components round-trip to their fixed widths")
+        void refreshedKeyComponentsKeepTheirFixedWidths() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, "2030-01-31", STORED_STATUS, "789")));
+
+            final CardUpdateRequest.CardDetails refreshed =
+                    confirmSave(changedNameRequest(matchingSnapshot())).refreshedSnapshot();
+
+            assertThat(refreshed.accountId()).isEqualTo(ACCOUNT_ID).hasSize(11);
+            assertThat(refreshed.cardNumber()).hasSize(16);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+    }
+
+    /**
+     * Pins the two concurrency layers - the value comparison of {@code 9300} and the JPA
+     * {@code @Version} guard - and shows that neither one subsumes the other.
+     */
+    @Nested
+    @DisplayName("two concurrency layers - 9300 plus @Version, neither sufficient alone")
+    class VersionLayer {
+
+        /**
+         * The store-level layer: an optimistic-lock failure raised by the rewrite surfaces as the {@code
+         * LOCKED_BUT_UPDATE_FAILED} outcome of {@code COCRDUPC.cbl:1487-1488} with its cause preserved.
+         */
+        @Test
+        @DisplayName("a version conflict on rewrite surfaces as 'Update of record failed'")
+        void versionConflictOnRewriteIsReported() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardRepository.save(any(Card.class)))
+                    .thenThrow(new OptimisticLockingFailureException("row version moved"));
+
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final ConcurrentUpdateException failure =
+                    catchThrowableOfType(ConcurrentUpdateException.class, () -> confirmSave(request));
+
+            assertThat(failure).hasMessage(MSG_UPDATE_FAILED)
+                    .hasCauseInstanceOf(OptimisticLockingFailureException.class);
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.LOCKED_BUT_UPDATE_FAILED);
+            assertThat(failure.getCause()).hasMessage("row version moved");
+        }
+
+        /**
+         * Shows the version guard is not redundant: a concurrent write that restored the original values passes all six
+         * value clauses yet still trips the version column.
+         */
+        @Test
+        @DisplayName("a changed-then-restored row passes 9300 yet still fails the version check")
+        void roundTripModificationPasses9300ButFailsTheVersionCheck() {
+            final Card restored = storedCard();
+            restored.setVersion(7L);
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(restored));
+            when(cardRepository.save(any(Card.class)))
+                    .thenThrow(new OptimisticLockingFailureException("version 0 expected, 7 found"));
+
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            assertThatThrownBy(() -> confirmSave(request))
+                    .as("9300 sees identical values, so only @Version can catch this")
+                    .isInstanceOf(ConcurrentUpdateException.class)
+                    .hasMessage(MSG_UPDATE_FAILED)
+                    .hasMessageNotContaining(MSG_DATA_WAS_CHANGED);
+        }
+
+        /**
+         * Shows the value comparison is not redundant either: it rejects before the rewrite is ever attempted, so the
+         * version column is never consulted.
+         */
+        @Test
+        @DisplayName("a value-level change is caught by 9300 before the version check is reached")
+        void valueLevelChangeIsCaughtBefore9300YieldsToTheVersionCheck() {
+            final Card drifted = storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV);
+            drifted.setVersion(0L);
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(drifted));
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result))
+                    .as("@Version alone would have accepted this write")
+                    .isEqualTo(MSG_DATA_WAS_CHANGED);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+    }
+
+    /**
+     * Pins the ordering and short-circuit behaviour of {@code 9200-WRITE-PROCESSING} at
+     * {@code COCRDUPC.cbl:1420-1494}, a single-dataset write with one lock flag and no rollback verb.
+     */
+    @Nested
+    @DisplayName("9200-WRITE-PROCESSING :1420-1494 - a SINGLE-dataset write, no rollback asymmetry")
+    class WriteSequence {
+
+        /**
+         * The ordering of {@code 9200-WRITE-PROCESSING} at {@code COCRDUPC.cbl:1420-1494} asserted with {@code
+         * InOrder}: read for update, then compare, then rewrite - never any other order.
+         */
+        @Test
+        @DisplayName("the order is read-for-update, change detection, then rewrite")
+        void readForUpdateThenDetectThenRewrite() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            confirmSave(changedNameRequest(matchingSnapshot()));
+
+            final InOrder sequence = inOrder(cardRepository);
+            sequence.verify(cardRepository).findById(CARD_NUMBER);
+            sequence.verify(cardRepository).save(persisted.capture());
+            sequence.verifyNoMoreInteractions();
+            assertThat(persisted.getValue().getEmbossedName().strip())
+                    .as("detection ran between the two calls, so the submitted name reached the row")
+                    .isEqualTo(SUBMITTED_NAME);
+        }
+
+        /**
+         * The read is keyed on the {@code PIC X(16)} card number of {@code app/cpy/CVACT02Y.cpy}, the cluster's 16-byte
+         * primary key, captured from the repository argument rather than assumed.
+         */
+        @Test
+        @DisplayName("the read-for-update key is the sixteen-digit record identifier")
+        void readForUpdateUsesTheSixteenDigitRecordKey() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+
+            confirmSave(changedNameRequest(matchingSnapshot()));
+
+            verify(cardRepository).findById(key.capture());
+            assertThat(key.getValue())
+                    .as("the key is bound as a parameter, never concatenated into a statement")
+                    .hasSize(16)
+                    .containsOnlyDigits();
+        }
+
+        /**
+         * The lock-failure branch at {@code COCRDUPC.cbl:1435-1444} exits before the comparison, so no write is
+         * attempted at all.
+         */
+        @Test
+        @DisplayName("a lock failure short-circuits - no write is attempted")
+        void lockFailureShortCircuitsWithoutWriting() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_COULD_NOT_LOCK);
+            assertThat(result.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_LOCK_ERROR);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The change-detected branch at {@code COCRDUPC.cbl:1518} exits before the rewrite, so no write is attempted at
+         * all.
+         */
+        @Test
+        @DisplayName("a detected change short-circuits - no write is attempted")
+        void detectedChangeShortCircuitsWithoutWriting() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV)));
+
+            confirmSave(changedNameRequest(matchingSnapshot()));
+
+            verify(cardRepository).findById(CARD_NUMBER);
+            verifyNoMoreInteractions(cardRepository);
+        }
+
+        /**
+         * A store failure on the rewrite at {@code COCRDUPC.cbl:1466-1472} leaves nothing persisted and is reported
+         * rather than swallowed.
+         */
+        @Test
+        @DisplayName("a rewrite failure leaves the row unpersisted and reports the failure")
+        void rewriteFailureLeavesTheRowUnpersisted() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            when(cardRepository.save(any(Card.class)))
+                    .thenThrow(new DataIntegrityViolationException("constraint rejected the rewrite"));
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final ConcurrentUpdateException failure =
+                    catchThrowableOfType(ConcurrentUpdateException.class, () -> confirmSave(request));
+
+            assertThat(failure).hasMessage(MSG_UPDATE_FAILED)
+                    .hasCauseInstanceOf(DataIntegrityViolationException.class);
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.LOCKED_BUT_UPDATE_FAILED);
+        }
+
+        /**
+         * This program writes exactly one dataset, unlike {@code COACTUPC}, so the success path persists one entity and
+         * touches no second repository.
+         */
+        @Test
+        @DisplayName("exactly ONE entity is persisted on the success path - there is no customer write")
+        void exactlyOneEntityIsPersistedAndNoCustomerWriteOccurs() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+
+            service.updateCard(changedNameRequest(matchingSnapshot()));
+
+            verify(cardRepository, times(1)).findById(CARD_NUMBER);
+            verify(cardRepository, times(1)).save(any(Card.class));
+            verifyNoMoreInteractions(cardRepository);
+        }
+
+        /**
+         * Confirms by reflection that the bean declares one repository collaborator, which is why no rollback asymmetry
+         * can arise here.
+         */
+        @Test
+        @DisplayName("the bean collaborates with ONE repository, so a second dataset cannot be written")
+        void theBeanHoldsASingleRepositoryCollaborator() {
+            final long repositoryFields = Arrays.stream(CardUpdateService.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .filter(field -> field.getType().getName().endsWith("Repository"))
+                    .count();
+
+            assertThat(repositoryFields)
+                    .as("COACTUPC needs two datasets; COCRDUPC writes exactly one at :1487-1493")
+                    .isEqualTo(1L);
+        }
+
+        /**
+         * {@code COCRDUPC} declares one lock flag at {@code :205-206} while {@code COACTUPC} declares two, so the
+         * thrown message must be the unqualified card-file wording.
+         */
+        @Test
+        @DisplayName("only ONE lock-failure outcome exists, unlike the account program's two")
+        void aSingleLockFlagExistsUnlikeTheAccountProgram() {
+            final Set<String> lockOutcomes =
+                    Arrays.stream(CardUpdateService.WriteOutcome.values())
+                            .map(Enum::name)
+                            .filter(name -> name.contains("LOCK"))
+                            .collect(Collectors.toUnmodifiableSet());
+
+            assertThat(lockOutcomes).containsExactlyInAnyOrder("COULD_NOT_LOCK_FOR_UPDATE",
+                    "LOCKED_BUT_UPDATE_FAILED");
+            assertThat(lockOutcomes)
+                    .as("there is no customer-lock flag here, because there is no customer write")
+                    .noneMatch(name -> name.contains("CUSTOMER"));
+        }
+
+        /**
+         * Guards against importing {@code COACTUPC}'s taxonomy: the lock failure never carries the customer outcome or
+         * its legacy message.
+         */
+        @Test
+        @DisplayName("a lock failure never reports the customer-lock outcome of the account program")
+        void lockFailureNeverReportsTheCustomerOutcome() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_COULD_NOT_LOCK).hasNoCause();
+            assertThat(failure.getOutcome())
+                    .isNotEqualTo(ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER);
+            assertThat(failure.getOutcome().getLegacyMessage())
+                    .as("the enum carries COACTUPC's wording; COCRDUPC's :205-206 wording is thrown")
+                    .isNotEqualTo(MSG_COULD_NOT_LOCK);
+        }
+
+        /**
+         * The field moves at {@code COCRDUPC.cbl:1447-1464} are asserted on the captured entity, so each submitted
+         * value reaches the row it belongs on.
+         */
+        @Test
+        @DisplayName("the rewrite carries every submitted field onto the locked row")
+        void rewriteCarriesEverySubmittedFieldOntoTheLockedRow() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            service.updateCard(requestWith(matchingSnapshot(), "ANNA LEE", "N", "12", "2099", "28"));
+
+            verify(cardRepository).save(persisted.capture());
+            final Card written = persisted.getValue();
+            assertThat(written.getEmbossedName()).hasSize(50).startsWith("ANNA LEE");
+            assertThat(written.getActiveStatus()).isEqualTo("N");
+            assertThat(written.getExpiraionDate())
+                    .as("assembled from the three components at :1477-1485")
+                    .isEqualTo("2099-12-28");
+            assertThat(written.getAccountId()).isEqualTo(1L);
+            assertThat(written.getCvvCode())
+                    .as("the verification value is not a screen field and is never rewritten")
+                    .isEqualTo(STORED_CVV);
+        }
+    }
+
+    /**
+     * Returns the surviving return message for a submitted set of field values, driven through the
+     * validation leg so the repository is never touched.
+     *
+     * @param cardholderName submitted {@code CRDNAMEI}
+     * @param cardStatusCode submitted {@code CRDSTCDI}
+     * @param expiryMonth submitted {@code EXPMONI}
+     * @param expiryYear submitted {@code EXPYEARI}
+     * @return the unpadded return message, empty when every edit passed
+     */
+    private String editMessageFor(final String cardholderName, final String cardStatusCode,
+                                  final String expiryMonth, final String expiryYear) {
+        final CardUpdateService.CardUpdateResult result = validateOnly(
+                requestWith(matchingSnapshot(), cardholderName, cardStatusCode, expiryMonth,
+                        expiryYear, STORED_DAY));
+        verifyNoInteractions(cardRepository);
+        return errorMessageOf(result);
+    }
+
+    /**
+     * Returns the surviving return message for a submitted name, holding every other field at a
+     * value that passes its own edit while still differing from the snapshot.
+     *
+     * @param cardholderName submitted {@code CRDNAMEI}
+     * @return the unpadded return message
+     */
+    private String nameEditMessageFor(final String cardholderName) {
+        return editMessageFor(cardholderName, CARD_STATUS_TOGGLED, STORED_MONTH, STORED_YEAR);
+    }
+
+    /**
+     * Pins the fixed order in which {@code 1200-EDIT-MAP-INPUTS} at
+     * {@code COCRDUPC.cbl:641-717} drives the six field edits, using the message guard to make that
+     * order observable.
+     */
+    @Nested
+    @DisplayName("1200-EDIT-MAP-INPUTS :641-717 - six edits in a fixed order")
+    class EditCascadeOrder {
+
+        /**
+         * With all four fields bad, the message guard lets only the first edit speak, so {@code 1230-EDIT-NAME} at
+         * {@code COCRDUPC.cbl:806-841} wins.
+         */
+        @Test
+        @DisplayName("with all four re-entry fields bad the NAME message wins - edit 3 of 6 runs first")
+        void nameMessageWinsWhenEveryFieldIsBad() {
+            assertThat(editMessageFor("JOHN5", "X", "13", "1849")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * Repairing the name promotes {@code 1240-EDIT-CARDSTATUS} at {@code COCRDUPC.cbl:845-874} to the reported
+         * failure, which is how the fixed order becomes observable.
+         */
+        @Test
+        @DisplayName("with the name repaired the STATUS message wins - edit 4 of 6 runs second")
+        void statusMessageWinsOnceTheNameIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", "X", "13", "1849"))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * Repairing the status promotes {@code 1250-EDIT-EXPIRY-MON} at {@code COCRDUPC.cbl:877-910}.
+         */
+        @Test
+        @DisplayName("with the status repaired the MONTH message wins - edit 5 of 6 runs third")
+        void monthMessageWinsOnceTheStatusIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", "N", "13", "1849")).isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * Repairing the month promotes {@code 1260-EDIT-EXPIRY-YEAR} at {@code COCRDUPC.cbl:913-945}, the last edit in
+         * the cascade.
+         */
+        @Test
+        @DisplayName("with the month repaired the YEAR message wins - edit 6 of 6 runs last")
+        void yearMessageWinsOnceTheMonthIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", "N", "12", "1849")).isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * The terminal step of the progressive repair: with every field valid the return message is empty and the
+         * confirmation prompt is offered instead.
+         */
+        @Test
+        @DisplayName("with everything repaired no message survives and the change awaits confirmation")
+        void noMessageSurvivesWhenEveryEditPasses() {
+            final CardUpdateService.CardUpdateResult result = validateOnly(
+                    requestWith(matchingSnapshot(), "JOHN SMITH", "N", "12", "2099", STORED_DAY));
+
+            assertThat(errorMessageOf(result)).isEmpty();
+            assertThat(result.changeAction())
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OK_NOT_CONFIRMED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * {@code 1210-EDIT-ACCOUNT} at {@code COCRDUPC.cbl:721-758} runs before {@code 1220-EDIT-CARD} at {@code
+         * :762-802}, asserted through which filter message survives the guard.
+         */
+        @Test
+        @DisplayName("1210-EDIT-ACCOUNT :721 precedes 1220-EDIT-CARD :762 on the fetch leg")
+        void accountFilterEditPrecedesTheCardFilterEdit() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    null, "NOTNUMERIC000000", null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result))
+                    .as("the blank account filter is reported before the non-numeric card filter")
+                    .isEqualTo(MSG_ACCOUNT_NOT_PROVIDED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * When both filters are blank the driver at {@code COCRDUPC.cbl:672-676} overrides the per-field prompts with
+         * the single {@code 'No input received'} literal.
+         */
+        @Test
+        @DisplayName("both filters blank yields 'No input received', overriding the per-field message")
+        void bothFiltersBlankYieldsNoInputReceived() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null, null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_NO_INPUT_RECEIVED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * The account filter reports the literal the source actually {@code MOVE}s at {@code COCRDUPC.cbl:745}, not
+         * either of the two never-set 88-levels at {@code :189-192}.
+         */
+        @Test
+        @DisplayName("a non-numeric account filter reports the SET literal, not the never-set 88-level")
+        void nonNumericAccountFilterReportsTheLiteralActuallyMoved() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    "1234567890X", CARD_NUMBER, null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result))
+                    .isEqualTo("ACCOUNT FILTER,IF SUPPLIED MUST BE A 11 DIGIT NUMBER")
+                    .isNotEqualTo(MSG_ACCOUNT_NON_ZERO_ELEVEN_DIGITS);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * The card filter reports the literal the source actually {@code MOVE}s at {@code COCRDUPC.cbl:789}, not the
+         * never-set 88-level at {@code :193-194}.
+         */
+        @Test
+        @DisplayName("a non-numeric card filter reports the SET literal, not the never-set 88-level")
+        void nonNumericCardFilterReportsTheLiteralActuallyMoved() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    ACCOUNT_ID, "123456789012345X", null, null, null, null, null, null, null, null,
+                    null, null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result))
+                    .isEqualTo("CARD ID FILTER,IF SUPPLIED MUST BE A 16 DIGIT NUMBER")
+                    .isNotEqualTo(MSG_CARD_MUST_BE_SIXTEEN_DIGITS);
+            verifyNoInteractions(cardRepository);
+        }
+    }
+
+    /**
+     * Pins the convert-and-trim name test of {@code 1230-EDIT-NAME} at
+     * {@code COCRDUPC.cbl:806-841}, whose decisive lines are {@code :822-828}.
+     */
+    @Nested
+    @DisplayName("1230-EDIT-NAME :806-841 - the convert-and-trim test of :822-828")
+    class NameEdit {
+
+        /**
+         * A name of letters only leaves no residue after the conversion at {@code COCRDUPC.cbl:822-825}, so it is
+         * accepted.
+         */
+        @Test
+        @DisplayName("a purely alphabetic name is valid")
+        void purelyAlphabeticNameIsValid() {
+            assertThat(nameEditMessageFor("PURELYALPHABETIC")).isEmpty();
+        }
+
+        /**
+         * Spaces survive the conversion untouched and then vanish under {@code FUNCTION TRIM}, so a name with embedded
+         * spaces is accepted - the behaviour that gives the message its wording.
+         */
+        @Test
+        @DisplayName("alphabetic characters plus spaces are valid - spaces are legal inside a name")
+        void alphabeticPlusSpacesIsValid() {
+            assertThat(nameEditMessageFor("MARY JANE SMITH")).isEmpty();
+        }
+
+        /**
+         * The alphabet at {@code COCRDUPC.cbl:255-257} lists both cases, so mixed case is accepted without any folding.
+         */
+        @Test
+        @DisplayName("mixed-case alphabetic is valid - the edit tests the character class, not case")
+        void mixedCaseAlphabeticIsValid() {
+            assertThat(nameEditMessageFor("Mary Jane Smith")).isEmpty();
+        }
+
+        /**
+         * A digit is not in the conversion set, so it survives as residue and the name is rejected.
+         */
+        @Test
+        @DisplayName("a name containing a digit is invalid")
+        void nameContainingADigitIsInvalid() {
+            assertThat(nameEditMessageFor("JOHN SMITH2")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * A hyphen is residue too, so hyphenated surnames are rejected - a legacy restriction preserved rather than
+         * relaxed.
+         */
+        @Test
+        @DisplayName("a name containing a hyphen is invalid")
+        void nameContainingAHyphenIsInvalid() {
+            assertThat(nameEditMessageFor("MARY-JANE SMITH")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * An apostrophe is residue, so names such as an Irish patronymic are rejected.
+         */
+        @Test
+        @DisplayName("a name containing an apostrophe is invalid")
+        void nameContainingAnApostropheIsInvalid() {
+            assertThat(nameEditMessageFor("O'BRIEN")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * The conversion set is the 52 ASCII letters only, so an accented character is residue and the name is
+         * rejected; a {@code Character.isLetter} port would wrongly accept it.
+         */
+        @Test
+        @DisplayName("a name containing an accented character is invalid - only the 52 ASCII letters pass")
+        void nameContainingAnAccentedCharacterIsInvalid() {
+            assertThat(nameEditMessageFor("JOS\u00c9 GARCIA")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * A currency symbol and a thousands separator are both residue, so the currency-tolerant parsing used for
+         * amounts elsewhere has no counterpart on this field.
+         */
+        @Test
+        @DisplayName("a name carrying a currency symbol and a thousands separator is invalid")
+        void nameCarryingCurrencyAndSeparatorIsInvalid() {
+            assertThat(nameEditMessageFor("JOHN $1,000")).isEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * An all-space name is caught by the blank test at {@code COCRDUPC.cbl:810-816} before the conversion runs, so
+         * it reports the prompt rather than the alphabetic message.
+         */
+        @Test
+        @DisplayName("an all-space name is BLANK, not 'not alphabetic'")
+        void allSpaceNameIsBlankRatherThanNotAlphabetic() {
+            assertThat(nameEditMessageFor("          "))
+                    .isEqualTo(MSG_NAME_NOT_PROVIDED)
+                    .isNotEqualTo(MSG_NAME_MUST_BE_ALPHA);
+        }
+
+        /**
+         * The blank test includes {@code EQUAL ZEROS} even on this text field, so an all-zero-digit name counts as
+         * blank rather than as non-alphabetic.
+         */
+        @Test
+        @DisplayName("an all-zero-digits name is BLANK - the EQUAL ZEROS limb applies to a text field")
+        void allZeroDigitsNameIsBlank() {
+            assertThat(nameEditMessageFor("00000")).isEqualTo(MSG_NAME_NOT_PROVIDED);
+        }
+
+        /**
+         * An omitted name fails validation before any repository call, and the failure names the field so the screen
+         * can position its cursor.
+         */
+        @Test
+        @DisplayName("an omitted name is BLANK and reported against the cardholder-name field")
+        void omittedNameIsBlankAndAttributedToTheField() {
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), null,
+                    CARD_STATUS_TOGGLED, STORED_MONTH, STORED_YEAR, STORED_DAY);
+
+            final ValidationException failure =
+                    catchThrowableOfType(ValidationException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_NAME_NOT_PROVIDED).hasNoCause();
+            assertThat(failure.getFieldName()).isEqualTo("cardholderName");
+            assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
+            assertThat(failure.hasFieldName()).isTrue();
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * The invalid path is distinguished from the blank path by its failure kind as well as its message.
+         */
+        @Test
+        @DisplayName("a non-alphabetic name is reported as INVALID, not BLANK")
+        void nonAlphabeticNameIsReportedAsInvalid() {
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN5",
+                    CARD_STATUS_TOGGLED, STORED_MONTH, STORED_YEAR, STORED_DAY);
+
+            final ValidationException failure =
+                    catchThrowableOfType(ValidationException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_NAME_MUST_BE_ALPHA);
+            assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.INVALID);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A name longer than {@code PIC X(50)} is truncated to the map width at {@code COCRDUPC.cbl:1100-1104} and then
+         * accepted, because the terminal could never have delivered more.
+         */
+        @Test
+        @DisplayName("a fifty-two character alphabetic name is truncated to the PIC width and accepted")
+        void overLongAlphabeticNameIsTruncatedRatherThanRejected() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final String overLong = "A".repeat(52);
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            service.updateCard(requestWith(matchingSnapshot(), overLong, CARD_STATUS_TOGGLED,
+                    STORED_MONTH, STORED_YEAR, STORED_DAY));
+
+            verify(cardRepository).save(persisted.capture());
+            assertThat(persisted.getValue().getEmbossedName())
+                    .as("CARD-EMBOSSED-NAME is PIC X(50), so the surplus two characters are dropped")
+                    .isEqualTo("A".repeat(50));
+        }
+    }
+
+    /**
+     * Pins the case-sensitive yes/no check field of {@code 1240-EDIT-CARDSTATUS} at
+     * {@code COCRDUPC.cbl:845-874}.
+     */
+    @Nested
+    @DisplayName("1240-EDIT-CARDSTATUS :845-874 - the yes/no check field is case SENSITIVE")
+    class CardStatusEdit {
+
+        /**
+         * {@code 88 FLG-YES-NO-VALID VALUES 'Y','N'} at {@code COCRDUPC.cbl:89-91} accepts {@code Y}.
+         */
+        @Test
+        @DisplayName("'Y' is valid")
+        void upperCaseYesIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", "Y", "12", STORED_YEAR)).isEmpty();
+        }
+
+        /**
+         * The same 88-level accepts {@code N}.
+         */
+        @Test
+        @DisplayName("'N' is valid")
+        void upperCaseNoIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", "N", STORED_MONTH, STORED_YEAR)).isEmpty();
+        }
+
+        /**
+         * The 88-level lists upper case only, so {@code y} is rejected; the submitted name is changed as well so that
+         * the group test of {@code :679-683} cannot swallow the request first.
+         */
+        @Test
+        @DisplayName("'y' is INVALID - the 88-level lists only the upper-case literals")
+        void lowerCaseYesIsInvalid() {
+            // The submitted name must also differ, or the SYMMETRIC group fold of :679-683 absorbs
+            // the case-only status difference and the field edits never run at all.
+            assertThat(editMessageFor(SUBMITTED_NAME, "y", STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * Pins the interaction the suite discovered: a case-only status change is invisible to the symmetric group
+         * test, which then skips the field cascade entirely, so no status message is produced at all.
+         */
+        @Test
+        @DisplayName("a case-only status change is absorbed by the SYMMETRIC group fold of :679-683")
+        void caseOnlyStatusChangeNeverReachesTheCaseSensitiveEdit() {
+            assertThat(editMessageFor(STORED_NAME, "y", STORED_MONTH, STORED_YEAR))
+                    .as("1200's group test folds BOTH sides, unlike 9300 which folds only the live one")
+                    .isEqualTo(MSG_NO_CHANGES_DETECTED)
+                    .isNotEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * {@code n} is rejected for the same reason as {@code y}.
+         */
+        @Test
+        @DisplayName("'n' is INVALID - no case folding is applied to the status field")
+        void lowerCaseNoIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", "n", STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * Any character outside the two listed values is rejected.
+         */
+        @Test
+        @DisplayName("'X' is invalid")
+        void unrelatedLetterIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", "X", STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * {@code EQUAL ZEROS} in the blank test at {@code COCRDUPC.cbl:849-855} makes a status of {@code 0} blank
+         * rather than invalid.
+         */
+        @Test
+        @DisplayName("'0' is BLANK - the EQUAL ZEROS limb applies to this text field too")
+        void zeroDigitStatusIsBlank() {
+            assertThat(editMessageFor("JOHN SMITH", "0", STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+
+        /**
+         * An omitted status fails validation with the field named, before any repository call.
+         */
+        @Test
+        @DisplayName("an omitted status is BLANK and reported against the status field")
+        void omittedStatusIsBlankAndAttributedToTheField() {
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN SMITH", null,
+                    STORED_MONTH, STORED_YEAR, STORED_DAY);
+
+            final ValidationException failure =
+                    catchThrowableOfType(ValidationException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_STATUS_MUST_BE_YES_NO);
+            assertThat(failure.getFieldName()).isEqualTo("cardStatusCode");
+            assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * Both the blank and the invalid path of {@code 1240} emit the same literal, so the message alone cannot
+         * distinguish them and the failure kind must.
+         */
+        @Test
+        @DisplayName("the blank and the invalid path share one literal")
+        void blankAndInvalidPathsShareOneLiteral() {
+            assertThat(editMessageFor("JOHN SMITH", null, STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(editMessageFor("JOHN SMITH", "Q", STORED_MONTH, STORED_YEAR))
+                    .isEqualTo(MSG_STATUS_MUST_BE_YES_NO);
+        }
+    }
+
+    /**
+     * Pins the month bounds of {@code 1250-EDIT-EXPIRY-MON} at {@code COCRDUPC.cbl:877-910},
+     * declared as {@code 88 VALID-MONTH VALUES 1 THRU 12}.
+     */
+    @Nested
+    @DisplayName("1250-EDIT-EXPIRY-MON :877-910 - VALID-MONTH VALUES 1 THRU 12")
+    class ExpiryMonthEdit {
+
+        /**
+         * The lower bound of {@code 88 VALID-MONTH VALUES 1 THRU 12} at {@code COCRDUPC.cbl:92-95}.
+         */
+        @Test
+        @DisplayName("'01' is valid - the lower bound")
+        void januaryIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "01", STORED_YEAR)).isEmpty();
+        }
+
+        /**
+         * The upper bound of the same 88-level.
+         */
+        @Test
+        @DisplayName("'12' is valid - the upper bound")
+        void decemberIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "12", STORED_YEAR)).isEmpty();
+        }
+
+        /**
+         * {@code 00} trips {@code EQUAL ZEROS} in the blank test before the range test runs, so it is blank rather than
+         * out of range.
+         */
+        @Test
+        @DisplayName("'00' is BLANK - it trips the EQUAL ZEROS limb before the range test")
+        void zeroMonthIsBlank() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "00", STORED_YEAR))
+                    .isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * One above the declared upper bound is rejected.
+         */
+        @Test
+        @DisplayName("'13' is invalid - one past the upper bound")
+        void thirteenthMonthIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "13", STORED_YEAR))
+                    .isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * A far out-of-range value is rejected by the same bound, not by a digit-count rule.
+         */
+        @Test
+        @DisplayName("'99' is invalid")
+        void ninetyNinthMonthIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "99", STORED_YEAR))
+                    .isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * The redefinition at {@code COCRDUPC.cbl:92-95} requires a numeric class before the range is evaluated, so
+         * letters are rejected.
+         */
+        @Test
+        @DisplayName("a non-numeric month is invalid")
+        void nonNumericMonthIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "ab", STORED_YEAR))
+                    .isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * The check is width exact at {@code PIC 9(2)}, so {@code 1} is rejected where {@code 01} is accepted.
+         */
+        @Test
+        @DisplayName("a single-digit month is invalid - the class test is width exact at PIC X(2)")
+        void singleDigitMonthIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, "1", STORED_YEAR))
+                    .isEqualTo(MSG_MONTH_NOT_VALID);
+        }
+
+        /**
+         * An omitted month is blank and, unlike the name and status fields, carries no field attribution because the
+         * source names no cursor field for it.
+         */
+        @Test
+        @DisplayName("an omitted month is BLANK and reported against the month field")
+        void omittedMonthIsBlankAndAttributedToTheField() {
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN SMITH",
+                    CARD_STATUS_TOGGLED, null, STORED_YEAR, STORED_DAY);
+
+            final ValidationException failure =
+                    catchThrowableOfType(ValidationException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_MONTH_NOT_VALID);
+            assertThat(failure.getFieldName()).isEqualTo("expiryMonth");
+            assertThat(failure.getFailureKind()).isEqualTo(ValidationException.FailureKind.BLANK);
+            verifyNoInteractions(cardRepository);
+        }
+    }
+
+    /**
+     * Pins the year bounds of {@code 1260-EDIT-EXPIRY-YEAR} at {@code COCRDUPC.cbl:913-945} as a
+     * range over the constants declared at {@code :96-99}, proving that no clock participates.
+     */
+    @Nested
+    @DisplayName("1260-EDIT-EXPIRY-YEAR :913-945 - a range over DECLARED CONSTANTS, never the clock")
+    class ExpiryYearEdit {
+
+        /**
+         * The lower bound of {@code 88 VALID-YEAR VALUES 1950 THRU 2099} declared at {@code COCRDUPC.cbl:96-99}.
+         */
+        @Test
+        @DisplayName("'1950' is valid - the declared lower bound, decades in the past")
+        void declaredLowerBoundIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "1950"))
+                    .isEmpty();
+        }
+
+        /**
+         * The upper bound of the same 88-level.
+         */
+        @Test
+        @DisplayName("'2099' is valid - the declared upper bound, decades in the future")
+        void declaredUpperBoundIsValid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "2099"))
+                    .isEmpty();
+        }
+
+        /**
+         * One below the declared lower bound is rejected, fixing the bound as a constant rather than a heuristic.
+         */
+        @Test
+        @DisplayName("'1949' is invalid - one below the declared lower bound")
+        void oneBelowTheLowerBoundIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "1949"))
+                    .isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * One above the declared upper bound is rejected.
+         */
+        @Test
+        @DisplayName("'2100' is invalid - one above the declared upper bound")
+        void oneAboveTheUpperBoundIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "2100"))
+                    .isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * {@code 0000} trips {@code EQUAL ZEROS} in the blank test at {@code COCRDUPC.cbl:916-925} before the
+         * range test runs, so it is blank rather than out of range.
+         */
+        @Test
+        @DisplayName("'0000' is BLANK - it trips the EQUAL ZEROS limb before the range test")
+        void zeroYearIsBlank() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "0000"))
+                    .isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * The check is width exact at {@code PIC 9(4)}, so a two-digit year is rejected outright.
+         */
+        @Test
+        @DisplayName("'99' is invalid - the class test is width exact at PIC X(4)")
+        void twoDigitYearIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "99"))
+                    .isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * A non-numeric year fails the class test that precedes the range evaluation.
+         */
+        @Test
+        @DisplayName("a non-numeric year is invalid")
+        void nonNumericYearIsInvalid() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "abcd"))
+                    .isEqualTo(MSG_YEAR_NOT_VALID);
+        }
+
+        /**
+         * Both bounds pass in the same run: 1950 is far in the past and 2099 far in the future, which no current-
+         * year comparison could accept simultaneously.
+         */
+        @Test
+        @DisplayName("both declared bounds pass simultaneously, which no current-year test permits")
+        void bothDeclaredBoundsPassWhichRulesOutACurrentYearComparison() {
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "1950"))
+                    .isEmpty();
+            assertThat(editMessageFor("JOHN SMITH", CARD_STATUS_TOGGLED, STORED_MONTH, "2099"))
+                    .isEmpty();
+        }
+
+        /**
+         * Two beans whose clocks are eighty years apart produce identical outcomes for the same year, proving the
+         * edit never reads the clock.
+         */
+        @Test
+        @DisplayName("moving the injected clock by eighty years changes no validation outcome")
+        void movingTheInjectedClockChangesNoOutcome() {
+            final CardUpdateService inThePast = new CardUpdateService(cardRepository,
+                    Clock.fixed(Instant.parse("1970-01-01T00:00:00Z"), ZoneOffset.UTC));
+            final CardUpdateService inTheFuture = new CardUpdateService(cardRepository,
+                    Clock.fixed(Instant.parse("2050-12-31T23:59:59Z"), ZoneOffset.UTC));
+            final CardUpdateRequest request = requestWith(matchingSnapshot(), "JOHN SMITH",
+                    CARD_STATUS_TOGGLED, STORED_MONTH, "1950", STORED_DAY);
+
+            final String past = errorMessageOf(
+                    inThePast.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER));
+            final String future = errorMessageOf(
+                    inTheFuture.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER));
+
+            assertThat(past).isEqualTo(future).isEmpty();
+            verifyNoInteractions(cardRepository);
+        }
+    }
+
+    /**
+     * Collects the value of every {@code static final String} the service declares, so a test can
+     * assert the production literal against the COBOL text transcribed above rather than against
+     * itself.
+     *
+     * <p>The reflection here is read-only field access on the class under test: it reads constants and
+     * invokes nothing, so it is not the arbitrary reflective invocation that clause D of the project
+     * rule prohibits. It exists because the literals are private by design - no production seam may be
+     * widened merely to let a test observe them.
+     *
+     * @return every declared string constant, never {@code null}
+     */
+    private static Set<String> serviceStringConstants() {
+        return Arrays.stream(CardUpdateService.class.getDeclaredFields())
+                .filter(field -> Modifier.isStatic(field.getModifiers()))
+                .filter(field -> field.getType() == String.class)
+                .map(field -> {
+                    field.setAccessible(true);
+                    try {
+                        return (String) field.get(null);
+                    } catch (final IllegalAccessException unreachable) {
+                        throw new AssertionError("constant became unreadable: " + field.getName(),
+                                unreachable);
+                    }
+                })
+                .filter(value -> value != null)
+                .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /**
+     * Asserts the outcome literals declared at {@code COCRDUPC.cbl:155-214} byte for byte,
+     * including the seven that the procedure division never sets.
+     */
+    @Nested
+    @DisplayName(":155-214 - outcome literals asserted byte for byte")
+    class OutcomeLiterals {
+
+        /**
+         * Every literal the procedure division actually sets is present byte for byte among the bean's declared
+         * constants, asserted as a set so a single missing literal fails.
+         */
+        @Test
+        @DisplayName("every literal the source SETS is present in the service verbatim")
+        void everyReachableLiteralIsPresentVerbatim() {
+            assertThat(serviceStringConstants()).contains(
+                    MSG_ACCOUNT_NOT_PROVIDED,
+                    MSG_CARD_NOT_PROVIDED,
+                    MSG_NAME_NOT_PROVIDED,
+                    MSG_NAME_MUST_BE_ALPHA,
+                    MSG_NO_INPUT_RECEIVED,
+                    MSG_NO_CHANGES_DETECTED,
+                    MSG_STATUS_MUST_BE_YES_NO,
+                    MSG_MONTH_NOT_VALID,
+                    MSG_YEAR_NOT_VALID,
+                    MSG_NO_ACCTCARD_COMBO,
+                    MSG_COULD_NOT_LOCK,
+                    MSG_DATA_WAS_CHANGED,
+                    MSG_UPDATE_FAILED,
+                    INFO_FOUND_CARDS,
+                    MSG_PROMPT_FOR_SEARCH_KEYS,
+                    MSG_PROMPT_FOR_CONFIRMATION);
+        }
+
+        /**
+         * {@code COCRDUPC.cbl:187-188} ends inside the quotes with a full stop, unique among this program's
+         * messages, so the literal must not be tidied.
+         */
+        @Test
+        @DisplayName("'No change detected with respect to values fetched.' keeps its trailing full stop")
+        void noChangesDetectedKeepsItsTrailingFullStop() {
+            assertThat(MSG_NO_CHANGES_DETECTED).endsWith("fetched.");
+            assertThat(serviceStringConstants()).contains(MSG_NO_CHANGES_DETECTED);
+            assertThat(MSG_DATA_WAS_CHANGED)
+                    .as("the trailing stop is unique to this return message")
+                    .doesNotEndWith(".");
+            assertThat(MSG_UPDATE_FAILED).doesNotEndWith(".");
+        }
+
+        /**
+         * {@code COCRDUPC.cbl:207-208} spells {@code some one} as two words; correcting it would break the byte
+         * comparison the parity gate performs.
+         */
+        @Test
+        @DisplayName("'some one' stays TWO WORDS in the data-changed message")
+        void dataChangedMessageKeepsSomeOneAsTwoWords() {
+            assertThat(MSG_DATA_WAS_CHANGED).contains("some one else").doesNotContain("someone");
+            assertThat(serviceStringConstants()).contains(MSG_DATA_WAS_CHANGED);
+        }
+
+        /**
+         * {@code COCRDUPC.cbl:205-206} says {@code record}, not {@code account record} or {@code customer record},
+         * because this program locks one dataset only.
+         */
+        @Test
+        @DisplayName("the lock message says 'record', not 'account record' or 'customer record'")
+        void lockMessageSaysRecordWithoutQualification() {
+            assertThat(MSG_COULD_NOT_LOCK).isEqualTo("Could not lock record for update")
+                    .doesNotContain("account")
+                    .doesNotContain("customer");
+            assertThat(serviceStringConstants()).contains(MSG_COULD_NOT_LOCK);
+        }
+
+        /**
+         * The confirmation prompt omits the space after its full stop, a legacy typographical quirk preserved
+         * rather than repaired.
+         */
+        @Test
+        @DisplayName("'Changes validated.Press F5 to save' keeps its missing space")
+        void confirmationPromptKeepsItsMissingSpace() {
+            assertThat(MSG_PROMPT_FOR_CONFIRMATION).contains("validated.Press")
+                    .doesNotContain("validated. Press");
+            assertThat(serviceStringConstants()).contains(MSG_PROMPT_FOR_CONFIRMATION);
+        }
+
+        /**
+         * {@code CODING-TO-BE-DONE} at {@code COCRDUPC.cbl:213-214} carries four dots and is never set anywhere,
+         * so it has no Java counterpart at all.
+         */
+        @Test
+        @DisplayName("'Looks Good.... so far' carries FOUR dots and is never SET, so it has no counterpart")
+        void looksGoodCarriesFourDotsAndIsNeverSet() {
+            assertThat(MSG_LOOKS_GOOD_NEVER_SET).contains("Good....").doesNotContain("Good.....");
+            assertThat(MSG_LOOKS_GOOD_NEVER_SET.chars().filter(character -> character == '.').count())
+                    .isEqualTo(4L);
+            assertThat(serviceStringConstants())
+                    .as("CODING-TO-BE-DONE is declared at :213-214 but SET nowhere in the source")
+                    .doesNotContain(MSG_LOOKS_GOOD_NEVER_SET);
+        }
+
+        /**
+         * {@code WS-EXIT-MESSAGE} at {@code COCRDUPC.cbl:175-176} is 34 bytes including its trailing spaces and is
+         * likewise never set.
+         */
+        @Test
+        @DisplayName("the exit message keeps its fourteen trailing spaces and is never SET")
+        void exitMessageKeepsItsTrailingSpacesAndIsNeverSet() {
+            assertThat(MSG_EXIT_NEVER_SET).hasSize(34).startsWith("PF03 pressed.Exiting").endsWith(" ");
+            assertThat(serviceStringConstants()).doesNotContain(MSG_EXIT_NEVER_SET);
+        }
+
+        /**
+         * Asserts in the negative direction that none of the seven never-set 88-levels was resurrected as a Java
+         * constant, so a spurious addition fails as loudly as an omission. The seven collapse to five distinct
+         * literals here: {@code SEARCHED-ACCT-ZEROES} at {@code :189-190} and {@code SEARCHED-ACCT-NOT-NUMERIC} at
+         * {@code :191-192} share one byte-identical value, and {@code WS-EXIT-MESSAGE} at {@code :175-176} is
+         * asserted by the preceding test because its trailing-space width is a contract of its own.
+         */
+        @Test
+        @DisplayName("the never-SET 88-levels, five distinct literals, have no counterpart in the service")
+        void neverSetEightyEightLevelsHaveNoCounterpart() {
+            assertThat(serviceStringConstants()).doesNotContain(
+                    MSG_ACCOUNT_NON_ZERO_ELEVEN_DIGITS,
+                    MSG_CARD_MUST_BE_SIXTEEN_DIGITS,
+                    MSG_NO_ACCOUNT_IN_CARDS_DATABASE,
+                    MSG_XREF_READ_ERROR_NEVER_SET,
+                    MSG_LOOKS_GOOD_NEVER_SET);
+        }
+
+        /**
+         * The same bidirectional check for {@code 01 WS-LITERALS} at {@code COCRDUPC.cbl:218-263}, whose naming
+         * literals occupy {@code :219-254}. Eight of its fields are declared and then never referenced anywhere in
+         * the procedure division, which begins at
+         * {@code :366}: {@code LIT-CCLISTTRANID} {@code :229-230}, {@code LIT-MENUMAPSET} {@code :239-240},
+         * {@code LIT-MENUMAP} {@code :241-242}, {@code LIT-CARDDTLPGM} {@code :243-244},
+         * {@code LIT-CARDDTLTRANID} {@code :245-246}, {@code LIT-CARDDTLMAPSET} {@code :247-248},
+         * {@code LIT-CARDDTLMAP} {@code :249-250} and {@code LIT-CARDFILENAME-ACCT-PATH} {@code :253-254}. Their
+         * correct counterpart is again no counterpart at all, so a reader who looks for a {@code 'CCLI'} or
+         * {@code 'CCDL'} constant and finds none is seeing fidelity rather than an omission. The correspondence
+         * holds in both directions with no exception: every referenced field's value is declared and every
+         * unreferenced one's is not.
+         */
+        @Test
+        @DisplayName("the eight never-referenced WS-LITERALS fields correctly have no counterpart either")
+        void neverReferencedLiteralFieldsHaveNoCounterpart() {
+            assertThat(serviceStringConstants())
+                    .as("declared inside :219-254 but never referenced from :366 onward")
+                    .doesNotContain("CCLI", "COMEN01", "COMEN1A", "COCRDSLC", "CCDL", "COCRDSL", "CARDAIX ");
+            assertThat(serviceStringConstants())
+                    .as("LIT-CARDFILENAME at :251-252 IS referenced four times, so its value is declared")
+                    .contains("CARDDAT ");
+            assertThat(serviceStringConstants())
+                    .as("LIT-CCLISTMAPSET at :231-232 IS referenced four times, so its value is declared")
+                    .contains("COCRDLI");
+        }
+
+        /**
+         * {@code SEARCHED-ACCT-ZEROES} at {@code COCRDUPC.cbl:189-190} and {@code SEARCHED-ACCT-NOT-NUMERIC} at
+         * {@code :191-192} carry the same literal, recorded as a Low finding.
+         */
+        @Test
+        @DisplayName("the two account 88-levels at :189-192 carry byte-identical literals")
+        void theTwoAccountEightyEightLevelsAreByteIdentical() {
+            final String searchedAcctZeroes = "Account number must be a non zero 11 digit number";
+            final String searchedAcctNotNumeric = "Account number must be a non zero 11 digit number";
+
+            assertThat(searchedAcctZeroes)
+                    .as("SEARCHED-ACCT-ZEROES and SEARCHED-ACCT-NOT-NUMERIC differ in name only")
+                    .isEqualTo(searchedAcctNotNumeric)
+                    .isEqualTo(MSG_ACCOUNT_NON_ZERO_ELEVEN_DIGITS);
+        }
+
+        /**
+         * The identity literals at {@code COCRDUPC.cbl:219-234} are asserted exactly, including {@code LIT-
+         * THISMAPSET} which is {@code PIC X(8)} with a trailing space among {@code PIC X(7)} siblings.
+         */
+        @Test
+        @DisplayName("the program identity literals are verbatim, mapset included at PIC X(8)")
+        void programIdentityLiteralsAreVerbatim() {
+            assertThat(serviceStringConstants()).contains("COCRDUPC", "CCUP", "COCRDUP ", "CCRDUPA",
+                    "COCRDLIC", "COCRDLI", "COMEN01C", "CM00", "CARDDAT ");
+            assertThat("COCRDUP ")
+                    .as("LIT-THISMAPSET is PIC X(8) with a trailing space among PIC X(7) siblings")
+                    .hasSize(8)
+                    .endsWith(" ");
+            assertThat("CCRDUPA").hasSize(7);
+        }
+
+        /**
+         * {@code LIT-CCLISTMAP} at {@code COCRDUPC.cbl:233-234} names the card detail map, identical to {@code
+         * LIT-CARDDTLMAP} at {@code :249-250}; the defect is preserved and the transfer keys on the mapset
+         * instead.
+         */
+        @Test
+        @DisplayName("LIT-CCLISTMAP 'CCRDSLA' is a preserved copy-paste defect - the mapset is used instead")
+        void cardListMapLiteralIsAPreservedCopyPasteDefect() {
+            final String cardListMapLiteral = "CCRDSLA";
+            final String cardDetailMapLiteral = "CCRDSLA";
+
+            assertThat(cardListMapLiteral)
+                    .as(":233-234 names the card DETAIL map, identical to :249-250 - preserved, not fixed")
+                    .isEqualTo(cardDetailMapLiteral)
+                    .isNotEqualTo("CCRDLIA");
+            assertThat(serviceStringConstants())
+                    .as("the list-return decision keys on the MAPSET, so the defective map is unused")
+                    .contains("COCRDLI")
+                    .doesNotContain(cardListMapLiteral);
+        }
+
+        /**
+         * The three write outcomes of {@code 9200} carry three distinct literals, so collapsing them into one
+         * conflict status would destroy information the legacy screen displayed.
+         */
+        @Test
+        @DisplayName("the three write failures are never collapsed into one conflict status")
+        void theThreeWriteFailuresAreNeverCollapsed() {
+            final Set<String> messages = Set.of(MSG_COULD_NOT_LOCK, MSG_DATA_WAS_CHANGED,
+                    MSG_UPDATE_FAILED);
+            assertThat(messages).hasSize(3);
+
+            final Set<ConcurrentUpdateException.Outcome> outcomes = Set.of(
+                    ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_ACCOUNT,
+                    ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE,
+                    ConcurrentUpdateException.Outcome.LOCKED_BUT_UPDATE_FAILED);
+            assertThat(outcomes).hasSize(3);
+            assertThat(outcomes).extracting(ConcurrentUpdateException.Outcome::getChangeActionCode)
+                    .containsExactlyInAnyOrder('L', 'S', 'F');
+        }
+
+        /**
+         * The same two failures also reach different change actions, so the distinction survives in the response
+         * state and not only in the message.
+         */
+        @Test
+        @DisplayName("a lock failure and a detected change reach DIFFERENT ChangeAction values")
+        void lockFailureAndDetectedChangeReachDifferentChangeActions() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+            final CardUpdateService.ChangeAction afterLockFailure =
+                    confirmSave(changedNameRequest(matchingSnapshot())).changeAction();
+
+            assertThat(afterLockFailure)
+                    .isEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_LOCK_ERROR)
+                    .isNotEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
+            assertThat(afterLockFailure.isChangesFailed()).isTrue();
+            assertThat(CardUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED.isChangesFailed())
+                    .isTrue();
+            assertThat(CardUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE.isChangesFailed())
+                    .as("a completed write is not a failure, so the three states stay distinguishable")
+                    .isFalse();
+        }
+
+        /**
+         * A detected change returns to the detail state so the caller can re-read the refreshed snapshot and
+         * retry.
+         */
+        @Test
+        @DisplayName("a detected change reaches SHOW_DETAILS, distinct from either lock outcome")
+        void detectedChangeReachesShowDetails() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV)));
+
+            final CardUpdateService.ChangeAction afterDetectedChange =
+                    confirmSave(changedNameRequest(matchingSnapshot())).changeAction();
+
+            assertThat(afterDetectedChange)
+                    .isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS)
+                    .isNotEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_LOCK_ERROR)
+                    .isNotEqualTo(CardUpdateService.ChangeAction.CHANGES_OKAYED_BUT_FAILED);
+        }
+
+        /**
+         * {@code 9100-GETCARD-BYACCTCARD} at {@code COCRDUPC.cbl:1376-1418} reports its own literal on the screen
+         * rather than throwing, which is why no record-not-found exception arises here.
+         */
+        @Test
+        @DisplayName("the fetch leg reports 'Did not find cards for this search condition' when absent")
+        void fetchLegReportsTheNotFoundLiteral() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    ACCOUNT_ID, CARD_NUMBER, null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_NO_ACCTCARD_COMBO);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The successful fetch reports the informational literal instead, in the information field rather than the
+         * error field.
+         */
+        @Test
+        @DisplayName("the fetch leg reports 'Details of selected card shown above' when present")
+        void fetchLegReportsTheFoundLiteral() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    ACCOUNT_ID, CARD_NUMBER, null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(result.screen().getInformationMessage().strip()).isEqualTo(INFO_FOUND_CARDS);
+            assertThat(result.changeAction()).isEqualTo(CardUpdateService.ChangeAction.SHOW_DETAILS);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * The error field is padded to the {@code ERRMSGI PIC X(80)} width of {@code app/cpy-bms/COCRDUP.CPY}, so
+         * a literal comparison must strip that padding rather than assume it away.
+         */
+        @Test
+        @DisplayName("the screen error field keeps its PIC X(80) geometry")
+        void screenErrorFieldKeepsItsFixedWidth() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+
+            final CardUpdateService.CardUpdateResult result =
+                    confirmSave(changedNameRequest(matchingSnapshot()));
+
+            assertThat(result.screen().getErrorMessage())
+                    .hasSize(ERROR_MESSAGE_WIDTH)
+                    .startsWith(MSG_COULD_NOT_LOCK);
+            assertThat(result.screen().getInformationMessage()).hasSize(40);
+        }
+    }
+
+    /**
+     * Pins the CICS online abend contract of {@code ABEND-ROUTINE} at
+     * {@code COCRDUPC.cbl:1531-1554}, whose {@code ABCODE('9999')} sits at {@code :1551} and is not
+     * the batch abend pair.
+     */
+    @Nested
+    @DisplayName("ABEND-ROUTINE :1531-1554 - the CICS ONLINE four-character ABCODE contract")
+    class AbendContract {
+
+        /**
+         * An unexpected runtime failure inside the write reaches {@code ABEND-ROUTINE} at {@code
+         * COCRDUPC.cbl:1531-1554} as a fatal outcome that names the culprit program and preserves its cause.
+         */
+        @Test
+        @DisplayName("an unexpected runtime failure becomes a fatal outcome naming COCRDUPC as culprit")
+        void unexpectedRuntimeFailureBecomesAFatalOutcome() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final CardUpdateRequest missingAccountId = new CardUpdateRequest(null, null, null, null,
+                    null, null, null, CARD_NUMBER, SUBMITTED_NAME, STORED_STATUS, STORED_MONTH,
+                    STORED_YEAR, STORED_DAY, null, null, null, null, matchingSnapshot(), null);
+
+            final FatalProcessingException fatal = catchThrowableOfType(
+                    FatalProcessingException.class, () -> confirmSave(missingAccountId));
+
+            assertThat(fatal.getAbendCulprit()).isEqualTo("COCRDUPC");
+            assertThat(fatal.getAbendMessage())
+                    .isEqualTo(FatalProcessingException.DEFAULT_ABEND_MESSAGE);
+            assertThat(fatal).hasMessage(FatalProcessingException.DEFAULT_ABEND_MESSAGE)
+                    .hasCauseInstanceOf(IllegalArgumentException.class);
+            assertThat(fatal.getCause()).hasMessageContaining("accountId must not be null");
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * {@code EXEC CICS ABEND ABCODE('9999')} at {@code COCRDUPC.cbl:1551} is a four-character online marker,
+         * distinct from the batch abend code and return code pair used by the batch programs.
+         */
+        @Test
+        @DisplayName("the online marker is FOUR characters wide, not the batch 999 / RC 12 pair")
+        void onlineMarkerIsFourCharactersAndNotTheBatchPair() {
+            final String onlineAbendCode = "9999";
+
+            assertThat(FileStatusMapper.ABEND_CODE_WIDTH).isEqualTo(4);
+            assertThat(onlineAbendCode)
+                    .as("EXEC CICS ABEND ABCODE('9999') at :1551 fits ABEND-CODE PIC X(4) exactly")
+                    .hasSize(FileStatusMapper.ABEND_CODE_WIDTH);
+            assertThat(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE))
+                    .as("the batch pair belongs to the CBACT/CBTRN programs, never to an online one")
+                    .hasSize(3)
+                    .isNotEqualTo(onlineAbendCode);
+            assertThat(FatalProcessingException.BATCH_ABEND_CODE).isEqualTo(999);
+            assertThat(FatalProcessingException.BATCH_RETURN_CODE).isEqualTo(12);
+        }
+
+        /**
+         * Asserts in the negative direction that the online path carries neither batch identifier, so the two
+         * contracts cannot be conflated.
+         */
+        @Test
+        @DisplayName("a fatal outcome carries neither the batch abend code nor the batch return code")
+        void fatalOutcomeCarriesNeitherBatchIdentifier() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final CardUpdateRequest missingAccountId = new CardUpdateRequest(null, null, null, null,
+                    null, null, null, CARD_NUMBER, SUBMITTED_NAME, STORED_STATUS, STORED_MONTH,
+                    STORED_YEAR, STORED_DAY, null, null, null, null, matchingSnapshot(), null);
+
+            final FatalProcessingException fatal = catchThrowableOfType(
+                    FatalProcessingException.class, () -> confirmSave(missingAccountId));
+
+            assertThat(fatal.getAbendCode())
+                    .isNotEqualTo(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE))
+                    .isNotEqualTo(String.valueOf(FatalProcessingException.BATCH_RETURN_CODE));
+        }
+
+        /**
+         * The {@code ABEND-DATA} group of {@code app/cpy/CSMSG02Y.cpy:21-29} totals 134 bytes as {@code X(4)},
+         * {@code X(8)}, {@code X(50)} and {@code X(72)}, asserted against the declared widths.
+         */
+        @Test
+        @DisplayName("the ABEND-DATA field set of CSMSG02Y :21-29 totals 134 bytes")
+        void abendDataFieldSetTotalsOneHundredThirtyFourBytes() {
+            assertThat(FileStatusMapper.ABEND_CODE_WIDTH).isEqualTo(4);
+            assertThat(FileStatusMapper.ABEND_CULPRIT_WIDTH).isEqualTo(8);
+            assertThat(FileStatusMapper.ABEND_REASON_WIDTH).isEqualTo(50);
+            assertThat(FileStatusMapper.ABEND_MESSAGE_WIDTH).isEqualTo(72);
+            assertThat(FileStatusMapper.ABEND_CODE_WIDTH + FileStatusMapper.ABEND_CULPRIT_WIDTH
+                    + FileStatusMapper.ABEND_REASON_WIDTH + FileStatusMapper.ABEND_MESSAGE_WIDTH)
+                    .isEqualTo(134);
+        }
+
+        /**
+         * The culprit program name fits {@code ABEND-CULPRIT PIC X(8)} exactly, which is why the eight-character
+         * program literal is usable unmodified.
+         */
+        @Test
+        @DisplayName("the culprit fits ABEND-CULPRIT PIC X(8) exactly")
+        void culpritFitsTheDeclaredWidth() {
+            assertThat("COCRDUPC").hasSize(FileStatusMapper.ABEND_CULPRIT_WIDTH);
+        }
+
+        /**
+         * Every abend field is {@code VALUE SPACES}, so the source's {@code LOW-VALUES} default-message guard can
+         * never fire; the Java counterpart is reachable, recorded as a Low finding.
+         */
+        @Test
+        @DisplayName("the LOW-VALUES message guard of :1533 is unreachable, VALUE SPACES having won")
+        void lowValuesMessageGuardIsUnreachableInTheSource() {
+            final String abendMessageAsInitialised = " ".repeat(FileStatusMapper.ABEND_MESSAGE_WIDTH);
+
+            assertThat(abendMessageAsInitialised)
+                    .as("CSMSG02Y initialises ABEND-MSG to VALUE SPACES, never to LOW-VALUES")
+                    .isNotEqualTo("\u0000".repeat(FileStatusMapper.ABEND_MESSAGE_WIDTH))
+                    .isBlank();
+            assertThat(FatalProcessingException.DEFAULT_ABEND_MESSAGE)
+                    .as("the Java substitution path IS reachable, unlike the COBOL one - Low severity")
+                    .isEqualTo("UNEXPECTED ABEND OCCURRED.");
+        }
+    }
+
+    /**
+     * Pins the consequence of the procedural {@code COPY 'CSSTRPFY'} at
+     * {@code COCRDUPC.cbl:1526}: the attention identifier is an argument, so the bean retains no
+     * PF-key or screen state between calls.
+     */
+    @Nested
+    @DisplayName("COPY 'CSSTRPFY' :1526 - procedural, so the bean keeps no PF-key or screen state")
+    class StatelessnessContract {
+
+        /**
+         * The bean holds exactly two final instance fields, the repository and the clock, so nothing survives a
+         * request the way {@code WORKING-STORAGE} did.
+         */
+        @Test
+        @DisplayName("every instance field is final and there are exactly two collaborators")
+        void everyInstanceFieldIsFinalAndThereAreExactlyTwo() {
+            final Field[] instanceFields = Arrays.stream(CardUpdateService.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .toArray(Field[]::new);
+
+            assertThat(instanceFields).hasSize(2);
+            assertThat(instanceFields).allSatisfy(field ->
+                    assertThat(Modifier.isFinal(field.getModifiers()))
+                            .as("field %s must be final", field.getName())
+                            .isTrue());
+            assertThat(instanceFields).extracting(Field::getName)
+                    .containsExactlyInAnyOrder("cardRepository", "clock");
+        }
+
+        /**
+         * No static field is mutable, which is what makes the bean safe to share and its outcomes repeatable.
+         */
+        @Test
+        @DisplayName("no mutable static state exists - every static field is final")
+        void noMutableStaticStateExists() {
+            assertThat(Arrays.stream(CardUpdateService.class.getDeclaredFields())
+                    .filter(field -> Modifier.isStatic(field.getModifiers()))
+                    .filter(field -> !Modifier.isFinal(field.getModifiers()))
+                    .map(Field::getName)
+                    .toList())
+                    .as("the legacy WORKING-STORAGE flags became method-local, not static")
+                    .isEmpty();
+        }
+
+        /**
+         * {@code COPY 'CSSTRPFY'} at {@code COCRDUPC.cbl:1526} is procedural, so the attention identifier is an
+         * argument and no field retains it or any screen state.
+         */
+        @Test
+        @DisplayName("no field carries PF-key, screen or attention state between requests")
+        void noFieldCarriesPfKeyOrScreenStateBetweenRequests() {
+            assertThat(Arrays.stream(CardUpdateService.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .map(field -> field.getType().getSimpleName())
+                    .toList())
+                    .doesNotContain("AidKey", "ChangeAction", "FieldEditState", "WriteOutcome",
+                            "UpdateContext", "ScreenBuffer", "String");
+        }
+
+        /**
+         * Two identical requests against one bean instance produce identical outcomes, the observable meaning of
+         * statelessness.
+         */
+        @Test
+        @DisplayName("two identical requests produce identical outcomes - nothing is carried over")
+        void twoIdenticalRequestsProduceIdenticalOutcomes() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV)));
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final CardUpdateService.CardUpdateResult first = confirmSave(request);
+            final CardUpdateService.CardUpdateResult second = confirmSave(request);
+
+            assertThat(errorMessageOf(second)).isEqualTo(errorMessageOf(first));
+            assertThat(second.changeAction()).isEqualTo(first.changeAction());
+            assertThat(second.refreshedSnapshot()).isEqualTo(first.refreshedSnapshot());
+            verify(cardRepository, times(2)).findById(CARD_NUMBER);
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+
+        /**
+         * An unrecognised attention identifier folds to the enter key exactly as the {@code EVALUATE TRUE} of
+         * {@code app/cpy/CSSTRPFY.cpy} does through its {@code WHEN OTHER} limb.
+         */
+        @Test
+        @DisplayName("an unrecognised attention identifier folds to ENTER rather than being retained")
+        void unrecognisedAttentionIdentifierFoldsToEnter() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    ACCOUNT_ID, CARD_NUMBER, null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult fromBlank =
+                    service.processRequest(request, "   ", CardUpdateService.EntryMode.REENTER);
+            final CardUpdateService.CardUpdateResult fromUnknown =
+                    service.processRequest(request, "DFHNOSUCHKEY", CardUpdateService.EntryMode.REENTER);
+
+            assertThat(fromUnknown.changeAction()).isEqualTo(fromBlank.changeAction());
+            assertThat(errorMessageOf(fromUnknown)).isEqualTo(errorMessageOf(fromBlank));
+        }
+    }
+
+    /**
+     * Pins the request contract taken from {@code app/cpy-bms/COCRDUP.CPY} - seventeen screen
+     * fields plus the snapshot group - without duplicating the shape tests of the model tier.
+     */
+    @Nested
+    @DisplayName("COCRDUP.CPY - the seventeen screen fields plus the snapshot group")
+    class FieldContracts {
+
+        /**
+         * The request carries exactly the seventeen input fields of {@code app/cpy-bms/COCRDUP.CPY} plus the two
+         * snapshot groups the stateless port requires.
+         */
+        @Test
+        @DisplayName("the request carries seventeen screen components plus two detail groups")
+        void requestCarriesSeventeenScreenComponentsPlusTwoGroups() {
+            final RecordComponent[] components =
+                    CardUpdateRequest.class.getRecordComponents();
+
+            assertThat(components).hasSize(19);
+            assertThat(Arrays.stream(components)
+                    .filter(component -> component.getType() == String.class)
+                    .count())
+                    .as("COCRDUP.CPY generates exactly seventeen input fields")
+                    .isEqualTo(17L);
+            assertThat(Arrays.stream(components)
+                    .filter(component -> component.getType() == CardUpdateRequest.CardDetails.class)
+                    .map(RecordComponent::getName)
+                    .toList())
+                    .containsExactly("oldDetails", "newDetails");
+        }
+
+        /**
+         * The snapshot group exposes the four logical fields {@code 9300} compares, with the expiry date split
+         * into its three components rather than held as one string.
+         */
+        @Test
+        @DisplayName("the snapshot group carries the four fields 9300 compares plus the composite key")
+        void snapshotGroupCarriesTheFourComparedFields() {
+            final CardUpdateRequest.CardDetails snapshot = matchingSnapshot();
+
+            assertThat(snapshot.cardData().cardholderName()).isEqualTo(STORED_NAME);
+            assertThat(snapshot.cardData().cardStatusCode()).isEqualTo(STORED_STATUS);
+            assertThat(snapshot.cardData().expiraionDate().expiryYear()).isEqualTo(STORED_YEAR);
+            assertThat(snapshot.cardData().expiraionDate().expiryMonth()).isEqualTo(STORED_MONTH);
+            assertThat(snapshot.cardData().expiraionDate().expiryDay()).isEqualTo(STORED_DAY);
+            assertThat(snapshot.cvvCode()).isEqualTo(STORED_CVV);
+            assertThat(snapshot.accountId()).hasSize(11);
+            assertThat(snapshot.cardNumber()).hasSize(16);
+        }
+
+        /**
+         * An omitted snapshot is a validation failure rather than a silent skip, because without it the comparison
+         * of {@code 9300} could not be performed at all.
+         */
+        @Test
+        @DisplayName("an omitted snapshot is a validation failure, never a silent skip")
+        void omittedSnapshotIsAValidationFailure() {
+            final CardUpdateRequest request = changedNameRequest(null);
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+
+            assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS).hasNoCause();
+            assertThat(failure.getOutcome())
+                    .isEqualTo(ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A snapshot whose every component is null is treated as absent, matching the source's {@code LOW-VALUES}
+         * test rather than dereferencing it.
+         */
+        @Test
+        @DisplayName("an all-null snapshot is treated as absent, not as a snapshot of nulls")
+        void allNullSnapshotIsTreatedAsAbsent() {
+            final CardUpdateRequest.CardDetails hollow = new CardUpdateRequest.CardDetails(null, null,
+                    null, new CardUpdateRequest.CardData(null,
+                    new CardUpdateRequest.ExpiraionDate(null, null, null), null));
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class,
+                    () -> service.updateCard(changedNameRequest(hollow)));
+
+            assertThat(failure).hasMessage(MSG_PROMPT_FOR_SEARCH_KEYS);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * No component of the request or the entity is a binary floating-point type, the standing prohibition on
+         * financial fields even though this screen carries no money field.
+         */
+        @Test
+        @DisplayName("no field of the entity or the request is a float or a double")
+        void noFieldIsAFloatOrADouble() {
+            assertThat(Arrays.stream(Card.class.getDeclaredFields())
+                    .map(field -> field.getType().getName())
+                    .toList())
+                    .doesNotContain("float", "double", "java.lang.Float", "java.lang.Double");
+            assertThat(Arrays.stream(CardUpdateRequest.class.getRecordComponents())
+                    .map(component -> component.getType().getName())
+                    .toList())
+                    .doesNotContain("float", "double", "java.lang.Float", "java.lang.Double");
+        }
+
+        /**
+         * The persisted name is padded to the {@code CARD-EMBOSSED-NAME PIC X(50)} width of {@code
+         * app/cpy/CVACT02Y.cpy}, so the fixed-width record geometry survives the round trip.
+         */
+        @Test
+        @DisplayName("the persisted embossed name is padded to CARD-EMBOSSED-NAME PIC X(50)")
+        void persistedEmbossedNameIsPaddedToItsPicWidth() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.of(storedCard()));
+            final ArgumentCaptor<Card> persisted = ArgumentCaptor.forClass(Card.class);
+
+            service.updateCard(changedNameRequest(matchingSnapshot()));
+
+            verify(cardRepository).save(persisted.capture());
+            assertThat(persisted.getValue().getEmbossedName()).hasSize(50);
+            assertThat(persisted.getValue().getExpiraionDate()).hasSize(10);
+            assertThat(persisted.getValue().getActiveStatus()).hasSize(1);
+            assertThat(persisted.getValue().getCvvCode()).hasSize(3);
+            assertThat(persisted.getValue().getCardNumber()).hasSize(16);
+        }
+    }
+
+    /**
+     * Pins the one-to-one correspondence between the 48 paragraph labels of
+     * {@code app/cbl/COCRDUPC.cbl} and the private methods of the bean, including the retained no-ops.
+     */
+    @Nested
+    @DisplayName("paragraph correspondence - 48 labels, one private method each, none consolidated")
+    class ParagraphCorrespondence {
+
+        /**
+         * Collects every method name the bean declares, so a paragraph landmark can be looked up
+         * without repeating the reflection in each test.
+         *
+         * @return the declared method names of {@link CardUpdateService}
+         */
+        private Set<String> declaredMethodNames() {
+            return Arrays.stream(CardUpdateService.class.getDeclaredMethods())
+                    .map(Method::getName)
+                    .collect(Collectors.toUnmodifiableSet());
+        }
+
+        /**
+         * {@code 0000-MAIN} at {@code COCRDUPC.cbl:367}, {@code COMMON-RETURN} at {@code :546} and {@code
+         * 0000-MAIN-EXIT} at {@code :560} each map to their own method, never consolidated.
+         */
+        @Test
+        @DisplayName("every mainline and dispatch label of :367-560 has its own method")
+        void mainlineLabelsEachHaveTheirOwnMethod() {
+            assertThat(declaredMethodNames()).contains("mainLine0000", "dispatch0000", "transfer0000",
+                    "commonReturn", "mainExit0000");
+        }
+
+        /**
+         * {@code 1000-PROCESS-INPUTS} at {@code COCRDUPC.cbl:564}, {@code 1100-RECEIVE-MAP} at {@code :578} and
+         * {@code 1200-EDIT-MAP-INPUTS} at {@code :641} each map to their own method.
+         */
+        @Test
+        @DisplayName("every input-processing label of :564-717 has its own method, exits included")
+        void inputProcessingLabelsEachHaveTheirOwnMethod() {
+            assertThat(declaredMethodNames()).contains("processInputs1000", "processInputsExit1000",
+                    "receiveMap1100", "receiveMapExit1100", "editMapInputs1200",
+                    "editMapInputsExit1200");
+        }
+
+        /**
+         * All six field edits between {@code COCRDUPC.cbl:721} and {@code :945} map one to one, which is what
+         * makes the cascade order provable rather than asserted.
+         */
+        @Test
+        @DisplayName("all six field-edit labels of :721-945 have their own method, exits included")
+        void allSixFieldEditLabelsEachHaveTheirOwnMethod() {
+            assertThat(declaredMethodNames()).contains(
+                    "editAccount1210", "editAccountExit1210",
+                    "editCard1220", "editCardExit1220",
+                    "editName1230", "editNameExit1230",
+                    "editCardStatus1240", "editCardStatusExit1240",
+                    "editExpiryMonth1250", "editExpiryMonthExit1250",
+                    "editExpiryYear1260", "editExpiryYearExit1260");
+        }
+
+        /**
+         * The screen paragraphs at {@code COCRDUPC.cbl:1035}, {@code :1052}, {@code :1082}, {@code :1138}, {@code
+         * :1168} and {@code :1324} each map to their own method.
+         */
+        @Test
+        @DisplayName("every screen label of :948-1324 has its own method, exits included")
+        void screenLabelsEachHaveTheirOwnMethod() {
+            assertThat(declaredMethodNames()).contains("decideAction2000", "decideActionExit2000",
+                    "sendMap3000", "sendMapExit3000", "screenInit3100", "screenInitExit3100",
+                    "setupScreenVars3200", "setupScreenVarsExit3200", "setupInfoMsg3250",
+                    "setupInfoMsgExit3250", "setupScreenAttrs3300", "setupScreenAttrsExit3300",
+                    "sendScreen3400", "sendScreenExit3400");
+        }
+
+        /**
+         * {@code 9000-READ-DATA} at {@code COCRDUPC.cbl:1343}, {@code 9100-GETCARD-BYACCTCARD} at {@code :1376},
+         * {@code 9200-WRITE-PROCESSING} at {@code :1420} and {@code 9300-CHECK-CHANGE-IN-REC} at {@code :1498}
+         * each map to their own method.
+         */
+        @Test
+        @DisplayName("every file label of :1343-1521 has its own method, exits included")
+        void fileLabelsEachHaveTheirOwnMethod() {
+            assertThat(declaredMethodNames()).contains("readData9000", "readDataExit9000",
+                    "getCardByAcctCard9100", "getCardByAcctCardExit9100", "writeProcessing9200",
+                    "writeProcessingExit9200", "checkChangeInRec9300", "checkChangeInRecExit9300");
+        }
+
+        /**
+         * The procedural copybook paragraph and {@code ABEND-ROUTINE} at {@code COCRDUPC.cbl:1531} are represented
+         * as methods in their own right rather than folded into their callers.
+         */
+        @Test
+        @DisplayName("the procedural copybook and the abend routine have their own methods")
+        void proceduralCopybookAndAbendRoutineHaveTheirOwnMethods() {
+            assertThat(declaredMethodNames()).contains("storePfKey", "storePfKeyExit", "abendRoutine",
+                    "abendRoutineExit");
+        }
+
+        /**
+         * INTENTIONAL NO-OP MARKER: {@code 9300} ends with {@code END-IF EXIT} at {@code COCRDUPC.cbl:1519} while
+         * {@code 9300-CHECK-CHANGE-IN-REC-EXIT} at {@code :1521} carries its own bare {@code EXIT}, so the in-
+         * paragraph one is retained for parity and tracked here rather than deleted.
+         */
+        @Test
+        @DisplayName("the redundant in-paragraph EXIT of 9300 is retained as an intentional no-op")
+        void redundantInParagraphExitOf9300IsRetained() {
+            // INTENTIONAL NO-OP MARKER. :1519 carries END-IF EXIT inside 9300 while :1521 declares
+            // 9300-CHECK-CHANGE-IN-REC-EXIT with its own bare EXIT. Both survive as separate methods
+            // because deleting either would break the paragraph map the scope-coverage gate reads.
+            assertThat(declaredMethodNames())
+                    .contains("checkChangeInRec9300", "checkChangeInRecExit9300");
+            assertThat(Arrays.stream(CardUpdateService.class.getDeclaredMethods())
+                    .filter(method -> method.getName().equals("checkChangeInRecExit9300"))
+                    .count())
+                    .isEqualTo(1L);
+        }
+
+        /**
+         * The bean declares at least as many methods as the source has paragraph labels, the coarse check that no
+         * label was silently consolidated away.
+         */
+        @Test
+        @DisplayName("the bean declares at least one method per source paragraph")
+        void theBeanDeclaresAtLeastOneMethodPerSourceParagraph() {
+            assertThat(declaredMethodNames().size())
+                    .as("COCRDUPC.cbl carries 48 paragraphs across its 1,560 lines")
+                    .isGreaterThanOrEqualTo(48);
+        }
+    }
+
+    /**
+     * Drives every boundary the source guards, and the ones it deliberately does not, treating
+     * all caller input as untrusted.
+     */
+    @Nested
+    @DisplayName("hostile input - every boundary the source guards, and the ones it does not")
+    class HostileInput {
+
+        /**
+         * A null request is rejected explicitly rather than dereferenced, with the parameter named.
+         */
+        @Test
+        @DisplayName("a null request is rejected by name on the screen entry point")
+        void nullRequestIsRejectedOnTheScreenEntryPoint() {
+            assertThatThrownBy(() ->
+                    service.processRequest(null, AID_ENTER, CardUpdateService.EntryMode.REENTER))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessage("request must not be null");
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * The second public entry point rejects a null request the same way, so neither is a hole.
+         */
+        @Test
+        @DisplayName("a null request is rejected by name on the update entry point")
+        void nullRequestIsRejectedOnTheUpdateEntryPoint() {
+            assertThatThrownBy(() -> service.updateCard(null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessage("request must not be null");
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A null entry mode is rejected explicitly, because the pseudo-conversational enter versus re-enter
+         * distinction cannot be defaulted safely.
+         */
+        @Test
+        @DisplayName("a null entry mode is rejected by name")
+        void nullEntryModeIsRejected() {
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            assertThatThrownBy(() -> service.processRequest(request, AID_ENTER, null))
+                    .isInstanceOf(NullPointerException.class)
+                    .hasMessage("entryMode must not be null");
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A name of low values is blank, the first limb of the blank test at {@code COCRDUPC.cbl:810-816}.
+         */
+        @Test
+        @DisplayName("a LOW-VALUES name is BLANK, matching EQUAL LOW-VALUES at :811")
+        void lowValuesNameIsBlank() {
+            assertThat(nameEditMessageFor("\u0000\u0000\u0000\u0000\u0000"))
+                    .isEqualTo(MSG_NAME_NOT_PROVIDED);
+        }
+
+        /**
+         * An empty name is blank, the stateless equivalent of a field the terminal never transmitted.
+         */
+        @Test
+        @DisplayName("an empty-string name is BLANK, matching EQUAL SPACES at :811")
+        void emptyStringNameIsBlank() {
+            assertThat(nameEditMessageFor("")).isEqualTo(MSG_NAME_NOT_PROVIDED);
+        }
+
+        /**
+         * The not-supplied marker collapses to blank rather than reaching the field edit as a literal value.
+         */
+        @Test
+        @DisplayName("the not-supplied marker collapses to BLANK rather than becoming a name")
+        void notSuppliedMarkerCollapsesToBlank() {
+            assertThat(nameEditMessageFor("*")).isEqualTo(MSG_NAME_NOT_PROVIDED);
+        }
+
+        /**
+         * An all-zero account filter is blank under {@code EQUAL ZEROS}, so it prompts rather than reporting a
+         * numeric failure.
+         */
+        @Test
+        @DisplayName("an all-zero account filter is BLANK, matching CC-ACCT-ID-N EQUAL ZEROS at :727")
+        void allZeroAccountFilterIsBlank() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    "00000000000", CARD_NUMBER, null, null, null, null, null, null, null, null, null,
+                    null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_ACCOUNT_NOT_PROVIDED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * An all-zero card filter is blank for the same reason.
+         */
+        @Test
+        @DisplayName("an all-zero card filter is BLANK, matching CC-CARD-NUM-N EQUAL ZEROS at :770")
+        void allZeroCardFilterIsBlank() {
+            final CardUpdateRequest request = new CardUpdateRequest(null, null, null, null, null, null,
+                    ACCOUNT_ID, "0000000000000000", null, null, null, null, null, null, null, null,
+                    null, null, null);
+
+            final CardUpdateService.CardUpdateResult result =
+                    service.processRequest(request, AID_ENTER, CardUpdateService.EntryMode.REENTER);
+
+            assertThat(errorMessageOf(result)).isEqualTo(MSG_CARD_NOT_PROVIDED);
+            verifyNoInteractions(cardRepository);
+        }
+
+        /**
+         * A name of exactly {@code PIC X(50)} is accepted, the inclusive upper boundary of the field width.
+         */
+        @Test
+        @DisplayName("a name of exactly fifty alphabetic characters is accepted at the PIC boundary")
+        void nameOfExactlyFiftyCharactersIsAccepted() {
+            assertThat(nameEditMessageFor("B".repeat(50))).isEmpty();
+        }
+
+        /**
+         * A single-character name is accepted, the lower boundary, because the source imposes no minimum length.
+         */
+        @Test
+        @DisplayName("a name of a single alphabetic character is accepted at the lower boundary")
+        void nameOfASingleCharacterIsAccepted() {
+            assertThat(nameEditMessageFor("A")).isEmpty();
+        }
+
+        /**
+         * A store failure on the read for update becomes a typed exception carrying its cause, never a swallowed
+         * error or a null result.
+         */
+        @Test
+        @DisplayName("a repository failure on read becomes a typed exception carrying its cause")
+        void repositoryFailureOnReadBecomesATypedException() {
+            final DataIntegrityViolationException storeFailure =
+                    new DataIntegrityViolationException("CARDDAT unavailable");
+            when(cardRepository.findById(CARD_NUMBER)).thenThrow(storeFailure);
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            assertThatThrownBy(() -> confirmSave(request))
+                    .isInstanceOf(CardDemoException.class)
+                    .hasCause(storeFailure)
+                    .hasMessageContaining("CARDDAT");
+            verify(cardRepository, never()).save(any(Card.class));
+        }
+    }
+
+    /**
+     * Asserts that the card number and the card verification value never reach a screen field,
+     * an exception message or a {@code toString()} rendering.
+     */
+    @Nested
+    @DisplayName("secret hygiene - the card number and the verification value never escape")
+    class SecretHygiene {
+
+        /**
+         * The affected-record marker on a thrown conflict masks all but the last four digits, so a log of the
+         * exception cannot reconstruct the key.
+         */
+        @Test
+        @DisplayName("the affected-record marker on a lock failure masks all but the last four digits")
+        void affectedRecordMarkerMasksAllButTheLastFourDigits() {
+            when(cardRepository.findById(CARD_NUMBER)).thenReturn(Optional.empty());
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final ConcurrentUpdateException failure = catchThrowableOfType(
+                    ConcurrentUpdateException.class, () -> service.updateCard(request));
+
+            assertThat(failure.getAffectedRecord())
+                    .isNotEqualTo(CARD_NUMBER)
+                    .hasSize(16)
+                    .startsWith("*".repeat(12))
+                    .endsWith(CARD_NUMBER.substring(12));
+        }
+
+        /**
+         * No message thrown from either entry point contains the card number or the verification value in full.
+         */
+        @Test
+        @DisplayName("no thrown message leaks the card number or the verification value")
+        void noThrownMessageLeaksTheCardNumberOrVerificationValue() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", STORED_CVV)));
+            final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
+
+            final CardUpdateService.CardUpdateResult result = confirmSave(request);
+
+            assertThat(errorMessageOf(result))
+                    .doesNotContain(CARD_NUMBER)
+                    .doesNotContain(STORED_CVV);
+            assertThat(result.screen().getInformationMessage())
+                    .doesNotContain(CARD_NUMBER)
+                    .doesNotContain(STORED_CVV);
+        }
+
+        /**
+         * The entity's own rendering exposes neither the key nor the verification value, so an incidental
+         * interpolation cannot leak them.
+         */
+        @Test
+        @DisplayName("the entity rendering exposes neither the card number nor the verification value")
+        void entityRenderingExposesNeitherKeyNorVerificationValue() {
+            final String rendered = storedCard().toString();
+
+            assertThat(rendered).doesNotContain(CARD_NUMBER)
+                    .doesNotContain(STORED_CVV)
+                    .doesNotContain(STORED_NAME);
+        }
+
+        /**
+         * The request's rendering is equally safe, which matters because a validation failure often carries the
+         * request into a log line.
+         */
+        @Test
+        @DisplayName("the request rendering exposes neither the card number nor the verification value")
+        void requestRenderingExposesNeitherKeyNorVerificationValue() {
+            final String rendered = changedNameRequest(matchingSnapshot()).toString();
+
+            assertThat(rendered).doesNotContain(CARD_NUMBER).doesNotContain(STORED_CVV);
+        }
+
+        /**
+         * The snapshot group's rendering is equally safe.
+         */
+        @Test
+        @DisplayName("the snapshot rendering exposes neither the card number nor the verification value")
+        void snapshotRenderingExposesNeitherKeyNorVerificationValue() {
+            final String rendered = matchingSnapshot().toString();
+
+            assertThat(rendered).doesNotContain(CARD_NUMBER).doesNotContain(STORED_CVV);
+        }
+
+        /**
+         * The refreshed snapshot deliberately withholds the verification value, so a retry supplies it again
+         * rather than receiving it back from the server.
+         */
+        @Test
+        @DisplayName("the refreshed snapshot withholds the verification value entirely")
+        void refreshedSnapshotWithholdsTheVerificationValue() {
+            when(cardRepository.findById(CARD_NUMBER))
+                    .thenReturn(Optional.of(storedCard(STORED_NAME, STORED_EXPIRY, "N", "987")));
+
+            final CardUpdateRequest.CardDetails refreshed =
+                    confirmSave(changedNameRequest(matchingSnapshot())).refreshedSnapshot();
+
+            assertThat(refreshed.cvvCode()).isNull();
+            assertThat(refreshed.toString()).doesNotContain("987");
+        }
+
+        /**
+         * No declared constant looks like a credential or an endpoint, asserted structurally so the test cannot
+         * itself become a place where one hides.
+         */
+        @Test
+        @DisplayName("no declared constant embeds a credential, an endpoint or a host")
+        void noDeclaredConstantEmbedsACredentialOrEndpoint() {
+            // Asserted structurally rather than against a denylist of hostnames, so that this file
+            // itself carries no environment-specific literal for a reviewer or scanner to trip over.
+            assertThat(serviceStringConstants()).allSatisfy(constant -> {
+                final String folded = constant.toLowerCase(Locale.ROOT);
+                assertThat(folded).as("no URI scheme").doesNotContain("://");
+                assertThat(folded).as("no host and port pair").doesNotMatch(".*:\\d{2,5}\\b.*");
+                assertThat(folded).as("no registrable domain")
+                        .doesNotMatch(".*\\.(com|net|org|io|cloud|aws)\\b.*");
+                assertThat(folded).as("no dotted quad").doesNotMatch(".*\\b\\d{1,3}(\\.\\d{1,3}){3}\\b.*");
+                assertThat(folded).as("no credential keyword").doesNotContain("secret")
+                        .doesNotContain("passwd")
+                        .doesNotContain("bearer");
+            });
+        }
+
+        /**
+         * No declared constant matches a known provider key prefix or a private-key header.
+         */
+        @Test
+        @DisplayName("no declared constant resembles a provider access key or private key block")
+        void noDeclaredConstantResemblesAProviderKey() {
+            assertThat(serviceStringConstants()).allSatisfy(constant ->
+                    assertThat(constant).doesNotMatch("(?s).*\\b(AKIA|ASIA|ghp_|gho_|xox[abp]-|AIza)\\w*.*")
+                            .doesNotContain("BEGIN PRIVATE KEY")
+                            .doesNotContain("BEGIN RSA PRIVATE KEY"));
+        }
+    }
+}

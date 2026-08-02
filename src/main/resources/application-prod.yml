@@ -135,7 +135,7 @@
 # Full verify, including coverage and the vulnerability scan:
 #     ./mvnw -B -ntp clean verify
 #
-# Activate this profile by environment variable only. Dockerfile:95 sets
+# Activate this profile by environment variable only. Dockerfile:476 sets
 # SPRING_PROFILES_ACTIVE to the empty string precisely so the image stays
 # profile neutral, and nothing in this file or in application.yml sets
 # spring.profiles.active:
@@ -268,7 +268,7 @@
 #     genuinely not wanted in a given environment, disable it explicitly with
 #     MANAGEMENT_TRACING_ENABLED=false rather than by omitting the endpoint.
 #   - /actuator/health/readiness RETURNS 404. The probe groups were removed
-#     or renamed in the base. Dockerfile:99-100 issues
+#     or renamed in the base. Dockerfile:495-496 issues
 #     GET /actuator/health/readiness and greps for UP, so the group must
 #     exist and resolve or every container will be killed by its own probe.
 #   - AN ACTUATOR ENDPOINT RETURNS 404 IN PRODUCTION. Expected. Exactly
@@ -1125,7 +1125,7 @@ spring:
 # THE MANAGEMENT PORT AND BASE PATH ARE DELIBERATELY NOT MOVED, and the
 # instruction to consider a separate port was evaluated rather than skipped. A
 # separate management port would narrow the public surface, but two root-owned
-# artefacts address the MAIN application port: Dockerfile:99-100 opens a
+# artefacts address the MAIN application port: Dockerfile:495-496 opens a
 # loopback TCP socket on it and issues GET /actuator/health/readiness, and
 # observability/prometheus.yml:43-53 declares its scrape targets on it at
 # metrics_path /actuator/prometheus. Splitting the port

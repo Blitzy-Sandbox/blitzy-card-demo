@@ -97,7 +97,7 @@
 # and the concrete host values; this base profile carries neither:
 #     SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
 # Container image and readiness probe: Dockerfile builds the single JAR and its
-# HEALTHCHECK at Dockerfile:99-100 issues GET /actuator/health/readiness and
+# HEALTHCHECK at Dockerfile:495-496 issues GET /actuator/health/readiness and
 # greps for UP, so the readiness group declared below must exist and resolve.
 # Prometheus scrapes /actuator/prometheus every 15 seconds; the scrape
 # configuration is owned by observability/prometheus.yml and is deliberately
@@ -192,7 +192,7 @@
 #     value would create no exporter at all and every span would be dropped in
 #     silence. Failing loudly is the whole point.
 #   - /actuator/health/readiness returns 404. The liveness and readiness
-#     groups below were removed or renamed; Dockerfile:99-100 and the compose
+#     groups below were removed or renamed; Dockerfile:495-496 and the compose
 #     probe both depend on them.
 #   - An actuator endpoint returns 404. Only health, info and prometheus are
 #     exposed, deliberately. Do not widen the exposure list to "*".
@@ -200,7 +200,7 @@
 # PROFILE LAYERING CONTRACT
 #
 # spring.profiles.active is deliberately ABSENT. The runtime supplies it:
-# Dockerfile:95 sets SPRING_PROFILES_ACTIVE to the empty string precisely so
+# Dockerfile:476 sets SPRING_PROFILES_ACTIVE to the empty string precisely so
 # the image stays neutral. Hardcoding an active profile here would make the
 # base profile non-neutral and fight the deployment contract. Overrides that
 # belong to the three sibling profiles and must NOT appear in this file:
@@ -709,7 +709,7 @@ spring:
 # moves to request parameters and response metadata, never to the server.
 server:
   # A port is not a secret, so a documented non-secret default is acceptable.
-  # 8080 matches Dockerfile:92 EXPOSE and the observability/prometheus.yml
+  # 8080 matches Dockerfile:460 EXPOSE and the observability/prometheus.yml
   # scrape targets.
   port: ${SERVER_PORT:8080}
   # Drain in-flight requests, and let a running batch step finish, instead of
@@ -770,7 +770,7 @@ management:
         # made TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC available to the
         # online region. All five are VSAM datasets, so all five map to the
         # relational substrate and are covered by the db contributor.
-        # Dockerfile:99-100 issues GET /actuator/health/readiness and greps for
+        # Dockerfile:495-496 issues GET /actuator/health/readiness and greps for
         # UP, so this group must exist and resolve.
         # Object-storage and queue contributors come from
         # com.cardemo.observability.HealthIndicators and must be appended here

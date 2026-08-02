@@ -1,0 +1,883 @@
+# ******************************************************************
+# * File         : application-test.yml
+# * Application  : CardDemo
+# * Type         : Spring Boot profile configuration (YAML) - test
+# * Function     : Testcontainers-backed test profile. Layers the smallest
+# *                possible set of DELTAS over application.yml so that the
+# *                Failsafe integration and end-to-end tiers run against a
+# *                throwaway PostgreSQL 16 container and a throwaway
+# *                LocalStack container, with every connection detail
+# *                supplied at runtime by Testcontainers rather than written
+# *                here. It carries NO host, NO port, NO endpoint, NO
+# *                database name, NO credential and NO secret of any kind,
+# *                and it introduces NO dependency metadata: pom.xml owns
+# *                every coordinate and every version.
+# * Source       : app/jcl/POSTTRAN.jcl (STEP15 EXEC PGM=CBTRN02C at L23; the
+# *                six data DD statements TRANFILE L28, DALYTRAN L30,
+# *                XREFFILE L32, DALYREJS L34, ACCTFILE L39, TCATBALF L41;
+# *                DCB=(RECFM=F,LRECL=430,BLKSIZE=0) at L36 and the
+# *                DALYREJS(+1) generation reference at L38);
+# *                app/jcl/DUSRSECJ.jcl (the ten in-stream SYSUT1 records at
+# *                L35-L44, DCB=(LRECL=80,RECFM=FB) at L48 and DEFINE
+# *                CLUSTER KEYS(8,0) RECORDSIZE(80,80) at L64-L71);
+# *                app/catlg/LISTCAT.txt (CLUSTER 10 at L3940, GDG 7 at
+# *                L3942, PATH 3 at L3946 - the physical geometry the three
+# *                migrations reproduce);
+# *                app/csd/CARDDEMO.CSD (18 DEFINE TRANSACTION entries of
+# *                which 17 are sourced; DEFINE TDQUEUE(JOBS) at L499-L505);
+# *                app/data/ASCII/dailytran.txt (the 300-record Gate 1
+# *                parity fixture);
+# *                app/data/ASCII/discgrp.txt (the 51-row disclosure-group
+# *                fixture) - all @ 7756d89
+# ******************************************************************
+# * Copyright Amazon.com, Inc. or its affiliates.
+# * All Rights Reserved.
+# *
+# * Licensed under the Apache License, Version 2.0 (the "License").
+# * You may not use this file except in compliance with the License.
+# * You may obtain a copy of the License at
+# *
+# *    http://www.apache.org/licenses/LICENSE-2.0
+# *
+# * Unless required by applicable law or agreed to in writing,
+# * software distributed under the License is distributed on an
+# * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+# * either express or implied. See the License for the specific
+# * language governing permissions and limitations under the License
+# ******************************************************************
+
+# MODULE DOCSTRING
+#
+# WHAT IT DOES
+#
+# This is the `test` Spring profile. It is a DELTA FILE and nothing more.
+# application.yml holds the structure, the namespace, the environment-variable
+# contract and every legacy parity constant; this file changes only the handful
+# of values that must differ when the substrate is a throwaway container rather
+# than a long-lived service. Restating a base value here would be the
+# duplication Rule 1 Clause C forbids, so the sections below document what is
+# INHERITED as carefully as they document what is overridden - an omission in a
+# configuration file is otherwise indistinguishable from an oversight.
+#
+# There are exactly FOUR active property overrides in this file. Everything
+# else is prose, and the prose exists because Rule 1 Clause E requires a
+# docstring and Rule 1 Clause F requires evidence.
+#
+# The profile is deliberately NOT bootable on its own, and that is the whole
+# design. A test class completes it by contributing, at a precedence higher
+# than any profile file:
+#
+#   - the JDBC url, username and password of a PostgreSQL 16 container;
+#   - the S3, SQS and SNS endpoint of a LocalStack container;
+#   - the JWT signing key;
+#   - the S3 bucket, SQS queue and SNS topic names it provisioned.
+#
+# Writing any of those here would defeat the point. A literal port or hostname
+# is precisely the "environment-specific assumption" Rule 1 Clause C forbids,
+# and it would also make two test classes running in parallel collide on one
+# fixed port. Container-supplied values are unique per run, which is what makes
+# the tier deterministic in the sense Rule 1 Clause A requires.
+#
+# The database major version is PostgreSQL 16, matching the local profile and
+# the production target, because the DDL under db/migration is derived
+# byte-for-byte from the record layouts in app/cpy and the catalogued geometry
+# of app/catlg/LISTCAT.txt. Validating it against an in-memory database instead
+# would validate a different engine's interpretation of NUMERIC(12,2),
+# CHAR(26) and a 5-constraint CHECK set, which is not a validation at all.
+#
+# HOW TO RUN, BUILD AND TEST
+#
+# A container runtime with a reachable Docker socket is a HARD PREREQUISITE of
+# this profile. Nothing here works without one.
+#
+# Unit tier only - never activates this profile, needs no container:
+#     ./mvnw -B -ntp test
+# Integration and end-to-end tiers, which do activate it:
+#     ./mvnw -B -ntp verify
+# Full gate, including coverage and the vulnerability scan:
+#     ./mvnw -B clean verify
+#
+# The two tiers are separated by PATH, not by class-name suffix, and pom.xml
+# owns that split: maven-surefire-plugin includes **/*Test.java and
+# **/*Tests.java while EXCLUDING **/integration/** and **/e2e/**, and
+# maven-failsafe-plugin includes exactly those two trees. A test that needs
+# this profile therefore belongs under src/test/java/com/cardemo/integration or
+# src/test/java/com/cardemo/e2e; placed anywhere else it runs in the unit tier,
+# where no container is started and the context cannot boot.
+#
+# Activation is the test class's job, not this file's: spring.profiles.active
+# is deliberately absent here, exactly as it is absent from application.yml.
+# A class opts in with @ActiveProfiles("test"). Hardcoding an active profile
+# inside a profile-specific file is circular and would fight the layering
+# contract application.yml:200-212 sets out.
+#
+# KEY CONFIGURATION AND DEFAULTS
+#
+# INHERITED FROM application.yml AND DELIBERATELY NOT RESTATED. Each of these
+# is load-bearing for the test tier, and each is already correct in the base,
+# so repeating it here would add a second place to get it wrong:
+#
+#   - spring.jpa.hibernate.ddl-auto is validate (application.yml:575-576).
+#     THIS MUST NEVER BE RELAXED FOR TESTS. Setting ddl-auto to create,
+#     create-drop or update would let Hibernate build the schema from the
+#     entity mapping and then "validate" its own output, which passes
+#     unconditionally and proves nothing. The entire purpose of this tier is
+#     the opposite: assert that the Flyway-owned, copybook-derived DDL and the
+#     entity mapping agree. A schema drift must fail the build here, which is
+#     the "avoid unsafe defaults" obligation of Rule 1 Clause A.
+#   - The Flyway block (application.yml:622-635): enabled true, locations
+#     classpath:db/migration, baseline-on-migrate false, validate-on-migrate
+#     true, clean-disabled true, out-of-order false. All five guards stay ON in
+#     this profile. clean-disabled in particular is NOT relaxed just because
+#     the database is disposable - a container is recreated per run, so clean
+#     buys nothing and would only remove a guard.
+#   - EXACTLY THREE migrations exist and a fourth is forbidden:
+#     V1__create_schema.sql, V2__create_indexes.sql, V3__seed_data.sql.
+#     V1 creates exactly 11 tables - transaction_type, transaction_category,
+#     account, customer, card, card_cross_reference, disclosure_group,
+#     transaction_category_balance, "transaction", daily_transaction and
+#     user_security - one per VSAM KSDS cluster counted at
+#     app/catlg/LISTCAT.txt:L3940 plus the DALYTRAN physical sequential
+#     staging dataset of app/jcl/POSTTRAN.jcl:L30. A validation gate asserts
+#     that count, so nothing may be appended to V1 and no V4 may appear.
+#   - spring.batch.job.enabled is false (application.yml:647). Jobs must not
+#     auto-launch when a test context refreshes; a test launches them
+#     explicitly through JobLauncherTestUtils or JobOperator so that the job
+#     parameters, the exit status and the reject count are all assertable.
+#     Return code 4 is set if and only if the reject count exceeds zero
+#     (app/cbl/CBTRN02C.cbl:L229-L231), and that is only observable when the
+#     launch is under the test's control.
+#   - The Actuator surface (application.yml:734-780): exposure limited to
+#     health, info and prometheus; show-details and show-components both
+#     never; probes enabled; liveness including livenessState only and
+#     readiness including readinessState and db. The exposure list is never
+#     widened to the wildcard and health details are never raised to always,
+#     in tests any more than in production - Rule 1 Clause D names tests
+#     explicitly. The two probe groups are left intact because
+#     GateVerificationTest asserts they resolve as distinct endpoints and
+#     Dockerfile:99-100 depends on the readiness path.
+#   - The conservative logging levels (application.yml:1139-1163), including
+#     the org.hibernate.SQL and org.hibernate.orm.jdbc.bind protective floors.
+#     Hibernate SQL and bind-parameter logging, Spring Security DEBUG, AWS SDK
+#     wire logging and web body logging are all left OFF. At DEBUG or TRACE
+#     they emit statement text and bound parameter values, which for
+#     app/cpy/CVCUS01Y.cpy means CUST-SSN PIC 9(09) and for
+#     app/cpy/CSUSR01Y.cpy means the stored BCrypt hash, plus Authorization
+#     headers and signing material. Rule 1 Clause D reads "No secrets in code,
+#     logs, tests, or config" - the word "tests" is in the rule.
+#   - The whole carddemo.* namespace: the JWT contract, the BCrypt strength,
+#     the four page sizes of 7, 10, 10 and 20, the record lengths 350, 430,
+#     133, 100, 80 and 32, and the decimal policy. These are PARITY CONTRACTS
+#     read out of the COBOL source, not tunables. Varying one per environment
+#     would mean the test tier verified behaviour the delivered application
+#     does not have.
+#
+# THE FOUR ACTIVE OVERRIDES, and why each one is genuinely a delta:
+#
+#   1. spring.autoconfigure.exclude - removes the OTLP span exporter. Base
+#      declares management.otlp.tracing.endpoint with no default, and that
+#      property gates a bean with @ConditionalOnProperty. Condition evaluation
+#      resolves placeholders STRICTLY, so with no collector variable exported
+#      the context refresh aborts before any test runs. Measured; see RUNTIME
+#      VALIDATION EVIDENCE.
+#   2. spring.batch.jdbc.initialize-schema - always instead of the base never,
+#      so the framework creates its own BATCH_* metadata tables in the fresh
+#      container.
+#   3. spring.cloud.aws.s3.path-style-access-enabled - true instead of the SDK
+#      default, because virtual-host bucket addressing cannot resolve against
+#      a container endpoint.
+#   4. logging.level.com.github.dockerjava - a WARN protective floor over the
+#      container-control client, so that raising the root level during an
+#      investigation cannot dump container environment variables.
+#
+# NOTHING ELSE IS SET. In particular this file declares no spring.datasource
+# url, username, password, host, port or database name; no
+# spring.cloud.aws.*.endpoint; no spring.cloud.aws.credentials.*; no S3 bucket,
+# SQS queue or SNS topic name; and no JWT signing key, default, example or
+# fallback. Every one of those omissions is deliberate and is explained under
+# THE DYNAMIC-INJECTION CONTRACT below.
+#
+# COMMON FAILURE MODES AND TROUBLESHOOTING
+#
+#   - "Could not find a valid Docker environment", or a container start that
+#     hangs and then times out. THE DOCKER SOCKET IS THE FIRST THING TO CHECK
+#     and it is the single most common cause of a red integration tier. This
+#     profile cannot function without a container runtime: there is no
+#     in-memory fallback and none may be added, because an in-memory database
+#     would silently stop validating the copybook-derived DDL. Verify with
+#     `docker info`, then re-run. In an environment that genuinely has no
+#     runtime, the correct action is to report the prerequisite - Rule 1
+#     Clause F, state what is missing rather than assert an untested pass -
+#     never to weaken this profile until the tests go green.
+#   - An image pull failure, typically a timeout or a registry rate limit on
+#     first use. The tier needs the PostgreSQL 16 image, the LocalStack image
+#     and the Testcontainers reaper image. Pre-pull them, or point the run at a
+#     mirror; docker-compose.yml and .env.example name the image coordinates
+#     the rest of the repository already uses, so reusing those tags keeps the
+#     local cache warm for both paths.
+#   - Startup aborts with an unresolvable placeholder for
+#     carddemo.security.jwt.signing-key. The signing key was not supplied. THIS
+#     IS CORRECT, INTENDED BEHAVIOUR and it is what proves the fail-fast
+#     contract still holds under test. Supply the value from the test's own
+#     registry or environment. Never add a default here to quiet the message:
+#     a committed default is the High-severity defect the previous migration
+#     attempt shipped, and a test-only default would reintroduce it in the one
+#     place Rule 1 Clause D calls out by name.
+#   - Startup aborts on the datasource url, username or password. The test
+#     class is not contributing the container's connection details. Either
+#     annotate the container bean @ServiceConnection or register the three
+#     values from a @DynamicPropertySource method; see THE DYNAMIC-INJECTION
+#     CONTRACT for which mechanism applies to which substrate.
+#   - Startup aborts on an unresolvable bucket, queue or topic name. Those are
+#     read by @Value with no default - TransactionWriter and RejectWriter read
+#     carddemo.aws.s3.batch-output-bucket, and ReportSubmissionService reads
+#     the three carddemo.aws.sqs.* keys - so the test must supply the names of
+#     the resources it provisioned inside LocalStack. They are deliberately not
+#     defaulted here; see the same section.
+#   - Flyway reports "Validate failed: Migration checksum mismatch". A
+#     committed migration was edited after it had been applied to a database
+#     that outlived the run. A per-test container cannot hit this, so it points
+#     at a reused volume or at a shared database. Recreate the container.
+#     validate-on-migrate stays true and clean-disabled stays true; disabling
+#     either to make the tier pass would be swallowing the failure, which
+#     Rule 1 Clause B forbids outright.
+#   - Flyway reports "found non-empty schema without schema history table". The
+#     database was migrated by something else before the application started -
+#     for example a test that pre-applied the SQL by hand. Let the application
+#     own the migration. baseline-on-migrate stays false so this is loud rather
+#     than silently accepted.
+#   - Hibernate reports a missing table, column or type mismatch during schema
+#     validation. This is the tier working as designed: the entity mapping and
+#     the Flyway DDL have diverged. Fix whichever is wrong against the
+#     originating copybook in app/cpy. Watch the three money precisions in
+#     particular, because two of them are not the common case - account fields
+#     are PIC S9(10)V99 hence NUMERIC(12,2), the transaction amount and the
+#     transaction-category balance are PIC S9(09)V99 hence NUMERIC(11,2), and
+#     the disclosure rate is PIC S9(04)V99 hence NUMERIC(6,2).
+#   - "Table BATCH_JOB_INSTANCE not found", or a job launch that fails on
+#     missing metadata. The framework schema was not created. This profile sets
+#     spring.batch.jdbc.initialize-schema to always precisely to prevent it;
+#     if the error appears, the override below was removed or a competing value
+#     won at a higher precedence. The remedy is NEVER to add the BATCH_* tables
+#     to a Flyway migration.
+#   - An AWS call fails with an unknown host, a connection refusal, or a
+#     credential-chain error. LocalStack is not reachable at the endpoint the
+#     test registered, or no endpoint was registered at all and the SDK
+#     resolved the real service. There is deliberately NO live-AWS fallback
+#     anywhere in this profile: a missing emulator must fail the test loudly.
+#     If the failure names a real service host, the endpoint override did not
+#     reach the client - check that the dynamic registration ran before the
+#     context refreshed.
+#   - S3 succeeds against the shared local stack but fails against the
+#     container, or vice versa. This is almost always the ambient
+#     AWS_ENDPOINT_URL variable, which .env.example ships and which the AWS SDK
+#     honours on its own. Exported globally it redirects EVERY client - the
+#     container's included - onto whichever emulator that variable names, so
+#     two runs disagree for reasons nothing in the code explains. The
+#     spring.cloud.aws.*.endpoint properties a test registers take precedence
+#     over it, which is why registering them explicitly is not optional. See
+#     the findings register for the severity and the remediation.
+#   - S3 fails with a bucket-addressing or DNS error such as an unresolvable
+#     bucket-prefixed host. Path-style access was lost. The override below
+#     restores it; virtual-host addressing cannot work against a container
+#     endpoint because no wildcard DNS entry exists for it.
+#   - An SQS operation fails with a queue-not-found error. Base sets
+#     queue-not-found-strategy to FAIL, so a mistyped or unprovisioned queue is
+#     a loud error rather than a silently auto-created queue whose FIFO
+#     attributes would then be wrong. Provision the queue in the container
+#     first. Note the logical-versus-physical split: the logical contract is
+#     carddemo-report-jobs and AWS requires the .fifo suffix on the physical
+#     name.
+#   - The context starts but no span, traceId or spanId appears. Expected in
+#     part: the OTLP EXPORTER is excluded below, so nothing leaves the process.
+#     In-process tracing is deliberately left ON, so traceId and spanId still
+#     populate MDC and logback-spring.xml still renders them - a test may
+#     assert that. What a test may not assert here is a delivered span.
+#   - Two integration classes interfere with each other, or one sees rows the
+#     other seeded. Containers are per-run, not per-method, so a shared context
+#     shares a database. Use @Transactional rollback, or a distinct container
+#     lifecycle, or assert against data the seed migration guarantees rather
+#     than against data another class wrote.
+#
+# THE DYNAMIC-INJECTION CONTRACT
+#
+# This is the core requirement of the profile, and the two substrates do NOT
+# use the same mechanism. That asymmetry is not a style preference; it is what
+# the pinned classpath supports, verified by inspecting the jars rather than
+# assumed.
+#
+#   - PostgreSQL: @ServiceConnection works, and is the preferred route.
+#     Annotate a container bean and Boot contributes a JdbcConnectionDetails
+#     bean that SUPERSEDES spring.datasource.url, .username and .password
+#     outright, so the base placeholders beneath them are never evaluated and
+#     POSTGRES_HOST, POSTGRES_DB, POSTGRES_USER and POSTGRES_PASSWORD need not
+#     be exported at all. The match is made by
+#     JdbcContainerConnectionDetailsFactory, whose type parameter is
+#     JdbcDatabaseContainer, and org.testcontainers.postgresql.PostgreSQLContainer
+#     extends JdbcDatabaseContainer - so the NEW package name required by
+#     pom.xml is compatible with @ServiceConnection. @DynamicPropertySource
+#     registering the same three properties is an equally valid alternative.
+#   - LocalStack: @ServiceConnection is NOT AVAILABLE and
+#     @DynamicPropertySource is the only route. Neither
+#     spring-boot-testcontainers nor Spring Cloud AWS ships a LocalStack
+#     connection-details factory on this classpath, so nothing can match a
+#     LocalStack container bean. A test must therefore register
+#     spring.cloud.aws.s3.endpoint, .sqs.endpoint and .sns.endpoint - the same
+#     three keys the local profile sets statically - from the container's
+#     mapped port, together with the region and the credential pair the
+#     emulator expects. See the findings register.
+#
+# Both mechanisms contribute at a precedence ABOVE every profile file, which is
+# what makes an override here unnecessary and a literal here harmful. The
+# resource names follow the same rule: a test provisions its buckets, its FIFO
+# queue and its topic inside its own container and registers the names it used,
+# so two runs never contend for one bucket. The published spellings are
+# CARDDEMO_S3_BATCH_INPUT_BUCKET, CARDDEMO_S3_BATCH_OUTPUT_BUCKET,
+# CARDDEMO_S3_STATEMENTS_BUCKET, CARDDEMO_SQS_REPORT_QUEUE and
+# CARDDEMO_SNS_NOTIFICATION_TOPIC, shared by .env.example, docker-compose.yml
+# and localstack-init/init-aws.sh; a test that prefers the environment route
+# may export those instead of registering properties.
+
+#
+# DEPENDENCY METADATA IS NOT DECLARED HERE - AND ONE BLOCKER THAT EXPLAINS WHY
+#
+# This file introduces no coordinate, no artefact identifier and no version of
+# any kind, and it imports no bill of materials. The root pom.xml owns all of
+# it, pins every plugin and every unmanaged dependency to an exact value, and
+# admits no range, no LATEST, no RELEASE and no snapshot. The paragraph below
+# is DOCUMENTATION, not configuration; it is here because the failure it
+# describes surfaces as an unexplained resolution error in the very tier this
+# profile serves, and Rule 1 Clause F requires a known blocker to be recorded
+# with evidence and a remediation rather than left for the next reader to
+# rediscover.
+#
+#   - BLOCKER - the Testcontainers 2.x module rename. The 2.x line renamed
+#     every module artefact. Under the org.testcontainers group the bare 1.x
+#     identifiers `localstack`, `postgresql` and `junit-jupiter` DO NOT EXIST
+#     at 2.0.3 and resolution against them fails outright. Only the prefixed
+#     identifiers resolve: `testcontainers`, `testcontainers-localstack`,
+#     `testcontainers-postgresql` and `testcontainers-junit-jupiter`.
+#     Compounding it, Spring Boot 3.5.11 already manages a 1.x Testcontainers
+#     version and imports the Testcontainers bill of materials itself, so
+#     adding a competing import produces an ordering-dependent resolution that
+#     can silently select that 1.x line instead.
+#     REMEDIATION - both halves are required and either alone still fails.
+#     Half one: raise the version the Spring Boot parent manages by setting the
+#     managed-version property to exactly 2.0.3, which switches the import the
+#     parent already performs. Do NOT add a second bill-of-materials import.
+#     Half two: use only the prefixed identifiers in the test scope. Overriding
+#     without renaming resolves artefacts that do not exist; renaming without
+#     overriding resolves the wrong line.
+#     STATUS - both halves are in place in pom.xml and were verified to hold;
+#     see RUNTIME VALIDATION EVIDENCE.
+#     A related consequence for test code rather than for the build: import the
+#     containers from their NEW packages, org.testcontainers.postgresql and
+#     org.testcontainers.localstack. The org.testcontainers.containers
+#     equivalents still ship at 2.0.3 but are deprecated, and the zero-warning
+#     compile turns a deprecation warning into a build failure.
+#
+# SEED AND FIXTURE CONTRACT
+#
+# V3__seed_data.sql loads NINE fixtures and only nine, all from
+# app/data/ASCII, in the exact source order, width and row count below. The
+# figures were confirmed by direct inspection of the fixtures and of the
+# migration; they are the assertions a seed test should make, because a wrong
+# row count means a wrong parity baseline:
+#
+#     acctdata.txt    50 rows x 300 bytes    -> account
+#     carddata.txt    50 rows x 150 bytes    -> card
+#     cardxref.txt    50 rows x  36 bytes    -> card_cross_reference
+#     custdata.txt    50 rows x 500 bytes    -> customer
+#     dailytran.txt  300 rows x 350 bytes    -> daily_transaction
+#     discgrp.txt     51 rows x  50 bytes    -> disclosure_group
+#     tcatbal.txt     50 rows x  50 bytes    -> transaction_category_balance
+#     trancatg.txt    18 rows x  60 bytes    -> transaction_category
+#     trantype.txt     7 rows x  60 bytes    -> transaction_type
+#
+# The fixture is named dailytran.txt, spelled in full. The mainframe DD name
+# and dataset at app/jcl/POSTTRAN.jcl:L30-L31 abbreviate it, but the ASCII
+# fixture does not, and a test resource path that guesses the abbreviation
+# resolves to nothing. The eleventh table, "transaction", is intentionally
+# unseeded: it is the posting job's OUTPUT, and Gate 1 measures what the job
+# writes into it from the 300 staged records.
+#
+# There is NO usrsec fixture file. The ten users exist only as in-stream
+# IEBGENER data at app/jcl/DUSRSECJ.jcl:L35-L44, in the 80-byte CSUSR01Y
+# layout of an 8-character identifier, a 20-character first name, a
+# 20-character last name, an 8-character password, a 1-character type and
+# filler - five administrators of type A and five standard users of type U.
+# Every one of the ten carries the SAME literal plaintext password in the
+# legacy corpus. That value is not reproduced anywhere in this repository and
+# must not be: V3__seed_data.sql stores the ten rows only as BCrypt hashes at
+# strength 10, which is what makes the security gate's "every password hashed"
+# assertion provable rather than asserted.
+#
+# Two properties of the fixture data govern how a test must read it.
+#
+#   - ZONED-DECIMAL OVERPUNCH SIGNS ARE POSITION-AWARE. A signed numeric field
+#     carries its sign in the final character: { is +0, A through I are +1 to
+#     +9, } is -0, and J through R are -1 to -9. Decoding must be driven by the
+#     PIC clause offsets, NEVER by a global text substitution, because those
+#     same letters occur legitimately inside text fields such as a merchant
+#     name - substituting globally corrupts the text and the amount together.
+#   - dailytran.txt GENUINELY CONTAINS NEGATIVE AMOUNTS and must never be
+#     normalised. Of its 300 amount fields, 25 end in { and 6 end in }, and 44
+#     more end in a J-to-R character carrying a negative non-zero value. Those
+#     44 are what exercise the cycle-debit branch of the posting logic, where a
+#     negative amount is added to the debit accumulator so that the
+#     over-limit expression's subtraction of that accumulator behaves
+#     correctly. An absolute-value "clean-up" anywhere on this path silently
+#     removes the only coverage that branch has.
+#
+# Two further fixture properties make specific outcomes testable, and they are
+# the reason discgrp.txt is a source of this file at all. Of its 51 rows, 17
+# carry the literal group identifier DEFAULT, covering type and category pairs
+# 01/0001-0004, 02/0001-0003, 03/0001-0003, 04/0001-0003, 05/0001, 06/0001-0002
+# and 07/0001 - and seven of those 17 carry a ZERO rate. So both branches of
+# the interest program's default-rate fallback are reachable from the seed
+# alone: a hit on the DEFAULT row, and a zero rate that produces no interest
+# transaction and no accumulation. A pair type and category outside that set
+# reaches the third branch, where a missing DEFAULT row abends the job.
+#
+# All 300 dailytran.txt records carry the same originating timestamp text and a
+# BLANK 26-space processing timestamp, which is what makes the generated
+# processing timestamp - 26 characters ending in four zero digits, at
+# millisecond precision - an observable output of the job rather than an echo
+# of its input.
+#
+# app/data/EBCDIC is never read, parsed, transcoded or loaded by this profile
+# or by any test that activates it. Those twelve files are byte-level codepage
+# reference only; the ASCII fixtures are the authoritative seed and test input.
+#
+# FINDINGS REGISTER
+#
+# Severities follow Rule 1 Clause F. Nothing below is a defect introduced by
+# this file. Each entry names its evidence and its remediation.
+#
+#   - HIGH - LocalStack has no @ServiceConnection support on this classpath.
+#     The instruction for this artefact describes the AWS endpoint as arriving
+#     through "@DynamicPropertySource/@ServiceConnection". Only the first of
+#     those two works: spring-boot-testcontainers 3.5.11 contains no LocalStack
+#     class of any kind, and Spring Cloud AWS 3.3.0 contributes no
+#     testcontainers module to this classpath, so no connection-details factory
+#     can match a LocalStack container bean. PostgreSQL is unaffected and both
+#     mechanisms work for it.
+#     Remediation: register the three spring.cloud.aws.*.endpoint keys from a
+#     @DynamicPropertySource method. Revisit only if a future Spring Cloud AWS
+#     release ships a factory - and then verify it rather than assume it.
+#   - HIGH - the ambient AWS_ENDPOINT_URL variable can silently redirect
+#     container clients. .env.example ships AWS_ENDPOINT_URL and the AWS SDK
+#     honours that variable directly, without Spring's involvement. A developer
+#     who sources the environment file before running the tier therefore points
+#     every AWS client at the shared emulator named by that variable rather
+#     than at the per-test container, and the tier then passes or fails for
+#     reasons no code explains. application.yml:180-182 records the same
+#     hazard.
+#     Remediation: always register spring.cloud.aws.s3.endpoint,
+#     .sqs.endpoint and .sns.endpoint explicitly, because those properties take
+#     precedence over the variable; or unset AWS_ENDPOINT_URL for the run.
+#     Deliberately NOT remediated by writing an endpoint into this file, which
+#     would substitute a hardcoded assumption for an ambient one.
+#   - HIGH - a missing java.time.Clock bean stops ANY test that boots the whole
+#     application, this profile included, and the cause is outside this file.
+#     com.cardemo.security.JwtTokenProvider takes a Clock as constructor
+#     parameter 3 and no configuration class declares one, so a full-context
+#     boot fails with "Parameter 3 of constructor in
+#     com.cardemo.security.JwtTokenProvider required a bean of type
+#     'java.time.Clock' that could not be found". Measured directly: the
+#     container-tier boot described under RUNTIME VALIDATION EVIDENCE hit this
+#     before it reached a single assertion. It is a defect in the configuration
+#     layer, not in this profile - no property can supply a bean - and that
+#     layer is outside this file's scope, so it is reported rather than patched.
+#     Remediation: declare a Clock bean in the configuration layer, ideally
+#     Clock.system(ZoneOffset.UTC) so batch timestamps stay deterministic and
+#     the 26-character format ending in four zeros stays reproducible; a test
+#     may substitute Clock.fixed to pin generated timestamps.
+#   - MEDIUM - signing-key variable name. The instruction for this artefact
+#     names the variable JWT_SIGNING_KEY. The repository standardised on
+#     JWT_SECRET before this file existed: application.yml:874 reads it,
+#     .env.example ships it empty and required, and pom.xml and
+#     owasp-suppressions.xml both name it. Introducing a second spelling here
+#     would create exactly the duplication Rule 1 Clause C forbids while
+#     satisfying none of the instruction's normative requirements any better -
+#     those requirements are environment indirection, no committed value, no
+#     fallback and fail-fast, and all four hold as written because this file
+#     declares nothing at all about the key.
+#     Remediation if the repository later standardises on the other spelling:
+#     rename in every place at once, never partially.
+#   - MEDIUM - management.tracing.enabled is deliberately NOT set to false
+#     here, even though disabling tracing is the obvious-looking way to remove
+#     the collector dependency. It was measured not to be the mechanism that
+#     removes it, and its only measured effect on the bean graph is to swap the
+#     trace-context propagator for a no-op - which would REDUCE what the tier
+#     can assert about the observability layer the COBOL corpus lacks entirely.
+#     Declaring it would therefore add a property that does not solve the
+#     problem it appears to solve.
+#     Remediation: none required. The exclusion below is the mechanism, and it
+#     leaves in-process tracing intact on purpose.
+#   - MEDIUM - the Testcontainers 2.x LocalStack API changed shape as well as
+#     coordinate, which the Blocker above does not by itself convey. Verified
+#     against the resolved 2.0.3 jar rather than assumed: the 1.x nested
+#     LocalStackContainer.Service enum NO LONGER EXISTS, so withServices now
+#     takes plain strings - withServices("s3", "sqs", "sns") - and the per
+#     service getEndpointOverride(Service) accessor is replaced by a single
+#     getEndpoint() returning java.net.URI. Test code carried over from 1.x
+#     therefore fails to compile even once the coordinates are correct, which
+#     under the zero-warning build is a hard stop rather than a warning.
+#     Remediation: pass service names as strings and derive all three of
+#     spring.cloud.aws.s3.endpoint, .sqs.endpoint and .sns.endpoint from the one
+#     getEndpoint() value. The container class moved package too, to
+#     org.testcontainers.localstack.LocalStackContainer, alongside
+#     org.testcontainers.postgresql.PostgreSQLContainer.
+#   - LOW - spring.cloud.aws.s3.path-style-access-enabled is set both here and
+#     in the local profile with the same value. That is not duplication in the
+#     sense Rule 1 Clause C forbids: it could only be hoisted into
+#     application.yml, and the base profile must stay free of any assumption
+#     that an emulator is in use. Two independent environments needing the same
+#     switch is the correct shape.
+#     Remediation: none required, and hoisting is the wrong fix. Should a THIRD
+#     emulator-backed profile ever appear, revisit by introducing a shared
+#     emulator profile for the three to include rather than by moving the switch
+#     into application.yml, which would let a production run inherit it.
+#   - LOW - this profile cannot be booted by `spring-boot:run` and is not
+#     meant to be. It is a fragment completed by a test class, as set out under
+#     THE DYNAMIC-INJECTION CONTRACT. Remediation: use the local profile to run
+#     the application interactively.
+#
+# NOT AVAILABLE
+#
+#   - No service-level objective exists anywhere in the COBOL corpus, so this
+#     profile asserts no latency, throughput or timeout threshold and sets no
+#     connection-pool size. What would be needed to set one: a measured
+#     production workload profile. Until then, the performance gate records a
+#     measured baseline rather than a target, and inventing a threshold here
+#     would be exactly the unjustified value Rule 1 Clause A forbids.
+#   - app/csd/CARDDEMO.CSD:L388-L390 defines transaction CDV1 against
+#     PROGRAM(COCRDSEC), and COCRDSEC has no source anywhere in the
+#     repository - the identifier occurs in the CSD and nowhere else. Nothing
+#     is configured for it and no test surface is invented for it. The 17
+#     sourced operations are CAUP, CAVW, CA00, CB00, CCDL, CCLI, CCUP, CC00,
+#     CM00, CR00, CT00, CT01, CT02, CU00, CU01, CU02 and CU03.
+#   - The integration and end-to-end test trees, and the configuration classes
+#     that consume several of the properties named above - SecurityConfig,
+#     BatchConfig, AwsConfig, ObservabilityConfig, CorrelationIdFilter and
+#     HealthIndicators - were still pending when this profile was authored, the
+#     migration being delivered in a single phase. Every reference to them
+#     describes the interface they must honour rather than an inspected file.
+#     Everything cited with a line number WAS inspected and verified to exist:
+#     the six app/ sources named in the banner, plus application.yml, pom.xml,
+#     .env.example, .editorconfig, Dockerfile, docker-compose.yml,
+#     V1__create_schema.sql and V3__seed_data.sql.
+
+#
+# RUNTIME VALIDATION EVIDENCE
+#
+# Measured, not asserted, on 2026-08-02 against the pinned toolchain: OpenJDK
+# 25.0.3, Apache Maven 3.9.11, Spring Boot 3.5.11, Spring Cloud AWS 3.3.0,
+# Testcontainers 2.0.3, PostgreSQL 16 and Docker Engine 29.7.0 with Compose
+# 5.3.1. Rule 1 Clause F requires evidence rather than a claim, and the central
+# override in this file is one that reasoning alone gets wrong.
+#
+#   - WHY THE OTLP EXPORTER MUST BE EXCLUDED, and why the two obvious
+#     alternatives do not work. A four-scenario matrix was booted against the
+#     real application.yml on the real test classpath with both
+#     OTEL_EXPORTER_OTLP_ENDPOINT and MANAGEMENT_OTLP_TRACING_ENDPOINT
+#     deliberately unset - which is the state of a clean continuous-integration
+#     run and of any developer who has not sourced an environment file:
+#         no override                                -> refresh ABORTED
+#         management.tracing.enabled false           -> refresh ABORTED
+#         + management.otlp.tracing.export.enabled
+#           false                                    -> refresh ABORTED
+#         spring.autoconfigure.exclude of the OTLP
+#           tracing auto-configuration               -> STARTED
+#     All three aborts failed identically, with
+#     "PlaceholderResolutionException: Could not resolve placeholder
+#     'OTEL_EXPORTER_OTLP_ENDPOINT'". The successful scenario reported zero span
+#     exporter beans and zero OTLP connection-details beans. The exclusion is
+#     therefore NECESSARY AND SUFFICIENT, and neither disabling tracing nor
+#     lowering the sampling probability is a substitute.
+#   - THE MECHANISM behind that result, established separately so the fix is
+#     understood rather than merely observed. Three measurements:
+#     (1) @ConfigurationProperties binding is LENIENT - binding an unresolvable
+#     ${...} yields the literal text and throws nothing;
+#     (2) Environment.getProperty is STRICT - it throws
+#     PlaceholderResolutionException, and containsProperty returns true for a
+#     placeholder-valued key without resolving it;
+#     (3) consequently @ConditionalOnProperty THROWS during CONDITION
+#     EVALUATION when the property's value is an unresolvable placeholder,
+#     proved with a purpose-built gated bean that refreshed cleanly when the
+#     variable was present and failed with "Error processing condition" when it
+#     was not.
+#     The OTLP tracing auto-configuration is annotated only @ConditionalOnClass
+#     at class level - it carries no tracing-enabled condition - and the
+#     connection-details bean it imports is gated by @ConditionalOnProperty on
+#     management.otlp.tracing.endpoint. Because application.yml supplies that
+#     key as a defaultless placeholder, the condition is always evaluated and
+#     always throws when no collector variable is exported. Excluding the
+#     auto-configuration removes the import, so the condition is never
+#     evaluated at all.
+#   - IN-PROCESS TRACING SURVIVES THE EXCLUSION, which is why it was chosen
+#     over disabling tracing. With the exclusion in place the tracer, the
+#     OpenTelemetry SDK, the tracer provider and the sampler are all still
+#     present and only the exporter is gone, so spans are still created and
+#     traceId and spanId still reach the logging context. A bean-graph diff
+#     between the exclusion alone and the exclusion plus
+#     management.tracing.enabled false was identical at 247 bean definitions
+#     and 4 observation handlers, differing in exactly one entry: the
+#     trace-context propagator became a no-op. That is the whole measured
+#     effect of disabling tracing here, and it is a loss rather than a gain.
+#   - NOTHING IN THE APPLICATION DEPENDS ON THE EXCLUDED BEANS. A search of the
+#     main sources for the OTLP connection-details type, the span-exporter
+#     type, the tracer-provider type and the OpenTelemetry SDK type returned no
+#     match, so the exclusion cannot break bean wiring.
+#   - THE TESTCONTAINERS REMEDY HOLDS. The resolved test classpath carries only
+#     the 2.0.3 line - seven artefacts, every one prefixed - and a dependency
+#     tree restricted to the org.testcontainers group reports 2.0.3 at every
+#     node including the transitive JDBC and database-commons modules. A 1.x
+#     artefact remains cached in the local repository, being the version the
+#     Spring Boot parent manages by default, and it is NOT resolved. That is
+#     direct evidence that the property override switches the parent's own
+#     import and that no second bill of materials is needed.
+#   - @ServiceConnection COMPATIBILITY WITH THE RENAMED CONTAINER, verified by
+#     inspecting the jars rather than assumed. Boot's JDBC connection-details
+#     factory is parameterised on JdbcDatabaseContainer, and
+#     org.testcontainers.postgresql.PostgreSQLContainer extends
+#     JdbcDatabaseContainer, so the new package name and @ServiceConnection are
+#     compatible. Both container classes ship at 2.0.3 - the new package and a
+#     deprecated org.testcontainers.containers shim - and only the new one is
+#     safe under the zero-warning compile. No LocalStack class exists in
+#     spring-boot-testcontainers at all, which is the evidence behind the HIGH
+#     finding above.
+#   - THE SCHEMA AND SEED FIGURES THIS PROFILE VALIDATES AGAINST were counted
+#     from the migrations themselves. V1__create_schema.sql declares exactly 11
+#     CREATE TABLE statements, the eleventh being the quoted "transaction"
+#     identifier. V3__seed_data.sql inserts into 10 of those 11 tables with row
+#     counts of 7, 18, 50, 50, 50, 50, 51, 50, 300 and 10, matching the nine
+#     fixtures and the ten in-stream users exactly, and it contains ten BCrypt
+#     hashes and zero occurrences of the legacy plaintext literal.
+#   - THE FIXTURE FIGURES were counted from the fixtures themselves.
+#     dailytran.txt is 105,300 bytes: 300 records of 350 characters plus one
+#     line terminator each. Its amount field ends in { on 25 records and } on 6,
+#     with 44 further records carrying a negative non-zero J-to-R sign; 250
+#     records are type 01 from a point-of-sale source and 50 are type 03 from an
+#     operator source; and the processing timestamp is blank on all 300.
+#     discgrp.txt is 51 records of 50 characters, 17 under each of three group
+#     identifiers, and 7 of the 17 DEFAULT rows carry a zero rate.
+#   - THE EXCLUSION WORKS WHEN SUPPLIED FROM THIS PROFILE FILE, which is the one
+#     thing the matrix above did NOT establish: every scenario in it was driven
+#     by a command-line argument, and Spring Boot consumes
+#     spring.autoconfigure.exclude during auto-configuration IMPORT SELECTION -
+#     early enough that a profile-file contribution could plausibly have arrived
+#     too late to take effect. Re-measured on 2026-08-02 with the test profile
+#     activated by name and both collector variables explicitly unset, this file
+#     being the only source of the exclusion: the context REFRESHED, the
+#     property read back exactly as written here, and the span-exporter and OTLP
+#     connection-details bean counts were both zero. In the same run the tracer
+#     and tracer-provider counts were both one, confirming that in-process
+#     tracing survives. 29 assertions, all passing, process exit 0. The three
+#     sibling overrides read back as written, and 16 inherited base contracts -
+#     the validate-only schema handling, the five Flyway settings, the disabled
+#     job launcher, the actuator exposure and its two probe groups, the
+#     fail-on-missing-queue strategy, the two log floors, the four parity page
+#     sizes and the 430 = 350 + 80 reject geometry - were each read back
+#     unchanged, proving this file overrides nothing it should inherit. The same
+#     run confirmed that no AWS endpoint property and no AWS credential property
+#     is declared anywhere under this profile.
+#   - FAIL-FAST ON THE ABSENT SIGNING KEY SURVIVES THIS PROFILE, measured with
+#     the mechanism the application itself uses: a required constructor argument
+#     bound to carddemo.security.jwt.signing-key, which application.yml:874
+#     maps to a defaultless environment variable. With the variable absent the
+#     refresh ABORTED with "Could not resolve placeholder" naming both the
+#     variable and the property; with it present the same context STARTED. Both
+#     directions were measured, so the result is a demonstrated sensitivity
+#     rather than an unconditional failure.
+#   - THE MODULE BUILDS AND ITS SUITE PASSES WITH THIS FILE PRESENT. A clean
+#     compile built 93 sources under release 25 with -Xlint:all and -Werror and
+#     copied 11 resources, reporting zero warnings and zero errors, exit 0. The
+#     unit tier ran 6858 tests with 0 failures, 0 errors and 0 skipped, exit 0.
+#     That tier neither started a container nor activated this profile - zero
+#     Testcontainers, Docker-client and Ryuk references in its output, and zero
+#     profile activations - because Surefire excludes the integration and
+#     end-to-end trees, which Failsafe owns. Those two trees do not exist yet,
+#     so no test class consumes this profile as at this commit; see the LOW
+#     finding above, which this measurement confirms rather than discovers.
+#   - THE CONTAINER TIER WAS RUN, NOT DESCRIBED. Because no integration or
+#     end-to-end test class exists yet, the contract was proved with a
+#     purpose-built harness on 2026-08-02: a real PostgreSQL container reporting
+#     server version 16.14 and a real LocalStack 4.14.0 container, both started
+#     through Testcontainers 2.0.3 using the prefixed coordinates and the moved
+#     package names, with their addresses injected as a highest-precedence
+#     property source exactly as @ServiceConnection and @DynamicPropertySource
+#     do. 41 assertions, 0 failures, process exit 0. Docker Engine 29.7.0 with
+#     Compose 5.3.1; every image already local, so nothing was pulled.
+#     What that run establishes about THIS file:
+#       the context refreshes, which means ddl-auto validate PASSED against the
+#         Flyway-owned schema - the inherited setting this profile deliberately
+#         does not touch, and the one that would have hidden schema drift;
+#       exactly 3 SQL migrations applied, versions 1, 2 and 3, each exactly
+#         once, all successful, and no version 4 anywhere in the history;
+#       V1 created exactly 11 domain tables - account, card,
+#         card_cross_reference, customer, daily_transaction, disclosure_group,
+#         transaction, transaction_category, transaction_category_balance,
+#         transaction_type, user_security;
+#       the 6 Spring Batch metadata tables were created by the FRAMEWORK script
+#         because of the initialize-schema override below, and none of them is
+#         owned by a migration. The framework script also contributes 5 foreign
+#         keys of its own, which is why the catalogue reports 15 while V1
+#         declares exactly 10, named fk01 through fk10. That arithmetic is
+#         itself the cleanest proof the override took effect;
+#       V2 created exactly the 3 alternate-index B-trees, one per VSAM alternate
+#         index: ix_card_acct_id, ix_card_cross_reference_acct_id and
+#         ix_transaction_proc_ts;
+#       the seed row counts came back 50, 50, 50, 50, 300, 51, 50, 18, 7 and 10
+#         for the nine fixtures and the ten in-stream users, with the
+#         transaction table empty because posting produces it;
+#       the disclosure-group set is 17 rows under each of three identifiers with
+#         7 of the DEFAULT rows at a zero rate, so both the fallback-success and
+#         the no-interest branch are reachable from seed alone;
+#       50 daily-transaction amounts are NEGATIVE and 250 positive, so the
+#         overpunch sign was decoded position-aware and the cycle-debit branch
+#         was not normalised away;
+#       user_security has no column named password, all 10 rows begin with a
+#         BCrypt marker at strength 10, no row carries the legacy plaintext
+#         literal, and the split is 5 administrators to 5 standard users;
+#       S3, SQS and SNS all answered on the container endpoint, with the three
+#         buckets, the FIFO queue and the topic present.
+#     THE AMBIENT-REDIRECT REMEDIATION WAS PROVED TOO, and it is the one claim in
+#     the HIGH finding above that could have been wrong. The run was repeated
+#     with AWS_ENDPOINT_URL deliberately exported to the SHARED emulator, which
+#     holds an extra bucket the per-test container does not, giving an
+#     unambiguous discriminator. The Spring-managed S3 client listed exactly the
+#     three container buckets and NOT the extra one, so the explicit endpoint
+#     properties do take precedence over the variable and no call escaped to the
+#     ambient address. No endpoint resolved to a real AWS host.
+#   - TEST-LOG HYGIENE WAS MEASURED ON REAL OUTPUT, not assumed from the absence
+#     of debug switches. The captured container-tier log contains zero SQL bind
+#     parameters, zero Authorization headers, zero bearer tokens, zero BCrypt
+#     hashes, zero nine-digit sequences that could be a social security number,
+#     zero serialised tokens and zero echoed SQL, and the signing-key value
+#     itself appears nowhere. One further observation worth recording: when a
+#     bean-creation failure was provoked, logback-spring.xml rendered the
+#     message as "[REDACTED] exception during bean creation", so the masking
+#     configuration is demonstrably active rather than merely declared.
+
+# ============================================================================
+# THE FOUR OVERRIDES
+# ============================================================================
+# Everything below this line is the complete active content of this file. If a
+# property is not here, it is inherited from application.yml unchanged, or it is
+# contributed at runtime by the test class - never guessed.
+spring:
+
+  # --------------------------------------------------------------------------
+  # 1. Remove the OTLP span exporter so no trace collector is required
+  # --------------------------------------------------------------------------
+  # The test tier must not depend on a Jaeger collector, and application.yml
+  # deliberately gives management.otlp.tracing.endpoint no default so that a
+  # deployment which wants tracing fails loudly rather than dropping every span
+  # in silence. Those two requirements collide in a test: the defaultless
+  # placeholder gates a bean through @ConditionalOnProperty, condition
+  # evaluation resolves placeholders strictly, and the context therefore aborts
+  # before a single test runs.
+  #
+  # Excluding the auto-configuration is the measured fix - see RUNTIME
+  # VALIDATION EVIDENCE, where disabling tracing and disabling the export flag
+  # were both proved insufficient. It removes the exporter and its condition
+  # while leaving in-process tracing intact, so traceId and spanId still reach
+  # MDC and logback-spring.xml still renders them; only delivery is gone.
+  #
+  # This is the one place in this file that names a framework class. It is a
+  # class name, not an endpoint, a credential or a version, and it introduces no
+  # dependency metadata.
+  autoconfigure:
+    exclude: org.springframework.boot.actuate.autoconfigure.tracing.otlp.OtlpTracingAutoConfiguration
+
+  # --------------------------------------------------------------------------
+  # 2. Let the framework create its own batch metadata schema
+  # --------------------------------------------------------------------------
+  # application.yml:656 sets this to never, which is the conservative base
+  # value: it is unconditional, unlike the framework default, which creates
+  # nothing against a real PostgreSQL and would surface much later as a missing
+  # BATCH_JOB_INSTANCE when a job launches.
+  #
+  # A test container starts empty, so the BATCH_* tables must be created during
+  # the run. They come from the framework's own
+  # org/springframework/batch/core/schema-postgresql.sql and from NOWHERE ELSE.
+  # They must never be added as a fourth Flyway migration and never appended to
+  # V1__create_schema.sql, because a validation gate asserts that V1 creates
+  # exactly 11 tables - one per VSAM KSDS cluster counted at
+  # app/catlg/LISTCAT.txt:L3940, plus the DALYTRAN staging dataset of
+  # app/jcl/POSTTRAN.jcl:L30. Batch bookkeeping is framework state, not part of
+  # the migrated CardDemo schema, and conflating the two would corrupt that
+  # count permanently.
+  #
+  # The framework script is not idempotent as SQL, but the framework's own
+  # initialiser continues past already-exists failures, so this value is
+  # restart-safe against a reused volume. It is silent about a partial failure
+  # for the same reason, which is exactly why it belongs to the local and test
+  # profiles only and why prod keeps never so a database administrator applies
+  # the script deliberately.
+  batch:
+    jdbc:
+      initialize-schema: always
+
+  cloud:
+    aws:
+      s3:
+        # --------------------------------------------------------------------
+        # 3. Address buckets by path, not by virtual host
+        # --------------------------------------------------------------------
+        # The SDK default addresses a bucket as a subdomain of the service
+        # host. That cannot work against a container: the emulator is reached
+        # through a mapped port on a plain host name, and no wildcard DNS
+        # entry exists to make a bucket-prefixed name resolve. Every S3
+        # operation in the tier would fail on name resolution instead of on
+        # anything the test is actually asserting.
+        #
+        # Path-style addressing is therefore required, exactly as it is in the
+        # local profile against the compose emulator. Note what this property
+        # is NOT: it carries no endpoint, no host and no port. The endpoint
+        # itself is contributed by the test class from the container's mapped
+        # port, per THE DYNAMIC-INJECTION CONTRACT, and it is that separation
+        # which keeps every literal address out of this file.
+        #
+        # The S3 objects at stake are the fixed-width outputs whose geometry is
+        # the parity contract: 430-byte reject records, being the 350-byte
+        # transaction image plus an 80-byte trailer of a four-digit reason code
+        # and a 76-character description, as declared by
+        # app/jcl/POSTTRAN.jcl:L36; 133-byte report lines; and the 80-byte and
+        # 100-byte statement outputs. Record length is preserved byte-exactly
+        # at the S3 boundary, so a test that cannot reach the bucket cannot
+        # verify the one thing that matters most about it.
+        path-style-access-enabled: true
+
+# ============================================================================
+# 4. Logging - a protective floor over the container-control client
+# ============================================================================
+# The levels themselves are inherited from application.yml:1139-1163 and are
+# NOT restated. Hibernate SQL and bind-parameter logging, Spring Security
+# DEBUG, AWS SDK wire logging and web body logging all stay off, because at
+# DEBUG or TRACE they emit statement text and bound parameter values - which
+# for app/cpy/CVCUS01Y.cpy means CUST-SSN PIC 9(09) and for
+# app/cpy/CSUSR01Y.cpy means the stored BCrypt hash - along with Authorization
+# headers and signing material.
+#
+# One namespace exists only in this tier and therefore has no floor in the
+# base: the client that drives the container runtime. It is a genuine exposure
+# and it is specific to testing. Below WARN it logs the container-create
+# request, and that request carries the container's full environment - which for
+# the emulator includes the credential pair it is configured with, and for any
+# container a test parameterises may include whatever else was passed in. Rule 1
+# Clause D reads "No secrets in code, logs, tests, or config", naming tests
+# explicitly, so this is the one place the obligation is unmet unless it is
+# stated here.
+#
+# This is a FLOOR, following the same pattern and the same reasoning as the
+# org.hibernate.SQL and org.hibernate.orm.jdbc.bind entries in the base. A child
+# level overrides its parent, so it has no visible effect while the root level
+# stays at INFO and becomes load-bearing the moment someone raises the root
+# level to investigate a container that will not start - which is precisely
+# when the temptation to leave it raised is greatest.
+logging:
+  level:
+    com.github.dockerjava: WARN
