@@ -242,15 +242,22 @@
 #     and Spring Cloud AWS 3.3.0 ships no health indicator at all: no class
 #     matching Health exists in spring-cloud-aws-autoconfigure-3.3.0.jar,
 #     spring-cloud-aws-s3-3.3.0.jar or spring-cloud-aws-sqs-3.3.0.jar.
-#     Naming s3 or sqs today would therefore make the application unbootable.
+#     Naming s3 or sqs would therefore have made the application unbootable at
+#     the time this file was authored.
 #     Resolution: the readiness group enumerates only contributors that exist
 #     on this classpath, and the group-membership validation is left at its
 #     secure default rather than disabled, because disabling it would swallow
 #     a misconfiguration.
-#     Remediation: com.cardemo.observability.HealthIndicators supplies the
-#     object-storage and queue contributors; append their contributor names to
-#     management.endpoint.health.group.readiness.include in the same change
-#     that introduces them.
+#     RESOLVED - the stated remediation has been carried out. The library still
+#     ships no health indicator; instead
+#     src/main/java/com/cardemo/observability/HealthIndicators.java now declares
+#     the two beans s3HealthIndicator and sqsHealthIndicator, whose component
+#     keys are `s3` and `sqs`, and those keys were appended to
+#     management.endpoint.health.group.readiness.include in the same change.
+#     Readiness therefore covers database + object storage + queue as the
+#     specification requires, with validate-group-membership still true. The
+#     two spellings are now coupled: renaming a bean without renaming the key,
+#     or the reverse, is a HIGH-severity regression.
 #   - MEDIUM - GDG retention conflict, inherited from the source.
 #     app/jcl/DEFGDGB.jcl:L37-38 declares LIMIT(5) for the TRANREPT
 #     generation data group and app/jcl/REPTFILE.jcl:L26-27 declares LIMIT(10)
@@ -772,12 +779,27 @@ management:
         # relational substrate and are covered by the db contributor.
         # Dockerfile:495-496 issues GET /actuator/health/readiness and greps for
         # UP, so this group must exist and resolve.
-        # Object-storage and queue contributors come from
-        # com.cardemo.observability.HealthIndicators and must be appended here
-        # in the same change that introduces them; see the discrepancy
-        # register for why they cannot be named in advance.
+        # Object-storage and queue contributors now exist and are named below.
+        # com.cardemo.observability.HealthIndicators declares exactly two beans,
+        # s3HealthIndicator and sqsHealthIndicator; Actuator strips the
+        # HealthIndicator suffix, so the component keys are `s3` and `sqs`. They
+        # were appended here in the same change that introduced those beans,
+        # which is what management.endpoint.health.validate-group-membership
+        # (true, just above) requires: naming a contributor that does not exist
+        # fails startup. Renaming either bean without renaming the key here
+        # silently drops that dependency from readiness - HIGH severity - so the
+        # two spellings must always move together. The published constants are
+        # HealthIndicators.S3_HEALTH_COMPONENT_NAME and
+        # .SQS_HEALTH_COMPONENT_NAME; cite those rather than retyping a literal.
+        #
+        # `s3` probes the three configured buckets with a metadata-only
+        # HeadBucket and `sqs` resolves the report queue with a read-only
+        # GetQueueUrl. Neither mutates anything, and neither may be added to the
+        # liveness group above: an emulator blip must not restart a healthy JVM.
+        # Readiness therefore covers database + object storage + queue, which is
+        # the three-way composite the migration requires.
         readiness:
-          include: readinessState,db
+          include: readinessState,db,s3,sqs
   health:
     # Every contributor states its own participation rather than inheriting a
     # blanket enable.
