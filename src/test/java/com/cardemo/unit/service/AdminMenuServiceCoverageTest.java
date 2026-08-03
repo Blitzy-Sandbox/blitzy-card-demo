@@ -107,7 +107,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       accept anything, including all-null components. That asymmetry is pinned here as <em>observed</em>
  *       behaviour so that a later edit which adds or removes a guard is visible as a test change rather
  *       than as silence.</li>
- * </ul>
+ *   </ul>
  *
  * <p>One further observation is recorded rather than exploited: the service takes a {@link Clock}, but
  * nothing the clock feeds escapes the service. {@code populateHeaderInfo} composes a header string that is
@@ -118,8 +118,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>
- *   mvn -o -B test -Dtest=AdminMenuServiceCoverageTest -DfailIfNoSpecifiedTests=false
- *   mvn -o -B clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
+ *   ./mvnw -B -ntp -o test -Dtest=AdminMenuServiceCoverageTest -DfailIfNoSpecifiedTests=false
+ *   ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
  * </pre>
  *
  * <p>No profile, container, database or network endpoint is required.</p>
@@ -151,7 +151,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>A failure in {@code RecordContracts} means guards have been added to, or removed from, the admin
  *       records. That may well be an improvement, but it is a behaviour change and belongs in the decision
  *       log rather than in a silent edit.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("AdminMenuService - the COADM01C administrator menu dispatch")
 final class AdminMenuServiceCoverageTest {
@@ -393,7 +393,7 @@ final class AdminMenuServiceCoverageTest {
     }
 
     @Nested
-    @DisplayName("Label rendering: stripped rather than padded to a screen slot")
+    @DisplayName("Label rendering: padded to the forty-column screen slot, exactly as the main menu is")
     final class LabelRendering {
 
         @ParameterizedTest(name = "label {0} is [{1}]")
@@ -403,45 +403,46 @@ final class AdminMenuServiceCoverageTest {
             "2|03. User Update (Security)",
             "3|04. User Delete (Security)",
         }, delimiter = '|')
-        @DisplayName("each label is the zero-padded number, the separator and the stripped caption")
+        @DisplayName("each label is the zero-padded number, the separator and the caption at its full width")
         void eachLabelIsItsThreeParts(final int index, final String expected) {
             assertThat(service.getMenuScreen().optionLabels().get(index))
                     .as("the renderer formats the PIC 9(02) number with a leading zero, appends '. ', "
-                            + "appends the caption and then strips the caption's trailing blanks")
-                    .isEqualTo(expected);
+                            + "appends the whole PIC X(35) caption and pads the line to PIC X(40)")
+                    .isEqualTo(expected + " ".repeat(
+                            MenuResponse.SCREEN_OPTION_SLOT_LENGTH - expected.length()));
         }
 
         @Test
-        @DisplayName("labels are ragged, because they are stripped rather than padded")
-        void labelsAreRaggedBecauseTheyAreStripped() {
-            final List<String> labels = service.getMenuScreen().optionLabels();
-
-            assertThat(labels)
-                    .as("MainMenuService pads every line to the forty-column screen slot, so its lines are "
-                            + "all the same length; this service strips, so its lines differ - the two "
-                            + "renderers genuinely diverge and neither is a bug")
+        @DisplayName("every label is exactly forty characters, so the lines are not ragged")
+        void everyLabelIsExactlyFortyCharacters() {
+            // app/cbl/COADM01C.cbl:L231-L236 and app/cbl/COMEN01C.cbl:L241-L246 are byte-identical STRING
+            // statements into byte-identical PIC X(40) receiving fields, so the two renderers must produce
+            // the same geometry. This service previously applied stripTrailing while the main menu padded,
+            // which made lines of 24, 23, 26 and 26 characters out of a fixed-width screen field.
+            assertThat(service.getMenuScreen().optionLabels())
                     .extracting(String::length)
-                    .containsExactly(24, 23, 26, 26);
+                    .containsOnly(MenuResponse.SCREEN_OPTION_SLOT_LENGTH);
         }
 
         @Test
-        @DisplayName("no label carries a trailing blank")
-        void noLabelCarriesATrailingBlank() {
+        @DisplayName("every label carries the trailing blank the MOVE SPACES left, rather than losing it")
+        void everyLabelCarriesItsResidualBlank() {
+            // Thirty-nine bytes are written - two digits, two separator characters, thirty-five caption
+            // bytes - and the fortieth is the space :L231 left. Stripping it discarded a byte the screen
+            // slot genuinely carried.
             assertThat(service.getMenuScreen().optionLabels())
-                    .as("the stripTrailing is the whole difference from the main menu renderer, so a "
-                            + "single surviving trailing blank means it has been removed or bypassed")
-                    .allSatisfy(label -> assertThat(label).isEqualTo(label.stripTrailing()));
+                    .allSatisfy(label -> assertThat(label).endsWith(" "));
         }
 
         @Test
-        @DisplayName("no label reaches the forty-column slot the main menu pads to")
-        void noLabelReachesTheMainMenuScreenSlot() {
+        @DisplayName("the caption occupies its whole PIC X(35) width, wherever it ends")
+        void theCaptionOccupiesItsDeclaredWidth() {
+            // The caption starts after the two digits and the two-character separator, and DELIMITED BY SIZE
+            // transfers all thirty-five of its bytes whatever the caption's own text length is.
+            final int captionStart = 2 + 2;
             assertThat(service.getMenuScreen().optionLabels())
-                    .as("the longest admin caption still leaves the line well short of forty columns, so "
-                            + "an accidental switch to the padding renderer would be visible as a length "
-                            + "change on every line rather than on none")
-                    .allSatisfy(label -> assertThat(label.length())
-                            .isLessThan(MenuResponse.SCREEN_OPTION_SLOT_LENGTH));
+                    .allSatisfy(label -> assertThat(label.length() - captionStart)
+                            .isGreaterThanOrEqualTo(MenuResponse.OPTION_NAME_LENGTH));
         }
 
         @Test
@@ -749,7 +750,11 @@ final class AdminMenuServiceCoverageTest {
             assertThat(withPlaceholder.getMenuScreen().optionLabels())
                     .as("the DUMMY guard runs when an option is chosen, not when the menu is drawn, so a "
                             + "placeholder is offered on screen exactly like a real option")
-                    .containsExactly("01. User List (Security)", "02. Future Admin Feature");
+                    .containsExactly(
+                            "01. User List (Security)"
+                                    + " ".repeat(MenuResponse.SCREEN_OPTION_SLOT_LENGTH - 24),
+                            "02. Future Admin Feature"
+                                    + " ".repeat(MenuResponse.SCREEN_OPTION_SLOT_LENGTH - 24));
         }
     }
 

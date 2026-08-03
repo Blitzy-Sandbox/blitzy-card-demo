@@ -65,7 +65,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <p><strong>The independent witness.</strong> Each copybook declares its slot geometry twice: once as the
  * {@code VALUE}-bearing {@code FILLER} fields of the data group, and once as the {@code 15}-level fields
- * of the {@code REDEFINES} group. The oracle reads the first. {@link #perSlotWidthMatchesTheRedefinesGroup}
+ * of the {@code REDEFINES} group. The oracle reads the first.
+ * {@link TheRedefinesGroupCorroboratesTheParse#perSlotWidthMatchesTheRedefinesGroup}
  * parses the second with a pattern local to this test and requires the two to agree, so a parsing error in
  * the oracle cannot be confirmed by the oracle itself.</p>
  */

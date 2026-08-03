@@ -104,7 +104,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A placeholder selection keeps its {@code DUMMY} program name.</strong> The main menu
  *       returns the name it found and flags the selection; the administrator menu, by contrast, blanks it.
  *       The two services diverge here and both are faithful, so the divergence is pinned on both sides.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The record contracts are covered as first-class subjects rather than as a side effect of the service
  * calls, because {@code MenuSelection} carries an invariant that no service call can violate: a real target
@@ -115,8 +115,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>
- *   mvn -o -B test -Dtest=MainMenuServiceCoverageTest -DfailIfNoSpecifiedTests=false
- *   mvn -o -B clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
+ *   ./mvnw -B -ntp -o test -Dtest=MainMenuServiceCoverageTest -DfailIfNoSpecifiedTests=false
+ *   ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
  * </pre>
  *
  * <p>No profile, container, database or network endpoint is required. Every assertion runs against a plain
@@ -152,7 +152,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       operator input is a validation failure; an absent {@link UserType} is a wiring defect, because the
  *       role claim that replaces {@code CDEMO-USER-TYPE} is always present by the time the service is
  *       reached.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("MainMenuService - the COMEN01C main menu dispatch")
 final class MainMenuServiceCoverageTest {

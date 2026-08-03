@@ -103,7 +103,7 @@ import org.junit.jupiter.api.Test;
  *           {@code -PGMNAME PIC X(08)}; <strong>no {@code -USRTYPE}</strong></td></tr>
  *   <tr><td>slot width</td><td>2 + 35 + 8 + 1 = <strong>46 bytes</strong></td>
  *       <td>2 + 35 + 8 = <strong>45 bytes</strong></td></tr>
- * </table>
+ *   </table>
  *
  * <p>Both halves are asserted here. The shape asymmetry is asserted structurally, over the record components
  * of {@link MainMenuOption} and {@link AdminMenuOption} and over the members of the sealed
@@ -112,40 +112,41 @@ import org.junit.jupiter.api.Test;
  * {@link MenuType#getDeclaredCapacity()}, and over the fact that every index at or beyond the count is
  * unreachable through {@link MenuResponse#getOptions()}.</p>
  *
- * <h3>1.1 Findings this class records, classified by severity</h3>
+ * <h3>1.1 The mistakes this class exists to prevent</h3>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - using the {@code OCCURS} arity as an iteration bound. The overlay is
+ *   <li><strong>Using the {@code OCCURS} arity as an iteration bound.</strong> The overlay is
  *       wider than the data it redefines: main is 10 &times; 46 = 460 populated bytes under a 12 &times; 46
  *       = 552 byte overlay, a <strong>92 byte over-run</strong> making subscripts 11 and 12 uninitialised;
  *       admin is 4 &times; 45 = 180 under 9 &times; 45 = 405, a <strong>225 byte over-run</strong> making
- *       subscripts 5 through 9 uninitialised. Remediation: bound every loop by the count field. Both
+ *       subscripts 5 through 9 uninitialised. Every loop must be bounded by the count field. Both
  *       programs already do - {@code app/cbl/COMEN01C.cbl:L238-L239} and
  *       {@code app/cbl/COADM01C.cbl:L228-L229} stop when the index passes the count, and
  *       {@code :L128} in each validates a selection against the same count.</li>
- *   <li><strong>Blocker</strong> - imposing one entry shape on both tables. Remediation: two types, and a
+ *   <li><strong>Imposing one entry shape on both tables.</strong> There are two types, and a
  *       shared supertype that declares only the three genuinely shared sub-fields.</li>
- *   <li><strong>Blocker</strong> - altering a rejection literal, in particular dropping the trailing space
- *       inside {@code 'No access - Admin Only option... '} at {@code app/cbl/COMEN01C.cbl:L140}.
- *       Remediation: assert the literals byte for byte, as {@link RejectionLiterals} does.</li>
- *   <li><strong>Blocker</strong> - collapsing the absent / blank / {@code LOW-VALUES} tri-state into one
- *       state. Remediation: keep {@code null}, a space and {@code U+0000} distinguishable end to end.</li>
- *   <li><strong>High</strong> - trimming the 35 character caption, unpadding the two digit option number,
+ *   <li><strong>Altering a rejection literal</strong>, in particular dropping the trailing space
+ *       inside {@code 'No access - Admin Only option... '} at {@code app/cbl/COMEN01C.cbl:L140}. The
+ *       literals are asserted byte for byte, as {@link RejectionLiterals} does.</li>
+ *   <li><strong>Collapsing the absent / blank / {@code LOW-VALUES} tri-state into one
+ *       state.</strong> {@code null}, a space and {@code U+0000} stay distinguishable end to end.</li>
+ *   <li><strong>Distorting a field on the way through:</strong> trimming the 35 character caption,
+ *       unpadding the two digit option number,
  *       comparing all eight program-name characters against {@code 'DUMMY'}, fabricating an admin user-type
  *       gate, left-justifying the option parse, leaving iteration order unspecified, publishing a mutable
  *       option list, treating the program name as a live dispatch key, abstracting a shared screen header,
  *       or modelling a gated cross-field edit as an unconditional class-level constraint.</li>
- *   <li><strong>Medium, closed</strong> - prior-generation plan prose gave a census of 460 BMS input
- *       fields. A direct count of the seventeen symbolic maps totals <strong>441</strong>, and that prose's
- *       own table summed to 440, so the three figures disagreed; the specification now publishes 441.
+ *   <li><strong>Quoting a symbolic-map field total from prose.</strong> A direct count of the seventeen
+ *       symbolic maps totals <strong>441</strong>, not the 460 that older prose gives.
  *       The two maps this class touches are counted here first hand:
  *       {@code app/cpy-bms/COMEN01.CPY} and {@code app/cpy-bms/COADM01.CPY} declare
- *       <strong>20 input fields each</strong>. Remediation: recount before quoting the total.</li>
- *   <li><strong>Low</strong> - {@code app/cpy/COMEN02Y.cpy:L2} banners the member as
+ *       <strong>20 input fields each</strong>.</li>
+ *   <li><strong>Trusting a copybook banner over its declarations.</strong>
+ *       {@code app/cpy/COMEN02Y.cpy:L2} banners the member as
  *       {@code CardDemo - Admin Menu Options} although its group item at {@code :L19} is
- *       {@code CARDDEMO-MAIN-MENU-OPTIONS} and its ten captions are the main-menu captions. Cosmetic; the
- *       declarations are authoritative. Recorded, not acted on.</li>
- * </ul>
+ *       {@code CARDDEMO-MAIN-MENU-OPTIONS} and its ten captions are the main-menu captions. The
+ *       declarations are authoritative.</li>
+ *   </ul>
  *
  * <h3>1.2 Every locator this class relies on</h3>
  *
@@ -178,7 +179,7 @@ import org.junit.jupiter.api.Test;
  *       {@code app/cpy-bms/COSGN00.CPY:L54} where the same field is {@code PIC X(9)}.</li>
  *   <li>{@code app/cbl/CBACT04C.cbl:L1-L21} the canonical banner this file opens with;
  *       {@code CONTRIBUTING.md:L33-L34}; {@code NOTICE}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run, build and test</h2>
  *
@@ -215,22 +216,23 @@ import org.junit.jupiter.api.Test;
  *       strict-stubs default would apply, but {@link MenuResponse} has no collaborator to double: it
  *       performs no I/O, reads no configuration and depends on exactly one other CardDemo type. Mocking a
  *       pure value type would assert the mock rather than the contract, so Mockito is deliberately unused
- *       and deliberately not imported - Clause B forbids an unused import, and because {@code javac} 25.0.3
+ *       and deliberately not imported - Clause B forbids an unused import, and because {@code javac} at
+ *       release 25
  *       publishes no lint key for one that prohibition is honoured here by omission rather than by the
  *       compiler.</li>
  *   <li><strong>Reflection.</strong> Used only to read declared structure - field names, method names,
  *       record components, annotations, generic type names - never to invoke anything or to defeat access
  *       control. Synthetic members are filtered because the coverage agent adds {@code $jacocoData} during
  *       {@code verify}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
  *   <li><em>The build fails on something trivial.</em> Compilation runs with {@code -Xlint:all},
  *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one raw type or
- *       deprecation is an error rather than a warning. An unused import is not - {@code javac} 25.0.3
- *       publishes no lint key for one - so that is caught at review. Reproduce with
+ *       deprecation is an error rather than a warning. An unused import is not - {@code javac} at release 25
+ *       publishes no lint key for one - so it must be spotted by hand. Reproduce with
  *       {@code ./mvnw -B test-compile}.</li>
  *   <li><em>A count assertion fails at 12 or 9 instead of 10 or 4.</em> The {@code OCCURS} arity was used
  *       as the bound. Use {@link MenuType#getPopulatedOptionCount()}.</li>
@@ -248,21 +250,20 @@ import org.junit.jupiter.api.Test;
  *       the space-to-zero substitution. See {@link #normaliseOptionEntry(String)}.</li>
  *   <li><em>{@code "XDUMMY"} is treated as a placeholder.</em> All eight characters were compared instead
  *       of the first five that {@code (1:5) NOT = 'DUMMY'} compares.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>5. Deliberately not asserted - "Not available"</h2>
+ * <h2>5. Deliberately not asserted</h2>
  *
  * <ul>
  *   <li><strong>Any DDL claim.</strong> The two menu tables are <strong>copybook constants, not database
  *       tables</strong>: {@code app/cpy/COMEN02Y.cpy} and {@code app/cpy/COADM02Y.cpy} are
- *       {@code WORKING-STORAGE} literals copied into two programs, they appear in no
- *       {@code DEFINE CLUSTER} job and in no catalogue entry, and {@code V1__create_schema.sql} has no
- *       planned child for them. Their column mapping is therefore <strong>Not available</strong>, and none
- *       is invented. What would be needed to state one: a catalogued cluster or an IDCAMS definition for a
- *       menu dataset, neither of which exists.</li>
+ *       {@code WORKING-STORAGE} literals copied into two programs, and they appear in no
+ *       {@code DEFINE CLUSTER} job and in no catalogue entry. They have no column mapping to assert, and
+ *       none is invented; stating one would take a catalogued cluster or an IDCAMS definition for a
+ *       menu dataset, and neither exists.</li>
  *   <li><strong>The contents of the unpopulated overlay subscripts.</strong> Main 11 and 12, and admin 5
- *       through 9, address storage no {@code VALUE} literal reaches. Their contents are
- *       <strong>Not available</strong>; this class asserts only that they are unreachable.</li>
+ *       through 9, address storage no {@code VALUE} literal reaches, so their contents are undefined;
+ *       this class asserts only that they are unreachable.</li>
  *   <li><strong>The private constructor's null-menu-type guard.</strong> It is the one line of
  *       {@link MenuResponse} this class leaves uncovered, and deliberately so. The sole constructor is
  *       private and all four factories pass a {@link MenuType} constant, so no public caller can reach the
@@ -277,7 +278,7 @@ import org.junit.jupiter.api.Test;
  *       {@code app/cbl/COMEN01C.cbl}. What is asserted here is that the byte is faithfully
  *       <em>representable</em>, so the service can refuse access, and that no method on the payload decides
  *       access itself.</li>
- * </ul>
+ *   </ul>
  */
 class MenuResponseTest {
 

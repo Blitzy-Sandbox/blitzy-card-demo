@@ -85,9 +85,11 @@ import java.util.Objects;
  *
  * <p>Compile and run the unit tier with {@code ./mvnw -B -ntp test}; compile only with
  * {@code ./mvnw -B -ntp test-compile}. Test compilation runs under {@code -Xlint:all -Werror} with
- * {@code failOnWarning}, so a single unused import, raw type or deprecated call in this file fails the whole
- * build rather than printing a warning. Nothing here needs a container, a Spring context, a database or a
- * network endpoint: it is a pure JVM classpath read, so it runs identically on a developer machine and in CI.
+ * {@code failOnWarning}, so a single raw type, unchecked cast or deprecated call in this file fails the whole build
+ * rather than printing a warning. An unused import does not: {@code javac} 25 publishes no {@code unused} lint key,
+ * so Rule 1 Clause B's prohibition on one is enforced at review. Nothing here needs a container, a Spring context, a
+ * database or a network endpoint: it is a pure JVM classpath read, so it runs identically on a developer machine and
+ * in CI.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -102,7 +104,7 @@ import java.util.Objects;
  *       intact. See the geometry table below for why.</li>
  *   <li><strong>Nothing is cached in mutable static state.</strong> Every method is pure and re-reads its
  *       resource; {@link FixtureData} is an immutable snapshot a caller may hold for as long as it likes.</li>
- * </ul>
+ *   </ul>
  *
  * <p>That last default is a deliberate tradeoff and worth stating plainly. Re-reading is slightly more work
  * than a shared cache would be, and the reasons it is still the right default are that the nine fixtures total
@@ -613,7 +615,7 @@ public final class FixtureLoader {
      * <p>A signed COBOL numeric written to a text file carries its sign in the final character, overpunched
      * onto the last digit: <code>&#123;</code> is +0 and {@code A} through {@code I} are +1 to +9;
      * <code>&#125;</code> is -0 and {@code J} through {@code R} are -1 to -9. A plain digit in that position is
-     * read as unsigned and therefore positive. So {@code "00000001940{"} is +194.00 and {@code "0000009190}"}
+     * read as unsigned and therefore positive. So {@code "00000001940&#123;"} is +194.00 and {@code "0000009190&#125;"}
      * is -919.00.
      *
      * <p><strong>Decoding is position aware and must stay that way.</strong> This method decodes a field that
@@ -784,4 +786,3 @@ public final class FixtureLoader {
         return records;
     }
 }
-

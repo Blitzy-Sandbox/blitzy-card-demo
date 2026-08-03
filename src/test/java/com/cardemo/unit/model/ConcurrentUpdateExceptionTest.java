@@ -79,12 +79,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       that a future reader does not "fix" it and silently break parity.</li>
  *   <li><strong>The {@code affectedRecord} normalisation policy</strong>, which is blank-to-null
  *       <em>and</em> strip - a third policy distinct from its two sibling exception types.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=ConcurrentUpdateExceptionTest
+ * ./mvnw -B -ntp -o test -Dtest=ConcurrentUpdateExceptionTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -103,7 +103,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       "corrected". The parity gate reads these byte for byte.</li>
  *   <li><strong>The strip assertions fail.</strong> The normalisation on {@code affectedRecord} changed.
  *       Note it is deliberately not the same policy the other payload types use.</li>
- * </ul>
+ *   </ul>
  *
  * @see ConcurrentUpdateException
  */

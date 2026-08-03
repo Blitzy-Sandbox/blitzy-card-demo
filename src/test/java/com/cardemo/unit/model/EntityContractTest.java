@@ -198,18 +198,23 @@ final class EntityContractTest {
      * Columns whose copybook picture is numeric but which the entity deliberately models as
      * {@code String}.
      *
-     * <p>All three hold digit strings that are never arithmetic and whose leading zeros are
-     * significant, so a numeric Java type would silently drop them: a card verification value and a
-     * social security number are fixed-width codes, and the FICO score is carried as written because
-     * twenty-one of the fifty customer fixture rows hold a value below the notional 300 floor. They are
-     * bounded by the width probes in group 4 instead of the numeric probes in group 5.</p>
+     * <p>Both hold digit strings that are never arithmetic and whose leading zeros are significant, so a
+     * numeric Java type would silently drop them: a social security number is a fixed-width code, and the
+     * FICO score is carried as written because twenty-one of the fifty customer fixture rows hold a value
+     * below the notional 300 floor. They are bounded by the width probes in group 4 instead of the numeric
+     * probes in group 5.</p>
+     *
+     * <p>{@code Card.cvvCode} was a third entry until finding F13 removed the operational verification
+     * column outright. It is not replaced by a substitute entry: the census is derived from the entities
+     * that exist, so a removed column must leave the list rather than linger as a name that resolves to
+     * nothing.</p>
      *
      * <p>The list is a census, not a licence: {@link NumericGuard#theTextHeldNumericCensusIsWellFormed()}
      * proves every entry really is a numeric-picture column of {@code String} type, so it cannot become a
      * place to park a column that simply lacks a guard.</p>
      */
     private static final List<String> NUMERIC_PICTURE_HELD_AS_TEXT = List.of(
-            "Card.cvvCode", "Customer.ssn", "Customer.ficoCreditScore");
+            "Customer.ssn", "Customer.ficoCreditScore");
 
     /**
      * Whether a column's Java type carries a numeric domain this test can bound.
@@ -1021,7 +1026,7 @@ final class EntityContractTest {
         @Test
         @DisplayName("the card number never reaches a card rendering")
         void cardNumberIsWithheld() {
-            final Card card = new Card("4111111111111111", 1L, "123", "A CARDHOLDER",
+            final Card card = new Card("4111111111111111", 1L, "A CARDHOLDER",
                     "2025-01-01", "Y");
 
             assertThat(card.toString())

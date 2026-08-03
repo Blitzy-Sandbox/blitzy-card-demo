@@ -27,7 +27,6 @@
 package com.cardemo.service.transaction;
 
 import java.math.BigDecimal;
-import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
 import java.util.Optional;
@@ -66,7 +65,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code app/csd/CARDDEMO.CSD:153} and program entry {@code app/csd/CARDDEMO.CSD:271}. The source program is
  * 783 lines carrying 18 paragraph labels, and every one of those labels is reproduced here as exactly one
  * private method whose Javadoc cites the label and its verified line. The traceability anchor is commit
- * {@code 7756d89}; the paragraph-to-method correspondence is what {@code TRACEABILITY_MATRIX.md} asserts.
+ * {@code 7756d89}; the paragraph-to-method correspondence is what the planned {@code TRACEABILITY_MATRIX.md} will
+ * assert.
  * </p>
  * <p>
  * The behaviour, in source order, is: resolve the account or card key through the card cross reference,
@@ -87,8 +87,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       This class therefore consults <em>no</em> clock: it holds no {@code Clock}, calls no {@code now()}
  *       and formats no timestamp. Both the batch rendering {@code yyyy-MM-dd-HH.mm.ss.SS0000} and the
  *       online rendering {@code yyyy-MM-dd HH:mm:ss.SSSSSS} are wrong for this program. This corrects the
- *       technical specification, which describes a generated timestamp; recorded in {@code DECISION_LOG.md}.
- *       Remediation: none — the source is authoritative.</li>
+ *       technical specification, which describes a generated timestamp; owed an entry in the planned
+ *       {@code DECISION_LOG.md}. Remediation: none — the source is authoritative.</li>
  *   <li><b>High — the identifier generation race is deliberately retained.</b>
  *       {@code app/cbl/COTRN02C.cbl:443-450} moves {@code HIGH-VALUES} into the key, browses backwards for
  *       the highest existing identifier, adds one, and writes. That is racy under concurrency, exactly as
@@ -97,8 +97,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       the Gate 1 comparison against the legacy baseline. A collision surfaces as
  *       {@code DuplicateRecordException} from the primary key constraint, which is the intended outcome and
  *       matches the shared {@code DUPKEY}/{@code DUPREC} branch at {@code app/cbl/COTRN02C.cbl:735-736}.
- *       Recorded in {@code DECISION_LOG.md}. Remediation: acceptable only because parity against the legacy
- *       baseline is the contract; revisit if concurrent add throughput becomes a requirement.</li>
+ *       Owed an entry in the planned {@code DECISION_LOG.md}. Remediation: acceptable only because parity against the
+ *       legacy baseline is the contract; revisit if concurrent add throughput becomes a requirement.</li>
  *   <li><b>High — validation is strictly fail fast.</b> {@code SEND-TRNADD-SCREEN} issues
  *       {@code EXEC CICS SEND} and then {@code EXEC CICS RETURN} at
  *       {@code app/cbl/COTRN02C.cbl:530-534}, so every failure branch terminates the task immediately.
@@ -111,15 +111,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       currency parsed and echoed at {@code app/cbl/COTRN02C.cbl:383-386}, which is <em>before</em> the two
  *       dates are semantically validated at {@code :389-427} and <em>before</em> the merchant identifier
  *       numeric check at {@code :430-437}. A tidier ordering would change which echo the caller receives on
- *       a date validation failure. Recorded in {@code DECISION_LOG.md}. Remediation: none — reorder only if the
- *       parity contract is renegotiated, because the echoed amount is byte compared.</li>
+ *       a date validation failure. Owed an entry in the planned {@code DECISION_LOG.md}. Remediation: none — reorder
+ *       only if the parity contract is renegotiated, because the echoed amount is byte compared.</li>
  *   <li><b>Medium — on the PF5 path the key validation and the cross reference read execute twice.</b>
  *       {@code COPY-LAST-TRAN-DATA} performs {@code VALIDATE-INPUT-KEY-FIELDS} at
  *       {@code app/cbl/COTRN02C.cbl:473} and then performs {@code PROCESS-ENTER-KEY} at {@code :495}, which
  *       performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166}. The redundant read is source
  *       behaviour and is not optimised away; the efficiency clause is discharged by this written
- *       justification and the {@code DECISION_LOG.md} entry, not by deduplicating. Remediation: revisit only if PF5
- *       prefill latency becomes a measured problem; the repeat is a single indexed lookup.</li>
+ *       justification and the entry owed to the planned {@code DECISION_LOG.md}, not by deduplicating. Remediation:
+ *       revisit only if PF5 prefill latency becomes a measured problem; the repeat is a single indexed lookup.</li>
  *   <li><b>Medium — two distinct numeric parsers are used deliberately.</b> {@code FUNCTION NUMVAL} parses
  *       the account identifier at {@code app/cbl/COTRN02C.cbl:204} and the card number at {@code :218};
  *       {@code FUNCTION NUMVAL-C}, which additionally tolerates currency symbols and thousands separators,
@@ -138,7 +138,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       never referenced anywhere in the procedure division — no {@code EXEC CICS} verb names the dataset
  *       and no account field is read or written — so {@code Account} and {@code AccountRepository} are
  *       deliberately neither imported, injected nor referenced. Importing them would leave unused imports,
- *       which is a hard build failure under {@code -Xlint:all -Werror}. No Java field is created for any of
+ *       which Rule 1 Clause B forbids - caught at review rather than by {@code -Xlint:all -Werror}, since
+ *       {@code javac} 25 publishes no {@code unused} lint key. No Java field is created for any of
  *       these five declarations.</li>
  *   <li><b>Low — {@code CURTIMEI} is {@code PIC X(8)}</b> at {@code app/cpy-bms/COTRN02.CPY:54}, not the
  *       {@code X(9)} the specification claims universally. The header renders {@code MM/DD/YY} and
@@ -150,8 +151,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><b>Low — the screen header reads no clock in this target.</b>
  *       {@code MOVE FUNCTION CURRENT-DATE} at {@code app/cbl/COTRN02C.cbl:554} is presentation only, and the
  *       zero-clock constraint above is absolute for this file, so {@code populateHeaderInfo} echoes the
- *       request's own date and time text. Recorded in {@code DECISION_LOG.md}.</li>
- * </ol>
+ *       request's own date and time text. Owed an entry in the planned {@code DECISION_LOG.md}.</li>
+ *   </ol>
  *
  * <h2>Fixed-width input contract</h2>
  * <p>
@@ -174,19 +175,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Key configuration and defaults</h2>
  * <ul>
  *   <li>The two numeric converters and the edited-amount printer are owned by
- *       {@link com.cardemo.config.WebConfig} and are consumed here, never redeclared or reimplemented.
- *       Their resolved names are {@code WebConfig.StrictIdentifierConverter},
- *       {@code WebConfig.CurrencyAwareAmountConverter} and {@code WebConfig.EditedAmountPrinter}. They are
- *       registered for query and path binding only and do not participate in JSON body binding, so this
- *       class invokes them explicitly. They are documented immutable and stateless, so single shared
- *       instances are held.</li>
+ *       {@link com.cardemo.config.WebConfig}, published there as singleton beans, and <b>injected</b> here -
+ *       never redeclared, reimplemented or constructed. Their resolved names are
+ *       {@code WebConfig.StrictIdentifierConverter}, {@code WebConfig.CurrencyAwareAmountConverter} and
+ *       {@code WebConfig.EditedAmountPrinter}. They are registered for query and path binding only and do
+ *       not participate in JSON body binding, so this class invokes them explicitly - on the very objects
+ *       request binding is registered with, which is what keeps one parsing rule to one object.</li>
  *   <li>{@code spring.jpa.hibernate.ddl-auto=validate} and {@code spring.jpa.open-in-view=false} are
  *       consumed as configured and never redeclared here. No property is read by this class, and no
  *       environment variable or system property is consulted.</li>
  *   <li>The write path runs inside a single {@code @Transactional(rollbackFor = Exception.class)} boundary,
  *       so failure semantics are reproduced by scoping rather than by conditional logic. Transaction
  *       management is owned by {@code JpaConfig}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
@@ -205,7 +206,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       status.</li>
  *   <li>{@link com.cardemo.exception.FatalProcessingException} — the record image violated the
  *       {@code CVTRA05Y} field contract, which is the abend path: abend code 999, return code 12.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Not available</h2>
  * <p>
@@ -220,10 +221,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@link com.cardemo.config.WebConfig} exists and declares {@code StrictIdentifierConverter},
  *       {@code CurrencyAwareAmountConverter} and {@code EditedAmountPrinter}, all consumed here, so no local
  *       fallback was written and no deviation needed logging.</li>
- *   <li>{@code src/main/resources/db/migration/V1__create_schema.sql},
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} do not exist yet, so the schema those
- *       migrations will establish is Not available. Needed: the three migrations, so that the column widths
- *       this class relies on are enforced by the schema rather than only by the entity guards. No DDL is
+ *   <li><b>Resolved during discovery</b> - {@code src/main/resources/db/migration/V1__create_schema.sql},
+ *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} all exist. An earlier revision of this
+ *       bullet said they did not and called the resulting schema Not available; that is no longer true and
+ *       the claim is withdrawn. The column widths this class relies on are therefore enforced by the schema
+ *       as well as by the entity guards, and because {@code spring.jpa.hibernate.ddl-auto} is
+ *       {@code validate} in all four profiles a divergence aborts context startup. No DDL is
  *       emitted here.</li>
  *   <li>File status {@code '35'} has no literal attestation anywhere in the COBOL corpus, so its handling
  *       contract is Not available. Needed: a source occurrence before any {@code '35'} handling is asserted;
@@ -233,7 +236,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code app/cpy-bms/COSGN00.CPY:54} declares {@code PIC X(9)}. Needed: nothing further — the corpus
  *       count is conclusive, so this class treats the field as {@code X(8)} per
  *       {@code app/cpy-bms/COTRN02.CPY:54}. Classified Low above.</li>
- * </ul>
+ *   </ul>
  *
  * @see com.cardemo.model.dto.TransactionAddRequest
  * @see com.cardemo.model.dto.TransactionDto
@@ -750,7 +753,14 @@ public class TransactionAddService {
     // themselves are app/cpy/CSMSG02Y.cpy, whose fields are the fatal exception payload.
     // ------------------------------------------------------------------------------------------------
 
-    /** {@code ABEND-CODE PIC X(4)} carrying the corpus abend code, {@code app/cpy/CSMSG02Y.cpy:1200-2000}. */
+    /**
+     * {@code ABEND-CODE PIC X(4)} carrying the corpus abend code, {@code app/cpy/CSMSG02Y.cpy:L22-L23}.
+     *
+     * <p>The copybook carries COBOL sequence numbers in columns 1-6, so the {@code ABEND-DATA} group spans
+     * sequence numbers {@code 001200} through {@code 002000}. Those are sequence numbers, not file lines:
+     * the same declarations occupy physical lines 21-29 of the 35-line member, and it is the physical line
+     * that a text editor or {@code sed} will land on.
+     */
     private static final String ABEND_CODE = String.valueOf(FatalProcessingException.BATCH_ABEND_CODE);
 
     /** {@code ABEND-REASON PIC X(50)} for a record image that violates the {@code CVTRA05Y} contract. */
@@ -776,36 +786,34 @@ public class TransactionAddService {
     private static final String ZERO_FILLED_TRANSACTION_KEY = ZERO_DIGIT.repeat(TRANSACTION_ID_WIDTH);
 
     // ------------------------------------------------------------------------------------------------
-    // The two numeric converters and the edited-amount printer, owned by com.cardemo.config.WebConfig and
-    // consumed here. They are documented immutable, stateless and thread safe, so one shared instance of
-    // each is held rather than reimplementing the parsing rules locally. WebConfig registers them for
-    // query and path binding only, so a JSON request body does not pass through them and this class must
-    // invoke them explicitly.
+    // The two numeric converters and the edited-amount printer are owned by com.cardemo.config.WebConfig,
+    // published there as singleton beans, and INJECTED here. They are deliberately not constructed in this
+    // class: doing so produced a second copy of each parsing rule, so the object the MVC conversion service
+    // registered was never the object that actually parsed a transaction amount or a card number. One rule,
+    // one object. WebConfig registers them for query and path binding only, so a JSON request body does not
+    // pass through them and this class must invoke them explicitly.
     // ------------------------------------------------------------------------------------------------
 
     /**
      * Digits-only parser, the counterpart of {@code FUNCTION NUMVAL} at {@code app/cbl/COTRN02C.cbl:204},
-     * {@code :218} and the merchant identifier guard at {@code :430}.
+     * {@code :218} and the merchant identifier guard at {@code :430}. The shared bean, injected.
      */
-    private static final WebConfig.StrictIdentifierConverter STRICT_IDENTIFIER_CONVERTER =
-            new WebConfig.StrictIdentifierConverter();
+    private final WebConfig.StrictIdentifierConverter strictIdentifierConverter;
 
     /**
      * Currency-tolerant parser, the counterpart of {@code FUNCTION NUMVAL-C} at
      * {@code app/cbl/COTRN02C.cbl:383-384} and {@code :456-457}. It is applied to the amount and to nothing
-     * else.
+     * else. The shared bean, injected.
      */
-    private static final WebConfig.CurrencyAwareAmountConverter CURRENCY_AWARE_AMOUNT_CONVERTER =
-            new WebConfig.CurrencyAwareAmountConverter();
+    private final WebConfig.CurrencyAwareAmountConverter currencyAwareAmountConverter;
 
     /**
      * Renderer for {@code WS-TRAN-AMT-E PIC +99999999.99} at {@code app/cbl/COTRN02C.cbl:59}. It emits
      * exactly twelve characters with a mandatory sign and eight integer digits, discarding the ninth integer
      * digit that {@code WS-TRAN-AMT-N PIC S9(9)V99} at {@code :58} can hold. That asymmetry is source
-     * behaviour and is preserved rather than widened.
+     * behaviour and is preserved rather than widened. The shared bean, injected.
      */
-    private static final WebConfig.EditedAmountPrinter EDITED_AMOUNT_PRINTER =
-            new WebConfig.EditedAmountPrinter();
+    private final WebConfig.EditedAmountPrinter editedAmountPrinter;
 
     /** Transaction dataset access, {@code TRANSACT}. */
     private final TransactionRepository transactionRepository;
@@ -831,13 +839,23 @@ public class TransactionAddService {
      *     {@code app/cbl/COTRN02C.cbl:393} and {@code :413}. Must not be null.
      * @param fileStatusMapper file status rendering and translation, replacing the corpus-wide
      *     {@code 9910-DISPLAY-IO-STATUS} idiom. Must not be null.
+     * @param strictIdentifierConverter the application's single {@code FUNCTION NUMVAL} parser, published by
+     *     {@link com.cardemo.config.WebConfig}. Injected rather than constructed so that the object this
+     *     class parses with is the object request binding is registered with. Must not be null.
+     * @param currencyAwareAmountConverter the application's single {@code FUNCTION NUMVAL-C} parser, on the
+     *     same terms. Must not be null.
+     * @param editedAmountPrinter the application's single {@code PIC +99999999.99} renderer, on the same
+     *     terms. Must not be null.
      * @throws NullPointerException if any collaborator is null, which is a wiring defect rather than a
      *     business outcome and is therefore not translated into a CardDemo exception.
      */
     public TransactionAddService(final TransactionRepository transactionRepository,
                                  final CardCrossReferenceRepository cardCrossReferenceRepository,
                                  final DateValidationService dateValidationService,
-                                 final FileStatusMapper fileStatusMapper) {
+                                 final FileStatusMapper fileStatusMapper,
+                                 final WebConfig.StrictIdentifierConverter strictIdentifierConverter,
+                                 final WebConfig.CurrencyAwareAmountConverter currencyAwareAmountConverter,
+                                 final WebConfig.EditedAmountPrinter editedAmountPrinter) {
         this.transactionRepository =
                 Objects.requireNonNull(transactionRepository, "transactionRepository must not be null");
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
@@ -846,6 +864,12 @@ public class TransactionAddService {
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
         this.fileStatusMapper =
                 Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
+        this.strictIdentifierConverter = Objects.requireNonNull(strictIdentifierConverter,
+                "strictIdentifierConverter must not be null");
+        this.currencyAwareAmountConverter = Objects.requireNonNull(currencyAwareAmountConverter,
+                "currencyAwareAmountConverter must not be null");
+        this.editedAmountPrinter =
+                Objects.requireNonNull(editedAmountPrinter, "editedAmountPrinter must not be null");
     }
 
 
@@ -1302,7 +1326,7 @@ public class TransactionAddService {
      * this program is immediately followed by {@code PERFORM SEND-TRNADD-SCREEN}, which returns from the
      * task, so {@code ERR-FLG-ON} at {@code :237} cannot be true on entry. It is retained rather than
      * deleted because deleting it would break the paragraph body correspondence the coverage gate verifies
-     * (Low; recorded in {@code DECISION_LOG.md}).
+     * (Low; owed an entry in the planned {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1408,7 +1432,7 @@ public class TransactionAddService {
         // Stage 7 of 10, :383-386. The currency-aware parse and the edited echo. This runs BEFORE both date
         // validations and before the merchant identifier check; the ordering is preserved (Medium).
         work.wsTranAmtN = parseCurrencyAmount(work.trnAmt);
-        work.wsTranAmtE = EDITED_AMOUNT_PRINTER.print(work.wsTranAmtN, Locale.ROOT);
+        work.wsTranAmtE = this.editedAmountPrinter.print(work.wsTranAmtN, Locale.ROOT);
         work.trnAmt = fixedWidth(work.wsTranAmtE, AMOUNT_INPUT_WIDTH);
 
         // Stage 8 of 10, :389-407. Semantic validation of the originating date, with the 2513 tolerance.
@@ -1516,36 +1540,25 @@ public class TransactionAddService {
     // ================================================================================================
 
     /**
-     * Source: {@code app/cbl/COTRN02C.cbl} {@code COPY-LAST-TRAN-DATA} ({@code :471-495}).
-     * <p>
-     * The PF5 prefill. It validates the key fields at {@code :473}, runs the same maximum-key browse at
-     * {@code :475-478} but here to read the newest transaction rather than to generate an identifier, copies
-     * that record into the map with truncating moves at {@code :480-493}, and then performs
-     * {@code PROCESS-ENTER-KEY} at {@code :495}.
-     * </p>
-     * <p>
-     * Because {@code PROCESS-ENTER-KEY} performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166},
-     * the key validation and the cross reference read execute twice on this path (Medium). That redundant
-     * I/O is source behaviour and is not optimised away; it is justified in writing here and in
-     * {@code DECISION_LOG.md} rather than deduplicated.
-     * </p>
-     * <p>
-     * The two reads are not necessarily the same read, and this is easy to get wrong. When the operator typed
-     * only a card number, the first pass takes the card branch and {@code :223} moves {@code XREF-ACCT-ID}
-     * into {@code ACTIDINI}. The account field is therefore populated by the time the second pass evaluates
-     * {@code :196}, so the second pass takes the <em>account</em> branch and reads the account-keyed alternate
-     * index at {@code :208} rather than the card cross reference again. The observable sequence on the
-     * card-only PF5 path is consequently a cross reference read followed by an alternate index read, and on
-     * the account path it is the alternate index read twice. Both are reproduced as written.
-     * </p>
-     * <p>
-     * {@code :481} moves the raw {@code TRAN-AMT} straight into the edited field, bypassing
-     * {@code WS-TRAN-AMT-N} entirely. That is a distinct path from the stage-seven echo at {@code :385} and
-     * is modelled as such. The reverse truncating moves are the mirror image of the widening moves of
-     * {@code ADD-TRANSACTION}: description one hundred to sixty at {@code :486}, both timestamps twenty-six
-     * to ten at {@code :487-488}, merchant name fifty to thirty at {@code :490} and merchant city fifty to
-     * twenty-five at {@code :491}.
-     * </p>
+     * Source: {@code app/cbl/COTRN02C.cbl} {@code COPY-LAST-TRAN-DATA} ({@code :471-495}). <p> The PF5 prefill. It
+     * validates the key fields at {@code :473}, runs the same maximum-key browse at {@code :475-478} but here to read
+     * the newest transaction rather than to generate an identifier, copies that record into the map with truncating
+     * moves at {@code :480-493}, and then performs {@code PROCESS-ENTER-KEY} at {@code :495}. </p> <p> Because
+     * {@code PROCESS-ENTER-KEY} performs {@code VALIDATE-INPUT-KEY-FIELDS} again at {@code :166}, the key validation
+     * and the cross reference read execute twice on this path (Medium). That redundant I/O is source behaviour and is
+     * not optimised away; it is justified in writing here and in the planned {@code DECISION_LOG.md} rather than
+     * deduplicated. </p> <p> The two reads are not necessarily the same read, and this is easy to get wrong. When the
+     * operator typed only a card number, the first pass takes the card branch and {@code :223} moves
+     * {@code XREF-ACCT-ID} into {@code ACTIDINI}. The account field is therefore populated by the time the second
+     * pass evaluates {@code :196}, so the second pass takes the <em>account</em> branch and reads the account-keyed
+     * alternate index at {@code :208} rather than the card cross reference again. The observable sequence on the
+     * card-only PF5 path is consequently a cross reference read followed by an alternate index read, and on the
+     * account path it is the alternate index read twice. Both are reproduced as written. </p> <p> {@code :481} moves
+     * the raw {@code TRAN-AMT} straight into the edited field, bypassing {@code WS-TRAN-AMT-N} entirely. That is a
+     * distinct path from the stage-seven echo at {@code :385} and is modelled as such. The reverse truncating moves
+     * are the mirror image of the widening moves of {@code ADD-TRANSACTION}: description one hundred to sixty at
+     * {@code :486}, both timestamps twenty-six to ten at {@code :487-488}, merchant name fifty to thirty at
+     * {@code :490} and merchant city fifty to twenty-five at {@code :491}. </p>
      *
      * @param work the per-invocation work area.
      */
@@ -1567,7 +1580,7 @@ public class TransactionAddService {
         endbrTransactFile(work);
 
         if (!work.errFlag) {
-            work.wsTranAmtE = EDITED_AMOUNT_PRINTER.print(work.tranRecord.tranAmt, Locale.ROOT);
+            work.wsTranAmtE = this.editedAmountPrinter.print(work.tranRecord.tranAmt, Locale.ROOT);
             work.tTypCd = fixedWidth(work.tranRecord.tranTypeCd, TYPE_CODE_WIDTH);
             work.tCatCd = renderZeroPadded(work.tranRecord.tranCatCd, CATEGORY_CODE_WIDTH);
             work.trnSrc = fixedWidth(work.tranRecord.tranSource, SOURCE_WIDTH);
@@ -1749,7 +1762,7 @@ public class TransactionAddService {
      * generates no timestamp at all on the write path, the zero-clock constraint is absolute for this file,
      * so the header echoes the date and time text the request carried rather than consulting a clock. The
      * renderings are {@code MM/DD/YY} and {@code HH:MM:SS}, eight characters each, per
-     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Recorded in {@code DECISION_LOG.md}.
+     * {@code app/cpy/CSDAT01Y.cpy:30-41}. Owed an entry in the planned {@code DECISION_LOG.md}.
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1776,10 +1789,10 @@ public class TransactionAddService {
      * reports {@code 'Unable to lookup Acct in XREF AIX file...'} at {@code :597-603}.
      * </p>
      * <p>
-     * The alternate index is non-unique, so the derived finder returns a
-     * {@code List&lt;CardCrossReference&gt;} and never an {@code Optional}. An {@code EXEC CICS READ} through
-     * a path returns the first record carrying the alternate key, so the first element of the
-     * card-number-ascending ordering is taken, which makes the choice deterministic.
+     * The alternate index is non-unique, but an {@code EXEC CICS READ} through a path returns exactly the
+     * <em>first</em> record carrying the alternate key, never a set. The derived finder therefore returns an
+     * {@code Optional} and the database applies {@code LIMIT 1}; the {@code OrderByCardNumberAsc} clause is
+     * what makes "the first record" deterministic when duplicates exist.
      * </p>
      *
      * @param work the per-invocation work area.
@@ -1864,7 +1877,7 @@ public class TransactionAddService {
      * {@code EXEC CICS STARTBR} only positions a browse, and Spring Data JPA has no separate positioning
      * call because the descending top-one query both positions and reads. The exec layer therefore reports a
      * normal response, and the not-found and other branches are retained for paragraph completeness and
-     * documented as unreachable in this target (Low; recorded in {@code DECISION_LOG.md}).
+     * documented as unreachable in this target (Low; owed an entry in the planned {@code DECISION_LOG.md}).
      * </p>
      *
      * @param work the per-invocation work area.
@@ -2089,12 +2102,15 @@ public class TransactionAddService {
      */
     private int execCxacaixRead(final ScreenWorkArea work) {
         try {
-            final List<CardCrossReference> matches =
-                    this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(work.xrefAcctId);
-            if (matches.isEmpty()) {
+            // LIMIT 1 at the database: a keyed read through the CXACAIX path yields one record, and only
+            // the first was ever used here. See CardCrossReferenceRepository for the full reasoning.
+            final Optional<CardCrossReference> found =
+                    this.cardCrossReferenceRepository
+                            .findFirstByAccountIdOrderByCardNumberAsc(work.xrefAcctId);
+            if (found.isEmpty()) {
                 return recordResponse(work, CICS_RESP_NOTFND, IO_STATUS_RECORD_NOT_FOUND);
             }
-            final CardCrossReference match = matches.get(0);
+            final CardCrossReference match = found.get();
             work.xrefCardNum = nullToEmpty(match.getCardNumber());
             work.xrefAcctId = match.getAccountId() == null ? work.xrefAcctId : match.getAccountId();
             return recordResponse(work, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
@@ -2332,10 +2348,11 @@ public class TransactionAddService {
      * @param screenMessage the byte-exact legacy message to report on a failure.
      * @return the parsed value.
      */
-    private static long parseStrictIdentifier(final String suppliedValue, final int width,
-                                              final String fieldName, final String screenMessage) {
+    private long parseStrictIdentifier(final String suppliedValue, final int width,
+                                       final String fieldName, final String screenMessage) {
         try {
-            final Long parsed = STRICT_IDENTIFIER_CONVERTER.convert(fixedWidth(suppliedValue, width).trim());
+            final Long parsed =
+                    this.strictIdentifierConverter.convert(fixedWidth(suppliedValue, width).trim());
             if (parsed == null) {
                 throw ValidationException.invalidField(fieldName, screenMessage);
             }
@@ -2359,10 +2376,10 @@ public class TransactionAddService {
      * @param suppliedValue the amount field content, already known to satisfy the positional mask.
      * @return the parsed amount, scaled to two decimals with half-even rounding.
      */
-    private static BigDecimal parseCurrencyAmount(final String suppliedValue) {
+    private BigDecimal parseCurrencyAmount(final String suppliedValue) {
         try {
             final BigDecimal parsed =
-                    CURRENCY_AWARE_AMOUNT_CONVERTER.convert(fixedWidth(suppliedValue, AMOUNT_INPUT_WIDTH)
+                    this.currencyAwareAmountConverter.convert(fixedWidth(suppliedValue, AMOUNT_INPUT_WIDTH)
                             .trim());
             if (parsed == null) {
                 throw ValidationException.invalidField(FIELD_AMOUNT, AMOUNT_FORMAT_MESSAGE);
@@ -2683,6 +2700,15 @@ public class TransactionAddService {
      * </p>
      */
     private static final class ScreenWorkArea {
+        /**
+         * Creates the work area with every member at its post-{@code INITIALIZE} value, which is the state
+         * the legacy {@code WORKING-STORAGE SECTION} begins each task in. Declared explicitly rather than
+         * left implicit so the surface is documented; it takes no argument and performs no work.
+         */
+        private ScreenWorkArea() {
+            // Every member carries its initial value in its own declaration above, exactly as a COBOL
+            // VALUE clause does, so there is nothing for this constructor to assign.
+        }
 
         /** {@code EIBAID}, evaluated at {@code app/cbl/COTRN02C.cbl:133}. */
         AttentionIdentifier attentionIdentifier = AttentionIdentifier.OTHER;
@@ -2972,4 +2998,3 @@ public class TransactionAddService {
         }
     }
 }
-

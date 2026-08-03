@@ -105,7 +105,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       test {@code SPACES OR LOW-VALUES} as two separate sentinels. Section 5 asserts that absent,
  *       blank, low-values and present stay four distinguishable states and that nothing is
  *       coerced.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. The BMS field contract for this type is "Not available"</h2>
  *
@@ -129,7 +129,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       at all: the program moves its results into the COMMAREA and issues
  *       {@code EXEC CICS XCTL}. There was never a success payload to lay out, which is exactly why
  *       no map for one exists.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>What would be needed</strong> to source this type from a map is a mapset describing a
  * successful sign-on reply. No such mapset exists anywhere in the corpus, so the shape is instead
@@ -176,7 +176,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       plaintext password in bytes 49 to 56 of the 80 byte record, with the type character at byte
  *       57; that literal never appears anywhere in this file, and test 3.8 proves the fixtures
  *       cannot collide with it by asserting a shape mismatch instead of writing it.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Common failure modes and troubleshooting</h2>
  *
@@ -206,7 +206,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *   <li><em>A reflective lookup fails.</em> A record component was renamed. The helpers report that
  *       as an {@code AssertionError} whose cause is the original {@code NoSuchFieldException}, so
  *       the root cause survives; test 6.8 asserts exactly that.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>6. Findings this suite records, by severity</h2>
  *
@@ -236,7 +236,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       {@code app/cpy/CVACT02Y.cpy:5} is {@code PIC X(16)}, alphanumeric. Neither shape is
  *       propagated here, because a card number has no place in a sign-on reply at all. Test
  *       2.8.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Thread safety, side effects and shared state</h2>
  *

@@ -5,9 +5,13 @@
  * Type        : Java 25 / Spring Boot 3.5.11 servlet filter
  * Function    : Establishes the per-request correlation identifier in
  *               MDC, on the trace span and on outbound AWS calls.
- * Replaces    : EIBTRNID as the per-request thread of identity
- *               (CICS-supplied; NOT present in app/** - citation Not
- *               available). New capability per Rule 1 Clause A.
+ * Capability  : NEW - additive request correlation, not a translation.
+ *               The frozen corpus has no per-request identifier to
+ *               translate: EIBTRNID is CICS-supplied and occurs ZERO
+ *               times anywhere under app/**. This filter fills the role
+ *               CICS played implicitly, which is a different claim from
+ *               replacing a construct present in the source. Mandated by
+ *               Rule 1 Clause A, not derived from a COBOL paragraph.
  * Source      : app/csd/CARDDEMO.CSD @ 7756d89 (18 DEFINE TRANSACTION
  *               entries; 17 sourced)
  * Source      : app/cpy/CSSTRPFY.cpy:L22 @ 7756d89 (EIBAID
@@ -76,18 +80,30 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * meaningful errors, and measurable behavior (metrics/tracing where relevant)."</em> That makes it a
  * rule-mandated artefact shipped <em>with</em> the initial implementation rather than as follow-up work.
  * Because it is new capability, <strong>no part of it may be justified as "preserved for parity"</strong>,
- * and it contains no intentional no-op. The three documented sites where the no-dead-code rule yields to
- * the parity mandate are reject code 109, {@code app/cbl/CBACT04C.cbl} paragraph
- * {@code 1400-COMPUTE-FEES} and a redundant index assignment in {@code app/cbl/CBSTM03A.CBL}. None of
- * them is in this package.
+ * and it contains no intentional no-op.
  *
- * <h2>Evidence: what this replaces, and one citation that is Not available</h2>
+ * <p>No global tally of retained no-ops is stated here. An earlier revision named "the three documented
+ * sites"; that count is withdrawn, because several files each maintained their own tally by hand and they did
+ * not agree - one said three and another five - which is what a hand-maintained census in a comment always
+ * decays into. Severity of what that left in place: <strong>High</strong>. The governing rule instead is
+ * per-artefact: <strong>a retained no-op is justified at its own declaration</strong>, where it must carry its
+ * COBOL locator, a proof of reachability, an explicit intentional-no-op marker, and an acknowledgement that it
+ * is owed an entry in the planned {@code DECISION_LOG.md}. The only claim this class makes is the local one:
+ * nothing in {@code com.cardemo.observability} carries such a marker, so anything here resembling dead code is
+ * dead code.
  *
- * <p>The specification describes this filter as replacing {@code EIBTRNID}, "the only per-request identity
- * the legacy system had". {@code EIBTRNID} is the field of the CICS EXEC Interface Block that
+ * <h2>Evidence: this is additive capability, and one citation that is Not available</h2>
+ *
+ * <p><strong>Correlation is new request-correlation capability, not a translation of anything in the frozen
+ * corpus.</strong> That is the accurate description and the one used consistently throughout this class.
+ *
+ * <p>The specification motivates the filter by analogy with {@code EIBTRNID}, "the only per-request identity
+ * the legacy system had". The analogy is useful but it is <em>not</em> a translation relationship, and this
+ * documentation does not assert one. {@code EIBTRNID} is the field of the CICS EXEC Interface Block that
  * conventionally carries the running transaction identifier. It is <strong>supplied by the transaction
  * monitor rather than declared in application source</strong>, and it is consequently
- * <strong>not referenced anywhere in the frozen corpus</strong>.
+ * <strong>not referenced anywhere in the frozen corpus</strong>. There is therefore no source construct
+ * being replaced here - only a role that CICS filled implicitly and that must now be filled explicitly.
  *
  * <p><strong>Direct citation for {@code EIBTRNID}: Not available. Severity: Medium.</strong> What would be
  * needed to verify it is an {@code EIBTRNID} reference somewhere under {@code app/cbl/**} - and
@@ -119,7 +135,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <li>{@code app/cbl/COMEN01C.cbl:L153} - {@code XCTL PROGRAM(...)} carrying
  *       {@code COMMAREA(CARDDEMO-COMMAREA)} at {@code :L154}. That COMMAREA propagation across program
  *       transfer is what this filter chain replaces.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The MDC key contract: three exact spellings</h2>
  *
@@ -152,7 +168,8 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <tr><td>Filter chain composition and ordering relative to authentication</td>
  *       <td>{@code com.cardemo.config.SecurityConfig}</td></tr>
  *   <tr><td>Tracing and metrics registration, and the wiring of this package</td>
- *       <td>{@code com.cardemo.config.ObservabilityConfig}</td></tr>
+ *       <td>{@code com.cardemo.config.ObservabilityConfig} - <strong>planned, not yet authored</strong>. Its
+ *       absence disables nothing here: the three classes in this package are self-registering.</td></tr>
  *   <tr><td>Log encoder, appender, JSON field set, MDC selection and masking</td>
  *       <td>{@code src/main/resources/logback-spring.xml}</td></tr>
  *   <tr><td>Per-logger operational verbosity, tracing sampling, actuator exposure</td>
@@ -160,26 +177,33 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <tr><td>AWS client construction and execution interceptors</td>
  *       <td>{@code com.cardemo.config.AwsConfig}</td></tr>
  *   <tr><td>Placing the batch job instance identifier into MDC</td>
- *       <td>{@code com.cardemo.batch} wired by {@code com.cardemo.config.BatchConfig}</td></tr>
- * </table>
+ *       <td>{@code com.cardemo.batch}, which the <strong>planned</strong>
+ *       {@code com.cardemo.config.BatchConfig} will wire</td></tr>
+ *   </table>
  *
  * <p>Nothing above is restated here, because Rule 1 Clause C requires that duplication be avoided. This
  * class registers itself as a component and declares its own precedence; it composes no chain, builds no
  * client, and configures no appender.
  *
- * <h2>Ordering, and why it is the highest precedence available</h2>
+ * <h2>Ordering: after the observation filter, before security</h2>
  *
- * <p>The intended chain is this filter, then {@code com.cardemo.security.JwtAuthenticationFilter}, then
- * role-based authorisation. This class declares {@link #ORDER}, which is
- * {@link Ordered#HIGHEST_PRECEDENCE}. That value is published as a constant precisely so that
- * {@code com.cardemo.config.SecurityConfig} can align without guesswork.
+ * <p>The intended chain is Spring Boot's server observation filter, then this filter, then
+ * {@code com.cardemo.security.JwtAuthenticationFilter}, then role-based authorisation. This class declares
+ * {@link #ORDER}, which is {@link Ordered#HIGHEST_PRECEDENCE} plus two. That value is published as a constant
+ * precisely so that {@code com.cardemo.config.SecurityConfig} can align without guesswork.
  *
- * <p>The choice is not stylistic. Spring Boot registers the entire Spring Security filter chain at
- * {@code SecurityProperties.DEFAULT_FILTER_ORDER}, which is {@code -100}. Any value above that would let
- * an authentication failure be rejected <em>before</em> a correlation identifier existed, and the
- * resulting 401 or 403 would be logged without one. Running at the highest precedence guarantees that
- * <strong>every</strong> request is correlated, including one that authentication or authorisation
- * rejects outright.
+ * <p>The choice is not stylistic, and getting it wrong is silent. Spring Boot registers the entire Spring
+ * Security filter chain at {@code SecurityProperties.DEFAULT_FILTER_ORDER}, which is {@code -100}: any value
+ * above that would let an authentication failure be rejected <em>before</em> a correlation identifier existed,
+ * and the resulting 401 or 403 would be logged without one. But the ceiling is only half the constraint. Boot
+ * also registers {@code ServerHttpObservationFilter} at {@code Ordered.HIGHEST_PRECEDENCE + 1}, and that filter
+ * is what opens the server observation and with it the span this class tags. Running at
+ * {@link Ordered#HIGHEST_PRECEDENCE} - as an earlier revision did - therefore ran <em>before</em> the span
+ * existed, so {@link Tracer#currentSpan()} returned {@code null} on every request, no span was ever tagged and
+ * the trace and span identifiers never reached the diagnostic context. Nothing failed and nothing was logged
+ * about it, because a null span is a legitimate state this class handles deliberately; the symptom was an
+ * always-empty {@code traceId} that read as "tracing is off". Severity: <strong>High</strong>. The window
+ * between the two registrations is exactly one order value wide, and {@link #ORDER} sits inside it.
  *
  * <h2>Stateless by construction: no session, no server-side state</h2>
  *
@@ -213,7 +237,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       pattern is one bounded character class, so it cannot backtrack catastrophically. The absolute
  *       {@code \z} anchor is used rather than {@code $} because {@code $} also matches immediately before
  *       a final line terminator, which is exactly the character an injection attempt carries.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Three distinct rejection cases are handled explicitly, as Rule 1 Clause B requires of null and empty
  * boundary conditions: an <em>absent</em> header, a header <em>present but blank or whitespace-only</em>,
@@ -239,17 +263,32 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * are thread-local, so <strong>on the same thread</strong> they are already visible to the AWS client
  * interceptor layer and to any logging that layer performs, with nothing further required here.
  *
- * <p><strong>That guarantee stops at a thread boundary.</strong> Across an executor hand-off, an
- * asynchronous dispatch, a parallel stream or a Spring Batch worker thread the context does
- * <em>not</em> propagate automatically and must be carried deliberately by whoever crosses the boundary.
- * This is the documented cause of an empty {@value #MDC_KEY_CORRELATION_ID} field on work that plainly
- * belongs to a request, and the fix belongs at the hand-off, not here.
+ * <p><strong>That guarantee stops at a thread boundary, and at a process boundary it never held at all.</strong>
+ * Across an executor hand-off, an asynchronous dispatch, a parallel stream or a Spring Batch worker thread the
+ * context does not propagate automatically; and an outbound HTTP request carries no diagnostic context
+ * whatsoever, because a thread-local is not a wire format. An earlier revision named the second of these as
+ * something the AWS configuration would do and provided nothing for it to do it with, which left the identifier
+ * ending at the edge of this process. Severity: <strong>High</strong>.
  *
- * <p>Consistent with the ownership table above, this class constructs no AWS client and registers no
- * execution interceptor; that is {@code com.cardemo.config.AwsConfig} territory. Its obligation is to
- * make the identifier <em>available</em> in the ambient context and to state precisely how far that
- * availability reaches. All AWS interaction targets LocalStack with zero live credentials, and no code
- * path in this class reaches any AWS endpoint, live or emulated.
+ * <p>Two published methods close both boundaries, and they are the whole propagation surface:
+ *
+ * <ul>
+ *   <li>{@link #currentCorrelationId()} - reads the identifier in scope, validated, or {@code null}.
+ *       {@code com.cardemo.config.AwsConfig} registers an execution interceptor that calls it and copies the
+ *       result onto every outbound cloud request as {@value #CORRELATION_ID_HEADER}, and
+ *       {@code com.cardemo.service.report.ReportSubmissionService} calls it to carry the identifier as a
+ *       message header on the queue publish that replaces {@code EXEC CICS WRITEQ TD QUEUE('JOBS')}.</li>
+ *   <li>{@link #propagate(String)} - establishes or clears the identifier on the calling thread and returns
+ *       what it replaced, so a receiving thread can adopt a value and then put things back exactly as they
+ *       were. This is what a hand-off uses, and what batch code uses to establish its own identifier without
+ *       destroying an outer one.</li>
+ *   </ul>
+ *
+ * <p>Consistent with the ownership table above, this class still constructs no AWS client and registers no
+ * execution interceptor - it publishes the value and the validation, and
+ * {@code com.cardemo.config.AwsConfig} owns the interceptor that consumes them. All AWS interaction targets
+ * LocalStack with zero live credentials, and no code path in this class reaches any AWS endpoint, live or
+ * emulated.
  *
  * <h2>Batch events: the job instance identifier contract</h2>
  *
@@ -257,8 +296,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  * declared here are nevertheless the shared contract for the whole application, and batch events carry one
  * additional key: {@link #MDC_KEY_JOB_INSTANCE_ID}. It is published on this class as the single point of
  * definition, and <strong>the batch layer is responsible for putting it into MDC</strong> -
- * {@code com.cardemo.batch} wired by {@code com.cardemo.config.BatchConfig}. Deliberately, no
- * {@code JobExecutionListener}, scheduler or other batch component is added to this file.
+ * {@code com.cardemo.batch}, which the <strong>planned</strong> {@code com.cardemo.config.BatchConfig} will
+ * wire. Deliberately, no {@code JobExecutionListener}, scheduler or other batch component is added to this
+ * file.
  *
  * <p>The key matters because it is what makes a run's logs correlatable with its output objects: the batch
  * writers derive their object-storage key prefixes from the same job instance identifier that tags the
@@ -327,13 +367,22 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *
  * <p>Build and unit-test from the repository root with {@code ./mvnw -B -ntp clean compile} and
  * {@code ./mvnw -B -ntp test}. Compilation runs {@code -Xlint:all -Werror} with warnings failing the
- * build, targeting Java 25 with no preview features. Tests for this class live under
- * {@code src/test/java/com/cardemo/unit} and drive it through the public
- * {@code doFilter(ServletRequest, ServletResponse, FilterChain)} entry point with
- * {@code MockHttpServletRequest}, {@code MockHttpServletResponse} and {@code MockFilterChain}; the
- * injected {@link Tracer} collaborator can be {@link Tracer#NOOP} or a stub. The class holds no static
- * mutable state and depends on no clock, locale, charset or time zone, so those tests need no fixture
- * beyond the mocks.
+ * build, targeting Java 25 with no preview features.
+ * <p>
+ * The unit test for this class lives at
+ * {@code src/test/java/com/cardemo/unit/infrastructure/CorrelationIdFilterTest.java}. Re-derive with
+ * {@code grep -rl CorrelationIdFilter src/test}. It drives the filter through the public
+ * {@code doFilter(ServletRequest, ServletResponse, FilterChain)} entry point - the same one the container
+ * uses - with {@code MockHttpServletRequest}, {@code MockHttpServletResponse} and {@code MockFilterChain},
+ * and supplies a stubbed {@link Tracer}. The class holds no static mutable state and depends on no clock,
+ * locale, charset or time zone, so those tests need no fixture beyond the mocks.
+ * <p>
+ * Two groups there are load-bearing rather than routine. The restoration group asserts that the diagnostic
+ * context is handed back exactly as it was found - on the normal path, on the exception path, and when the
+ * request thread already carried an outer context - because this filter runs on a pooled thread and a
+ * surviving entry would mis-attribute every log line the next request writes. The rejection group asserts
+ * that a blank, over-length or metacharacter-bearing caller value is <em>replaced</em> rather than echoed,
+ * because the value reaches both a response header and the log stream.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -387,15 +436,34 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public final class CorrelationIdFilter extends OncePerRequestFilter {
 
     /**
-     * The precedence at which this filter runs, {@link Ordered#HIGHEST_PRECEDENCE}.
+     * The precedence at which this filter runs: {@link Ordered#HIGHEST_PRECEDENCE} plus two.
      *
      * <p>Published as a constant so that {@code com.cardemo.config.SecurityConfig} can position the
-     * authentication filter relative to this one without duplicating a magic number. The value must stay
-     * below {@code SecurityProperties.DEFAULT_FILTER_ORDER} ({@code -100}), the order at which Spring Boot
-     * registers the Spring Security chain; otherwise a request rejected by authentication or authorisation
-     * would be logged before a correlation identifier existed.
+     * authentication filter relative to this one without duplicating a magic number.
+     *
+     * <p><strong>The offset of two is load-bearing and was measured, not guessed.</strong> The value has to
+     * sit inside a window bounded at both ends:
+     *
+     * <ul>
+     *   <li><strong>After Spring Boot's server observation filter</strong>, which
+     *       {@code WebMvcObservationAutoConfiguration} registers at {@code Ordered.HIGHEST_PRECEDENCE + 1} -
+     *       the literal {@code -2147483647}, read out of the compiled auto-configuration rather than taken
+     *       from documentation. That filter is what opens the server observation, and therefore the span.
+     *       At {@link Ordered#HIGHEST_PRECEDENCE} this filter ran <em>before</em> it, so
+     *       {@link Tracer#currentSpan()} was {@code null} on every single request: the span tag was never
+     *       applied and {@value #MDC_KEY_TRACE_ID} and {@value #MDC_KEY_SPAN_ID} were never populated. The
+     *       code handled a null span correctly and the outcome looked like "tracing is disabled" rather than
+     *       like a defect, which is precisely why it survived. Severity: <strong>High</strong>.</li>
+     *   <li><strong>Before the Spring Security chain</strong>, which Spring Boot registers at
+     *       {@code SecurityProperties.DEFAULT_FILTER_ORDER}, {@code -100}. A request rejected by
+     *       authentication or authorisation must already carry a correlation identifier, or the rejection is
+     *       logged uncorrelated - which is the one log record an operator most wants to join to a caller.</li>
+     * </ul>
+     *
+     * <p>Two, rather than one, so that nothing has to share an order with the observation filter: relative
+     * order between two registrations at the same value is unspecified, and a coin toss is not a contract.
      */
-    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE;
+    public static final int ORDER = Ordered.HIGHEST_PRECEDENCE + 2;
 
     /**
      * The header name read for an inbound correlation identifier and echoed back on the response.
@@ -437,7 +505,8 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * pass through it. The constant exists here because this is the single point of definition for the
      * application's MDC key contract, and {@code logback-spring.xml} passes this one key through by name
      * as the marker that an event is a batch event. Populating it is the responsibility of
-     * {@code com.cardemo.batch}, wired by {@code com.cardemo.config.BatchConfig}. It is a published
+     * {@code com.cardemo.batch}, which the <strong>planned</strong> {@code com.cardemo.config.BatchConfig}
+     * will wire. It is a published
      * contract constant, not dead code: the batch writers key their object-storage prefixes off the same
      * job instance identifier, which is what makes a run's logs and its output objects correlatable.
      */
@@ -460,6 +529,17 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
      * oversized value is rejected without being scanned.
      */
     public static final int MAX_CORRELATION_ID_LENGTH = 64;
+
+    /**
+     * Maximum length of a job instance identifier accepted by
+     * {@link #propagateJobInstanceId(String)}.
+     *
+     * <p>Twenty characters: nineteen digits, the widest a signed 64-bit value needs, plus a sign. A Spring Batch
+     * instance identifier is a {@code long}, so no legitimate value can exceed this; the bound exists so that an
+     * oversized value is refused without being scanned, the same ordering {@link #MAX_CORRELATION_ID_LENGTH}
+     * establishes for the correlation identifier.
+     */
+    public static final int MAX_JOB_INSTANCE_ID_LENGTH = 20;
 
     /**
      * The single validation pattern for an inbound correlation identifier, compiled once.
@@ -707,6 +787,160 @@ public final class CorrelationIdFilter extends OncePerRequestFilter {
             }
         }
         return false;
+    }
+
+    /**
+     * Returns the correlation identifier in scope on the calling thread, or {@code null} when there is none.
+     *
+     * <p><strong>This is the propagation surface, and it exists because a diagnostic context does not cross a
+     * boundary by itself.</strong> The context is thread-local: it is established here for a request thread and
+     * restored when the request ends, which covers logging on that thread and nothing else. Two boundaries need
+     * the value explicitly, and both now read it from here:
+     *
+     * <ul>
+     *   <li><strong>A process boundary.</strong> {@code com.cardemo.config.AwsConfig} registers an execution
+     *       interceptor that copies this value onto every outbound cloud request as
+     *       {@value #CORRELATION_ID_HEADER}, and {@code com.cardemo.service.report.ReportSubmissionService}
+     *       carries it as a message header on the queue publish that replaces
+     *       {@code EXEC CICS WRITEQ TD QUEUE('JOBS')}. Without that the thread of identity stopped at the edge
+     *       of this process.</li>
+     *   <li><strong>A thread boundary.</strong> Batch work never passes through this filter at all, so a job
+     *       establishes its own value under {@value #MDC_KEY_CORRELATION_ID}; a step that hands work to another
+     *       thread copies it across with {@link #propagate(String)} on the receiving thread and undoes that by
+     *       calling the same method again with the value it returned.</li>
+     * </ul>
+     *
+     * <p>The value is validated before it is returned, so a caller writing it into a text protocol - a header,
+     * a message attribute - cannot be handed a value carrying a carriage return or a line feed. A malformed
+     * entry yields {@code null}, which every caller treats as "no correlation available" rather than as an
+     * error: a missing correlation is a diagnostic gap, whereas a corrupted header would be an injection.
+     *
+     * <p>Side effects: none. It reads the diagnostic context and nothing else.
+     *
+     * @return the well-formed correlation identifier in scope, or {@code null} when none is set or the entry
+     *         present is not well-formed
+     */
+    public static String currentCorrelationId() {
+        final String candidate = MDC.get(MDC_KEY_CORRELATION_ID);
+        return isWellFormed(candidate) ? candidate : null;
+    }
+
+    /**
+     * Establishes, or clears, the correlation identifier on the calling thread, returning the value it replaced.
+     *
+     * <p>The counterpart to {@link #currentCorrelationId()} for a <em>thread</em> boundary: a caller that hands
+     * work to another thread calls this with the value from the originating thread, and the receiving thread
+     * calls it again with the returned value to put things back exactly as they were. Passing {@code null}
+     * removes the entry, which is what restores a thread that had none.
+     *
+     * <p>Restoring rather than blindly removing is the same discipline this filter applies to its own cleanup:
+     * an entry that did not exist is removed, so nothing leaks onto the next task to borrow a pooled thread,
+     * and an entry that did exist is put back, so context owned by an outer scope is not destroyed.
+     *
+     * <p>An argument that is not well-formed is rejected rather than stored, for the reason given on
+     * {@link #currentCorrelationId()}: the diagnostic context feeds a text-based log format, so an unvalidated
+     * value would be a log-injection vector.
+     *
+     * <p>Side effects: mutates one diagnostic context entry on the calling thread.
+     *
+     * @param correlationId the identifier to establish, or {@code null} to clear the entry
+     * @return the well-formed value the entry held before this call, or {@code null} if it held none
+     * @throws IllegalArgumentException if {@code correlationId} is non-null and not well-formed - longer than
+     *         {@value #MAX_CORRELATION_ID_LENGTH} characters, or carrying anything outside ASCII letters,
+     *         digits, {@code -} and {@code _}
+     */
+    public static String propagate(final String correlationId) {
+        final String previous = currentCorrelationId();
+        if (correlationId == null) {
+            MDC.remove(MDC_KEY_CORRELATION_ID);
+            return previous;
+        }
+        if (!isWellFormed(correlationId)) {
+            throw new IllegalArgumentException("A propagated correlation identifier must be at most "
+                    + MAX_CORRELATION_ID_LENGTH + " characters of ASCII letters, digits, '-' and '_'. The "
+                    + "rejected value is withheld from this message.");
+        }
+        MDC.put(MDC_KEY_CORRELATION_ID, correlationId);
+        return previous;
+    }
+
+    /**
+     * Establishes, or clears, the batch job instance identifier on the calling thread, returning the value it
+     * replaced.
+     *
+     * <p>The {@link #MDC_KEY_JOB_INSTANCE_ID} counterpart to {@link #propagate(String)}, and it lives here for
+     * the same reason the constant does: the class that owns a diagnostic context key owns the discipline for
+     * mutating it. Batch work never passes through this filter, so a batch listener has to establish the entry
+     * itself - and a listener that establishes an entry owes the thread a <em>restore</em>, not a removal.
+     * Spring Batch runs jobs on pooled threads, so a blanket {@code MDC.remove} in an {@code afterJob} destroys
+     * an entry an outer scope owned: a job launched from inside a request, or a partitioned step whose parent
+     * already labelled the thread. That is the asymmetry this method exists to close.
+     *
+     * <p>Passing {@code null} removes the entry, which is what restores a thread that had none.
+     *
+     * <p>The value is validated as an optionally negative run of decimal digits - exactly what
+     * {@link Long#toString(long)} produces - for the reason given on {@link #propagate(String)}: the diagnostic
+     * context feeds a text-based log format, so an unvalidated value is a log-injection vector.
+     *
+     * <p>The value this method reports as the previous one is validated by the same rule, so a malformed
+     * inherited entry is reported as {@code null} and is therefore cleared rather than put back. That is
+     * deliberate and matches {@link #currentCorrelationId()}: a restore must never itself fail, and a value that
+     * could inject into the log format is not something to preserve. Without that rule a caller round-tripping
+     * the returned value could be handed a value this method would then reject.
+     *
+     * <p>Side effects: mutates one diagnostic context entry on the calling thread.
+     *
+     * @param jobInstanceId the identifier to establish, or {@code null} to clear the entry
+     * @return the well-formed value the entry held before this call, or {@code null} if it held none or held a
+     *         value outside the permitted grammar
+     * @throws IllegalArgumentException if {@code jobInstanceId} is non-null and is not an optionally negative
+     *         run of decimal digits
+     */
+    public static String propagateJobInstanceId(final String jobInstanceId) {
+        final String candidate = MDC.get(MDC_KEY_JOB_INSTANCE_ID);
+        final String previous = isDecimalNumber(candidate) ? candidate : null;
+        if (jobInstanceId == null) {
+            MDC.remove(MDC_KEY_JOB_INSTANCE_ID);
+            return previous;
+        }
+        if (!isDecimalNumber(jobInstanceId)) {
+            throw new IllegalArgumentException("A propagated job instance identifier must be an optionally "
+                    + "negative run of at most " + MAX_JOB_INSTANCE_ID_LENGTH + " decimal digits, as "
+                    + "Long.toString produces. The rejected value is withheld from this message.");
+        }
+        MDC.put(MDC_KEY_JOB_INSTANCE_ID, jobInstanceId);
+        return previous;
+    }
+
+    /**
+     * Reports whether a candidate job instance identifier is an optionally negative run of decimal digits.
+     *
+     * <p>Checked with an explicit loop rather than {@link Character#isDigit(char)}, which accepts every Unicode
+     * decimal digit - Arabic-Indic, Devanagari and dozens more - none of which {@link Long#parseLong(String)}
+     * would accept and any of which would reach the log format. The length bound is applied before the scan so
+     * an oversized value is rejected without being walked; nineteen digits plus a sign is the widest a signed
+     * 64-bit value needs.
+     *
+     * @param candidate the candidate identifier, which may be {@code null}
+     * @return {@code true} only when the candidate is non-null, non-empty, at most
+     *         {@value #MAX_JOB_INSTANCE_ID_LENGTH} characters, and composed of ASCII digits with at most a
+     *         single leading {@code -} that is itself followed by at least one digit
+     */
+    private static boolean isDecimalNumber(final String candidate) {
+        if (candidate == null || candidate.isEmpty() || candidate.length() > MAX_JOB_INSTANCE_ID_LENGTH) {
+            return false;
+        }
+        final int firstDigit = candidate.charAt(0) == '-' ? 1 : 0;
+        if (candidate.length() == firstDigit) {
+            return false;
+        }
+        for (int index = firstDigit; index < candidate.length(); index++) {
+            final char digit = candidate.charAt(index);
+            if (digit < '0' || digit > '9') {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

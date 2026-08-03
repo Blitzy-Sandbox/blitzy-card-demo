@@ -65,11 +65,12 @@
 # transaction, program and JCL inventory, so it is reference material first and
 # an edit target second.
 #
-# The `*.md text eol=lf` rule above matched it and stripped all 324 CR bytes,
-# producing a 324-line whole-file diff with ZERO content change - exactly the
-# sweeping, review-obscuring diff CONTRIBUTING.md:33 asks contributors not to
-# create, and a continuity break against the anchor for a file this checkpoint
-# was not scoped to reformat. `-text` restores byte-for-byte passthrough in both
+# Without the `-text` exemption below, the `*.md text eol=lf` rule above matches
+# it and strips every CR byte, producing a whole-file diff with ZERO content
+# change - exactly the sweeping, review-obscuring diff CONTRIBUTING.md:33 asks
+# contributors not to create, and a continuity break against the anchor for a
+# file no migration step needs to reformat. `-text` restores byte-for-byte
+# passthrough in both
 # directions, matching how the frozen corpus is protected. Diffs still render as
 # text; only EOL conversion is disabled.
 #
@@ -158,6 +159,29 @@ Dockerfile      text eol=lf
 # ---- directly in that directory as well as in any sub-directory, so a fixture
 # ---- added under a nested baseline folder inherits the same guarantee.
 src/test/resources/**/*.txt  text eol=lf
+
+# ---- The SAME fixtures additionally need a narrow whitespace exemption, and
+# ---- the reason is that their trailing spaces are DATA, not sloppiness. A
+# ---- fixed-width record pads its short fields to width, so a record whose last
+# ---- field is short necessarily ends in spaces. Measured at this commit:
+# ---- acctdata.txt 50 records, carddata.txt 50, custdata.txt 50 and
+# ---- dailytran.txt 300 - 450 records in total - end in a space before the LF.
+# ----
+# ---- With `whitespace` unspecified, git's default `blank-at-eol` rule reports
+# ---- every one of those as an error, so `git diff --check` exits non-zero and
+# ---- `git apply --whitespace=error` refuses the patch, on files that are
+# ---- byte-correct. The trap is what a contributor does next: the obvious fix
+# ---- is to strip the trailing spaces, which silently shortens 450 records and
+# ---- breaks every offset a fixed-width reader computes. So the exemption is
+# ---- not a convenience - it removes the incentive to corrupt the data.
+# ----
+# ---- `whitespace=-blank-at-eol` unsets ONLY that one rule. space-before-tab,
+# ---- indent-with-non-tab, tab-in-indent and cr-at-eol all remain in force, so
+# ---- a genuine CR or a stray tab in a fixture is still an error. A blanket
+# ---- `-whitespace` would have disabled all of them and is deliberately not
+# ---- used. The pattern is path-scoped and sits above the frozen-corpus block,
+# ---- exactly as the eol rule above does, so it cannot reach app/.
+src/test/resources/**/*.txt  whitespace=-blank-at-eol
 
 # ==================================================================
 # FROZEN LEGACY CORPUS - LAST BLOCK, SO IT OVERRIDES EVERY RULE ABOVE

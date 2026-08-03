@@ -81,7 +81,7 @@ import org.springframework.stereotype.Repository;
  *       {@code REC-TOTAL 7} the catalogue records. The seven codes are {@code 01} Purchase,
  *       {@code 02} Payment, {@code 03} Credit, {@code 04} Authorization, {@code 05} Refund,
  *       {@code 06} Reversal and {@code 07} Adjustment.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Every seeded code is exactly two digits, zero padded, so the identifier is a fixed width
  * character string and not a number. That is why this repository is typed
@@ -105,9 +105,9 @@ import org.springframework.stereotype.Repository;
  * integration test so a later schema edit cannot silently reintroduce the suffix. No derived
  * query method or {@code @Query} in this file targets {@code tran_type_cd}, and none may.
  *
- * <p><b>Medium, narrowed: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are
- * "Not available".</b> {@code V1__create_schema.sql} is present and declares this table. See
- * <i>Information gaps</i> below for the full disclosure and for the contract {@code V1} declares.
+ * <p><b>Closed: all three Flyway migrations are present.</b> {@code V1__create_schema.sql} declares this
+ * table, {@code V2__create_indexes.sql} correctly adds no index to it, and {@code V3__seed_data.sql} seeds
+ * its 7 rows. See <i>Information gaps</i> below for the contract {@code V1} declares.
  *
  * <p><b>Low: this is a batch only dataset, so it is granted no online surface.</b> Developed in
  * the next section; the consequence is an authorisation boundary, not a defect.
@@ -142,11 +142,13 @@ import org.springframework.stereotype.Repository;
  *   <li>The integration surface is correspondingly the batch tier: this repository is to be exercised
  *       through the transaction report job against a Testcontainers PostgreSQL 16 instance, not
  *       through the REST surface, because the REST surface has no path that reaches it.
- *       <strong>Not available, measured 1 August 2026:</strong> neither
- *       {@code com.cardemo.batch.jobs.TransactionReportJob} nor
- *       {@code src/test/java/com/cardemo/integration} exists, so no tier exercises this repository at
- *       all today - the sentence states the surface the tests are to take.</li>
- * </ul>
+ *       <strong>Partly not available:</strong> {@code com.cardemo.batch.jobs.TransactionReportJob} still
+ *       does not exist, so the report-job surface above remains the surface the tests are <em>to</em> take.
+ *       {@code src/test/java/com/cardemo/integration} does exist now, however, and
+ *       {@code RepositorySchemaAndFinderIntegrationTest} exercises this repository against a containerised
+ *       PostgreSQL 16 instance, so it is no longer true that no tier reaches it at all. An earlier revision
+ *       recorded both as absent.</li>
+ *   </ul>
  *
  * <h2>Method surface: three inherited operations, nothing declared</h2>
  *
@@ -222,7 +224,7 @@ import org.springframework.stereotype.Repository;
  *       <br><b>Failure modes.</b> An empty list means the seed migration did not run; it is not
  *       an error at this layer, and the integration test that asserts a row count of exactly 7
  *       is what turns it into a detectable one.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Deliberate omissions, each with its reason</h2>
  *
@@ -282,7 +284,7 @@ import org.springframework.stereotype.Repository;
  *       of any kind. Connectivity is configuration, resolved by the container from the active
  *       profile, which keeps the build free of the environment specific assumptions clause C
  *       rules out.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Configuration contract and operational notes</h2>
  *
@@ -309,7 +311,7 @@ import org.springframework.stereotype.Repository;
  *       defaults are used as shipped. Stating the gap is the honest discharge of clause A's
  *       "justify tradeoffs only when needed"; inventing pool figures with no measured workload
  *       behind them would be the dishonest one.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build and test</h2>
  *
@@ -337,21 +339,23 @@ import org.springframework.stereotype.Repository;
  * <h2>Information gaps: "Not available"</h2>
  *
  * <p>Rule 1 clause F requires that missing information be stated plainly rather than assumed.
- * Two items are <b>Not available</b> at the time this interface was authored:
+ * Two items were recorded as <b>Not available</b> when this interface was authored. The first has
+ * since been closed by measurement and is recorded as closed rather than quietly dropped:
  *
  * <ol>
- *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
- *       {@code V1__create_schema.sql} <b>is present</b> and declares
- *       {@code CREATE TABLE transaction_type}; {@code V2__create_indexes.sql} and
- *       {@code V3__seed_data.sql} do not exist. <i>What is needed:</i> those two remaining
- *       files. Because {@code ddl-auto: validate} makes the match mandatory rather than advisory,
+ *   <li><b>All three Flyway migrations are present.</b> An earlier revision of this bullet recorded
+ *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as non-existent; that is no longer
+ *       true and the claim is withdrawn.
+ *       {@code V1__create_schema.sql} declares {@code CREATE TABLE transaction_type},
+ *       {@code V2} adds no index to it, and {@code V3} seeds its 7 rows.
+ *       Because {@code ddl-auto: validate} makes the match mandatory rather than advisory,
  *       the contract restated here is what {@code V1} declares at that line and what this interface
  *       and its entity are typed over — table {@code transaction_type}, with columns
  *       <b>{@code tran_type CHAR(2)}</b> as the primary key, <i>not</i> {@code tran_type_cd},
  *       and {@code tran_type_desc CHAR(50)} not null, and with no version column, since this is
- *       static reference data. {@code V2} must add <b>no</b> index on this table: its three
- *       indexes are on {@code card.card_acct_id}, {@code card_cross_reference.xref_acct_id} and
- *       {@code "transaction".tran_proc_ts}. {@code V3} must seed exactly <b>7</b> rows from the
+ *       static reference data. {@code V2} adds <b>no</b> index on this table, as required: its three
+ *       indexes are {@code idx_card_acct_id}, {@code idx_card_cross_reference_acct_id} and
+ *       {@code idx_transaction_proc_ts}. {@code V3} seeds exactly <b>7</b> rows from the
  *       7 sixty byte records of {@code app/data/ASCII/trantype.txt}. A mismatch on any of these
  *       points fails context startup outright rather than degrading gracefully.</li>
  *   <li><b>FILE STATUS {@code '35'}, file unavailable, is "Not available" as a grounded source
@@ -366,7 +370,7 @@ import org.springframework.stereotype.Repository;
  *       The statuses this repository's access path <i>does</i> ground are {@code '00'}, checked
  *       after the open at {@code app/cbl/CBTRN03C.cbl:L433}, and {@code '23'}, set on the keyed
  *       miss at {@code :L498}.</li>
- * </ol>
+ *   </ol>
  *
  * @see TransactionType
  */

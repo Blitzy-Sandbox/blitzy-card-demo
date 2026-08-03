@@ -83,7 +83,7 @@ import java.util.Optional;
  *       filter is blank and the program is re-entered. No numeric Java type can hold an
  *       asterisk. The declared numeric picture is therefore contradicted by the program's own
  *       writes, which settles the question from source rather than by preference.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>No shared header helper exists, deliberately.</strong> Six header fields recur on
  * all seventeen maps, but not identically. {@code CURTIMEI} is {@code PIC X(8)} here
@@ -118,7 +118,7 @@ import java.util.Optional;
  *   <li>the government-issued identifier is interleaved <em>between</em> the two phone numbers
  *       ({@code ACSPHN1I} at line 204, {@code ACSGOVTI} at line 210, {@code ACSPHN2I} at
  *       line 216).</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Legacy narrowing is preserved, never widened.</strong> Three fields are narrower
  * on the map than in the record they are copied from, so the legacy screen silently truncates.
@@ -130,7 +130,7 @@ import java.util.Optional;
  *       ({@code app/cbl/COACTVWC.cbl:517}) - two bytes are dropped;</li>
  *   <li>{@code CUST-PHONE-NUM-2 PIC X(15)} moves into {@code ACSPHN2I PIC X(13)}
  *       ({@code app/cbl/COACTVWC.cbl:518}) - two bytes are dropped.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The width enforcement described below therefore uses the <em>map</em> width for all three, not
  * the record width. Accepting ten characters of postal code or fifteen of telephone number would
@@ -206,12 +206,12 @@ import java.util.Optional;
  * emit every component, so relying on the default would leak all six groups on the first
  * logged payload. The override emits only the account identifier, the account status and the
  * program name. No validation or exception message produced by this class ever quotes a field
- * value; messages name the field only. Never emitting the values is the <em>only</em> defence
- * this payload has, not merely the primary one: a central masking configuration would be a
- * second line of defence, but no {@code logback-spring.xml} exists under
- * {@code src/main/resources} at present, so there is nothing behind the override to catch what
- * it might miss. That absence is what makes the override load-bearing rather than belt-and-braces,
- * and it is why the omission is asserted by test rather than left to review. Consistent
+ * value; messages name the field only. Never emitting the values is the <em>primary</em> defence
+ * this payload has, and {@code src/main/resources/logback-spring.xml} stands behind it as the second,
+ * with a masking decorator applied identically in every profile. The override is still load-bearing
+ * rather than belt-and-braces, because a mask recognises only the field names and value shapes it was
+ * given and this override decides which of them are ever presented to it, which is why the omission
+ * is asserted by test rather than left to review. Consistent
  * with least privilege, this payload carries no password and no password hash - the account-view
  * map declares no such field - and it must not acquire one.</p>
  *

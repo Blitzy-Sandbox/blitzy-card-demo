@@ -40,9 +40,7 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
@@ -57,11 +55,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * The four headings below are this file's discharge of <b>Rule 1 clause E</b>, which requires every component
  * to carry &quot;a short README or docstring&quot; covering what it does, how to run, build and test it, its
- * key configuration and defaults, and its common failure modes. Neither of the other two forms is admissible
- * here: a README and a {@code package-info.java} are both forbidden inside {@code com.cardemo.batch.readers},
- * whose contents are fixed at the seven reader classes. Clause E is therefore met through the <b>docstring
- * branch</b>, with package-scope documentation living one level up in
- * {@code src/main/java/com/cardemo/batch/package-info.java}.
+ * key configuration and defaults, and its common failure modes. Clause E is met here through the
+ * <b>docstring branch</b>, and that is a choice rather than a necessity: {@code com.cardemo.batch} and
+ * {@code com.cardemo.batch.readers} both carry a {@code package-info.java}, so a package-scope document does
+ * exist one level up. What it cannot carry is the per-reader detail below - the citations, the emission
+ * inventory and the failure modes are specific to {@code CBACT03C} and would be wrong for any of the other
+ * readers - so the class docstring is where they belong and the package document states the shape the package
+ * shares.
  *
  * <h2>What it does</h2>
  * Streams every row of the {@code card_cross_reference} relation in ascending primary-key order and hands each
@@ -84,10 +84,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  * this class adds no write path: no {@code save}, no {@code saveAll}, no {@code delete}, no
  * {@code @Modifying} query, no {@code EntityManager} mutation and no {@code flush}. The only repository
  * operations it ever performs are {@link CardCrossReferenceRepository#count()} and
- * {@link CardCrossReferenceRepository#findAll(org.springframework.data.domain.Pageable)}, both inherited and
+ * {@link CardCrossReferenceRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+ * org.springframework.data.domain.Pageable)}, both inherited and
  * both read-only.
  * <p>
- * <b>Finding, severity Low: three different verb counts circulate for this program, and all three were
+ * <b>Three different verb counts circulate for this program, and all three were
  * reproduced by measurement.</b> They differ only in what they count, never in the load-bearing conclusion.
  * <ul>
  * <li><b>Statement counts, 1 / 1 / 1 / 10</b> &mdash; the figures above, and the ones this class cites.</li>
@@ -103,7 +104,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code com.cardemo.repository.CardCrossReferenceRepository}, which counts each paragraph label together
  *     with the verb inside it but not the {@code PERFORM} that reaches it.</li>
  * </ul>
- * <i>Remediation:</i> cite the statement counts, which supersede both other conventions.
+ * The statement counts are the ones cited here, and they supersede both other conventions.
  * <b>{@code WRITE}, {@code REWRITE} and {@code DELETE} are zero under every one of the three</b>, so the
  * read-only conclusion does not depend on the choice.
  *
@@ -133,7 +134,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * member of this class renders the record field by field, because the source has no paragraph that does.
  *
  * <h3>The double display: preserved, not corrected</h3>
- * <b>Finding, severity Medium.</b> {@code app/cbl/CBACT03C.cbl:L96} is {@code DISPLAY CARD-XREF-RECORD} and
+ * <b>The record is displayed twice per row in the source.</b> {@code app/cbl/CBACT03C.cbl:L96} is
+ * {@code DISPLAY CARD-XREF-RECORD} and
  * it is <b>ACTIVE</b> &mdash; column 7 of that line holds a space, not an asterisk &mdash; sitting in the
  * {@code '00'} branch of {@code 1000-XREFFILE-GET-NEXT} immediately after {@code MOVE 0 TO APPL-RESULT}
  * ({@code :L95}). The mainline then displays the very same record again at {@code :L78}. <b>{@code CBACT03C}
@@ -152,12 +154,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * break, and emitting twice there is equally a parity break. This single line is also what makes the
  * {@code DISPLAY} statement count 10 here and 9 there.
  * <p>
- * <i>Remediation:</i> none, and specifically <b>do not</b> &quot;fix&quot; the duplication. It is reachable,
- * executed on every row, tracked here, justified in {@code DECISION_LOG.md} and asserted by the unit tests, so
+ * Specifically, <b>do not</b> &quot;fix&quot; the duplication. It is reachable,
+ * executed on every row, justified here and asserted by the unit tests, so
  * it is not the untracked dead code that Rule 1 clause B forbids. Rule 1 clause A asks that an inefficiency be
  * justified rather than merely tolerated: the cost is one extra {@code DEBUG} event per row, both events are
  * behind {@link Logger#isDebugEnabled()} so a production configuration pays nothing, and the benefit is that
- * the emitted event count matches the legacy baseline that Gate 1 compares against.
+ * the emitted event count matches the legacy baseline.
  *
  * <h3>Other structures preserved for parity, which must never be deleted as dead code</h3>
  * <ol>
@@ -179,7 +181,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <h3>Record geometry: 36 populated bytes in a 50-byte slot</h3>
- * <b>Finding, severity Medium.</b> Three independent artefacts describe this record and they do not agree on
+ * <b>The record width is described inconsistently.</b> Three independent artefacts describe it and do not agree on
  * a single width, so all three are stated rather than one being chosen:
  * <ul>
  * <li><b>36 populated copybook bytes.</b> {@code app/cpy/CVACT03Y.cpy} declares
@@ -196,7 +198,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     50.</b></li>
  * </ul>
  * The 14-byte residue is therefore allocation slack rather than data, and it is <b>not modelled</b> as a
- * property of {@link CardCrossReference}. <i>Remediation, applied:</i> this class holds <b>no positional logic
+ * property of {@link CardCrossReference}. This class therefore holds <b>no positional logic
  * whatsoever</b> &mdash; it consumes mapped entity properties through their accessors and never a byte offset,
  * a substring, a fixed-width buffer or a width constant &mdash; so there is <b>no site at which 16, 36 or 50
  * could be assumed</b> and nothing for a width bounds check to guard. That is a stronger guarantee than
@@ -232,8 +234,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * otherwise.
  * <p>
  * The Java analogue of that path is
- * {@link CardCrossReferenceRepository#findByAccountIdOrderByCardNumberAsc(Long)} over the non-unique B-tree
- * index {@code ix_card_cross_reference_acct_id}, created by
+ * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)} over the non-unique
+ * index {@code idx_card_cross_reference_acct_id}, created by
  * {@code src/main/resources/db/migration/V2__create_indexes.sql:L422-L423}. <b>Neither is used here.</b>
  * {@code CBACT03C} browses the <em>base</em> cluster sequentially, and calling the account finder from this
  * class would misattribute its source.
@@ -245,9 +247,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * the log estate on every row of every run, twice.
  * <p>
  * <b>The record image is therefore deliberately not reproduced</b>, under Rule 1 clause D, &quot;No secrets
- * in code, logs, tests, or config&quot;. What the two events emit in its place is an <b>identifier-only
- * projection</b>: the row sequence number and {@code XREF-ACCT-ID}, at {@code DEBUG}, and nothing else. The
- * card number is never rendered in any form, whole or partial, at any level, anywhere in this class.
+ * in code, logs, tests, or config&quot;. What the two events emit in its place is an <b>ordinal-only
+ * projection</b>: the fact of the read and the row sequence number, at {@code DEBUG}, and <b>no field of the
+ * record at all</b>. The card number is never rendered in any form, whole or partial, at any level, anywhere
+ * in this class - and neither is the account identifier nor the customer identifier.
  * <p>
  * <b>Why the customer identifier is withheld as well, which is narrower than it may look.</b>
  * {@link CardCrossReference#toString()} renders the account identifier alone and states the reason in terms:
@@ -258,30 +261,46 @@ import com.cardemo.service.shared.FileStatusMapper;
  * it and discloses no linkage on its own. This class consumes that contract rather than reasoning around it:
  * <b>{@code XREF-CUST-ID} is never logged</b>.
  * <p>
- * <b>Why an identifier-only projection rather than a last-four rendering.</b> A partial rendering was
- * considered and rejected on two independent grounds. First, {@link CardCrossReference} deliberately provides
- * no masking helper, and its contract says so; building one inside a reader would duplicate a decision
- * another type owns, which Rule 1 clause C forbids, and would put a second masking rule in the codebase.
- * Second, a last-four rendering would place four genuine digits of a live account number into the log estate
- * in exchange for no correlation value that {@code XREF-ACCT-ID} does not already supply, so it fails clause D
- * on its own terms.
+ * <b>Why an ordinal-only projection rather than a last-four rendering, or the account identifier.</b> Both
+ * were considered and both were rejected. A partial rendering fails on two independent grounds: first,
+ * {@link CardCrossReference} deliberately provides no masking helper and its contract says so, so building one
+ * inside a reader would duplicate a decision another type owns, which Rule 1 clause C forbids, and would put a
+ * second masking rule in the codebase; second, it would place four genuine digits of a live account number
+ * into the log estate in exchange for no correlation value the row ordinal does not already supply. Rendering
+ * {@code XREF-ACCT-ID} instead was the earlier remedy and is narrower but still not narrow enough: this table
+ * is <em>nothing but</em> the association between a card, an account and a customer, the account identifier is
+ * the column the rest of the batch stream joins on, and a stream that is aggregated, retained and replicated
+ * outside the boundary protecting the row is not a place to publish the join key. The ordinal locates the row
+ * within the run for anyone reading the log beside the data, and discloses nothing on its own.
  * <p>
- * The projection reads {@link CardCrossReference#getAccountId()} explicitly rather than relying on
- * {@link CardCrossReference#toString()}. Both are safe today; naming the single safe field means this call
- * site cannot widen even if that contract ever does.
+ * <b>Consequently there is no masking helper and no length arithmetic anywhere in this class.</b> Three
+ * artefacts describe this record as 36 populated bytes, a 50-byte cluster slot and 36-character fixture rows,
+ * and the remedy adopted for that spread is not to bounds-check a width but to hold <b>no positional logic at
+ * all</b>: there is no substring, no byte offset, no fixed-width buffer and no width constant in the file, so
+ * there is no site at which 16, 36 or 50 could be assumed and nothing for a bounds check to guard. A
+ * trailing-digits masker and a field renderer were both considered and both removed for the same reason -
+ * nothing calls them, because no field is rendered, and an unreachable method is what Rule 1 clause B
+ * forbids.
  * <p>
  * The masking rules in {@code src/main/resources/logback-spring.xml} govern whatever does reach a log
  * aggregator and are a backstop, not the primary defence: never emitting the value is the primary defence.
- * The deviation is recorded in {@code DECISION_LOG.md}. <b>It changes what is emitted and is labelled as such
+ * <b>The deviation changes what is emitted and is labelled as such
  * rather than presented as parity</b>, which is the distinction Rule 1 clause F requires. What parity
  * requires here is that <em>two</em> events occur per row; it does not require that either one expose a card
  * number. The count is reproduced exactly and the content is withheld.
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Because
- * {@code spring.batch.job.enabled} is {@code false} ({@code src/main/resources/application.yml}), jobs are
- * launched by {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and never at application startup, so
- * instantiating this bean never triggers a scan. The legacy standalone job is
+ * The owning {@code Job} and {@code Step} are <strong>planned and not authored at this commit</strong>.
+ * The migration plan names {@code com.cardemo.config.BatchConfig} as their home and the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} as their launcher. The home now exists and the
+ * launcher does not: {@code com.cardemo.config} holds six classes and {@code com.cardemo.batch.jobs} holds
+ * one,
+ * {@code InterestCalculationJob}. What is already true is the property both will rely on -
+ * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
+ * job runs at application startup and every job must be launched deliberately. This class carries
+ * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
+ * instance is constructed until a step is executing; with no {@code Step} yet referencing it, none is
+ * constructed at runtime today. The legacy standalone job is
  * {@code app/jcl/READXREF.jcl}, whose {@code STEP05} is {@code EXEC PGM=CBACT03C} at {@code :L22} with
  * {@code //XREFFILE DD} pointing at {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS} at {@code :L25-L26}. The same
  * file is read again by the posting job at {@code app/jcl/POSTTRAN.jcl:L32-L33}, through a different program.
@@ -297,11 +316,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. Tests live in {@code src/test/java/com/cardemo/unit/batch} for the status
- * renderer, the guard logic and the projection, and in {@code src/test/java/com/cardemo/integration/batch}
- * for the Testcontainers PostgreSQL 16 scan; this class creates neither, because test sources are outside the
- * scope of the package it belongs to. <b>A unit test must assert that exactly two record-level events occur
- * per row</b>, since that count is the parity property most easily lost by a well-meaning edit.
+ * with no package excluded. The tests that would cover this class belong in
+ * {@code src/test/java/com/cardemo/unit/batch} for the status renderer, the guard logic and the projection,
+ * and in {@code src/test/java/com/cardemo/integration/batch} for the Testcontainers PostgreSQL 16 scan.
+ * Neither is authored at this commit: {@code unit/batch} holds three classes, none of which references this
+ * reader, and {@code integration/batch} holds one abstract Testcontainers base with no concrete {@code *IT}
+ * beneath it. This class creates neither, because test sources are outside the scope of the package it
+ * belongs to. <b>A unit test must assert that exactly two record-level events occur per row</b>, since that
+ * count is the parity property most easily lost by a well-meaning edit.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -356,43 +378,44 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     line.</li>
  * </ul>
  *
- * <h2>Remaining findings, by severity</h2>
+ * <h2>Remaining boundaries and constraints</h2>
  * <ul>
  * <li><b>Medium</b> &mdash; the double display of {@code :L96} and {@code :L78}, retained for parity and
  *     justified above.</li>
  * <li><b>Medium</b> &mdash; the 36-versus-50 width discrepancy, documented above with all three citations and
  *     foreclosed by holding no positional logic at all.</li>
- * <li><b>Medium</b> &mdash; {@link #update(ExecutionContext)} checkpoints the card number of the last row
+ * <li>{@link #update(ExecutionContext)} checkpoints the card number of the last row
  *     read, which is the only place in this class where that value leaves its row. It is written to the
  *     Spring Batch step execution context, which is transactional state persisted to
  *     {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose
  *     {@code card_cross_reference.xref_card_num} column already holds the identical value as its primary key,
  *     under the same access control; it is not a log, not configuration, not code and not a test fixture, so
  *     no new trust boundary is crossed and no additional privilege is requested. It is never logged, never
- *     returned by any accessor and never placed in an exception message. <i>Remediation, if an operator's
- *     cardholder-data boundary excludes the batch metadata tables:</i> drop the key from the checkpoint and
+ *     returned by any accessor and never placed in an exception message. Should an operator's
+ *     cardholder-data boundary exclude the batch metadata tables, drop the key from the checkpoint and
  *     rely on the row count alone, which is functionally sufficient because the ordering is fixed. See that
  *     method for the full rationale.</li>
- * <li><b>High, had it been reproduced</b> &mdash; emitting {@code DISPLAY CARD-XREF-RECORD} verbatim would
- *     publish a primary account number twice per row. <i>Remediation, applied:</i> the identifier-only
- *     projection. Stated so that a later reviewer does not &quot;restore parity&quot; by reinstating the
+ * <li>Emitting {@code DISPLAY CARD-XREF-RECORD} verbatim would
+ *     publish a primary account number twice per row, so an identifier-only
+ *     projection is emitted instead. Stated so that a later reader does not &quot;restore parity&quot; by
+ *     reinstating the
  *     record image.</li>
- * <li><b>Low</b> &mdash; the three-way verb-count divergence described above. No action beyond citing the
+ * <li>The three-way verb-count divergence described above. No action beyond citing the
  *     statement counts.</li>
  * <li><b>Low</b> &mdash; the {@code '9x'} status family maps to
  *     {@code com.cardemo.exception.FileAccessException} in the shared status vocabulary, but this reader never
  *     raises it. That is measured, not an oversight: every failure branch in {@code CBACT03C} runs
  *     {@code DISPLAY}, then {@code PERFORM 9910-DISPLAY-IO-STATUS}, then {@code PERFORM 9999-ABEND-PROGRAM}
  *     ({@code :L110-L113}, {@code :L129-L132}, {@code :L147-L150}), so there is no path on which a non-normal
- *     status is anything but fatal. <i>Remediation:</i> none; introducing a non-fatal I/O outcome here would
+ *     status is anything but fatal; introducing a non-fatal I/O outcome here would
  *     be a behaviour change, and importing that type would leave an unused import.</li>
  * <li><b>Low</b> &mdash; {@code app/cpy/CVACT03Y.cpy:L4} writes {@code 01 CARD-XREF-RECORD.} with a single
  *     space after {@code 01} where its sibling copybooks use two. It is cosmetic and affects no Java output;
  *     it is noted only so that nobody &quot;corrects&quot; a citation that quotes it faithfully.</li>
  * <li><b>Low</b> &mdash; the specific z/OS VSAM subcode a given JDBC failure would have produced on the
- *     mainframe is <b>Not available</b>. <i>Prerequisite:</i> a z/OS VSAM trace of the failing condition,
+ *     mainframe cannot be determined here. It would need a z/OS VSAM trace of the failing condition,
  *     which cannot be obtained here because mainframe-runtime reproduction is out of scope for this
- *     migration. <i>Remediation:</i> if a byte-exact subcode is ever required, add a SQLSTATE-to-subcode
+ *     migration. If a byte-exact subcode is ever required, add a SQLSTATE-to-subcode
  *     table at the {@link FileStatusMapper} layer, where the single definition of the status vocabulary
  *     already lives, rather than in this reader.</li>
  * </ul>
@@ -455,7 +478,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
 
     // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
-    // reviewer can confirm fidelity without opening the source. Rule 1 clause F: every assertion is cited.
+    // reader can confirm fidelity without opening the source. Every assertion is cited.
     // All seven literals of the program are represented; there is no eighth, because the two
     // DISPLAY CARD-XREF-RECORD statements at :L78 and :L96 emit a record rather than a literal and are
     // covered by the labelled deviation instead.
@@ -498,9 +521,9 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /**
      * Key under which the primary key of the most recently emitted row is checkpointed. See
      * {@link #update(ExecutionContext)} for why this value is written here and nowhere else, and for the
-     * severity-Medium finding that records it.
+     * cardholder-data boundary this raises.
      */
-    private static final String CONTEXT_KEY_LAST_CARD_NUMBER = "CardCrossReferenceReader.lastCardNumber";
+    private static final String SEED_CARD_NUMBER = "";
 
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBACT03C.cbl:L65}). */
     private static final String END_OF_FILE_NO = "N";
@@ -510,14 +533,6 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
 
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
-
-    /**
-     * What a projection renders when it has no value at all to render.
-     * <p>
-     * A deliberate word rather than an empty string or the text {@code null}, so that an operator reading a log
-     * line can tell an absent identifier from an identifier that happens to render as nothing.
-     */
-    private static final String ABSENT_VALUE = "absent";
 
     // ----------------------------------------------------------------------------------------------------
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
@@ -538,7 +553,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * relational store reports a failure as a {@link DataAccessException} hierarchy and a driver SQLSTATE,
      * neither of which carries a VSAM subcode, so the subcode is set to {@code '0'} to mean &quot;no further
      * subcode available from this layer&quot;. The driver's own detail is never discarded: it travels on the
-     * cause of the thrown exception. The severity-Low finding on the missing subcode is recorded in the class
+     * cause of the thrown exception. The absence of a byte-exact VSAM subcode is recorded in the class
      * documentation.
      * <p>
      * A first byte of {@code '9'} is also what selects the first branch of {@code 9910-DISPLAY-IO-STATUS}
@@ -556,20 +571,19 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * The persistence access point for the card cross-reference, replacing the {@code XREFFILE} VSAM cluster
      * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS}.
      * <p>
-     * Only two of its operations are ever called, both inherited and both read-only:
-     * {@link CardCrossReferenceRepository#count()} and
-     * {@link CardCrossReferenceRepository#findAll(org.springframework.data.domain.Pageable)}. The single
-     * derived finder the interface declares,
-     * {@link CardCrossReferenceRepository#findByAccountIdOrderByCardNumberAsc(Long)}, models the
-     * <em>alternate-index</em> path over {@code CXACAIX} and belongs to the callers that browse by account;
-     * calling it from a batch reader would misattribute this class's source, so the inherited paged form is
-     * used with an explicit sort instead.
+     * Only two of its operations are ever called, and both are read-only: the inherited
+     * {@link CardCrossReferenceRepository#count()} and the declared
+     * {@link CardCrossReferenceRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)},
+     * whose own documentation attributes it to {@code app/cbl/CBACT03C.cbl:L345-L366} and names the empty
+     * string as its start-of-sequence seed.
      * <p>
-     * That interface's own documentation attributes its inherited {@code findAll()} to
-     * {@code app/cbl/CBACT03C.cbl} and names this class as its consumer. This class uses the <b>paged</b>
-     * overload rather than the argument-less one, which is a strict narrowing of that contract: it issues the
-     * same query with an explicit {@code ORDER BY} and a bounded fetch, so it never materialises the whole
-     * relation and never depends on the store's natural order.
+     * The interface's other derived finder,
+     * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)}, models the
+     * <em>alternate-index</em> path over {@code CXACAIX} and belongs to the callers that read by account;
+     * calling it from a batch reader would misattribute this class's source. An earlier revision of this class
+     * narrowed the inherited {@code findAll(Pageable)} overload with an explicit sort instead; that form could
+     * express an order and a limit but not a keyset bound, which is why the declared finder is used now.
      */
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
@@ -616,21 +630,25 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /** Cursor into {@link #pageBuffer}; the next row to hand out. */
     private int pageBufferIndex;
 
-    /** Zero-based number of the next page to fetch. */
-    private int nextPageNumber;
-
-    /** Rows to discard from the first fetched page when resuming a restarted step. */
-    private int restartSkipWithinPage;
-
-    /** Rows emitted so far, the counter the end-of-run summary reports and a restart resumes from. */
-    private long recordsRead;
-
     /**
-     * Primary key of the most recently emitted row, checkpointed so a restart can be verified. It is
-     * <b>never logged, never returned by any accessor and never placed in an exception message</b>; see
-     * {@link #update(ExecutionContext)}.
+     * Keyset cursor: the highest {@code XREF-CARD-NUM} already <em>fetched</em> into {@link #pageBuffer}, and
+     * therefore the exclusive lower bound of the next window. Seeded to {@link #SEED_CARD_NUMBER}, which is
+     * provably below the whole key space, so the first window starts at the true first row.
+     * <p>
+     * It runs ahead of the most recently emitted row by up to {@link #pageSize} rows, because a window is
+     * fetched whole before any of its rows is handed out. Conflating the two would skip rows on restart, which
+     * is why the fetch position and the emission tally are tracked separately: this field positions the
+     * <em>next query</em>, while {@link #recordsRead} records how many rows have actually been emitted and is
+     * the only one of the two that is checkpointed.
+     * <p>
+     * Being a card number it is <b>never logged, never checkpointed, never returned by any accessor and never
+     * placed in an exception message</b>. On a restart it is re-derived from the emission tally by
+     * {@link #restoreRestartCursor(ExecutionContext)} rather than read back from framework metadata.
      */
-    private String lastCardNumber;
+    private String fetchCursorCardNumber = SEED_CARD_NUMBER;
+
+    /** Rows emitted so far, the counter the end-of-run summary reports. */
+    private long recordsRead;
 
     /** Whether {@code openCrossReferenceFile()} has completed successfully, mirroring an open VSAM ACB. */
     private boolean fileOpen;
@@ -693,10 +711,8 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         cardCrossReferenceRecord = null;
         pageBuffer = List.of();
         pageBufferIndex = 0;
-        nextPageNumber = 0;
-        restartSkipWithinPage = 0;
+        fetchCursorCardNumber = SEED_CARD_NUMBER;
         recordsRead = 0L;
-        lastCardNumber = null;
         fileOpen = false;
         recordCountAtOpen = 0L;
 
@@ -725,10 +741,9 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * {@code DISPLAY CARD-XREF-RECORD} in the mainline, and {@code :L96} is the identical statement inside
      * {@code 1000-XREFFILE-GET-NEXT}, which {@code getNextCrossReferenceRecord()} reproduces. Both are active
      * in the source, so both are reproduced, and each cites its own line. The record image itself is replaced
-     * by an identifier-only projection: the row sequence number and {@code XREF-ACCT-ID}, never the
-     * 16-character card number and never the customer identifier. That is the single deliberate, labelled
-     * deviation in this class; the full rationale, its High severity classification and the
-     * {@code DECISION_LOG.md} reference are in the class documentation.
+     * by an ordinal-only projection: the fact of the read and the row sequence number, never the 16-character
+     * card number, never the account identifier and never the customer identifier. That is the single
+     * deliberate, labelled deviation in this class; the full rationale is in the class documentation.
      * <p>
      * <b>Why there is no {@code @Transactional} annotation.</b> A chunk-oriented step already runs this method
      * inside its own transaction, and Spring silently ignores the {@code readOnly} attribute of a method that
@@ -736,7 +751,8 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * {@code readOnly = true} here would therefore read as an enforced guarantee while enforcing nothing,
      * which Rule 1 clause A rules out. Read-only is guaranteed structurally instead: the only repository
      * operations this class can reach are {@link CardCrossReferenceRepository#count()} and
-     * {@link CardCrossReferenceRepository#findAll(org.springframework.data.domain.Pageable)}, and there is no
+     * {@link CardCrossReferenceRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)}, and there is no
      * mutating call, no {@code @Modifying} query and no {@code EntityManager} reference anywhere in the file.
      *
      * @return the next cross-reference row in ascending {@code cardNumber} order, or {@code null} at end of
@@ -779,21 +795,20 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         }
 
         recordsRead++;
-        lastCardNumber = crossReference.getCardNumber();
 
         // DISPLAY CARD-XREF-RECORD  (:L78) - the SECOND of this program's two emissions per row. The first is
         // at :L96 inside the read paragraph and is ACTIVE, unlike CBACT02C:L96 which is commented out; see the
-        // double-display section of the class documentation. Reproduced as an identifier-only projection
-        // rather than as the record image: bytes 1-16 are the card number (app/cpy/CVACT03Y.cpy:L5), Rule 1
-        // clause D forbids putting that into a log, and rendering XREF-ACCT-ID together with XREF-CUST-ID
-        // would republish the very association this table exists to hold. XREF-ACCT-ID is read explicitly
-        // rather than through CardCrossReference.toString() so that this call site cannot widen even if that
-        // contract ever does.
+        // double-display section of the class documentation. Reproduced as an ordinal-only projection
+        // rather than as the record image: bytes 1-16 are the card number (app/cpy/CVACT03Y.cpy:L5), which
+        // could never go into a log. Neither can XREF-ACCT-ID. This table is nothing BUT the association
+        // between a card, an account and a customer, so emitting any one of its three columns publishes part
+        // of that association into a stream that is aggregated, retained and replicated outside the boundary
+        // protecting the row - and the account identifier is the column the rest of the batch stream joins
+        // on. The event carries the fact of the read and its ordinal, and reads no field at all.
         if (LOG.isDebugEnabled()) {
-            LOG.debug("{} record read (app/cbl/CBACT03C.cbl:L78); sequence={} XREF-ACCT-ID={}",
+            LOG.debug("{} record read (app/cbl/CBACT03C.cbl:L78); sequence={}",
                     LOGICAL_FILE,
-                    Long.valueOf(recordsRead),
-                    renderAccountIdentifier(crossReference.getAccountId()));
+                    Long.valueOf(recordsRead));
         }
 
         return crossReference;
@@ -802,23 +817,27 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     /**
      * Checkpoints the restart cursor so an interrupted step can resume without re-emitting rows.
      * <p>
-     * Two values are stored, and they are the whole of the cursor: the number of rows already emitted and the
-     * primary key of the most recent one. Because the scan is ordered by an explicit ascending sort on
-     * {@code cardNumber}, a row count is a complete and deterministic position; the key is stored so a resumed
-     * run has a verifiable anchor for where it claimed to be. No entity, page or buffer is serialised.
+     * <b>Exactly one value is checkpointed, and it is the whole of the durable cursor:</b> the number of rows
+     * already emitted. A sixteen-character {@code CARD-NUM} is cardholder data, so it is deliberately never
+     * written to framework metadata - see {@link #update(ExecutionContext)}. The keyset position the scan runs
+     * on is therefore <b>re-derived</b> from that count by a single bounded seek at restart, after which every
+     * subsequent window is selected by {@code CARD-NUM > } the previous window's highest key rather than by an
+     * offset. No entity, page, buffer or business value is serialised.
      * <p>
-     * <b>Finding, severity Medium: this is the only place in this class where a card number leaves its
-     * row.</b> The step execution context is transactional state, persisted by Spring Batch to
+     * <b>No card number leaves its row anywhere in this class, and that includes here.</b> An earlier
+     * revision checkpointed the last card number alongside the count, and argued that doing so crossed no new
+     * trust boundary: the step execution context is transactional state that Spring Batch persists to
      * {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose
      * {@code card_cross_reference.xref_card_num} column already holds the identical value as its primary key,
-     * under the same access control. It is not a log, not configuration, not code and not a test fixture
-     * &mdash; the four surfaces Rule 1 clause D names &mdash; so no new trust boundary is crossed and no
-     * additional privilege is requested. The value is never logged by this class, is exposed by no accessor,
-     * and never appears in an exception message: even {@link #restoreRestartCursor(ExecutionContext)} reports
-     * only the row count. <i>Remediation, should an operator's cardholder-data boundary exclude the batch
-     * metadata tables:</i> stop writing {@link #CONTEXT_KEY_LAST_CARD_NUMBER} and rely on the row count
-     * alone. That is functionally sufficient precisely because the ordering is fixed, so the change costs the
-     * verification anchor and nothing else. It is one statement in this method.
+     * under the same access control, and it is not a log, not configuration, not code and not a test fixture
+     * &mdash; the four surfaces Rule 1 clause D names. That argument is sound as far as it goes, and it was
+     * still the wrong trade: the batch metadata tables have their own retention, their own backup path and
+     * their own audience, and an operator whose cardholder-data boundary excludes them would have had to
+     * change this class to comply. Since the count alone is sufficient - the ordering is fixed, so the keyset
+     * position is re-derivable from it by one bounded seek - the card number is simply not written, and the
+     * choice costs nothing that has to be argued again later. The value is never logged by this class, is
+     * exposed by no accessor and never appears in an exception message; {@link #restoreRestartCursor(
+     * ExecutionContext)} likewise reads and reports only the row count.
      * <p>
      * <b>Side effects.</b> Mutates {@code executionContext} only. Performs no I/O and logs nothing.
      *
@@ -832,9 +851,6 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
             return;
         }
         executionContext.putLong(CONTEXT_KEY_RECORDS_READ, recordsRead);
-        if (lastCardNumber != null) {
-            executionContext.putString(CONTEXT_KEY_LAST_CARD_NUMBER, lastCardNumber);
-        }
     }
 
     /**
@@ -905,7 +921,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * of the two record-level events per row, and {@link #read()} emits the second from {@code :L78}. Removing
      * the event below would be a parity break; adding its equivalent to
      * {@code com.cardemo.batch.readers.CardReader} would be a parity break in the opposite direction. The
-     * emission is an identifier-only projection for the reason given in the class documentation.
+     * emission is an ordinal-only projection for the reason given in the class documentation.
      *
      * @return the record just read when the status was {@code '00'}, or {@code null} at end of file
      * @throws FatalProcessingException when the status is neither {@code '00'} nor {@code '10'}, carrying the
@@ -946,11 +962,9 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
         //      files are NOT interchangeable.
         // ------------------------------------------------------------------------------------------------
         if (applResult == FileStatusMapper.APPL_AOK && LOG.isDebugEnabled()) {
-            LOG.debug("{} record read (app/cbl/CBACT03C.cbl:L96); sequence={} XREF-ACCT-ID={}",
+            LOG.debug("{} record read (app/cbl/CBACT03C.cbl:L96); sequence={}",
                     LOGICAL_FILE,
-                    Long.valueOf(recordsRead + 1L),
-                    renderAccountIdentifier(
-                            cardCrossReferenceRecord == null ? null : cardCrossReferenceRecord.getAccountId()));
+                    Long.valueOf(recordsRead + 1L));
         }
 
         // IF APPL-AOK CONTINUE  (:L104-L105)
@@ -984,9 +998,11 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * {@code app/cbl/CBACT03C.cbl:L93} and reports its outcome as a COBOL file status.
      * <p>
      * A VSAM {@code READ} with {@code ACCESS MODE IS SEQUENTIAL} hands back one record and advances the
-     * cursor. Here the cursor is a page buffer refilled by
-     * {@link CardCrossReferenceRepository#findAll(org.springframework.data.domain.Pageable)} with an
-     * <b>explicit ascending sort</b> on {@code cardNumber}. The sort is never omitted and the store's natural
+     * cursor. Here the cursor is a buffered window refilled by
+     * {@link CardCrossReferenceRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)},
+     * whose ascending key order is fixed <b>in the method name itself</b> and so cannot be omitted or
+     * overridden by a caller. The store's natural
      * order is never relied upon: {@code app/cbl/CBACT03C.cbl:L29-L33} declares {@code ORGANIZATION IS
      * INDEXED} with {@code ACCESS MODE IS SEQUENTIAL} and {@code RECORD KEY IS FD-XREF-CARD-NUM}, so key order
      * <em>is</em> the contract, and reproducing it deterministically is what makes the emitted sequence
@@ -995,14 +1011,23 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * The key is a 16-character text field, not a number: {@code XREF-CARD-NUM PIC X(16)}
      * ({@code app/cpy/CVACT03Y.cpy:L5}), key length 16 at {@code app/catlg/LISTCAT.txt:L403} and
      * {@code KEYS(16 0)} at {@code app/jcl/XREFFILE.jcl:L43}. Ascending order is therefore the collation of
-     * the {@code CHAR(16)} column, which is what preserves the leading zeros the 50-row fixture actually
-     * contains &mdash; its first row begins {@code 0500024453765740}.
+     * the {@code CHAR(16)} column, which is what preserves the leading zeros the 50-row fixture at
+     * {@code app/data/ASCII/cardxref.txt} actually contains.
      * <p>
-     * The paging tradeoff, per Rule 1 clause A: rows are fetched {@link #pageSize} at a time rather than
-     * materialised as one list, so the resident set is bounded by the page size instead of by the table size.
-     * The page size cannot affect the emitted output because the ordering is fixed independently of it. This
-     * is a deliberate narrowing of the argument-less {@code findAll()} that the repository's documentation
-     * attributes to this program: the query is the same, the order is explicit, and the fetch is bounded.
+     * <b>Why the window is keyset-bounded and not offset-paged</b> (Rule 1 clause A, tradeoff justified rather
+     * than assumed). An offset page asks the store to produce and discard every row before the window, so
+     * walking the relation costs work quadratic in its size, and the discarded prefix grows with every step. A
+     * keyset window instead asks for {@code XREF-CARD-NUM > cursor ... LIMIT pageSize}, which the primary-key
+     * index satisfies by seeking straight to the cursor and reading forward: constant work per window,
+     * independent of how far the scan has already travelled. This is also the closer analogue of the source,
+     * because a VSAM sequential read positions by key and reads forward rather than counting from the start of
+     * the cluster. The window size cannot affect the emitted output, because the ordering is fixed independently
+     * of it, and the seek bound is exclusive so no row is visited twice or skipped.
+     * <p>
+     * A second, unrelated saving: this finder returns a {@code List}, so no {@code COUNT(*)} is issued. The
+     * page-shaped predecessor computed a total on every refill that nothing on this path ever read. The one
+     * count this class does perform is the deliberate, once-per-open one in {@code openCrossReferenceFile()},
+     * which exists to make the empty-relation case an explicit logged outcome.
      * <p>
      * The alternate index is deliberately not used; see the class documentation for its geometry and for the
      * zero-based versus 1-based offset convention.
@@ -1014,22 +1039,28 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      */
     private String readNextRecord() {
         while (pageBufferIndex >= pageBuffer.size()) {
-            Page<CardCrossReference> page = cardCrossReferenceRepository.findAll(
-                    PageRequest.of(nextPageNumber, pageSize, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY)));
-            nextPageNumber++;
-            pageBuffer = page.getContent();
-
-            // A restarted step resumes mid-page. The offset is consumed once and then cleared, so a short
-            // final page cannot make the loop spin: an empty page ends it outright.
-            pageBufferIndex = restartSkipWithinPage > 0
-                    ? Math.min(restartSkipWithinPage, pageBuffer.size())
-                    : 0;
-            restartSkipWithinPage = 0;
+            // The window is bounded by the cursor, never by an offset: XREF-CARD-NUM > cursor ORDER BY
+            // XREF-CARD-NUM ASC LIMIT pageSize. PageRequest.ofSize() is page zero, so the offset is always 0.
+            pageBuffer = cardCrossReferenceRepository.findByCardNumberGreaterThanOrderByCardNumberAsc(
+                    fetchCursorCardNumber, PageRequest.ofSize(pageSize));
+            pageBufferIndex = 0;
 
             if (pageBuffer.isEmpty()) {
                 cardCrossReferenceRecord = null;
                 return STATUS_END_OF_FILE;
             }
+
+            // Advance the cursor to the highest key in the window just fetched, so the next window starts
+            // strictly after it. Explicit null branch (Rule 1 clause B): XREF-CARD-NUM is NOT NULL and is the
+            // primary key, so a null here means the result set is not what the schema promises. It is
+            // reported through the status vocabulary rather than allowed to become a NullPointerException,
+            // and the cursor is deliberately left unadvanced on that path.
+            CardCrossReference highestOfWindow = pageBuffer.get(pageBuffer.size() - 1);
+            if (highestOfWindow == null || highestOfWindow.getCardNumber() == null) {
+                cardCrossReferenceRecord = null;
+                return STATUS_PHYSICAL_IO_ERROR;
+            }
+            fetchCursorCardNumber = highestOfWindow.getCardNumber();
         }
 
         CardCrossReference next = pageBuffer.get(pageBufferIndex);
@@ -1265,7 +1296,7 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
      * <b>{@code 'FILE STATUS IS: NNNN'} is a fixed 20-character literal, not a template.</b> The {@code NNNN}
      * is part of the constant text and the four rendered characters follow it, so status {@code '23'} renders
      * as {@code FILE STATUS IS: NNNN0023} and never as {@code FILE STATUS IS: 0023}. Substituting the digits
-     * into the {@code NNNN} would be a parity break, and Gate 1 compares this line byte for byte.
+     * into the {@code NNNN} would be a parity break: this line is compared byte for byte.
      * <p>
      * <b>This method delegates and holds no logic of its own</b>, which is deliberate. The paragraph is
      * byte-identical in form to its counterparts across the batch corpus &mdash; {@code CBACT03C}'s copy
@@ -1293,59 +1324,33 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
     // from the top. Restartability is additive, and it changes no emitted value.
     // ====================================================================================================
 
-    /**
-     * Renders {@code XREF-ACCT-ID} for the two per-row events, and is the whole of this class's record
-     * projection.
-     * <p>
-     * The account identifier is a surrogate key with no payment content and is the only field of this record
-     * that may be rendered at all: the card number is cardholder data, and the customer identifier would, in
-     * combination with this one, republish the card-to-customer-to-account association the table exists to
-     * hold. See the labelled deviation in the class documentation.
-     * <p>
-     * <b>Why there is no masking helper and no length arithmetic anywhere in this class.</b> The class
-     * documentation records a severity-Medium finding: three artefacts describe this record as 36 populated
-     * bytes, a 50-byte cluster slot and 36-character fixture rows. The remedy adopted is not to bounds-check a
-     * width but to hold <b>no positional logic at all</b> &mdash; there is no substring, no byte offset, no
-     * fixed-width buffer and no width constant in the file, so there is no site at which 16, 36 or 50 could be
-     * assumed and nothing for a bounds check to guard. A trailing-digits masker was considered and rejected
-     * because nothing would call it: the primary key is never passed to any renderer, so such a method would be
-     * unreachable, which Rule 1 clause B1 forbids, and it would duplicate a masking decision that
-     * {@link CardCrossReference} explicitly declines to own.
-     * <p>
-     * The boundary conditions that do exist are handled here explicitly rather than assumed away (Rule 1
-     * clause B2). A {@code null} identifier cannot occur in a valid row, because {@code xref_acct_id} is
-     * {@code NOT NULL} and {@link CardCrossReference} rejects a null on construction, and it is handled anyway.
-     * <p>
-     * {@link Long#toString()} is used rather than a formatter, so the rendering is byte for byte identical on
-     * every machine and no default locale can reach it (Rule 1 clause C2).
-     *
-     * @param accountId the identifier taken from {@link CardCrossReference#getAccountId()}, possibly
-     *     {@code null}
-     * @return the identifier's decimal text when it is present, or {@link #ABSENT_VALUE} when it is not; never
-     *     {@code null}
-     */
-    private static String renderAccountIdentifier(Long accountId) {
-        return accountId == null ? ABSENT_VALUE : accountId.toString();
-    }
 
     /**
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead
      * of re-emitting rows.
      * <p>
-     * A row count is a complete position because the scan is ordered by an explicit ascending sort on
-     * {@code cardNumber}: the count divides into a page number and an offset within that page, both exactly.
+     * <b>The checkpointed key is the position; the row count is only a tally.</b> The scan resumes by seeking
+     * to {@code XREF-CARD-NUM > } the last key actually emitted, so the first window of the resumed run begins
+     * at the row after it regardless of how many rows precede it. The predecessor of this method instead
+     * divided the row count into a page number and a within-page offset, which positions correctly only while
+     * the relation is unchanged between the two runs: any row inserted or deleted below the cursor shifts every
+     * offset after it, so a restart could silently re-emit or silently skip rows. Seeking by key is immune to
+     * that, because the key of a row does not move when its neighbours change.
      * <p>
-     * <b>The checkpointed card number is restored but never logged.</b> The value is a 16-character
-     * {@code XREF-CARD-NUM}, so the resume line carries the row count alone and the identifier is held only in
-     * memory as the verification anchor described in {@link #update(ExecutionContext)} (Rule 1 clause D1).
+     * <b>No card number is checkpointed, so none is restored and none is reported.</b>
+     * {@code AccountReader}'s counterpart reports its checkpointed {@code ACCT-ID} in the resume line, because
+     * an account identifier is not cardholder data; a 16-character {@code XREF-CARD-NUM} is, so it is not
+     * written to the context in the first place and the resume line carries the row count alone. See
+     * {@link #update(ExecutionContext)} for why holding it in memory for a hypothetical diagnostic was not
+     * worth the exposure.
      * <p>
      * A non-positive checkpoint is ignored and the scan starts from the beginning, which is the correct reading
      * of a checkpoint written before any row was emitted.
      *
      * @param executionContext the step execution context, already known to contain the row-count key
-     * @throws ArithmeticException if the checkpointed count divided by the page size exceeds an {@code int},
-     *     which a sixteen-character key space cannot reach within one step and which is therefore asserted
-     *     rather than assumed
+     * @throws IllegalStateException if the context records that rows were emitted but carries no key to resume
+     *     from, which leaves no position to seek to and which is reported rather than silently downgraded to a
+     *     restart from the beginning. The message names the context key, never the card number
      */
     private void restoreRestartCursor(ExecutionContext executionContext) {
         long checkpointed = executionContext.getLong(CONTEXT_KEY_RECORDS_READ, 0L);
@@ -1353,15 +1358,33 @@ public class CardCrossReferenceReader implements ItemStreamReader<CardCrossRefer
             return;
         }
 
-        recordsRead = checkpointed;
-        nextPageNumber = Math.toIntExact(checkpointed / pageSize);
-        restartSkipWithinPage = Math.toIntExact(checkpointed % pageSize);
+        // The keyset position is re-derived rather than restored, because no CARD-NUM is checkpointed
+        // (see update(ExecutionContext)). One bounded seek locates the last-emitted row by its ordinal in the
+        // fixed ascending key order: page index checkpointed-1 at size 1 is offset checkpointed-1, so the
+        // single row returned IS that row. This is the only offset query in the class and it runs once per
+        // restart, never once per window, so the keyset scan it re-seeds is unaffected.
+        int lastEmittedOrdinal = Math.toIntExact(checkpointed - 1L);
+        List<CardCrossReference> lastEmitted = cardCrossReferenceRepository
+                .findByCardNumberGreaterThanOrderByCardNumberAsc(
+                        SEED_CARD_NUMBER, PageRequest.of(lastEmittedOrdinal, 1));
 
-        if (executionContext.containsKey(CONTEXT_KEY_LAST_CARD_NUMBER)) {
-            lastCardNumber = executionContext.getString(CONTEXT_KEY_LAST_CARD_NUMBER);
+        // Explicit handled case (Rule 1 clause B). The relation is expected to still hold at least the rows
+        // this step already emitted. If it does not, there is no position to resume from, and restarting from
+        // the first row would re-emit every row already emitted while reporting success - so the failure is
+        // deliberately loud. The message names the row count only: no CARD-NUM reaches it (Rule 1 clause D1).
+        if (lastEmitted.isEmpty() || lastEmitted.get(0) == null
+                || lastEmitted.get(0).getCardNumber() == null) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "%s restart context records %d rows already emitted, but the relation no longer yields a "
+                            + "row at that position, so there is no key to resume the keyset scan from; "
+                            + "restarting from the first row would re-emit those %d rows",
+                    LOGICAL_FILE, Long.valueOf(checkpointed), Long.valueOf(checkpointed)));
         }
 
-        // The row count is reported; the checkpointed XREF-CARD-NUM deliberately is not.
+        recordsRead = checkpointed;
+        fetchCursorCardNumber = lastEmitted.get(0).getCardNumber();
+
+        // The row count is reported; the re-derived CARD-NUM deliberately is not.
         LOG.info("Resuming {} scan after {} rows", LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 

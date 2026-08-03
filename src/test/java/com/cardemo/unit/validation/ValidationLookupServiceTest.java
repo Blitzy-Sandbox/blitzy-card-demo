@@ -129,17 +129,21 @@ import org.springframework.core.io.ResourceLoader;
  *
  * <h2>2. How to run it</h2>
  *
- * <p>Whole class, offline, from the repository root:
+ * <p>Whole class, offline, from the repository root. The only prerequisite is JDK 25 on {@code PATH} with
+ * {@code JAVA_HOME} set; Maven comes from the pinned wrapper, which is why the wrapper and never a host
+ * {@code mvn} is invoked:
  *
  * <pre>
- *     source /etc/profile.d/10-carddemo-toolchain.sh
- *     mvn -o -B test -Dtest=ValidationLookupServiceTest -DfailIfNoSpecifiedTests=false -Djacoco.skip=true
+ *     ./mvnw -B -ntp -o test -Dtest=ValidationLookupServiceTest -DfailIfNoSpecifiedTests=false -Djacoco.skip=true
  * </pre>
  *
- * <p>As part of the gated build:
+ * <p>As part of the gated build. Note what the two flags mean: {@code -o} makes Maven offline, which
+ * causes it to skip {@code dependency-check:check} because that goal declares {@code requiresOnline}, and
+ * {@code -Ddependency-check.skip=true} skips it explicitly. Either way <strong>a skipped scan is never
+ * evidence that the scan passes</strong>, so the vulnerability gate must be run separately and online:
  *
  * <pre>
- *     mvn -o -B clean verify -Ddependency-check.skip=true
+ *     ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true
  * </pre>
  *
  * <p>No container, no database and no Spring context. The happy-path fixture is built from a plain
@@ -181,7 +185,7 @@ import org.springframework.core.io.ResourceLoader;
  *       absent or all-space input and {@code INVALID} is for a present value of the wrong width. The two
  *       drive different screen attributes at {@code app/cpy/CSSETATY.cpy}, where blank additionally earns an
  *       asterisk, so they are not interchangeable.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("ValidationLookupService: the five CSLKPCDY lookup tables as verifiable classpath data")
 class ValidationLookupServiceTest {

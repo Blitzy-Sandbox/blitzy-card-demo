@@ -61,14 +61,14 @@ import jakarta.persistence.PersistenceException;
  * ({@code app/csd/CARDDEMO.CSD}), and its whole job is to accept one transaction identifier and render
  * the matching {@code TRANSACT} record on one screen. It is surfaced over HTTP by
  * {@code com.cardemo.controller.TransactionController} under {@code /api/transactions/*}; the deep-link
- * entry {@code GET /api/transactions/{id}} is the REST analogue of the
+ * entry {@code GET /api/transactions/detail?transactionId=...} is the REST analogue of the
  * {@code CDEMO-CT01-TRN-SELECTED} hand-off at {@code app/cbl/COTRN01C.cbl:103-108}.
  * Traceability anchor commit {@code 7756d89}.
  *
  * <p>Every one of the nine source paragraphs maps to exactly one private method here, one for one, with
  * no consolidation and no splitting, each carrying a Javadoc citation of its label and verified line
- * range. That correspondence is the artefact the scope-coverage gate reads out of
- * {@code TRACEABILITY_MATRIX.md}, so it is structural rather than stylistic: the industry advice against
+ * range. That correspondence is the artefact the scope-coverage gate reads, so it is structural rather
+ * than stylistic: the industry advice against
  * literal transliteration is deliberately overridden here, and the readability cost is paid back by the
  * per-method source citations rather than by restructuring.
  *
@@ -79,15 +79,17 @@ import jakarta.persistence.PersistenceException;
  *
  * <h2>2. How to build, run and test</h2>
  * <ul>
- *   <li>Compile: {@code mvn -B clean compile}. The build runs {@code -Xlint:all -Werror} with
- *       {@code failOnWarning}, so this file must be warning-clean, including no unused import.</li>
- *   <li>Unit tests: {@code mvn -B clean test}. The tests for this bean live at
+ *   <li>Compile: {@code ./mvnw -B -ntp clean compile}. The build runs {@code -Xlint:all -Werror} with
+ *       {@code failOnWarning}, so this file must be warning-clean. It must also carry no unused import, but
+ *       that is a review obligation rather than a build one: {@code javac} 25 publishes no {@code unused}
+ *       lint key.</li>
+ *   <li>Unit tests: {@code ./mvnw -B -ntp clean test}. The tests for this bean live at
  *       {@code src/test/java/com/cardemo/unit/service/TransactionDetailServiceTest.java} and drive it
  *       directly with a fixed {@code java.time.Clock} and mocked collaborators, so no database and no
  *       container are needed.</li>
- *   <li>Full gate: {@code mvn -B clean verify} additionally applies the JaCoCo line-coverage floor and
+ *   <li>Full gate: {@code ./mvnw -B -ntp clean verify} additionally applies the JaCoCo line-coverage floor and
  *       the OWASP dependency scan.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>3. Key configuration and defaults</h2>
  * <ul>
@@ -105,7 +107,7 @@ import jakarta.persistence.PersistenceException;
  *   <li><strong>Field widths.</strong> Every width is consumed from the public constants on
  *       {@code com.cardemo.model.dto.TransactionDto} rather than restated here, so there is one
  *       definition of each field contract in the tree.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  * <ul>
@@ -128,39 +130,38 @@ import jakarta.persistence.PersistenceException;
  *       detail views of the <em>same</em> transaction serialise, and a viewer can block behind a writer.
  *       Symptoms are latency on {@code GET /api/transactions/{id}} and, once a lock timeout is
  *       configured, a {@code FileAccessException} raised from the read. This is legacy behaviour
- *       faithfully reproduced, not a defect in this class - see the remediation note below.</li>
+ *       faithfully reproduced, not a defect in this class - see the preserved-lock note below.</li>
  *   <li><strong>Startup failure mentioning {@code Clock} or {@code EntityManager}.</strong> Both are
  *       constructor-injected. A {@code Clock} bean is a pre-existing requirement of the tree, since
  *       {@code com.cardemo.service.shared.DateValidationService} also takes one; the shared
  *       {@code EntityManager} proxy is contributed by Spring Data JPA.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Preserved legacy quirks, by severity</h2>
+ * <h2>Preserved legacy quirks</h2>
  *
- * <h3>High - the {@code READ ... UPDATE} exclusive lock on a pure read-only path</h3>
+ * <h3>The {@code READ ... UPDATE} exclusive lock on a pure read-only path</h3>
  * {@code app/cbl/COTRN01C.cbl:269-278} issues {@code EXEC CICS READ ... UPDATE}, and the {@code UPDATE}
  * option at {@code :275} is the <strong>only</strong> occurrence of that word in the file. The program
  * takes an exclusive update lock and then never writes: it has no {@code REWRITE}, no {@code WRITE} and
  * no {@code DELETE}. The lock is therefore pure overhead in the source - and it is
  * <strong>reproduced deliberately</strong>, because it is observable under concurrency and parity is the
- * contract. Rule 1 Clause A asks that inefficiencies be justified rather than removed silently; this
- * paragraph and {@link #readTransactFile(String)} are that justification.
- * <em>Remediation, tracked in {@code DECISION_LOG.md}:</em> add a
- * {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} finder to
- * {@code com.cardemo.repository.TransactionRepository} so the lock is declared at the repository layer
- * instead of being escalated here. That interface declares no such finder today - see the
- * "Not available" list.
+ * contract. An inefficiency must be justified rather than removed silently; this
+ * paragraph and {@link #readTransactFile(String)} are that justification. The cleaner home for the lock
+ * is a {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} finder on
+ * {@code com.cardemo.repository.TransactionRepository}, declaring it at the repository layer
+ * instead of escalating it here; that interface declares no such finder, so the lock is escalated
+ * through the injected {@link jakarta.persistence.EntityManager}.
  *
- * <h3>Medium - there is no numeric validation of the transaction identifier, and none is added</h3>
+ * <h3>There is no numeric validation of the transaction identifier, and none is added</h3>
  * {@code app/cbl/COTRN01C.cbl:146-156} checks the identifier for blank and for {@code LOW-VALUES} and
  * for nothing else. The sibling list program has {@code 'Tran ID must be Numeric ...'} at
  * {@code app/cbl/COTRN00C.cbl:214}; <strong>{@code COTRN01C} has no such check at all.</strong> The
  * absent guard is preserved: a non-numeric identifier is not rejected here, it flows into the lookup and
  * comes back as the not-found path. Adding a numeric guard would reject input the legacy screen accepted,
- * which is a behaviour change. Recorded in {@code DECISION_LOG.md} as a deliberately preserved asymmetry
+ * which is a behaviour change. It is a deliberately preserved asymmetry
  * between {@code CT00} and {@code CT01}.
  *
- * <h3>Medium - the edited amount mask renders eight integer digits while the record holds nine</h3>
+ * <h3>The edited amount mask renders eight integer digits while the record holds nine</h3>
  * {@code TRAN-AMT} is {@code PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:10}, but
  * {@code WS-TRAN-AMT} is {@code PIC +99999999.99} at {@code app/cbl/COTRN01C.cbl:49} - eight integer
  * digits. A value of a thousand million or more therefore loses its leading digit on the way to the
@@ -180,7 +181,7 @@ import jakarta.persistence.PersistenceException;
  *       last identifier anchors, the page number and the next-page flag are inert in this program; they
  *       are the list program's state, and modelling them here would invent pagination the source does not
  *       perform.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Low - the failure message differs in case from its sibling, and the difference is preserved</h3>
  * This program says {@code 'Unable to lookup Transaction...'} with an upper-case {@code T} at
@@ -196,29 +197,25 @@ import jakarta.persistence.PersistenceException;
  * return, so the fall-through survives. The sibling add program's send paragraph <em>does</em> return and
  * is therefore fail-fast; that pattern is deliberately not applied here.
  *
- * <h2>"Not available" (Rule 1 Clause F)</h2>
+ * <h2>Boundaries of this class</h2>
  * <ul>
- *   <li><strong>A for-update finder on {@code com.cardemo.repository.TransactionRepository}.</strong>
- *       Not available. Needed: a method annotated {@code @Lock(LockModeType.PESSIMISTIC_WRITE)}, for
- *       example {@code findByIdForUpdate}. Until it exists the lock is escalated here through the
+ *   <li><strong>The exclusive lock is escalated here, not declared at the repository.</strong>
+ *       {@code com.cardemo.repository.TransactionRepository} declares no
+ *       {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} finder, so the lock is taken through the
  *       injected {@link jakarta.persistence.EntityManager}; that interface is owned by the repository
  *       package and is deliberately not modified from this file.</li>
- *   <li><strong>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql}.</strong> Not available.
- *       {@code V1__create_schema.sql} <em>is</em> present and declares {@code tran_id CHAR(16)} as the
+ *   <li><strong>The schema this class binds against.</strong>
+ *       {@code V1__create_schema.sql} declares {@code tran_id CHAR(16)} as the
  *       primary key with {@code tran_desc CHAR(100)}, {@code tran_orig_ts CHAR(26)} and
- *       {@code tran_proc_ts CHAR(26)}, which is what this class binds against.</li>
- *   <li><strong>The four {@code application*.yml} profiles.</strong> Not available, so the
- *       {@code ddl-auto} and {@code open-in-view} settings named above are consumed on the contract that
- *       they will carry those values, not read from a file that exists today.</li>
- *   <li><strong>A corpus literal for {@code FILE STATUS '35'}.</strong> Not available - the value has no
+ *       {@code tran_proc_ts CHAR(26)}.</li>
+ *   <li><strong>{@code FILE STATUS '35'} has no corpus literal.</strong> The value has no
  *       literal attestation anywhere in {@code app/}. It is reachable here only through
  *       {@code FileStatusMapper}, never constructed by this class.</li>
- *   <li><strong>A screen-width declaration reconciling {@code CURTIMEI}.</strong> The technical
- *       specification states that the header time field is {@code X(9)} on every map. That is wrong for
- *       this map: {@code app/cpy-bms/COTRN01.CPY:54} declares {@code CURTIMEI PIC X(8)}, matching the
- *       eight characters of {@code WS-CURTIME-HH-MM-SS} at {@code app/cpy/CSDAT01Y.cpy:36-41}. Severity
- *       Low; this class renders eight characters, following the map.</li>
- * </ul>
+ *   <li><strong>The header time field is eight characters on this map, not nine.</strong>
+ *       {@code app/cpy-bms/COTRN01.CPY:54} declares {@code CURTIMEI PIC X(8)}, matching the
+ *       eight characters of {@code WS-CURTIME-HH-MM-SS} at {@code app/cpy/CSDAT01Y.cpy:36-41}, so
+ *       this class renders eight characters and follows the map.</li>
+ *   </ul>
  *
  * <h2>Thread safety</h2>
  * Immutable after construction. All four collaborators are {@code private final} and none is reassigned;
@@ -408,6 +405,25 @@ public class TransactionDetailService {
     private static final int MERCHANT_ID_DIGITS = 9;
 
     /**
+     * The fixed-width placeholder that replaces the edited amount in this class's one diagnostic emission,
+     * and only there.
+     *
+     * <p>Twelve characters, the exact width of the mask {@code PIC +99999999.99} at
+     * {@code app/cbl/COTRN01C.cbl:49} - one sign, {@value #AMOUNT_MASK_INTEGER_DIGITS} integer digits, the
+     * decimal point and two decimals - so the emitted event keeps the width a reader would use to verify
+     * that the mask was applied at all. See {@code populateTranviewScreen} for the full justification.
+     */
+    private static final String REDACTED_AMOUNT =
+            "*".repeat(PLUS_SIGN.length() + AMOUNT_MASK_TOTAL_DIGITS + DECIMAL_POINT.length());
+
+    /**
+     * The fixed-width placeholder that replaces the merchant identifier in this class's one diagnostic
+     * emission, and only there. Exactly {@value #MERCHANT_ID_DIGITS} characters, one per digit position of
+     * {@code TRAN-MERCHANT-ID PIC 9(09)}.
+     */
+    private static final String REDACTED_MERCHANT_ID = "*".repeat(MERCHANT_ID_DIGITS);
+
+    /**
      * The two-character file status this class reports to {@code FileStatusMapper} when the persistence
      * layer fails, standing in for the {@code WHEN OTHER} arm of {@code app/cbl/COTRN01C.cbl:289-296}.
      *
@@ -433,6 +449,22 @@ public class TransactionDetailService {
      * Logged in place of a card number when the record carries none.
      */
     private static final String CARD_NUMBER_ABSENT = "<absent>";
+
+    /**
+     * A fixed, digit-free stand-in logged wherever a value from the record would otherwise appear.
+     *
+     * <p>It replaces the pair of card-specific constants this class used to carry. Masking the card number
+     * alone was never enough: the transaction identifier, the amount, the two dates and the merchant
+     * identifier together identify a transaction and its value as precisely as the card number does, and this
+     * service runs once per view request, so enumerating them at DEBUG amounted to a transaction ledger in a
+     * stream that is aggregated, retained and replicated outside the boundary that protects the row.
+     *
+     * <p>No field of the record now reaches any log statement at any level. The response payload is
+     * unaffected - the screen at {@code app/cpy-bms/COTRN01.CPY:62-66} legitimately displays these values -
+     * and the correlation identifier that {@code CorrelationIdFilter} places in the MDC is what ties a log
+     * event to the request that produced it.
+     */
+    private static final String WITHHELD_VALUE = "[withheld]";
 
     /**
      * The stand-in for a COBOL {@code MOVE SPACES}.
@@ -486,7 +518,7 @@ public class TransactionDetailService {
      * {@code app/cbl/COTRN01C.cbl:275} to {@link LockModeType#PESSIMISTIC_WRITE}.
      *
      * <p>It is injected because {@code com.cardemo.repository.TransactionRepository} declares no
-     * for-update finder - stated as "Not available" on this class - and because adding one would mean
+     * for-update finder - as this class's boundaries note records - and because adding one would mean
      * editing a file this class does not own. Spring Data JPA contributes the shared, transaction-bound
      * proxy, so this reference resolves to whichever persistence context is active on the calling thread
      * and is safe to hold on a singleton.
@@ -541,8 +573,9 @@ public class TransactionDetailService {
      * Opens the detail screen, optionally deep-linked to one transaction: the first-entry branch of
      * {@code MAIN-PARA} at {@code app/cbl/COTRN01C.cbl:99-109}.
      *
-     * <p>This is the entry point behind {@code GET /api/transactions/{id}}. Supplying an identifier is the
-     * REST analogue of arriving with {@code CDEMO-CT01-TRN-SELECTED} populated from the transaction list,
+     * <p>This is the entry point behind {@code GET /api/transactions/detail?transactionId=...}. Supplying
+     * an identifier is the REST analogue of arriving with {@code CDEMO-CT01-TRN-SELECTED} populated from
+     * the transaction list,
      * which {@code :103-108} moves into the input field and then looks up immediately. Supplying no
      * identifier is the other arm of the same {@code IF}: the screen comes back blank, with the cursor on
      * the input field and no lookup attempted.
@@ -592,7 +625,7 @@ public class TransactionDetailService {
      * {@link #viewTransaction(String)}; the reasoning is identical. The other three arms perform no I/O, so
      * the transaction they open stays empty and is inexpensive; keeping one boundary for all arms is
      * preferred to splitting the dispatch across two methods, because splitting it would break the
-     * one-paragraph-to-one-method correspondence that {@code TRACEABILITY_MATRIX.md} is proved against.
+     * one-paragraph-to-one-method correspondence the scope-coverage gate reads.
      *
      * @param aid the key pressed, standing in for {@code EIBAID}; {@code null} is treated as the
      * {@code WHEN OTHER} arm rather than rejected, because an unrecognised key is exactly what that arm
@@ -654,7 +687,7 @@ public class TransactionDetailService {
      * reproduced:
      * <ul>
      *   <li>{@code :89 SET USR-MODIFIED-NO TO TRUE} sets {@code WS-USR-MODIFIED}, which
-     *       <strong>nothing ever reads</strong>. No field is created for it. Severity Low.</li>
+     *       <strong>nothing ever reads</strong>. No field is created for it.</li>
      *   <li>{@code :98 MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} copies the inbound commarea into
      *       working storage. A REST request carries its state in its own parameters, so there is nothing to
      *       copy.</li>
@@ -794,8 +827,7 @@ public class TransactionDetailService {
      * the validation is the blank test at {@code :147}. The sibling list program rejects a non-numeric
      * identifier at {@code app/cbl/COTRN00C.cbl:214}; this program does not test for it at all, so a
      * non-numeric identifier flows into the read and returns through the not-found path. Preserving the
-     * absent guard is deliberate - adding one would reject input the legacy screen accepted. Severity
-     * Medium, recorded in {@code DECISION_LOG.md}.
+     * absent guard is deliberate - adding one would reject input the legacy screen accepted.
      *
      * <p>Side effects: reads one row under the preserved exclusive lock and mutates the work area. Writes
      * nothing.
@@ -925,10 +957,27 @@ public class TransactionDetailService {
             // Observability (Rule 1 clause A) - no legacy counterpart, since the source's only instrumentation
             // is the DISPLAY at :290. The card number is masked, never rendered: it is the one cardholder
             // field on this screen and it must not reach a log, a stack trace or an exception message.
+            //
+            // Finding, Medium severity - the amount and the merchant identifier are redacted too. Masking
+            // only the card number was too narrow a reading of clause D1. This one line carries the amount
+            // and the merchant identifier BESIDE the transaction identifier, so it discloses what a
+            // cardholder spent and where; the transaction identifier then links it back to the card through
+            // a single lookup, which makes the masked card number no protection at all. Both values are
+            // replaced by fixed-width placeholders of their declared widths. The transaction identifier, the
+            // type and category codes, the source and the two dates are kept: they are reference and key
+            // data, they are what this event exists to confirm, and logback-spring.xml:731-736 records that
+            // the value masks deliberately leave identifier-shaped lines alone rather than over-redact them.
+            // Debug alone was not sufficient - debug is enabled during exactly the incident investigations
+            // in which logs are read most widely - so the guard is kept as a volume control and is no longer
+            // the only control. Not a parity artefact: the source's DISPLAY at :290 is an error diagnostic,
+            // not this event, and no screen field or response payload is altered. Remediation if the true
+            // values are ever needed: emit them to a separately access-controlled artefact.
             LOG.debug("CT01 detail populated: transactionId={} typeCode={} categoryCode={} source={} "
                             + "amount={} originatingDate={} processingDate={} merchantId={} cardNumber={}",
-                    work.transactionId, work.typeCode, work.categoryCode, work.source, work.amount,
-                    work.originatingDate, work.processingDate, work.merchantId,
+                    work.transactionId, work.typeCode, work.categoryCode, work.source,
+                    work.amount == null ? null : REDACTED_AMOUNT,
+                    work.originatingDate, work.processingDate,
+                    work.merchantId == null ? null : REDACTED_MERCHANT_ID,
                     maskCardNumber(work.cardNumber));
 
             // :191 PERFORM SEND-TRNVIEW-SCREEN.
@@ -1071,7 +1120,7 @@ public class TransactionDetailService {
      * <p><strong>The time field is eight characters, not nine.</strong>
      * {@code app/cpy-bms/COTRN01.CPY:54} declares {@code CURTIMEI PIC X(8)}, matching the eight bytes of
      * {@code WS-CURTIME-HH-MM-SS} at {@code app/cpy/CSDAT01Y.cpy:36-41}. The technical specification's claim
-     * that the field is {@code X(9)} on every map does not hold for this map; severity Low, and the map
+     * that the field is {@code X(9)} on every map does not hold for this map, and the map
      * governs. {@code WS-CURTIME-MILSEC} exists in the copybook but this paragraph never moves it, so no
      * fractional part is rendered.
      *
@@ -1134,16 +1183,15 @@ public class TransactionDetailService {
      * is <strong>reproduced here on purpose</strong> because it is observable under concurrency - two
      * viewers of the same transaction serialise, and a viewer blocks behind a writer - and parity, not
      * efficiency, is the contract. Rule 1 Clause A asks that an inefficiency be justified rather than
-     * removed silently; this paragraph is that justification. Severity High.
+     * removed silently; this paragraph is that justification.
      *
-     * <p><em>Remediation, tracked in {@code DECISION_LOG.md} against
-     * {@code app/cbl/COTRN01C.cbl:275}:</em> add a {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} finder to
-     * {@code com.cardemo.repository.TransactionRepository} so that the lock is declared at the repository
-     * layer instead of being escalated at the service layer.
+     * <p><em>The cleaner home for it</em>, against {@code app/cbl/COTRN01C.cbl:275}, is a
+     * {@code @Lock(LockModeType.PESSIMISTIC_WRITE)} finder on
+     * {@code com.cardemo.repository.TransactionRepository}, declaring the lock at the repository
+     * layer instead of escalating it at the service layer.
      *
      * <h4>How the lock is taken, and why this way</h4>
-     * A for-update finder on {@code com.cardemo.repository.TransactionRepository} is <strong>"Not
-     * available"</strong>: that interface declares no method annotated
+     * That interface declares no method annotated
      * {@code @Lock(LockModeType.PESSIMISTIC_WRITE)}, and it is owned by the repository package, so this file
      * does not add one. The lock is therefore escalated in two steps that together reproduce one
      * {@code READ ... UPDATE}: the row is fetched through the repository, keeping the architectural access
@@ -1206,7 +1254,7 @@ public class TransactionDetailService {
 
             // :275 UPDATE. THE PRESERVED EXCLUSIVE LOCK. Escalated only when a row was actually found,
             // because there is nothing to lock otherwise - and CICS likewise locks nothing on NOTFND.
-            // DO NOT REMOVE: see this method's Javadoc and DECISION_LOG.md.
+            // DO NOT REMOVE: see this method's Javadoc.
             if (located.isPresent()) {
                 this.entityManager.lock(located.get(), LockModeType.PESSIMISTIC_WRITE);
             }
@@ -1217,15 +1265,20 @@ public class TransactionDetailService {
             // one structured log event here, carrying the legacy screen text of :292 alongside it. The
             // response and reason codes are CICS concepts; the persistence layer's own diagnosis stands in
             // for them and is preserved in full as the cause.
+            //
+            // The transaction identifier is withheld: which record was being read is caller-supplied input, and
+            // the store failure this reports is a property of the store rather than of the record. The
+            // correlation identifier that CorrelationIdFilter puts in the MDC ties this event to the request
+            // that caused it, which is what a diagnosis actually needs.
             LOG.error("CT01 {} file={} operation={} status={} transactionId={}",
                     LOOKUP_FAILURE_MESSAGE, TRANSACT_FILE, READ_UPDATE_OPERATION, IO_FAILURE_STATUS,
-                    tranId, cause);
+                    WITHHELD_VALUE, cause);
 
             // :291-295 the error flag, the message, the cursor and the send are replaced by the typed
             // exception. FileStatusMapper decides which one: '90' is in the '9x' family, so the decision is
             // FileAccessException.
             //
-            // On the orElseGet arm (severity Low, and deliberately kept): toException answers an empty
+            // On the orElseGet arm (deliberately kept): toException answers an empty
             // Optional only for the two success statuses '00' and '10', and the status handed to it here is
             // always the '9x' constant, so this arm does not fire today - an instruction-level coverage run
             // reports its nine instructions as the only unexecuted code in this class. It is NOT dead code
@@ -1257,7 +1310,7 @@ public class TransactionDetailService {
      *
      * <p>Two statements, both {@code PERFORM}, reached from the PF4 arm at {@code :123-124}. It is kept as
      * its own method rather than folded into either of the paragraphs it calls, because the paragraph map
-     * must stay one-for-one: {@code TRACEABILITY_MATRIX.md} is proved against it.
+     * must stay one-for-one; the scope-coverage gate is read out of it.
      *
      * <p>Side effects: mutates the work area and emits log output. No I/O and no lock, so PF4 never touches
      * the database.
@@ -1433,11 +1486,11 @@ public class TransactionDetailService {
      * positive amount renders {@code +} rather than a blank, and zero renders {@code +00000000.00}.
      *
      * <p><strong>The mask is one digit narrower than the field it renders, and that is preserved.</strong>
-     * {@code TRAN-AMT} is {@code PIC S9(09)V99} ({@code app/cpy/CVTRA05Y.cpy:23}) and holds nine integer
+     * {@code TRAN-AMT} is {@code PIC S9(09)V99} ({@code app/cpy/CVTRA05Y.cpy:10}) and holds nine integer
      * digits; the mask accepts eight. A COBOL {@code MOVE} between them discards the high-order digit, so an
      * amount of 123456789.99 reaches the screen as {@code +23456789.99}. {@link #AMOUNT_MASK_MODULUS}
-     * reproduces that discard exactly. This is a legacy display defect, classified Medium, documented on this
-     * class and recorded in {@code DECISION_LOG.md} - it is reproduced, not corrected, because the parity
+     * reproduces that discard exactly. This is a legacy display defect, documented on this
+     * class - it is reproduced, not corrected, because the parity
      * gate compares the rendered characters.
      *
      * <p>Negative amounts are rendered with a leading {@code -} and are never normalised to their magnitude:
@@ -1480,7 +1533,7 @@ public class TransactionDetailService {
     /**
      * Renders a card number safe for a log statement.
      *
-     * <p>{@code TRAN-CARD-NUM} ({@code app/cpy/CVTRA05Y.cpy:32}) is cardholder data. It legitimately reaches
+     * <p>{@code TRAN-CARD-NUM} ({@code app/cpy/CVTRA05Y.cpy:15}) is cardholder data. It legitimately reaches
      * the response payload, because the screen at {@code app/cpy-bms/COTRN01.CPY:62-66} displays it, but it
      * must never reach a log, an exception message or a stack trace. No digits are retained - not even a last
      * four - because nothing on this read-only path needs to identify a card from a log line, and the least

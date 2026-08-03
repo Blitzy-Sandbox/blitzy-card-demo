@@ -84,7 +84,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       :366.</li>
  *   <li>One trailer field: {@code ERRMSGI PIC X(78)} at :372, the last input field. Its width is
  *       <b>78</b>, not 79 and not 80.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Two details of that census are asserted precisely because they are the ones a reasonable reader
  * would get wrong. First, <b>the ten row groups are uniform</b>: every one declares all five fields.
@@ -119,9 +119,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code 88 CA-NEXT-PAGE-EXISTS VALUE 'Y'.}, alongside a counter-intuitive companion flag where
  *       {@code 88 CA-LAST-PAGE-SHOWN VALUE 0.} and {@code 88 CA-LAST-PAGE-NOT-SHOWN VALUE 9.} - zero
  *       meaning shown and nine meaning not shown.</li>
- * </ul>
+ *   </ul>
  *
- * <p><b>Finding, established by reading the driving program rather than reasoning by analogy:</b> the
+ * <p><b>Established by reading the driving program rather than reasoning by analogy:</b> the
  * user list belongs to the {@code 'N'} family. {@code app/cbl/COUSR00C.cbl}:71 declares
  * {@code 10 CDEMO-CU00-NEXT-PAGE-FLG PIC X(01) VALUE 'N'.} with {@code 88 NEXT-PAGE-YES VALUE 'Y'.} at
  * :72 and {@code 88 NEXT-PAGE-NO VALUE 'N'.} at :73, and the program sets those condition names at
@@ -176,7 +176,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       they are not secrets. <b>The one plaintext credential all ten share appears nowhere in this
  *       file</b> - not in a value, not in a comment, not in an assertion message - and no BCrypt digest
  *       literal appears either; digest shape is detected by pattern, never by example.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Names are not treated as secrets, but they are identifying, so this test also proves that the
  * diagnostic renderings of both the page and its rows disclose neither a name nor an identifier.
@@ -253,7 +253,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li><b>No global mutable state.</b> Every fixture is produced by a pure static factory returning
  *       immutable values; there is no mutable static field, no shared instance state between tests and
  *       no ordering dependency, so the class is order-independent by construction.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -262,10 +262,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       {@code -Xlint:all -Werror} at {@code release 25} and that configuration reaches test
  *       compilation, so a single raw type or deprecation warning is a hard build failure, not a warning.
  *       Fix the expression rather than suppressing the warning. An <em>unused</em> import is a separate
- *       matter: {@code javac} 25.0.3 publishes no lint key for one, so it will not fail the build and is
- *       caught at review - remove it there.</li>
+ *       matter: {@code javac} at release 25 publishes no lint key for one, so it will not fail the build
+ *       and must be spotted by hand - remove it when you see it.</li>
  *   <li><b>A password or hash component is added for symmetry with the add and update maps.</b> This is
- *       the highest-severity regression available here. The write maps have {@code PASSWDI}; this read
+ *       the most damaging regression available here. The write maps have {@code PASSWDI}; this read
  *       map does not, and the assertions in the security group fail loudly if one appears.</li>
  *   <li><b>The card list's page size of seven is reused.</b> Seven belongs to
  *       {@code app/cbl/COCRDLIC.cbl}:177-178. Ten belongs here, by
@@ -278,64 +278,51 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *       Cite {@code app/cbl/COUSR00C.cbl}:54 working storage instead.</li>
  *   <li><b>A self-delete guard is invented.</b> See the note below; the guard does not exist in the
  *       source and must not be introduced.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Preserved legacy quirk</h2>
  *
  * <p>{@code app/cbl/COUSR03C.cbl}, the 359-line user-delete program, contains <b>no self-delete
  * guard</b>: it never compares the target user identifier against the signed-on identifier, so an
  * administrator can delete their own record. That absent guard is preserved deliberately under the
- * parity mandate and is recorded in {@code DECISION_LOG.md}. This test therefore asserts that a row
+ * parity mandate. This test therefore asserts that a row
  * whose identifier equals the signed-on identifier is carried without objection, and it asserts no
  * self-delete restriction of any kind, because inventing one would be a behaviour change.
  *
- * <h2>Findings, by severity</h2>
+ * <h2>Two counts worth pinning</h2>
  *
  * <ul>
- *   <li><b>Blocker</b> - a password or hash component on this projection; the seeded plaintext
- *       credential appearing anywhere under {@code src/}; the absent, empty, blank and low-values states
- *       collapsed into one. <em>Remediation:</em> delete the component and let
- *       {@code UserCreateRequest} or {@code UserUpdateRequest} carry the credential; remove the literal
- *       and assert digest shape by pattern; carry every value exactly as supplied without coercion.</li>
- *   <li><b>High</b> - a page size other than ten; the two next-page encodings conflated; a shared
- *       header or paging abstraction; an invented self-delete guard; a session-state component; a
- *       class-level cross-field constraint. <em>Remediation:</em> take each figure from the program that
- *       owns it, keep the header fields declared inline, and gate any cross-field rule the way
- *       {@code app/cbl/COACTUPC.cbl}:1665-1669 gates its own.</li>
- *   <li><b>Medium, closed</b> - prior-generation plan prose stated 460 input fields across the seventeen
- *       symbolic maps while a direct count totals <b>441</b>, and its own per-map table summed to 440.
- *       Separately, that prose attributed paging metadata to {@code app/cpy/COCOM01Y.cpy}, which declares
- *       no such field. This map's own count is unaffected and independently verified at <b>59</b>.
- *       <em>Remediation, applied:</em> {@code docs/technical-specifications.md} now publishes 441 and
- *       re-attributes the paging fields to the program WORKING-STORAGE and COMMAREA extensions that
- *       actually declare them, verified on 1 August 2026; no code change follows.</li>
- *   <li><b>Low</b> - the {@code USRSEC} record carries 57 populated bytes in an 80-byte slot; the
- *       23-byte named filler at {@code app/cpy/CSUSR01Y.cpy}:23 is not modelled, because no screen field
- *       occupies it. <em>Remediation:</em> none required.</li>
- * </ul>
+ *   <li><b>This map declares 59 input fields</b>, counted directly from
+ *       {@code app/cpy-bms/COUSR00.CPY}. A direct count across all seventeen symbolic maps totals
+ *       <b>441</b> rather than the 460 that older prose quotes, and the paging metadata that same prose
+ *       attributed to {@code app/cpy/COCOM01Y.cpy} is declared nowhere in that copybook: it lives in the
+ *       driving program's WORKING-STORAGE and in the COMMAREA extensions. This map's own count of 59 is
+ *       unaffected either way.</li>
+ *   <li><b>The {@code USRSEC} record carries 57 populated bytes in an 80-byte slot.</b> The 23-byte named
+ *       filler at {@code app/cpy/CSUSR01Y.cpy}:23 is not modelled, because no screen field occupies
+ *       it.</li>
+ *   </ul>
  *
- * <h2>Not available</h2>
+ * <h2>Boundaries of this class</h2>
  *
  * <ul>
- *   <li><b>A user seed fixture.</b> There is no {@code usrsec.txt} under {@code app/data/ASCII}, which
+ *   <li><b>No user seed fixture is loaded, because none exists.</b> There is no {@code usrsec.txt} under
+ *       {@code app/data/ASCII}, which
  *       holds nine fixtures and none for users; the ten rows exist only inside
  *       {@code app/jcl/DUSRSECJ.jcl}:35-44. The EBCDIC {@code .PS} member of the same name is codepage
  *       reference only and is never parsed by the build. Consequently no fixture loader is used by this
- *       test and none is invented. <em>What would be needed:</em> an ASCII fixture in the
- *       {@code CSUSR01Y} 80-byte layout, with credentials already replaced by digests.</li>
- *   <li><b>Planned children of the schema migration.</b> No child artefact of
- *       {@code V1__create_schema.sql} is planned, so no column-level schema assertion is made here.
- *       <em>What would be needed:</em> the generated DDL, which is a database-tier concern and outside
- *       this pure-JVM tier in any case.</li>
- *   <li><b>The production owner of the row-selection rule.</b> {@code isSelected} classifies a row
- *       marker exactly as {@code app/cbl/COUSR00C.cbl}:152-179 classifies it, but it is a test-local
- *       oracle rather than a delegation. The services that will own that rule,
- *       {@code UserListService} from {@code app/cbl/COUSR00C.cbl} and {@code UserDeleteService} from
- *       {@code app/cbl/COUSR03C.cbl}, do not exist at this checkpoint, so the oracle is retained
- *       deliberately to record the contract rather than lose it, and this entry is its tracking record.
- *       <em>What would be needed:</em> those two services; the moment either arrives, re-point every
- *       assertion that calls {@code isSelected} at the production method and delete the oracle.</li>
- * </ul>
+ *       test and none is invented.</li>
+ *   <li><b>No column-level schema assertion is made here.</b> DDL is a database-tier concern and outside
+ *       this pure-JVM tier; {@code SchemaStructureTest} owns the migration text.</li>
+ *   <li><b>The row-selection rule is asserted through a test-local oracle.</b> {@code isSelected}
+ *       classifies a row
+ *       marker exactly as {@code app/cbl/COUSR00C.cbl}:152-179 classifies it, but it is an oracle rather
+ *       than a delegation: {@code UserListService} keeps its equivalent classifier private, and the
+ *       user-delete service that {@code app/cbl/COUSR03C.cbl} maps to is not present in this tree. The
+ *       oracle therefore records the contract where a unit test can reach it. Should either classifier
+ *       ever become part of a public surface, re-point every
+ *       assertion that calls {@code isSelected} at it and delete the oracle.</li>
+ *   </ul>
  *
  * @see UserSecurityDto
  * @see UserType
@@ -1307,7 +1294,7 @@ final class UserSecurityDtoTest {
 
             assertThatCode(() -> pageOf(List.of(ownRow)))
                     .as("app/cbl/COUSR03C.cbl never compares the target identifier against the signed-on "
-                            + "one; that absent guard is preserved and recorded in DECISION_LOG.md")
+                            + "one; that absent guard is preserved and owed an entry in the planned DECISION_LOG.md")
                     .doesNotThrowAnyException();
             assertThat(pageOf(List.of(ownRow)).rows().get(0).userId()).isEqualTo(signedOnUser);
             assertThat(isSelected(pageOf(List.of(ownRow)).rows().get(0).selectionFlag()))

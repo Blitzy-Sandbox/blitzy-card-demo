@@ -160,7 +160,7 @@
 -- silently corrupted text. See ZONED-DECIMAL OVERPUNCH DECODING.
 -- There is no credit-score range constraint, so a low score is never
 -- the cause: 21 of the 50 seeded customers legitimately score below
--- 300, and V1's DISCREPANCY REGISTER records why.
+-- 300, and V1 records why from the schema side.
 --
 -- "invalid input syntax for type timestamp" - something has been
 -- retyped. The four timestamp-shaped columns are CHAR(26) by design
@@ -380,7 +380,7 @@
 --                  RECORDSIZE(60 60)
 -- Row census     : 7 rows, codes 01 through 07, each unique
 --
--- HIGH - THE KEY COLUMN IS tran_type, NOT tran_type_cd.
+-- NOTE: THE KEY COLUMN IS tran_type, NOT tran_type_cd.
 -- app/cpy/CVTRA03Y.cpy:L5 names the field plainly TRAN-TYPE, uniquely
 -- among the copybooks; every other transaction-type field carries the
 -- -CD suffix. V1 preserved that spelling and so does this INSERT.
@@ -389,7 +389,7 @@
 -- not. Corroborated by the unsuffixed target field FD-TRAN-TYPE at
 -- app/cbl/CBTRN03C.cbl:189.
 --
--- LOW - the 8-byte FILLER at :L7 is ZERO-filled in this fixture, not
+-- NOTE: the 8-byte FILLER at :L7 is ZERO-filled in this fixture, not
 -- blank-filled. It is not modelled as a column, so this affects only
 -- how bytes [53-60] are skipped while parsing.
 
@@ -432,7 +432,7 @@ INSERT INTO transaction_type (tran_type, tran_type_desc) VALUES
 -- at :458. Adding a 01/0005 DEFAULT rate row would equally be wrong -
 -- it is not in the fixture.
 --
--- LOW - the 4-byte FILLER at :L9 is ZERO-filled, not blank-filled.
+-- NOTE: the 4-byte FILLER at :L9 is ZERO-filled, not blank-filled.
 
 INSERT INTO transaction_category (
   tran_type_cd, tran_cat_cd, tran_cat_type_desc
@@ -623,7 +623,7 @@ INSERT INTO account (
 -- domain that the demotion to character discards; all 50 rows satisfy
 -- it.
 --
--- BLOCKER - THE LOW CREDIT SCORES ARE SEEDED VERBATIM AND MUST NOT BE
+-- THE LOW CREDIT SCORES ARE SEEDED VERBATIM AND MUST NOT BE
 -- FILTERED, CLAMPED OR CORRECTED. 21 of the 50 rows score below 300.
 -- app/cbl/COACTUPC.cbl:848-849 does declare
 -- 88 FICO-RANGE-IS-VALID VALUES 300 THROUGH 850. with a validator at
@@ -702,11 +702,12 @@ INSERT INTO customer (
 -- ==================================================================
 --
 -- Source fixture : app/data/ASCII/carddata.txt, 50 rows x 150 bytes = 7,550 B
---                  91 bytes populated, bytes [92-150] blank
+--                  91 bytes populated, bytes [92-150] blank;
+--                  bytes [28-30] are read from the fixture and NOT loaded
 -- Source layout  : app/cpy/CVACT02Y.cpy, CARD-RECORD, RECLN 150
 --                  CARD-NUM            PIC X(16)  :L5   [1-16]
 --                  CARD-ACCT-ID        PIC 9(11)  :L6   [17-27]
---                  CARD-CVV-CD         PIC 9(03)  :L7   [28-30]
+--                  CARD-CVV-CD         PIC 9(03)  :L7   [28-30]  NOT LOADED
 --                  CARD-EMBOSSED-NAME  PIC X(50)  :L8   [31-80]
 --                  CARD-EXPIRAION-DATE PIC X(10)  :L9   [81-90]
 --                  CARD-ACTIVE-STATUS  PIC X(01)  :L10  [91]
@@ -715,12 +716,12 @@ INSERT INTO customer (
 --                  average record length 150; alternate index
 --                  CARDDATA.VSAM.AIX on the account identifier at
 --                  zero-based AXRKP 16, which is one-based byte 17 -
---                  V2's ix_card_acct_id
+--                  V2's idx_card_acct_id
 -- Row census     : 50 rows, card_num unique on all 50;
 --                  card_active_status 'Y' on all 50;
 --                  every card_acct_id resolves to a BLOCK 3 account
 --
--- HIGH - THE VERIFICATION VALUE COLUMN IS CHARACTER, NOT NUMERIC, AND 8
+-- THE VERIFICATION VALUE COLUMN IS CHARACTER, NOT NUMERIC, AND 8
 -- OF THE 50 VALUES BEGIN WITH A ZERO. app/cpy/CVACT02Y.cpy:L7 declares
 -- PIC 9(03) but the leading zero is part of the value on a payment
 -- card, so V1 declares CHAR(3) and this block seeds the three
@@ -736,62 +737,63 @@ INSERT INTO customer (
 -- of the two occurrences in the corpus, and is preserved.
 --
 -- version is 0 on every row. The 59-byte FILLER at :L11 is blank-filled
--- and unmodelled.
+-- and unmodelled, as are the three verification-value bytes above, so
+-- 88 of the 150 bytes of each fixture row reach the table.
 
 INSERT INTO card (
-  card_num, card_acct_id, card_cvv_cd, card_embossed_name,
+  card_num, card_acct_id, card_embossed_name,
   card_expiraion_date, card_active_status, version
 ) VALUES
-  ('0500024453765740', 50, '747', 'Aniya Von                                         ', '2023-03-09', 'Y', 0),
-  ('0683586198171516', 27, '567', 'Ward Jones                                        ', '2025-07-13', 'Y', 0),
-  ('0923877193247330', 2, '028', 'Enrico Rosenbaum                                  ', '2024-08-11', 'Y', 0),
-  ('0927987108636232', 20, '003', 'Carter Veum                                       ', '2024-03-13', 'Y', 0),
-  ('0982496213629795', 12, '075', 'Maci Robel                                        ', '2023-07-07', 'Y', 0),
-  ('1014086565224350', 44, '640', 'Irving Emard                                      ', '2024-01-17', 'Y', 0),
-  ('1142167692878931', 37, '625', 'Shany Walker                                      ', '2023-10-24', 'Y', 0),
-  ('1561409106491600', 35, '031', 'Angelica Dach                                     ', '2025-09-23', 'Y', 0),
-  ('2745303720002090', 39, '033', 'Aliyah Berge                                      ', '2025-09-08', 'Y', 0),
-  ('2760836797107565', 24, '859', 'Stefanie Dickinson                                ', '2025-02-11', 'Y', 0),
-  ('2871968252812490', 6, '775', 'Ignacio Douglas                                   ', '2025-10-08', 'Y', 0),
-  ('2940139362300449', 22, '876', 'Allene Brown                                      ', '2025-12-28', 'Y', 0),
-  ('2988091353094312', 4, '795', 'Delbert Parisian                                  ', '2023-12-16', 'Y', 0),
-  ('3260763612337560', 10, '342', 'Maybell Mann                                      ', '2023-01-27', 'Y', 0),
-  ('3766281984155154', 41, '622', 'Lucinda Dach                                      ', '2023-04-24', 'Y', 0),
-  ('3940246016141489', 19, '375', 'Hadley Hamill                                     ', '2025-07-23', 'Y', 0),
-  ('3999169246375885', 3, '317', 'Larry Homenick                                    ', '2024-01-10', 'Y', 0),
-  ('4011500891777367', 13, '390', 'Mariane Fadel                                     ', '2024-08-04', 'Y', 0),
-  ('4385271476627819', 34, '709', 'Faustino Schmidt                                  ', '2025-10-06', 'Y', 0),
-  ('4534784102713951', 36, '644', 'Toney Gerhold                                     ', '2024-12-23', 'Y', 0),
-  ('4859452612877065', 7, '321', 'Cooper Mayert                                     ', '2024-12-13', 'Y', 0),
-  ('5407099850479866', 21, '524', 'Jerrold Maggio                                    ', '2023-01-06', 'Y', 0),
-  ('5656830544981216', 46, '196', 'Cindy Cremin                                      ', '2025-06-20', 'Y', 0),
-  ('5671184478505844', 18, '137', 'Emile White                                       ', '2023-09-10', 'Y', 0),
-  ('5787351228879339', 47, '067', 'Rigoberto Hoeger                                  ', '2025-08-23', 'Y', 0),
-  ('5975117516616077', 42, '426', 'Heather Nienow                                    ', '2025-09-19', 'Y', 0),
-  ('6009619150674526', 5, '021', 'Treva Schowalter                                  ', '2025-03-09', 'Y', 0),
-  ('6349250331648509', 15, '735', 'Aubree Hermann                                    ', '2025-06-09', 'Y', 0),
-  ('6503535181795992', 48, '413', 'Lyric Pacocha                                     ', '2025-02-06', 'Y', 0),
-  ('6509230362553816', 30, '236', 'Layla Ullrich                                     ', '2024-06-27', 'Y', 0),
-  ('6723000463207764', 28, '486', 'Hester Hane                                       ', '2024-05-09', 'Y', 0),
-  ('6727055190616014', 16, '641', 'Carroll Bergstrom                                 ', '2024-01-25', 'Y', 0),
-  ('6832676047698087', 33, '983', 'Bernice Herman                                    ', '2025-10-07', 'Y', 0),
-  ('7026637615032277', 31, '920', 'Lucious O''Connell                                 ', '2025-06-08', 'Y', 0),
-  ('7058267261837752', 43, '401', 'Britney Waters                                    ', '2025-08-29', 'Y', 0),
-  ('7094142751055551', 32, '659', 'Stephany Fisher                                   ', '2025-05-19', 'Y', 0),
-  ('7251508149188883', 29, '717', 'Rickie Daugherty                                  ', '2024-06-04', 'Y', 0),
-  ('7379335634661142', 45, '134', 'Dixie Beier                                       ', '2025-07-09', 'Y', 0),
-  ('7427684863423209', 11, '892', 'Hayden Pfannerstill                               ', '2025-03-12', 'Y', 0),
-  ('7443870988897530', 38, '708', 'Angela Ankunding                                  ', '2023-07-23', 'Y', 0),
-  ('8040580410348680', 26, '971', 'Marjory Stracke                                   ', '2024-12-19', 'Y', 0),
-  ('8112545834239735', 23, '440', 'Johnson Ruecker                                   ', '2025-03-18', 'Y', 0),
-  ('8262593602473076', 49, '457', 'Immanuel Bednar                                   ', '2023-09-17', 'Y', 0),
-  ('8517866958206008', 14, '955', 'Chelsea Marks                                     ', '2025-12-11', 'Y', 0),
-  ('8931369351894783', 8, '230', 'Kelsie Dicki                                      ', '2024-05-20', 'Y', 0),
-  ('9056297931664011', 25, '931', 'Elliott Howell                                    ', '2025-07-10', 'Y', 0),
-  ('9349107475869214', 17, '218', 'Sigrid Mann                                       ', '2025-03-01', 'Y', 0),
-  ('9501733721429893', 9, '725', 'Melvin Ondricka                                   ', '2024-12-27', 'Y', 0),
-  ('9680294154603697', 1, '045', 'Immanuel Kessler                                  ', '2025-05-20', 'Y', 0),
-  ('9805583408996588', 40, '908', 'Davon Emmerich                                    ', '2023-10-27', 'Y', 0);
+  ('0500024453765740', 50, 'Aniya Von                                         ', '2023-03-09', 'Y', 0),
+  ('0683586198171516', 27, 'Ward Jones                                        ', '2025-07-13', 'Y', 0),
+  ('0923877193247330', 2, 'Enrico Rosenbaum                                  ', '2024-08-11', 'Y', 0),
+  ('0927987108636232', 20, 'Carter Veum                                       ', '2024-03-13', 'Y', 0),
+  ('0982496213629795', 12, 'Maci Robel                                        ', '2023-07-07', 'Y', 0),
+  ('1014086565224350', 44, 'Irving Emard                                      ', '2024-01-17', 'Y', 0),
+  ('1142167692878931', 37, 'Shany Walker                                      ', '2023-10-24', 'Y', 0),
+  ('1561409106491600', 35, 'Angelica Dach                                     ', '2025-09-23', 'Y', 0),
+  ('2745303720002090', 39, 'Aliyah Berge                                      ', '2025-09-08', 'Y', 0),
+  ('2760836797107565', 24, 'Stefanie Dickinson                                ', '2025-02-11', 'Y', 0),
+  ('2871968252812490', 6, 'Ignacio Douglas                                   ', '2025-10-08', 'Y', 0),
+  ('2940139362300449', 22, 'Allene Brown                                      ', '2025-12-28', 'Y', 0),
+  ('2988091353094312', 4, 'Delbert Parisian                                  ', '2023-12-16', 'Y', 0),
+  ('3260763612337560', 10, 'Maybell Mann                                      ', '2023-01-27', 'Y', 0),
+  ('3766281984155154', 41, 'Lucinda Dach                                      ', '2023-04-24', 'Y', 0),
+  ('3940246016141489', 19, 'Hadley Hamill                                     ', '2025-07-23', 'Y', 0),
+  ('3999169246375885', 3, 'Larry Homenick                                    ', '2024-01-10', 'Y', 0),
+  ('4011500891777367', 13, 'Mariane Fadel                                     ', '2024-08-04', 'Y', 0),
+  ('4385271476627819', 34, 'Faustino Schmidt                                  ', '2025-10-06', 'Y', 0),
+  ('4534784102713951', 36, 'Toney Gerhold                                     ', '2024-12-23', 'Y', 0),
+  ('4859452612877065', 7, 'Cooper Mayert                                     ', '2024-12-13', 'Y', 0),
+  ('5407099850479866', 21, 'Jerrold Maggio                                    ', '2023-01-06', 'Y', 0),
+  ('5656830544981216', 46, 'Cindy Cremin                                      ', '2025-06-20', 'Y', 0),
+  ('5671184478505844', 18, 'Emile White                                       ', '2023-09-10', 'Y', 0),
+  ('5787351228879339', 47, 'Rigoberto Hoeger                                  ', '2025-08-23', 'Y', 0),
+  ('5975117516616077', 42, 'Heather Nienow                                    ', '2025-09-19', 'Y', 0),
+  ('6009619150674526', 5, 'Treva Schowalter                                  ', '2025-03-09', 'Y', 0),
+  ('6349250331648509', 15, 'Aubree Hermann                                    ', '2025-06-09', 'Y', 0),
+  ('6503535181795992', 48, 'Lyric Pacocha                                     ', '2025-02-06', 'Y', 0),
+  ('6509230362553816', 30, 'Layla Ullrich                                     ', '2024-06-27', 'Y', 0),
+  ('6723000463207764', 28, 'Hester Hane                                       ', '2024-05-09', 'Y', 0),
+  ('6727055190616014', 16, 'Carroll Bergstrom                                 ', '2024-01-25', 'Y', 0),
+  ('6832676047698087', 33, 'Bernice Herman                                    ', '2025-10-07', 'Y', 0),
+  ('7026637615032277', 31, 'Lucious O''Connell                                 ', '2025-06-08', 'Y', 0),
+  ('7058267261837752', 43, 'Britney Waters                                    ', '2025-08-29', 'Y', 0),
+  ('7094142751055551', 32, 'Stephany Fisher                                   ', '2025-05-19', 'Y', 0),
+  ('7251508149188883', 29, 'Rickie Daugherty                                  ', '2024-06-04', 'Y', 0),
+  ('7379335634661142', 45, 'Dixie Beier                                       ', '2025-07-09', 'Y', 0),
+  ('7427684863423209', 11, 'Hayden Pfannerstill                               ', '2025-03-12', 'Y', 0),
+  ('7443870988897530', 38, 'Angela Ankunding                                  ', '2023-07-23', 'Y', 0),
+  ('8040580410348680', 26, 'Marjory Stracke                                   ', '2024-12-19', 'Y', 0),
+  ('8112545834239735', 23, 'Johnson Ruecker                                   ', '2025-03-18', 'Y', 0),
+  ('8262593602473076', 49, 'Immanuel Bednar                                   ', '2023-09-17', 'Y', 0),
+  ('8517866958206008', 14, 'Chelsea Marks                                     ', '2025-12-11', 'Y', 0),
+  ('8931369351894783', 8, 'Kelsie Dicki                                      ', '2024-05-20', 'Y', 0),
+  ('9056297931664011', 25, 'Elliott Howell                                    ', '2025-07-10', 'Y', 0),
+  ('9349107475869214', 17, 'Sigrid Mann                                       ', '2025-03-01', 'Y', 0),
+  ('9501733721429893', 9, 'Melvin Ondricka                                   ', '2024-12-27', 'Y', 0),
+  ('9680294154603697', 1, 'Immanuel Kessler                                  ', '2025-05-20', 'Y', 0),
+  ('9805583408996588', 40, 'Davon Emmerich                                    ', '2023-10-27', 'Y', 0);
 
 
 -- ==================================================================
@@ -808,7 +810,7 @@ INSERT INTO card (
 --                  average record length 50; alternate index
 --                  CARDXREF.VSAM.AIX on the account identifier at
 --                  zero-based AXRKP 25, which is one-based byte 26 -
---                  V2's ix_card_cross_reference_acct_id
+--                  V2's idx_card_cross_reference_acct_id
 -- Row census     : 50 rows, xref_card_num unique on all 50; every
 --                  customer and account identifier resolves
 --
@@ -904,7 +906,7 @@ INSERT INTO card_cross_reference (
 --                  character, so no rate is negative; 7 of the 17
 --                  DEFAULT rates are zero
 --
--- MEDIUM - ALL 17 DEFAULT ROWS ARE REQUIRED. OMITTING ANY ONE ABENDS
+-- ALL 17 DEFAULT ROWS ARE REQUIRED. OMITTING ANY ONE ABENDS
 -- THE INTEREST JOB. app/cbl/CBACT04C.cbl:415-460 is a two-query
 -- fallback and only the second query is fatal:
 --
@@ -1117,7 +1119,7 @@ INSERT INTO transaction_category_balance (
 --                  average record length 350; alternate index
 --                  TRANSACT.VSAM.AIX on the processing timestamp at
 --                  zero-based AXRKP 304, which is one-based byte 305 -
---                  V2's ix_transaction_proc_ts
+--                  V2's idx_transaction_proc_ts
 -- Row census     : 0 rows. This block contains no INSERT statement
 --
 -- THE TABLE IS LEFT EMPTY BECAUSE THE CORPUS HAS NOTHING TO PUT IN IT.
@@ -1193,7 +1195,7 @@ INSERT INTO transaction_category_balance (
 --                  one single value on all 300; the processing
 --                  timestamp is twenty-six blanks on all 300
 --
--- BLOCKER - THE 50 NEGATIVE AMOUNTS ARE LOAD BEARING AND MUST NEVER BE
+-- THE 50 NEGATIVE AMOUNTS ARE LOAD BEARING AND MUST NEVER BE
 -- NORMALISED. Sign and type are perfectly partitioned in this fixture:
 -- all 250 rows whose amount is non-negative are type 01, and all 50 rows
 -- whose amount is negative are type 03. The overpunch census of byte
@@ -1593,7 +1595,7 @@ INSERT INTO daily_transaction (
 --                  RECORDSIZE(80,80)
 -- Row census     : 10 rows - 5 of type A and 5 of type U
 --
--- BLOCKER - NO CREDENTIAL IS SEEDED IN RECOVERABLE FORM, AND THE
+-- NO CREDENTIAL IS SEEDED IN RECOVERABLE FORM, AND THE
 -- LEGACY PLAINTEXT VALUE APPEARS NOWHERE IN THIS FILE. The ten
 -- in-stream records at app/jcl/DUSRSECJ.jcl:L35-L44 each carry a
 -- credential in bytes [49-56], and all ten carry the same single
@@ -1641,9 +1643,58 @@ INSERT INTO daily_transaction (
 -- from bytes [1-8], [9-28] and [29-48], blanks included. The table has
 -- no version column.
 
+-- THESE TEN ROWS ARE GATED, AND THE GATE IS CLOSED BY DEFAULT.
+--
+-- Every one of the ten digests below derives from ONE plaintext that is
+-- recorded in a frozen file in this repository, and the ten identifiers
+-- are recorded there too. That makes them demonstration credentials, not
+-- credentials: anyone who can read the repository can authenticate as a
+-- seeded administrator and hold administrative authority. Hashing does
+-- not change that - the digests are correct, and correctness of a digest
+-- is irrelevant when its input is published. Nor does the schema help:
+-- it declares no locked, expired or must-reset state for a principal to
+-- be parked in, and none is invented here.
+--
+-- So the rows are installed only where a demonstration corpus is the
+-- point. The gate is the Flyway placeholder seeddemousers, and the
+-- shape of the guard matters:
+--
+--   * The DEFAULT IS FALSE, set in application.yml, so a profile that
+--     says nothing installs nothing. A guard that had to be remembered
+--     in each new profile would be one forgotten profile away from
+--     being no guard at all.
+--   * TRUE is set only in application-local.yml and
+--     application-test.yml. application-prod.yml sets FALSE explicitly
+--     as well, so the intent is stated where a reader looks for it
+--     rather than inherited silently.
+--   * The gate is INSIDE the script, not a separate migration or an
+--     environment-specific edit. Flyway checksums the RAW script text,
+--     before placeholder substitution, so one file with one checksum
+--     applies everywhere and validate-on-migrate stays meaningful. A
+--     per-environment variant of this file would make the checksum
+--     environment-dependent and defeat validation entirely.
+--   * A closed gate leaves user_security EMPTY rather than seeding a
+--     substitute principal. There is deliberately no bootstrap account:
+--     the alternative to a known credential is no credential, and an
+--     operator provisions one out of band.
+--
+-- The row census below counts ten because that is what the gated
+-- statement installs where the gate is open, which is where the
+-- fixture-validation and security gates are exercised.
+-- The guard is expressed in plain SQL rather than in a PL/pgSQL DO
+-- block deliberately. A DO block body is dollar-quoted, and every digest
+-- below carries the substrings $2a$ and $10$; a $$ body would therefore
+-- put dollar-sign runs inside a dollar-quoted region and make correct
+-- parsing depend on the parser rejecting $2a$ as a tag - which
+-- PostgreSQL does, since a tag may not begin with a digit, but which is
+-- a property of two parsers rather than one. Plain SQL removes the
+-- question: the digests stay in ordinary single-quoted literals, and the
+-- placeholder appears once, in a WHERE clause.
 INSERT INTO user_security (
   sec_usr_id, sec_usr_fname, sec_usr_lname, sec_usr_pwd, sec_usr_type
-) VALUES
+)
+SELECT sec_usr_id, sec_usr_fname, sec_usr_lname, sec_usr_pwd, sec_usr_type
+FROM (VALUES
   ('ADMIN001', 'MARGARET            ', 'GOLD                ', '$2a$10$NgAX2NHjhyCZyUAa0rlw2u/eRTfdAHTinmFLZv5ZF67bj6HfqqbjK', 'A'),
   ('ADMIN002', 'RUSSELL             ', 'RUSSELL             ', '$2a$10$9J55mmJQ0VdwwFPpxC1WIOmWpFiwJJOmf/k8fNcLHZjn1uCO0IX.i', 'A'),
   ('ADMIN003', 'RAYMOND             ', 'WHITMORE            ', '$2a$10$iEf/lBQUccNoOD76CW1bC.kF9UsGpcVbhtvxUK5Kkb.6uWANLhsMe', 'A'),
@@ -1653,7 +1704,9 @@ INSERT INTO user_security (
   ('USER0002', 'AJITH               ', 'KUMAR               ', '$2a$10$Fy0wtIw2a/47TYD368qxfuPNrnYtuQhf7yaGFthfZBlES6GVMIpJO', 'U'),
   ('USER0003', 'LAURITZ             ', 'ALME                ', '$2a$10$orV8FG4W1dzvv5BWnSFfPu9fwCACzd0RmwxFvS/1GiKYM5tmcrbeq', 'U'),
   ('USER0004', 'AVERARDO            ', 'MAZZI               ', '$2a$10$iP.tnqAFfsYOTMlpXSEYG.iDsxU344aS7lvy1Bi9qQerIYW5mmRM.', 'U'),
-  ('USER0005', 'LEE                 ', 'TING                ', '$2a$10$fEh2UvITmbqSQZs5y.E5hO07iGLdvxAz6abGAcMCfhr4djZyuuZ/W', 'U');
+  ('USER0005', 'LEE                 ', 'TING                ', '$2a$10$fEh2UvITmbqSQZs5y.E5hO07iGLdvxAz6abGAcMCfhr4djZyuuZ/W', 'U')
+) AS demo_users(sec_usr_id, sec_usr_fname, sec_usr_lname, sec_usr_pwd, sec_usr_type)
+WHERE ${seeddemousers} = TRUE;
 
 
 -- ==================================================================
@@ -1698,17 +1751,15 @@ INSERT INTO user_security (
 
 
 -- ==================================================================
--- DISCREPANCY REGISTER
+-- WAYS THIS SEED GETS BROKEN
 -- ==================================================================
 --
--- Findings carried forward from authoring this migration, classified
--- Blocker, High, Medium and Low, each with its remediation. Recorded
--- here because a seed is read where it is applied; the project-level
--- decision log and validation-gate document are the homes for the
--- same entries, and are separate deliverables.
+-- Each entry below is a mistake this file is written to prevent, with
+-- the source evidence that settles it. They are recorded here because a
+-- seed is read where it is applied.
 --
--- BLOCKER - ABSOLUTE-VALUE NORMALISING THE 50 NEGATIVE STAGED AMOUNTS.
--- Remediation applied: preserve every sign exactly as the overpunch
+-- ABSOLUTE-VALUE NORMALISING THE 50 NEGATIVE STAGED AMOUNTS.
+-- Never: preserve every sign exactly as the overpunch
 -- byte encodes it. Those rows are the only thing in the seed that
 -- reaches the cycle-debit branch at app/cbl/CBTRN02C.cbl:547-552, and
 -- they are why the over-limit test at :403-405 subtracts the debit
@@ -1716,39 +1767,39 @@ INSERT INTO user_security (
 -- fails to compile, no constraint is violated, and the divergence
 -- surfaces only as a parity mismatch much later. See BLOCK 10.
 --
--- BLOCKER - SEEDING, QUOTING OR EXEMPLIFYING THE LEGACY PLAINTEXT
--- CREDENTIAL. Remediation applied: store ten BCrypt strength-10
+-- SEEDING, QUOTING OR EXEMPLIFYING THE LEGACY PLAINTEXT
+-- CREDENTIAL. Never: store ten BCrypt strength-10
 -- digests and nothing else, and refer to the source literal only by
 -- its locator, app/jcl/DUSRSECJ.jcl:L35-L44. The value appears nowhere
 -- in this file - not as a value, not in a comment, not as an example.
 -- V1 declares no plaintext credential column, so the schema itself
 -- forbids the alternative. See BLOCK 11.
 --
--- BLOCKER - FILTERING, CLAMPING OR CORRECTING THE 21 CREDIT SCORES
--- BELOW 300. Remediation applied: seed all 50 rows verbatim. The
+-- FILTERING, CLAMPING OR CORRECTING THE 21 CREDIT SCORES
+-- BELOW 300. Never: seed all 50 rows verbatim. The
 -- 300-through-850 rule at app/cbl/COACTUPC.cbl:848-849 qualifies
 -- ACUP-NEW-CUST-FICO-SCORE, declared at :845-847 inside the screen
 -- snapshot group. It is an online input rule on a screen field, not an
 -- invariant on stored data, which is why V1 declares no range CHECK.
--- V1 records the same finding from the schema side. See BLOCK 4.
+-- V1 records the same constraint from the schema side. See BLOCK 4.
 --
--- HIGH - transaction_type's key column is tran_type, not
--- tran_type_cd. Remediation applied: use tran_type. Evidence
+-- transaction_type's key column is tran_type, not
+-- tran_type_cd. Use tran_type. Evidence
 -- app/cpy/CVTRA03Y.cpy:L5, where the field is named plainly TRAN-TYPE,
 -- uniquely among the copybooks; corroborated by the unsuffixed target
 -- field FD-TRAN-TYPE at app/cbl/CBTRN03C.cbl:189. The suffixed
 -- spelling fails at apply time with an undefined column. See BLOCK 1.
 --
--- MEDIUM - THE FIXTURE IS dailytran.txt, WITH THE WORD IN FULL. No
+-- THE FIXTURE IS dailytran.txt, WITH THE WORD IN FULL. No
 -- file in the repository carries the abbreviated stem the DD name
--- would suggest. Remediation applied: the full spelling is used in
+-- would suggest, so the full spelling is used in
 -- the banner, in BLOCK 10 and in the census. The dataset and DD
 -- name ARE DALYTRAN, which is why the columns are dalytran_*, and that
 -- asymmetry is what makes the mistake easy. It is also silent: a
 -- mis-spelled path is a missing test resource, never a compile error.
 --
--- MEDIUM - OMITTING ANY OF THE 17 DEFAULT DISCLOSURE-GROUP ROWS.
--- Remediation applied: all 51 rows are seeded, including all 17 of the
+-- OMITTING ANY OF THE 17 DEFAULT DISCLOSURE-GROUP ROWS. All 51 rows
+-- are seeded, including all 17 of the
 -- DEFAULT group and all 7 of its zero-rate rows. Every seeded account
 -- carries a blank group identifier, so the first lookup at
 -- app/cbl/CBACT04C.cbl:416 misses on all fifty and the DEFAULT retry at
@@ -1756,14 +1807,14 @@ INSERT INTO user_security (
 -- '00' only; a missing row abends at :458 with code 999 and return
 -- code 12. See BLOCK 7.
 --
--- MEDIUM - A TEMPORAL TYPE FOR ANY OF THE FOUR TIMESTAMP-SHAPED
--- COLUMNS. Remediation applied: they stay CHAR(26), as V1 declares
+-- A TEMPORAL TYPE FOR ANY OF THE FOUR TIMESTAMP-SHAPED
+-- COLUMNS. Never: they stay CHAR(26), as V1 declares
 -- them, and the twenty-six blanks of dalytran_proc_ts are seeded
 -- literally on all 300 rows. No temporal type can hold them, so
 -- retyping the column would force a fabricated value onto every staged
 -- row. See BLOCK 10.
 --
--- LOW - ONE PROHIBITED-CONSTRUCT CHECK CANNOT REACH A LITERAL ZERO.
+-- ONE PROHIBITED-CONSTRUCT CHECK CANNOT REACH A LITERAL ZERO.
 -- The check for the privilege-granting keyword matches three rows of
 -- BLOCK 10. Rows 68, 111 and 173 of app/data/ASCII/dailytran.txt each
 -- carry that word inside a merchant name, as an ordinary surname and
@@ -1771,33 +1822,23 @@ INSERT INTO user_security (
 -- quoted literals. Editing them to satisfy a text scan would corrupt
 -- frozen fixture data and break the Gate 1 parity comparison, so they
 -- stand. This file contains no privilege statement, and every other
--- prohibited-construct check matches nothing at all. Remediation for
--- a reviewer: anchor the check to statement position, for example
+-- prohibited-construct check matches nothing at all. Anchor any such
+-- check to statement position, for example
 --   grep -icE '(^|;)[[:space:]]*grant[[:space:]]' V3__seed_data.sql
 -- which returns 0. Evidence: all three matching lines are data rows
 -- whose match falls between apostrophes, never at statement position.
 --
--- LOW - ASSUMING EVERY FIXTURE PADS ITS TRAILING FILLER WITH BLANKS.
--- Remediation applied: parse each fixture by offset and never by
+-- ASSUMING EVERY FIXTURE PADS ITS TRAILING FILLER WITH BLANKS.
+-- Never: parse each fixture by offset and never by
 -- trimming. acctdata, custdata, carddata and dailytran are blank-filled;
 -- discgrp, tcatbal, trancatg and trantype are ZERO-filled with the
 -- character 0. No FILLER is modelled as a column, so the asymmetry
 -- affects only how the bytes are skipped - but a parser that trims
 -- zeros as though they were padding corrupts the last real field.
 --
--- LOW - cardxref.txt DOES NOT CARRY THE 14-BYTE FILLER ITS CLUSTER
--- RECORD RESERVES. Remediation applied: read 36 data bytes, not 50.
+-- cardxref.txt DOES NOT CARRY THE 14-BYTE FILLER ITS CLUSTER
+-- RECORD RESERVES. Read 36 data bytes, not 50.
 -- 1,850 bytes over 50 rows is 37 per line, which is 36 plus the
 -- terminator. It is the one fixture of the nine whose row is narrower
 -- than its VSAM slot. See BLOCK 6.
---
--- LOW - a claim that the pinned toolchain is unavailable in this
--- environment. Remediation applied: verify rather than assume. OpenJDK
--- 25.0.3, Maven 3.9.11 and a PostgreSQL 16 container were all present
--- and were used to apply and reconcile this file: V1, V2 and V3
--- applied in order against PostgreSQL 16.10 through Flyway 11.7.2,
--- seeding 636 rows across eleven tables with no constraint
--- violation. A prerequisite that is actually
--- missing should be named with what is needed, per Rule 1 Clause F,
--- rather than asserted from a stale note.
 -- ==================================================================

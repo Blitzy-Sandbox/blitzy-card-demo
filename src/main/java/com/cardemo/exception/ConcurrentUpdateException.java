@@ -177,8 +177,8 @@ public class ConcurrentUpdateException extends CardDemoException {
      * Creates an exception for a named outcome, for the business level detections that have no underlying
      * throwable.
      *
-     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
      * @param outcome which of the five reasons applies.
+     * @param message the detail message, retrievable through {@link Throwable#getMessage()}.
      */
     public ConcurrentUpdateException(Outcome outcome, String message) {
         super(message);

@@ -64,8 +64,7 @@
 #      exporting anything. Base fails fast on the same variable; that
 #      difference IS the delta.
 #   2. A CHANGED base value - one key, spring.batch.jdbc.initialize-schema.
-#   3. A LOCAL-ONLY key absent from base entirely - the three LocalStack
-#      endpoints, S3 path-style addressing and the static credential pair.
+#   3. A LOCAL-ONLY key absent from base entirely - S3 path-style addressing.
 #
 # Anything already correct in application.yml is INHERITED, not repeated.
 # Repeating it would create two sources of truth for one value, which is
@@ -74,31 +73,38 @@
 # value that was considered for this file and left to the base on purpose,
 # so that "absent" is never mistaken for "forgotten".
 #
-# THE SAFETY PROPERTY - WHY A LOCAL RUN CANNOT REACH LIVE AWS
+# THE SAFETY PROPERTY - WHY NO RUN, LOCAL OR OTHERWISE, CAN REACH LIVE AWS
 #
-# Two independent mechanisms enforce it, and either alone would be enough:
+# Three mechanisms enforce it, and NONE OF THEM IS DECLARED IN THIS FILE ANY
+# MORE - which is the point. They used to be, and scoping them to this profile
+# meant every other profile fell back to real AWS:
 #
-#   * ENDPOINT OVERRIDE. spring.cloud.aws.s3.endpoint, .sqs.endpoint and
-#     .sns.endpoint are set to the LocalStack edge. An AWS SDK client built
-#     with an endpoint override never performs regional endpoint discovery,
-#     so when LocalStack is down the call fails with a connection error to
-#     127.0.0.1 - it does not silently fall back to a real regional host.
-#     These three keys exist ONLY in this profile and in the test profile.
-#     The base profile declares no endpoint override at all, which is why
-#     nothing here can leak into prod: a profile that is not active
-#     contributes no property source.
-#   * STATIC CREDENTIALS. Supplying spring.cloud.aws.credentials.access-key
-#     and .secret-key pins a static credentials provider, which REPLACES the
-#     default provider chain. That is a security control, not a convenience:
-#     without it the chain would happily read a developer's real
-#     ~/.aws/credentials profile, a web-identity token, container
-#     credentials or EC2 instance metadata and sign a request with a live
-#     principal. Pinning it closes that path.
+#   * ENDPOINT OVERRIDE, now in application.yml for every runnable profile.
+#     spring.cloud.aws.s3.endpoint, .sqs.endpoint and .sns.endpoint are
+#     indirected through ${AWS_ENDPOINT_URL}, defaulting to the LocalStack
+#     edge. An AWS SDK client built with an endpoint override never performs
+#     regional endpoint discovery, so when LocalStack is down the call fails
+#     with a connection error to 127.0.0.1 - it does not silently fall back to
+#     a real regional host.
+#   * STATIC NON-LIVE CREDENTIALS, now in application.yml as literals rather
+#     than as ${AWS_ACCESS_KEY_ID}/${AWS_SECRET_ACCESS_KEY} indirections.
+#     Supplying the pair pins a static credentials provider, which REPLACES
+#     the default provider chain: without it the chain reads a developer's
+#     real ~/.aws/credentials profile, a web-identity token, container
+#     credentials or EC2 instance metadata and signs a request with a live
+#     principal. Indirecting to the ambient variables re-admitted exactly
+#     that, which is why the literals are the safer choice - LocalStack
+#     validates no credential, so the values are inert.
+#   * APPLICATION-SIDE VALIDATION in AwsConfig's constructor, which runs
+#     before any S3/SQS/SNS template it declares and therefore before any
+#     client can address or sign anything. Each endpoint must be an absolute
+#     http/https URI with an explicit port, no user information and a host on
+#     the permitted emulator list; both credentials must be present and the
+#     access key must not carry the AKIA/ASIA prefix of a real AWS key.
+#     Startup aborts otherwise.
 #
-# Neither key holds a value. Both are ${...} references with no default, so
-# an unset variable fails placeholder resolution at startup instead of
-# booting with a guess. There is ZERO live AWS credential anywhere in this
-# repository, and no code path in it can reach a live AWS endpoint.
+# There is ZERO live AWS credential anywhere in this repository, and no code
+# path in it can reach a live AWS endpoint (AAP 0.3.2).
 #
 # HOW TO RUN, BUILD AND TEST
 #
@@ -146,16 +152,20 @@
 #     variables, the queue variable, the topic variable and the OTLP
 #     endpoint. None is sensitive and each addresses a container on the
 #     loopback interface.
-#   * A SECRET NEVER carries a default, here or anywhere. POSTGRES_PASSWORD,
-#     AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY and the JWT signing key have
-#     no default and no committed value in this file. Rule 1 Clause D
-#     forbids secrets in configuration, and a default credential is a
-#     committed credential no matter how harmless the value looks - which is
-#     why not even LocalStack's own `test`/`test` placeholders appear below.
+#   * A SECRET NEVER carries a default, here or anywhere. POSTGRES_PASSWORD
+#     and the JWT signing key have no default and no committed value in this
+#     file or in the base. Rule 1 Clause D forbids secrets in configuration,
+#     and a default credential is a committed credential no matter how
+#     harmless the value looks. The AWS credential pair is not in that
+#     category and is not a secret: LocalStack validates no credential, the
+#     pair exists solely to displace the SDK default provider chain, and the
+#     base profile therefore carries the inert `test`/`test` placeholders as
+#     literals rather than indirecting them to whatever the ambient
+#     environment exports. Indirecting them was the defect, not the fix.
 #
 # Resource names are NOT re-invented here. The three buckets, the FIFO
 # queue and the topic use the published contract spelling asserted at
-# .env.example:76-79 and matched byte-for-byte by docker-compose.yml:97-99
+# .env.example:146-149 and matched byte-for-byte by docker-compose.yml:97-99
 # and by the resolution block of localstack-init/init-aws.sh:529-533. That
 # script is the only thing that creates these resources, so a divergent
 # spelling here would resolve to a bucket that does not exist.
@@ -196,8 +206,11 @@
 #     no business restating them.
 #   * logging.config and any appender or encoder detail. Owned by
 #     logback-spring.xml.
-#   * carddemo.aws.s3.gdg-retention-generations. The base already records
-#     the resolved value 10; see the retention note in the S3 block.
+#   * The generation retention count. It is no longer a property in any
+#     profile: nothing bound it, no S3 lifecycle rule is created from Java,
+#     and a number that governs nothing must not look settable. The resolved
+#     value 10 and the conflict it resolves are recorded as a comment in
+#     application.yml and restated in the S3 block below.
 #
 # LOG LEVELS DELIBERATELY LEFT ALONE - THIS IS A SECURITY DECISION
 #
@@ -233,8 +246,16 @@
 #   * Startup aborts on an unresolved placeholder for
 #     spring.cloud.aws.credentials.access-key or .secret-key.
 #     AWS_ACCESS_KEY_ID or AWS_SECRET_ACCESS_KEY is unset. Export the
-#     LocalStack placeholders from .env.example:62-63. They are inert
+#     LocalStack placeholders .env.example ships. They are inert
 #     everywhere and grant nothing.
+#   * Startup aborts from AwsConfig saying an endpoint host is not permitted,
+#     an endpoint is not set, or a credential property is not set. The
+#     local-only guard is working. The base profile indirects all five values
+#     through the environment with NO literal default, and this profile
+#     supplies the developer default for the three endpoints, so reaching this
+#     means a variable is unset or something overrode one of them - most often
+#     an exported AWS_ENDPOINT_URL pointing somewhere other than the emulator.
+#     Point it back at the emulator; there is no live-AWS mode to enable.
 #   * Startup aborts on the signing key. The variable the base reads is
 #     unset. This is intended fail-fast behaviour; generate a key of at
 #     least 32 bytes of entropy as .env.example describes. Never add a
@@ -279,33 +300,33 @@
 # Severities follow Rule 1 Clause F. Each entry names its evidence and its
 # remediation. None is a defect introduced by this file.
 #
-#   * HIGH - three writers bind a property namespace that no profile
-#     declares. src/main/java/com/cardemo/batch/writers/
-#     TransactionWriter.java:586-587 reads carddemo.s3.output-bucket (with
-#     NO default) and carddemo.s3.transaction-object-prefix;
-#     RejectWriter.java:613 reads carddemo.s3.output-bucket; and
-#     StatementWriter.java documents carddemo.s3.statements-bucket. The
-#     configured namespace is carddemo.aws.s3.* - application.yml:891-900.
-#     Because carddemo.s3.output-bucket has no default, the application
-#     context fails to start on an unresolvable placeholder once those beans
-#     are instantiated. It breaks neither compilation nor the test suite,
-#     which is why it survives to runtime.
-#     NOT resolved here, deliberately. Adding carddemo.s3.* to this profile
-#     would make the local run boot while creating a SECOND source of truth
-#     for the same three bucket names - the duplication Rule 1 Clause C
-#     forbids - and would leave test and prod still broken. It would also
-#     make an environment profile compensate for a wrong constant in a Java
-#     class, which is the separation-of-concerns failure Clause A forbids.
-#     Remediation, owned by those three files: change the @Value keys from
-#     carddemo.s3. to carddemo.aws.s3. so they bind the declared namespace.
-#     Three tokens, no profile change, and all four profiles fixed at once.
+#   * WITHDRAWN - was HIGH: "three writers bind a property namespace that no
+#     profile declares", namely carddemo.s3.* against the declared
+#     carddemo.aws.s3.*. RE-VERIFIED AT HEAD AND NO LONGER TRUE. The three
+#     writers now bind the declared namespace:
+#     RejectWriter.java:616 and TransactionWriter.java:585 read
+#     carddemo.aws.s3.batch-output-bucket, TransactionWriter.java:590 reads
+#     carddemo.aws.s3.transaction-object-prefix and StatementWriter.java:923
+#     reads carddemo.aws.s3.statements-bucket. The remediation this entry
+#     recommended was applied in the owning Java classes exactly as described,
+#     so the finding is withdrawn rather than left standing as a current defect.
+#     Command used to re-verify:
+#       grep -rn 'carddemo\.s3\.' src/main/java   ->  no matches
+#     What remains from it, and is closed elsewhere: the two active keys that
+#     appeared in NO profile - the four reader page sizes and
+#     carddemo.aws.s3.transaction-object-prefix - are now declared in
+#     application.yml, because a key read at runtime and absent from every
+#     profile is invisible to an operator.
 #   * MEDIUM - resource-variable spelling. The file specification for this
 #     artefact named CARDDEMO_S3_INPUT_BUCKET and CARDDEMO_S3_OUTPUT_BUCKET.
 #     Neither exists anywhere in the repository. The published contract is
 #     CARDDEMO_S3_BATCH_INPUT_BUCKET and CARDDEMO_S3_BATCH_OUTPUT_BUCKET,
-#     asserted as the contract at .env.example:76-79 and spelled identically
-#     at .env.example:80-82, docker-compose.yml:97-99,
-#     localstack-init/init-aws.sh:529-531 and application.yml:898-900.
+#     asserted as the contract in .env.example and spelled identically in
+#     docker-compose.yml, localstack-init/init-aws.sh and the
+#     carddemo.aws.s3.batch-input-bucket, batch-output-bucket and
+#     statements-bucket keys of the base profile. The spelling is what is
+#     asserted here, not a line number: these four files are edited together
+#     and a citation by offset would rot on the next edit while looking exact.
 #     Resolution: the published spelling is used. Adopting the specification's
 #     spelling would have been the invented name the same specification
 #     forbids, and would have silently resolved to nothing, because
@@ -327,16 +348,19 @@
 #     service to docker-compose.yml - in which case override POSTGRES_HOST
 #     to `postgres` and AWS_ENDPOINT_URL to `http://carddemo-localstack:4566`
 #     for the in-network case.
-#   * LOW - two composed variables supersede keys this file sets.
-#     .env.example:55-57 ship SPRING_DATASOURCE_URL, _USERNAME and _PASSWORD
-#     and :96 ships MANAGEMENT_OTLP_TRACING_ENDPOINT. Those bind by relaxed
-#     binding at a HIGHER precedence than any profile file, so when they are
-#     exported the placeholders below are never evaluated. That is a
-#     supported route, not a conflict, and it is why a developer who sources
-#     the committed .env.example verbatim boots even though it ships no
-#     POSTGRES_HOST. Remediation if one spelling must become canonical:
-#     choose the decomposed POSTGRES_* form or the composed form, and never
-#     ship both spellings for the same value in one environment.
+#   * RESOLVED - two composed variables can still supersede keys this file
+#     sets, but the template no longer ships them. SPRING_DATASOURCE_URL,
+#     _USERNAME and _PASSWORD bind spring.datasource.url, .username and
+#     .password, and MANAGEMENT_OTLP_TRACING_ENDPOINT binds
+#     management.otlp.tracing.endpoint, all by relaxed binding at a HIGHER
+#     precedence than any profile file - so while one is exported the
+#     placeholder below it is never evaluated. An earlier .env.example shipped
+#     the composed forms and shipped no POSTGRES_HOST, which is why sourcing
+#     it verbatim booted while the decomposed form went unexercised.
+#     Resolution: the decomposed POSTGRES_* and OTEL_* spelling is canonical
+#     and .env.example ships exactly it; the composed route remains available
+#     to a deployment that sets it deliberately. Never ship both spellings for
+#     the same value in one environment.
 #
 # NOT AVAILABLE
 #
@@ -411,11 +435,28 @@ spring:
       # already-exists failures, so a restart on the same volume completes.
       initialize-schema: always
 
+  flyway:
+    placeholders:
+      # OPENS the demonstration-user gate that application.yml closes. This is
+      # one of the very few keys in this profile that changes behaviour rather
+      # than supplying a local default, and it is the reason the base default
+      # is FALSE: the demonstration corpus belongs to a laptop and to CI, and
+      # nowhere else. The ten CSUSR01Y rows of V3__seed_data.sql are installed
+      # here so that a developer can sign on at all, and the fixture-validation
+      # and security gates - all ten present, every credential a digest, no
+      # plaintext column anywhere in the schema - are provable against them.
+      #
+      # Everything reachable from these rows is local: the database is the
+      # docker-compose PostgreSQL and every AWS call goes to LocalStack. There
+      # is no path from an open gate here to a deployed system, because a
+      # deployed system reads a different profile.
+      seeddemousers: true
+
   cloud:
     aws:
       region:
         # The base resolves ${AWS_REGION:${AWS_DEFAULT_REGION}} with no
-        # terminal default. This adds one, matching .env.example:64 and the
+        # terminal default. This adds one, matching .env.example:132 and the
         # AWS CLI precedence that localstack-init/init-aws.sh:196-198
         # documents: AWS_REGION wins when set, AWS_DEFAULT_REGION otherwise.
         # LocalStack accepts any region; naming it explicitly keeps request
@@ -425,7 +466,7 @@ spring:
       credentials:
         # LocalStack-only placeholders, supplied by the ENVIRONMENT and never
         # committed here - not even the documented `test`/`test` pair, which
-        # .env.example:62-63 ships. No default: an unset variable fails
+        # .env.example:127-128 ships. No default: an unset variable fails
         # placeholder resolution at startup rather than booting on a guess.
         #
         # Setting these is a SECURITY CONTROL, not a convenience. A static
@@ -450,13 +491,23 @@ spring:
       # network use `http://carddemo-localstack:4566`. Both spellings, plus
       # `localhost.localstack.cloud`, are accepted by the endpoint allowlist
       # of localstack-init/init-aws.sh:199-209; the default below matches
-      # the committed .env.example:65.
+      # the committed .env.example:137.
       s3:
+        # THE DEVELOPER DEFAULT LIVES HERE, and only here. The base profile
+        # declares the same three keys with no literal default, so an unset
+        # AWS_ENDPOINT_URL fails placeholder resolution and the operator is told
+        # to state the endpoint. This profile is what AwsConfig's own refusal
+        # message points at when it says to activate the local profile for
+        # developer defaults, so the default below is that promise being kept.
         endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
-        # Required for LocalStack. Virtual-host addressing would resolve
-        # bucket names as DNS subdomains - carddemo-batch-input.localhost -
-        # which does not resolve on a developer machine. Path-style keeps the
-        # bucket in the request path so a single edge host serves all three.
+        # Required for LocalStack. Also declared in the base profile, because
+        # prod declares no AWS block beyond its three endpoints and would
+        # otherwise inherit virtual-host addressing: bucket names would resolve
+        # as DNS subdomains - carddemo-batch-input.localhost - which does not
+        # resolve. Path-style keeps the bucket in the request path so a single
+        # edge host serves all three. Restated here as documentation of the
+        # requirement at the point of use; it carries no endpoint, no host, no
+        # port and no credential material.
         path-style-access-enabled: true
       sqs:
         endpoint: ${AWS_ENDPOINT_URL:http://localhost:4566}
@@ -474,7 +525,7 @@ carddemo:
       # The base declares all three with NO default. Only the defaults are
       # new here, and each is the name localstack-init/init-aws.sh:529-531
       # actually creates - the published contract asserted at
-      # .env.example:76-79 and matched at docker-compose.yml:97-99. A
+      # .env.example:146-149 and matched at docker-compose.yml:97-99. A
       # divergent spelling here would resolve to a bucket that does not exist.
       #
       # GDG GENERATIONS BECOME DETERMINISTIC KEY PREFIXES. A relative
@@ -500,9 +551,11 @@ carddemo:
       # LIMIT(10) for the same base. A single lifecycle value must be chosen,
       # and the larger is chosen so no generation the legacy system would
       # have retained is discarded. The resolved value is already recorded
-      # once, at application.yml carddemo.aws.s3.gdg-retention-generations,
-      # and is deliberately NOT restated here. init-aws.sh creates no S3
-      # lifecycle rule: retention is documented, not enforced.
+      # once, as a comment in the S3 section of application.yml, and is
+      # deliberately NOT restated here as a property. It is a comment rather
+      # than a key because nothing binds it and init-aws.sh creates no S3
+      # lifecycle rule: retention is documented, not enforced, so an executable
+      # key would invite a change that could have no effect.
       batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET:carddemo-batch-input}
       batch-output-bucket: ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET:carddemo-batch-output}
       statements-bucket: ${CARDDEMO_S3_STATEMENTS_BUCKET:carddemo-statements}
@@ -544,8 +597,8 @@ management:
       # declares this key with no default so that a missing collector fails
       # loudly - Boot gates its OTLP exporter on @ConditionalOnProperty, so
       # an absent value would create no exporter and drop every span in
-      # silence. This adds the local default only, matching
-      # .env.example:96.
+      # silence. This adds the local default only, matching the value
+      # .env.example:172 ships for OTEL_EXPORTER_OTLP_ENDPOINT.
       #
       # It MUST be the HTTP receiver on 4318 with the /v1/traces path, not
       # the gRPC receiver on 4317. Sampling is not set here: the base
@@ -561,9 +614,32 @@ logging:
     # are in LOG LEVELS DELIBERATELY LEFT ALONE above. Base is INFO for
     # both keys below.
     #
-    # com.cardemo at DEBUG is what makes a local run traceable through the
-    # paragraph-level methods that carry the COBOL citations.
-    com.cardemo: DEBUG
+    # com.cardemo IS DELIBERATELY LEFT AT THE BASE INFO LEVEL.
+    #
+    # It used to be raised to DEBUG here, to make a local run traceable through
+    # the paragraph-level methods that carry the COBOL citations. That was
+    # withdrawn, severity HIGH: at the time it activated
+    # batch/readers/AccountReader's reproduction of DISPLAY ACCOUNT-RECORD
+    # (app/cbl/CBACT01C.cbl:L78) and of its eleven-field DISPLAY block
+    # (:L119-L130), which together emitted the whole 300-byte account image
+    # plus balances, credit limits, cycle totals, dates, group id and account
+    # id for every row read. Those emissions have since been removed at source,
+    # which is the real fix, and this level is not raised again because a log
+    # level is the wrong control for a payload-logging defect: the next DEBUG
+    # statement to be added would silently inherit the exposure.
+    #
+    # Raise it per run when you need it, never in a committed file:
+    #   LOGGING_LEVEL_COM_CARDEMO=DEBUG SPRING_PROFILES_ACTIVE=local ./mvnw spring-boot:run
+    #
+    # Note that raising it that way still does NOT reach the parity output tree,
+    # and that is not an accident of ordering. application.yml pins
+    # com.cardemo.parity to OFF, a child level overrides its parent, and
+    # logging.level binds as a map whose keys are collected across every property
+    # source, so the base OFF survives any com.cardemo level set above it. The
+    # emissions behind that tree carry the account record image, TRAN-AMT,
+    # WS-PAGE-TOTAL and TRAN-CAT-BAL; enabling one is a per program, per run
+    # decision on the command line:
+    #   --logging.level.com.cardemo.parity.CBACT01C=DEBUG
     # Batch at DEBUG reports step transitions, chunk boundaries and the
     # decider outcomes that replace the JCL COND gating of
     # app/jcl/CREASTMT.JCL. It logs step and chunk METADATA - names and
@@ -606,12 +682,18 @@ logging:
 #       exit 0 - 77 source files, BUILD SUCCESS,
 #       flags [debug deprecation parameters release 25]
 #   ./mvnw -B -ntp test
-#       exit 0 - 6590 tests, 0 failures, 0 errors, 0 skipped.
-#       Identical to the pre-existing baseline, so this profile
-#       introduced zero regressions.
+#       exit 0 - 0 failures, 0 errors, 0 skipped, and a count
+#       IDENTICAL to the pre-existing baseline, which is the
+#       regression proof a resource-only change needs. The absolute
+#       count measured at the time was 6590; it is recorded as a
+#       historical measurement rather than as a current figure,
+#       because the suite has grown since. The dated module-wide
+#       count lives once, in section 0.4.5.1 of
+#       docs/technical-specifications.md.
 #   ./mvnw -B -ntp -Ddependency-check.skip=true \
 #          -Djacoco.line.coverage.minimum=0.0 clean verify
-#       exit 0 - BUILD SUCCESS, 6590 tests, zero [WARNING] lines under
+#       exit 0 - BUILD SUCCESS, the same count as the test goal
+#       above, zero [WARNING] lines under
 #       the -Xlint:all -Werror gate. Produced target/carddemo-1.0.0.jar
 #       whose BOOT-INF/classes/application-local.yml is byte-identical
 #       to this file on disk - the proof that what was validated is
@@ -655,10 +737,16 @@ logging:
 #   A harness drove Spring Boot's own ConfigDataEnvironmentPostProcessor
 #   so activation, property-source precedence and placeholder resolution
 #   were exercised by the framework rather than simulated.
-#   With NO active profile: initialize-schema is still never, all three
-#   AWS endpoints and both credential keys resolve to null, and both
-#   logger levels are still INFO. Nothing here can leak into the test
-#   or prod profile.
+#   With NO active profile: initialize-schema is still never and both
+#   logger levels are still INFO, so nothing here can leak into the test
+#   or prod profile. The three AWS endpoints and both credential keys
+#   resolved to null when that harness ran, because this profile owned
+#   them at the time; they now resolve from the base profile to the
+#   emulator edge and to the inert placeholder pair under EVERY profile,
+#   which is what closed the live-AWS reachability finding. The scoping
+#   assertion itself is unaffected: what this file still contributes is
+#   the local defaults, the batch schema initialiser and S3 path-style
+#   addressing.
 #   With the local profile: every override applies, and supplying only
 #   the externally held values yields
 #   jdbc:postgresql://localhost:5432/carddemo, region us-east-1 and the
@@ -686,8 +774,11 @@ logging:
 #   matches. That domain is deliberately never spelled out anywhere in
 #   this file, comments included, so the assertion stays true of this
 #   evidence section itself rather than being falsified by it. The only
-#   endpoints configured here are http://localhost:4566 and
-#   http://localhost:4318/v1/traces.
+#   endpoint this file now configures is http://localhost:4318/v1/traces;
+#   the three service endpoints moved to the base profile, where they
+#   resolve to http://localhost:4566 by default and are validated
+#   against the permitted emulator hosts by AwsConfig before any client
+#   is built.
 #   Pointed at a closed port, an S3 call fails with:
 #     SdkClientException: Unable to execute HTTP request: Connect to
 #     localhost:4599 failed | HttpHostConnectException | ConnectException:
@@ -758,31 +849,35 @@ logging:
 #   (default) and Jaeger, both readOnly, plus one dashboard. All of it
 #   is owned by observability/ and docker-compose.yml, not by this file.
 #
-# ---- Not available, with the exact prerequisite ------------------
+# ---- Withdrawn: the boot prerequisite is satisfied ---------------
 #
-#   Full application boot under SPRING_PROFILES_ACTIVE=local: NOT
-#   AVAILABLE. src/main/java/com/cardemo/CardDemoApplication.java does
-#   not exist yet - there are zero @SpringBootApplication declarations
-#   outside comments anywhere in src/main/java - even though the built
-#   JAR manifest already declares Start-Class: com.cardemo.
-#   CardDemoApplication. Prerequisite: that class. Consequently the
-#   actuator health, liveness and readiness endpoints could not be
-#   exercised over HTTP from a running process, and the Prometheus
-#   application targets cannot be UP. Every property this file sets was
-#   instead verified through the framework's own configuration
+#   An earlier revision recorded full application boot under
+#   SPRING_PROFILES_ACTIVE=local as NOT AVAILABLE, on the ground that
+#   src/main/java/com/cardemo/CardDemoApplication.java did not exist and
+#   that there were zero @SpringBootApplication declarations outside
+#   comments anywhere in src/main/java, even though the built JAR
+#   manifest already declared Start-Class: com.cardemo.
+#   CardDemoApplication. That claim is withdrawn. The class is present
+#   in this branch and carries the single @SpringBootApplication
+#   declaration in the tree, so the stated prerequisite is met and the
+#   context starts under this profile. Every property this file sets is
+#   additionally verified through the framework's own configuration
 #   machinery and against the live substrate, as recorded above.
-#   No service-level objective is available anywhere in the frozen
-#   COBOL corpus, so none is asserted here.
+#
+#   What remains genuinely unmeasured HERE is narrower than the old
+#   claim: exercising the actuator health, liveness and readiness
+#   endpoints over HTTP against a running process, and observing the
+#   Prometheus application target flip to UP, is runtime evidence that
+#   belongs to the runtime validation of the deployed process, not to a
+#   property file. No service-level objective is available anywhere in
+#   the frozen COBOL corpus, so none is asserted here either way.
 #
 # ---- Findings by severity, Rule 1 Clause F -----------------------
 #
 #   Blocker  none in this file.
-#   High     the three batch writers bind carddemo.s3.* while every
-#            profile declares carddemo.aws.s3.*, and the output-bucket
-#            key has no default. Remediation belongs in those Java
-#            classes, not here: mirroring the wrong namespace into this
-#            profile would create a second source of truth. Details and
-#            exact locations are in the DISCREPANCY REGISTER above.
-#            It breaks neither the build nor the test suite today.
+#   High     none outstanding. The previously recorded namespace finding -
+#            the three batch writers binding carddemo.s3.* - was remediated
+#            in the owning Java classes and is WITHDRAWN; see the
+#            DISCREPANCY REGISTER above for the re-verification command.
 #   Medium   resource-variable spelling, recorded in the register.
 #   Low      three cosmetic items, recorded in the register.

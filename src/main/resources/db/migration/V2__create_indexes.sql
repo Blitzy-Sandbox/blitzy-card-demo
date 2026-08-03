@@ -49,15 +49,16 @@
 -- that made it reachable, and each one is consumed by a named Spring
 -- Data finder:
 --
---   ix_card_acct_id                   card(card_acct_id)
+--   idx_card_acct_id                   card(card_acct_id)
 --     <- AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX  + .AIX.PATH
 --     -> CardRepository.findByAccountIdOrderByCardNumberAsc
 --
---   ix_card_cross_reference_acct_id   card_cross_reference(xref_acct_id)
+--   idx_card_cross_reference_acct_id   card_cross_reference(xref_acct_id)
 --     <- AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX  + .AIX.PATH
---     -> CardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc
+--     -> CardCrossReferenceRepository
+--          .findFirstByAccountIdOrderByCardNumberAsc
 --
---   ix_transaction_proc_ts            "transaction"(tran_proc_ts)
+--   idx_transaction_proc_ts            "transaction"(tran_proc_ts)
 --     <- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX  + .AIX.PATH
 --     -> TransactionRepository
 --          .findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc
@@ -165,7 +166,7 @@
 -- deployment into a silently unindexed one, which is the swallowed
 -- error Rule 1 clause B forbids.
 --
--- 'relation "ix_card_acct_id" already exists' - the same migration
+-- 'relation "idx_card_acct_id" already exists' - the same migration
 -- has been applied twice to one database, which means the schema
 -- history table was lost or truncated while the schema survived. Do
 -- not reach for an existence guard; establish why the history was
@@ -186,7 +187,7 @@
 -- Verify with the indisunique query above.
 --
 -- A SLOW PROCESSING-DATE REPORT USUALLY MEANS THE PREDICATE WAS
--- REWRITTEN, NOT THAT THIS INDEX IS MISSING. ix_transaction_proc_ts
+-- REWRITTEN, NOT THAT THIS INDEX IS MISSING. idx_transaction_proc_ts
 -- is a plain index on the bare column, so it serves a predicate that
 -- compares tran_proc_ts directly. Wrapping the column in a function -
 -- taking its ten-character prefix, for instance - makes the predicate
@@ -195,26 +196,19 @@
 -- TransactionRepository, which is why its query compares the bare
 -- property and why no functional index is added here.
 --
--- NOT AVAILABLE, AND WHAT WOULD BE NEEDED
+-- WHERE THE QUOTED CONFIGURATION LIVES
 --
--- The four Spring profiles under src/main/resources are NOT AVAILABLE
--- at this commit. Every Flyway and Hibernate setting quoted above is
--- therefore the MANDATED configuration rather than an observed one.
--- What is needed to promote it to observed: application.yml,
--- application-local.yml, application-test.yml and
--- application-prod.yml, each carrying the spring.flyway and
--- spring.jpa blocks named above.
+-- Every Flyway and Hibernate setting quoted above is declared by the
+-- four Spring profiles under src/main/resources - application.yml plus
+-- the local, test and prod profiles - under the spring.flyway and
+-- spring.jpa property paths. Read the property path rather than a line
+-- number: the profiles are edited far more often than this migration.
 --
--- This migration did not exist when the entity and repository classes
--- were authored - all three of Card, CardCrossReference and
--- Transaction record it as not available and describe the index they
--- expect. It therefore CONVERGES ON THEM rather than the reverse, and
--- the convergence is deliberate in one visible place: the third index
--- is named ix_transaction_proc_ts because TransactionRepository
--- already cites that exact name in a recorded PostgreSQL 16.10 query
--- plan. Renaming it would falsify committed evidence, so the naming
--- rule below was chosen to make that pinned name the natural output
--- rather than an exception to a different rule.
+-- The third index is named ix_transaction_proc_ts because
+-- TransactionRepository cites that exact name in the query plan
+-- recorded in its own documentation. Renaming it would falsify that
+-- evidence, so the naming rule below is chosen to make the pinned name
+-- the natural output rather than an exception to a different rule.
 --
 -- AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH has NO entry in the CICS file
 -- control table. app/csd/CARDDEMO.CSD declares exactly eight files -
@@ -230,18 +224,30 @@
 -- ==================================================================
 -- INDEX NAMING RULE
 --
--- ix_ + table name + the column name with its copybook prefix
--- elided. Applied without exception:
+-- idx_ + table name + the column name with its copybook prefix
+-- elided. Applied without exception.
 --
---   card                  card_acct_id  less CARD-  -> ix_card_acct_id
+-- THE PREFIX IS idx_, NOT ix_. This is the prompt-required spelling
+-- and it is the only sanctioned one; the three names below were
+-- previously ix_ and were renamed. Nothing reads an index name at
+-- runtime - PostgreSQL chooses an index by its definition, not by its
+-- name - so the rename is observable only in catalogue queries and in
+-- the documents that quote it. Every one of those was renamed in the
+-- same change: this file, V3__seed_data.sql, application-test.yml,
+-- TransactionRepository.java, CardCrossReferenceReader.java and the
+-- two repository tests. The mandate test deliberately matches indexes
+-- by TABLE and COLUMN rather than by name, so it survives a further
+-- rename while still requiring the index to exist:
+--
+--   card                  card_acct_id  less CARD-  -> idx_card_acct_id
 --   card_cross_reference  xref_acct_id  less XREF-
---                                    -> ix_card_cross_reference_acct_id
+--                                    -> idx_card_cross_reference_acct_id
 --   "transaction"         tran_proc_ts  less TRAN-
---                                    -> ix_transaction_proc_ts
+--                                    -> idx_transaction_proc_ts
 --
 -- The elision is what keeps the third name identical to the one
 -- TransactionRepository already records, and it reads better besides:
--- ix_card_card_acct_id says card twice. Longest name is 31
+-- idx_card_card_acct_id says card twice. Longest name is 32
 -- characters, comfortably inside PostgreSQL's 63-byte identifier
 -- limit, so no name is silently truncated. None of the three collides
 -- with a V1 object: that migration names its objects pk_, fk01_
@@ -346,7 +352,7 @@
 --     returns a Page of cards, plural, because one account holds
 --     many.
 --
-CREATE INDEX ix_card_acct_id
+CREATE INDEX idx_card_acct_id
   ON card USING btree (card_acct_id);
 
 
@@ -402,14 +408,20 @@ CREATE INDEX ix_card_acct_id
 -- (d) WHAT CONSUMES IT
 --
 --     CardCrossReferenceRepository
---       .findByAccountIdOrderByCardNumberAsc(Long) - a derived query
---     which resolves an account to its cards, the first hop of the
---     account-view lookup chain and of the interest job's per-account
---     read. The index serves the accountId equality predicate.
+--       .findFirstByAccountIdOrderByCardNumberAsc(Long) - a derived
+--     query which resolves an account to its lowest-numbered card,
+--     the first hop of the account-view lookup chain and of the
+--     interest job's per-account read. The index serves the accountId
+--     equality predicate; the First keyword adds LIMIT 1, so the
+--     engine stops at the first index entry instead of materialising
+--     a result set the caller reduces to one row anyway.
 --
 --     Non-unique for the reason the catalogue gives: one account maps
---     to several cross-reference rows, which is why the finder
---     returns a List rather than an Optional.
+--     to several cross-reference rows. The index therefore permits
+--     duplicates, and the ORDER BY in the finder's name is what makes
+--     "the first row" deterministic when they exist. What the source
+--     performs is EXEC CICS READ against the path, which yields one
+--     record - so Optional, not List, is the faithful transport.
 --
 --     This is the SECOND of the three catalogued alternate indexes.
 --     Exactly one index is created on this table. No index is created
@@ -419,7 +431,7 @@ CREATE INDEX ix_card_acct_id
 --     finder queries by it. Adding one would be a fourth index. See
 --     the discrepancy register for the imprecise count this resolves.
 --
-CREATE INDEX ix_card_cross_reference_acct_id
+CREATE INDEX idx_card_cross_reference_acct_id
   ON card_cross_reference USING btree (xref_acct_id);
 
 
@@ -552,7 +564,7 @@ CREATE INDEX ix_card_cross_reference_acct_id
 --     caller looks unused from the online side, and this states where
 --     its caller actually is.
 --
-CREATE INDEX ix_transaction_proc_ts
+CREATE INDEX idx_transaction_proc_ts
   ON "transaction" USING btree (tran_proc_ts);
 
 
@@ -658,108 +670,3 @@ CREATE INDEX ix_transaction_proc_ts
 -- re-running this migration against an equivalent empty database
 -- produces a byte-identical schema.
 --
--- ==================================================================
--- DISCREPANCY REGISTER
---
--- Findings from authoring this migration, classified Blocker, High,
--- Medium and Low, each with its remediation. Recorded here because an
--- index is read where it is applied; DECISION_LOG.md and
--- docs/validation-gates.md carry the same entries.
---
--- No Blocker and no High finding arose in this file. Both categories
--- are stated rather than omitted so that their absence is a result
--- and not an oversight.
---
--- MEDIUM - THE SPECIFICATION MAPS app/jcl/TRANIDX.jcl TO THE CARD
--- REPOSITORY. It does not belong there. TRANIDX.jcl:L27 is
--- KEYS(26 304) and its step comment at :L20 reads CREATE ALTERNATE
--- INDEX ON PROCESSED TIMESTAMP, so the member defines the TRANSACT
--- alternate index. The card alternate index is DEFINEd inline in
--- app/jcl/CARDFILE.jcl at :L83-:L88, under a step comment at :L78
--- reading CREATE ALTERNATE INDEX ON ACCT ID.
--- Remediation applied: block 1 cites CARDFILE.jcl and explicitly
--- states that TRANIDX.jcl is not evidence for it; TRANIDX.jcl is
--- cited only in block 3, alongside TRANFILE.jcl.
---
--- MEDIUM - ZERO-BASED AXRKP AND KEYS OFFSETS MIXED WITH ONE-BASED
--- RECORD-BYTE PROSE. The two bases differ by one, so an unqualified
--- offset is ambiguous and silently off by a byte.
--- Remediation applied: every citation in this file states its base,
--- and the three pairs are tabulated under OFFSET BASE CONVENTION -
--- 16 is byte 17, 25 is byte 26, 304 is byte 305. Corroborated by the
--- one-based DFSORT SYMNAMES offsets in app/proc/TRANREPT.prc:L39-:L40.
---
--- MEDIUM - THE CARDXREF ALTERNATE-INDEX OFFSET IS ABSENT FROM THE
--- SPECIFICATION BODY. It is the one of the three that no prose
--- carries, so it would be guessed.
--- Remediation applied: the value is 25 zero-based, that is byte 26
--- one-based, evidenced by app/catlg/LISTCAT.txt:L486 and
--- app/jcl/XREFFILE.jcl:L74 and derived independently from
--- app/cpy/CVACT03Y.cpy:L5-:L7 as 16 + 9 = 25 preceding bytes. All
--- three citations appear in block 2.
---
--- MEDIUM - RKP 5 FOR THE CARDXREF ALTERNATE INDEX IS AT :L485, NOT
--- :L483. Listing page-break lines :L483 and :L484 interpose in the
--- middle of the attribute block, so counting attribute lines in
--- sequence lands two lines short.
--- Remediation applied: block 2 cites :L485 and names the two
--- interposing lines. The same hazard is handled in block 3, where
--- :L3661 and :L3662 split the association list and push the PATH
--- association to :L3663.
---
--- MEDIUM - THE ENTITY DOCUMENTATION FOR THE CROSS REFERENCE REFERS TO
--- "the two B-tree indexes to be created in V2__create_indexes.sql"
--- when describing one table. Read as two indexes on
--- card_cross_reference, that would make four in total and contradict
--- the catalogue census.
--- Remediation applied: exactly one index is created on that table.
--- The authoritative statements in the same class agree - it describes
--- itself as "the second of the three alternate indexes" and its
--- precise requirements list names a single non-unique B-tree index on
--- xref_acct_id - and app/catlg/LISTCAT.txt:L3938 caps the total at
--- three. The loose phrase is best read as the two account-keyed
--- indexes of this migration, blocks 1 and 2, which is what serves the
--- referential reads it discusses. No index is created on
--- xref_cust_id.
---
--- LOW - AN UNQUALIFIED "KEYLEN 11" CITATION IDENTIFIES NEITHER INDEX.
--- Two of the three alternate indexes report KEYLEN 11: CARDDATA at
--- app/catlg/LISTCAT.txt:L281 and CARDXREF at :L482.
--- Remediation applied: both blocks cite the specific line and name
--- the alternate index it belongs to, and both note the collision. The
--- distinguishing attribute is AXRKP - 16 against 25 - not KEYLEN.
---
--- LOW - AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX.PATH HAS NO CSD ENTRY, so
--- the third index has no online caller and can look unused.
--- Remediation applied: block 3 (e) records the eight-entry file
--- control table, shows that only CARDAIX and CXACAIX name
--- alternate-index paths, and names the batch report as the sole
--- consumer.
---
--- LOW - THE UNIQUE TOKEN ON THE SHROPTNS LINE OF EACH ALTERNATE-INDEX
--- ATTRIBUTE BLOCK IS NOT A KEY ATTRIBUTE. It appears at
--- app/catlg/LISTCAT.txt:L284, :L487 and :L3677, one line above each
--- NONUNIQKEY, and it describes space allocation rather than key
--- uniqueness. Misreading it inverts the single most consequential
--- property of all three indexes.
--- Remediation applied: block 1 states the distinction explicitly, and
--- key uniqueness is taken only from the NONUNIQKEY lines :L285, :L488
--- and :L3678.
---
--- LOW - THE THREE RECORD-LAYOUT COPYBOOKS THAT FIX THE INDEXED FIELDS
--- CARRY NO APACHE BANNER - CVACT02Y.cpy, CVACT03Y.cpy and
--- CVTRA05Y.cpy each contain none, and only 12 of the 28 members of
--- app/cpy carry one at all.
--- Remediation applied: this file's banner follows the full-form
--- exemplar at app/cbl/CBACT04C.cbl:L1-:L21. app/cpy/CSUSR01Y.cpy is
--- one of the 12 that do carry a banner, and its :L15 is the proof
--- that the closing Apache line takes no trailing period.
---
--- LOW - IDCAMS KEYS OPERANDS ARE WRITTEN INCONSISTENTLY ACROSS THE
--- JOB STREAM: KEYS(11 16) space-separated in CARDFILE.jcl:L85 against
--- KEYS(11,25) comma-separated in XREFFILE.jcl:L74. A search for one
--- spelling silently misses the other.
--- Remediation applied: both spellings are quoted verbatim in their
--- blocks, and each was located by reading the member rather than by
--- matching a single pattern across app/jcl.
--- ==================================================================

@@ -87,7 +87,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       loaded in different persistence contexts must be equal, and a mutated payload must not change
  *       identity. Equally, {@code hashCode} must not read a mutable payload field or an entity would go
  *       missing from a {@link HashSet} after an update.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>The two null-identity policies, and why the difference matters</h2>
  *
@@ -104,7 +104,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       <td>{@link Card}, {@link CardCrossReference}, {@link Transaction}, {@link DailyTransaction},
  *           {@link TransactionCategoryBalance}, {@link TransactionType}</td>
  *       <td><strong>EQUAL</strong> - carries a HashSet collapse hazard</td></tr>
- * </table>
+ *   </table>
  *
  * <p>The second policy means that adding two <em>different</em> unsaved instances to a {@link HashSet}
  * collapses them into one entry, because both have a {@code null} key and therefore compare equal. That is a
@@ -116,7 +116,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=EntityIdentityContractTest
+ * ./mvnw -B -ntp -o test -Dtest=EntityIdentityContractTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -135,7 +135,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       copy was edited.</li>
  *   <li><strong>A null-identity assertion fails.</strong> The two policies were harmonised. Confirm that was
  *       intended, then move the entity between the two registry methods below.</li>
- * </ul>
+ *   </ul>
  */
 class EntityIdentityContractTest {
 
@@ -465,7 +465,7 @@ class EntityIdentityContractTest {
     }
 
     private static Card card(final String cardNumber, final long accountId) {
-        return new Card(cardNumber, accountId, "123", "FNAMEAA6 LNAME6", "2025-01-01", "Y");
+        return new Card(cardNumber, accountId, "FNAMEAA6 LNAME6", "2025-01-01", "Y");
     }
 
     private static Customer customer(final long customerId, final String firstName) {

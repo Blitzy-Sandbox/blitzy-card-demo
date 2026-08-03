@@ -123,7 +123,7 @@ import org.slf4j.LoggerFactory;
  *       open, keyed read by reference modification, close, epilogue and terminator.</li>
  *   <li>{@code CBSTM03B.CBL:L206}, {@code L214-L215}, {@code L221}, {@code L225-L228} - {@code ACCTFILE}, same
  *       shape, but on a numeric record key.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -137,10 +137,13 @@ import org.slf4j.LoggerFactory;
  *   <li>{@code ./mvnw -B -ntp test} for the whole unit tier.</li>
  *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} for the gated build, which adds the
  *       JaCoCo line-coverage floor. The skip property is hyphenated, not dotted.</li>
- * </ul>
+ *   </ul>
  *
- * <p>Test compilation runs under {@code -Xlint:all -Werror} at {@code release 25}, so an unused import or a
- * doclint complaint is a build failure rather than a warning.
+ * <p>Test compilation runs under {@code -Xlint:all -Werror} at {@code release 25}, so any warning
+ * {@code javac} emits - a raw type, an unchecked cast, a dangling documentation comment - is a build
+ * failure rather than a warning. Two things are <strong>not</strong> covered by it: an unused import, for
+ * which {@code javac} 25 publishes no lint key, and a doclint complaint, because no Javadoc plugin is bound
+ * in {@code pom.xml}. Both are enforced separately, by review and by the explicit doclint command.
  *
  * <h2>Key configurations and defaults</h2>
  *
@@ -158,7 +161,7 @@ import org.slf4j.LoggerFactory;
  *   <li><strong>No personal data.</strong> Keys and records are obviously synthetic - repeated single
  *       characters and sequential digits - never a plausible social security number, card number or date of
  *       birth. The payload buffer and the key are never placed in an assertion message.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -168,7 +171,8 @@ import org.slf4j.LoggerFactory;
  *       have no source at all. Match {@code app/cbl/**} case-insensitively.</li>
  *   <li><strong>Not stripping the carriage return drifts every citation.</strong> Both files are CRLF. Count
  *       lines through {@code tr -d '\r'} or every locator above moves.</li>
- *   <li><strong>Five specification locators are three too high.</strong> The {@code PROCEDURE DIVISION}
+ *   <li><strong>Four labels sit three lines earlier than a reader may expect.</strong> The
+ *       {@code PROCEDURE DIVISION}
  *       header is at L114 not L117, {@code 0000-START.} at L116 not L119, the {@code EVALUATE} at L118 not
  *       L121, and {@code GO TO 9999-GOBACK.} at L128 not L131. The other eleven labels match exactly, so this
  *       is not a systematic offset and nothing should be shifted wholesale.</li>
@@ -183,7 +187,7 @@ import org.slf4j.LoggerFactory;
  *   <li><strong>Expecting an abend from the subprogram itself.</strong> {@code CBSTM03B} declares no
  *       {@code ABCODE} and calls no abend service, so it is outside the abend-999 contract. It reports a
  *       status and returns; interpreting that status is the caller's job.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("FileService: the CBSTM03B call contract as one DD-keyed bean")
 class FileServiceTest {
@@ -387,8 +391,8 @@ class FileServiceTest {
      * fires, so control reaches the epilogue, which unconditionally moves the file's status into the return code
      * ({@code app/cbl/CBSTM03B.CBL:L152}, {@code L176}, {@code L201}, {@code L226}). No input or output
      * happened, so the caller receives the file's stale prior status and no error is signalled. It is reproduced
-     * rather than repaired because behavioural parity is the contract; tracked in {@code DECISION_LOG.md} with
-     * severity High, and cited row by row in {@code TRACEABILITY_MATRIX.md}.
+     * rather than repaired because behavioural parity is the contract, and it is cited to the source lines
+     * above so that a later change which "fixes" it fails these tests rather than passing quietly.
      */
     @Nested
     @DisplayName("2. The twelve unimplemented cells perform no input or output - defect A")
@@ -398,14 +402,12 @@ class FileServiceTest {
          * The pairs no handler in {@code app/cbl/CBSTM03B.CBL} implements: the write and the rewrite for every
          * dataset, plus the read form each dataset's access mode excludes.
          *
-         * <p><strong>Count reconciliation.</strong> The specification states eight unimplemented cells in two
-         * places, yet its own matrix states twelve of twenty-four implemented, and twenty-four less twelve is
-         * twelve. The source settles it: {@code M03B-WRITE} and {@code M03B-REWRITE} are referenced by no
+         * <p><strong>Count reconciliation: twelve, not eight.</strong> {@code M03B-WRITE} and
+         * {@code M03B-REWRITE} are referenced by no
          * handler at all, which is eight cells, and additionally {@code M03B-READ} is absent from
          * {@code CUSTFILE} and {@code ACCTFILE} while {@code M03B-READ-K} is absent from {@code TRNXFILE} and
          * {@code XREFFILE}, which is four more. <strong>Twelve is the arithmetic the handler bodies support</strong>,
-         * so all twelve are asserted here - a superset of the eight the specification names. Severity: Medium,
-         * citation accuracy rather than behaviour.
+         * and twenty-four less the twelve implemented cells is twelve, so all twelve are asserted here.
          *
          * @return one argument pair per unimplemented cell
          */
@@ -437,7 +439,8 @@ class FileServiceTest {
                 final FileService.Operation operation) {
             final FakeDataset binding = new FakeDataset(dd);
 
-            serviceOver(binding).execute(FileService.FileServiceRequest.raw(dd.ddName(), operation, "", 0));
+            serviceOver(binding).executeInLegacyParityMode(
+                    FileService.FileServiceRequest.raw(dd.ddName(), operation, "", 0));
 
             assertThat(binding.totalCalls()).isZero();
         }
@@ -450,7 +453,7 @@ class FileServiceTest {
             final FakeDataset binding = new FakeDataset(dd);
 
             final FileService.FileServiceResult result = serviceOver(binding)
-                    .execute(FileService.FileServiceRequest.raw(dd.ddName(), operation, "", 0));
+                    .executeInLegacyParityMode(FileService.FileServiceRequest.raw(dd.ddName(), operation, "", 0));
 
             assertThat(result.returnCode()).isEqualTo(UNSET);
         }
@@ -464,8 +467,10 @@ class FileServiceTest {
             final FileService service = serviceOver(binding);
 
             final String fromRealCall = service
-                    .execute(FileService.FileServiceRequest.of(dd, FileService.Operation.OPEN)).returnCode();
-            final FileService.FileServiceResult stale = service.execute(FileService.FileServiceRequest
+                    .executeInLegacyParityMode(
+                            FileService.FileServiceRequest.of(dd, FileService.Operation.OPEN))
+                    .returnCode();
+            final FileService.FileServiceResult stale = service.executeInLegacyParityMode(FileService.FileServiceRequest
                     .raw(dd.ddName(), FileService.Operation.WRITE, "", 0));
 
             assertThat(fromRealCall).isEqualTo(NOT_FOUND);
@@ -495,7 +500,7 @@ class FileServiceTest {
             final FakeDataset binding = new FakeDataset(FileService.Dd.CUSTFILE);
 
             final FileService.FileServiceResult result = serviceOver(binding)
-                    .execute(FileService.FileServiceRequest.raw(FileService.Dd.CUSTFILE.ddName(),
+                    .executeInLegacyParityMode(FileService.FileServiceRequest.raw(FileService.Dd.CUSTFILE.ddName(),
                             FileService.Operation.READ, "", 0));
 
             assertThat(result.payload()).isEqualTo(" ".repeat(FileService.PAYLOAD_WIDTH));
@@ -508,12 +513,138 @@ class FileServiceTest {
             bindings.get(FileService.Dd.TRNXFILE).openStatus("35");
             final FileService service = serviceOver(bindings);
 
-            service.execute(FileService.FileServiceRequest.of(FileService.Dd.TRNXFILE,
+            service.executeInLegacyParityMode(FileService.FileServiceRequest.of(FileService.Dd.TRNXFILE,
                     FileService.Operation.OPEN));
-            final FileService.FileServiceResult otherDataset = service.execute(FileService.FileServiceRequest
-                    .raw(FileService.Dd.XREFFILE.ddName(), FileService.Operation.WRITE, "", 0));
+            final FileService.FileServiceResult otherDataset = service.executeInLegacyParityMode(
+                    FileService.FileServiceRequest
+                            .raw(FileService.Dd.XREFFILE.ddName(), FileService.Operation.WRITE, "", 0));
 
             assertThat(otherDataset.returnCode()).isEqualTo(UNSET);
+        }
+    }
+
+    /**
+     * The fail-closed contract of the default public adapter, and the reason it is not a deviation.
+     *
+     * <p>{@code FileService.execute} refuses the two cells the source leaves unimplemented, while
+     * {@code executeInLegacyParityMode} reproduces the source's behaviour byte for byte. Both halves are
+     * asserted here, side by side, because the value of the split is the contrast: the same request answers
+     * one way through the safe adapter and the other way through the parity mode.
+     *
+     * <p><strong>Why refusing is faithful rather than a repair.</strong> In the corpus both paths are
+     * unreachable: the single caller {@code app/cbl/CBSTM03A.CBL} sets DD names from its own literals and
+     * pairs each with an operation that dataset implements, so no live execution selects an unknown name or an
+     * unimplemented cell. In Java {@code FileServiceRequest} takes an arbitrary DD-name string, so the same
+     * paths ARE reachable - reproducing them on the default adapter would manufacture a live fail-open path
+     * the source never had, and would contradict the invariant that a file status becomes a typed exception on
+     * every I/O path and is never swallowed.
+     */
+    @Nested
+    @DisplayName("2b. The default adapter fails closed on both defects, and says so")
+    class FailClosedDefaultAdapter {
+
+        @ParameterizedTest(name = "an unknown DD [{0}] is refused rather than answered")
+        @ValueSource(strings = {"NOSUCHDD", "trnxfile", "        ", "", "TRNXFIL", "ACCTFIL2"})
+        @DisplayName("defect B is refused: an unknown DD name abends instead of reporting the pre-set")
+        void unknownDdIsRefused(final String ddName) {
+            final FileService service = serviceOver(allBindings());
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.execute(
+                            FileService.FileServiceRequest.raw(ddName, FileService.Operation.READ, "", 0)))
+                    .withMessageContaining("is not one of")
+                    .withMessageContaining("TRNXFILE")
+                    .satisfies(abend -> assertThat(abend.getAbendCulprit()).isEqualTo("CBSTM03B"));
+        }
+
+        @Test
+        @DisplayName("defect A is refused: an unimplemented operation abends instead of republishing a stale "
+                + "status")
+        void unimplementedCellIsRefused() {
+            final FileService service = serviceOver(allBindings());
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.execute(FileService.FileServiceRequest
+                            .raw("ACCTFILE", FileService.Operation.WRITE, "", 0)))
+                    .withMessageContaining("does not implement operation")
+                    .withMessageContaining("ACCTFILE")
+                    .satisfies(abend -> assertThat(abend.getAbendCulprit()).isEqualTo("CBSTM03B"));
+        }
+
+        @Test
+        @DisplayName("every one of the twelve unimplemented cells is refused, not just the write")
+        void allTwelveUnimplementedCellsAreRefused() {
+            final FileService service = serviceOver(allBindings());
+            int refused = 0;
+
+            for (final FileService.Dd dd : FileService.Dd.values()) {
+                for (final FileService.Operation operation : FileService.Operation.values()) {
+                    if (service.supports(dd, operation)) {
+                        continue;
+                    }
+                    refused++;
+                    assertThatExceptionOfType(FatalProcessingException.class)
+                            .as("%s with '%s' must be refused", dd.ddName(), operation.code())
+                            .isThrownBy(() -> service.execute(FileService.FileServiceRequest
+                                    .raw(dd.ddName(), operation, "", 0)));
+                }
+            }
+
+            assertThat(refused)
+                    .as("four datasets by six operations is twenty-four cells, twelve implemented")
+                    .isEqualTo(12);
+        }
+
+        @Test
+        @DisplayName("the refusal message points the caller at the parity mode rather than at nothing")
+        void refusalNamesTheAlternative() {
+            final FileService service = serviceOver(allBindings());
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.execute(
+                            FileService.FileServiceRequest.raw("NOSUCHDD", FileService.Operation.READ, "", 0)))
+                    .withMessageContaining("executeInLegacyParityMode");
+        }
+
+        @Test
+        @DisplayName("an unknown DD name is control-encoded before it enters the abend message")
+        void refusalEncodesTheUntrustedName() {
+            final FileService service = serviceOver(allBindings());
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.execute(FileService.FileServiceRequest
+                            .raw("A\r\nBOGUS", FileService.Operation.READ, "", 0)))
+                    .satisfies(abend -> assertThat(abend.getMessage())
+                            .as("a DD name carrying CR/LF must not be able to forge a second log record")
+                            .doesNotContain("\r")
+                            .doesNotContain("\n")
+                            .contains("\\u000d"));
+        }
+
+        @Test
+        @DisplayName("the same request answers differently through the parity mode, which is the whole point")
+        void parityModeStillReproducesTheDefect() {
+            final FileService service = serviceOver(allBindings());
+            final FileService.FileServiceRequest request =
+                    FileService.FileServiceRequest.raw("NOSUCHDD", FileService.Operation.READ, "", 0);
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.execute(request));
+            assertThat(service.executeInLegacyParityMode(request).returnCode())
+                    .as("MOVE ZERO into PIC X(02) leaves 00, and the subprogram never overwrites it")
+                    .isEqualTo("00");
+        }
+
+        @Test
+        @DisplayName("a dispatchable cell is unaffected: the safe adapter still reports the status")
+        void dispatchableCellIsUnaffected() {
+            final Map<FileService.Dd, FakeDataset> bindings = allBindings();
+            final FileService service = serviceOver(bindings);
+
+            assertThat(service.execute(FileService.FileServiceRequest
+                    .raw("ACCTFILE", FileService.Operation.OPEN, "", 0)).returnCode())
+                    .as("refusing the unimplemented cells must not change any implemented one")
+                    .isEqualTo("00");
         }
     }
 
@@ -523,8 +654,8 @@ class FileServiceTest {
      * whose whole body is a bare {@code GOBACK.} ({@code L130-L131}). It performs no input or output and never
      * assigns the return code, so because every caller pre-sets it to zero
      * ({@code app/cbl/CBSTM03A.CBL:L349}) the caller observes success with an all-spaces payload. Reproduced
-     * rather than repaired for parity; tracked in {@code DECISION_LOG.md} with severity High. Note the scope
-     * limit: {@code CBSTM03B} declares no {@code ABCODE}, so this sits outside the abend-999 contract and the
+     * rather than repaired for parity, and asserted here so that repairing it cannot pass unnoticed. Note the
+     * scope limit: {@code CBSTM03B} declares no {@code ABCODE}, so this sits outside the abend-999 contract and the
      * defect must not be generalised into one.
      */
     @Nested
@@ -538,8 +669,8 @@ class FileServiceTest {
             final Map<FileService.Dd, FakeDataset> bindings = allBindings();
             final FileService service = serviceOver(bindings);
 
-            final FileService.FileServiceResult result = service.execute(FileService.FileServiceRequest
-                    .raw(ddName, FileService.Operation.READ, "", 0));
+            final FileService.FileServiceResult result = service.executeInLegacyParityMode(
+                    FileService.FileServiceRequest.raw(ddName, FileService.Operation.READ, "", 0));
 
             assertThat(result.returnCode())
                     .as("MOVE ZERO into PIC X(02) leaves 00, and the subprogram never overwrites it")
@@ -555,9 +686,10 @@ class FileServiceTest {
         void thePresetReturnCodeIsWhatSurfaces() {
             final FileService service = serviceOver();
 
-            final FileService.FileServiceResult result = service.execute(new FileService.FileServiceRequest(
-                    "NOSUCHDD", FileService.Operation.READ, "", 0, "77",
-                    "x".repeat(FileService.PAYLOAD_WIDTH)));
+            final FileService.FileServiceResult result =
+                    service.executeInLegacyParityMode(new FileService.FileServiceRequest(
+                            "NOSUCHDD", FileService.Operation.READ, "", 0, "77",
+                            "x".repeat(FileService.PAYLOAD_WIDTH)));
 
             assertThat(result.returnCode()).isEqualTo("77");
             assertThat(result.payload()).isEqualTo("x".repeat(FileService.PAYLOAD_WIDTH));
@@ -1040,8 +1172,8 @@ class FileServiceTest {
          * reachable and no handler implements {@code 'W'} or {@code 'Z'} at all. Clause B of Rule 1 forbids
          * dead code; the parity mandate requires the declared contract to survive intact. Parity governs, and
          * Clause B is satisfied on its own terms because the prohibition is on artefacts without an owner or a
-         * tracking reference: this one is tracked in {@code DECISION_LOG.md} and carries a
-         * {@code TRACEABILITY_MATRIX.md} row against the source locator above.
+         * tracking reference: this one is cited to the source locator above and pinned by the assertion
+         * below.
          */
         @Test
         @DisplayName("all six operation codes are retained, including the two no handler implements")
@@ -1060,9 +1192,8 @@ class FileServiceTest {
          * cause is that every {@code OPEN} in the subprogram is an {@code OPEN INPUT}
          * ({@code app/cbl/CBSTM03B.CBL:L136}, {@code L160}, {@code L184}, {@code L209}), so the subprogram is
          * strictly read-only and no write path exists to implement. The two codes are kept declared rather than
-         * deleted for parity with {@code L107-L108}; tracked in {@code DECISION_LOG.md}. Severity of a
-         * regression here would be High, because exposing a write capability this boundary never had would
-         * widen the contract beyond the source.
+         * deleted for parity with {@code L107-L108}. Exposing a write capability this boundary never had would
+         * widen the contract beyond the source, which is what this assertion prevents.
          */
         @Test
         @DisplayName("the write and the rewrite are implemented by no dataset at all")
@@ -1449,7 +1580,7 @@ class FileServiceTest {
             final FakeDataset binding = new FakeDataset(FileService.Dd.CUSTFILE);
             final FileService service = serviceOver(binding);
 
-            service.execute(FileService.FileServiceRequest
+            service.executeInLegacyParityMode(FileService.FileServiceRequest
                     .raw(FileService.Dd.CUSTFILE.ddName(), FileService.Operation.WRITE, "", 0));
 
             assertThat(eventsAt(Level.DEBUG)).hasSize(1);
@@ -1462,7 +1593,7 @@ class FileServiceTest {
         @Test
         @DisplayName("an unknown DD is traced with the pre-set success it silently reports - defect B")
         void anUnknownDdIsTracedWithItsFalseSuccess() {
-            serviceOver().execute(FileService.FileServiceRequest
+            serviceOver().executeInLegacyParityMode(FileService.FileServiceRequest
                     .raw("NOSUCHDD", FileService.Operation.READ, "", 0));
 
             assertThat(eventsAt(Level.DEBUG)).hasSize(1);
@@ -1560,14 +1691,14 @@ class FileServiceTest {
         void bothDefectsHoldOnAPartiallyBoundInstance() {
             final FileService service = serviceOver(new FakeDataset(FileService.Dd.ACCTFILE));
 
-            assertThat(service.execute(FileService.FileServiceRequest
+            assertThat(service.executeInLegacyParityMode(FileService.FileServiceRequest
                     .of(FileService.Dd.ACCTFILE, FileService.Operation.OPEN)).returnCode())
                     .isEqualTo(OK);
-            assertThat(service.execute(FileService.FileServiceRequest
+            assertThat(service.executeInLegacyParityMode(FileService.FileServiceRequest
                     .raw(FileService.Dd.ACCTFILE.ddName(), FileService.Operation.WRITE, "", 0))
                     .returnCode()).as("defect A republishes the open's status").isEqualTo(OK);
 
-            final FileService.FileServiceResult unknown = service.execute(
+            final FileService.FileServiceResult unknown = service.executeInLegacyParityMode(
                     FileService.FileServiceRequest.raw("NOSUCHDD", FileService.Operation.READ, "", 0));
 
             assertThat(unknown.returnCode()).as("defect B").isEqualTo(OK);
@@ -1661,7 +1792,7 @@ class FileServiceTest {
             // terminator stay separate methods because they do different work: the epilogue body moves the
             // file status into the return code and runs whether or not any input or output happened, which is
             // the mechanism of defect A, while the terminator body is a bare EXIT. Collapsing the pair into
-            // one method would erase defect A silently. Tracked in DECISION_LOG.md, severity Medium.
+            // one method would erase defect A silently, which is what this assertion prevents.
             final List<String> epilogues = List.of("trnxfileStatusEpilogue", "xreffileStatusEpilogue",
                     "custfileStatusEpilogue", "acctfileStatusEpilogue");
             final List<String> terminators = List.of("trnxfileTerminator", "xreffileTerminator",
@@ -1937,21 +2068,116 @@ class FileServiceTest {
             Mockito.verify(mapper).requireFileServiceSuccess("35", "TRNXFILE", "OPEN");
         }
 
+        /**
+         * Proves that the dataset verb is issued before the guard that interprets its status, for all four
+         * operations, using one transcript that both collaborators write into.
+         *
+         * <h4>Why a transcript and not two separate orderings</h4>
+         *
+         * <p>The claim is about the boundary <em>between</em> two collaborators: the dataset performs the I/O
+         * and only then is its return code handed to the guard. An {@code InOrder} over the mapper alone
+         * cannot express that. It can only say that one mapper call preceded another mapper call - which is
+         * true of an implementation that consulted the guard first and read afterwards, and true of one that
+         * never read at all. The dataset side of every pair has to be observable in the same sequence as the
+         * guard side, or the assertion is about something other than what it is named for.
+         *
+         * <p>{@link FakeDataset} is a hand-written fake rather than a Mockito mock, deliberately, because the
+         * four operations have stateful behaviour - a sequential read consumes a queued record - that a stub
+         * would have to re-express. It therefore cannot join an {@code InOrder}. The remedy is a shared event
+         * recorder: the fake appends one entry per verb and the mapper is stubbed with an answer that appends
+         * one entry per guard, both into the same list, so the resulting transcript is the interleaving
+         * itself. An implementation that consulted the guard before performing the verb would produce
+         * {@code GUARD:OPEN, DATASET:OPEN} and fail on the first pair.
+         *
+         * <p>All four operations are covered in one method on purpose: the ordering is one contract of the
+         * dispatch, not four independent ones, and asserting the whole transcript at once also proves that
+         * nothing extra is interleaved between a verb and its guard.
+         */
         @Test
-        @DisplayName("the guard runs after the input or output, never before it")
+        @DisplayName("the dataset verb runs before the guard that reads its status, for all four operations")
         void theGuardRunsAfterTheInputOrOutputNeverBeforeIt() {
-            final FakeDataset binding = new FakeDataset(FileService.Dd.XREFFILE);
-            binding.openStatus(OK);
-            binding.closeStatus(OK);
-            final FileService service = new FileService(mapper, List.of(binding));
+            // Two bindings, because the matrix is access-mode specific: XREFFILE is SEQUENTIAL and
+            // implements only the sequential read, CUSTFILE is RANDOM and implements only the keyed read.
+            // Covering both in one transcript is what proves the ordering holds for all four verbs rather
+            // than only for the pair one access mode happens to offer.
+            final List<String> transcript = new ArrayList<>();
+            final FakeDataset sequential = new FakeDataset(FileService.Dd.XREFFILE);
+            sequential.recordInto(transcript);
+            sequential.openStatus(OK);
+            sequential.closeStatus(OK);
+            sequential.queueSequentialRead(
+                    FileService.DatasetRead.of(OK, recordFor(FileService.Dd.XREFFILE, 'X')));
+            final FakeDataset keyed = new FakeDataset(FileService.Dd.CUSTFILE);
+            keyed.recordInto(transcript);
+            keyed.openStatus(OK);
+            keyed.closeStatus(OK);
+            keyed.stubKeyedRead("CCCCCCCCC",
+                    FileService.DatasetRead.of(OK, recordFor(FileService.Dd.CUSTFILE, 'C')));
+            Mockito.doAnswer(invocation -> {
+                transcript.add("GUARD:" + invocation.getArgument(2));
+                return null;
+            }).when(mapper).requireFileServiceSuccess(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.anyString());
+            Mockito.doAnswer(invocation -> {
+                transcript.add("GUARD:" + invocation.getArgument(2));
+                return false;
+            }).when(mapper).requireFileServiceSuccessOrEndOfFile(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.anyString());
 
+            final FileService service = new FileService(mapper, List.of(sequential, keyed));
             service.open(FileService.Dd.XREFFILE);
+            service.readNext(FileService.Dd.XREFFILE);
             service.close(FileService.Dd.XREFFILE);
+            service.open(FileService.Dd.CUSTFILE);
+            service.readByKey(FileService.Dd.CUSTFILE, "CCCCCCCCC", 9);
+            service.close(FileService.Dd.CUSTFILE);
 
+            assertThat(transcript)
+                    .as("each verb is followed by its own guard, and nothing sits between the two")
+                    .containsExactly(
+                            "DATASET:OPEN", "GUARD:OPEN",
+                            // The sequential guard is labelled READ, matching the single sequential cell of
+                            // the matrix; only the keyed guard carries the _K discriminator.
+                            "DATASET:READ_N", "GUARD:READ",
+                            "DATASET:CLOSE", "GUARD:CLOSE",
+                            "DATASET:OPEN", "GUARD:OPEN",
+                            "DATASET:READ_K", "GUARD:READ_K",
+                            "DATASET:CLOSE", "GUARD:CLOSE");
+            // And the mapper really was the thing consulted, with the status the dataset returned.
             final InOrder order = Mockito.inOrder(mapper);
             order.verify(mapper).requireFileServiceSuccess(OK, "XREFFILE", "OPEN");
+            order.verify(mapper).requireFileServiceSuccessOrEndOfFile(OK, "XREFFILE", "READ");
             order.verify(mapper).requireFileServiceSuccess(OK, "XREFFILE", "CLOSE");
+            order.verify(mapper).requireFileServiceSuccess(OK, "CUSTFILE", "OPEN");
+            order.verify(mapper).requireFileServiceSuccessOrEndOfFile(OK, "CUSTFILE", "READ_K");
+            order.verify(mapper).requireFileServiceSuccess(OK, "CUSTFILE", "CLOSE");
             order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("a guard that abends does so with the verb already performed, never instead of it")
+        void aGuardThatAbendsDoesSoWithTheVerbAlreadyPerformed() {
+            // The failing case of the same boundary. When the guard rejects a status, the dataset operation
+            // has already happened - the status could not exist otherwise - so the transcript must still show
+            // the verb before the guard, and the count on the fake must show the verb was issued exactly once.
+            final List<String> transcript = new ArrayList<>();
+            final FakeDataset binding = new FakeDataset(FileService.Dd.ACCTFILE);
+            binding.recordInto(transcript);
+            binding.openStatus("97");
+            Mockito.doAnswer(invocation -> {
+                transcript.add("GUARD:" + invocation.getArgument(2));
+                throw new FatalProcessingException(null, "CBSTM03B", null, "unexpected status");
+            }).when(mapper).requireFileServiceSuccess(Mockito.anyString(), Mockito.anyString(),
+                    Mockito.anyString());
+
+            final FileService service = new FileService(mapper, List.of(binding));
+
+            assertThatExceptionOfType(FatalProcessingException.class)
+                    .isThrownBy(() -> service.open(FileService.Dd.ACCTFILE));
+            assertThat(transcript).containsExactly("DATASET:OPEN", "GUARD:OPEN");
+            assertThat(binding.openCount())
+                    .as("the verb was issued once and the guard rejected its result, not the reverse")
+                    .isOne();
         }
 
         @Test
@@ -1998,11 +2224,14 @@ class FileServiceTest {
         }
 
         @Test
-        @DisplayName("04 is rejected even by the general end-of-file aware guard")
-        void secondaryStatusIsRejectedByTheGeneralEndOfFileGuard() {
-            assertThatExceptionOfType(RuntimeException.class)
-                    .as("'10' is the only non-success the general guard tolerates; '04' is not a second one")
-                    .isThrownBy(() -> mapper.requireSuccessOrEndOfFile(SECONDARY, "ACCTDAT", "READ"));
+        @DisplayName("04 is not a success on the general sequential-read classification either")
+        void secondaryStatusIsNotASuccessOnTheGeneralSequentialRead() {
+            // '10' is the only non-success the sequential-read classification tolerates, and it maps to
+            // APPL_EOF. '04' is not a second one: it classifies as a failure, exactly as every status
+            // outside the general map does.
+            assertThat(mapper.applResultForSequentialRead(SECONDARY))
+                    .as("'04' is reachable only through the two file-service methods")
+                    .isEqualTo(FileStatusMapper.APPL_FAILURE);
         }
 
         @Test
@@ -2118,6 +2347,18 @@ class FileServiceTest {
         private String lastKey;
 
         /**
+         * Optional shared transcript this fake appends one entry to per verb, or {@code null} when the
+         * calling test is not asserting an ordering.
+         *
+         * <p>It exists because the claim "the dataset verb runs before the guard that reads its status" spans
+         * two collaborators, and this fake cannot join a Mockito {@code InOrder}: it is hand written rather
+         * than stubbed, because the four operations have stateful behaviour that a stub would have to
+         * re-express. Writing into a list the mapper's answer also writes into makes the interleaving of the
+         * two sides directly observable. Left {@code null} by default so that no existing test pays for it.
+         */
+        private List<String> transcript;
+
+        /**
          * Creates a binding for one DD.
          *
          * @param dd the DD to answer for, or {@code null} to exercise the constructor guard
@@ -2134,18 +2375,21 @@ class FileServiceTest {
         @Override
         public String openInput() {
             openCount++;
+            record("OPEN");
             return openStatus;
         }
 
         @Override
         public String close() {
             closeCount++;
+            record("CLOSE");
             return closeStatus;
         }
 
         @Override
         public FileService.DatasetRead readNext() {
             readNextCount++;
+            record("READ_N");
             if (nullRead) {
                 return null;
             }
@@ -2158,10 +2402,35 @@ class FileServiceTest {
         public FileService.DatasetRead readByKey(final String recordKey) {
             readByKeyCount++;
             lastKey = recordKey;
+            record("READ_K");
             if (nullRead) {
                 return null;
             }
             return keyedReads.getOrDefault(recordKey, keyedDefault);
+        }
+
+        /**
+         * Directs this fake to append one entry per verb into a shared transcript.
+         *
+         * @param sink the list both this fake and the stubbed status mapper append into; must not be
+         *             {@code null}
+         */
+        void recordInto(final List<String> sink) {
+            this.transcript = java.util.Objects.requireNonNull(sink, "sink");
+        }
+
+        /**
+         * Appends one verb entry to the transcript, if one was supplied.
+         *
+         * <p>The prefix is what makes a transcript entry attributable to the dataset rather than to the guard,
+         * so the two sides of the boundary can never be confused for one another.
+         *
+         * @param operation the operation just performed
+         */
+        private void record(final String operation) {
+            if (transcript != null) {
+                transcript.add("DATASET:" + operation);
+            }
         }
 
         /**

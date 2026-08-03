@@ -68,7 +68,7 @@ import com.cardemo.model.enums.UserType;
  *       or the legacy "coming soon" notice, and rejects an unusable or forbidden option. It is the
  *       counterpart of the re-entry branch at {@code app/cbl/COMEN01C.cbl:92-95}, which receives the map
  *       and performs {@code PROCESS-ENTER-KEY} when the operator pressed Enter.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The ten options come from {@code app/cpy/COMEN02Y.cpy} and are held once, in
  * {@code MenuResponse.MAIN_MENU_OPTIONS}, so that exactly one transcription of that table exists in the
@@ -211,9 +211,9 @@ import com.cardemo.model.enums.UserType;
  *
  * <h2>6. Deviations from the source, with severities</h2>
  *
- * <p>Recorded here and in {@code DECISION_LOG.md} under the entries named below. Nothing in this list is
- * a silent improvement; every item is either forced by the target language or required by Rule 1, and
- * every one is observationally inert against the frozen table unless stated otherwise.</p>
+ * <p>Owed an entry in the planned {@code DECISION_LOG.md} under the entries named below. Nothing in this list is a
+ * silent improvement; every item is either forced by the target language or required by Rule 1, and every one is
+ * observationally inert against the frozen table unless stated otherwise.</p>
  *
  * <ul>
  *   <li><strong>Blocker class if mis-implemented - the transfer never returns.</strong>
@@ -281,7 +281,7 @@ import com.cardemo.model.enums.UserType;
  *       {@code app/cbl/COMEN01C.cbl:205-206} into {@code WS-RESP-CD} and {@code WS-REAS-CD} declared at
  *       {@code :43-44}, and nothing anywhere in the program ever tests them. That absent guard is
  *       preserved rather than improved. Decision log entry: <em>unguarded RECEIVE</em>.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. What this bean deliberately does not do</h2>
  *
@@ -313,7 +313,7 @@ import com.cardemo.model.enums.UserType;
  *   <li>It logs no credential, token, personally identifiable value or card number. It never receives
  *       one: its whole input is a two-character option string and a resolved
  *       {@code UserType}.</li>
- * </ul>
+ *   </ul>
  *
  * @see #getMainMenu(UserType)
  * @see #selectOption(String, UserType)
@@ -794,7 +794,7 @@ public class MainMenuService {
 
         // :136-143 retained verbatim although the frozen table can never satisfy the second conjunct:
         // all ten entries carry 'U'. Kept because it is real, reachable code and because a table value
-        // of 'A' must behave exactly as the source made it behave. Tracked in DECISION_LOG.md under
+        // of 'A' must behave exactly as the source made it behave. Owed an entry in the planned DECISION_LOG.md under
         // "retained user-type gate"; covered through the package-private test seam, never by a coverage
         // exclusion. The comparison is exact - CDEMO-USRTYP-USER is the byte 'U' and the gate byte is
         // compared with 'A' - so no case folding is performed on either side.
@@ -808,9 +808,9 @@ public class MainMenuService {
         final boolean placeholder = targetProgram.startsWith(PLACEHOLDER_PROGRAM_PREFIX);
 
         if (!placeholder) {
-            // :152-155 EXEC CICS XCTL transfers control and never returns, so :157-164 is unreachable on
-            // this path. Returning here is what reproduces that. Removing this return would answer
-            // "coming soon" for every valid selection. DECISION_LOG.md: "XCTL fall-through guard".
+            // :152-155 EXEC CICS XCTL transfers control and never returns, so :157-164 is unreachable on this path.
+            // Returning here is what reproduces that. Removing this return would answer "coming soon" for every valid
+            // selection. the planned DECISION_LOG.md entry \"XCTL fall-through guard".
             LOG.debug("Main menu option {} of {} resolved to target program {}",
                     selectedOptionNumber, menuOptionCount, targetProgram);
             return new MenuSelection(selectedOption.optionNumber(), selectedOption.optionName(),
@@ -1185,10 +1185,10 @@ public class MainMenuService {
                         "message must not be null; supply the empty string when there is no notice");
             }
 
-            // The XCTL fall-through invariant. A real target carries no notice, because under CICS the
-            // notice at app/cbl/COMEN01C.cbl:157-164 was unreachable once XCTL had transferred control;
-            // a placeholder target always carries one, because :159-163 always assembles a non-empty
-            // string. DECISION_LOG.md: "XCTL fall-through guard".
+            // The XCTL fall-through invariant. A real target carries no notice, because under CICS the notice at
+            // app/cbl/COMEN01C.cbl:157-164 was unreachable once XCTL had transferred control; a placeholder target
+            // always carries one, because :159-163 always assembles a non-empty string. the planned DECISION_LOG.md
+            // entry \"XCTL fall-through guard".
             if (placeholder == message.isEmpty()) {
                 throw new IllegalArgumentException("message must be empty for a real target and non-empty "
                         + "for a placeholder target, but placeholder was " + placeholder

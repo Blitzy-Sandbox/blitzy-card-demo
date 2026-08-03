@@ -65,7 +65,7 @@ import jakarta.persistence.Embeddable;
  *       {@code tran_type_cd}.</li>
  *   <li>{@code TRAN-CAT-CD}, {@code PIC 9(04)}, 4 bytes, exposed by {@link #getTranCatCd()}, column
  *       {@code tran_cat_cd}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>The key length is 6, corroborated four independent ways.</strong>
  * <ul>
@@ -80,7 +80,7 @@ import jakarta.persistence.Embeddable;
  *   <li>Seed fixture: {@code app/data/ASCII/trancatg.txt} line 1 reads
  *       {@code 010001Regular Sales Draft}, a 2 and 4 split of {@code 01} and {@code 0001}, and line 2
  *       reads {@code 010002Regular Cash Advance}; all 18 rows are exactly 60 bytes wide.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Declaration order is load bearing, not cosmetic.</strong> VSAM browses proceed in key order
  * and the composite key's byte layout is that order, so {@code tranTypeCd} precedes {@code tranCatCd}
@@ -111,7 +111,7 @@ import jakarta.persistence.Embeddable;
  *   <li>{@code app/cpy/CVTRA01Y.cpy}, {@code TransactionCategoryBalanceId}: 17 bytes, 3 fields,
  *       {@code TRANCAT-} field name prefix, record {@code TRAN-CAT-BAL-RECORD} at {@code RECLN = 50},
  *       cluster {@code TCATBALF} with {@code KEYLEN 17} at {@code app/catlg/LISTCAT.txt:L1371}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The resemblance between the two, that both end in a type code followed by a category code, is
  * superficial, and the shared group name is a naming coincidence in the legacy corpus rather than
@@ -145,15 +145,13 @@ import jakarta.persistence.Embeddable;
  * three separate tables, it is not evidence of a shared type, and each key class declares its own columns
  * independently.
  *
- * <p><strong>Not available, and what is needed to close it.</strong>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} and
- * {@code com.cardemo.model.entity.TransactionCategory} were not available when this class was authored:
- * the {@code src} tree did not yet exist, so neither the authored SQL types nor the owning entity could be
- * read. Closing this gap requires both artefacts. Until they exist the contract above is normative,
- * derived solely from {@code app/cpy/CVTRA04Y.cpy} and {@code app/catlg/LISTCAT.txt:L1475}, and no SQL
- * type has been invented beyond it.
- *
- * <p><strong>Gap now closed, with one consequence.</strong> Both artefacts exist. The migration was
+ * <p><strong>Reconciled against the migration and the owning entity.</strong> An earlier revision of this
+ * section recorded {@code src/main/resources/db/migration/V1__create_schema.sql} and
+ * {@code com.cardemo.model.entity.TransactionCategory} as unavailable, on the ground that the {@code src}
+ * tree did not yet exist when this class was authored; that is no longer true and the claim is withdrawn.
+ * Both artefacts exist, and the contract above is derived from {@code app/cpy/CVTRA04Y.cpy} and
+ * {@code app/catlg/LISTCAT.txt:L1475} and then confirmed against the authored SQL rather than asserted in
+ * its absence - with one consequence. The migration was
  * reconciled against this contract and converged on it for every column except one: {@code tran_cat_cd},
  * which had to become {@code NUMERIC(4)} rather than {@code INTEGER} because a referencing foreign key
  * made {@code INTEGER} impossible in PostgreSQL. That single divergence was resolved here, in the key
@@ -239,7 +237,7 @@ import jakarta.persistence.Embeddable;
  *   <li>A repository lookup that unexpectedly finds nothing is usually a key built with the two
  *       components transposed, or a type code that was trimmed instead of being kept at its fixed width
  *       of 2 characters.</li>
- * </ul>
+ *   </ul>
  *
  * <p>In the legacy corpus this record layout is consumed by {@code app/cbl/CBTRN03C.cbl:L108}, which
  * issues {@code COPY CVTRA04Y.} to resolve a transaction category description while producing the

@@ -133,7 +133,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Header rendering</strong> - {@code app/cbl/COUSR02C.cbl:L296-L315} moves
  *       {@code WS-CURDATE-MM-DD-YY} and {@code WS-CURTIME-HH-MM-SS}, both eight characters wide in
  *       {@code app/cpy/CSDAT01Y.cpy}, into the two header fields.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -180,7 +180,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       factory method, so no test can observe a value another test wrote.</li>
  *   <li><strong>No environment coupling.</strong> No host, port, JDBC URL or cloud endpoint appears
  *       anywhere in this file, and nothing here opens a socket, starts a container or reads a file.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The two decisions this class records</h2>
  *
@@ -205,7 +205,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * renders a value, so neither can disclose one. The properties that do matter - that
  * {@link UserUpdateRequest#toString()} omits the credential, that no outbound JSON carries it, that no
  * digest field exists and that no {@code String} the type produces contains it - are each asserted
- * separately below. See the findings register for the severity and the remediation.</p>
+ * separately below.</p>
  *
  * <h2>Common failure modes</h2>
  *
@@ -213,8 +213,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A raw type or a deprecation fails the build, not the test.</strong> Under
  *       {@code -Werror} with {@code failOnWarning} the compiler is the first gate, so a warning here is a
  *       build failure with no test report at all. An <em>unused</em> import behaves differently:
- *       {@code javac} 25.0.3 publishes no lint key for one, so it compiles cleanly and is caught at review
- *       instead.</li>
+ *       {@code javac} at release 25 publishes no lint key for one, so it compiles cleanly and must be
+ *       spotted by hand.</li>
  *   <li><strong>Reading a constraint from the wrong reflective element returns null.</strong> On a record,
  *       {@code @Size} and {@code @JsonProperty} are propagated to the private final field, the accessor and
  *       the constructor parameter, but <em>not</em> retained on the {@link RecordComponent}, because neither
@@ -238,65 +238,60 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Collapsing absent, blank and low-values.</strong> This screen's empty predicate unifies
  *       spaces and low-values, but the framework tri-state keeps blank distinct from invalid, and the
  *       carrier keeps absent distinct from blank.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings register</h2>
+ * <h2>Constraints that must continue to hold</h2>
  *
- * <p>Classified by severity, with the remediation applied or recommended:</p>
  * <ul>
- *   <li><strong>Blocker</strong> - {@code app/cbl/COUSR02C.cbl:L169} moves {@code SEC-USR-PWD} straight
+ *   <li><strong>The credential is inbound only.</strong> {@code app/cbl/COUSR02C.cbl:L169} moves
+ *       {@code SEC-USR-PWD} straight
  *       into {@code PASSWDI}, so the legacy read-modify-write flow rendered the stored plaintext credential
- *       on the terminal. Remediation applied upstream and asserted here: the credential is bound inbound
+ *       on the terminal. Here it is bound inbound
  *       only, is absent from every outbound rendering, and no response type carries it.</li>
- *   <li><strong>Blocker</strong> - deciding "did the credential change" by string equality against the
- *       stored value. Remediation applied: the carrier performs no comparison and structurally cannot hold a
+ *   <li><strong>"Did the credential change" is never decided by string equality against the stored
+ *       value.</strong> The carrier performs no comparison and structurally cannot hold a
  *       digest, since its width constraint is eight characters and a digest is sixty. The decision belongs
  *       to a digest <em>verification</em> call in the service tier. Asserted by
  *       {@link #aDigestWidthValueCannotEvenBeCarriedSoEqualityCannotDecideTheChange()}.</li>
- *   <li><strong>High</strong> - the two user maps diverge in both the identifier field name and the field
- *       order, so a shared base type, interface or mixin across the user payloads would be factually wrong.
- *       Remediation applied: no abstraction exists, and its absence is asserted.</li>
- *   <li><strong>High</strong> - the update cascade's order differs from the add cascade's. Remediation
- *       applied: the update order is asserted explicitly and its inequality with the add order is asserted
- *       as well.</li>
- *   <li><strong>Medium, closed</strong> - prior-generation plan prose reported 460 input fields across
- *       the seventeen symbolic maps while its own per-map table summed lower; the specification now
- *       publishes 441. The discrepancy is confined to a
- *       longhand picture clause on an unrelated map; this map contributes twelve fields under every reading,
- *       so nothing here is affected. Remediation is documentation only.</li>
- *   <li><strong>Low</strong> - the specification cites the gated cross-field edit in
- *       {@code app/cbl/COACTUPC.cbl} at lines 1667 to 1672 and 1674 to 1678. Direct inspection places the
- *       gate at lines 1665 to 1669 and the follow-on at 1671 to 1675. Remediation applied: the verified
- *       locators are cited above, and the divergence is recorded here rather than propagated.</li>
- *   <li><strong>Low</strong> - the specification asks that the credential be excluded from {@code equals}
- *       and {@code hashCode}. The type under test includes it, which its own documentation justifies as
- *       correct value semantics. No disclosure follows, because neither operation renders a value, so the
- *       Blocker criterion is not met. Remediation, if exclusion is ever required: hand-write both members on
- *       {@link UserUpdateRequest} omitting the credential component. Recorded, not silently absorbed.</li>
- *   <li><strong>Low</strong> - the two {@code WHEN OTHER} branches of this program, at
- *       {@code app/cbl/COUSR02C.cbl:L347} and {@code :L384}, each carry a live {@code DISPLAY}, whereas the
- *       add program's equivalent is commented out. A preserved legacy inconsistency; documented, and nothing
- *       is acted on beyond documenting it.</li>
- * </ul>
+ *   <li><strong>No abstraction is shared across the user payloads.</strong> The two user maps diverge in
+ *       both the identifier field name and the field
+ *       order, so a shared base type, interface or mixin across them would be factually wrong. No such
+ *       abstraction exists, and its absence is asserted.</li>
+ *   <li><strong>The update cascade's order differs from the add cascade's</strong>, so the update order is
+ *       asserted explicitly and its inequality with the add order is asserted as well.</li>
+ *   <li><strong>This map contributes twelve fields.</strong> A direct count across all seventeen symbolic
+ *       maps totals 441 rather than the 460 that older prose quotes; the difference is confined to a
+ *       longhand picture clause on an unrelated map, and this map contributes twelve under every reading.</li>
+ *   <li><strong>The gated cross-field edit in {@code app/cbl/COACTUPC.cbl} is at lines 1665 to 1669, with
+ *       the follow-on at 1671 to 1675.</strong> Those are the verified locators cited above; a citation three
+ *       lines later points at the wrong statements.</li>
+ *   <li><strong>The credential participates in {@code equals} and {@code hashCode}</strong>, which is
+ *       correct value semantics for this carrier and discloses nothing, because neither operation renders a
+ *       value. Should exclusion ever be wanted, hand-write both members on
+ *       {@link UserUpdateRequest} omitting the credential component.</li>
+ *   <li><strong>Both {@code WHEN OTHER} branches of this program carry a live {@code DISPLAY}</strong>, at
+ *       {@code app/cbl/COUSR02C.cbl:L347} and {@code :L384}, whereas the
+ *       add program's equivalent is commented out. It is a preserved legacy inconsistency and is not
+ *       harmonised.</li>
+ *   </ul>
  *
- * <h2>Not available</h2>
+ * <h2>Boundaries of this class</h2>
  *
  * <ul>
- *   <li><strong>A {@code usrsec.txt} fixture.</strong> There is none. The ten seeded rows exist only as
+ *   <li><strong>No {@code usrsec.txt} fixture is loaded, because there is none.</strong> The ten seeded rows
+ *       exist only as
  *       inline {@code SYSUT1 DD *} card images inside {@code app/jcl/DUSRSECJ.jcl:L35-L44}, fed through
- *       {@code IEBGENER}. No fixture loader is used by this class, and none is needed. What would be needed
- *       to change this: a fixture extracted from that job stream, which is out of scope because the corpus
- *       is frozen.</li>
- *   <li><strong>An optimistic-lock column on the user record.</strong> Not available. Version columns are
+ *       {@code IEBGENER}. No fixture loader is used by this class, and none is needed; extracting one from
+ *       that job stream is out of scope because the corpus is frozen.</li>
+ *   <li><strong>The user record carries no optimistic-lock column.</strong> Version columns are
  *       carried by the account, card, customer and transaction entities only, so nothing is asserted about
- *       one here. What would be needed: a version column on the user entity, which the plan does not
- *       specify.</li>
- *   <li><strong>Planned children of the first schema migration.</strong> Not available; the migration has
- *       none, so no schema-level assertion is made and none is invented.</li>
- *   <li><strong>A credential policy.</strong> Not available. {@code app/cbl/COUSR02C.cbl} imposes no
+ *       one here.</li>
+ *   <li><strong>No schema-level assertion is made.</strong> DDL is a database-tier concern and outside this
+ *       pure-JVM tier.</li>
+ *   <li><strong>The corpus states no credential policy.</strong> {@code app/cbl/COUSR02C.cbl} imposes no
  *       minimum length, no character-class rule and no complexity rule, so none is asserted and none is
- *       added. What would be needed: a policy stated in the corpus, which does not exist.</li>
- * </ul>
+ *       added.</li>
+ *   </ul>
  *
  * <h2>Security note on this file specifically</h2>
  *

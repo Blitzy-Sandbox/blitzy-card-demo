@@ -83,7 +83,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=CustomerTest
+ * ./mvnw -B -ntp -o test -Dtest=CustomerTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -102,7 +102,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  *   <li><strong>The case-folding assertions fail.</strong> The comparison asymmetry was normalised. The
  *       source upper-cases the name and address fields and lower-cases the account group id, and applies no
  *       case function at all to the remainder - see the assertions below for the exact split.</li>
- * </ul>
+ *   </ul>
  */
 class CustomerTest {
 

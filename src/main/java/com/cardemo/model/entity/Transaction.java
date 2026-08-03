@@ -50,8 +50,10 @@ import jakarta.persistence.Version;
  * record by byte position rather than by field name. Where a sort deck and the copybook disagree, the copybook
  * governs.
  *
- * <p>Both 26-character timestamps are text, never a temporal type: the generated form carries millisecond
- * precision followed by four zero digits, and the report filter compares the first ten characters lexically.
+ * <p>Both 26-character timestamps are text, never a temporal type: the generated form carries
+ * <strong>centisecond</strong> precision followed by four literal zero digits - two fraction digits, not
+ * three and not nine, per {@code DB2-MIL PIC 9(002)} and {@code DB2-REST PIC X(04)} at
+ * {@code app/cbl/CBTRN02C.cbl:L159-L174} - and the report filter compares the first ten characters lexically.
  * The non-unique {@code TRANSACT.VSAM.AIX} alternate index at offset 304 is not mapped here at all — it
  * becomes a range query on {@code com.cardemo.repository.TransactionRepository}.
  *
@@ -116,7 +118,7 @@ import jakarta.persistence.Version;
  *   <li><strong>The fixture data.</strong> Every one of the 300 rows of
  *       {@code app/data/ASCII/dailytran.txt} is exactly 350 bytes (105,300 bytes total, 300 records of
  *       350 data bytes plus a newline), and every field parses cleanly at the offsets above.</li>
- * </ol>
+ *   </ol>
  *
  * <h3>Medium: the two DFSORT declarations disagree about the card number, and the copybook wins</h3>
  * {@code app/proc/TRANREPT.prc:L39} types bytes 263-278 as {@code ZD} (zoned decimal) while
@@ -141,8 +143,9 @@ import jakarta.persistence.Version;
  *
  * <p><strong>The alternate index is not an entity and is not mapped here.</strong> It becomes exactly
  * two things: a processing-timestamp finder on the transaction repository, and a <em>non-unique</em>
- * B-tree index on {@code tran_proc_ts} to be created by {@code V2__create_indexes.sql} (planned; absent at this
- * commit). The non-uniqueness is
+ * B-tree index on {@code tran_proc_ts}, created by {@code V2__create_indexes.sql} as
+ * {@code idx_transaction_proc_ts}; indexes are owned by that migration rather than by {@code V1}, which
+ * declares none. The non-uniqueness is
  * not a judgement call - {@code app/catlg/LISTCAT.txt:L3678} declares the alternate index
  * {@code NONUNIQKEY} in so many words, and the fixture bears that out, since all 300 staging rows share
  * a single processing-timestamp value. A unique index would reject legitimate legacy data.
@@ -176,7 +179,7 @@ import jakarta.persistence.Version;
  *   <li><strong>Pure text pass-through.</strong> {@code app/cbl/CBTRN02C.cbl:L436} moves
  *       {@code DALYTRAN-ORIG-TS} straight into {@code TRAN-ORIG-TS}, copying whatever text arrived
  *       without examining it.</li>
- * </ol>
+ *   </ol>
  *
  * <p>A census of {@code app/data/ASCII/dailytran.txt} makes the consequence concrete. All 300 rows
  * carry the text {@code 2022-06-10 19:27:53.000000} in bytes 279-304 - the space-separated form of
@@ -313,7 +316,7 @@ import jakarta.persistence.Version;
  *       property, its COBOL field and that field's picture clause; importing the project exception
  *       hierarchy from a model class is deliberately avoided so that the model layer depends on
  *       nothing.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Blocker: fixed-width CHAR columns need an explicit JDBC type code</h2>
  * <strong>Severity Blocker.</strong> The field table mandates {@code CHAR(n)} columns and every profile
@@ -363,11 +366,17 @@ import jakarta.persistence.Version;
  * {@code spring.jpa.hibernate.ddl-auto: validate} is set in every profile, any residual mismatch of
  * column name, SQL type, precision, scale or nullability would fail application-context startup outright
  * rather than degrading quietly. <strong>The field table above remains the normative column contract, so
- * any future divergence is resolved by changing {@code V1}, not this table.</strong> What is still absent
- * is {@code V2__create_indexes.sql}: {@code V1} declares no {@code CREATE INDEX}, so the B-tree index on
- * {@code tran_proc_ts} that replaces {@code TRANSACT.VSAM.AIX} is <strong>planned</strong>, not present.
+ * any future divergence is resolved by changing {@code V1}, not this table.</strong>
  *
- * <p>What is needed from {@code V1__create_schema.sql} is precisely this table:
+ * <p>The index is present too, in the migration that owns indexes rather than in {@code V1}:
+ * {@code V2__create_indexes.sql} declares {@code CREATE INDEX idx_transaction_proc_ts ON "transaction" USING
+ * btree (tran_proc_ts)}, which is the B-tree replacement for {@code TRANSACT.VSAM.AIX}. It is deliberately
+ * <strong>non-unique</strong>, because the alternate index it replaces carries {@code NONUNIQUEKEY}, and the
+ * table name is quoted because {@code transaction} is a reserved word in the SQL standard. An earlier revision
+ * of this paragraph called that index planned rather than present; that is no longer true and the claim is
+ * withdrawn.
+ *
+ * <p>{@code V1__create_schema.sql} declares precisely this table:
  *
  * <pre>
  *   transaction (
@@ -442,7 +451,7 @@ import jakarta.persistence.Version;
  *       widened.</li>
  *   <li><em>Rows are rejected as having an invalid source</em> - the source column has been narrowed to
  *       an enum. It is a ten-character string, and {@code OPERATOR} arrives by pass-through.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
  * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing

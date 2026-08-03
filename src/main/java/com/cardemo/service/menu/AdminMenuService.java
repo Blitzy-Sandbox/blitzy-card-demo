@@ -43,6 +43,80 @@ import com.cardemo.model.dto.MenuResponse;
  * The administrator menu of the CardDemo application: the Java counterpart of CICS transaction {@code CA00},
  * which {@code app/csd/CARDDEMO.CSD:L327-L328} binds to program {@code COADM01C}.
  *
+ * <h2>Usage</h2>
+ *
+ * <p>Two operations, and no state between them - this bean is stateless and immutable once constructed, so a
+ * single instance serves every request:
+ *
+ * <ul>
+ *   <li>{@link #getMenuScreen()} renders the menu: the six recurring header fields plus the four populated
+ *       option lines, each formatted as a two-digit number, {@code ". "} and the option text within a
+ *       {@value #OPTION_SLOT_LENGTH}-character slot. Call it to display the menu; it never throws for input
+ *       reasons because it takes none.</li>
+ *   <li>{@link #selectOption(String)} normalises and validates a raw selection, then returns the target for
+ *       that option. The argument is the raw screen field, not a parsed integer, because the normalisation
+ *       itself is part of the reproduced behaviour: the value is right-justified into a
+ *       {@value #OPTION_FIELD_LENGTH}-character field exactly as the COBOL {@code MOVE} would, so
+ *       {@code "1"}, {@code " 1"} and {@code "01"} are all the same selection.</li>
+ *   </ul>
+ *
+ * <p>Callers are expected to be the HTTP layer. This bean performs no I/O, touches no repository, reads no
+ * database and holds no collaborator other than a {@link java.time.Clock}, so it can be constructed directly
+ * in a test without a Spring context.
+ *
+ * <h2>Configuration and defaults</h2>
+ *
+ * <p><strong>This service binds no configuration property of its own.</strong> That is a deliberate statement
+ * rather than an omission: there is no {@code @Value}, no {@code @ConfigurationProperties} and no tunable
+ * here, because every value it needs is fixed by the frozen corpus rather than by deployment.
+ *
+ * <ul>
+ *   <li>The option table is <strong>four</strong> entries, fixed by
+ *       {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4} at {@code app/cpy/COADM02Y.cpy:L20}. The
+ *       {@code OCCURS 9} capacity declared later in that copybook is <strong>not</strong> a valid bound,
+ *       because its spare subscripts are unpopulated - a table sized to 9 would serve five blank options.</li>
+ *   <li>Field widths are fixed: the option input field is {@value #OPTION_FIELD_LENGTH} characters and each
+ *       rendered option slot is {@value #OPTION_SLOT_LENGTH}. These come from the copybook and the symbolic
+ *       map, so widening one to accept a client's payload would break the field contract silently.</li>
+ *   <li>Message text is fixed and is a parity contract compared byte-for-byte, not prose to improve:
+ *       {@link #INVALID_OPTION_MESSAGE} and {@link #COMING_SOON_MESSAGE}.</li>
+ *   <li>A {@link java.time.Clock} bean must be present in the context; the header date and time are read from
+ *       it rather than from the ambient clock so that rendering is reproducible under test.</li>
+ *   </ul>
+ *
+ * <h2>Failure modes and troubleshooting</h2>
+ *
+ * <dl>
+ *   <dt>{@link com.cardemo.exception.ValidationException} carrying {@link #INVALID_OPTION_MESSAGE}</dt>
+ *   <dd>The normalised selection was blank, non-numeric, zero, negative, longer than the declared field width,
+ *       or greater than the four populated options. All of those collapse to <em>one</em> message in the
+ *       source, so they collapse to one here too; do not split them into distinct messages to be more
+ *       helpful, because the text is compared against the legacy baseline.</dd>
+ *
+ *   <dt>A selection returns {@link #COMING_SOON_MESSAGE} instead of navigating</dt>
+ *   <dd>Expected, and not a defect. The option's target program name begins with
+ *       {@code PLACEHOLDER_PROGRAM_PREFIX}, which is the source's own placeholder-program guard. The legacy
+ *       menu shipped options pointing at programs that were never written, and it answered exactly this way.
+ *       Do not remove the guard or repoint the option.</dd>
+ *
+ *   <dt>{@link IllegalArgumentException} from the package-private constructor</dt>
+ *   <dd>Only reachable from the test seam. The clock or the option table was {@code null}, the table was
+ *       empty, it contained a {@code null} element, or it exceeded the four populated options. Production
+ *       construction goes through the public constructor and cannot hit these.</dd>
+ *
+ *   <dt>The menu renders but the header date or time is wrong, or a test fails only on some machines</dt>
+ *   <dd>The ambient clock or the host default time zone was read somewhere instead of the injected
+ *       {@link java.time.Clock}. Inject a fixed clock in tests.</dd>
+ *
+ *   <dt>An option number renders unpadded, or a slot is the wrong width</dt>
+ *   <dd>The right-justification or the slot padding was bypassed. Both reproduce a COBOL {@code MOVE} into a
+ *       fixed-width field and are what make the rendered output byte-comparable to the legacy screen.</dd>
+ *
+ *   <dt>An administrator reaches this menu but the operations it lists return 404</dt>
+ *   <dd>Not a fault in this class. The user-administration controller is planned rather than authored; see the
+ *       present-versus-target notes in {@code com.cardemo.controller}.</dd>
+ *   </dl>
+ *
  * @see #getMenuScreen()
  * @see #selectOption(String)
  */
@@ -106,8 +180,13 @@ public class AdminMenuService {
      * The width of the rendered option line, from {@code WS-ADMIN-OPT-TXT PIC X(40)} at
      * {@code app/cbl/COADM01C.cbl:L48}, matching the twelve {@code OPTN001I} through {@code OPTN012I} screen
      * slots of {@code app/cpy-bms/COADM01.CPY:L60-L126} which are each {@code PIC X(40)}.
+     *
+     * <p>Read from {@link MenuResponse#SCREEN_OPTION_SLOT_LENGTH} rather than declared again here. The main
+     * menu's {@code WS-MENU-OPT-TXT} at {@code app/cbl/COMEN01C.cbl:L48} is the same {@code PIC X(40)} and
+     * both programs assemble it with a byte-identical {@code STRING} statement, so one declaration serves
+     * both renderers - and a second declaration is exactly how the two came to disagree.
      */
-    private static final int OPTION_SLOT_LENGTH = 40;
+    private static final int OPTION_SLOT_LENGTH = MenuResponse.SCREEN_OPTION_SLOT_LENGTH;
 
     /**
      * The separator the source concatenates between the option number and the caption, from
@@ -379,7 +458,7 @@ public class AdminMenuService {
             // ---- THE XCTL FALL-THROUGH GUARD. Under CICS, XCTL never returns, so :L147-L154 is
             // unreachable from here. In Java the call would return, so returning now is what preserves
             // the source's behaviour; falling through would announce "coming soon" for every valid
-            // selection. Recorded in DECISION_LOG.md as a mechanism substitution.
+            // selection. Owed an entry in the planned DECISION_LOG.md as a mechanism substitution.
             return new AdminMenuSelection(optionNumber, selectedOption.optionName(), targetProgram,
                     NO_MESSAGE, false);
         }
@@ -391,9 +470,9 @@ public class AdminMenuService {
         //
         // INTENTIONAL RETENTION: none of the four shipped program names begins with 'DUMMY', so this
         // branch is unreachable in production. It is retained verbatim for behavioural parity rather than
-        // deleted, and it is tracked - not an untracked leftover - by a DECISION_LOG.md entry and by the
-        // package-private test seam on this class, which is how it is covered without weakening the
-        // coverage gate.
+        // deleted, and it is tracked - not an untracked leftover - by an entry in the planned DECISION_LOG.md and by
+        // the package-private test seam on this class, which is how it is covered without weakening the coverage
+        // gate.
         LOG.debug("Admin menu option {} of transaction {} targets placeholder program prefix {};"
                 + " returning the coming-soon notice", optionNumber, TRANSACTION_ID,
                 PLACEHOLDER_PROGRAM_PREFIX);
@@ -403,11 +482,11 @@ public class AdminMenuService {
     }
 
     /**
-     * The default at {@code :L162-L164} is retained one for one. {@code LOW-VALUES} is a field of binary zeros
-     * and {@code SPACES} a field of blanks - the two ways a fixed-width field expresses "unset" - so the Java
-     * test covers {@code null}, empty and all-blank, which are their counterparts. The transfer at
-     * {@code :L165-L167} has no counterpart: the resolved name is returned and the client navigates. Retained
-     * rather than consolidated into its callers, with a DECISION_LOG.md reference.
+     * The default at {@code :L162-L164} is retained one for one. {@code LOW-VALUES} is a field of binary zeros and
+     * {@code SPACES} a field of blanks - the two ways a fixed-width field expresses "unset" - so the Java test covers
+     * {@code null}, empty and all-blank, which are their counterparts. The transfer at {@code :L165-L167} has no
+     * counterpart: the resolved name is returned and the client navigates. Retained rather than consolidated into its
+     * callers, with a reference owed to the planned DECISION_LOG.md.
      *
      * @param requestedProgram the requested target, standing in for {@code CDEMO-TO-PROGRAM}.
      * @return the requested program when it carries a value, otherwise {@link #SIGN_ON_PROGRAM}
@@ -429,8 +508,8 @@ public class AdminMenuService {
      * {@code :L177} becomes {@link AdminMenuView#message()}. The BMS {@code SEND} at {@code :L179-L184} has no
      * counterpart: the map and mapset names address a 3270 screen that is not reimplemented, and the controller
      * serialises the returned view instead. {@code ERASE} clears the physical screen before painting, which a
-     * stateless response does implicitly by carrying the whole payload. Retained one for one with a
-     * DECISION_LOG.md reference.
+     * stateless response does implicitly by carrying the whole payload. Retained one for one with a reference owed to
+     * the planned DECISION_LOG.md.
      *
      * @param message the message to carry, either empty or one of the two source literals
      * @return the assembled view, never {@code null}
@@ -522,6 +601,16 @@ public class AdminMenuService {
      * {@code WS-ADMIN-OPT-TXT PIC X(40)}, which is why option one reads {@code 01. User List (Security)} and
      * option four {@code 04. User Delete (Security)} - note {@code 01.} and not {@code 1.}
      *
+     * <p><strong>Each rendered line is exactly forty bytes, not a stripped one.</strong> This renderer
+     * previously applied {@code stripTrailing()} while {@code com.cardemo.service.menu.MainMenuService}
+     * padded to the slot width, so the two produced different geometry from source statements that are
+     * byte-identical: {@code app/cbl/COADM01C.cbl:L231-L236} and {@code app/cbl/COMEN01C.cbl:L241-L246} differ
+     * only in their data names, both receiving fields are {@code PIC X(40)}, and both destination screen
+     * slots are {@code PIC X(40)}. Thirty-nine bytes are written and the fortieth is the space the
+     * {@code MOVE SPACES} at {@code :L231} left, so the line is forty bytes wide with a single trailing
+     * space - stripping it discarded a byte the screen carried. Both renderers now apply the one policy, and
+     * {@code com.cardemo.unit.service.MenuFixedWidthPolicyTest} asserts the widths on both.
+     *
      * @return the rendered option lines in menu order, one per populated option, as an unmodifiable list
      */
     private List<String> buildMenuOptions() {
@@ -543,13 +632,28 @@ public class AdminMenuService {
             // :L234 '. ' DELIMITED BY SIZE.
             optionLine.append(OPTION_NUMBER_SEPARATOR);
 
-            // :L235 CDEMO-ADMIN-OPT-NAME(WS-IDX) DELIMITED BY SIZE: the full declared width, padding
-            // included, which is what DELIMITED BY SIZE means.
+            // :L235 CDEMO-ADMIN-OPT-NAME(WS-IDX) DELIMITED BY SIZE: the caption contributes its full
+            // declared PIC X(35) width from app/cpy/COADM02Y.cpy:L47, blank padding included, which is what
+            // DELIMITED BY SIZE means.
             optionLine.append(option.optionName());
 
-            // :L236 INTO WS-ADMIN-OPT-TXT. Trailing padding stripped for the reason given above;
-            // stripTrailing removes only trailing white space and is locale-independent.
-            optionLabels.add(optionLine.toString().stripTrailing());
+            // :L236 INTO WS-ADMIN-OPT-TXT PIC X(40). The MOVE SPACES at :L231 leaves any byte the STRING did
+            // not reach as a space, and STRING stops when the receiving field is full, so the line is exactly
+            // forty bytes: two digits, two separator characters, thirty-five caption bytes and one residual
+            // space. Padding and then truncating to the declared slot width reproduces both halves.
+            //
+            // The caption's own padding to PIC X(35) is subsumed by this one pad rather than applied
+            // separately, and the two are provably the same string: the caption is the LAST operand of the
+            // STRING and both pads are spaces, so padding the caption to thirty-five and then the line to
+            // forty appends exactly the spaces this single pad appends. A caption longer than thirty-five is
+            // impossible - MenuResponse.AdminMenuOption rejects one against PIC X(35) at construction - so
+            // there is no case in which the collapsed form could lose a caption byte.
+            while (optionLine.length() < OPTION_SLOT_LENGTH) {
+                optionLine.append(' ');
+            }
+            optionLine.setLength(OPTION_SLOT_LENGTH);
+
+            optionLabels.add(optionLine.toString());
         }
 
         // :L238-L261 the EVALUATE into screen slots has no counterpart; order carries the same meaning.

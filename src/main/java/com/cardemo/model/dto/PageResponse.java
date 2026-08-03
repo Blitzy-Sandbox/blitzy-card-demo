@@ -97,7 +97,7 @@ import java.util.Objects;
  *       {@code PIC X(01) VALUE 'N'} with {@code 88 NEXT-PAGE-YES VALUE 'Y'} and
  *       {@code 88 NEXT-PAGE-NO VALUE 'N'}. Here the absent-page sentinel is the literal
  *       {@code 'N'}.</li>
- * </ul>
+ *   </ul>
  * <p>The two conventions are deliberately not unified, because unifying them would require choosing
  * one sentinel and thereby misrepresenting the other program. Instead <b>no legacy sentinel
  * character is transported on the wire at all</b>: the indicator is modelled as a {@code boolean},

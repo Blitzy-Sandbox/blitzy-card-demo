@@ -95,7 +95,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=TransactionAndCardDtoTest
+ * ./mvnw -B -ntp -o test -Dtest=TransactionAndCardDtoTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -111,7 +111,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       A caller could then mutate a response after it was built.</li>
  *   <li><strong>The magnitude-guard test fails.</strong> The bound was widened past the edited mask's
  *       capacity, so an amount would render incorrectly on the screen.</li>
- * </ul>
+ *   </ul>
  */
 class TransactionAndCardDtoTest {
 

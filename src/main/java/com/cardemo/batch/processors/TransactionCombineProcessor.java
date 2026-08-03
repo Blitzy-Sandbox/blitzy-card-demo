@@ -82,7 +82,7 @@ import com.cardemo.model.entity.Transaction;
  *       {@code DSN=AWS.M2.CARDDEMO.TRANSACT.BKUP(0)}, the transaction backup.</li>
  *   <li>{@code app/jcl/COMBTRAN.jcl:L25-L26} - an unnamed continuation {@code // DD DISP=SHR,} then
  *       {@code DSN=AWS.M2.CARDDEMO.SYSTRAN(0)}, the interest job's output.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Both are the <strong>current</strong> generation {@code (0)}, not {@code (+1)}. {@code SYSTRAN} is
  * written by the interest job, whose output DD at {@code app/jcl/INTCALC.jcl:L37-L41} allocates
@@ -109,7 +109,7 @@ import com.cardemo.model.entity.Transaction;
  * {@code app/proc/REPROC.prc:L28} ({@code DSN=&CNTLLIB(REPROCT)}), which independently confirms the
  * semantic: {@code REPRO} loads a sequential file into a VSAM cluster.
  *
- * <p><strong>Source observation, severity Low.</strong> {@code app/jcl/COMBTRAN.jcl:L41} carries
+ * <p><strong>A difference between the two decks worth noting.</strong> {@code app/jcl/COMBTRAN.jcl:L41} carries
  * <em>no</em> {@code COND=} parameter, unlike {@code app/jcl/CREASTMT.JCL} whose {@code STEP020},
  * {@code STEP030} and {@code STEP040} at {@code :L56}, {@code :L66} and {@code :L79} each carry
  * {@code COND=(0,NE)}. STEP10 therefore runs unconditionally in the source. It is recorded here because
@@ -121,8 +121,8 @@ import com.cardemo.model.entity.Transaction;
  * <p>{@code TRAN-ID,1,16,CH} at {@code app/jcl/COMBTRAN.jcl:L28} means offset 1, length 16, character.
  * Laid against the record layout of {@code app/cpy/CVTRA05Y.cpy}, whose header comment at
  * {@code app/cpy/CVTRA05Y.cpy:L2} reads "Data-structure for TRANsaction record (RECLN = 350)", offset 1
- * length 16 lands squarely and only on the first field. The derivation is stated here so that no
- * reviewer has to recompute it:
+ * length 16 lands squarely and only on the first field. The derivation is stated here so that nobody
+ * has to recompute it:
  *
  * <pre>
  *   COBOL field         Line  PIC        Bytes    Java accessor            Checked by
@@ -153,22 +153,21 @@ import com.cardemo.model.entity.Transaction;
  * identifier in this corpus is zero-padded: all 300 rows of {@code app/data/ASCII/dailytran.txt} carry a
  * 16-character all-digit identifier in bytes 1-16.
  *
- * <p><strong>Finding, severity Medium: codepage collation.</strong> DFSORT collates {@code CH} fields in
+ * <p><strong>Codepage collation.</strong> DFSORT collates {@code CH} fields in
  * EBCDIC; {@link String#compareTo(String)} collates in UTF-16 code-unit order. For the decimal digits
  * {@code 0}-{@code 9} the two sequences agree, so for the all-digit identifiers this corpus actually
  * contains the two orderings are identical and the translation is exact. Because the field is
  * {@code PIC X(16)} a non-digit identifier is nevertheless representable, and for such a value the two
  * collating sequences would differ - in EBCDIC digits sort after letters, in ASCII before them.
- * <em>Remediation if that ever matters:</em> compare the EBCDIC-translated bytes rather than the
+ * <em>If that ever matters:</em> compare the EBCDIC-translated bytes rather than the
  * characters. It is deliberately <em>not</em> done here, because introducing a codepage translation for
  * a case the data does not contain would add a failure mode without removing one.
  *
  * <h2>Inputs, output, and why nothing is filtered or rewritten</h2>
  *
  * <p>The input is one {@link Transaction} decoded by the upstream reader from the concatenated
- * {@code TRANSACT.BKUP(0)} and {@code SYSTRAN(0)} stream. Per the migration plan that reader is
- * {@code com.cardemo.batch.readers.CombinedTransactionReader}, described as the multi-source
- * concatenated read; it is named in prose only and is deliberately <em>not</em> imported, since this
+ * {@code TRANSACT.BKUP(0)} and {@code SYSTRAN(0)} stream. That reader performs the multi-source
+ * concatenated read; it is referred to in prose only and is deliberately <em>not</em> imported, since this
  * class has no compile-time dependency on it.
  *
  * <p>The output is <strong>the same instance</strong>, returned unchanged. That is not laziness, it is
@@ -189,7 +188,7 @@ import com.cardemo.model.entity.Transaction;
  *   <li><strong>Only one key.</strong> {@code app/jcl/COMBTRAN.jcl:L30} specifies exactly one sort field.
  *       Contrast {@code app/jcl/CREASTMT.JCL:L53}, {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)}, which has
  *       two. No secondary key is invented here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Side effects</h2>
  *
@@ -207,7 +206,7 @@ import com.cardemo.model.entity.Transaction;
  *       {@code app/jcl/COMBTRAN.jcl:L22} becomes the {@link Comparator} published as
  *       {@link #TRAN_ID_ASCENDING} plus ordered retrieval, never a child process. {@code Runtime.exec}
  *       and {@code ProcessBuilder} appear nowhere in this file.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Error modes</h2>
  *
@@ -261,14 +260,14 @@ import com.cardemo.model.entity.Transaction;
  * are honoured here without exception:
  *
  * <ul>
- *   <li><strong>Blocker - no retry, no backoff, no regeneration loop.</strong> Re-deriving an identifier
+ *   <li><strong>No retry, no backoff, no regeneration loop.</strong> Re-deriving an identifier
  *       would hand out a value the legacy system would not have handed out.</li>
- *   <li><strong>Blocker - no silent upsert.</strong> No update, merge, insert-or-ignore or
+ *   <li><strong>No silent upsert.</strong> No update, merge, insert-or-ignore or
  *       on-conflict-do-nothing. A softer outcome silently corrupts the transaction master.</li>
- *   <li><strong>Blocker - no database sequence, identity column or generator substitution.</strong> A
+ *   <li><strong>No database sequence, identity column or generator substitution.</strong> A
  *       sequence is better engineering and still wrong, because it changes the generated values and so
  *       fails the boundary parity comparison.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Accordingly this file contains no retry annotation, no recovery loop, no skip policy, no
  * {@code ON CONFLICT}, no merge call and no sequence reference. The single correct handling is to let the
@@ -305,41 +304,34 @@ import com.cardemo.model.entity.Transaction;
  *   <li><em>A negative amount appears in the loaded data.</em> Also legitimate. Debits are genuinely
  *       negative in this corpus - {@code app/data/ASCII/dailytran.txt} carries negative overpunch signs -
  *       and nothing here normalises, absolutises or rejects them.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Not available</h2>
- *
- * <p>Facts this class could not verify at authoring time, stated plainly rather than guessed:
+ * <h2>Boundaries of this class, and what the corpus does not determine</h2>
  *
  * <ul>
- *   <li><strong>Corrected 1 August 2026 - this item is no longer unavailable.</strong> Earlier
- *       generations of this list recorded the primary-key constraint name as unavailable because the
- *       declaring migration "does not exist yet". That is measurably wrong:
- *       {@code src/main/resources/db/migration/V1__create_schema.sql} is present and declares
- *       {@code pk_transaction} at {@code :L1260}, so the name is known. It is still not carried here,
- *       but deliberately rather than for want of a source: neither diagnostic path using
+ *   <li><strong>No constraint name is carried on a diagnostic.</strong>
+ *       {@code src/main/resources/db/migration/V1__create_schema.sql} declares {@code pk_transaction} as
+ *       the primary key of the {@code transaction} table, so the name is known; it is deliberately not
+ *       carried here. Neither diagnostic path using
  *       {@link #RELATION} can establish which of that table's four named constraints failed, because
  *       the per-record rejections throw before any insert is attempted and the store-failure
  *       translation does not parse the driver-reported name. Where a constructor requires a constraint
  *       name, {@code null} is passed rather than a fabricated identifier. The table and column remain
  *       independently verifiable: {@code Transaction} maps {@code @Table(name = "transaction")} and
  *       {@code @Column(name = "tran_id")}.</li>
- *   <li><strong>Not available</strong> - the concrete reader and writer type names and the step's chunk
- *       size. Neither {@code com.cardemo.batch.readers} nor {@code com.cardemo.batch.writers} exists
- *       yet. <em>Needed to resolve:</em> those packages and the batch configuration. Nothing here depends
- *       on them; the reader is named in prose only.</li>
- *   <li><strong>Not available</strong> - any throughput or latency objective. The frozen corpus publishes
- *       no service-level objective anywhere, so none is asserted, implied or designed against.
- *       <em>Needed to resolve:</em> a stated objective from the business, which does not exist in this
- *       repository.</li>
- * </ul>
+ *   <li><strong>The step definition sits outside this class</strong> - the reader, the writer and the
+ *       chunk size all belong to it. Nothing here depends on any of them; the reader is referred to in
+ *       prose only.</li>
+ *   <li><strong>No throughput or latency objective exists.</strong> The frozen corpus publishes
+ *       no service-level objective anywhere, so none is asserted, implied or designed against.</li>
+ *   </ul>
  *
  * <h2>Bean registration</h2>
  *
- * <p>Registered by {@link Component} so that the bean exists without depending on a configuration class
- * that has not been written yet, and consistent with the stereotype annotations already used elsewhere in
- * this tree. <em>Remediation if the batch configuration later declares this type as a factory-method bean
- * as well:</em> keep exactly one definition - preferably this annotation - because two definitions of the
+ * <p>Registered by {@link Component}, consistent with the stereotype annotations used elsewhere in this
+ * tree, so the bean exists without depending on a configuration class. If a batch configuration ever
+ * declares this type as a factory-method bean as well, keep exactly one definition - preferably this
+ * annotation - because two definitions of the
  * same type make by-type injection ambiguous and the context will fail to start.
  *
  * @see Transaction
@@ -348,6 +340,20 @@ import com.cardemo.model.entity.Transaction;
  */
 @Component
 public class TransactionCombineProcessor implements ItemProcessor<Transaction, Transaction> {
+
+    /**
+     * Creates the processor.
+     *
+     * <p>This step has no collaborator to inject: {@code app/jcl/COMBTRAN.jcl} has no COBOL program at all,
+     * and {@code STEP05R} is a pure DFSORT ordering of a concatenated input, so the per-record work is a
+     * function of the record alone and touches no repository, no object store and no clock. The constructor
+     * is declared explicitly rather than left implicit so that the public surface is documented; it takes
+     * no argument and performs no work.
+     */
+    public TransactionCombineProcessor() {
+        // Intentionally empty: this processor is stateless, so there is nothing to assign and nothing to
+        // validate. It is not a placeholder - see the class documentation for why no collaborator exists.
+    }
 
     /**
      * Diagnostic logger. Debug carries per-record flow, error is used only where this class rethrows.
@@ -645,9 +651,10 @@ public class TransactionCombineProcessor implements ItemProcessor<Transaction, T
      * into a log-integrity defect: a {@code CR} or {@code LF} inside it ends the current log line and
      * begins one that the reader will attribute to this application.
      *
-     * <p>No encoder stands between this class and the log file. {@code logback-spring.xml} is planned but
-     * absent from the repository at this commit, so there is no JSON encoder to escape a newline into
-     * {@code \n} on the way out, and no masking rule to fall back on. The escaping therefore has to
+     * <p>The escaping deliberately does not lean on the logging configuration.
+     * {@code src/main/resources/logback-spring.xml} does encode and mask, but which appender is active is a
+     * deployment-time choice and a plain-text one escapes nothing, so a {@code CR} or {@code LF} that
+     * reaches the logger can still forge a line. The escaping therefore has to
      * happen here, at the point of rendering, and it is applied there rather than at each call site so
      * that adding a message later cannot forget it.
      *

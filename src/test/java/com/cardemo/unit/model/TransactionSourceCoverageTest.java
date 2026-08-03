@@ -80,13 +80,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The case-insensitive lookup is a separate, explicitly named operation.</strong> Both
  *       lookups strip surrounding blanks, which is what makes them usable against a fixed-width field read
  *       straight out of a record, and that stripping is asserted on both.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test                                       # whole unit tier
- * mvn -B -o test -Dtest=TransactionSourceCoverageTest          # this class alone
+ * ./mvnw -B -ntp -o test                                       # whole unit tier
+ * ./mvnw -B -ntp -o test -Dtest=TransactionSourceCoverageTest          # this class alone
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -105,7 +105,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       which shifts every offset after byte 32 of the 350-byte transaction record.</li>
  *   <li><strong>A lookup assertion fails.</strong> A permissive fallback was introduced; an unknown source
  *       must stay unknown.</li>
- * </ul>
+ *   </ul>
  *
  * @see TransactionSource
  */

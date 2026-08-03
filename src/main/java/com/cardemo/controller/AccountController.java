@@ -30,6 +30,8 @@ import jakarta.validation.Valid;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -40,6 +42,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -54,6 +57,9 @@ import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.AccountDto;
 import com.cardemo.model.dto.AccountUpdateRequest;
+import com.cardemo.model.dto.AccountUpdateResponse;
+import com.cardemo.model.dto.AccountViewResponse;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.account.AccountUpdateService;
 import com.cardemo.service.account.AccountUpdateService.AccountUpdateResult;
 import com.cardemo.service.account.AccountViewService;
@@ -82,7 +88,7 @@ import com.cardemo.service.account.AccountViewService;
  *   <li><strong>Account update</strong>, {@code PUT} {@value #BASE_PATH}. Replaces transaction
  *       {@code CAUP}, defined at {@code app/csd/CARDDEMO.CSD:L306} against {@code PROGRAM(COACTUPC)}
  *       at {@code :L308}, which painted mapset {@code COACTUP}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Both are boundary adapters and nothing more. Each performs one service call, translates the
  * outcome into a status and a body, and translates a typed failure into a problem detail. No business
@@ -117,8 +123,12 @@ import com.cardemo.service.account.AccountViewService;
  * <p>Running it means running the application. The view operation reaches three tables through their
  * repositories and the update operation writes two of them, so exercising either end to end needs the
  * PostgreSQL 16 service from {@code docker compose up -d} and the three Flyway migrations applied. The
- * verified invocation recorded at {@code docs/project-guide.md:424} is
- * {@code curl -s http://localhost:8080/api/accounts/00000000001} with a bearer credential. Unit
+ * verified invocation recorded at {@code docs/project-guide.md:424-425} is
+ * {@code curl -s http://localhost:8080/api/accounts/00000000001 -H "Authorization: Bearer $TOKEN"}. The
+ * header is not optional decoration: {@code com.cardemo.config.SecurityConfig} makes
+ * {@code GET /api/accounts/{accountId}} require either authority, and only {@code POST /api/auth/**} and
+ * five Actuator paths are {@code permitAll}, so the same command without the header returns 401 rather than
+ * the documented body. Unit
  * coverage is cheapest as a Spring MVC standalone test over a constructor-injected instance with both
  * services stubbed - no application context, no database and no cloud emulator. Tests belong in
  * {@code src/test/java/com/cardemo/unit} and {@code src/test/java/com/cardemo/e2e}, never in this
@@ -194,17 +204,23 @@ import com.cardemo.service.account.AccountViewService;
  *   </tr>
  *   <tr>
  *     <td>{@code 404 Not Found} with a problem detail</td>
- *     <td>A {@code RecordNotFoundException} from one of the three links of the lookup chain. The
- *         {@code recordType} property names which one, so a missing cross-reference row is not confused
- *         with a missing account or a missing customer. The legacy screen said the same thing in three
- *         different sentences; see section 5.</td>
+ *     <td>A {@code RecordNotFoundException} from one of the three links of the lookup chain. The body is
+ *         the SAME for all three - a fixed detail and the code {@code ACCOUNT_RECORD_NOT_FOUND} - because
+ *         varying it would tell a caller which relation is missing the row. It names no link, no dataset
+ *         and no key either: the record type this exception carries is a logical file name and its message
+ *         is the status mapper's internal diagnostic, so both go to the {@code WARN} log instead, reached
+ *         through the {@code correlationId} the body carries. The legacy screen said the same thing in
+ *         three different sentences and those sentences survive on the success path; see section 5.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 409 Conflict} with a problem detail</td>
- *     <td>Either a {@code DataIntegrityException} - a referential constraint refused the write, and the
- *         {@code constraintName} and {@code relation} properties name it - or a
- *         {@code ConcurrentUpdateException} whose outcome is {@code COULD_NOT_LOCK_CUSTOMER} or is
- *         unnamed. The {@code outcome} property tells the two apart.</td>
+ *     <td>Either a {@code DataIntegrityException} - a referential constraint refused the write, reported as
+ *         the code {@code ACCOUNT_WRITE_REFUSED} with the constraint name and the relation logged rather
+ *         than returned, because together they map the schema - or a {@code ConcurrentUpdateException}
+ *         whose outcome is {@code COULD_NOT_LOCK_CUSTOMER} or is unnamed. The {@code outcome} property
+ *         tells the two apart, and the {@code errorCode} property separates
+ *         {@value #ERROR_CODE_CONSTRAINT} from {@value #ERROR_CODE_UPDATE_CONFLICT} without parsing any
+ *         text.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 412 Precondition Failed} with a problem detail</td>
@@ -216,8 +232,8 @@ import com.cardemo.service.account.AccountViewService;
  *   <tr>
  *     <td>{@code 423 Locked} with a problem detail</td>
  *     <td>Outcome {@code COULD_NOT_LOCK_ACCOUNT}, detail
- *         {@code Could not lock account record for update}, {@code affectedRecord} normally
- *         {@code ACCTDAT}. Nothing was written. Safe to retry.</td>
+ *         {@code Could not lock account record for update}. The affected dataset is logged rather than
+ *         returned. Nothing was written. Safe to retry.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 428 Precondition Required} with a problem detail</td>
@@ -230,22 +246,22 @@ import com.cardemo.service.account.AccountViewService;
  *     <td>{@code 500 Internal Server Error} with a problem detail</td>
  *     <td>Outcome {@code LOCKED_BUT_UPDATE_FAILED}, detail {@code Update of record failed} - a rewrite
  *         failed after both records were locked and the snapshot matched; or a
- *         {@code FatalProcessingException}, carrying abend code {@code 999} and batch return code
- *         {@code 12}; or any other typed failure. The detail is fixed and reveals nothing. Diagnose from
- *         the log line matching the request's {@code correlationId}.</td>
+ *         {@code FatalProcessingException}, whose abend code {@code 999} and batch return code
+ *         {@code 12} are logged rather than returned; or any other typed failure. The detail is fixed and
+ *         reveals nothing. Diagnose from the log line matching the request's {@code correlationId}.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 502 Bad Gateway} with a problem detail</td>
- *     <td>A {@code FileAccessException}, the {@code FILE STATUS '9x'} family. The
- *         {@code expandedStatus} property carries the four-character rendering the legacy status
- *         renderer produced, and {@code logicalFileName} and {@code operation} name the dataset and the
- *         verb. This is a storage-layer fault, not a client fault.</td>
+ *     <td>A {@code FileAccessException}, the {@code FILE STATUS '9x'} family. The four-character
+ *         rendering the legacy status renderer produced, the dataset and the verb are all logged rather
+ *         than returned - returned together they said which internal dataset failed which verb with which
+ *         status. This is a storage-layer fault, not a client fault.</td>
  *   </tr>
  *   <tr>
  *     <td>{@code 503 Service Unavailable} with a problem detail</td>
- *     <td>A {@code FileUnavailableException}, {@code FILE STATUS '35'}: the dataset behind
- *         {@code resourceName} is not open. In the target that means the database is unreachable or the
- *         migrations have not run. Bring the compose stack up and let Flyway apply.</td>
+ *     <td>A {@code FileUnavailableException}, {@code FILE STATUS '35'}: a dataset the operation needs is
+ *         not open, and which one is logged rather than returned. In the target that means the database is
+ *         unreachable or the migrations have not run. Bring the compose stack up and let Flyway apply.</td>
  *   </tr>
  * </table>
  *
@@ -253,7 +269,7 @@ import com.cardemo.service.account.AccountViewService;
  *
  * <p>Three places in {@code app/cbl/COACTUPC.cbl} produce working code that behaves differently from
  * the source when translated the obvious way. Each is reproduced rather than repaired, each is labelled
- * with a severity per Rule 1 Clause F, and each is recorded in {@code DECISION_LOG.md} and
+ * with a severity per Rule 1 Clause F, and each is owed an entry in the planned {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}.</p>
  *
  * <p><strong>Trap 1 - Blocker 5.2: a customer lock failure is reported as success.</strong> The
@@ -359,8 +375,10 @@ import com.cardemo.service.account.AccountViewService;
  * {@code 9400-GETCUSTDATA-BYCUST} at {@code :L825}. Each link builds its own diagnostic with
  * {@code STRING}, and the three sentences differ: the cross-reference and account-master links read
  * {@code ' not found in'} at {@code :L750} and {@code :L799} while the customer-master link reads
- * {@code ' not found'} at {@code :L849}. The three are surfaced as three distinguishable {@code 404}
- * responses rather than one, which is why the {@code recordType} property exists.</p>
+ * {@code ' not found'} at {@code :L849}. All three are surfaced as ONE indistinguishable {@code 404}, because
+ * telling a caller which link found nothing tells it which relations exist and which identifiers are present in
+ * them. The distinction is kept in the log entry, which carries the same correlation identifier as the
+ * response.</p>
  *
  * <p>That program also declares the paragraph {@code 0000-MAIN-EXIT.} <strong>twice</strong>, at
  * {@code app/cbl/COACTVWC.cbl:L408} and again at {@code :L411}. The duplicate is a legacy artefact
@@ -412,8 +430,8 @@ import com.cardemo.service.account.AccountViewService;
  * balance or time abstraction is introduced. The verified census is 441 input fields across the
  * seventeen symbolic maps with {@code COACTVW} contributing 37 - independently confirmed by
  * {@code com.cardemo.model.dto.AccountDto} declaring exactly 37 components - which supersedes the
- * figures of 460 and 36 carried by the specification and is recorded as discrepancy 1 in
- * {@code DECISION_LOG.md}, severity Medium.</p>
+ * figures of 460 and 36 carried by the specification and is owed an entry as discrepancy 1 in the
+ * planned {@code DECISION_LOG.md}, severity Medium.</p>
  *
  * <p>Every monetary value crossing this boundary is a fixed-scale decimal, never a binary floating-point
  * type, and equality on one is decided by {@code compareTo} and never by {@code equals}. The account
@@ -446,8 +464,9 @@ public class AccountController {
 
     /**
      * The base path both operations are mounted under, and the whole path of the update operation. Fixed
-     * by {@code docs/project-guide.md:161} and {@code :424}, which record the verified invocation
-     * {@code curl -s http://localhost:8080/api/accounts/00000000001}.
+     * by {@code docs/project-guide.md:161} and {@code :424-425}, which record the verified invocation
+     * {@code curl -s http://localhost:8080/api/accounts/00000000001 -H "Authorization: Bearer $TOKEN"}.
+     * Both operations require a bearer token; neither is {@code permitAll}.
      */
     static final String BASE_PATH = "/api/accounts";
 
@@ -477,6 +496,12 @@ public class AccountController {
      * re-implemented function-key dispatcher.</p>
      */
     static final String CONFIRM_PARAMETER = "confirm";
+
+    /** The only accepted affirmative spelling of {@link #CONFIRM_PARAMETER}. */
+    private static final String TRUE_TOKEN = "true";
+
+    /** The only accepted negative spelling of {@link #CONFIRM_PARAMETER}. */
+    private static final String FALSE_TOKEN = "false";
 
     /**
      * The CICS transaction the view operation replaces, defined at {@code app/csd/CARDDEMO.CSD:L317}.
@@ -567,6 +592,19 @@ public class AccountController {
     private static final String NOT_FOUND_PROBLEM_TITLE = "Account record not found";
 
     /**
+     * The single detail every {@code 404} from this controller carries.
+     *
+     * <p>Fixed on purpose. {@code app/cbl/COACTVWC.cbl} says it three ways depending on which link of the
+     * chain found nothing, and {@code app/cbl/COACTUPC.cbl:L513-L514} adds a fourth; relaying whichever one
+     * was thrown would tell a caller which relation is missing the row, and the identifier that was looked up
+     * is the caller's own input echoed as confirmation that it does or does not exist. The distinction is kept
+     * where it belongs: the projected screen field on the normal path still carries the source's own wording,
+     * and the log records which link failed.
+     */
+    private static final String NOT_FOUND_PROBLEM_DETAIL =
+            "The requested account record could not be found";
+
+    /**
      * Problem title shared by all five concurrency outcomes, which the {@code outcome} property and the
      * status code then distinguish.
      */
@@ -640,11 +678,6 @@ public class AccountController {
     private static final String CHANGE_ACTION_PROPERTY = "changeAction";
 
     /**
-     * Problem-detail property naming the dataset a lock or rewrite failed against.
-     */
-    private static final String AFFECTED_RECORD_PROPERTY = "affectedRecord";
-
-    /**
      * Problem-detail property naming the rejected field.
      */
     private static final String FIELD_PROPERTY = "field";
@@ -658,58 +691,102 @@ public class AccountController {
     private static final String FAILURE_KIND_PROPERTY = "failureKind";
 
     /**
-     * Problem-detail property naming which link of the lookup chain found nothing.
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
      */
-    private static final String RECORD_TYPE_PROPERTY = "recordType";
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
     /**
-     * Problem-detail property carrying the key that was not found.
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
      */
-    private static final String RECORD_KEY_PROPERTY = "recordKey";
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
-     * Problem-detail property naming the violated constraint.
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
      */
-    private static final String CONSTRAINT_NAME_PROPERTY = "constraintName";
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
     /**
-     * Problem-detail property naming the relation the constraint belongs to.
+     * Problem-detail property carrying the resource-specific public code.
+     * <p>
+     * <b>Two code properties travel on an error body from this controller, and they are not duplicates.</b>
+     * {@value #ERROR_CODE_PROPERTY} is the envelope code every handler in every controller sets, drawn from
+     * the {@code ERROR_CODE_*} constants below, and it classifies the failure coarsely enough to be uniform
+     * across the API. This one is the account resource's own refinement, drawn from {@link PublicErrorCode},
+     * and it is set only on the two paths that have a resource-specific meaning worth branching on: a link of
+     * the lookup chain found nothing, and a referential constraint refused a write. A caller that wants one
+     * rule for every endpoint reads the envelope code; a caller written against this resource reads this one.
+     * <p>
+     * Both replace the {@code recordType}, {@code recordKey}, {@code constraintName} and {@code relation}
+     * properties this class used to publish. Each of those described the server's internals to the caller: two
+     * named a relation of the schema, one named a database constraint, and one echoed the key that was not
+     * found. A caller that must branch on the outcome needs a value it can switch on and that the server
+     * promises not to change - which a constraint name is emphatically not - and the operator's need for the
+     * specific relation, constraint and key is met by the log, where the correlation identifier ties the entry
+     * to this exact response. The fixed detail those relays were replaced by is
+     * {@value #NOT_FOUND_PROBLEM_DETAIL}: {@code AccountViewService} maps an empty repository result to the
+     * file status {@code '23'} and hands it to {@code FileStatusMapper}, which composes a message naming the
+     * operation, the alternate-index path and the legacy status, and relaying that returned all three to any
+     * caller who asked for an account that does not exist - on the primary {@code GET} path of this
+     * controller.
      */
-    private static final String RELATION_PROPERTY = "relation";
+    private static final String PUBLIC_CODE_PROPERTY = "code";
 
     /**
-     * Problem-detail property naming the unavailable dataset.
+     * Stable error code meaning that the request was refused by a field-level validation rule.
      */
-    private static final String RESOURCE_NAME_PROPERTY = "resourceName";
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
 
     /**
-     * Problem-detail property carrying the four-character status rendering that
-     * {@code 9910-DISPLAY-IO-STATUS} produced in the legacy batch corpus.
+     * Stable error code meaning that a record the operation needed does not exist.
      */
-    private static final String EXPANDED_STATUS_PROPERTY = "expandedStatus";
+    private static final String ERROR_CODE_NOT_FOUND = "CARDDEMO-RECORD-NOT-FOUND";
 
     /**
-     * Problem-detail property naming the logical file the failure occurred against - for these two
-     * operations one of {@code ACCTDAT}, {@code CCXREF} or {@code CUSTDAT}, the names declared by
-     * {@code app/csd/CARDDEMO.CSD} and by {@code LIT-ACCTFILENAME} and {@code LIT-CUSTFILENAME} at
-     * {@code app/cbl/COACTUPC.cbl:L573-L576}.
+     * Stable error code meaning that the update was not applied because the stored state moved or was not confirmed.
      */
-    private static final String LOGICAL_FILE_NAME_PROPERTY = "logicalFileName";
+    private static final String ERROR_CODE_UPDATE_CONFLICT = "CARDDEMO-UPDATE-CONFLICT";
 
     /**
-     * Problem-detail property naming the verb that failed.
+     * Stable error code meaning that a referential constraint refused the write.
      */
-    private static final String OPERATION_PROPERTY = "operation";
+    private static final String ERROR_CODE_CONSTRAINT = "CARDDEMO-CONSTRAINT-REFUSED";
 
     /**
-     * Problem-detail property carrying the abend code, 999.
+     * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
      */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
 
     /**
-     * Problem-detail property carrying the batch return code, 12.
+     * Stable error code meaning that the store behind this service reported an input-output failure.
      */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    private static final String ERROR_CODE_IO_FAILURE = "CARDDEMO-IO-FAILURE";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /**
      * Diagnostic log destination. Static and final: a logger is neither mutable state nor per-request
@@ -764,7 +841,8 @@ public class AccountController {
     }
 
     /**
-     * Account view - operation 4 of 17, replacing CICS transaction {@code CAVW}.
+     * Account view - operation 4 of the target 17, replacing CICS transaction {@code CAVW}. Both of this
+     * controller's operations are authored; five of the target 17 are not.
      *
      * <p><strong>Purpose.</strong> Returns the account projection that {@code app/cbl/COACTVWC.cbl}
      * painted onto mapset {@code COACTVW}. Transaction {@code CAVW} is defined at
@@ -807,24 +885,45 @@ public class AccountController {
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} for a rejected account filter,
      * with the legacy literal relayed byte for byte and {@code failureKind} separating blank from
-     * invalid. {@code 404} for each of the three links of the chain, with {@code recordType} naming which
-     * one, because the source said it in three different sentences: the cross-reference and account-master
-     * diagnostics are built with {@code ' not found in'} at {@code :L750} and {@code :L799} while the
-     * customer-master diagnostic uses {@code ' not found'} at {@code :L849}. {@code 503} when the store
+     * invalid. {@code 404} for any of the three links of the chain, with one fixed body for all three: the
+     * source said it in three different sentences - the cross-reference and account-master diagnostics use
+     * {@code ' not found in'} at {@code :L750} and {@code :L799} while the customer-master diagnostic uses
+     * {@code ' not found'} at {@code :L849} - and which one fired is recorded in the {@code WARN} log, not in
+     * the response. {@code 503} when the store
      * is closed, {@code 502} for the {@code FILE STATUS '9x'} family with the four-character expanded
      * status attached, and {@code 500} for an abend carrying code {@code 999} and return code
      * {@code 12}. Every one of them is logged against the request's correlation identifier, which is how
      * a diagnosis starts, since the response bodies deliberately reveal nothing.</p>
      *
+     * <p><strong>What the response carries, and what it withholds.</strong> The body is
+     * {@code AccountViewResponse}, not the thirty-seven-component projection. Nine of those components are
+     * withheld - the social security number, the date of birth, the three customer names, both telephone
+     * numbers, the government-issued identifier and the electronic funds account identifier - because none
+     * of them is needed to display or to update an account and each is a protected value. The list is
+     * published as {@code AccountViewResponse.WITHHELD_COMPONENTS} so the contract is machine-checkable
+     * rather than merely documented.</p>
+     *
+     * <p><strong>The response is also the precondition for the update.</strong> It carries a sealed
+     * as-displayed snapshot, published both as a body member and as the {@code ETag} header, and the
+     * matching {@code PUT} requires that value in {@code If-Match}. This is what closes the gap that
+     * {@code AccountUpdateService.fetchForUpdate} was previously unreachable: a client had no way to obtain
+     * a snapshot, and one it composed for itself would not be a precondition at all - the comparison at
+     * {@code app/cbl/COACTUPC.cbl:L4109-L4193} would be answerable to the caller rather than to the record.
+     * The snapshot is produced by the <em>update</em> service, because {@code ACUP-OLD-DETAILS} belongs to
+     * {@code COACTUPC}, and it is sealed with authenticated encryption bound to this account and to a
+     * lifetime, so all twenty-nine of its values take part in the comparison while none of them is
+     * disclosed.</p>
+     *
      * @param accountId the contents of screen field {@code ACCTSIDI}, passed to the service verbatim;
      * may be blank, which the service rejects rather than this method.
      * @param authentication the principal Spring Security resolved, which may be null when the request
      * bypassed the filter chain.
-     * @return {@code 200} with the account projection, or {@code 401} with an empty body when the
-     * request carries no usable identity
+     * @return {@code 200} with the minimized account response and the sealed snapshot, the latter also
+     * published as the {@code ETag}, or {@code 401} with an empty body when the request carries no usable
+     * identity
      */
     @GetMapping(ACCOUNT_PATH)
-    public ResponseEntity<AccountDto> viewAccount(
+    public ResponseEntity<AccountViewResponse> viewAccount(
             @PathVariable(ACCOUNT_ID_VARIABLE) final String accountId,
             final Authentication authentication) {
 
@@ -836,13 +935,23 @@ public class AccountController {
 
         final AccountDto account = this.retrieveAccount(accountId);
 
-        LOG.debug("Served transaction {} program {} from mapset COACTVW", VIEW_TRANSACTION_ID,
-                VIEW_PROGRAM);
-        return ResponseEntity.ok(account);
+        // The precondition the matching update requires. It is produced by the UPDATE service, because
+        // ACUP-OLD-DETAILS belongs to app/cbl/COACTUPC.cbl and because the group carries values - the date
+        // of birth, the social security number, the government-issued identifier, both telephone numbers
+        // and the electronic funds account identifier - that no response may contain. What comes back is one
+        // opaque string, and it is the only route by which a client can obtain a valid snapshot at all.
+        final String snapshotToken = this.acquireUpdateSnapshot(accountId);
+        final AccountViewResponse response = AccountViewResponse.of(account, snapshotToken);
+
+        LOG.debug("Served transaction {} program {} from mapset COACTVW with a sealed snapshot",
+                VIEW_TRANSACTION_ID, VIEW_PROGRAM);
+        // Also published as an entity tag, so a client may use the standard conditional-request idiom
+        // rather than reading the token out of the body.
+        return ResponseEntity.ok().eTag(quotedETag(snapshotToken)).body(response);
     }
 
     /**
-     * Account update - operation 5 of 17, replacing CICS transaction {@code CAUP}.
+     * Account update - operation 5 of the target 17, replacing CICS transaction {@code CAUP}.
      *
      * <p><strong>Purpose.</strong> Applies an edited account together with its customer record, exactly
      * as {@code app/cbl/COACTUPC.cbl} did over mapset {@code COACTUP}. Transaction {@code CAUP} is
@@ -854,10 +963,15 @@ public class AccountController {
      * <strong>not</strong> restated as logic here.</p>
      *
      * <p><strong>Inputs.</strong> A JSON body binding to
-     * {@code com.cardemo.model.dto.AccountUpdateRequest}, the fifty-four input fields of
-     * {@code app/cpy-bms/COACTUP.CPY} plus the two nested groups {@code oldDetails} and
-     * {@code newDetails} that mirror {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:L669} and
-     * {@code ACUP-NEW-DETAILS} at {@code :L757}. <strong>Both groups travel verbatim.</strong> Nothing
+     * {@code com.cardemo.model.dto.AccountUpdateRequest}: the fifty-four input fields of
+     * {@code app/cpy-bms/COACTUP.CPY} plus the {@code newDetails} group that mirrors
+     * {@code ACUP-NEW-DETAILS} at {@code app/cbl/COACTUPC.cbl:L757}. The other group,
+     * {@code ACUP-OLD-DETAILS} at {@code :L669}, <strong>arrives in {@code If-Match}</strong> as the sealed
+     * value the preceding read returned, and a body that carries an {@code oldDetails} group is
+     * <em>refused</em> rather than ignored - a precondition a caller composes is not a precondition, and the
+     * group carries six protected customer values that no client should hold or replay.</p>
+     *
+     * <p><strong>Everything that does travel, travels verbatim.</strong> Nothing
      * in this method trims, strips, pads, folds case on, re-formats, re-orders or date-parses either
      * group, or any member of either group: Trap 3 in the class documentation proves why, and the
      * decisive evidence is the date-of-birth comparison at {@code :L4174-L4179}, where the live record is
@@ -881,25 +995,32 @@ public class AccountController {
      * the {@code CONTINUE} arm at {@code :L2620-L2621}, while an unrecognised value is rejected rather
      * than charitably read as a confirmation. The consequence of collapsing the legacy pseudo-conversation
      * into one operation is that the unconfirmed validation repaint is not a separate turn: field-level
-     * rejections surface on the confirmed request. That collapse is recorded in {@code DECISION_LOG.md},
-     * severity Low. Identity arrives only as the authenticated principal, never from the body.</p>
+     * rejections surface on the confirmed request. That collapse is owed an entry in the planned
+     * {@code DECISION_LOG.md}, severity Low. Identity arrives only as the authenticated principal, never from the
+     * body.</p>
      *
-     * <p><strong>Outputs.</strong> {@code 200 OK} carrying the service's result record. Its
-     * {@code changeAction} is the {@code ACUP-CHANGE-ACTION PIC X(1)} marker of {@code :L654-L668} that
-     * the next turn must echo, its {@code screen} is the symbolic map <em>including the refreshed
-     * snapshot</em> the caller needs in order to submit again, its {@code fieldAttributes} are the
-     * per-field markers the 3270 attribute bytes carried, and its {@code informationMessage} and
-     * {@code errorMessage} are {@code WS-INFO-MSG PIC X(40)} at {@code :L463} and
-     * {@code WS-RETURN-MSG PIC X(75)} at {@code :L479} as the program left them.</p>
+     * <p><strong>Outputs.</strong> {@code 200 OK} carrying {@code AccountUpdateResponse}, an API-native
+     * body of four members: the account identifier echoed back, {@code changeAction} - the
+     * {@code ACUP-CHANGE-ACTION PIC X(1)} outcome of {@code :L654-L668} reported by name so the source's
+     * outcome vocabulary survives over HTTP - a boolean {@code applied}, and the two message fields
+     * {@code WS-INFO-MSG PIC X(40)} at {@code :L463} and {@code WS-RETURN-MSG PIC X(75)} at {@code :L479}
+     * relayed byte for byte as the program left them.</p>
      *
-     * <p>Returning that record rather than the view projection is a deliberate, documented deviation
-     * from the file's own outline, severity Medium, recorded in {@code DECISION_LOG.md}.
-     * {@code com.cardemo.model.dto.AccountDto} is the thirty-seven-component projection of a
-     * <em>different</em> mapset, {@code COACTVW}, and no factory maps one onto the other. Building that
-     * conversion in this class would be precisely the mapper, DTO assembler and field unification the
-     * file's directive forbids, and it would discard both the change-action marker and the refreshed
-     * snapshot - and without the snapshot the two-layer concurrency design described in section 6 cannot
-     * work at all, because the caller has nothing to send back.</p>
+     * <p><strong>Three members of the service result are deliberately withheld</strong>, and each for its
+     * own reason. {@code screen} is the submitted map plus the snapshot group - fifty-four fields including
+     * the social security number, the date of birth, the government-issued identifier, both telephone
+     * numbers and the electronic funds account identifier - so returning it would publish protected values
+     * on every successful write. {@code navigation} carries {@code CDEMO-TO-PROGRAM} and its five siblings,
+     * which describe a CICS screen flow that does not exist in a URL-routed target. {@code fieldAttributes}
+     * carries {@code DFHBMPRF} attribute bytes, colour bytes, the {@code '*'} marker and a cursor position -
+     * 3270 presentation instructions with no meaning to an HTTP client. The service record itself is
+     * unchanged and remains the in-process contract; what changed is that it is no longer a response
+     * body.</p>
+     *
+     * <p><strong>No refreshed snapshot is returned.</strong> A client that wishes to edit again reads the
+     * account again, which is one request and is what the source required too - the screen was repainted
+     * before the next turn. Returning one here would additionally mean issuing a precondition for a state
+     * this response cannot vouch for, since the write has already completed.</p>
      *
      * <p><strong>Side effects.</strong> Two rows are rewritten, in the account relation and the customer
      * relation, inside one unit of work owned by the service's
@@ -920,10 +1041,14 @@ public class AccountController {
      * overridden.</p>
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 428} when the confirmation was not
-     * asserted, carrying {@value #NOT_CONFIRMED_PROMPT}; nothing was written. {@code 423} for
+     * asserted, carrying {@value #NOT_CONFIRMED_PROMPT}, and equally when {@code If-Match} was absent so
+     * that the guard had nothing to compare against; nothing was written in either case. {@code 423} for
      * {@code COULD_NOT_LOCK_ACCOUNT}, nothing written, safe to retry. {@code 412} for
-     * {@code DATA_CHANGED_BEFORE_UPDATE} - re-read, resubmit with the fresh snapshot, re-apply the edits,
-     * and do not retry blindly, because the snapshot is the guarantee. {@code 409} for a referential
+     * {@code DATA_CHANGED_BEFORE_UPDATE}, which covers both a record that changed under the caller and an
+     * {@code If-Match} value that did not verify - a token this server did not seal, one sealed for another
+     * account, or one whose lifetime has passed, all answered with one message because distinguishing them
+     * would let a caller probe the sealing key. Re-read, resubmit with the fresh {@code ETag}, re-apply the
+     * edits, and do not retry blindly, because the snapshot is the guarantee. {@code 409} for a referential
      * refusal or for an outcome that names itself {@code COULD_NOT_LOCK_CUSTOMER} explicitly.
      * {@code 500} for {@code LOCKED_BUT_UPDATE_FAILED} and for an abend. {@code 400} for a field
      * rejection with the legacy literal relayed byte for byte. And - the trap that matters most - a
@@ -932,22 +1057,30 @@ public class AccountController {
      * {@code errorMessage} on the body, and this method emits a {@code WARN} line naming Blocker 5.2
      * whenever that happens.</p>
      *
-     * @param request the symbolic map of {@code app/cpy-bms/COACTUP.CPY} carrying both the
-     * {@code oldDetails} snapshot and the {@code newDetails} edits; validated against the DTO's own
-     * width and range contracts and then passed to the service unaltered.
-     * @param confirm the explicit replacement for attention identifier {@code CCARD-AID-PFK05}; null
-     * when absent or supplied empty, and only an affirmative value confirms.
+     * @param request the symbolic map of {@code app/cpy-bms/COACTUP.CPY} carrying the {@code newDetails}
+     * edits; validated against the DTO's own width and range contracts and then passed to the service
+     * unaltered. It must <em>not</em> carry an {@code oldDetails} group.
+     * @param confirmToken the explicit replacement for attention identifier {@code CCARD-AID-PFK05},
+     * matched exactly against {@code true} and {@code false}; null means absent and therefore not
+     * confirmed, and no alias is accepted.
+     * @param ifMatch the sealed as-displayed snapshot the preceding read returned, quoted as an entity tag
+     * or bare; null when the header was absent, which the service reports as unconfirmed.
      * @param authentication the principal Spring Security resolved, which may be null when the request
      * bypassed the filter chain.
-     * @return {@code 200} with the update result, or {@code 401} with an empty body when the request
-     * carries no usable identity
+     * @return {@code 200} with the API-native update response, or {@code 401} with an empty body when the
+     * request carries no usable identity
      * @throws ConcurrentUpdateException with outcome {@code CHANGES_NOT_CONFIRMED} when the confirmation
-     * was not asserted, which this class maps to {@code 428} without attempting a write
+     * was not asserted or no snapshot was presented, which this class maps to {@code 428} without
+     * attempting a write, and with {@code DATA_CHANGED_BEFORE_UPDATE} mapped to {@code 412} when a
+     * presented snapshot does not verify
+     * @throws ValidationException when the body carries an {@code oldDetails} group, or when the
+     * confirmation parameter is present and is neither exact token
      */
     @PutMapping
-    public ResponseEntity<AccountUpdateResult> updateAccount(
+    public ResponseEntity<AccountUpdateResponse> updateAccount(
             @Valid @RequestBody final AccountUpdateRequest request,
-            @RequestParam(name = CONFIRM_PARAMETER, required = false) final Boolean confirm,
+            @RequestParam(name = CONFIRM_PARAMETER, required = false) final String confirmToken,
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) final String ifMatch,
             final Authentication authentication) {
 
         if (isUnauthenticated(authentication)) {
@@ -956,7 +1089,9 @@ public class AccountController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        if (!Boolean.TRUE.equals(confirm)) {
+        rejectBodyCarriedSnapshot(request);
+
+        if (!requireConfirmToken(confirmToken)) {
             LOG.debug("Refused transaction {} with 428: request parameter {} was not asserted, so the"
                     + " app/cbl/COACTUPC.cbl:L2602-L2603 gate did not fire and no write was attempted",
                     UPDATE_TRANSACTION_ID, CONFIRM_PARAMETER);
@@ -964,13 +1099,13 @@ public class AccountController {
                     ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED, NOT_CONFIRMED_PROMPT);
         }
 
-        final AccountUpdateResult result = this.applyAccountUpdate(request);
+        final AccountUpdateResult result = this.applyAccountUpdate(request, unquotedETag(ifMatch));
 
         warnOnUnreportedCustomerLock(result);
 
         LOG.debug("Served transaction {} program {} with change action {} and response kind {}",
                 UPDATE_TRANSACTION_ID, UPDATE_PROGRAM, result.changeAction(), result.responseKind());
-        return ResponseEntity.ok(result);
+        return ResponseEntity.ok(projectUpdateResponse(request, result));
     }
 
     /**
@@ -1011,20 +1146,180 @@ public class AccountController {
      * {@code app/cbl/COACTUPC.cbl}'s program name as the abend culprit.</p>
      *
      * @param request the symbolic map carrying both detail groups, passed on unaltered.
+     * @param snapshotToken the sealed as-displayed snapshot the caller returned, passed on unaltered so the
+     *     service can verify it against the token it minted; never rewritten here
      * @return the update result, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private AccountUpdateResult applyAccountUpdate(final AccountUpdateRequest request) {
+    private AccountUpdateResult applyAccountUpdate(final AccountUpdateRequest request,
+                                                   final String snapshotToken) {
 
         try {
-            return this.accountUpdateService.updateAccount(request);
+            return this.accountUpdateService.updateAccount(request, snapshotToken);
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
         } catch (final RuntimeException unexpected) {
             throw new FatalProcessingException(ABEND_CODE, UPDATE_PROGRAM, UPDATE_ABEND_REASON,
                     UPDATE_ABEND_MESSAGE, unexpected);
         }
+    }
+
+    /**
+     * Obtains the sealed {@code ACUP-OLD-DETAILS} snapshot for one account.
+     *
+     * <p>Delegates once to the update service, which owns the group. The catch clauses behave exactly as on
+     * {@link #retrieveAccount}: a typed failure is rethrown so the declared status mapping applies, and
+     * anything else becomes an abend with its cause preserved.</p>
+     *
+     * <p>The failure is <em>not</em> suppressed. Returning a null token on a failed acquisition would answer
+     * {@code 200} with a response a client cannot update from, which is the very gap this method closes;
+     * the two services read the same three-dataset chain, so a filter this one refuses is a filter the view
+     * would have refused as well.</p>
+     *
+     * @param accountFilter the contents of screen field {@code ACCTSIDI}, passed on verbatim.
+     * @return the sealed snapshot, never null
+     * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
+     * failure
+     */
+    private String acquireUpdateSnapshot(final String accountFilter) {
+
+        try {
+            return this.accountUpdateService.issueUpdateSnapshot(accountFilter);
+        } catch (final CardDemoException alreadyTyped) {
+            throw alreadyTyped;
+        } catch (final RuntimeException unexpected) {
+            throw new FatalProcessingException(ABEND_CODE, UPDATE_PROGRAM, UPDATE_ABEND_REASON,
+                    UPDATE_ABEND_MESSAGE, unexpected);
+        }
+    }
+
+    /**
+     * Projects the service result onto the API-native update response.
+     *
+     * <p>Four members reach a client and three do not. {@code changeAction}, the two message fields and the
+     * account identifier are reported, because they are the source's own outcome vocabulary and its own
+     * screen text. {@code screen} is withheld because it is the submitted map plus the snapshot group -
+     * fifty-four fields including the social security number, the date of birth, the government-issued
+     * identifier, both telephone numbers and the electronic funds account identifier. {@code navigation} is
+     * withheld because routing is URL based in the target, so {@code CDEMO-TO-PROGRAM} and its siblings
+     * describe a screen flow that does not exist here. {@code fieldAttributes} is withheld because a
+     * {@code DFHBMPRF} attribute byte and a cursor position are 3270 presentation instructions with no
+     * meaning to an HTTP client.</p>
+     *
+     * <p>{@code applied} is true for exactly one change action, {@code CHANGES_OKAYED_AND_DONE}. It is not
+     * derived from the absence of an error message, because of the legacy trap that {@code :L2606-L2615}
+     * never tests the customer-lock condition - which is why {@link #warnOnUnreportedCustomerLock} logs it
+     * and why the error message is reported alongside.</p>
+     *
+     * @param request the submitted map, read only for the account identifier it echoes.
+     * @param result the service outcome; never null here.
+     * @return the response body, never null
+     */
+    private static AccountUpdateResponse projectUpdateResponse(final AccountUpdateRequest request,
+                                                               final AccountUpdateResult result) {
+        return new AccountUpdateResponse(
+                request.getAccountId(),
+                result.changeAction().name(),
+                result.changeAction()
+                        == AccountUpdateService.ChangeAction.CHANGES_OKAYED_AND_DONE,
+                result.informationMessage(),
+                result.errorMessage());
+    }
+
+    /**
+     * Refuses a request body that carries an as-displayed snapshot.
+     *
+     * <p>The group remains on the request type because it is the transcription of {@code ACUP-OLD-DETAILS}
+     * at {@code app/cbl/COACTUPC.cbl:L669} and because it is the shape the sealed token carries internally.
+     * What it is not is a wire input: the authentic snapshot arrives in {@code If-Match}, sealed, and the
+     * service reads it from there and from nowhere else.</p>
+     *
+     * <p>A body that carries one is refused rather than ignored. Ignoring it would leave a caller believing
+     * it controlled the write precondition when it did not, and that failure is silent and appears only
+     * under concurrency. Refusing states the contract at the one moment the caller can act on it - and the
+     * group is twenty-nine values of which six are protected, so accepting it would also invite a client to
+     * hold and replay them.</p>
+     *
+     * @param request the bound request body; never null once the framework has bound one.
+     * @throws ValidationException with failure kind {@code INVALID} when {@code oldDetails} is present
+     */
+    private static void rejectBodyCarriedSnapshot(final AccountUpdateRequest request) {
+
+        if (request != null && request.getOldDetails() != null) {
+            throw ValidationException.invalidField("oldDetails",
+                    "oldDetails must not be sent: the as-displayed snapshot is server-issued and travels"
+                            + " in the If-Match header, because a caller-supplied precondition is not a"
+                            + " precondition and because the group carries protected customer values");
+        }
+    }
+
+    /**
+     * Resolves the confirmation parameter, accepting only {@code true} and {@code false}.
+     *
+     * <p>The framework's default {@code Boolean} binding additionally accepts {@code on}, {@code off},
+     * {@code yes}, {@code no}, {@code 1} and {@code 0}. This parameter is the PF5 gate of
+     * {@code app/cbl/COACTUPC.cbl:L2602-L2603} - the single decision that separates validating a payload
+     * from writing two datasets - so admitting six aliases for two values would admit five spellings of an
+     * instruction the operation never declared, on the one parameter where that matters most.</p>
+     *
+     * @param token the raw parameter value, or null when the parameter was absent, which means "not
+     * confirmed" and is answered with {@code 428} exactly as before.
+     * @return whether the confirmation was asserted
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is neither exact token
+     */
+    private static boolean requireConfirmToken(final String token) {
+
+        if (token == null) {
+            return false;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(CONFIRM_PARAMETER,
+                    "confirm must be supplied as " + TRUE_TOKEN + " or " + FALSE_TOKEN
+                            + " when the parameter is present at all");
+        }
+        if (TRUE_TOKEN.equals(token)) {
+            return true;
+        }
+        if (FALSE_TOKEN.equals(token)) {
+            return false;
+        }
+        throw ValidationException.invalidField(CONFIRM_PARAMETER,
+                "confirm accepts exactly " + TRUE_TOKEN + " and " + FALSE_TOKEN
+                        + "; no alias and no other spelling is accepted");
+    }
+
+    /**
+     * Wraps a sealed token in the double quotes an entity tag requires.
+     *
+     * @param token the sealed token, which is base64url and therefore contains no character needing escape.
+     * @return the quoted entity-tag value, or null when {@code token} is null
+     */
+    private static String quotedETag(final String token) {
+        return token == null ? null : "\"" + token + "\"";
+    }
+
+    /**
+     * Strips the entity-tag quoting from an {@code If-Match} value, so a client may return either the header
+     * value verbatim or the bare token. A weak-validator prefix is stripped for the same reason.
+     *
+     * @param headerValue the raw header value, or null when the header was absent.
+     * @return the bare token, or null when the header was absent
+     */
+    private static String unquotedETag(final String headerValue) {
+
+        if (headerValue == null) {
+            return null;
+        }
+        String value = headerValue.trim();
+        if (value.startsWith("W/")) {
+            value = value.substring(2).trim();
+        }
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return value;
     }
 
     /**
@@ -1061,7 +1356,7 @@ public class AccountController {
                     + " app/cbl/COACTUPC.cbl:L2606-L2615 never tests the flag that"
                     + " app/cbl/COACTUPC.cbl:L3934-L3942 sets, so a customer read-for-update failure"
                     + " falls through WHEN OTHER to ACUP-CHANGES-OKAYED-AND-DONE. Neither record was"
-                    + " written. See DECISION_LOG.md.",
+                    + " written. See the planned DECISION_LOG.md.",
                     UPDATE_TRANSACTION_ID, UPDATE_PROGRAM, result.changeAction(),
                     ConcurrentUpdateException.Outcome.COULD_NOT_LOCK_CUSTOMER);
         }
@@ -1214,7 +1509,8 @@ public class AccountController {
         LOG.warn("Refused an account request with 400 for field {} and failure kind {}",
                 rejection.getFieldName(), rejection.getFailureKind());
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
@@ -1226,35 +1522,52 @@ public class AccountController {
      * respectively, while the customer-master link at {@code :L846-L856} reads {@code ' not found'} at
      * {@code :L849}. The update path adds a fourth sentence,
      * {@code Did not find this account in cards database} at
-     * {@code app/cbl/COACTUPC.cbl:L513-L514}. Relaying the message and attaching {@code recordType} is
-     * what keeps a missing cross-reference row distinguishable from a missing account and from a missing
-     * customer, which is the whole point of the source having said it three different ways.</p>
+     * {@code app/cbl/COACTUPC.cbl:L513-L514}. On a 3270 those four sentences went to the operator who had
+     * just typed the key; over HTTP they go to whoever asked, so the distinction between them is what makes a
+     * 404 usable for enumeration. It is preserved in the log rather than in the response, and the wording
+     * itself still reaches a caller where the source put it - on the result of a <em>successful</em> exchange,
+     * never on an error body.</p>
      *
-     * <p>{@code recordKey} carries the key that was not found. That is an account or customer
-     * identifier - the same value the caller already supplied - and is neither a card number nor a
-     * social security number nor any other member of the masked set.</p>
+     * <p><strong>Nothing is relayed from the exception, and that is a correction rather than a
+     * tightening.</strong> On this resource group the service does not put a screen sentence on the
+     * exception at all: {@code AccountViewService} records the file status {@code '23'} for an empty
+     * repository result and hands it to {@code FileStatusMapper}, whose composed message names the
+     * operation, the logical file and the legacy status. Relaying it disclosed all three, and
+     * {@code recordType} and {@code recordKey} disclosed the dataset and the key beside it - and on the
+     * customer link that key is an identifier the caller never supplied, since it is resolved server side
+     * from the cross-reference. All four now go to the {@code WARN} log only, where they are subject to the
+     * masking configuration and reachable from the correlation identifier, and the body carries
+     * {@value #NOT_FOUND_PROBLEM_DETAIL}, {@value #ERROR_CODE_NOT_FOUND}, the resource-specific
+     * {@link PublicErrorCode#ACCOUNT_RECORD_NOT_FOUND} and that correlation identifier.</p>
      *
      * @param notFound the missing-record failure raised by one of the three links.
-     * @return {@code 404} carrying a problem detail, plus the record type and key when the throwing site
-     * named them
+     * @return {@code 404} carrying the fixed detail, the stable error codes and the correlation identifier,
+     * and never the record type, the key or the composed diagnostic
      */
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(final RecordNotFoundException notFound) {
 
-        final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.NOT_FOUND, NOT_FOUND_PROBLEM_DETAIL);
         problem.setTitle(NOT_FOUND_PROBLEM_TITLE);
+        problem.setProperty(PUBLIC_CODE_PROPERTY, PublicErrorCode.ACCOUNT_RECORD_NOT_FOUND.code());
 
-        final String notFoundMessage = notFound.getMessage();
-        if (notFoundMessage != null) {
-            problem.setDetail(notFoundMessage);
-        }
-        notFound.recordType().ifPresent(recordType -> problem.setProperty(RECORD_TYPE_PROPERTY, recordType));
-        notFound.recordKey().ifPresent(recordKey -> problem.setProperty(RECORD_KEY_PROPERTY, recordKey));
+        // The composed message, the record type and the record key all go to the log and none to the body.
+        // The message is the status mapper's internal diagnostic on this resource group; the record type is a
+        // logical file or alternate-index path name; the key, echoed on a 404, is what an enumeration attempt
+        // needs. The correlation identifier in the body is how a caller reporting this reaches these lines.
+        // The public code is logged as well as returned, and that is the whole point of logging it: a caller
+        // reports the code and the correlation identifier from the body, and this line is what turns that pair
+        // into the record type, the key and the status mapper's diagnostic. Emitting the code costs nothing in
+        // disclosure - it is already in the response - and without it the two channels share only the
+        // correlation identifier, which an aggregator may sample away.
+        LOG.warn("Answered an account request with 404, code {}, for record type {} key {}: {}",
+                PublicErrorCode.ACCOUNT_RECORD_NOT_FOUND.code(),
+                notFound.recordType().orElse("unspecified"), notFound.recordKey().orElse("unspecified"),
+                notFound.getMessage());
 
-        LOG.warn("Answered an account request with 404 for record type {}",
-                notFound.recordType().orElse("unspecified"));
-
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(withPublicEnvelope(problem, ERROR_CODE_NOT_FOUND));
     }
 
     /**
@@ -1292,10 +1605,11 @@ public class AccountController {
             problem.setProperty(OUTCOME_PROPERTY, outcome);
             problem.setProperty(CHANGE_ACTION_PROPERTY, String.valueOf(outcome.getChangeActionCode()));
         }
+        // The affected record names the dataset the lock or the rewrite failed against, so it is logged
+        // below and not returned. The outcome and the change action above are screen state, not internals:
+        // they are the five-way outcome and the ACUP-CHANGE-ACTION marker the failed turn would have left on
+        // the map, and a client needs both to reproduce the source's behaviour.
         final String affectedRecord = conflict.getAffectedRecord();
-        if (affectedRecord != null) {
-            problem.setProperty(AFFECTED_RECORD_PROPERTY, affectedRecord);
-        }
 
         if (outcome == ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED) {
             LOG.debug("Answered transaction {} with {}: the {} action was not asserted",
@@ -1305,7 +1619,7 @@ public class AccountController {
                     UPDATE_TRANSACTION_ID, UPDATE_PROGRAM, status.value(), outcome, affectedRecord);
         }
 
-        return ResponseEntity.status(status).body(problem);
+        return ResponseEntity.status(status).body(withPublicEnvelope(problem, ERROR_CODE_UPDATE_CONFLICT));
     }
 
     /**
@@ -1315,11 +1629,18 @@ public class AccountController {
      * writes sit at the head of most of them. A refusal is a genuine conflict between the submitted state
      * and the state of the database rather than a malformed request, which is what distinguishes this
      * from the {@code 400} path. The detail is fixed and names no value, because the payload carries
-     * personally-identifiable data; the {@code constraintName} and {@code relation} properties give a
-     * client and an operator everything actionable without echoing anything submitted.</p>
+     * personally-identifiable data.</p>
+     *
+     * <p><strong>The constraint name and the relation are logged rather than returned.</strong> They are the
+     * schema's own identifiers, and a client can act on neither: returning them published a table name and a
+     * named constraint on it, which is a map of the store, and both are free to change with any migration, so
+     * neither could be part of an API contract. The operator still has both, at {@code WARN}, joined to the
+     * caller's report by the correlation identifier the body carries, and the response carries the stable
+     * pair - {@link PublicErrorCode#ACCOUNT_WRITE_REFUSED} in {@code code} and
+     * {@value #ERROR_CODE_CONSTRAINT} in {@code errorCode}.</p>
      *
      * @param violation the constraint refusal, whose constraint name and relation may each be null.
-     * @return {@code 409} carrying a problem detail, plus the constraint name and relation when known
+     * @return {@code 409} carrying the fixed detail, the stable error codes and the correlation identifier
      */
     @ExceptionHandler(DataIntegrityException.class)
     public ResponseEntity<ProblemDetail> handleDataIntegrity(final DataIntegrityException violation) {
@@ -1327,20 +1648,19 @@ public class AccountController {
         final ProblemDetail problem =
                 ProblemDetail.forStatusAndDetail(HttpStatus.CONFLICT, INTEGRITY_PROBLEM_DETAIL);
         problem.setTitle(INTEGRITY_PROBLEM_TITLE);
+        problem.setProperty(PUBLIC_CODE_PROPERTY, PublicErrorCode.ACCOUNT_WRITE_REFUSED.code());
 
-        final String constraintName = violation.getConstraintName();
-        if (constraintName != null) {
-            problem.setProperty(CONSTRAINT_NAME_PROPERTY, constraintName);
-        }
-        final String relation = violation.getRelation();
-        if (relation != null) {
-            problem.setProperty(RELATION_PROPERTY, relation);
-        }
+        // The constraint name and the relation are logged, not returned. They are the schema's own
+        // identifiers: together they disclose a table name and a named constraint on it, which is a map of
+        // the store rather than anything the caller can act on. The public code is logged beside them so the
+        // entry can be found from the code a caller quotes.
+        LOG.warn("Answered an account request with 409 and public code {}: constraint {} on relation {} "
+                        + "refused the write",
+                PublicErrorCode.ACCOUNT_WRITE_REFUSED.code(), violation.getConstraintName(),
+                violation.getRelation(), violation);
 
-        LOG.warn("Answered an account request with 409: constraint {} on relation {} refused the write",
-                constraintName, relation, violation);
-
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_CONSTRAINT));
     }
 
     /**
@@ -1350,7 +1670,7 @@ public class AccountController {
      * {@code app/jcl/OPENFIL.jcl} and {@code app/jcl/CLOSEFIL.jcl} controlled, and in the target means
      * the database is unreachable or the migrations have not been applied. It is a transient condition
      * that a client may sensibly retry, so it is reported as unavailability rather than as a fault. The
-     * detail is fixed; {@code resourceName} names the dataset.</p>
+     * detail is fixed and the dataset is named on the log rather than in the body.</p>
      *
      * @param unavailable the file-unavailable failure.
      * @return {@code 503} carrying a problem detail, plus the resource name when the throwing site named
@@ -1363,30 +1683,30 @@ public class AccountController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, UNAVAILABLE_PROBLEM_DETAIL);
         problem.setTitle(UNAVAILABLE_PROBLEM_TITLE);
 
-        unavailable.resourceName()
-                .ifPresent(resourceName -> problem.setProperty(RESOURCE_NAME_PROPERTY, resourceName));
-
+        // The dataset name is logged, not returned.
         LOG.error("Answered an account request with 503: resource {} is not available",
                 unavailable.resourceName().orElse("unspecified"), unavailable);
 
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
     }
 
     /**
      * Maps the {@code FILE STATUS '9x'} family onto {@code 502 Bad Gateway}.
      *
      * <p>A physical or logical input-output failure is a fault in the store behind this service rather
-     * than in the request or in this service, which is exactly what a gateway status describes. The
-     * {@code expandedStatus} property carries the four-character rendering that
-     * {@code 9910-DISPLAY-IO-STATUS} produced in the legacy corpus - the first byte copied through and
-     * the second expanded to three digits whenever the status was non-numeric or began with
-     * {@code '9'} - so an operator reading the response sees the same four characters the legacy job log
-     * showed. {@code logicalFileName} and {@code operation} name the dataset and the verb.</p>
+     * than in the request or in this service, which is exactly what a gateway status describes.</p>
+     *
+     * <p><strong>The expanded status, the logical file and the operation are logged rather than
+     * returned.</strong> The four-character rendering that {@code 9910-DISPLAY-IO-STATUS} produced - the
+     * first byte copied through and the second expanded to three digits whenever the status was
+     * non-numeric or began with {@code '9'} - remains available to an operator, on the {@code ERROR} log,
+     * beside the dataset and the verb. What no longer happens is returning the three of them together to
+     * the caller, which said which internal dataset failed which verb with which legacy status.</p>
      *
      * @param failure the input-output failure, whose expanded status is never null while the file name
      * and operation may each be null.
-     * @return {@code 502} carrying a problem detail, plus the expanded status and, when known, the
-     * logical file name and the operation
+     * @return {@code 502} carrying the fixed detail, the stable error code and the correlation identifier
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccessFailure(final FileAccessException failure) {
@@ -1394,21 +1714,13 @@ public class AccountController {
         final ProblemDetail problem =
                 ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, IO_PROBLEM_DETAIL);
         problem.setTitle(IO_PROBLEM_TITLE);
-        problem.setProperty(EXPANDED_STATUS_PROPERTY, failure.getExpandedStatus());
 
-        final String logicalFileName = failure.getLogicalFileName();
-        if (logicalFileName != null) {
-            problem.setProperty(LOGICAL_FILE_NAME_PROPERTY, logicalFileName);
-        }
-        final String operation = failure.getOperation();
-        if (operation != null) {
-            problem.setProperty(OPERATION_PROPERTY, operation);
-        }
-
+        // The expanded status, the logical file and the operation are logged, not returned.
         LOG.error("Answered an account request with 502: status {} on file {} during {}",
-                failure.getExpandedStatus(), logicalFileName, operation, failure);
+                failure.getExpandedStatus(), failure.getLogicalFileName(), failure.getOperation(), failure);
 
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
     }
 
     /**
@@ -1439,14 +1751,14 @@ public class AccountController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // Logged, not returned: 999 and 12 are internals of the terminating path.
+        LOG.error("An account operation abended: code {} returnCode {} culprit {} reason {}",
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("An account operation abended: code {} culprit {} reason {}", carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -1476,6 +1788,88 @@ public class AccountController {
 
         LOG.error("An account operation failed with a typed CardDemo exception", failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
+    }
+
+    /**
+     * The stable, public error codes this controller publishes in the {@code code} property.
+     *
+     * <p>These exist because the alternative is a caller branching on prose or on the name of a database
+     * object. A code is a promise: the set may grow, but a member's spelling and meaning do not change, and
+     * nothing about the server's schema, constraints or record keys is encoded in it. That is precisely what
+     * {@code recordType}, {@code recordKey}, {@code constraintName} and {@code relation} could not offer -
+     * they described the internals, they moved with every migration, and they let a 404 or a 409 be used to
+     * enumerate what exists on the other side of the boundary.
+     *
+     * <p>The codes are deliberately coarse. A caller needs to know whether to fix its request, re-read and
+     * retry, or escalate; it does not need to know which of ten foreign keys refused a write. An operator who
+     * does need that finds it in the log entry carrying the same correlation identifier as the response.
+     */
+    private enum PublicErrorCode {
+
+        /**
+         * Some link of the account lookup chain found no row. Which link is deliberately not distinguished.
+         */
+        ACCOUNT_RECORD_NOT_FOUND("ACCOUNT_RECORD_NOT_FOUND"),
+
+        /**
+         * A referential constraint refused the write. Which constraint, and on which relation, is deliberately
+         * not distinguished.
+         */
+        ACCOUNT_WRITE_REFUSED("ACCOUNT_WRITE_REFUSED");
+
+        /** The wire form, which is part of the published contract. */
+        private final String code;
+
+        /**
+         * Binds a constant to the exact text that reaches the wire.
+         *
+         * @param code the published wire form; never {@code null} and never derived from the constant name,
+         *     because a rename must not be able to change a value a client matches on
+         */
+        PublicErrorCode(final String code) {
+            this.code = code;
+        }
+
+        /**
+         * The wire form of this code.
+         *
+         * @return the code as it appears in the {@code code} property; never {@code null}
+         */
+        String code() {
+            return this.code;
+        }
     }
 }

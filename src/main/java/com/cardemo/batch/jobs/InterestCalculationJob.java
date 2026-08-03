@@ -80,6 +80,7 @@ import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.entity.TransactionCategoryBalance;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.TransactionSource;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
@@ -141,8 +142,10 @@ import io.awspring.cloud.s3.S3Operations;
  * updated</strong>: its accumulated interest is never added to {@code ACCT-CURR-BAL} and its two cycle
  * counters are never reset. Because {@code app/cbl/CBTRN02C.cbl:L403}-{@code :L405} computes the
  * over-limit test by subtracting the cycle-debit accumulator, that one account's over-limit arithmetic
- * behaves differently in {@code DailyTransactionPostingJob} on the following posting cycle. That is
- * the behaviour of the system of record and it is reproduced exactly.
+ * behaves differently on the following posting cycle - in the planned
+ * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, which is named by the migration plan and is
+ * not authored at this commit, this job being the only one {@code batch/jobs} holds. That is the behaviour
+ * of the system of record and it is reproduced exactly.
  * {@code InterestCalculationProcessor.updateAccountAtEndOfFile()} retains the branch as a marked,
  * unreachable no-op so the paragraph map stays provable - it lives there, with the rest of the
  * {@code :L185}-{@code :L232} loop body it belongs to, rather than being duplicated here.
@@ -163,7 +166,7 @@ import io.awspring.cloud.s3.S3Operations;
  * at all, so that program has no flush construct to reason about.
  *
  * <p><b>Numbering divergence, severity Low.</b> The folder requirements number this finding 3 while a
- * sibling prompt numbers it 2. It is recorded <em>once</em>, in {@code DECISION_LOG.md}, against the
+ * sibling prompt numbers it 2. It is owed a <em>single</em> entry in the planned {@code DECISION_LOG.md}, against the
  * Agent Action Plan claim it corrects. Neither number is asserted here, because asserting either would
  * contradict the other source.
  *
@@ -200,17 +203,17 @@ import io.awspring.cloud.s3.S3Operations;
  *   <li><b>Only the latest generation is merged.</b> {@code app/jcl/COMBTRAN.jcl} consumes the current
  *       generation reference, so an interest run superseded by a later one never reaches the
  *       cluster.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Finding 3 - Medium - the property namespace is {@code carddemo.aws.s3}, not {@code carddemo.s3}</h2>
  *
  * <p>A sibling prompt cites the bucket property as {@code carddemo.s3.*}. The namespace that
- * {@code src/main/resources/application.yml:L891}-{@code :L900} actually declares carries the
+ * {@code src/main/resources/application.yml} actually declares carries the
  * {@code aws} segment: {@code carddemo.aws.s3.batch-output-bucket}, backed by the environment variable
  * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}. The generation prefix is
  * {@code carddemo.aws.s3.gdg-prefixes.systran}, whose shipped value is {@code gdg/systran} and whose
  * comment names {@code app/jcl/DEFGDGB.jcl:L49} as its origin. This class binds the declared names.
- * The divergence is recorded in {@code DECISION_LOG.md} under clause F.
+ * The divergence is owed an entry in the planned {@code DECISION_LOG.md} under clause F.
  *
  * <h2>Finding 4 - Low - three locator corrections</h2>
  *
@@ -279,8 +282,9 @@ import io.awspring.cloud.s3.S3Operations;
  * {@code (0)} read resolves to the newest generation. <b>The concrete keys are published into the
  * {@link JobExecution#getExecutionContext() job execution context}</b> under
  * {@value #SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY} and
- * {@value #SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY} so a later job or step reads back exactly what this
- * run created and <strong>never re-resolves "latest" mid-pipeline.</strong>
+ * {@value #SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY} with the indexed entries that count describes, so a
+ * later job or step reads back exactly what this run created and <strong>never re-resolves "latest"
+ * mid-pipeline.</strong>
  *
  * <p>Side effects beyond that object: the previous account's row is rewritten on each control break by
  * the processor, and {@link MetricsConfig#countRecordProcessed()} is advanced once per emitted record.
@@ -322,7 +326,7 @@ import io.awspring.cloud.s3.S3Operations;
  *   <dt>The job is rejected before the step runs</dt>
  *   <dd>{@link ParmDateValidator} refused the date parameter. The message names the rule that failed
  *       and the length observed; it never echoes a credential and never truncates silently.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Exit-status contract</h2>
  *
@@ -412,16 +416,14 @@ import io.awspring.cloud.s3.S3Operations;
  * They are documented from here because a reader of the <em>job</em> is who needs warning that no final
  * flush exists; they are not re-declared here, because a second never-invoked copy of a method the
  * processor already owns would be the very dead code and duplication clauses B and C forbid. Severity
- * of that placement decision: <b>Low</b>, recorded in {@code DECISION_LOG.md}.
+ * of that placement decision: <b>Low</b>, owed an entry in the planned {@code DECISION_LOG.md}.
  *
- * <p><b>Parity governs</b>, because clause B forbids <em>untracked</em> dead code and deferred-work
- * markers "without owners or tracking reference". Both members carry, in the processor, an explicit
- * {@code intentional-no-op} marker, a {@code path:line} citation and an entry in
- * {@code DECISION_LOG.md} and
- * {@code TRACEABILITY_MATRIX.md}. Neither is abandoned residue; each is a documented faithful
- * reproduction of a paragraph that exists in the system of record. Deleting either would produce code
- * that is marginally tidier and demonstrably less traceable, failing a stated acceptance criterion to
- * satisfy a stylistic one.
+ * <p><b>Parity governs</b>, because clause B forbids <em>untracked</em> dead code and deferred-work markers "without
+ * owners or tracking reference". Both members carry, in the processor, an explicit {@code intentional-no-op} marker,
+ * a {@code path:line} citation and an entry in the planned {@code DECISION_LOG.md} and
+ * {@code TRACEABILITY_MATRIX.md}. Neither is abandoned residue; each is a documented faithful reproduction of a
+ * paragraph that exists in the system of record. Deleting either would produce code that is marginally tidier and
+ * demonstrably less traceable, failing a stated acceptance criterion to satisfy a stylistic one.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -462,8 +464,9 @@ import io.awspring.cloud.s3.S3Operations;
  *
  * <p>Build with {@code ./mvnw -B -ntp clean compile} and verify with
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}, on JDK 25 and Maven 3.9.11. The
- * compiler runs {@code -Xlint:all -Werror}, so a single warning - including a single unused import or
- * one deprecated builder overload - fails the build.
+ * compiler runs {@code -Xlint:all -Werror}, so a single warning {@code javac} emits - one deprecated builder
+ * overload, one raw type, one dangling documentation comment - fails the build. An unused import is not one
+ * of them: {@code javac} 25 publishes no {@code unused} lint key, so that prohibition is review-enforced.
  *
  * <p>Nothing runs on startup: {@code spring.batch.job.enabled} is {@code false} in
  * {@code application.yml}, so the job is launched explicitly, by the pipeline orchestrator or by a
@@ -504,17 +507,17 @@ import io.awspring.cloud.s3.S3Operations;
  *       runtime with an accessible socket, for PostgreSQL and for the object-storage emulator. Where
  *       one is unavailable the evidence must state the prerequisite; <strong>a pass is never
  *       fabricated.</strong></li>
- * </ul>
+ *   </ul>
  *
  * <h2>Bean registration</h2>
  *
  * <p>A plain {@link Configuration} class picked up by the component scan of
  * {@code com.cardemo.CardDemoApplication}. It declares exactly three beans - a {@link Step}, a
- * {@link Flow} and a {@link Job} - all uniquely prefixed so nothing collides with a future
- * {@code com.cardemo.config.BatchConfig}. It declares <strong>no</strong> infrastructure: the job
- * repository, transaction manager, repositories, object-storage client and meter registry are all
- * injected. The Spring Batch enablement annotation appears nowhere: under Spring Boot 3 it
- * <em>disables</em> batch auto-configuration and would strip away the very {@code JobRepository} this
+ * {@link Flow} and a {@link Job} - all uniquely prefixed so nothing collides with the planned
+ * {@code com.cardemo.config.BatchConfig}. It declares <strong>no</strong> infrastructure: the job repository,
+ * transaction manager, repositories, object-storage client and meter registry are all injected. The Spring Batch
+ * enablement annotation appears nowhere: under Spring Boot 3 it <em>disables</em> batch auto-configuration and would
+ * strip away the very {@code JobRepository} this
  * class depends on.
  * The decider and both listeners are plain nested objects rather than beans, so the container holds no
  * extra singleton on their behalf.
@@ -616,17 +619,36 @@ public class InterestCalculationJob {
             "carddemo.systran.generation.prefix";
 
     /**
-     * Job execution context entry holding the concrete object keys this run created, in creation
-     * order, separated by {@value #CONTEXT_KEY_SEPARATOR}. The context serialiser stores strings
-     * safely, and a key never contains the separator because
-     * {@link #composeObjectKey(long, long)} builds it from digits, the configured prefix and a fixed
-     * suffix.
+     * Job execution context entry holding <em>how many</em> object keys this run created. The keys themselves
+     * live one per entry under {@link #SYSTRAN_GENERATION_KEYS_INDEX_PREFIX}, the entry for index {@code n}
+     * being that prefix followed by {@code n}, rendered by {@link #generationKeysIndexEntry(int)}. Reading the
+     * generation back means reading this count and then that many indexed entries, which yields the keys in
+     * creation order.
+     *
+     * <p><b>Finding M-07, severity Medium, RESOLVED.</b> This entry used to hold every key in one string joined
+     * by a comma, and the Javadoc justified that by asserting a key "never contains the separator because it is
+     * built from digits, the configured prefix and a fixed suffix". <b>That justification was false.</b> The
+     * prefix is {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value, and
+     * {@link #normalisePrefix(String)} only strips trailing separators and rejects an empty result - a prefix
+     * written {@code gdg,systran} passes validation and silently splits one key into two on read, so a
+     * downstream step would resolve a generation to object names that were never created.
+     *
+     * <p>The remedy is structural rather than another validation rule, and that choice is the point. Rejecting
+     * the comma would make correctness depend on a constraint this class imposes on configuration it does not
+     * own, and any future delimiter change would re-open the hole. An indexed list has no delimiter at all, so
+     * there is no character a prefix must avoid: the hazard is removed rather than guarded. It is also the
+     * protocol {@code TransactionWriter}, {@code RejectWriter} and {@code StatementWriter} already use for the
+     * identical problem, so all four components publish their created keys the same way.
      */
-    private static final String SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY =
-            "carddemo.systran.generation.keys";
+    public static final String SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY =
+            "carddemo.systran.generation.keys.count";
 
-    /** Separator between the created object keys held in the job execution context. */
-    private static final String CONTEXT_KEY_SEPARATOR = ",";
+    /**
+     * Prefix of the indexed job execution context entries described on
+     * {@link #SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY}. The entry for index {@code n} is this prefix
+     * followed by {@code n}, rendered by {@link #generationKeysIndexEntry(int)}.
+     */
+    public static final String SYSTRAN_GENERATION_KEYS_INDEX_PREFIX = "carddemo.systran.generation.keys.";
 
     /**
      * Zero-padding width of both numeric key segments. Nineteen digits is the widest a signed 64-bit
@@ -658,15 +680,29 @@ public class InterestCalculationJob {
      */
     private static final Charset FIXED_WIDTH_CHARSET = StandardCharsets.ISO_8859_1;
 
-    /** MDC key carrying the Spring Batch job instance identifier, consumed by {@code logback-spring.xml}. */
-    private static final String MDC_JOB_INSTANCE_ID = "jobInstanceId";
-
     /**
-     * MDC key carrying the correlation identifier, consumed by {@code logback-spring.xml}. Batch work
-     * never passes through the HTTP-scoped correlation filter, so this class supplies the value itself;
-     * otherwise every batch event would carry an empty correlation identifier.
+     * The diagnostic context entries this job's listener owns for the duration of a run, captured on entry so
+     * that {@code afterJob} can put them back instead of deleting them.
+     *
+     * <p><b>Finding M-03, severity Medium, RESOLVED - two defects, one root cause.</b> This class used to
+     * declare its own {@code "jobInstanceId"} and {@code "correlationId"} literals, duplicating the keys
+     * {@link CorrelationIdFilter} publishes as {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID} and
+     * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID}, and it ended a run with an unconditional
+     * {@code MDC.remove} on both. The duplication meant a key could be renamed in one place and silently
+     * diverge from {@code logback-spring.xml}; the unconditional removal was worse, because Spring Batch runs
+     * jobs on pooled threads and a job launched from inside a request, or a partitioned step whose parent
+     * already labelled the thread, had its caller's context destroyed. Note the asymmetry that made it a
+     * defect rather than a style point: the old {@code beforeJob} deliberately <em>respected</em> an inherited
+     * correlation identifier by only setting one when absent, and then {@code afterJob} deleted the very value
+     * it had just taken care not to overwrite.
+     *
+     * <p>Held in a {@link ThreadLocal} rather than a field because the listener is documented as stateless and
+     * must stay that way: the job bean is a singleton, so an instance field would be shared across concurrent
+     * executions - the same defect class as the writers' step-scope finding. A thread-local has exactly the
+     * scope of the thing it is snapshotting, since {@link MDC} is itself thread-confined, and it is removed in
+     * the same {@code finally} that restores, so nothing is retained on a pooled thread.
      */
-    private static final String MDC_CORRELATION_ID = "correlationId";
+    private static final ThreadLocal<DiagnosticContextSnapshot> DIAGNOSTIC_SNAPSHOT = new ThreadLocal<>();
 
     /** Logical name of the category-balance dataset, from {@code app/jcl/INTCALC.jcl:L27}. */
     private static final String DD_TCATBALF = "TCATBALF";
@@ -688,20 +724,19 @@ public class InterestCalculationJob {
      *
      * <p><strong>Finding - severity Medium.</strong> This DD is <em>supplied but never referenced</em>.
      * {@code XREFFIL1} occurs exactly once in the entire frozen corpus - the DD statement at
-     * {@code app/jcl/INTCALC.jcl:L31} - and no {@code SELECT} in any program assigns to it. The
-     * {@code FILE-CONTROL} block of {@code CBACT04C} declares a single cross-reference file, assigned to
-     * {@code XREFFILE} at {@code app/cbl/CBACT04C.cbl:L34}, and reaches the alternate key through
-     * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID} at {@code :L38} on that one file definition - not
-     * through a second DD. The agent brief describes {@code XREFFIL1} as "a second logical view of the
-     * same dataset"; that is true of the JCL's intent but not of the program's behaviour, so the brief is
-     * corrected here rather than followed. Retained as a named constant so the unreferenced allocation is
-     * traceable and is reported at {@code DEBUG} by
-     * {@link #openCrossReferenceFile()} instead of vanishing silently; recorded in
+     * {@code app/jcl/INTCALC.jcl:L31} - and no {@code SELECT} in any program assigns to it. The {@code FILE-CONTROL}
+     * block of {@code CBACT04C} declares a single cross-reference file, assigned to {@code XREFFILE} at
+     * {@code app/cbl/CBACT04C.cbl:L34}, and reaches the alternate key through
+     * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID} at {@code :L38} on that one file definition - not through a
+     * second DD. The agent brief describes {@code XREFFIL1} as "a second logical view of the same dataset"; that is
+     * true of the JCL's intent but not of the program's behaviour, so the brief is corrected here rather than
+     * followed. Retained as a named constant so the unreferenced allocation is traceable and is reported at
+     * {@code DEBUG} by {@link #openCrossReferenceFile()} instead of vanishing silently; owed an entry in the planned
      * {@code DECISION_LOG.md}.
      *
      * <p>The Java consequence is nil: both DDs would collapse onto
      * {@link com.cardemo.repository.CardCrossReferenceRepository} regardless - the primary-key finder for
-     * the base view and {@code findByAccountIdOrderByCardNumberAsc} for the alternate key - so the
+     * the base view and {@code findFirstByAccountIdOrderByCardNumberAsc} for the alternate key - so the
      * correction changes the diagnostic identity only, never an access path.
      */
     private static final String DD_XREFFIL1 = "XREFFIL1";
@@ -764,7 +799,7 @@ public class InterestCalculationJob {
      * <b>This is a legacy copy-and-paste defect in the diagnostic text and it is preserved verbatim,
      * not repaired.</b> The literal is part of the observable output the parity comparison is measured
      * against, so correcting it here would register as a diff. Severity <b>Medium</b>: an operator
-     * reading this line is pointed at the wrong dataset. It is recorded in {@code DECISION_LOG.md}
+     * reading this line is pointed at the wrong dataset. It is owed an entry in the planned {@code DECISION_LOG.md}
      * alongside the other preserved legacy defects.
      */
     private static final String MSG_ERROR_OPENING_DISCGRP = "ERROR OPENING DALY REJECTS FILE";
@@ -982,7 +1017,7 @@ public class InterestCalculationJob {
      * {@code app/jcl/INTCALC.jcl:L29}-{@code :L30} and again as the alternate-index path
      * {@code XREFFIL1} at {@code :L31}-{@code :L32}. Both logical views collapse onto this one
      * repository - the primary-key finder for the base view, and
-     * {@link CardCrossReferenceRepository#findByAccountIdOrderByCardNumberAsc} for the path, matching
+     * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc} for the path, matching
      * {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID} at {@code app/cbl/CBACT04C.cbl:L38} and the
      * {@code READ ... KEY IS FD-XREF-ACCT-ID} at {@code :L396}.
      */
@@ -1040,8 +1075,9 @@ public class InterestCalculationJob {
      * The versioned output bucket, from {@code carddemo.aws.s3.batch-output-bucket}.
      *
      * <p><b>This is the one binding in this class with no literal default, deliberately.</b>
-     * {@code src/main/resources/application.yml:L899} declares it as {@code ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET}}
-     * with no fallback and states the reason in its own comment at {@code :L895}-{@code :L897}: a missing
+     * {@code src/main/resources/application.yml} declares that property as
+     * {@code ${CARDDEMO_S3_BATCH_OUTPUT_BUCKET}} with no fallback, and states the reason in its own
+     * accompanying comment: a missing
      * bucket name must fail startup rather than let a run write "into whatever bucket happens to exist".
      * Supplying a default here would be doubly wrong - it would be unreachable, because the property is
      * always defined by that file and an unset environment variable fails placeholder resolution before
@@ -1049,7 +1085,7 @@ public class InterestCalculationJob {
      * to the wrong location, which is precisely what clause D's least-privilege standard forbids. The
      * agent brief's instruction to "put a documented default on every {@code @Value}" is therefore
      * honoured for the job name, the chunk size and the generation prefix, and consciously not honoured
-     * for the bucket. Severity of the divergence: <b>Low</b>; recorded in {@code DECISION_LOG.md}.
+     * for the bucket. Severity of the divergence: <b>Low</b>; owed an entry in the planned {@code DECISION_LOG.md}.
      */
     private final String batchOutputBucket;
 
@@ -1403,7 +1439,7 @@ public class InterestCalculationJob {
      * arithmetic ({@link FileStatusMapper#applResultForGuard(String)}) and of the status rendering
      * ({@link FileStatusMapper#displayIoStatus(String)}); only the choice of terminal type is local, and
      * it is local because the source made it so. Severity of the divergence from the sibling precedent:
-     * Low, and recorded in {@code DECISION_LOG.md}.
+     * Low, and owed an entry in the planned {@code DECISION_LOG.md}.
      *
      * @param ioStatus the status the operation reported, {@code '00'} on success
      * @param logicalName the DD name, for the success trace
@@ -1465,7 +1501,7 @@ public class InterestCalculationJob {
      * reproduced; the wide gap in the source is source formatting, not output.
      *
      * <p>And the probe deliberately goes through
-     * {@link CardCrossReferenceRepository#findByAccountIdOrderByCardNumberAsc} rather than the primary
+     * {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc} rather than the primary
      * key, because the JCL supplies this dataset twice - as the base cluster {@code XREFFILE} at
      * {@code app/jcl/INTCALC.jcl:L29} and as the alternate-index path {@code XREFFIL1} at {@code :L31} -
      * and it is the path that the run actually reads, matching
@@ -1479,7 +1515,9 @@ public class InterestCalculationJob {
         String ioStatus = SUCCESS_STATUS;
         RuntimeException failure = null;
         try {
-            crossReferenceRepository.findByAccountIdOrderByCardNumberAsc(
+            // A reachability probe only; the row is never read. LIMIT 1 keeps the probe from transporting
+            // a result set it discards.
+            crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(
                     Long.valueOf(OPEN_PROBE_ACCOUNT_ID));
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
@@ -1593,15 +1631,14 @@ public class InterestCalculationJob {
      * at {@code :L245} calls the same dataset a "TRANSACTION CATEGORY BALANCE"; both spellings are
      * preserved as written.
      *
-     * <p><b>Mechanism substitution, and it is a deviation worth naming.</b> {@code CLOSE} releases a VSAM
-     * ACB and can report a status; a JPA repository has no {@code close}, because the container owns
-     * connection release and does it whether this paragraph runs or not. Deleting the paragraph would
-     * break the paragraph map, and inventing a guard that can never fail would be exactly the untracked
-     * dead code clause B forbids. So the paragraph is realised as <em>release and confirm</em>: the same
-     * bounded probe as the open, which makes the guard genuinely reachable - a run that exhausted or broke
-     * the connection pool reports {@code '35'} here and abends, which is the class of end-of-run failure
-     * the source's close guard exists to catch. Cost is one bounded query per dataset per run. Recorded in
-     * {@code DECISION_LOG.md}.
+     * <p><b>Mechanism substitution, and it is a deviation worth naming.</b> {@code CLOSE} releases a VSAM ACB and can
+     * report a status; a JPA repository has no {@code close}, because the container owns connection release and does
+     * it whether this paragraph runs or not. Deleting the paragraph would break the paragraph map, and inventing a
+     * guard that can never fail would be exactly the untracked dead code clause B forbids. So the paragraph is
+     * realised as <em>release and confirm</em>: the same bounded probe as the open, which makes the guard genuinely
+     * reachable - a run that exhausted or broke the connection pool reports {@code '35'} here and abends, which is
+     * the class of end-of-run failure the source's close guard exists to catch. Cost is one bounded query per dataset
+     * per run. Owed an entry in the planned {@code DECISION_LOG.md}.
      *
      * @throws FatalProcessingException if the driving dataset is no longer reachable at end of run
      */
@@ -1632,7 +1669,9 @@ public class InterestCalculationJob {
         String ioStatus = SUCCESS_STATUS;
         RuntimeException failure = null;
         try {
-            crossReferenceRepository.findByAccountIdOrderByCardNumberAsc(
+            // A reachability probe only; the row is never read. LIMIT 1 keeps the probe from transporting
+            // a result set it discards.
+            crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(
                     Long.valueOf(OPEN_PROBE_ACCOUNT_ID));
         } catch (final CardDemoException alreadyTyped) {
             throw alreadyTyped;
@@ -1728,15 +1767,18 @@ public class InterestCalculationJob {
             // reads this run's (empty) generation instead of resolving "latest" to an earlier one.
             context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY,
                     composeGenerationPrefix(jobExecution.getJobInstance().getInstanceId()));
-            context.putString(SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY, "");
+            context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L);
             LOG.info("{} closed with no generation object; every disclosure rate was zero, so "
                     + "app/cbl/CBACT04C.cbl:L214 suppressed every write", DD_TRANSACT);
-        } else if (context.getString(SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY, "").isEmpty()) {
+        } else if (publishedGenerationKeyCount(context) == 0) {
             ioStatus = OBJECT_STORE_IO_STATUS;
         } else {
-            LOG.info("{} closed; generation {} holds objects {}", DD_TRANSACT,
+            // The count, not the keys. A key carries the configured prefix and the generation, and this line
+            // is an operator-visible end-of-run marker; the exact object names are already in the context for
+            // a downstream step that needs them, so naming them again here only widens what a log carries.
+            LOG.info("{} closed; generation {} holds {} objects", DD_TRANSACT,
                     context.getString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY),
-                    context.getString(SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY));
+                    Integer.valueOf(publishedGenerationKeyCount(context)));
         }
 
         guardFileOperation(ioStatus, DD_TRANSACT, MSG_ERROR_CLOSING_TRANFILE, REASON_CLOSE_FAILED, failure);
@@ -1885,10 +1927,10 @@ public class InterestCalculationJob {
      * catalogue is updated atomically at close.
      *
      * <p>The context is per-execution, which is what makes the accumulation here correct without any field
-     * to hold it - the reason the ordinal counter lives in the step execution context too. Keys are
-     * appended in creation order and separated by {@value #CONTEXT_KEY_SEPARATOR}, which no key can
-     * contain because {@link #composeObjectKey(long, long)} builds them from digits, the configured prefix
-     * and a fixed base name and suffix.
+     * to hold it - the reason the ordinal counter lives in the step execution context too. Each key is stored
+     * in its own entry, indexed by creation order, with the count kept alongside it; see
+     * {@link #SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY} for the read protocol and for the finding that
+     * replaced the delimited form this method used to write.
      *
      * @param jobExecution the running execution whose context is written
      * @param jobInstanceId the instance identifier forming the generation segment
@@ -1900,9 +1942,38 @@ public class InterestCalculationJob {
         final ExecutionContext context = jobExecution.getExecutionContext();
         context.putString(SYSTRAN_GENERATION_PREFIX_CONTEXT_ENTRY,
                 composeGenerationPrefix(jobInstanceId));
-        final String published = context.getString(SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY, "");
-        context.putString(SYSTRAN_GENERATION_KEYS_CONTEXT_ENTRY,
-                published.isEmpty() ? objectKey : published + CONTEXT_KEY_SEPARATOR + objectKey);
+        final int published = publishedGenerationKeyCount(context);
+        context.putString(generationKeysIndexEntry(published), objectKey);
+        context.putLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, published + 1L);
+    }
+
+    /**
+     * Renders the job execution context entry name holding the object key at {@code index}.
+     *
+     * <p>Rendered with {@link Integer#toString(int)} rather than a formatted width, because the entry name is
+     * looked up by a reader that counts up from zero, never sorted as text. See
+     * {@link #SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY} for the read protocol and the finding it closes.
+     *
+     * @param index zero-based position of the key in creation order
+     * @return the context entry name for that position
+     */
+    private static String generationKeysIndexEntry(final int index) {
+        return SYSTRAN_GENERATION_KEYS_INDEX_PREFIX + Integer.toString(index);
+    }
+
+    /**
+     * Reads how many object keys have been published into a job execution context so far.
+     *
+     * <p>Absent means zero, which is the state before the first write of a run. {@link Math#toIntExact(long)}
+     * rather than a cast: the count is stored as a {@code long} because that is what
+     * {@link ExecutionContext#putLong(String, long)} accepts, and a value that could not have been produced by
+     * this class should fail loudly rather than wrap around into a negative index.
+     *
+     * @param context the job execution context to read
+     * @return the number of keys already published, never negative
+     */
+    private static int publishedGenerationKeyCount(final ExecutionContext context) {
+        return Math.toIntExact(context.getLong(SYSTRAN_GENERATION_KEYS_COUNT_CONTEXT_ENTRY, 0L));
     }
 
     /**
@@ -2003,7 +2074,7 @@ public class InterestCalculationJob {
      * source would have accepted. That is required rather than accidental - clause A demands inputs be
      * treated as untrusted, and a malformed parameter would otherwise corrupt every identifier in the
      * generation and only surface downstream in the combine job's load. The JCL's own value passes
-     * unchanged. Severity <b>Low</b>, and recorded in {@code DECISION_LOG.md}.
+     * unchanged. Severity <b>Low</b>, and owed an entry in the planned {@code DECISION_LOG.md}.
      *
      * <p>Failures are reported as {@link JobParametersInvalidException}, which is what this interface
      * declares and what Spring Batch turns into a refusal to start the job. It is not
@@ -2216,6 +2287,71 @@ public class InterestCalculationJob {
     }
 
     /**
+     * The two diagnostic context values a run replaced, so that they can be put back verbatim.
+     *
+     * <p>A {@code null} component means the entry was absent, or held a value outside the grammar its
+     * propagation helper accepts; either way the restore removes the entry rather than putting something back.
+     * See {@link #DIAGNOSTIC_SNAPSHOT} for the finding this closes.
+     *
+     * @param jobInstanceId  the value {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID} held on entry
+     * @param correlationId  the value {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID} held on entry
+     */
+    private record DiagnosticContextSnapshot(String jobInstanceId, String correlationId) {
+    }
+
+    /**
+     * Labels the calling thread with this run's identifiers and records what it displaced.
+     *
+     * <p>The correlation identifier is only generated when the thread has none, which preserves an identifier
+     * an outer scope established - a report submission that launched this job, for instance - so that the
+     * whole causal chain shares one identifier. {@link CorrelationIdFilter#currentCorrelationId()} is used for
+     * the read rather than a bare {@code MDC.get} because it validates: an inherited value that could inject
+     * into the log format is treated as absent and replaced, not propagated.
+     *
+     * <p>Side effects: mutates two diagnostic context entries and sets {@link #DIAGNOSTIC_SNAPSHOT} on the
+     * calling thread. Always paired with {@link #restoreDiagnosticContext()} in a {@code finally}.
+     *
+     * @param jobInstanceId the Spring Batch instance identifier of the starting execution
+     */
+    private static void establishDiagnosticContext(final long jobInstanceId) {
+        final String previousJobInstanceId =
+                CorrelationIdFilter.propagateJobInstanceId(Long.toString(jobInstanceId));
+        final String previousCorrelationId = CorrelationIdFilter.currentCorrelationId();
+        if (previousCorrelationId == null) {
+            CorrelationIdFilter.propagate(UUID.randomUUID().toString());
+        }
+        DIAGNOSTIC_SNAPSHOT.set(
+                new DiagnosticContextSnapshot(previousJobInstanceId, previousCorrelationId));
+    }
+
+    /**
+     * Puts both diagnostic context entries back exactly as {@link #establishDiagnosticContext(long)} found them.
+     *
+     * <p>Restoring rather than removing is the whole point: an entry that was absent is removed, so nothing
+     * leaks onto the next job to borrow this pooled thread, and an entry that existed is put back, so context
+     * owned by an outer scope survives. A blanket removal satisfied the first and violated the second.
+     *
+     * <p>Tolerates a missing snapshot by doing nothing. That is reachable rather than defensive padding: if
+     * {@code beforeJob} abends before the snapshot is set, Spring Batch may still route the failure through a
+     * path that reaches here, and this thread's context was never modified, so there is nothing to undo.
+     *
+     * <p>Side effects: mutates two diagnostic context entries and clears {@link #DIAGNOSTIC_SNAPSHOT} on the
+     * calling thread.
+     */
+    private static void restoreDiagnosticContext() {
+        final DiagnosticContextSnapshot snapshot = DIAGNOSTIC_SNAPSHOT.get();
+        if (snapshot == null) {
+            return;
+        }
+        try {
+            CorrelationIdFilter.propagateJobInstanceId(snapshot.jobInstanceId());
+            CorrelationIdFilter.propagate(snapshot.correlationId());
+        } finally {
+            DIAGNOSTIC_SNAPSHOT.remove();
+        }
+    }
+
+    /**
      * The mainline of {@code app/cbl/CBACT04C.cbl:L180}-{@code :L232}: the run boundary markers, the five
      * opens that precede the loop and the five closes that follow it, plus the logging context that the
      * corpus has no equivalent of.
@@ -2226,17 +2362,22 @@ public class InterestCalculationJob {
      * {@code 9400} at {@code :L224}-{@code :L228}. An abend in an open therefore reports the first dataset
      * that is unavailable, exactly as it does on the mainframe.
      *
-     * <p><b>Diagnostic context.</b> {@code CorrelationIdFilter} is HTTP-scoped and never runs for batch
-     * work, and the observability package is not permitted a job listener of its own, so this listener
-     * places the job instance identifier and a correlation identifier into the logging context itself,
-     * under the exact keys {@code src/main/resources/logback-spring.xml} consumes. An inherited
+     * <p><b>Diagnostic context.</b> {@link CorrelationIdFilter} is HTTP-scoped and never runs for batch work,
+     * and the observability package is not permitted a job listener of its own, so this listener places the job
+     * instance identifier and a correlation identifier into the logging context itself - through
+     * {@link InterestCalculationJob#establishDiagnosticContext(long)}, under the keys
+     * {@link CorrelationIdFilter#MDC_KEY_JOB_INSTANCE_ID} and
+     * {@link CorrelationIdFilter#MDC_KEY_CORRELATION_ID} rather than under literals of its own, so the names
+     * cannot drift from the ones {@code src/main/resources/logback-spring.xml} consumes. An inherited
      * correlation identifier is left alone, so a job launched from within a traced request keeps that
      * request's identifier instead of being given an unrelated one. {@code traceId} and {@code spanId} are
      * <em>not</em> set here: the tracing bridge populates them, and writing them by hand would overwrite
      * real span identity with a fabrication.
      *
-     * <p>The context is removed in a {@code finally} block so it cannot leak onto the launcher thread and
-     * label a later, unrelated job with this run's identifiers.
+     * <p>The context is <b>restored</b>, not removed, in a {@code finally} block - see
+     * {@link InterestCalculationJob#DIAGNOSTIC_SNAPSHOT} for finding M-03. Restoring discharges both halves of
+     * the obligation at once: an entry this run created is dropped, so it cannot leak onto the launcher thread
+     * and label a later unrelated job, and an entry an outer scope owned is put back rather than destroyed.
      */
     private final class InterestCalculationJobListener implements JobExecutionListener {
 
@@ -2257,19 +2398,25 @@ public class InterestCalculationJob {
          */
         @Override
         public void beforeJob(final JobExecution jobExecution) {
-            MDC.put(MDC_JOB_INSTANCE_ID,
-                    Long.toString(jobExecution.getJobInstance().getInstanceId()));
-            if (MDC.get(MDC_CORRELATION_ID) == null) {
-                MDC.put(MDC_CORRELATION_ID, UUID.randomUUID().toString());
-            }
+            establishDiagnosticContext(jobExecution.getJobInstance().getInstanceId());
 
             LOG.info(MSG_START_OF_EXECUTION);
 
-            openTransactionCategoryBalanceFile();
-            openCrossReferenceFile();
-            openDisclosureGroupFile();
-            openAccountFile();
-            openTransactionFile();
+            // An open that abends throws out of beforeJob, and Spring Batch then fails the job without
+            // calling afterJob - so without this the established context would be left on a pooled thread
+            // for the next job to inherit. Only the diagnostic context is unwound; the abend itself is
+            // rethrown untouched, because failing the job before the flow is entered is the faithful
+            // behaviour and must not change.
+            try {
+                openTransactionCategoryBalanceFile();
+                openCrossReferenceFile();
+                openDisclosureGroupFile();
+                openAccountFile();
+                openTransactionFile();
+            } catch (final RuntimeException abend) {
+                restoreDiagnosticContext();
+                throw abend;
+            }
         }
 
         /**
@@ -2304,8 +2451,7 @@ public class InterestCalculationJob {
                 jobExecution.setStatus(BatchStatus.FAILED);
             } finally {
                 applyAbendExitStatus(jobExecution);
-                MDC.remove(MDC_JOB_INSTANCE_ID);
-                MDC.remove(MDC_CORRELATION_ID);
+                restoreDiagnosticContext();
             }
         }
     }
@@ -2384,4 +2530,3 @@ public class InterestCalculationJob {
         }
     }
 }
-

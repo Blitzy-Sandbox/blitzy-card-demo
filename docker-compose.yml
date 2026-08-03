@@ -73,9 +73,15 @@ services:
   # Pinned to 4.14.0 to match the LocalStack CLI version the environment
   # provisions, and because it is the last release line that does not require
   # an ACTIVE LocalStack licence at container start. S3, SQS and SNS are all
-  # community-tier services, so no Pro licence is needed for CardDemo. Set
-  # LOCALSTACK_IMAGE=localstack/localstack-pro:<tag> and supply an ACTIVE
-  # LOCALSTACK_AUTH_TOKEN if Pro-only services are ever required.
+  # community-tier services, so no Pro licence is needed for CardDemo.
+  #
+  # No Pro auth token is passed in, and .env.example deliberately does not ship
+  # one: a name no committed file reads documents a setting that does not
+  # exist, which is the exact drift EnvironmentTemplateContractTest forbids.
+  # Pro-only services, should they ever be required, need BOTH halves supplied
+  # deliberately - LOCALSTACK_IMAGE=localstack/localstack-pro:<tag> and an
+  # ACTIVE token exported into this service's environment - so neither half is
+  # committed here in a form that only half works.
   # --------------------------------------------------------------------------
   localstack:
     image: ${LOCALSTACK_IMAGE:-localstack/localstack:4.14.0}

@@ -124,7 +124,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>{@code app/cpy/CSMSG02Y.cpy:L21-L29} - the {@code CABENDD.CPY} abend work areas. The copybook is 35
  *       physical lines and {@code 01 ABEND-DATA.} sits at physical line 21; the figures 001200 through
  *       002000 quoted elsewhere are card sequence numbers in columns 1 to 6, not line numbers.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -156,7 +156,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Zero mutable state.</strong> The subject is held in a {@code final} instance field
  *       initialised at construction rather than in a field reassigned by a setup method, and there is no
  *       static mutable field anywhere in this class.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -164,7 +164,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The build fails on a warning rather than a test.</strong> The compiler runs
  *       {@code -Xlint:all} with {@code -Werror} and {@code failOnWarning}, and it reaches test compilation.
  *       A raw type, a deprecated call, a dangling documentation comment or a switch fall through is fatal
- *       here exactly as it is in {@code src/main}. Remediation: read the {@code javac} note, not the
+ *       here exactly as it is in {@code src/main}. Read the {@code javac} note, not the
  *       Surefire report.</li>
  *   <li><strong>The rendering assertions fail on the literal {@code NNNN}.</strong> {@code NNNN} is a
  *       literal inside the COBOL {@code DISPLAY}, emitted on both branches, and {@code DISPLAY a b}
@@ -184,42 +184,41 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A status of {@code '10'} appears as an error.</strong> End of file terminates a read loop.
  *       It is only an unexpected condition at a guard where end of file cannot occur, such as an open or a
  *       write, which is why two guard shapes exist rather than one.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings this specification pins, by severity</h2>
+ * <h2>What this specification pins, and how each one is asserted</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - mis-rendering the {@code FILE STATUS IS: NNNN} line. Remediation: assert
- *       the whole line, literal included, and assert that the mapper composes it from the two owned parts
- *       rather than reassembling it.</li>
- *   <li><strong>Blocker</strong> - omitting the low order byte mask in the three-digit expansion.
- *       Remediation: feed a second byte above {@code 0x7F} and assert three digits with no sign.</li>
- *   <li><strong>Blocker</strong> - mapping a missing disclosure group default row to a not found rather
- *       than an abend. Remediation: assert the fatal type <em>and</em> assert that the thrown object is not
+ *   <li><strong>The {@code FILE STATUS IS: NNNN} line must not be mis-rendered.</strong> The whole line is
+ *       asserted, literal included, together with the fact that the mapper composes it from the two owned
+ *       parts rather than reassembling it.</li>
+ *   <li><strong>The low order byte mask in the three-digit expansion must not be omitted.</strong> A second
+ *       byte above {@code 0x7F} is fed in and three digits with no sign are asserted.</li>
+ *   <li><strong>A missing disclosure group default row must abend, not report not found.</strong> The fatal
+ *       type is asserted <em>and</em> the thrown object is asserted not to be
  *       a not found.</li>
- *   <li><strong>High</strong> - treating {@code '10'} as an error. Remediation: drive a read loop and
- *       assert it terminates without an exception.</li>
- *   <li><strong>High</strong> - admitting {@code '04'} to the general map. Remediation: assert it is fatal
+ *   <li><strong>{@code '10'} is not an error.</strong> A read loop is driven and asserted to terminate
+ *       without an exception.</li>
+ *   <li><strong>{@code '04'} is not admitted to the general map.</strong> It is asserted fatal
  *       on every general entry point and accepted only at the two statement file service ones.</li>
- *   <li><strong>High</strong> - implementing the rendering a second time. Remediation: assert composition
- *       against {@code FileStatus.renderIoStatus04(String)} across the whole vocabulary.</li>
- *   <li><strong>Medium</strong> - citing the renderer as ending at line 731. Its body ends at
- *       {@code app/cbl/CBTRN02C.cbl:L727}; lines 728 onward are blank and version stamp comments. The
- *       banner above is corrected accordingly.</li>
- *   <li><strong>Medium</strong> - citing the disclosure group retry guard at line 445 rather than
- *       {@code app/cbl/CBACT04C.cbl:L446}.</li>
- *   <li><strong>Low</strong> - both lenient guards are written {@code '00'} then <em>two</em> spaces then
- *       {@code OR '23'}, so a naive single-space search finds neither. Pinned by
+ *   <li><strong>The rendering is never implemented a second time.</strong> Composition against
+ *       {@code FileStatus.renderIoStatus04(String)} is asserted across the whole vocabulary.</li>
+ *   <li><strong>The renderer's body ends at {@code app/cbl/CBTRN02C.cbl:L727}</strong>, not at line 731;
+ *       lines 728 onward are blank and version stamp comments, and the
+ *       banner above cites the shorter range accordingly.</li>
+ *   <li><strong>The disclosure group retry guard is at {@code app/cbl/CBACT04C.cbl:L446}</strong>, not at
+ *       line 445, which is blank.</li>
+ *   <li><strong>Both lenient guards are written {@code '00'} then <em>two</em> spaces then
+ *       {@code OR '23'}</strong>, so a naive single-space search finds neither. Pinned by
  *       {@code WhereNotFoundIsNotAnError#theTwoSpaceSpellingIsAGrepHazard}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The documented conflict, and why parity governs</h2>
  *
  * <p>Rule 1 Clause B forbids dead code. Statuses {@code '22'} and {@code '35'} have <strong>zero</strong>
  * literal occurrences in the 19,254 line corpus - re-measured here at {@code 7756d89} - yet both remain
  * mapped, which looks like dead code and is not. Clause B prohibits an artefact <em>without an owner or a
- * tracking reference</em>; both mappings carry a {@code DECISION_LOG.md} entry, a
- * {@code TRACEABILITY_MATRIX.md} row and the citations in
+ * tracking reference</em>; both mappings carry the citations in
  * {@code TheStatusToExceptionMap#theTwoStatusesWithNoLiteralSourceSiteRemainMapped} below, and both are
  * runtime reachable from the store layer.
  * The CICS vocabulary is the corroborating evidence: {@code DFHRESP(DUPREC)} occurs at 7 sites and
@@ -268,7 +267,7 @@ class FileStatusMapperTest {
     /**
      * The two exact statuses the map retains even though a census of {@code app/cbl/*} at
      * {@code 7756d89} finds zero literal occurrences of either. They are runtime-reachable-only
-     * mappings, deliberately kept, and tracked in {@code DECISION_LOG.md}.
+     * mappings, deliberately kept, and pinned by the assertions in this class.
      */
     private static final List<String> STATUSES_WITH_NO_LITERAL_SOURCE_SITE = List.of("22", "35");
 
@@ -505,7 +504,11 @@ class FileStatusMapperTest {
                     .as("app/cbl/CBTRN02C.cbl:L366 PERFORM 9999-ABEND-PROGRAM on the non-EOF failure arm")
                     .isThrownBy(() -> {
                         performed.add("9999-ABEND-PROGRAM");
-                        mapper.requireSuccessOrEndOfFile(status, "DALYTRAN", "READ");
+                        // '23' classifies as a failure on the sequential-read form too, so the reader's
+                        // failure arm and the keyed guard's reach the same translation.
+                        assertThat(mapper.applResultForSequentialRead(status))
+                                .isEqualTo(FileStatusMapper.APPL_FAILURE);
+                        mapper.requireSuccess(status, "DALYTRAN", "READ");
                     })
                     .withMessageContaining("(IO-STATUS-04 0023)");
 
@@ -534,13 +537,13 @@ class FileStatusMapperTest {
     // ------------------------------------------------------------------------------------------
     // Group 2 - the four-character rendering of 9910-DISPLAY-IO-STATUS, a byte-level contract.
     // Source: app/cbl/CBTRN02C.cbl:L714-L727 (the paragraph body; L728 onward are version-stamp
-    // comments, which is why the widely quoted "L714-L731" over-runs and is a Medium finding).
+    // comments, which is why the widely quoted "L714-L731" over-runs the paragraph).
     // ------------------------------------------------------------------------------------------
 
     /**
      * Group 2. The byte-level rendering contract of {@code 9910-DISPLAY-IO-STATUS}, whose body is
-     * {@code app/cbl/CBTRN02C.cbl:L714-L727}. Two facts dominate this group and both are Blocker
-     * severity if got wrong: {@code NNNN} is a twenty-character fixed literal emitted on both
+     * {@code app/cbl/CBTRN02C.cbl:L714-L727}. Two facts dominate this group, and getting either wrong
+     * corrupts every rendered status line: {@code NNNN} is a twenty-character fixed literal emitted on both
      * branches rather than a placeholder, and the second status byte is expanded through an
      * unsigned {@code PIC 9(4) BINARY} field ({@code :L134}), so the low-order-byte mask is
      * mandatory or a high byte sign-extends.
@@ -598,7 +601,7 @@ class FileStatusMapperTest {
         @Test
         @DisplayName("NNNN survives verbatim in every rendering, proving it is a literal and not a placeholder")
         void theNnnnGroupIsALiteralAndNotAPlaceholder() {
-            // Blocker if mis-read: 'FILE STATUS IS: NNNN' is a 20-character fixed literal emitted on
+            // Easily mis-read: 'FILE STATUS IS: NNNN' is a 20-character fixed literal emitted on
             // BOTH branches (app/cbl/CBTRN02C.cbl:L721 and :L725), and COBOL DISPLAY a b concatenates
             // with no separator, so the four rendered characters FOLLOW the literal.
             assertThat(FileStatus.DISPLAY_MESSAGE_PREFIX)
@@ -617,7 +620,7 @@ class FileStatusMapperTest {
         @Test
         @DisplayName("the second status byte is masked to its unsigned low-order value, per PIC 9(4) BINARY")
         void theSecondStatusByteIsMaskedToItsUnsignedLowOrderValue() {
-            // Blocker. app/cbl/CBTRN02C.cbl:L134 declares TWO-BYTES-BINARY PIC 9(4) BINARY with NO
+            // app/cbl/CBTRN02C.cbl:L134 declares TWO-BYTES-BINARY PIC 9(4) BINARY with NO
             // leading S, so the receiving field is UNSIGNED. Omitting the low-order mask in Java lets
             // a char above 0x7F narrow to a negative byte and the three digits come out signed.
             assertThat(mapper.displayIoStatus("9\u00FF"))
@@ -630,7 +633,7 @@ class FileStatusMapperTest {
                     .as("a NUL second byte expands to three zero digits, not to an empty field")
                     .isEqualTo("FILE STATUS IS: NNNN9000");
 
-            // Remediation evidence: this is what the identical format string produces once the mask is
+            // Counter-evidence: this is what the identical format string produces once the mask is
             // dropped and the char is narrowed to a signed byte. It is not the legacy rendering.
             String signExtendedAtFf = String.format(Locale.ROOT, "%c%03d", '9', (byte) 0xFF);
             String signExtendedAt80 = String.format(Locale.ROOT, "%c%03d", '9', (byte) 0x80);
@@ -727,9 +730,9 @@ class FileStatusMapperTest {
             assertThatCode(() -> mapper.requireSuccess("00", LOGICAL_FILE, OPERATION_READ))
                     .as("app/cbl/CBTRN02C.cbl:L244, IF APPL-AOK CONTINUE")
                     .doesNotThrowAnyException();
-            assertThat(mapper.requireSuccessOrEndOfFile("00", LOGICAL_FILE, OPERATION_READ))
+            assertThat(mapper.applResultForSequentialRead("00"))
                     .as("a successful read is not end of file, so the caller keeps looping")
-                    .isFalse();
+                    .isEqualTo(FileStatusMapper.APPL_AOK);
         }
 
         @Test
@@ -740,11 +743,9 @@ class FileStatusMapperTest {
             assertThat(mapper.toException("10", LOGICAL_FILE, OPERATION_READ))
                     .as("app/cbl/CBTRN02C.cbl:L351-L352, FILE STATUS '10' moves 16 into APPL-RESULT")
                     .isEmpty();
-            assertThat(mapper.requireSuccessOrEndOfFile("10", LOGICAL_FILE, OPERATION_READ))
-                    .as("app/cbl/CBTRN02C.cbl:L360-L361, IF APPL-EOF MOVE 'Y' TO END-OF-FILE")
-                    .isTrue();
             assertThat(mapper.applResultForSequentialRead("10"))
-                    .as("the sequential read sentinel is APPL-EOF, per app/cbl/CBTRN02C.cbl:L144")
+                    .as("app/cbl/CBTRN02C.cbl:L360-L361, IF APPL-EOF MOVE 'Y' TO END-OF-FILE; the sentinel "
+                            + "is APPL-EOF, per :L144, and nothing is thrown for it")
                     .isEqualTo(FileStatusMapper.APPL_EOF);
         }
 
@@ -760,7 +761,7 @@ class FileStatusMapperTest {
                 if (endOfFile) {
                     break;
                 }
-                endOfFile = mapper.requireSuccessOrEndOfFile(status, LOGICAL_FILE, OPERATION_READ);
+                endOfFile = mapper.applResultForSequentialRead(status) == FileStatusMapper.APPL_EOF;
                 if (!endOfFile) {
                     consumed.add(status);
                 }
@@ -904,8 +905,8 @@ class FileStatusMapperTest {
         void theTwoStatusesWithNoLiteralSourceSiteRemainMapped() {
             // The documented clause-B versus parity conflict, resolved in favour of parity. A census of
             // app/cbl/* at 7756d89 finds '22' in 0 files and '35' in 0 files, so neither mapping can be
-            // reached from a literal source site. They are runtime-reachable-only paths, they carry a
-            // DECISION_LOG.md tracking reference, and the CICS vocabulary corroborates both: the
+            // reached from a literal source site. They are runtime-reachable-only paths, they are cited
+            // and pinned by this very assertion, and the CICS vocabulary corroborates both: the
             // duplicate-key concept appears as DFHRESP(DUPREC) at 7 sites and DFHRESP(DUPKEY) at 3.
             assertThat(STATUSES_WITH_NO_LITERAL_SOURCE_SITE)
                     .as("the census result is exactly these two statuses")
@@ -985,7 +986,7 @@ class FileStatusMapperTest {
      * subsequent write and rewrite at {@code :L512} and {@code :L530} accept only {@code '00'}.
      * Site 2 is the disclosure-group fallback, {@code app/cbl/CBACT04C.cbl:L415} with the lenient
      * guard at {@code :L422} and the strict retry guard at {@code :L446} - a missing default row
-     * abends and is emphatically not a record-not-found, which is Blocker severity. Site 3 is the
+     * abends and is emphatically not a record-not-found. Site 3 is the
      * statement file service, {@code app/cbl/CBSTM03A.CBL:L80} and its nine acceptance sites.
      */
     @Nested
@@ -1080,11 +1081,11 @@ class FileStatusMapperTest {
         @Test
         @DisplayName("the SECOND DISCGRP miss abends and is emphatically not a RecordNotFoundException")
         void theSecondDisclosureGroupMissAbendsAndIsNotARecordNotFound() {
-            // Blocker if mis-mapped. app/cbl/CBACT04C.cbl:L444 READs DISCGRP-FILE with NO INVALID KEY
+            // Easily mis-mapped. app/cbl/CBACT04C.cbl:L444 READs DISCGRP-FILE with NO INVALID KEY
             // clause at all, and the guard at :L446 tests '00' and nothing else. A missing DEFAULT row
             // therefore ABENDS the interest job. Mapping it to RecordNotFoundException would let the job
             // continue with a stale or zero rate, which is a silent financial divergence.
-            // Medium finding: the frequently quoted :L445 is blank; the guard is at :L446.
+            // Note also that the frequently quoted :L445 is blank; the guard is at :L446.
             assertThatCode(() -> mapper.requireDefaultDisclosureGroupReadSuccess("00"))
                     .as("app/cbl/CBACT04C.cbl:L446 accepts '00', which is the only accepted status")
                     .doesNotThrowAnyException();
@@ -1185,10 +1186,9 @@ class FileStatusMapperTest {
                 assertThatThrownBy(() -> mapper.requireSuccess(lenientStatus, LOGICAL_FILE, OPERATION_READ))
                         .as("[%s] is success at a scoped site only, never at a general guard", lenientStatus)
                         .isInstanceOf(CardDemoException.class);
-                assertThatThrownBy(() -> mapper.requireSuccessOrEndOfFile(lenientStatus, LOGICAL_FILE,
-                        OPERATION_READ))
+                assertThat(mapper.applResultForSequentialRead(lenientStatus))
                         .as("[%s] is not end of file either; only '10' is", lenientStatus)
-                        .isInstanceOf(CardDemoException.class);
+                        .isEqualTo(FileStatusMapper.APPL_FAILURE);
             }
             assertThat(mapper.toException("23", LOGICAL_FILE, OPERATION_READ))
                     .as("the browse path translates '23' rather than tolerating it")
@@ -1198,7 +1198,7 @@ class FileStatusMapperTest {
         @Test
         @DisplayName("the source spells both lenient guards with TWO spaces, which defeats a naive grep")
         void theTwoSpaceSpellingIsAGrepHazard() {
-            // Low severity, but it costs an afternoon. app/cbl/CBTRN02C.cbl:L481 and
+            // A small thing that costs an afternoon. app/cbl/CBTRN02C.cbl:L481 and
             // app/cbl/CBACT04C.cbl:L422 are both spelled with two spaces before OR, and CBACT04C also
             // has two spaces around the '=' sign. A search for the single-spaced form finds nothing.
             String categoryBalanceGuard = "IF  TCATBALF-STATUS = '00'  OR '23'";
@@ -1285,8 +1285,6 @@ class FileStatusMapperTest {
             for (String status : STATUS_VOCABULARY) {
                 collectDiagnostics(diagnostics, catchThrowableOfType(CardDemoException.class,
                         () -> mapper.requireSuccess(status, LOGICAL_FILE, OPERATION_READ)));
-                collectDiagnostics(diagnostics, catchThrowableOfType(CardDemoException.class,
-                        () -> mapper.requireSuccessOrEndOfFile(status, LOGICAL_FILE, OPERATION_READ)));
                 collectDiagnostics(diagnostics, catchThrowableOfType(CardDemoException.class,
                         () -> mapper.requireCategoryBalanceReadSuccess(status)));
                 collectDiagnostics(diagnostics, catchThrowableOfType(CardDemoException.class,
@@ -1770,7 +1768,7 @@ class FileStatusMapperTest {
         @Test
         @DisplayName("the build path contract holds, so Surefire collects this class instead of silently skipping it")
         void theBuildPathContractHolds() {
-            // The Phase 0 blocker, asserted rather than assumed. Surefire 3.5.4 includes **/*Test.java and
+            // Asserted rather than assumed. Surefire includes **/*Test.java and
             // excludes **/integration/** and **/e2e/**, so a class outside src/test/java/com/cardemo/unit/**
             // matches neither plugin's include set and never runs: green build, no error, no warning.
             assertThat(FileStatusMapperTest.class.getPackageName())
@@ -1829,8 +1827,6 @@ class FileStatusMapperTest {
                         () -> mapper.requireSuccess(status, LOGICAL_FILE, OPERATION_READ)));
                 addDiagnostics(sink, catchThrowableOfType(CardDemoException.class,
                         () -> mapper.requireSuccess(status, null, null)));
-                addDiagnostics(sink, catchThrowableOfType(CardDemoException.class,
-                        () -> mapper.requireSuccessOrEndOfFile(status, LOGICAL_FILE, OPERATION_WRITE)));
                 addDiagnostics(sink, catchThrowableOfType(CardDemoException.class,
                         () -> mapper.requireCategoryBalanceReadSuccess(status)));
                 addDiagnostics(sink, catchThrowableOfType(CardDemoException.class,

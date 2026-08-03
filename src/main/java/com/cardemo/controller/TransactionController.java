@@ -31,6 +31,7 @@ import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -54,6 +55,9 @@ import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.PageResponse;
 import com.cardemo.model.dto.TransactionAddRequest;
 import com.cardemo.model.dto.TransactionDto;
+import com.cardemo.model.dto.TransactionListResponse;
+import com.cardemo.model.dto.TransactionResponse;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.transaction.TransactionAddService;
 import com.cardemo.service.transaction.TransactionDetailService;
 import com.cardemo.service.transaction.TransactionListService;
@@ -195,7 +199,9 @@ import jakarta.validation.Valid;
  *
  * <p>Compile and unit-test the module with {@code ./mvnw -B -ntp test}. The full gate is
  * {@code ./mvnw -B -ntp clean verify}, which compiles under {@code -Xlint:all -Werror} with
- * {@code failOnWarning} enabled, so a single unused import in this file fails the build outright. Run the
+ * {@code failOnWarning} enabled, so a single raw type, unchecked cast or dangling documentation comment in
+ * this file fails the build outright; an unused import does not, because {@code javac} 25 publishes no
+ * {@code unused} lint key, and malformed Javadoc is covered by the separate explicit doclint command. Run the
  * application under the {@code local} profile against the Compose topology, which supplies PostgreSQL 16
  * and the LocalStack endpoint; the transaction surface itself needs only the database.</p>
  *
@@ -226,7 +232,7 @@ import jakarta.validation.Valid;
  *   <li>{@code app/cpy-bms/COTRN00.CPY} supplies the <em>size</em>, by carrying exactly ten row slots:
  *       {@code TRNID01I} through {@code TRNID10I}, each {@code PIC X(16)}, and {@code TDESC01I} through
  *       {@code TDESC10I}, each {@code PIC X(26)}. Ten fields, therefore ten rows.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Citing only the first would be citing a locator that does not contain the number, which Rule 1
  * Clause F forbids. The program's own loop bounds agree with the map -
@@ -358,6 +364,28 @@ public class TransactionController {
     /** Name of the page request parameter, used when a refusal must name the field it refers to. */
     private static final String PAGE_FIELD = "page";
 
+    /** Request-parameter name of the navigation action, matched exactly against the three declared tokens. */
+    private static final String ACTION_FIELD = "action";
+
+    /** Request-parameter name of the page-state flag, matched exactly against two tokens and no alias. */
+    private static final String NEXT_PAGE_FIELD = "nextPageAvailable";
+
+    /** The only accepted affirmative spelling of {@link #NEXT_PAGE_FIELD}. */
+    private static final String TRUE_TOKEN = "true";
+
+    /** The only accepted negative spelling of {@link #NEXT_PAGE_FIELD}. */
+    private static final String FALSE_TOKEN = "false";
+
+    /**
+     * The widest page token accepted before the value is parsed at all.
+     *
+     * <p>Eight digits, the width of {@code CDEMO-CT00-PAGE-NUM PIC 9(08)}. The <em>domain</em> check remains
+     * {@link #requirePageWithinBrowseDomain(int)}, which is where that rule is stated and cited; this bound
+     * exists only so the parse can never see an arbitrarily long digit run and so a rejected value is
+     * rejected as out of range rather than as an overflow.</p>
+     */
+    private static final int MAXIMUM_PAGE_TOKEN_DIGITS = 8;
+
     /**
      * Name of the transaction identifier request parameter. The symbolic-map counterpart is
      * {@code TRNIDINI}, {@code app/cpy-bms/COTRN01.CPY:60} for the detail screen and
@@ -424,17 +452,118 @@ public class TransactionController {
     /** Problem property distinguishing an omitted value from a supplied-and-wrong one. */
     private static final String FAILURE_KIND_PROPERTY = "failureKind";
 
-    /** Problem property carrying the record type a not-found failure named. */
-    private static final String RECORD_TYPE_PROPERTY = "recordType";
+    /**
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
+     */
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
-    /** Problem property carrying the four-character expanded file status. */
-    private static final String IO_STATUS_PROPERTY = "ioStatus";
+    /**
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
+     */
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
-    /** Problem property carrying the abend code. */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    /**
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
-    /** Problem property carrying the batch return code. */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    /**
+     * Fixed detail for an unreachable transaction store.
+     * <p>
+     * Fixed rather than relayed. This type is composed in one place, {@code FileStatusMapper}, whose message
+     * names the operation, the logical file and the {@code COBOL FILE STATUS}; relaying it published all
+     * three. The operator text is logged at {@code ERROR} and is reachable by correlation identifier.
+     */
+    private static final String UNAVAILABLE_PROBLEM_DETAIL =
+            "The transaction store is not currently available. Retry the request.";
+
+    /**
+     * Fixed detail for an input-output failure against the transaction store.
+     * <p>
+     * Fixed for the same reason as {@value #UNAVAILABLE_PROBLEM_DETAIL}: on this resource group a
+     * {@code FileAccessException} is raised by {@code TransactionListService} through
+     * {@code FileStatusMapper}, so its message is the composed internal diagnostic rather than a screen
+     * caption.
+     */
+    private static final String IO_PROBLEM_DETAIL =
+            "The transaction store reported a failure. Quote the correlation identifier when reporting this.";
+
+    /**
+     * Stable error code meaning that the request was refused by a field-level validation rule.
+     */
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
+
+    /**
+     * Stable error code meaning that a record the operation needed does not exist.
+     */
+    private static final String ERROR_CODE_NOT_FOUND = "CARDDEMO-RECORD-NOT-FOUND";
+
+    /**
+     * The fixed detail returned when the requested transaction does not exist.
+     *
+     * <p><strong>Fixed rather than relayed, on a type rule rather than a path argument.</strong> This
+     * exception type is one of the five {@code FileStatusMapper} composes, and the message it composes names
+     * the operation, the logical file and the {@code COBOL FILE STATUS}. It happens to be true today that no
+     * collaborator on this resource group reaches that mapper - but that is a whole-program property, not one
+     * a reader of this file can check, and one line added to a service three files away would reinstate the
+     * disclosure with no test failing. The rule is therefore applied by type: a detail is never taken from an
+     * exception the mapper can construct. Only {@code ValidationException} and
+     * {@code ConcurrentUpdateException}, which appear nowhere in that mapper, keep their relayed literal.
+     */
+    private static final String NOT_FOUND_PROBLEM_DETAIL =
+            "No transaction was found for the identifier supplied.";
+
+    /**
+     * The fixed detail returned when the generated transaction identifier was already taken.
+     *
+     * <p>Fixed for the same type-based reason as {@value #NOT_FOUND_PROBLEM_DETAIL}, and it states the one
+     * thing a caller can act on: the retained descending-browse race of
+     * {@code app/cbl/COTRN02C.cbl:L444-L449} makes the request retryable.
+     */
+    private static final String DUPLICATE_PROBLEM_DETAIL =
+            "The transaction identifier generated for this request was already taken. Retry the request.";
+
+    /**
+     * Stable error code meaning that the key the operation generated was already taken.
+     */
+    private static final String ERROR_CODE_DUPLICATE = "CARDDEMO-DUPLICATE-RECORD";
+
+    /**
+     * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
+     */
+    private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
+
+    /**
+     * Stable error code meaning that the store behind this service reported an input-output failure.
+     */
+    private static final String ERROR_CODE_IO_FAILURE = "CARDDEMO-IO-FAILURE";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /** Response header naming the location of a newly added transaction. */
     private static final String LOCATION_HEADER = "Location";
@@ -504,7 +633,7 @@ public class TransactionController {
      * Operation 1 of 3 on this controller, and operation 9 of the seventeen the REST surface exposes. Lists
      * transactions one page at a time.
      *
-     * <h2>Provenance</h2>
+     * <h4>Provenance</h4>
      *
      * <p>Replaces CICS transaction {@code CT00} - {@code DEFINE TRANSACTION(CT00)} at
      * {@code app/csd/CARDDEMO.CSD:L419} naming {@code PROGRAM(COTRN00C)} at {@code :L420} - and the program
@@ -513,14 +642,14 @@ public class TransactionController {
      * {@code :L119-L134}, whose three data-bearing arms are {@code WHEN DFHENTER} at {@code :L120},
      * {@code WHEN DFHPF7} at {@code :L125} and {@code WHEN DFHPF8} at {@code :L127}.</p>
      *
-     * <h2>Purpose</h2>
+     * <h4>Purpose</h4>
      *
      * <p>Returns one page of the transaction browse. All work is done by
      * {@code TransactionListService}: this method rebuilds the browse position from the request, calls the
      * service <strong>once</strong>, and returns the page the service produced. It performs no browse, no
      * comparison, no counting and no ordering of its own.</p>
      *
-     * <h2>Inputs, and why pagination looks like this</h2>
+     * <h4>Inputs, and why pagination looks like this</h4>
      *
      * <p>Transformation rule 7 moves conversational state onto the wire: the paging cursor becomes request
      * parameters and the paging outcome becomes response metadata. The four parameters that carry it are the
@@ -562,14 +691,22 @@ public class TransactionController {
      * client navigates to {@link #getTransactionDetail} instead. Nothing is lost: the identifier needed to
      * navigate is on every row of the page.</p>
      *
-     * <h2>Outputs</h2>
+     * <h4>Outputs</h4>
      *
-     * <p>{@code 200} with a {@code PageResponse} of transaction list rows: up to ten rows, each carrying the
-     * selection flag, the identifier ({@code TRNIDnnI PIC X(16)}), the date ({@code TDATEnnI PIC X(8)}), the
+     * <p>{@code 200} with a {@code TransactionListResponse} of transaction list rows: up to ten rows, each
+     * carrying the identifier ({@code TRNIDnnI PIC X(16)}), the date ({@code TDATEnnI PIC X(8)}), the
      * description ({@code TDESCnnI PIC X(26)}) and the amount ({@code TAMTnnI PIC X(12)}), plus the page
-     * number, the page size applied, the boolean next-page indicator and the two keyset anchors. Ordering is
+     * number, the page size applied, the boolean next-page indicator and the two keyset cursors. Ordering is
      * deterministic - ascending by transaction identifier, the browse order of the {@code TRANSACT} cluster -
      * so the same request returns the same page.</p>
+     *
+     * <p><strong>The envelope also carries the turn's own status text, and that is the point of it.</strong>
+     * {@code ERRMSGO} at {@code app/cbl/COTRN00C.cbl} is how the source reported "you are already at the top
+     * of the page" at {@code :L258-L262} and "you have reached the bottom" at {@code :L267-L272} - conditions
+     * that are answers rather than faults, so they cannot be expressed as a status code and would otherwise
+     * be lost entirely. It is relayed byte for byte as {@code statusMessage}. The per-row selection flag is
+     * <em>not</em> carried: it is a 3270 input marker, and in REST the navigation it enabled is a different
+     * URL, reachable from the identifier every row already carries.</p>
      *
      * <p><strong>The description here is 26 characters wide, and that is not the same field as anywhere
      * else.</strong> {@code TDESC01I} through {@code TDESC10I} are {@code PIC X(26)} in
@@ -585,11 +722,11 @@ public class TransactionController {
      * issues. What would be needed to supply one: a decision to diverge from the source, plus a counting
      * query, plus a decision-log entry recording both. None of those is in scope.</p>
      *
-     * <h2>Side effects</h2>
+     * <h4>Side effects</h4>
      *
      * <p>None. This operation reads.</p>
      *
-     * <h2>Configuration and defaults</h2>
+     * <h4>Configuration and defaults</h4>
      *
      * <p>This method reads no property. The page size is ten and is bound once by the service from
      * {@code carddemo.pagination.transaction-list-page-size}; <strong>no page-size literal appears in this
@@ -597,15 +734,21 @@ public class TransactionController {
      * {@code app/cbl/COTRN00C.cbl:L65-L68} for the semantics, and the ten row slots {@code TRNID01I} through
      * {@code TRNID10I} with {@code TDESC01I} through {@code TDESC10I} in {@code app/cpy-bms/COTRN00.CPY} for
      * the count - are set out in this class's documentation, along with why one alone would not do. Defaults
-     * on this operation: {@code action} defaults to {@code SUBMIT} and {@code page} to zero, which together
-     * mean "the first page of a fresh browse"; {@code nextPageAvailable} defaults to false; and the three
-     * text parameters default to absent.</p>
+     * on this operation: an absent {@code action} means {@code SUBMIT} and an absent {@code page} means zero,
+     * which together mean "the first page of a fresh browse"; an absent {@code nextPageAvailable} means
+     * false; and the three text parameters default to absent. Every one of those defaults applies to an
+     * <em>absent</em> parameter only - a parameter that is present is matched exactly, and an empty one is a
+     * blank refusal rather than a default.</p>
      *
-     * <h2>Failure modes and troubleshooting</h2>
+     * <h4>Failure modes and troubleshooting</h4>
      *
-     * <p>{@code 400} when {@code page} falls outside the domain of the eight-digit source counter, or when
-     * the service refuses the search key. {@code 401} when no identity reached the operation. {@code 502}
-     * and {@code 503} when the store cannot be read or opened. {@code 500} otherwise.</p>
+     * <p>{@code 400} when {@code page} falls outside the domain of the eight-digit source counter or is not
+     * a run of ASCII digits, when {@code action} is not exactly one of the three declared tokens, when
+     * {@code nextPageAvailable} is neither {@code true} nor {@code false}, or when the service refuses the
+     * search key. No control token is trimmed, case folded or read through an alias: a signed page, a padded
+     * action and {@code yes} in place of {@code true} are all refusals. {@code 401} when no identity reached
+     * the operation. {@code 502} and {@code 503} when the store cannot be read or opened. {@code 500}
+     * otherwise.</p>
      *
      * <p>Boundary conditions worth knowing, because each is answered rather than avoided. Page zero is
      * accepted and means an unstarted browse - it is the value {@code TransactionListState} itself reports
@@ -625,20 +768,25 @@ public class TransactionController {
      *
      * @param transactionId the search key as typed, {@code TRNIDINI PIC X(16)}, or null when the parameter
      *                      was absent. Relayed verbatim; absent and blank are kept distinct.
-     * @param action which of the three data-bearing dispatch arms to run; never null, because it defaults to
-     *               {@code SUBMIT} and an unrecognised value is refused during binding.
-     * @param page the page number the previous response reported, {@code CDEMO-CT00-PAGE-NUM PIC 9(08)};
-     *             zero for a fresh browse.
+     * @param actionToken which of the three data-bearing dispatch arms to run, as typed and matched exactly
+     *                    against the three constant names; null means {@code SUBMIT}, empty is a blank
+     *                    refusal and anything else is an invalid one.
+     * @param pageToken the page number the previous response reported,
+     *                  {@code CDEMO-CT00-PAGE-NUM PIC 9(08)}; null means zero, the value of a fresh browse,
+     *                  and a present value must be a run of at most eight ASCII digits with no sign and no
+     *                  padding.
      * @param firstKey the identifier of the first row of the page being left,
      *                 {@code CDEMO-CT00-TRNID-FIRST PIC X(16)}, or null on a fresh browse.
      * @param lastKey the identifier of the last row of the page being left,
      *                {@code CDEMO-CT00-TRNID-LAST PIC X(16)}, or null on a fresh browse.
-     * @param nextPageAvailable whether the previous response reported a further page; the boolean form of
-     *                          {@code CDEMO-CT00-NEXT-PAGE-FLG}, never the sentinel byte.
+     * @param nextPageToken whether the previous response reported a further page; the boolean form of
+     *                      {@code CDEMO-CT00-NEXT-PAGE-FLG}, never the sentinel byte, and accepted only as
+     *                      {@code true} or {@code false}.
      * @param authentication the principal the security filter chain resolved, or null when none did.
-     * @return {@code 200 OK} with one page of transaction rows and its paging metadata, or
-     *         {@code 401 Unauthorized} when no identity reached the operation; never null
-     * @throws ValidationException if {@code page} is outside the eight-digit browse domain, or the service
+     * @return {@code 200 OK} with one page of transaction rows, its paging metadata and the turn's status
+     *         text, or {@code 401 Unauthorized} when no identity reached the operation; never null
+     * @throws ValidationException if a control token is not exactly one of its declared spellings, if
+     *                             {@code page} is outside the eight-digit browse domain, or the service
      *                             refuses the search key; mapped to {@code 400} by
      *                             {@link #handleValidationFailure}
      * @throws FileUnavailableException if the transaction store could not be opened; mapped to {@code 503}
@@ -649,13 +797,13 @@ public class TransactionController {
      *                                  failure; mapped to {@code 500} by {@link #handleAbend}
      */
     @GetMapping
-    public ResponseEntity<PageResponse<TransactionDto.TransactionListRow>> listTransactions(
+    public ResponseEntity<TransactionListResponse> listTransactions(
             @RequestParam(name = "transactionId", required = false) final String transactionId,
-            @RequestParam(name = "action", defaultValue = "SUBMIT") final TransactionListAction action,
-            @RequestParam(name = "page", defaultValue = "0") final int page,
+            @RequestParam(name = ACTION_FIELD, required = false) final String actionToken,
+            @RequestParam(name = PAGE_FIELD, required = false) final String pageToken,
             @RequestParam(name = "firstKey", required = false) final String firstKey,
             @RequestParam(name = "lastKey", required = false) final String lastKey,
-            @RequestParam(name = "nextPageAvailable", defaultValue = "false") final boolean nextPageAvailable,
+            @RequestParam(name = NEXT_PAGE_FIELD, required = false) final String nextPageToken,
             final Authentication authentication) {
 
         if (isUnauthenticated(authentication)) {
@@ -664,6 +812,14 @@ public class TransactionController {
                     + "app/cbl/COTRN00C.cbl:L107-L109", LIST_TRANSACTION_ID);
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
+
+        // Every control token is matched here, exactly, rather than converted. The framework's default
+        // converters normalise - they trim an enum token, accept a signed integer and treat six spellings as
+        // a boolean - and a normalising converter on a control token silently accepts an instruction the
+        // operation never declared. See resolveAction, requirePageToken and requireBooleanToken.
+        final TransactionListAction action = resolveAction(actionToken);
+        final int page = requirePageToken(pageToken);
+        final boolean nextPageAvailable = requireBooleanToken(nextPageToken);
 
         requirePageWithinBrowseDomain(page);
 
@@ -677,22 +833,24 @@ public class TransactionController {
                 retrieveTransactionPage(action, transactionId, state);
 
         final PageResponse<TransactionDto.TransactionListRow> listing = screen.page();
+        final TransactionListResponse response = TransactionListResponse.of(listing,
+                listing.getFirstKey(), listing.getLastKey(), screen.list().errorMessage());
 
         // Presence and counts, never content. A row carries a card-derived identifier, a description and an
         // amount, and none of those may reach a log line; the keyset anchors are identifiers too.
         LOG.debug("Served transaction {} program {} action {}: page={}, size={}, rows={}, nextPage={}, "
-                + "searchKeyPresent={}", LIST_TRANSACTION_ID, LIST_PROGRAM, action, listing.getPageNumber(),
-                listing.getPageSize(), listing.getRows().size(), listing.isNextPageAvailable(),
-                transactionId != null);
+                + "searchKeyPresent={}, statusMessagePresent={}", LIST_TRANSACTION_ID, LIST_PROGRAM, action,
+                response.pageNumber(), response.pageSize(), response.rows().size(),
+                response.nextPageAvailable(), transactionId != null, response.statusMessage() != null);
 
-        return ResponseEntity.ok(listing);
+        return ResponseEntity.ok(response);
     }
 
     /**
      * Operation 2 of 3 on this controller, and operation 10 of the seventeen the REST surface exposes.
      * Returns one transaction's details.
      *
-     * <h2>Provenance</h2>
+     * <h4>Provenance</h4>
      *
      * <p>Replaces CICS transaction {@code CT01} - {@code DEFINE TRANSACTION(CT01)} at
      * {@code app/csd/CARDDEMO.CSD:L429} naming {@code PROGRAM(COTRN01C)} at {@code :L430} - and the program
@@ -701,13 +859,13 @@ public class TransactionController {
      * {@code READ-TRANSACT-FILE.} at {@code :L267}, whose twenty-one screen fields are the twenty-one input
      * fields of the generated symbolic map {@code app/cpy-bms/COTRN01.CPY}.</p>
      *
-     * <h2>Purpose</h2>
+     * <h4>Purpose</h4>
      *
      * <p>Retrieves a single transaction by identifier and returns its detail projection. The read, the
      * status handling and the field-by-field projection all belong to {@code TransactionDetailService};
      * this method calls it once.</p>
      *
-     * <h2>A preserved quirk: the read-only path issues an update-intent read</h2>
+     * <h4>A preserved quirk: the read-only path issues an update-intent read</h4>
      *
      * <p>{@code app/cbl/COTRN01C.cbl:L275} carries the operand {@code UPDATE} inside the
      * {@code EXEC CICS READ} that begins at {@code :L269} - a read that takes an exclusive lock on the
@@ -717,13 +875,13 @@ public class TransactionController {
      *
      * <p><strong>It is preserved, not repaired.</strong> Behavioural parity is the contract of this
      * migration, so the update-intent read is reproduced in the <em>service</em> layer, where the paragraph
-     * map lives, and is cited in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} as tracked
-     * rather than accidental. It is documented at this operation but not reproduced at it, because a
-     * controller has no paragraph map and holds no transaction boundary. Removing the operand would be a
-     * behaviour change - it would alter the locking observable to a concurrent updater - and is therefore
+     * map lives, and is owed an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} as
+     * tracked rather than accidental. It is documented at this operation but not reproduced at it, because a
+     * controller has no paragraph map and holds no transaction boundary. Removing the operand would be a behaviour
+     * change - it would alter the locking observable to a concurrent updater - and is therefore
      * out of scope regardless of how much it looks like a defect.</p>
      *
-     * <h2>Inputs</h2>
+     * <h4>Inputs</h4>
      *
      * <p>One parameter: the transaction identifier, {@code TRNIDINI PIC X(16)} at
      * {@code app/cpy-bms/COTRN01.CPY:60}, relayed verbatim as the text the map declared it to be.
@@ -736,12 +894,19 @@ public class TransactionController {
      * identifier before it reads anything, so an absent identifier is a client error and never a lookup that
      * returns nothing.</p>
      *
-     * <h2>Outputs</h2>
+     * <h4>Outputs</h4>
      *
-     * <p>{@code 200} with the twenty-one-field detail projection in map order: the six recurring header
-     * fields, the identifier, the card number, the type and category codes, the source, the description, the
-     * amount, the originating and processing dates, the four merchant fields and the message line. Every
-     * field is at the width its symbolic map declares.</p>
+     * <p>{@code 200} with a {@code TransactionResponse}: the identifier, the <strong>tail-masked</strong>
+     * card number, the type and category codes, the source, the description, the amount, the originating and
+     * processing dates, the four merchant fields and the status message. Every field is at the width its
+     * symbolic map declares.</p>
+     *
+     * <p><strong>The card number is masked and the six header fields are not carried.</strong> A primary
+     * account number may not appear in an HTTP response, and {@code app/cpy-bms/COTRN01.CPY}'s
+     * {@code CARDNI PIC X(16)} is one; the masking rule is stated once, in {@code ApiMasking}, and applied
+     * here through the response type rather than restated. The header fields - the transaction name, the two
+     * titles, the date and the time - painted a 3270 screen and carry no transaction data, so they are
+     * omitted rather than transported.</p>
      *
      * <p><strong>Field-contract note - this description is 60 characters, not 26 and not 100.</strong>
      * {@code TDESCI} is {@code PIC X(60)} at {@code app/cpy-bms/COTRN01.CPY:96}. The list operation's
@@ -754,16 +919,16 @@ public class TransactionController {
      * {@code app/cpy/CVTRA05Y.cpy:16} and {@code :17} - see this class's documentation for why that is a
      * <strong>Blocker</strong> if violated - and this method neither parses nor reformats them.</p>
      *
-     * <h2>Side effects</h2>
+     * <h4>Side effects</h4>
      *
      * <p>None that change data. One record is read, under the update intent described above.</p>
      *
-     * <h2>Configuration and defaults</h2>
+     * <h4>Configuration and defaults</h4>
      *
      * <p>None. This operation reads no property, and its single parameter has no default: its absence is a
      * refusal rather than a default.</p>
      *
-     * <h2>Failure modes and troubleshooting</h2>
+     * <h4>Failure modes and troubleshooting</h4>
      *
      * <p>{@code 400} when the identifier is absent or blank, naming the field and the failure kind.
      * {@code 404} when no transaction carries that identifier, carrying the byte-exact legacy literal
@@ -794,7 +959,7 @@ public class TransactionController {
      *                                  failure; mapped to {@code 500} by {@link #handleAbend}
      */
     @GetMapping(DETAIL_PATH)
-    public ResponseEntity<TransactionDto> getTransactionDetail(
+    public ResponseEntity<TransactionResponse> getTransactionDetail(
             @RequestParam(name = "transactionId", required = false) final String transactionId,
             final Authentication authentication) {
 
@@ -815,14 +980,14 @@ public class TransactionController {
         LOG.debug("Served transaction {} program {}: detail returned, errorLine={}", DETAIL_TRANSACTION_ID,
                 DETAIL_PROGRAM, screen.errorFlagOn());
 
-        return ResponseEntity.ok(screen.detail());
+        return ResponseEntity.ok(TransactionResponse.of(screen.detail()));
     }
 
     /**
      * Operation 3 of 3 on this controller, and operation 11 of the seventeen the REST surface exposes. Adds
      * a transaction.
      *
-     * <h2>Provenance</h2>
+     * <h4>Provenance</h4>
      *
      * <p>Replaces CICS transaction {@code CT02} - {@code DEFINE TRANSACTION(CT02)} at
      * {@code app/csd/CARDDEMO.CSD:L439} naming {@code PROGRAM(COTRN02C)} at {@code :L440} - and the program
@@ -830,14 +995,14 @@ public class TransactionController {
      * {@code COTRN02}. The request body's twenty-one fields are the twenty-one input fields of the generated
      * symbolic map {@code app/cpy-bms/COTRN02.CPY}, one for one, at the widths that map declares.</p>
      *
-     * <h2>Purpose</h2>
+     * <h4>Purpose</h4>
      *
      * <p>Validates and writes one transaction. Every part of that - the validation cascade, the two numeric
      * conversions, the identifier generation, the record assembly and the write - belongs to
      * {@code TransactionAddService}, which this method calls once. It performs no validation of its own
      * beyond the declarative field-width constraints the request record carries, and it generates nothing.</p>
      *
-     * <h2>Blocker-adjacent trap: two distinct numeric parsers, used deliberately</h2>
+     * <h4>Blocker-adjacent trap: two distinct numeric parsers, used deliberately</h4>
      *
      * <p>The source uses <strong>two different numeric intrinsics on the same screen</strong>, and the
      * asymmetry is deliberate rather than incidental. Using one for both is a behaviour change: it either
@@ -872,7 +1037,7 @@ public class TransactionController {
      * {@code MOVE WS-TRAN-AMT-E TO TRNAMTI} at {@code :L386}, and it is reproduced by the service and its
      * projection. Nothing on this method formats an amount.</p>
      *
-     * <h2>Inputs</h2>
+     * <h4>Inputs</h4>
      *
      * <p>One JSON body: the twenty-one fields of {@code app/cpy-bms/COTRN02.CPY}, including
      * {@code TRNSRCI PIC X(10)} at {@code :84}, {@code TDESCI PIC X(60)} at {@code :90},
@@ -887,7 +1052,7 @@ public class TransactionController {
      * class test, no lookup and no length check beyond the field width. Adding one would reject records the
      * legacy system accepts, so none is added - here or in the service.</p>
      *
-     * <h2>The generated identifier, and the race that is kept on purpose</h2>
+     * <h4>The generated identifier, and the race that is kept on purpose</h4>
      *
      * <p>The identifier is produced by the service using the source's own descending-browse maximum-key
      * idiom at {@code app/cbl/COTRN02C.cbl:L444-L449}: move high values into the key at {@code :L444},
@@ -901,30 +1066,29 @@ public class TransactionController {
      * it</strong> and let the primary key surface a collision as a duplicate-record failure, rather than
      * substituting a database sequence. A sequence would generate different values, would not reproduce the
      * first-identifier-is-one behaviour, and would break comparison against the baseline. This is a labelled
-     * decision recorded in {@code DECISION_LOG.md}, not an oversight, and it is why {@code 409} is a normal
-     * documented outcome of this operation rather than an internal error.</p>
+     * decision owed an entry in the planned {@code DECISION_LOG.md}, not an oversight, and it is why {@code 409} is a
+     * normal documented outcome of this operation rather than an internal error.</p>
      *
-     * <h2>Outputs</h2>
+     * <h4>Outputs</h4>
      *
      * <p>{@code 201} with a {@code Location} header addressing the new transaction through
-     * {@link #getTransactionDetail}, and the map image the source would have sent as the body, when the
-     * write happened. {@code 200} with the same projection and no {@code Location} header when the
-     * interaction terminated without a write - which the source does on four distinct paths, none of them an
-     * error: the confirmation prompt of its two-phase handshake, a screen display, a screen clear, and an
-     * unsupported key. The request was understood and answered in all four cases, so a failure status would
-     * misreport them.</p>
+     * {@link #getTransactionDetail}, and a {@code TransactionResponse} as the body, when the write happened.
+     * {@code 200} with the same response shape and no {@code Location} header when the interaction terminated
+     * without a write - which the source does on four distinct paths, none of them an error: the confirmation
+     * prompt of its two-phase handshake, a screen display, a screen clear, and an unsupported key. The
+     * request was understood and answered in all four cases, so a failure status would misreport them.</p>
      *
-     * <h2>Side effects</h2>
+     * <h4>Side effects</h4>
      *
      * <p>On the {@code 201} path exactly one transaction row is inserted, inside the service's transaction
      * boundary. On every other path there is no side effect at all.</p>
      *
-     * <h2>Configuration and defaults</h2>
+     * <h4>Configuration and defaults</h4>
      *
      * <p>None. This operation reads no property and applies no default to any body field: an absent field
      * arrives as null and stays null, which is how the source's blank map field is represented.</p>
      *
-     * <h2>Failure modes and troubleshooting</h2>
+     * <h4>Failure modes and troubleshooting</h4>
      *
      * <p>{@code 400} on the first cascade refusal - validation is fail-fast, so exactly one field is
      * reported and no later check runs. The refusals include a non-numeric account identifier, a card number
@@ -963,7 +1127,7 @@ public class TransactionController {
      *                                  {@code 500} by {@link #handleAbend}
      */
     @PostMapping
-    public ResponseEntity<TransactionDto> addTransaction(
+    public ResponseEntity<TransactionResponse> addTransaction(
             @Valid @RequestBody final TransactionAddRequest request, final Authentication authentication) {
 
         if (isUnauthenticated(authentication)) {
@@ -982,7 +1146,7 @@ public class TransactionController {
             LOG.info("Transaction {} program {} added one transaction", ADD_TRANSACTION_ID, ADD_PROGRAM);
             return ResponseEntity.status(HttpStatus.CREATED)
                     .header(LOCATION_HEADER, detailLocationOf(result.transactionId()))
-                    .body(result.screen());
+                    .body(TransactionResponse.of(result.screen()));
         }
 
         // The four no-write terminations: the confirmation prompt of the two-phase handshake, a screen
@@ -990,7 +1154,7 @@ public class TransactionController {
         // failure; and none of them wrote, so none of them may claim 201.
         LOG.debug("Transaction {} program {} ended with outcome {} and wrote nothing", ADD_TRANSACTION_ID,
                 ADD_PROGRAM, result.outcome());
-        return ResponseEntity.ok(result.screen());
+        return ResponseEntity.ok(TransactionResponse.of(result.screen()));
     }
 
     /**
@@ -1047,7 +1211,7 @@ public class TransactionController {
         LOG.debug("Refused a transaction request with 400: field {} kind {}", rejection.getFieldName(),
                 rejection.getFailureKind());
 
-        return ResponseEntity.badRequest().body(problem);
+        return ResponseEntity.badRequest().body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
@@ -1064,8 +1228,8 @@ public class TransactionController {
      * surfaced and not logged</strong>, because on the add path that key can be a card number.</p>
      *
      * @param absent the not-found failure; never null when the framework dispatches here.
-     * @return {@code 404 Not Found} carrying the legacy literal as its detail, plus the record type when the
-     *         exception named one
+     * @return {@code 404 Not Found} carrying the fixed detail, the stable error code and the correlation
+     *         identifier; the record type and the exception's message are logged rather than returned
      */
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(final RecordNotFoundException absent) {
@@ -1073,15 +1237,13 @@ public class TransactionController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle(NOT_FOUND_PROBLEM_TITLE);
 
-        final String absentMessage = absent.getMessage();
-        if (absentMessage != null) {
-            problem.setDetail(absentMessage);
-        }
-        absent.recordType().ifPresent(recordType -> problem.setProperty(RECORD_TYPE_PROPERTY, recordType));
+        problem.setDetail(NOT_FOUND_PROBLEM_DETAIL);
 
+        // The record type is logged, not returned: it holds a logical file name such as TRANSACT.
         LOG.debug("Answered a transaction request with 404: recordType {}", absent.recordType().orElse(null));
 
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(withPublicEnvelope(problem, ERROR_CODE_NOT_FOUND));
     }
 
     /**
@@ -1091,7 +1253,7 @@ public class TransactionController {
      * reading the maximum key and adding one ({@code app/cbl/COTRN02C.cbl:L444-L449}), which is not atomic;
      * the parity-preserving translation keeps that algorithm and lets the primary key detect a collision,
      * which is legacy file status {@code '22'}. The decision to keep it rather than substitute a sequence is
-     * recorded in {@code DECISION_LOG.md}.</p>
+     * owed an entry in the planned {@code DECISION_LOG.md}.</p>
      *
      * <p>{@code 409} rather than {@code 500}, and the distinction matters operationally: the request is
      * <em>retryable</em> and will normally succeed on the next attempt, because by then the committed row is
@@ -1102,7 +1264,8 @@ public class TransactionController {
      * colliding key is not surfaced and not logged</strong>: it is the primary key of a financial record.</p>
      *
      * @param collision the duplicate-key failure; never null when the framework dispatches here.
-     * @return {@code 409 Conflict} carrying a problem detail
+     * @return {@code 409 Conflict} carrying a problem detail, the stable error code and the correlation
+     *         identifier
      */
     @ExceptionHandler(DuplicateRecordException.class)
     public ResponseEntity<ProblemDetail> handleDuplicateRecord(final DuplicateRecordException collision) {
@@ -1110,16 +1273,14 @@ public class TransactionController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
         problem.setTitle(DUPLICATE_PROBLEM_TITLE);
 
-        final String collisionMessage = collision.getMessage();
-        if (collisionMessage != null) {
-            problem.setDetail(collisionMessage);
-        }
+        problem.setDetail(DUPLICATE_PROBLEM_DETAIL);
 
         LOG.warn("Answered transaction {} with 409: the generated identifier collided on logical file {}. "
                 + "This is the retained descending-browse race of app/cbl/COTRN02C.cbl:L444-L449 and the "
                 + "request is retryable", ADD_TRANSACTION_ID, collision.getLogicalFile());
 
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_DUPLICATE));
     }
 
     /**
@@ -1135,23 +1296,22 @@ public class TransactionController {
      * site identified one, so an operator learns what to look at without the cause reaching the response.</p>
      *
      * @param unavailable the unavailable-resource failure; never null when the framework dispatches here.
-     * @return {@code 503 Service Unavailable} carrying a problem detail
+     * @return {@code 503 Service Unavailable} carrying the fixed detail, the stable error code and the
+     *         correlation identifier; the resource name is logged rather than returned
      */
     @ExceptionHandler(FileUnavailableException.class)
     public ResponseEntity<ProblemDetail> handleFileUnavailable(final FileUnavailableException unavailable) {
 
-        final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        final ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                UNAVAILABLE_PROBLEM_DETAIL);
         problem.setTitle(STORE_PROBLEM_TITLE);
 
-        final String unavailableMessage = unavailable.getMessage();
-        if (unavailableMessage != null) {
-            problem.setDetail(unavailableMessage);
-        }
-
+        // The resource name is logged, not returned.
         LOG.error("Answered a transaction request with 503: resource {} could not be opened, the translation "
                 + "of file status '35'", unavailable.resourceName().orElse(null), unavailable);
 
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
     }
 
     /**
@@ -1170,40 +1330,42 @@ public class TransactionController {
      * codes to the operator's log rather than to the terminal.</p>
      *
      * @param failure the access failure; never null when the framework dispatches here.
-     * @return {@code 502 Bad Gateway} carrying a problem detail and the four-character expanded file status
+     * @return {@code 502 Bad Gateway} carrying the fixed detail, the stable error code and the correlation
+     *         identifier; the expanded file status, the logical file and the operation are logged rather than
+     *         returned
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccessFailure(final FileAccessException failure) {
 
-        final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
+        final ProblemDetail problem =
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, IO_PROBLEM_DETAIL);
         problem.setTitle(STORE_PROBLEM_TITLE);
 
-        final String failureMessage = failure.getMessage();
-        if (failureMessage != null) {
-            problem.setDetail(failureMessage);
-        }
-        problem.setProperty(IO_STATUS_PROPERTY, failure.getExpandedStatus());
-
+        // The expanded status, the logical file and the operation are logged, not returned.
         LOG.error("Answered a transaction request with 502: status {} logical file {} operation {}",
                 failure.getExpandedStatus(), failure.getLogicalFileName(), failure.getOperation(), failure);
 
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
     }
 
     /**
      * Maps a fatal failure onto {@code 500 Internal Server Error}.
      *
-     * <p>The translation of the source's abend path. The response carries the abend code, which is
-     * {@code 999} exactly as the corpus's abend routine moves it, and the batch return code {@code 12}. Both
-     * are reported because they are the identifiers an operator correlates a failure by; neither is invented.</p>
+     * <p>The translation of the source's abend path. The abend code, which is {@code 999} exactly as the
+     * corpus's abend routine moves it, and the batch return code {@code 12} are <strong>logged rather than
+     * returned</strong>. Neither is invented and both remain the identifiers an operator correlates a failure
+     * by - but an operator reads them on the log, and what the caller correlates by is the correlation
+     * identifier in the body, which is what joins the two without publishing an internal termination code.</p>
      *
      * <p>The detail is a fixed string rather than the exception's message, and the cause is logged rather
      * than returned. That is deliberate: an abend message can restate internal state, and this is the one
      * status whose cause is by definition not something the caller can act on.</p>
      *
      * @param abend the fatal failure; never null when the framework dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail plus the abend code and the
-     *         batch return code
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and the
+     *         correlation identifier; the abend code and the batch return code are logged rather than
+     *         returned
      */
     @ExceptionHandler(FatalProcessingException.class)
     public ResponseEntity<ProblemDetail> handleAbend(final FatalProcessingException abend) {
@@ -1212,14 +1374,14 @@ public class TransactionController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // Logged, not returned: 999 and 12 are internals of the terminating path.
+        LOG.error("A transaction request abended: code {} returnCode {} culprit {} reason {}",
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("A transaction request abended: code {} culprit {} reason {}", carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -1237,7 +1399,8 @@ public class TransactionController {
      * nothing is silently ignored.</p>
      *
      * @param failure the remaining typed failure; never null when the framework dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and the
+     *         correlation identifier
      */
     @ExceptionHandler(CardDemoException.class)
     public ResponseEntity<ProblemDetail> handleTypedFailure(final CardDemoException failure) {
@@ -1248,7 +1411,8 @@ public class TransactionController {
 
         LOG.error("A transaction request failed with a typed CardDemo exception", failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
     }
 
     /**
@@ -1402,6 +1566,119 @@ public class TransactionController {
     }
 
     /**
+     * Resolves the enumerated navigation action from its raw token, accepting nothing but an exact match.
+     *
+     * <p>The framework's default enum binding trims its input, so {@code " SUBMIT "} would bind as
+     * {@code SUBMIT}. That is coercion of a control token: this value selects which of the three
+     * data-bearing dispatch arms of {@code app/cbl/COTRN00C.cbl} runs, so accepting a spelling the operation
+     * never declared is accepting an instruction it never declared. Comparison is by
+     * {@link String#equals(Object)} against the constant names, with no trim and no case fold.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * {@link TransactionListAction#SUBMIT}, so a bare request returns the first page exactly as before.
+     * @return the resolved action, never null
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is not one of the three declared tokens. Neither message repeats the
+     * rejected value
+     */
+    private static TransactionListAction resolveAction(final String token) {
+
+        if (token == null) {
+            return TransactionListAction.SUBMIT;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(ACTION_FIELD,
+                    "action must name one of the three declared navigation tokens when the parameter is"
+                            + " present at all");
+        }
+        for (final TransactionListAction candidate : TransactionListAction.values()) {
+            if (candidate.name().equals(token)) {
+                return candidate;
+            }
+        }
+        throw ValidationException.invalidField(ACTION_FIELD,
+                "action must be exactly one of the three declared navigation tokens; no alias, no padding"
+                        + " and no other case is accepted");
+    }
+
+    /**
+     * Resolves the page counter from its raw token, accepting ASCII digits and nothing else.
+     *
+     * <p>The framework's default {@code int} binding accepts a leading sign and surrounding whitespace, so
+     * {@code " +3 "} would bind as three. {@code CDEMO-CT00-PAGE-NUM} is {@code PIC 9(08)} - unsigned - and
+     * the COBOL {@code IS NUMERIC} class test that guards every such field admits only the characters zero
+     * through nine. This reproduces that test rather than the framework's. The digit range is written out
+     * rather than delegated to {@link Character#isDigit(char)} on purpose: that method is true for every
+     * decimal digit in Unicode, so a guard written with it would admit an Arabic-Indic digit string that no
+     * 3270 terminal could have sent.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * zero, the counter's own value on a first entry.
+     * @return the page counter
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is not a run of at most eight ASCII digits
+     */
+    private static int requirePageToken(final String token) {
+
+        if (token == null) {
+            return LOWEST_PAGE_NUMBER;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(PAGE_FIELD,
+                    "page must be supplied as digits when the parameter is present at all");
+        }
+        for (int index = 0; index < token.length(); index++) {
+            final char character = token.charAt(index);
+            if (character < '0' || character > '9') {
+                throw ValidationException.invalidField(PAGE_FIELD,
+                        "page must consist of ASCII digits only, the domain of the COBOL IS NUMERIC class"
+                                + " test that guards the eight-digit page counter");
+            }
+        }
+        if (token.length() > MAXIMUM_PAGE_TOKEN_DIGITS) {
+            throw ValidationException.invalidField(PAGE_FIELD,
+                    "page must be at most " + MAXIMUM_PAGE_TOKEN_DIGITS + " digits; a longer value was never"
+                            + " representable in the page counter the transaction list browse maintains");
+        }
+        return Integer.parseInt(token);
+    }
+
+    /**
+     * Resolves the page-state flag from its raw token, accepting only {@code true} and {@code false}.
+     *
+     * <p>The framework's default {@code boolean} binding additionally accepts {@code on}, {@code off},
+     * {@code yes}, {@code no}, {@code 1} and {@code 0}. This flag decides whether a page-forward is
+     * attempted at all, so admitting six aliases for two values admits five spellings of an instruction the
+     * operation never declared.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * false, which is what a first request means.
+     * @return the flag
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is neither exact token
+     */
+    private static boolean requireBooleanToken(final String token) {
+
+        if (token == null) {
+            return false;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(NEXT_PAGE_FIELD,
+                    "nextPageAvailable must be supplied as " + TRUE_TOKEN + " or " + FALSE_TOKEN
+                            + " when the parameter is present at all");
+        }
+        if (TRUE_TOKEN.equals(token)) {
+            return true;
+        }
+        if (FALSE_TOKEN.equals(token)) {
+            return false;
+        }
+        throw ValidationException.invalidField(NEXT_PAGE_FIELD,
+                "nextPageAvailable accepts exactly " + TRUE_TOKEN + " and " + FALSE_TOKEN
+                        + "; no alias and no other spelling is accepted");
+    }
+
+    /**
      * Refuses an absent or blank transaction identifier on the detail operation.
      *
      * <p>The source refuses a blank {@code TRNIDINI} before it reads anything, so an unusable identifier is a
@@ -1531,5 +1808,36 @@ public class TransactionController {
         public TransactionListService.AttentionIdentifier attentionIdentifier() {
             return this.attentionIdentifier;
         }
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
     }
 }

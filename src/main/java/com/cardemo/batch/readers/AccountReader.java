@@ -30,7 +30,6 @@
 package com.cardemo.batch.readers;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.List;
 import java.util.Locale;
 import java.util.Objects;
@@ -42,9 +41,7 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
@@ -69,7 +66,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * source contains no write verb at all, this class adds no write path: no {@code save}, no {@code saveAll}, no
  * {@code delete}, no {@code @Modifying} query, no {@code EntityManager} mutation and no {@code flush}. The only
  * repository operations it ever performs are {@link AccountRepository#count()} and
- * {@link AccountRepository#findAll(org.springframework.data.domain.Pageable)}.
+ * {@link AccountRepository#findByAccountIdGreaterThanOrderByAccountIdAsc(Long,
+ * org.springframework.data.domain.Pageable)}.
  * <p>
  * <b>Finding, severity Low.</b> Other project documents quote &quot;OPEN 4 / READ 1 / CLOSE 3 / DISPLAY 27&quot;
  * for this program. Those are lexical token counts, not statement counts: the token {@code OPEN} also occurs in
@@ -114,17 +112,31 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     before the display ({@code :L74-L81}). The second test can never fail when the first passed and the read
  *     returned a record, so it is redundant by inspection. Both are reproduced as explicit guards in
  *     {@link #read()} and neither is collapsed.</li>
- * <li><b>Every record is emitted twice, by two different mechanisms.</b> The mainline performs
- *     {@code DISPLAY ACCOUNT-RECORD} over the whole 300-byte record ({@code :L78}) while
- *     {@code 1000-ACCTFILE-GET-NEXT} separately performs {@code 1100-DISPLAY-ACCT-RECORD} ({@code :L96}),
- *     which emits the record field by field. Both emissions are reproduced, as two distinct log events per
- *     row. Emitting once would be a parity break.</li>
- * <li><b>The field-by-field display omits {@code ACCT-ADDR-ZIP} and closes with a 49-character rule.</b>
- *     {@code app/cpy/CVACT01Y.cpy} declares twelve data fields; {@code 1100-DISPLAY-ACCT-RECORD} displays
- *     eleven of them at {@code :L119-L129} and skips the postal code entirely, then writes a rule of exactly
- *     49 hyphens at {@code :L130} (both figures measured). The omission and the rule width are reproduced
- *     exactly. Adding the twelfth field would be a parity break, and it would also publish
- *     address-adjacent personal data that {@link Account#toString()} deliberately withholds.</li>
+ * <li><b>Every record is emitted twice, by two different mechanisms - and the two emission POINTS are
+ *     preserved while their CONTENT is refused.</b> The mainline performs {@code DISPLAY ACCOUNT-RECORD} over
+ *     the whole 300-byte record ({@code :L78}) while {@code 1000-ACCTFILE-GET-NEXT} separately performs
+ *     {@code 1100-DISPLAY-ACCT-RECORD} ({@code :L96}), which emitted the record field by field. Both points
+ *     still emit, at the same two places in the control flow, so the structure the traceability map is checked
+ *     against is intact and each still produces a distinct log event per row. <b>Neither publishes a field
+ *     value.</b> Between them those emissions carried the current balance, both credit limits, both
+ *     current-cycle totals, the account identifier and three dates - customer financial data, which Rule 1
+ *     clause D forbids on a log channel, and which a DEBUG level does not mitigate because DEBUG is a switch an
+ *     operator can turn on. Masking cannot compensate either: the whole-record form is a positional byte string
+ *     with no field names for a {@code <paths>} rule to key on, and no value rule can distinguish a twelve-digit
+ *     money field from the eleven-digit identifier beside it. Each emission is now the logical file, the
+ *     operation and the running row sequence - a complete identity for a row of this scan, because the scan is
+ *     ordered by an explicit ascending sort. No gate is weakened: gate 1 compares the daily posting job's
+ *     fixed-width output, and this program writes no dataset at all. See
+ *     {@code displayAccountRecord(Account)}.</li>
+ * <li><b>The field-by-field display omitted {@code ACCT-ADDR-ZIP} and closed with a 49-character rule.</b>
+ *     {@code app/cpy/CVACT01Y.cpy} declares twelve data fields; {@code 1100-DISPLAY-ACCT-RECORD} displayed
+ *     eleven of them at {@code :L119-L129}, skipping the postal code entirely, then wrote a rule of exactly
+ *     49 hyphens at {@code :L130} (both figures measured). The omission is recorded here because it is the one
+ *     piece of evidence that the source itself treated address data as different in kind from the rest of the
+ *     record - the same judgement {@link Account#toString()} makes, and the same judgement that now applies to
+ *     the other eleven fields as well. Neither the eleven values nor the rule is emitted any longer, for the
+ *     reason given in the previous item, so the width of a rule that is no longer written is history rather
+ *     than contract.</li>
  * <li><b>The arithmetic-idiom variation between OPEN and CLOSE.</b> {@code 0000-ACCTFILE-OPEN} primes the
  *     result field with {@code MOVE 8 TO APPL-RESULT} ({@code :L134}); {@code 9000-ACCTFILE-CLOSE} primes the
  *     same field with {@code ADD 8 TO ZERO GIVING APPL-RESULT} ({@code :L152}) and clears it with
@@ -134,24 +146,34 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Because
- * {@code spring.batch.job.enabled} is {@code false}, jobs are launched by
- * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and never at application startup, so instantiating
- * this bean never triggers a scan.
+ * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Their
+ * launcher, the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, is <strong>not authored at
+ * this commit</strong> - {@code com.cardemo.batch.jobs} holds {@code InterestCalculationJob} only - so a job
+ * is launched deliberately rather than by an orchestrator. What both rely on is already true:
+ * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
+ * job runs at application startup. This class carries {@code @Component} and {@code @StepScope}, so the
+ * component scan registers a definition for it while no instance is constructed until a step is executing.
  * <p>
  * Two build paths were verified in this environment; both are pinned and either may be used.
  * <ul>
- * <li><b>Host toolchain</b> &mdash; {@code source /etc/profile.d/10-carddemo-toolchain.sh} then
- *     {@code mvn -B -o clean compile}. Verified present: OpenJDK 25.0.3 and Apache Maven 3.9.11.</li>
+ * <li><b>Host toolchain</b> &mdash; JDK 25 on {@code PATH} with {@code JAVA_HOME} set, however the host
+ *     provides it, then {@code ./mvnw -B -ntp -o clean compile}. The prerequisite is a capability and never a
+ *     host path; Maven 3.9.11 comes from the pinned wrapper. Verified present: OpenJDK 25.0.3 and Apache
+ *     Maven 3.9.11. Note that {@code -o} also causes Maven to skip {@code dependency-check:check}, which
+ *     declares {@code requiresOnline}, and a skipped scan is never evidence that the scan passes.</li>
  * <li><b>Pinned container</b> &mdash; Docker Engine 29.7.0 and {@code docker compose} v5.3.1 are available, so
  *     the build can also run hermetically:
  *     {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -q -DskipTests compile}.
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
- * warning. Tests live in {@code src/test/java/com/cardemo/unit/batch} for the status renderer and the guard
- * logic, and in {@code src/test/java/com/cardemo/integration/batch} for the Testcontainers PostgreSQL 16 scan;
- * this class creates neither, because test sources are outside the scope of the package it belongs to.
+ * warning. The tests that would cover this class belong in {@code src/test/java/com/cardemo/unit/batch} for
+ * the status renderer and the guard logic, and in {@code src/test/java/com/cardemo/integration/batch} for the
+ * Testcontainers PostgreSQL 16 scan. Neither is authored at this commit: {@code unit/batch} holds three
+ * classes - {@code InterestCalculationJobTest}, {@code TransactionCombineProcessorTest} and
+ * {@code TransactionCombineProcessorCoverageTest} - none of which references this reader, and
+ * {@code integration/batch} holds one abstract Testcontainers base with no concrete {@code *IT} beneath it.
+ * This class creates neither, because test sources are outside the scope of the package it belongs to.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -279,6 +301,35 @@ public class AccountReader implements ItemStreamReader<Account> {
     private static final String RECORD_SEPARATOR = "-".repeat(49);
 
     /**
+     * Name of the isolated parity-output logger. {@code OFF} in every shipped profile; see {@link #PARITY_LOG}.
+     *
+     * <p>The suffix is the originating COBOL program, so a parity run can enable exactly one program's output
+     * rather than the whole tree.
+     */
+    private static final String PARITY_LOGGER_NAME = "com.cardemo.parity.CBACT01C";
+
+    /**
+     * Parity-output logger, and the ONLY channel through which a record image or a financial value may leave
+     * this class.
+     *
+     * <p><strong>Why it exists.</strong> The translated {@code DISPLAY} statements reproduce the source's own
+     * SYSOUT output, and that output contains customer financial data: account balances, both credit limits,
+     * both current-cycle totals, transaction and category amounts, and whole fixed-width record images. Emitting
+     * those through the class logger put them in the application's ordinary log stream at DEBUG, where the
+     * masking rules in {@code logback-spring.xml} could not reach them - masking matches labelled values, and an
+     * unlabelled 300-byte record image presents nothing to match. Rule 1 Clauses A and D forbid that. Severity:
+     * <strong>Medium</strong>.
+     *
+     * <p><strong>What it changes.</strong> The parity emissions move to the dedicated logger name
+     * {@value #PARITY_LOGGER_NAME}, which {@code src/main/resources/application.yml} sets to {@code OFF} for the
+     * whole {@code com.cardemo.parity} tree in every shipped profile. So no deployment emits them, and a parity
+     * comparison enables the one logger deliberately, in an isolated run, with the output routed where a
+     * baseline diff needs it. The class logger keeps counters, statuses and masked identifiers - the diagnostics
+     * an operator actually needs - and never carries a value again.
+     */
+    private static final Logger PARITY_LOG = LoggerFactory.getLogger(PARITY_LOGGER_NAME);
+
+    /**
      * The eleven field labels of {@code 1100-DISPLAY-ACCT-RECORD} ({@code app/cbl/CBACT01C.cbl:L119-L129}) in
      * source order, each measured at exactly 25 characters with the colon in column 25. The source concatenates
      * label and value with no separator, so {@code ACCT-ID} renders as
@@ -303,10 +354,42 @@ public class AccountReader implements ItemStreamReader<Account> {
     };
 
     // ----------------------------------------------------------------------------------------------------
-    // Record geometry from app/cpy/CVACT01Y.cpy, corroborated by the FD at app/cbl/CBACT01C.cbl:L37-L40
-    // (FD-ACCT-ID PIC 9(11) + FD-ACCT-DATA PIC X(289) = 300), by app/catlg/LISTCAT.txt:L59
-    // (KEYLEN 11 / AVGLRECL 300 / MAXLRECL 300), by app/jcl/ACCTFILE.jcl:L40-L41
-    // (KEYS(11 0) / RECORDSIZE(300 300)) and by app/data/ASCII/acctdata.txt (measured row width 300).
+    // Record geometry, retained as documentation only.
+    //
+    // app/cpy/CVACT01Y.cpy declares the 300-byte layout, corroborated four independent ways: the FD at
+    // app/cbl/CBACT01C.cbl:L37-L40 (FD-ACCT-ID PIC 9(11) + FD-ACCT-DATA PIC X(289) = 300), the catalogue entry
+    // at app/catlg/LISTCAT.txt:L59 (KEYLEN 11 / AVGLRECL 300 / MAXLRECL 300), the cluster definition at
+    // app/jcl/ACCTFILE.jcl:L40-L41 (KEYS(11 0) / RECORDSIZE(300 300)) and the measured row width of
+    // app/data/ASCII/acctdata.txt. The field offsets are: identifier 1-11, active status 12, current balance
+    // 13-24, credit limit 25-36, cash credit limit 37-48, open date 49-58, expiration date 59-68, reissue date
+    // 69-78, current-cycle credit 79-90, current-cycle debit 91-102, postal code 103-112, group identifier
+    // 113-122, filler 123-300.
+    //
+    // WHY THESE ARE NO LONGER CONSTANTS. Eight width and padding constants used to live here, and every one of
+    // them existed to serve the two DISPLAY reproductions this class no longer performs: the field-by-field
+    // emission of 1100-DISPLAY-ACCT-RECORD and the whole-record image of :L78, both of which published customer
+    // financial data to a log channel and are now refused - see displayAccountRecord(Account) for the full
+    // reasoning. With their only callers gone the constants were unreachable, and Rule 1 clause B forbids dead
+    // code, so they were removed rather than left as a promise this class no longer keeps. The geometry itself
+    // is provenance worth keeping legible, which is what this comment is for. This reader consumes mapped rows
+    // through JPA and parses no fixed-width byte anywhere, so it needs no width at runtime; the byte-exact
+    // rendering of a record belongs to the fixed-width writers, which own the zoned-decimal codec.
+    //
+    // ONE FINDING SURVIVES FROM THOSE DECLARATIONS AND MUST NOT BE LOST, severity Medium:
+    // ACCT-EXPIRAION-DATE IS MISSPELLED IN THE COPYBOOK AND THE MISSPELLING IS DELIBERATE HERE.
+    // app/cpy/CVACT01Y.cpy:L11 spells it ACCT-EXPIRAION-DATE, missing the T of "EXPIRATION", so the entity
+    // property is Account.getExpiraionDate() over column acct_expiraion_date, and app/cbl/CBACT01C.cbl:L125
+    // emits a label carrying the same misspelling. Severity is Medium rather than Low because it is a standing
+    // naming trap: a maintainer who "corrects" the spelling in any one of the places it appears - copybook
+    // citation, entity property, column name - breaks compilation against the entity contract or the schema.
+    // Remediation: do not rename it. A sanctioned rename must be atomic across the entity, the Flyway
+    // migration, every reader and writer and the expected-output baselines, and is owed an entry in the
+    // planned DECISION_LOG.md as a deliberate divergence from the frozen corpus.
+    //
+    // The three PIC X(10) date fields are carried as String over CHAR(10) columns and are never parsed into a
+    // java.time type by this reader: a verification scan must be able to hold a value no date parser would
+    // accept. Parsing and validation belong to com.cardemo.service.shared.DateValidationService, which replaces
+    // CALL 'CSUTLDTC'.
     // ----------------------------------------------------------------------------------------------------
 
     /** {@code ACCT-ID PIC 9(11)}, bytes 1-11 of the record. */
@@ -322,9 +405,6 @@ public class AccountReader implements ItemStreamReader<Account> {
      * (37-48), {@code ACCT-CURR-CYC-CREDIT} (79-90) and {@code ACCT-CURR-CYC-DEBIT} (91-102).
      */
     private static final int MONEY_DIGITS = 12;
-
-    /** Scale of every money field, fixed by the {@code V99} of the picture clause. */
-    private static final int MONEY_SCALE = 2;
 
     /**
      * Width of each {@code PIC X(10)} field: the three text dates {@code ACCT-OPEN-DATE} (49-58),
@@ -348,8 +428,8 @@ public class AccountReader implements ItemStreamReader<Account> {
      * compilation against the entity contract or byte-comparison of the emitted label, and the two failures
      * surface in different gates. <i>Remediation:</i> do not rename it. Should a rename ever be sanctioned, it
      * must be applied atomically across the entity, the Flyway migration, every reader and writer, and the
-     * expected-output baselines, and recorded in {@code DECISION_LOG.md} as a deliberate divergence from the
-     * frozen corpus.
+     * expected-output baselines, and owed an entry in the planned {@code DECISION_LOG.md} as a deliberate divergence
+     * from the frozen corpus.
      *
      * @see Account#getExpiraionDate()
      */
@@ -367,6 +447,39 @@ public class AccountReader implements ItemStreamReader<Account> {
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
 
+    /**
+     * The same-width stand-in emitted in place of every monetary value in this class's two diagnostic
+     * emissions.
+     * <p>
+     * It is exactly {@value #MONEY_DIGITS} characters - the width is derived from {@code MONEY_DIGITS} rather
+     * than hand-counted, so it cannot drift from the picture clause - and substituting it therefore preserves
+     * the field width, the field order and the 300-character record geometry that the emissions exist to
+     * prove. What it does not preserve
+     * is the value, and that is deliberate: the current balance, the credit limit, the cash credit limit and
+     * the two cycle accumulators are customer financial data, and no rule in
+     * {@code src/main/resources/logback-spring.xml} masks a bare digit run - nor could one, because the same
+     * digit run is a legitimate account identifier. Emitting the values and relying on downstream masking left
+     * them in routine log volume (CWE-532); redacting here is the only place the distinction between a balance
+     * and an identifier is knowable.
+     * <p>
+     * The token is not a run of a numeric character, so it can never be mistaken for a value that happened to
+     * be zero.
+     * <p>
+     * <b>Why a run of {@code '*'} rather than a bracketed word.</b> An earlier revision composed this constant
+     * from a {@code "[REDACTED]"} marker right-padded out to the field width. That spelling is withdrawn, for
+     * two reasons that only became visible once every redaction site could be compared side by side. It was
+     * the sole divergence among the emitter-side redactions: {@code TransactionReportProcessor} withholds
+     * {@code TRAN-AMT}, {@code InterestCalculationProcessor} withholds {@code TRAN-CAT-BAL}, and
+     * {@code TransactionDetailService} withholds both an amount and a merchant identifier, each as a run of
+     * {@code '*'} sized from its own picture clause - so one vocabulary now covers every position a reader
+     * might compare, which is what Rule 1 clause C asks of a convention. And {@code [REDACTED]} is the value
+     * of the {@code REDACTION} property in {@code src/main/resources/logback-spring.xml}, which is what the
+     * masking layer substitutes when one of its rules <em>matches</em> text that has already been rendered.
+     * Reserving that token to the pipeline keeps two different facts about a log line distinguishable: that a
+     * rule scrubbed a value that had been written, and that the emitter never wrote one at all.
+     */
+    private static final String REDACTED_MONEY = "*".repeat(MONEY_DIGITS);
+
     // ----------------------------------------------------------------------------------------------------
     // Execution-context keys for the restart cursor. Namespaced by simple class name so two readers in the
     // same step cannot collide.
@@ -378,6 +491,19 @@ public class AccountReader implements ItemStreamReader<Account> {
     /** Key under which the identifier of the most recently emitted row is checkpointed. */
     private static final String CONTEXT_KEY_LAST_ACCOUNT_ID = "AccountReader.lastAccountId";
 
+    /**
+     * Exclusive lower bound seeding the first keyset window, chosen to sit provably below the entire key
+     * space so that {@code ACCT-ID > } this value selects the true first row.
+     * <p>
+     * The proof, not an assumption: {@code ACCT-ID} is declared {@code PIC 9(11)} at
+     * {@code app/cpy/CVACT01Y.cpy}, is materialised as {@code NUMERIC(11) NOT NULL} by
+     * {@code src/main/resources/db/migration/V1__create_schema.sql}, and {@code Account} rejects any value
+     * below its own {@code MIN_ACCOUNT_ID} of zero. An unsigned display field admits no negative member at
+     * all, so {@code -1} is below every value the column can hold and below every value the entity will
+     * accept. It is a bound, never a key: no row can equal it, so no row can be skipped by it.
+     */
+    private static final long SEED_ACCOUNT_ID = -1L;
+
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBACT01C.cbl:L65}). */
     private static final String END_OF_FILE_NO = "N";
 
@@ -388,6 +514,14 @@ public class AccountReader implements ItemStreamReader<Account> {
     // File-status literals, derived from com.cardemo.model.enums.FileStatus rather than restated, so that the
     // single definition of each code stays single (Rule 1 clause C3, avoid duplication).
     // ----------------------------------------------------------------------------------------------------
+
+    /**
+     * The {@code '0'} that occupies the second byte of {@link #STATUS_PHYSICAL_IO_ERROR}.
+     * <p>
+     * It is the character a COBOL {@code MOVE} into a numeric display item pads with on the left, which is why
+     * it is the right stand-in for an unavailable subcode rather than a space.
+     */
+    private static final char NUMERIC_SUBCODE_NONE = '0';
 
     /** {@code '00'}: the status the source tests at {@code app/cbl/CBACT01C.cbl:L94}, {@code :L136}, {@code :L154}. */
     private static final String STATUS_SUCCESS = requireExactCode(FileStatus.SUCCESS);
@@ -413,7 +547,7 @@ public class AccountReader implements ItemStreamReader<Account> {
      * status vocabulary already lives, rather than in this reader.
      */
     private static final String STATUS_PHYSICAL_IO_ERROR =
-            String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_PAD;
+            String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_SUBCODE_NONE;
 
     // ----------------------------------------------------------------------------------------------------
     // Collaborators, injected through the constructor and never reassigned.
@@ -458,16 +592,24 @@ public class AccountReader implements ItemStreamReader<Account> {
     /** Cursor into {@link #pageBuffer}; the next row to hand out. */
     private int pageBufferIndex;
 
-    /** Zero-based number of the next page to fetch. */
-    private int nextPageNumber;
+    /**
+     * Keyset cursor: the highest {@code ACCT-ID} already <em>fetched</em> into {@link #pageBuffer}, and
+     * therefore the exclusive lower bound of the next window. Seeded to {@value #SEED_ACCOUNT_ID}, which is
+     * provably below the whole key space, so the first window starts at the true first row.
+     * <p>
+     * This runs ahead of {@link #lastAccountId} by up to {@link #pageSize} rows, because a window is fetched
+     * before its rows are handed out. The two are distinct on purpose: this one positions the <em>next
+     * query</em>, that one records the <em>last emission</em> and is what a restart resumes from.
+     */
+    private long fetchCursorAccountId = SEED_ACCOUNT_ID;
 
-    /** Rows to discard from the first fetched page when resuming a restarted step. */
-    private int restartSkipWithinPage;
-
-    /** Rows emitted so far, the counter the end-of-run summary reports and a restart resumes from. */
+    /** Rows emitted so far, the counter the end-of-run summary reports. */
     private long recordsRead;
 
-    /** Identifier of the most recently emitted row, checkpointed so a restart can be verified. */
+    /**
+     * Identifier of the most recently emitted row. Checkpointed by {@link #update(ExecutionContext)} and, on a
+     * restart, the authoritative position that {@link #fetchCursorAccountId} is re-seeded from.
+     */
     private Long lastAccountId;
 
     /** Whether {@code openAccountFile()} has completed successfully, mirroring an open VSAM ACB. */
@@ -528,8 +670,7 @@ public class AccountReader implements ItemStreamReader<Account> {
         accountRecord = null;
         pageBuffer = List.of();
         pageBufferIndex = 0;
-        nextPageNumber = 0;
-        restartSkipWithinPage = 0;
+        fetchCursorAccountId = SEED_ACCOUNT_ID;
         recordsRead = 0L;
         lastAccountId = null;
         fileOpen = false;
@@ -554,9 +695,9 @@ public class AccountReader implements ItemStreamReader<Account> {
      * The method body is the loop <em>body</em>, not the loop: Spring Batch drives the iteration, so
      * {@code PERFORM UNTIL END-OF-FILE = 'Y'} becomes the framework calling this method until it answers
      * {@code null}. Both of the source's guards are reproduced explicitly, in order, and neither is collapsed;
-     * see parity structure 1 in the class documentation. The whole-record emission of {@code :L78} and the
-     * field-by-field emission that {@code getNextAccountRecord()} performs at {@code :L96} are both retained;
-     * see parity structure 2.
+     * see parity structure 1 in the class documentation. Both emission points are retained - the one at
+     * {@code :L78} here and the one {@code getNextAccountRecord()} performs at {@code :L96} - and neither
+     * publishes a field value; see parity structure 2.
      * <p>
      * <b>Why there is no {@code @Transactional} annotation.</b> A chunk-oriented step already runs this method
      * inside its own transaction, and Spring silently ignores the {@code readOnly} attribute of a method that
@@ -564,7 +705,8 @@ public class AccountReader implements ItemStreamReader<Account> {
      * {@code readOnly = true} here would therefore read as an enforced guarantee while enforcing nothing, which
      * Rule 1 clause A1 rules out. Read-only is guaranteed structurally instead: the only repository operations
      * this class can reach are {@link AccountRepository#count()} and
-     * {@link AccountRepository#findAll(org.springframework.data.domain.Pageable)}, and there is no mutating
+     * {@link AccountRepository#findByAccountIdGreaterThanOrderByAccountIdAsc(Long,
+     * org.springframework.data.domain.Pageable)}, and there is no mutating
      * call, no {@code @Modifying} query and no {@code EntityManager} reference anywhere in the file.
      *
      * @return the next account in ascending {@code accountId} order, or {@code null} at end of data, which is
@@ -606,11 +748,42 @@ public class AccountReader implements ItemStreamReader<Account> {
         }
 
         // DISPLAY ACCOUNT-RECORD  (:L78) - the whole 300-byte record, the FIRST of the two emissions this
-        // program performs per row. Parity structure 2. Emitted at DEBUG because the record carries balances
-        // and credit limits: customer financial data, which Rule 1 clause D1 keeps out of routine log volume.
-        // The masking rules in logback-spring.xml govern the final output.
+        // program performs per row. Parity structure 2 is preserved as CONTROL FLOW: the emission point is
+        // still here, at this exact position inside the '00' branch and before the guard, which is what made
+        // the source emit every successful row twice.
+        //
+        // TWO INDEPENDENT CONTROLS APPLY TO THE CONTENT, AND BOTH ARE KEPT. A 300-byte account image carries
+        // the current balance, both credit limits and both current-cycle totals: customer financial data.
+        // Rule 1 clause D forbids that on a log channel, and a DEBUG level is not a mitigation - it is a
+        // switch an operator can turn on. Nor can masking compensate: the image is a positional byte string
+        // with no field names, so no <paths> rule in logback-spring.xml can reach a balance inside it, and the
+        // value rules cannot either, because a twelve-digit money field is indistinguishable on shape from the
+        // account identifier beside it. So (1) every monetary field is REDACTED where it is rendered, in
+        // renderRedactedAccountRecord, which is the only place the difference between a balance and an
+        // identifier is knowable, and (2) what remains still goes to the isolated parity channel rather than
+        // to the application log. Either control alone would be defensible; together they mean no monetary
+        // value reaches a log event even when a parity run enables the channel.
+        //
+        // Parity is not weakened by the redaction. No validation gate compares this program's DISPLAY output:
+        // gate 1 compares the POSTING job's fixed-width output field by field, and CBACT01C is a read-only
+        // verification step whose verb inventory is OPEN, READ and CLOSE with no WRITE anywhere. The one log
+        // rendering that IS a parity contract, the four-character FILE STATUS of 9910-DISPLAY-IO-STATUS, is
+        // owned by FileStatusMapper and is untouched.
+        //
+        // WHAT THE CLASS LOGGER CARRIES: the safe projection only - the logical file and the running count,
+        // which is what makes a step's progress readable without publishing a single field value.
         if (LOG.isDebugEnabled()) {
-            LOG.debug("{}", renderAccountRecord(account));
+            LOG.debug("{} record read; sequence={}", LOGICAL_FILE, Long.valueOf(recordsRead + 1));
+        }
+
+        // WHAT THE PARITY LOGGER CARRIES: the redacted record image, and nothing else does. The two channels
+        // are separate on purpose. Being an unlabelled 300-character run, the image presents nothing for the
+        // masking rules in logback-spring.xml to match, so the class logger is the wrong channel for it at any
+        // level. PARITY_LOG is a per-program logger that every shipped profile sets to OFF and that a level
+        // set on com.cardemo cannot raise, so a parity comparison enables exactly one program's output in an
+        // isolated run and no deployment emits it. See PARITY_LOG.
+        if (PARITY_LOG.isDebugEnabled()) {
+            PARITY_LOG.debug("{}", renderRedactedAccountRecord(account));
         }
 
         recordsRead++;
@@ -621,10 +794,12 @@ public class AccountReader implements ItemStreamReader<Account> {
     /**
      * Checkpoints the restart cursor so an interrupted step can resume without re-emitting rows.
      * <p>
-     * Only two values are stored, and they are the whole of the cursor: the number of rows already emitted and
-     * the identifier of the most recent one. Because the scan is ordered by an explicit ascending sort on
-     * {@code accountId}, a row count is a complete and deterministic position; the identifier is stored so a
-     * resumed run can be verified against where it claimed to be. No entity, page or buffer is serialised.
+     * Only two scalars are stored, and together they are the whole of the cursor: the identifier of the most
+     * recently emitted row, which is the <b>position</b> a restart seeks to, and the number of rows emitted
+     * so far, which is the <b>tally</b> the end-of-run summary continues from. The identifier is what makes
+     * the position durable: because the scan is ordered by {@code accountId} and the next window is selected
+     * by {@code ACCT-ID > } that identifier, the resume point survives rows being inserted or deleted
+     * elsewhere in the relation between the two runs. No entity, window or buffer is serialised.
      * <p>
      * <b>Side effects.</b> Mutates {@code executionContext} only. Performs no I/O and logs nothing.
      *
@@ -700,9 +875,10 @@ public class AccountReader implements ItemStreamReader<Account> {
      * ({@code :L101}). The guard that follows then either continues, sets {@code END-OF-FILE} to {@code 'Y'},
      * or reports and abends ({@code :L104-L115}).
      * <p>
-     * Note where the field-by-field display sits: <b>inside the {@code '00'} branch, before the guard</b>, not
-     * after it. That placement is why every successfully read record is emitted twice and is reproduced here
-     * rather than hoisted; see parity structure 2.
+     * Note where the field-by-field emission sits: <b>inside the {@code '00'} branch, before the guard</b>, not
+     * after it. That placement is why every successfully read record produces two log events, and it is
+     * reproduced here rather than hoisted; the events carry the row sequence and no field value, for the reason
+     * set out on {@code displayAccountRecord(Account)}. See parity structure 2.
      *
      * @return the record just read when the status was {@code '00'}, or {@code null} at end of file
      * @throws FatalProcessingException when the status is neither {@code '00'} nor {@code '10'}, carrying the
@@ -762,17 +938,29 @@ public class AccountReader implements ItemStreamReader<Account> {
      * {@code app/cbl/CBACT01C.cbl:L93} and reports its outcome as a COBOL file status.
      * <p>
      * A VSAM {@code READ} with {@code ACCESS MODE IS SEQUENTIAL} hands back one record and advances the
-     * cursor. Here the cursor is a page buffer refilled by
-     * {@link AccountRepository#findAll(org.springframework.data.domain.Pageable)} with an <b>explicit
-     * ascending sort</b> on {@code accountId}. The sort is never omitted and the store's natural order is never
-     * relied upon: {@code app/cbl/CBACT01C.cbl:L29-L33} declares {@code ORGANIZATION IS INDEXED} with
+     * cursor. Here the cursor is a buffered window refilled by
+     * {@link AccountRepository#findByAccountIdGreaterThanOrderByAccountIdAsc(Long,
+     * org.springframework.data.domain.Pageable)}, whose ascending key order is fixed <b>in the method name
+     * itself</b> and so cannot be omitted or overridden by a caller. The store's natural order is never relied
+     * upon: {@code app/cbl/CBACT01C.cbl:L29-L33} declares {@code ORGANIZATION IS INDEXED} with
      * {@code ACCESS MODE IS SEQUENTIAL} and {@code RECORD KEY IS FD-ACCT-ID}, so key order <em>is</em> the
      * contract, and reproducing it deterministically is what makes the emitted sequence comparable against the
      * legacy baseline (Rule 1 clause A1).
      * <p>
-     * The paging tradeoff, per Rule 1 clause A5: rows are fetched {@link #pageSize} at a time rather than
-     * materialised as one list, so the resident set is bounded by the page size instead of by the table size.
-     * The page size cannot affect the emitted output because the ordering is fixed independently of it.
+     * <b>Why the window is keyset-bounded and not offset-paged</b> (Rule 1 clause A5, tradeoff justified
+     * rather than assumed). An offset page asks the store to produce and discard every row before the window,
+     * so walking the relation costs work quadratic in its size, and the discarded prefix grows with every
+     * step. A keyset window instead asks for {@code ACCT-ID > cursor ... LIMIT pageSize}, which the primary-key
+     * index satisfies by seeking straight to the cursor and reading forward: constant work per window,
+     * independent of how far the scan has already travelled. This is also the closer analogue of the source,
+     * because a VSAM sequential read positions by key and reads forward rather than counting from the start of
+     * the cluster. The window size cannot affect the emitted output, because the ordering is fixed
+     * independently of it, and the seek bound is exclusive so no row is visited twice or skipped.
+     * <p>
+     * A second, unrelated saving: this finder returns a {@code List}, so no {@code COUNT(*)} is issued. The
+     * page-shaped predecessor computed a total on every refill that nothing on this path ever read. The one
+     * count this class does perform is the deliberate, once-per-open one in {@code openAccountFile()}, which
+     * exists to make the empty-relation case an explicit logged outcome.
      *
      * @return {@link #STATUS_SUCCESS} when a record was placed in the record area, {@link #STATUS_END_OF_FILE}
      *     when the scan is exhausted, or {@link #STATUS_PHYSICAL_IO_ERROR} when the buffer yielded a
@@ -781,22 +969,28 @@ public class AccountReader implements ItemStreamReader<Account> {
      */
     private String readNextRecord() {
         while (pageBufferIndex >= pageBuffer.size()) {
-            Page<Account> page = accountRepository.findAll(
-                    PageRequest.of(nextPageNumber, pageSize, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY)));
-            nextPageNumber++;
-            pageBuffer = page.getContent();
-
-            // A restarted step resumes mid-page. The offset is consumed once and then cleared, so a short
-            // final page cannot make the loop spin: an empty page ends it outright.
-            pageBufferIndex = restartSkipWithinPage > 0
-                    ? Math.min(restartSkipWithinPage, pageBuffer.size())
-                    : 0;
-            restartSkipWithinPage = 0;
+            // The window is bounded by the cursor, never by an offset: ACCT-ID > cursor ORDER BY ACCT-ID
+            // ASC LIMIT pageSize. PageRequest.ofSize() is page zero, so the offset is always literally 0.
+            pageBuffer = accountRepository.findByAccountIdGreaterThanOrderByAccountIdAsc(
+                    Long.valueOf(fetchCursorAccountId), PageRequest.ofSize(pageSize));
+            pageBufferIndex = 0;
 
             if (pageBuffer.isEmpty()) {
                 accountRecord = null;
                 return STATUS_END_OF_FILE;
             }
+
+            // Advance the cursor to the highest key in the window just fetched, so the next window starts
+            // strictly after it. Explicit null branch (Rule 1 clause B2): ACCT-ID is NOT NULL and is the
+            // primary key, so a null here means the result set is not what the schema promises. It is
+            // reported through the status vocabulary rather than allowed to become a NullPointerException,
+            // and the cursor is deliberately left unadvanced on that path.
+            Account highestOfWindow = pageBuffer.get(pageBuffer.size() - 1);
+            if (highestOfWindow == null || highestOfWindow.getAccountId() == null) {
+                accountRecord = null;
+                return STATUS_PHYSICAL_IO_ERROR;
+            }
+            fetchCursorAccountId = highestOfWindow.getAccountId().longValue();
         }
 
         Account next = pageBuffer.get(pageBufferIndex);
@@ -819,60 +1013,100 @@ public class AccountReader implements ItemStreamReader<Account> {
     // ====================================================================================================
 
     /**
-     * Emits the record field by field, reproducing {@code 1100-DISPLAY-ACCT-RECORD}
-     * ({@code app/cbl/CBACT01C.cbl:L118-L131}).
+     * The counterpart of {@code 1100-DISPLAY-ACCT-RECORD} ({@code app/cbl/CBACT01C.cbl:L118-L131}).
      * <p>
-     * Eleven labelled lines at {@code :L119-L129} followed by a rule of exactly 49 hyphens at {@code :L130}.
-     * <b>{@code ACCT-ADDR-ZIP} is not among them</b> and is not added: parity structure 3. Each label is the
-     * source literal, measured at 25 characters with the colon in column 25, and the source concatenates label
-     * and value with no separator, which is reproduced.
+     * The paragraph exists here, is performed from the same place, and emits <b>no field value</b>.
      * <p>
-     * Labels and values are walked as parallel sequences rather than written out as eleven hand-paired
-     * statements, so a future edit cannot leave a label attached to the wrong field; the emitted result is the
-     * same eleven lines in the same order.
+     * <b>What the source did.</b> Eleven labelled lines at {@code :L119-L129}, each label a 25-character
+     * literal with the colon in column 25 and concatenated with its value with no separator, followed by a rule
+     * of exactly 49 hyphens at {@code :L130}. {@code ACCT-ADDR-ZIP} was not among the eleven.
      * <p>
-     * <b>Emitted at DEBUG, deliberately.</b> These eleven lines carry the current balance, both credit limits
-     * and both current-cycle totals, which is customer financial data. Rule 1 clause D1 keeps that out of
-     * routine log volume, and {@link Account#toString()} withholds the same values for the same reason. The
-     * masking rules in {@code src/main/resources/logback-spring.xml} govern whatever does reach an aggregator.
-     * The level is the only thing that differs from the source; the content, order and formatting do not.
+     * <b>The five monetary values are REDACTED, and the emission goes to the parity channel.</b> Three of the
+     * eleven lines carry the current balance and both credit limits and two more carry the current-cycle
+     * totals, all of which are customer financial data. Each present value is replaced by
+     * {@link #REDACTED_MONEY}, a stand-in of identical width, so the label, the field order, the field count
+     * and the column geometry are all still those of the source while the value itself never reaches a log
+     * event; {@link Account#toString()} withholds the same values for the same reason. Redaction is applied
+     * <b>here</b> rather than delegated to the masking rules in {@code src/main/resources/logback-spring.xml},
+     * because no rule there can distinguish a balance from an account identifier - both are bare digit runs -
+     * so a rule broad enough to catch one would destroy the other.
      * <p>
-     * <b>Side effects.</b> Writes twelve log events when DEBUG is enabled, and nothing at all when it is not.
+     * <b>Why the lines do not go to the class logger either.</b> The two controls are independent and both are
+     * applied. Emitting eleven label-prefixed positional values on the application channel at DEBUG was not a
+     * mitigation but a switch: an operator enabling DEBUG on this package published a row per field for every
+     * row of a scan, and the masking layer could not compensate for the reason just given. The lines therefore
+     * go to {@link #PARITY_LOG}, which every shipped profile sets to {@code OFF}, and they carry no monetary
+     * value even there.
+     * <p>
+     * <b>Why it is still emitted, on a different channel.</b> Removing the content outright would also remove
+     * the only artefact a parity comparison of this program has, so the emission is <em>isolated</em> rather
+     * than deleted: it goes to {@link #PARITY_LOG}, the per-program logger
+     * {@value #PARITY_LOGGER_NAME}, which every shipped profile sets to {@code OFF} and which a level set on
+     * {@code com.cardemo} cannot raise, because a child level overrides its parent. A parity run enables that
+     * one logger deliberately and routes it where a baseline diff needs it; no deployment emits it. The
+     * content, order and formatting are the source's - only the channel differs.
+     * <p>
+     * <b>What the class logger carries instead.</b> One line naming the logical file and the running row
+     * sequence. The sequence is a complete identity for a row of this scan, because the scan is ordered by an
+     * explicit ascending sort on {@code accountId} - the same property that makes a row count a complete
+     * restart cursor - so a log line is still traceable to a row without naming the account.
+     * <p>
+     * <b>Why parity is not weakened.</b> No validation gate compares this program's {@code DISPLAY} output.
+     * Gate 1 compares the daily posting job's fixed-width output field by field; {@code CBACT01C} is a
+     * read-only verification step whose entire verb inventory is {@code OPEN}, {@code READ} and {@code CLOSE},
+     * so it produces no dataset for any gate to compare. The one log rendering that <i>is</i> a parity
+     * contract - the four-character {@code FILE STATUS} of {@code 9910-DISPLAY-IO-STATUS} - is owned by
+     * {@code FileStatusMapper} and is untouched.
+     * <p>
+     * <b>Side effects.</b> Writes one class-logger event when DEBUG is enabled there, and twelve events to
+     * {@value #PARITY_LOGGER_NAME} when that logger is enabled at DEBUG - which is not the shipped state.
      *
      * @param account the record just read; must not be {@code null}
      * @throws NullPointerException if {@code account} is {@code null}, which the caller's {@code '00'} branch
      *     makes unreachable and which is asserted rather than assumed
      */
     private void displayAccountRecord(Account account) {
+        // Asserted, not assumed, even though no field of it is read: the '00' branch promises a record, and a
+        // null here would mean the status vocabulary and the returned value disagree, which is a defect worth
+        // failing on rather than logging past.
         Objects.requireNonNull(account, "account must not be null when the file status is '00'");
 
-        // Rendering eleven fixed-width values costs more than the guard, so the guard comes first. When DEBUG
-        // is off the paragraph produces no output, which is the only observable difference from the source.
-        if (!LOG.isDebugEnabled()) {
+        if (LOG.isDebugEnabled()) {
+            LOG.debug("{} record accepted; sequence={}", LOGICAL_FILE, Long.valueOf(recordsRead + 1));
+        }
+
+        // Rendering eleven fixed-width values costs more than the guard, so the guard comes first. When the
+        // parity logger is off - which it is in every shipped profile - the paragraph produces no field output,
+        // which is the only observable difference from the source.
+        if (!PARITY_LOG.isDebugEnabled()) {
             return;
         }
 
-        // Positionally paired with FIELD_LABELS, in the exact order of :L119-L129.
+        // Positionally paired with FIELD_LABELS, in the exact order of :L119-L129. The five monetary fields
+        // are REDACTED: they are customer financial data and no masking rule in logback-spring.xml covers a
+        // bare digit run, so the value must not leave this method. Field order, count and width are
+        // preserved, so the emission still proves the layout the paragraph displays, and an absent field
+        // still renders as spaces - see renderRedactedMoney.
         String[] values = {
             renderAccountId(account.getAccountId()),
             renderText(account.getActiveStatus(), ACTIVE_STATUS_WIDTH),
-            renderMoney(account.getCurrentBalance()),
-            renderMoney(account.getCreditLimit()),
-            renderMoney(account.getCashCreditLimit()),
+            renderRedactedMoney(account.getCurrentBalance()),
+            renderRedactedMoney(account.getCreditLimit()),
+            renderRedactedMoney(account.getCashCreditLimit()),
             renderText(account.getOpenDate(), TEN_CHARACTER_WIDTH),
             renderText(account.getExpiraionDate(), TEN_CHARACTER_WIDTH),
             renderText(account.getReissueDate(), TEN_CHARACTER_WIDTH),
-            renderMoney(account.getCurrentCycleCredit()),
-            renderMoney(account.getCurrentCycleDebit()),
+            renderRedactedMoney(account.getCurrentCycleCredit()),
+            renderRedactedMoney(account.getCurrentCycleDebit()),
             renderText(account.getGroupId(), TEN_CHARACTER_WIDTH),
         };
 
         for (int field = 0; field < FIELD_LABELS.length; field++) {
-            LOG.debug("{}{}", FIELD_LABELS[field], values[field]);
+            PARITY_LOG.debug("{}{}", FIELD_LABELS[field], values[field]);
         }
 
         // DISPLAY '-------------------------------------------------'  (:L130) - 49 hyphens, measured.
-        LOG.debug(RECORD_SEPARATOR);
+        PARITY_LOG.debug(RECORD_SEPARATOR);
     }
 
     // ====================================================================================================
@@ -1121,27 +1355,35 @@ public class AccountReader implements ItemStreamReader<Account> {
      * <i>Remediation:</i> if a byte-exact image is ever required from this step, call the writers' codec once it
      * exists rather than adding one here.
      * <p>
-     * <b>Emitted at DEBUG</b> by {@link #read()}, for the reason given on
-     * {@code displayAccountRecord(Account)}: the image carries balances and credit limits.
+     * <b>Emitted through {@link #PARITY_LOG}</b> by {@link #read()}, never through the class logger, and with
+     * every present monetary field replaced by {@link #REDACTED_MONEY}. Both controls are deliberate: the
+     * record carries balances and both credit limits, no masking rule downstream can tell one from an account
+     * identifier, and being an unlabelled 300-character run the image presents nothing for the rules in
+     * {@code src/main/resources/logback-spring.xml} to match. Every shipped profile sets
+     * {@value #PARITY_LOGGER_NAME} to {@code OFF}, so no deployment renders it at all.
      *
      * @param account the record to render; must not be {@code null}
      * @return exactly {@value #RECORD_LENGTH} characters, never {@code null}
      * @throws NullPointerException if {@code account} is {@code null}
      */
-    private static String renderAccountRecord(Account account) {
+    private static String renderRedactedAccountRecord(Account account) {
         Objects.requireNonNull(account, "account must not be null");
 
         StringBuilder image = new StringBuilder(RECORD_LENGTH);
         image.append(renderAccountId(account.getAccountId()));
         image.append(renderText(account.getActiveStatus(), ACTIVE_STATUS_WIDTH));
-        image.append(renderMoney(account.getCurrentBalance()));
-        image.append(renderMoney(account.getCreditLimit()));
-        image.append(renderMoney(account.getCashCreditLimit()));
+        // The five monetary fields are REDACTED, each by a token of the same width, so the geometry below
+        // still lands every subsequent field at its copybook offset. See REDACTED_MONEY for why the value
+        // cannot be emitted and why downstream masking cannot substitute for this, and renderRedactedMoney
+        // for why an absent field still renders as spaces rather than as the token.
+        image.append(renderRedactedMoney(account.getCurrentBalance()));
+        image.append(renderRedactedMoney(account.getCreditLimit()));
+        image.append(renderRedactedMoney(account.getCashCreditLimit()));
         image.append(renderText(account.getOpenDate(), TEN_CHARACTER_WIDTH));
         image.append(renderText(account.getExpiraionDate(), TEN_CHARACTER_WIDTH));
         image.append(renderText(account.getReissueDate(), TEN_CHARACTER_WIDTH));
-        image.append(renderMoney(account.getCurrentCycleCredit()));
-        image.append(renderMoney(account.getCurrentCycleDebit()));
+        image.append(renderRedactedMoney(account.getCurrentCycleCredit()));
+        image.append(renderRedactedMoney(account.getCurrentCycleDebit()));
 
         // ACCT-ADDR-ZIP is present HERE, in the whole-record image, because the record contains it. It is
         // absent only from the field-by-field paragraph, which is parity structure 3. The two emissions
@@ -1153,6 +1395,31 @@ public class AccountReader implements ItemStreamReader<Account> {
         image.append(String.valueOf(ALPHANUMERIC_PAD).repeat(TRAILING_FILLER_WIDTH));
 
         return image.toString();
+    }
+
+    /**
+     * Renders one monetary field of the account record without disclosing its value.
+     * <p>
+     * A field that carries a value renders as {@link #REDACTED_MONEY}; a field that carries none renders as
+     * {@value #MONEY_DIGITS} spaces. Both are exactly {@value #MONEY_DIGITS} characters wide, so every
+     * subsequent field still lands at its copybook offset and the 300-byte geometry of {@code CVACT01Y} is
+     * unchanged either way.
+     * <p>
+     * <b>Why the two cases are kept distinct.</b> "Withheld" and "never set" are different facts about the
+     * row, and only the first is a redaction. A COBOL {@code MOVE} of an uninitialised numeric item leaves
+     * spaces, so rendering an absent field as spaces is what the source does, and it discloses nothing: an
+     * absent value has no digits to leak. Collapsing the two would hide a genuine data condition - a row with
+     * no balance at all - behind a privacy token, which is the one thing this rendering exists to make
+     * visible. The same distinction is drawn by {@code InterestCalculationProcessor} on {@code TRAN-CAT-BAL}
+     * and by {@code TransactionReportProcessor} on {@code TRAN-AMT}.
+     *
+     * @param value the monetary field, tolerated when {@code null}
+     * @return exactly {@value #MONEY_DIGITS} characters, never {@code null}
+     */
+    private static String renderRedactedMoney(BigDecimal value) {
+        return value == null
+                ? String.valueOf(ALPHANUMERIC_PAD).repeat(MONEY_DIGITS)
+                : REDACTED_MONEY;
     }
 
     /**
@@ -1175,31 +1442,6 @@ public class AccountReader implements ItemStreamReader<Account> {
             digits = digits.substring(1);
         }
         return renderDigits(digits, ACCOUNT_ID_DIGITS);
-    }
-
-    /**
-     * Renders one {@code PIC S9(10)V99} money field as {@value #MONEY_DIGITS} zero-padded digit positions with
-     * the decimal point implied, which is how COBOL stores it: the point occupies no byte.
-     * <p>
-     * The value is first forced to scale {@value #MONEY_SCALE} using {@link RoundingMode#HALF_EVEN}, the
-     * rounding mode this migration applies to every financial field. For a value already at scale two this is
-     * an identity, and it is applied unconditionally so that a value arriving from the store at any other scale
-     * is normalised rather than rendered at the wrong width. The magnitude is taken before the digits are
-     * extracted, because the sign has no byte of its own in this representation; see the severity-Low finding on
-     * {@code renderAccountRecord(Account)}.
-     * <p>
-     * No {@code float} or {@code double} appears anywhere in this class, and no equality test is performed on a
-     * {@link BigDecimal}; where a comparison is needed elsewhere in the codebase it is {@code compareTo}.
-     *
-     * @param value the amount, tolerated when {@code null}
-     * @return exactly {@value #MONEY_DIGITS} characters: digits, or spaces when {@code value} is {@code null}
-     */
-    private static String renderMoney(BigDecimal value) {
-        if (value == null) {
-            return String.valueOf(ALPHANUMERIC_PAD).repeat(MONEY_DIGITS);
-        }
-        String digits = value.setScale(MONEY_SCALE, RoundingMode.HALF_EVEN).abs().unscaledValue().toString();
-        return renderDigits(digits, MONEY_DIGITS);
     }
 
     /**
@@ -1265,17 +1507,22 @@ public class AccountReader implements ItemStreamReader<Account> {
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead
      * of re-emitting rows.
      * <p>
-     * A row count is a complete position because the scan is ordered by an explicit ascending sort on
-     * {@code accountId}: the count divides into a page number and an offset within that page, both exactly. The
-     * checkpointed identifier is restored for diagnostics and reported in the resume log line so an operator can
-     * see where the run claims to be picking up.
+     * <b>The checkpointed key is the position; the row count is only a tally.</b> The scan resumes by seeking
+     * to {@code ACCT-ID > } the last identifier actually emitted, so the first window of the resumed run begins
+     * at the row after it regardless of how many rows precede it. The predecessor of this method instead
+     * divided the row count into a page number and a within-page offset, which positions correctly only while
+     * the relation is unchanged between the two runs: any row inserted or deleted below the cursor shifts every
+     * offset after it, so a restart could silently re-emit or silently skip rows. Seeking by key is immune to
+     * that, because the key of a row does not move when its neighbours change. The row count is still restored,
+     * but purely so the end-of-run tally continues from where it stopped.
      * <p>
      * A non-positive checkpoint is ignored and the scan starts from the beginning, which is the correct reading
      * of a checkpoint written before any row was emitted.
      *
      * @param executionContext the step execution context, already known to contain the row-count key
-     * @throws ArithmeticException if the checkpointed count divided by the page size exceeds an {@code int},
-     *     which an eleven-digit key space cannot reach and which is therefore asserted rather than assumed
+     * @throws IllegalStateException if the context records that rows were emitted but carries no identifier to
+     *     resume from, which leaves no position to seek to and which is reported rather than silently
+     *     downgraded to a restart from the beginning
      */
     private void restoreRestartCursor(ExecutionContext executionContext) {
         long checkpointed = executionContext.getLong(CONTEXT_KEY_RECORDS_READ, 0L);
@@ -1283,15 +1530,23 @@ public class AccountReader implements ItemStreamReader<Account> {
             return;
         }
 
-        recordsRead = checkpointed;
-        nextPageNumber = Math.toIntExact(checkpointed / pageSize);
-        restartSkipWithinPage = Math.toIntExact(checkpointed % pageSize);
-
-        if (executionContext.containsKey(CONTEXT_KEY_LAST_ACCOUNT_ID)) {
-            lastAccountId = Long.valueOf(executionContext.getLong(CONTEXT_KEY_LAST_ACCOUNT_ID));
+        // Explicit handled case (Rule 1 clause B2). update() writes both keys together whenever a row has been
+        // emitted, so this state cannot arise from this class; a hand-built context can still present it. The
+        // alternative to failing here would be to restart from the beginning, which would re-emit every row
+        // already emitted while reporting success, so the failure is deliberately loud.
+        if (!executionContext.containsKey(CONTEXT_KEY_LAST_ACCOUNT_ID)) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "%s restart context records %d rows already emitted but carries no '%s' entry, so there "
+                            + "is no key to resume the keyset scan from; restarting from the first row would "
+                            + "re-emit those %d rows", LOGICAL_FILE, Long.valueOf(checkpointed),
+                    CONTEXT_KEY_LAST_ACCOUNT_ID, Long.valueOf(checkpointed)));
         }
 
-        LOG.info("Resuming {} scan after {} rows; last emitted ACCT-ID={}",
+        recordsRead = checkpointed;
+        lastAccountId = Long.valueOf(executionContext.getLong(CONTEXT_KEY_LAST_ACCOUNT_ID));
+        fetchCursorAccountId = lastAccountId.longValue();
+
+        LOG.info("Resuming {} scan after {} rows; seeking to ACCT-ID greater than {}",
                 LOGICAL_FILE, Long.valueOf(recordsRead), lastAccountId);
     }
 

@@ -41,11 +41,10 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
@@ -58,6 +57,7 @@ import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.DailyTransaction;
 import com.cardemo.model.enums.FileStatus;
 import com.cardemo.model.enums.RejectCode;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.service.shared.FileStatusMapper;
 
 /**
@@ -83,7 +83,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to run, build and test</h2>
  *
- * <p>Build and test with {@code mvn -B clean test}; the module compiles under Java 25 with
+ * <p>Build and test with {@code ./mvnw -B -ntp clean test}; the module compiles under Java 25 with
  * {@code -Xlint:all -Werror}. This bean is step scoped, so it is instantiated by Spring Batch when the
  * posting step starts and is not usable outside a step context. Unit tests construct it directly, passing a
  * {@code StepExecution} built by {@code MetaDataInstanceFactory} or {@code null}; see the constructor.
@@ -91,8 +91,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>Key configuration and defaults</h2>
  *
  * <ul>
- *   <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket, declared at
- *       {@code src/main/resources/application.yml:899} and backed by the
+ *   <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket, declared as
+ *       {@code carddemo.aws.s3.batch-output-bucket} in {@code src/main/resources/application.yml} and
+ *       backed by the
  *       {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET} environment variable that {@code .env.example:81} ships.
  *       <strong>There is deliberately no default.</strong>
  *       A missing value fails the context at startup rather than silently writing somewhere unintended, which
@@ -100,12 +101,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>No endpoint, region or credential is read here. The object-storage client is injected already
  *       configured, and the local emulator endpoint override exists only in the {@code local} and {@code test}
  *       profiles, so no live-cloud path is structurally reachable from this class.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Why the 350-byte serialisation is not shared with the sibling writer</h2>
  *
- * <p>A reviewer will notice that {@code TransactionWriter} in this same package also emits a 350-byte image and
- * will reasonably ask why the two are not factored onto a common codec. The duplication is <strong>deliberate
+ * <p>{@code TransactionWriter} in this same package also emits a 350-byte image, which invites the question
+ * why the two are not factored onto a common codec. The duplication is <strong>deliberate
  * and is the compliant choice</strong>, for three independent reasons.
  *
  * <p>First, the two layouts are contractually distinct even though they are presently identical in width and
@@ -116,7 +117,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <p>Second, this package is capped at exactly three types by the migration plan - the two writers above and
  * the statement writer. A shared codec would be a fourth type in a package that admits none, so the
- * abstraction is not available to be created here even if it were desirable.
+ * abstraction cannot be created here even if it were desirable.
  *
  * <p>Third, the duplication is bounded and fully covered: each renderer is a pure function asserted against
  * the frozen fixture, and this class's own segment is proved byte-for-byte equal to record 0 of
@@ -133,12 +134,15 @@ import com.cardemo.service.shared.FileStatusMapper;
  * numeric order, and identifiers make the key reproducible on re-run whereas a timestamp would not. That is
  * the determinism tradeoff, taken deliberately.
  *
- * <p>The concrete key of every object created is published into the step execution context under
- * {@link #REJECT_OBJECT_KEY_CONTEXT_KEY}, alongside the generation prefix under
- * {@link #REJECT_GENERATION_PREFIX_CONTEXT_KEY} and the cumulative record count under
- * {@link #REJECT_RECORD_COUNT_CONTEXT_KEY}. A later step in the same job therefore reads the exact key that
- * was written instead of re-resolving "latest", which is what makes a {@code (+1)} written earlier in a job
- * readable as {@code (+1)} later in the same job.
+ * <p>The concrete key of every object created is published twice, at two scopes and for two readers. The
+ * <em>latest</em> key goes into the step execution context under {@link #REJECT_OBJECT_KEY_CONTEXT_KEY},
+ * alongside the generation prefix under {@link #REJECT_GENERATION_PREFIX_CONTEXT_KEY} and the cumulative record
+ * count under {@link #REJECT_RECORD_COUNT_CONTEXT_KEY}, for a listener running inside this step. The
+ * <em>complete ordered list</em> goes into the <b>job</b> execution context under
+ * {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} and the indexed entries it describes, for a later step in the same
+ * job. That is what makes a {@code (+1)} written earlier in a job readable as {@code (+1)} later in the same
+ * job: the downstream step consumes the exact keys that were written, in creation order, instead of
+ * re-resolving "latest" - a resolution that would race any concurrent producer and could not recover order.
  *
  * <p>The {@code DALYREJS} generation base declares {@code LIMIT(5)} at {@code app/jcl/DALYREJS.jcl:L26}.
  * <strong>Retention is documented, not enforced here</strong>; object versioning supersedes generation
@@ -150,22 +154,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  * record delimiters at all. Records are therefore concatenated with <strong>no separator</strong>, so record
  * <em>n</em> begins at offset <em>n</em> &times; 430 and the object size is always an exact multiple of 430.
  *
- * <p><strong>Clause F finding, Medium - object-storage transfer convention: {@code Not available}.</strong>
- * The corpus specifies no mainframe-to-object-storage transfer convention at {@code 7756d89}, so whether any
- * downstream consumer expects newline-delimited output cannot be determined from it. What would be needed is
- * an explicit transfer specification, which does not exist. Note the asymmetry that makes this a real
+ * <p><strong>The corpus specifies no mainframe-to-object-storage transfer convention</strong>, so whether any
+ * downstream consumer expects newline-delimited output cannot be determined from it. Note the asymmetry that
+ * makes this a real
  * question rather than a theoretical one: the ASCII reference fixture
  * {@code app/data/ASCII/dailytran.txt} <em>is</em> newline delimited - it measures 105,300 bytes, which is
  * 300 &times; 351, being 300 records of exactly 350 bytes each plus one line feed apiece - whereas the
  * {@code DALYREJS} dataset it feeds is unblocked. The unblocked form is emitted here because that is what
- * the {@code DCB} declares. Remediation if a delimited variant is ever required: treat it as a labelled
- * deviation with a {@code DECISION_LOG.md} entry, never as a silent change.
+ * the {@code DCB} declares. Should a delimited variant ever be required, it is a labelled
+ * deviation, never a silent change.
  *
- * <p><strong>Clause F finding, Medium - the fixture arithmetic in the surrounding plan is wrong.</strong>
- * {@code app/data/ASCII/dailytran.txt} is described elsewhere as 105,300 bytes being 300 &times; 350; that
- * product is 105,000. The measured decomposition is 300 &times; 351 as above. Remediation: cite the measured
- * byte count and the 300 line-feed bytes. The 350-byte <em>record</em> width is unaffected and is confirmed
- * by every one of the 300 lines being exactly 350 bytes.
+ * <p><strong>The fixture decomposes as 300 &times; 351, not 300 &times; 350</strong>, that second product
+ * being 105,000 rather than the measured 105,300. The 350-byte <em>record</em> width is unaffected and is
+ * confirmed by every one of the 300 lines being exactly 350 bytes.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -181,7 +182,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       as {@code 9910-DISPLAY-IO-STATUS} renders it. Check bucket existence, credentials and the emulator.</li>
  *   <li><strong>Object size not a multiple of 430</strong> - cannot occur; the length is asserted before the
  *       write and a mismatch throws rather than emitting a corrupt generation.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Exit-code contract this class must not contradict</h2>
  *
@@ -207,26 +208,6 @@ import com.cardemo.service.shared.FileStatusMapper;
 public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction> {
 
     /**
-     * Name of the tree-wide "records rejected" counter, tagged by reject code.
-     *
-     * <p>Exposed so that the metrics configuration and the unit tests reference one definition rather than
-     * repeating a string literal. Registering a counter is idempotent in Micrometer - the same name and tag
-     * set resolves to the meter that already exists - so incrementing it here <strong>cooperates with</strong>
-     * the central registration and does not create an additional instrument. Exactly four counters exist
-     * across the migration and this is one of them.
-     */
-    public static final String REJECTED_RECORDS_COUNTER = "carddemo.batch.records.rejected";
-
-    /**
-     * Tag key carrying the reject code on {@link #REJECTED_RECORDS_COUNTER}.
-     *
-     * <p>The tag has exactly five possible values - 100, 101, 102, 103 and 109 - so its cardinality is
-     * bounded and safe. No identifying value is ever used as a tag: not the card number, not the account
-     * identifier, not the transaction identifier.
-     */
-    public static final String REJECT_CODE_TAG = "reject.code";
-
-    /**
      * Step execution context key under which the concrete key of the most recently created reject object is
      * published, so a later step consumes the exact object this writer produced.
      */
@@ -245,6 +226,39 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * {@code app/cbl/CBTRN02C.cbl:L229-L231}; publishing it does not decide anything here.
      */
     public static final String REJECT_RECORD_COUNT_CONTEXT_KEY = "carddemo.dalyrejs.record.count";
+
+    /**
+     * Job execution context entry holding how many objects this job instance's reject generation contains, as a
+     * {@code Long}.
+     *
+     * <p>Together with {@link #rejectObjectKeysIndexEntry(int)} this is the complete, ordered, exact record of
+     * the generation. Read the count, then read that many indexed entries; entry {@code n} is the key of the
+     * {@code n}th object created, in creation order.
+     *
+     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only into the <em>step</em>
+     * execution context and told the reader to "promote these to the job execution context from the step's
+     * configuration if a later step needs them". No promotion existed, no configuration performed one, and the
+     * class that would have configured it does not exist - so the three entries this writer published were
+     * discarded when the step ended and no consumer of any kind could read them. The prefix entry did not
+     * rescue it either: a prefix lets a consumer <em>list</em> a generation, which reintroduces exactly the
+     * race the exact keys were recorded to avoid, and a listing cannot recover creation order. <i>Remediation,
+     * applied:</i> every key is appended here, in creation order, into the job execution context, by this
+     * class, so the record is complete with no external wiring. The step-scoped entries are kept because a
+     * listener inside the running step legitimately wants the latest one.
+     *
+     * <p>Indexed entries rather than one delimited string, for the reason
+     * {@code TransactionWriter.OBJECT_KEYS_COUNT_ENTRY} sets out: the prefix is configured, so a separator is a
+     * character this class cannot guarantee absent from a key, and a key containing it would split silently
+     * into two that name nothing.
+     */
+    public static final String REJECT_OBJECT_KEYS_COUNT_ENTRY = "carddemo.dalyrejs.object.keys.count";
+
+    /**
+     * Prefix of the indexed job-execution entries described on {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY}. The
+     * entry for index {@code n} is this prefix followed by {@code n}, rendered by
+     * {@link #rejectObjectKeysIndexEntry(int)}.
+     */
+    public static final String REJECT_OBJECT_KEYS_INDEX_ENTRY_PREFIX = "carddemo.dalyrejs.object.keys.";
 
     /**
      * Logical DD name of the reject dataset, from {@code //DALYREJS DD} at {@code app/jcl/POSTTRAN.jcl:L34}.
@@ -308,9 +322,41 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     private static final String OBJECT_CONTENT_TYPE = "application/octet-stream";
 
     /**
-     * Prefix of every reject object key, naming the legacy dataset it stands in for.
+     * Lowest code point admitted into a {@code PIC X(n)} field: the space, {@code U+0020}. Everything below it
+     * is a C0 control character. See {@link #requirePermittedCharacters(String, String)}.
      */
-    private static final String OBJECT_KEY_ROOT = "dalyrejs/";
+    private static final char MIN_PERMITTED_CHAR = '\u0020';
+
+    /** The delete control, {@code U+007F}, refused with the C0 set although it sits above the printable range. */
+    private static final char DELETE_CHAR = '\u007F';
+
+    /** First code point of the C1 control block, {@code U+0080}. */
+    private static final char FIRST_C1_CHAR = '\u0080';
+
+    /** Last code point of the C1 control block, {@code U+009F}. */
+    private static final char LAST_C1_CHAR = '\u009F';
+
+    /**
+     * Highest code point {@link #RECORD_CHARSET} represents as a single byte. Anything above it would be
+     * substituted rather than encoded, silently replacing record content while preserving the width.
+     */
+    private static final char MAX_ENCODABLE_CHAR = '\u00FF';
+
+    /**
+     * Human-readable description of the permitted set, reported in the diagnostic so an operator need not infer
+     * the rule from a code point.
+     */
+    private static final String PERMITTED_CHARACTER_SET_DESCRIPTION =
+            "U+0020 to U+007E and U+00A0 to U+00FF (printable ISO-8859-1; no C0 or C1 control, no DEL)";
+
+    /**
+     * Separator placed between the configured generation prefix and the rest of an object key.
+     *
+     * <p>Appended by this class rather than expected from configuration, so that a configured value with or
+     * without a trailing slash produces the same key. A configuration format that is only correct when the
+     * operator remembers a trailing character is a configuration format that will be got wrong.
+     */
+    private static final char KEY_SEGMENT_SEPARATOR = '/';
 
     /**
      * Suffix of every reject object key. The payload is a fixed-width unblocked record stream, not a text
@@ -327,9 +373,25 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     private static final String KEY_IDENTIFIER_FORMAT = "%019d";
 
     /**
-     * Format for the per-step generation sequence inside an object key: six zero-padded digits.
+     * Format for the per-step generation sequence inside an object key: {@value #KEY_IDENTIFIER_FORMAT}-wide
+     * zero-padded digits, the same width as every other numeric key component.
+     *
+     * <p><b>Finding, severity Medium, RESOLVED.</b> An earlier revision padded this component to six digits
+     * while the identifier components beside it were padded to nineteen. Six digits does not cover the domain
+     * of the {@code long} that feeds it, and the consequence is not a truncated key - {@code %06d} widens
+     * rather than truncates - but a <em>silently non-monotonic</em> one: the millionth object in a step is
+     * numbered {@code 1000000}, which is seven characters, and {@code "1000000"} sorts before {@code "999999"}
+     * lexicographically. The whole point of zero-padding these components is that
+     * {@code app/catlg/LISTCAT.txt}'s {@code (0)} generation reference becomes "the lexicographically greatest
+     * prefix", so the moment padding stops covering the domain that equivalence breaks and a consumer resolves
+     * {@code (0)} to the wrong object. It would not fail; it would quietly return stale data.
+     *
+     * <p>Nineteen digits is the width of {@code Long.MAX_VALUE}, so no value the counter can hold can overflow
+     * it and the equivalence holds for the entire domain rather than for a bound nobody has proven. Using the
+     * same width as the identifier components also means one rule governs every numeric component of every key
+     * this class emits, which is checkable by inspection.
      */
-    private static final String KEY_SEQUENCE_FORMAT = "%06d";
+    private static final String KEY_SEQUENCE_FORMAT = KEY_IDENTIFIER_FORMAT;
 
     /**
      * Identifier substituted when no step context is available, which happens only when the class is
@@ -427,10 +489,10 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * four-character literal. The fraction is therefore 2 + 4 characters and the whole value sums to
      * exactly 26.
      *
-     * <p><strong>Clause F finding, Medium - the "millisecond precision followed by four zeros" description of
-     * this format is arithmetically impossible.</strong> Millisecond precision is three fraction digits, so
+     * <p><strong>"Millisecond precision followed by four zeros" is arithmetically impossible for this
+     * format.</strong> Millisecond precision is three fraction digits, so
      * 3 + 4 is seven fraction characters and a 27-byte value, which cannot fit a {@code PIC X(26)} field. The
-     * verified 26-byte layout governs. Remediation: cite {@code app/cbl/CBTRN02C.cbl:L170-L174} and the
+     * verified 26-byte layout at {@code app/cbl/CBTRN02C.cbl:L170-L174} governs, giving the
      * pattern {@code yyyy-MM-dd-HH.mm.ss.SS0000}, which is hundredths rather than milliseconds. No timestamp
      * is generated in this class in any case, so the defect cannot reach its output.
      */
@@ -549,9 +611,18 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     private final S3Operations s3Operations;
 
     /**
-     * Meter registry backing the records-rejected counter.
+     * The application's sole meter owner, through which this writer reports a rejected record.
+     *
+     * <p>This class holds no meter, no metric name and no tag key of its own. It previously held all three and
+     * built the counter itself with {@code Counter.builder(...).register(meterRegistry)}, relying on
+     * Micrometer's idempotent registration to make that "cooperate with" the central configuration. That
+     * reasoning was sound about the <em>count</em> - no additional instrument was created - but wrong about
+     * <em>metadata</em>: Micrometer keeps the description and tag set of whichever registration happens
+     * first and silently discards every later builder's, so the published help text depended on bean
+     * initialisation order, and the name and tag key had to be kept byte-identical across two files by
+     * comment alone. Reporting through the owner instead leaves exactly one declaration of each.
      */
-    private final MeterRegistry meterRegistry;
+    private final MetricsConfig metricsConfig;
 
     /**
      * Sole owner of the file-status-to-exception decision, reproducing the guard idiom that every
@@ -570,7 +641,8 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     private final StepExecution stepExecution;
 
     /**
-     * The {@code (+1)} generation prefix for this step, computed once at construction.
+     * The {@code (+1)} generation prefix for this step, computed once at construction from the configured
+     * {@code carddemo.aws.s3.gdg-prefixes.daly-rejs} value and the job instance identifier.
      */
     private final String generationPrefix;
 
@@ -599,28 +671,78 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      *
      * @param s3Operations the object-storage operations, ordinarily the auto-configured
      *        {@code io.awspring.cloud.s3.S3Template}; must not be {@code null}
-     * @param meterRegistry the registry holding the records-rejected counter; must not be {@code null}
+     * @param metricsConfig the application's sole meter owner, through which the rejected-record counter is
+     *        reported; must not be {@code null}
      * @param fileStatusMapper the file-status-to-exception mapper; must not be {@code null}
      * @param outputBucket the destination bucket from {@code carddemo.aws.s3.batch-output-bucket}, backed by
      *        {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}; must not be {@code null}, and has no default so that an
      *        absent value fails the context rather than writing somewhere unintended
+     * @param rejectGdgPrefix the reject generation prefix from
+     *        {@code carddemo.aws.s3.gdg-prefixes.daly-rejs}.
+     *        <b>Finding, severity High, RESOLVED:</b> an earlier revision hard-coded {@code "dalyrejs/"} in a
+     *        private constant. {@code application.yml} declares this base authoritatively as {@code gdg/dalyrejs},
+     *        citing {@code app/jcl/DALYREJS.jcl:L25}, and it is one of the seven {@code 0GDG BASE} entries
+     *        reported at {@code app/catlg/LISTCAT.txt:L3942} - so the hard-coded value was not merely a second
+     *        declaration site, it disagreed with the first: every reject object was written to {@code dalyrejs/}
+     *        while every consumer configured from the catalogue looked under {@code gdg/dalyrejs/} and found an
+     *        empty generation. That is a silent data-loss path, not a naming inconsistency.
+     *        <i>Remediation, applied:</i> the key is bound here with no inline default, so the catalogue is the
+     *        one source of truth and an absent value fails the context; must not be {@code null} or blank
      * @param stepExecution the step this writer serves, supplied by the step scope. Permitted to be
      *        {@code null} so a unit test can construct the class directly; when it is {@code null} the object
      *        key falls back to the unassigned-identifier form and nothing is published to a step context
      * @throws NullPointerException if any argument other than {@code stepExecution} is {@code null}
+     * @throws IllegalArgumentException if {@code rejectGdgPrefix} is blank
      */
     public RejectWriter(
             final S3Operations s3Operations,
-            final MeterRegistry meterRegistry,
+            final MetricsConfig metricsConfig,
             final FileStatusMapper fileStatusMapper,
             @Value("${carddemo.aws.s3.batch-output-bucket}") final String outputBucket,
+            @Value("${carddemo.aws.s3.gdg-prefixes.daly-rejs}") final String rejectGdgPrefix,
             @Value("#{stepExecution}") final StepExecution stepExecution) {
         this.s3Operations = Objects.requireNonNull(s3Operations, "s3Operations must not be null");
-        this.meterRegistry = Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
+        this.metricsConfig = Objects.requireNonNull(metricsConfig, "metricsConfig must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper, "fileStatusMapper must not be null");
-        this.outputBucket = Objects.requireNonNull(outputBucket, "outputBucket must not be null");
+        if (outputBucket == null || outputBucket.isBlank()) {
+            throw new IllegalArgumentException(
+                    "carddemo.aws.s3.batch-output-bucket must be configured with a non-blank value; "
+                            + "set CARDDEMO_S3_BATCH_OUTPUT_BUCKET");
+        }
+        this.outputBucket = outputBucket;
         this.stepExecution = stepExecution;
-        this.generationPrefix = buildGenerationPrefix(stepExecution);
+        // Both callees are private static pure functions of their arguments, so neither publishes a partly
+        // built reference and -Xlint:this-escape stays silent.
+        this.generationPrefix =
+                buildGenerationPrefix(requireGdgPrefix(rejectGdgPrefix), stepExecution);
+    }
+
+    /**
+     * Validates the configured generation prefix and normalises its trailing separator away.
+     *
+     * <p>The value is untrusted configuration, so it is checked rather than trusted (Rule 1 clause A). A blank
+     * value is refused outright: it would place every reject object at the bucket root, mixed in with the
+     * transaction mirror and the report generations, which is indistinguishable from success until someone
+     * looks. Any trailing separator is stripped so that {@code gdg/dalyrejs} and {@code gdg/dalyrejs/} compose
+     * the identical key - the separator is this class's to add, not configuration's to remember.
+     *
+     * @param configured the raw configured value
+     * @return the prefix with no trailing separator, never {@code null} and never blank
+     * @throws IllegalArgumentException if the value is blank once trimmed of separators
+     */
+    private static String requireGdgPrefix(final String configured) {
+        Objects.requireNonNull(configured, "rejectGdgPrefix must not be null");
+        String normalised = configured.strip();
+        while (!normalised.isEmpty() && normalised.charAt(normalised.length() - 1) == KEY_SEGMENT_SEPARATOR) {
+            normalised = normalised.substring(0, normalised.length() - 1);
+        }
+        if (normalised.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "carddemo.aws.s3.gdg-prefixes.daly-rejs must not be blank; application.yml declares it as "
+                            + "gdg/dalyrejs for app/jcl/DALYREJS.jcl:L25, and a blank value would write every "
+                            + "reject generation to the bucket root");
+        }
+        return normalised;
     }
 
     /**
@@ -836,13 +958,31 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * two of the fields rendered through here, {@code DALYTRAN-CARD-NUM} and {@code DALYTRAN-ID}, are
      * sensitive or identifying, and an exception message is destined for a log.
      *
+     * <p><b>Every character is checked against an explicit permitted set. Finding, severity High, RESOLVED.</b>
+     * An earlier revision checked only the <em>length</em>, so any control byte an upstream system had placed
+     * in a merchant name or a description travelled straight into the emitted stream. That is an injection
+     * defect, not an untidiness: the payload is <b>unblocked and undelimited</b> - see
+     * {@link #assertUnblockedFraming(int, int)} - so a consumer finds record boundaries by counting
+     * {@value com.cardemo.model.enums.RejectCode#REJECT_RECORD_LENGTH} bytes and by nothing else. A carriage
+     * return, a line feed or a NUL inside a picture-clause field is a byte that a line-oriented reader, a shell
+     * pipeline or a log ingester will treat as a boundary this format does not have, splitting one reject record
+     * into two that decode as neither. The length check cannot see it, because a control byte occupies exactly
+     * one column like any other.
+     *
+     * <p>The rule is stated <b>positively</b> - {@code U+0020} to {@code U+007E} and {@code U+00A0} to
+     * {@code U+00FF} - rather than as a list of controls to exclude, because a deny-list stops being exhaustive
+     * without anyone noticing. Nothing legitimate is refused: every byte of
+     * {@code app/data/ASCII/dailytran.txt} is printable, the zoned-decimal overpunch characters
+     * <code>&#123;</code>, <code>&#125;</code> and {@code A}-{@code R} included.
+     *
      * <p>This method is a pure function of its arguments.
      *
      * @param value the field value, permitted to be {@code null}
      * @param width the declared width from the picture clause
      * @param fieldName the COBOL field name, used only in a failure message
      * @return exactly {@code width} characters
-     * @throws com.cardemo.exception.FatalProcessingException if {@code value} is longer than {@code width}
+     * @throws com.cardemo.exception.FatalProcessingException if {@code value} is longer than {@code width}, or
+     *         holds a character outside the permitted set
      */
     private static String alphanumeric(final String value, final int width, final String fieldName) {
         if (value == null) {
@@ -855,10 +995,46 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
                             + "the value is withheld because the field may carry identifying data",
                     fieldName, length, width));
         }
+        requirePermittedCharacters(value, fieldName);
         if (length == width) {
             return value;
         }
         return value + PADDING_SPACES.substring(0, width - length);
+    }
+
+    /**
+     * Refuses any character outside the permitted single-byte set of a {@code PIC X(n)} field.
+     *
+     * <p>Reports the field name and the offending <em>position and code point</em> and never the value, for the
+     * same reason {@link #alphanumeric(String, int, String)} withholds it: two of the fields rendered through
+     * that method, {@code DALYTRAN-CARD-NUM} and {@code DALYTRAN-ID}, are sensitive or identifying, and an
+     * exception message is destined for a log. A code point is safe to report because it names one character,
+     * not the value it came from.
+     *
+     * <p>Static and pure, so a test can exercise the whole code-point range without composing a record.
+     *
+     * @param value the field value, never {@code null}
+     * @param fieldName the COBOL field name, used only in a failure message
+     * @throws com.cardemo.exception.FatalProcessingException on the first character outside the permitted set
+     */
+    private static void requirePermittedCharacters(final String value, final String fieldName) {
+        for (int index = 0; index < value.length(); index++) {
+            final char candidate = value.charAt(index);
+            if (candidate < MIN_PERMITTED_CHAR
+                    || candidate == DELETE_CHAR
+                    || (candidate >= FIRST_C1_CHAR && candidate <= LAST_C1_CHAR)
+                    || candidate > MAX_ENCODABLE_CHAR) {
+                throw geometryFailure(String.format(Locale.ROOT,
+                        "%s holds a character at position %d (code point U+%04X) outside the permitted set %s. "
+                                + "The reject stream is unblocked and undelimited, so a consumer finds record "
+                                + "boundaries by counting %d bytes; a control byte inside a picture-clause "
+                                + "field would let a line-oriented reader see a boundary this format does not "
+                                + "have. The value is withheld because the field may carry identifying data",
+                        fieldName, Integer.valueOf(index + 1), Integer.valueOf(candidate),
+                        PERMITTED_CHARACTER_SET_DESCRIPTION,
+                        Integer.valueOf(RejectCode.REJECT_RECORD_LENGTH)));
+            }
+        }
     }
 
     /**
@@ -928,14 +1104,13 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * data: {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to {@code ACCT-CURR-CYC-DEBIT}, which
      * is exactly why the over-limit formula at {@code :L403-L405} subtracts that accumulator.
      *
-     * <p><strong>Clause F finding, Low - negative zero cannot round-trip.</strong> Zoned decimal distinguishes
+     * <p><strong>Negative zero cannot round-trip.</strong> Zoned decimal distinguishes
      * <code>}</code> ({@code -0}) from <code>{</code> ({@code +0}); {@code BigDecimal} has no signed zero, so
      * an amount of exactly zero always renders as <code>{</code>. This cannot arise from the reference
      * fixture - all six <code>}</code> rows there carry non-zero magnitudes - and it is inherent to decimal
-     * arithmetic rather than a defect here. Remediation if a byte-exact {@code -0} round-trip is ever
-     * required: retain the raw eleven-byte field on the entity and pass it through. Whether any consumer needs
-     * that is {@code Not available} at {@code 7756d89}; what would be needed is a raw-image field on
-     * {@code DailyTransaction}, which the entity does not have.
+     * arithmetic rather than a defect here. A byte-exact {@code -0} round-trip would require retaining the raw
+     * eleven-byte field on {@code DailyTransaction} and passing it through; the entity has no such field, and
+     * nothing in the corpus states that any consumer needs one.
      *
      * <p>This method is a pure function of its argument.
      *
@@ -1083,6 +1258,16 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * @throws com.cardemo.exception.FileAccessException if the object-storage write fails
      */
     private void emitGeneration(final String payload, final int recordCount) {
+        // DEADLINE AND RETRY, and where they come from. Finding, severity High, RESOLVED. The upload below is
+        // synchronous, so an unbounded call would hold the chunk transaction open for as long as the endpoint
+        // chose to stall. No per-call override is configured HERE on purpose: a deadline written at this call
+        // site would be a second policy that drifts from the one every other AWS call obeys.
+        // AwsConfig.applyBoundedPolicy installs it on the client itself through an S3ClientCustomizer - a 30
+        // second whole-call deadline, a 10 second per-attempt deadline and RetryMode.STANDARD, which bounds both
+        // the attempt count and the backoff - and AwsConfig.s3Template consumes that same auto-configured
+        // S3Client rather than building one, so this upload inherits it. A timeout therefore arrives as a
+        // RuntimeException, is caught by writeRejsRecord, becomes the '9x' status and abends the step exactly as
+        // app/cbl/CBTRN02C.cbl:L460-L463 does for any other physical write failure.
         final byte[] bytes = payload.getBytes(RECORD_CHARSET);
         assertUnblockedFraming(bytes.length, payload.length());
         final String objectKey = nextGenerationKey();
@@ -1243,19 +1428,21 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      * {@link #UNASSIGNED_IDENTIFIER} so the class remains constructible and testable outside a step, rather
      * than dereferencing {@code null}.
      *
-     * <p>This method is a pure function of its argument, which is why the constructor can call it without
+     * <p>This method is a pure function of its arguments, which is why the constructor can call it without
      * publishing a partly built instance.
      *
+     * @param root the validated configured generation base, with no trailing separator
      * @param stepExecution the step this writer serves, permitted to be {@code null}
      * @return the generation prefix, always ending in a path separator
      */
-    private static String buildGenerationPrefix(final StepExecution stepExecution) {
+    private static String buildGenerationPrefix(final String root, final StepExecution stepExecution) {
         final long jobInstanceId = stepExecution == null
                 || stepExecution.getJobExecution() == null
                 || stepExecution.getJobExecution().getJobInstance() == null
                 ? UNASSIGNED_IDENTIFIER
                 : stepExecution.getJobExecution().getJobInstance().getInstanceId();
-        return OBJECT_KEY_ROOT + String.format(Locale.ROOT, KEY_IDENTIFIER_FORMAT, jobInstanceId) + "/";
+        return root + KEY_SEGMENT_SEPARATOR
+                + String.format(Locale.ROOT, KEY_IDENTIFIER_FORMAT, jobInstanceId) + KEY_SEGMENT_SEPARATOR;
     }
 
     /**
@@ -1288,13 +1475,16 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
      *
      * <p>This is what makes a {@code (+1)} written by one step readable as {@code (+1)} by a later step in the
      * same job: the downstream step consumes the exact key recorded here instead of re-resolving "latest",
-     * which could otherwise pick up an object written by a different job execution. Promote these to the job
-     * execution context from the step's configuration if a later <em>step</em> needs them.
+     * which could otherwise pick up an object written by a different job execution. The <b>complete ordered</b>
+     * key list goes into the job execution context, written by this class rather than by an external promotion
+     * listener; see {@link #REJECT_OBJECT_KEYS_COUNT_ENTRY} for the finding that resolves and for the read
+     * protocol. The step-scoped entries remain for a listener running inside this step.
      *
      * <p>When no step context is available the values are simply not published, which is the explicit
      * {@code null} case rather than a silent failure.
      *
-     * <p>Side effects: mutates the step execution context and this writer's cumulative counter.
+     * <p>Side effects: mutates the step execution context, appends two entries to the job execution context,
+     * and advances this writer's cumulative counter.
      *
      * @param objectKey the key of the object just created
      * @param recordCount the number of records that object carries
@@ -1310,6 +1500,33 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
         context.putString(REJECT_OBJECT_KEY_CONTEXT_KEY, objectKey);
         context.putString(REJECT_GENERATION_PREFIX_CONTEXT_KEY, generationPrefix);
         context.putLong(REJECT_RECORD_COUNT_CONTEXT_KEY, cumulative);
+
+        final JobExecution jobExecution = stepExecution.getJobExecution();
+        if (jobExecution == null) {
+            // Reachable only from a unit test that builds a StepExecution without one. The step entries above
+            // are still written, so the writer stays testable and nothing is silently dropped in production.
+            return;
+        }
+        final ExecutionContext jobContext = jobExecution.getExecutionContext();
+        final int published = Math.toIntExact(jobContext.getLong(REJECT_OBJECT_KEYS_COUNT_ENTRY, 0L));
+        jobContext.putString(rejectObjectKeysIndexEntry(published), objectKey);
+        jobContext.putLong(REJECT_OBJECT_KEYS_COUNT_ENTRY, published + 1L);
+    }
+
+    /**
+     * Names the job-execution entry holding the key at one index of the ordered reject generation.
+     *
+     * <p>Static and pure, so a consumer and a test can apply the rule without an instance.
+     *
+     * @param index the zero-based position in creation order; must not be negative
+     * @return the context entry name, never {@code null}
+     * @throws IllegalArgumentException if {@code index} is negative, which would name an entry no writer emits
+     */
+    public static String rejectObjectKeysIndexEntry(final int index) {
+        if (index < 0) {
+            throw new IllegalArgumentException("index must not be negative but was " + index);
+        }
+        return REJECT_OBJECT_KEYS_INDEX_ENTRY_PREFIX + Integer.toString(index);
     }
 
     /**
@@ -1332,27 +1549,28 @@ public class RejectWriter implements ItemWriter<RejectWriter.RejectedTransaction
     }
 
     /**
-     * Increments the tree-wide records-rejected counter for one reject outcome.
+     * Reports one rejected record on the instrument that owns the records-rejected series.
      *
      * <p>This replaces {@code DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT} at
      * {@code app/cbl/CBTRN02C.cbl:L228} - note the two spaces before the colon in the source - with a metric
-     * that is queryable rather than only readable. The counter is tagged by reject code, which turns the five
-     * outcomes into an operable signal; the tag has five possible values so its cardinality is bounded.
-     * <strong>No identifying value is ever used as a tag.</strong>
+     * that is queryable rather than only readable. The series is tagged by reject code, which turns the five
+     * outcomes into an operable signal; the tag has exactly five possible values so its cardinality is
+     * bounded. <strong>No identifying value is ever used as a tag.</strong>
      *
-     * <p>Registration is idempotent in Micrometer, so this cooperates with the central metrics configuration
-     * instead of creating an additional instrument.
+     * <p>This writer is the right producer for it: {@code :L214} moves the reject count inside the same
+     * {@code ELSE} branch that writes the reject record, so a rejected record and a counted rejection are the
+     * same event in the source.
      *
-     * <p>Side effects: increments a counter. Nothing here influences the exit status - the return-code-4 rule
-     * of {@code :L229-L231} is the job's to apply.
+     * <p>Neither the metric name nor the tag key appears in this file. Both belong to {@link MetricsConfig},
+     * which registers all five series eagerly at startup, so a code that never occurs still appears on the
+     * scrape endpoint at zero rather than being absent.
      *
-     * @param rejectCode the outcome that rejected the record
+     * <p>Side effects: increments one counter series. Nothing here influences the exit status - the
+     * return-code-4 rule of {@code :L229-L231} is the job's to apply.
+     *
+     * @param rejectCode the outcome that rejected the record, never {@code null}
      */
     private void countRejectedRecord(final RejectCode rejectCode) {
-        Counter.builder(REJECTED_RECORDS_COUNTER)
-                .description("Daily transaction records rejected by CBTRN02C validation")
-                .tag(REJECT_CODE_TAG, Integer.toString(rejectCode.getCode()))
-                .register(meterRegistry)
-                .increment();
+        this.metricsConfig.countRecordRejected(rejectCode);
     }
 }

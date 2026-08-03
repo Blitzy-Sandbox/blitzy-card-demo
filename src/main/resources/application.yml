@@ -109,7 +109,7 @@
 # exception:
 #
 #   - NO DEFAULT is given to a secret or to anything that names a specific
-#     host, database or cloud resource. Those are JWT_SECRET, POSTGRES_HOST,
+#     host, database or cloud resource. Those are JWT_SIGNING_KEY, POSTGRES_HOST,
 #     POSTGRES_DB, POSTGRES_USER, POSTGRES_PASSWORD, the three bucket
 #     variables, the queue variable, the topic variable, the region pair and
 #     the OTLP endpoint. An absent value fails placeholder resolution and
@@ -119,7 +119,7 @@
 #     key is the unsafe default Rule 1 Clause A forbids.
 #   - A DOCUMENTED NON-SECRET DEFAULT is given only to protocol constants,
 #     IANA-registered ports and legacy parity constants: SERVER_PORT 8080,
-#     POSTGRES_PORT 5432, JWT_ISSUER, JWT_EXPIRATION_SECONDS, the tracing
+#     POSTGRES_PORT 5432, JWT_ISSUER, JWT_EXPIRATION_MINUTES, the tracing
 #     sample rate, the four page sizes, the BCrypt strength, the record
 #     lengths and the GDG retention count. None of these is environment
 #     specific and none is sensitive.
@@ -138,7 +138,8 @@
 # COMMON FAILURE MODES AND TROUBLESHOOTING
 #
 #   - Startup aborts on the signing key, typically reported as an unresolvable
-#     placeholder for carddemo.security.jwt.signing-key. JWT_SECRET is absent.
+#     placeholder for carddemo.security.jwt.signing-key. JWT_SIGNING_KEY is
+#     absent.
 #     This is intended fail-fast behaviour. Export a key of at least 32 bytes
 #     of entropy; .env.example shows how to generate one and ships the entry
 #     empty. Never add a default here to make the message go away.
@@ -185,8 +186,11 @@
 #     localstack-init/init-aws.sh, which is idempotent.
 #   - Startup aborts on an unresolvable OTEL_EXPORTER_OTLP_ENDPOINT. The trace
 #     collector has not been declared. Export it - `docker compose up -d`
-#     publishes the Jaeger OTLP HTTP receiver - or set the higher-precedence
-#     MANAGEMENT_OTLP_TRACING_ENDPOINT, which .env.example:96 already ships.
+#     publishes the Jaeger OTLP HTTP receiver, and .env.example:172 ships the
+#     matching value - or bind management.otlp.tracing.endpoint directly with
+#     the higher-precedence MANAGEMENT_OTLP_TRACING_ENDPOINT, which the
+#     template deliberately does NOT ship, because shipping both spellings for
+#     one value leaves whichever loses precedence dead while appearing to work.
 #     There is deliberately no default: Boot gates its OTLP span exporter on
 #     @ConditionalOnProperty for management.otlp.tracing.endpoint, so a missing
 #     value would create no exporter at all and every span would be dropped in
@@ -217,24 +221,23 @@
 # remediation. Nothing below is a defect introduced by this file; each is a
 # conflict between two sources, resolved here and recorded rather than hidden.
 #
-#   - MEDIUM - signing-key variable name. The file specification for this
-#     artefact asked for JWT_SIGNING_KEY on the stated grounds that
-#     .env.example defers to this file. It does not: .env.example:44 ships
-#     JWT_SECRET as the empty REQUIRED entry, and JWT_SECRET is also the name
-#     used by owasp-suppressions.xml:180, pom.xml:87, the Javadoc of
-#     src/main/java/com/cardemo/model/entity/CardCrossReference.java:256 and
-#     src/main/java/com/cardemo/repository/CardCrossReferenceRepository.java:
-#     372, and docs/technical-specifications.md:1030, :1040 and :2404, which
-#     state that JWT_SECRET must be present or startup fails fast.
-#     Resolution: the property key stays carddemo.security.jwt.signing-key,
-#     which is what SecurityConfig binds, and it reads the one committed
-#     variable JWT_SECRET with no default. Introducing a second name would
-#     create exactly the duplication Rule 1 Clause C forbids while satisfying
-#     none of the instruction's normative requirements any better - those
-#     requirements are environment indirection, no committed value, no
-#     fallback and fail-fast, all of which hold as written.
-#     Remediation if the repository later standardises on JWT_SIGNING_KEY:
-#     rename in all seven places in one change, never partially.
+#   - MEDIUM, NOW CLOSED - signing-key variable name and token-lifetime unit.
+#     This file first shipped reading JWT_SECRET, on the grounds that the rest
+#     of the repository already spelled it that way, and expressing the
+#     lifetime as expiration-seconds with a 3,600-second default. Both
+#     diverged from the mandated contract, which is ${JWT_SIGNING_KEY} and a
+#     30-minute lifetime, and the second divergence was not merely cosmetic:
+#     3,600 seconds is DOUBLE the approved bearer window, and a bearer token
+#     cannot be revoked before it expires.
+#     Resolution, applied in one change and never partially: the property key
+#     stays carddemo.security.jwt.signing-key and now reads ${JWT_SIGNING_KEY}
+#     with no default; the lifetime is carddemo.security.jwt.expiration-minutes
+#     reading ${JWT_EXPIRATION_MINUTES:30}; and the rename was carried through
+#     SecurityConfig, JwtTokenProvider, .env.example, the Dockerfile, pom.xml,
+#     owasp-suppressions.xml, the unit test that asserts the variable name and
+#     the Javadoc of every class that documented it. The normative requirements
+#     - environment indirection, no committed value, no fallback, fail-fast -
+#     held before and still hold.
 #   - MEDIUM - object storage and queue readiness. The specification requires
 #     readiness to cover database, object storage and queue.
 #     management.endpoint.health.validate-group-membership defaults to true
@@ -272,24 +275,26 @@
 #     existing; the neutrality requirement is unaffected. Remediation: set
 #     SPRING_PROFILES_ACTIVE on the command line, in .env, or on the
 #     application service when one is added to compose.
-#   - LOW - two variable names in the composed contract differ from the two
-#     this file reads. This file reads POSTGRES_HOST and
-#     OTEL_EXPORTER_OTLP_ENDPOINT, while .env.example ships neither and instead
-#     ships SPRING_DATASOURCE_URL at :55 and MANAGEMENT_OTLP_TRACING_ENDPOINT
-#     at :96. Those two supersede spring.datasource.url and
-#     management.otlp.tracing.endpoint outright, by relaxed binding at a higher
-#     precedence than this file, so the placeholders beneath them are never
-#     evaluated. Measured: a boot with the committed .env.example set alone and
-#     POSTGRES_HOST and OTEL_EXPORTER_OTLP_ENDPOINT deliberately unset started
-#     with exit 0, zero ERROR lines and Flyway at v1; a boot with neither the
-#     variable nor its superseding form failed fast, as intended. Both routes
-#     are therefore supported and neither is silent.
-#     Resolution: keep the decomposed POSTGRES_* and OTEL_* form here, because
-#     it is what makes the base profile free of any hostname, port or URL, and
-#     let the composed form win where a deployment prefers it. Remediation if
-#     one spelling should become canonical: add POSTGRES_HOST and
-#     OTEL_EXPORTER_OTLP_ENDPOINT to .env.example, or drop the composed
-#     entries - but never both spellings for the same value in one environment.
+#   - RESOLVED - the composed contract and the names this file reads are now
+#     one spelling. An earlier revision of .env.example shipped
+#     SPRING_DATASOURCE_URL and MANAGEMENT_OTLP_TRACING_ENDPOINT and shipped
+#     neither POSTGRES_HOST nor OTEL_EXPORTER_OTLP_ENDPOINT. Those two composed
+#     names supersede spring.datasource.url and management.otlp.tracing.endpoint
+#     outright, by relaxed binding at a higher precedence than any profile file,
+#     so the placeholders beneath them were never evaluated. Measured at the
+#     time: a boot with that template alone and POSTGRES_HOST and
+#     OTEL_EXPORTER_OTLP_ENDPOINT deliberately unset started with exit 0, zero
+#     ERROR lines and Flyway at v1 - the template worked while documenting a
+#     contract this file does not have, which is the worst of the two failure
+#     modes because nothing reports it.
+#     Resolution: the decomposed POSTGRES_* and OTEL_* form is canonical,
+#     because it is what makes the base profile free of any hostname, port or
+#     URL, and .env.example:111 and :172 now ship exactly it while shipping
+#     neither composed name. Relaxed binding still lets a deployment supply a
+#     whole URL, deliberately and in its own environment, INSTEAD OF the
+#     decomposed group - never both spellings for one value in one environment.
+#     EnvironmentTemplateContractTest asserts both halves: every placeholder
+#     these profiles read is documented, and no documented name is unread.
 #   - LOW - three legacy defects are preserved rather than repaired, because
 #     parity is the contract: the record-length mismatch for the statement
 #     HTML output between app/jcl/CREASTMT.JCL:L73 (LRECL 80 at pre-delete)
@@ -350,7 +355,7 @@
 #     localstack-init/init-aws.sh and V1__create_schema.sql. Because no
 #     @ConfigurationProperties class exists yet, the runtime evidence below was
 #     obtained through a throwaway boot harness rather than through
-#     `mvn spring-boot:run`, which cannot work until CardDemoApplication lands.
+#     `./mvnw -B -ntp spring-boot:run`, which cannot work until CardDemoApplication lands.
 #
 # RUNTIME VALIDATION EVIDENCE
 #
@@ -358,13 +363,14 @@
 # Spring Boot 3.5.11 and PostgreSQL 16.10, booting this file on the pinned
 # classpath. Rule 1 Clause F requires evidence rather than a claim.
 #
-#   - Signing-key fail-fast, both directions. With JWT_SECRET unset the context
-#     refresh aborts with exit 1 and
+#   - Signing-key fail-fast, both directions. With JWT_SIGNING_KEY unset the
+#     context refresh aborts with exit 1 and
 #     "PlaceholderResolutionException: Could not resolve placeholder
-#     'JWT_SECRET' in value \"${JWT_SECRET}\" <-- \"${carddemo.security.jwt.
-#     signing-key}\"", which names both the variable to set and the property
-#     that needs it. With the variable supplied externally the application
-#     starts, and the key value appears nowhere in stdout or stderr.
+#     'JWT_SIGNING_KEY' in value \"${JWT_SIGNING_KEY}\" <-- \"${carddemo.
+#     security.jwt.signing-key}\"", which names both the variable to set and
+#     the property that needs it. With the variable supplied externally the
+#     application starts, and the key value appears nowhere in stdout or
+#     stderr. Re-measured after the rename, on the same toolchain.
 #   - Actuator surface. "Exposing 3 endpoints beneath base path '/actuator'".
 #     /actuator/health returns {"status":"UP","groups":["liveness",
 #     "readiness"]} with no components key, so show-details never and
@@ -457,7 +463,7 @@
 #     templated health-path route. This is also what proves probes.enabled
 #     true is in force; with probes off both paths would 404.
 #   - Negative surface, 20 of 20 not exposed. /actuator/env,
-#     /env/JWT_SECRET, /beans, /configprops, /loggers, /heapdump, /threaddump,
+#     /env/JWT_SIGNING_KEY, /beans, /configprops, /loggers, /heapdump, /threaddump,
 #     /metrics, /caches, /mappings, /scheduledtasks, /sbom, /startup,
 #     /conditions, /httpexchanges, /shutdown, /flyway, /quartz, /auditevents
 #     and /integrationgraph each returned 404 with an identical 275-byte
@@ -504,9 +510,17 @@ spring:
   # --------------------------------------------------------------------------
   # JSON - deterministic DTO serialisation
   # --------------------------------------------------------------------------
-  # The 17 BMS symbolic maps of app/cpy-bms contribute 460 field contracts, and
+  # The 17 BMS symbolic maps of app/cpy-bms contribute 441 field contracts, and
   # every DTO field length and type derives from them. Serialisation must
   # therefore be predictable rather than convenient.
+  # THE COUNT IS 441. An earlier revision of this comment said 460, repeating
+  # the figure in AAP 0.2.1.4; the claim is withdrawn. Counting the data field
+  # of every generated quintuple across app/cpy-bms yields 441: COACTUP 54,
+  # COACTVW 37, COADM01 20, COBIL00 10, COCRDLI 45, COCRDSL 15, COCRDUP 17,
+  # COMEN01 20, CORPT00 17, COSGN00 11, COTRN00 59, COTRN01 21, COTRN02 21,
+  # COUSR00 59, COUSR01 12, COUSR02 12, COUSR03 11. COACTVW is the one the two
+  # figures disagree about - 37, not 36. AAP 0.1 makes the COBOL corpus the
+  # authority over prose, so the recount governs.
   jackson:
     default-property-inclusion: always
     serialization:
@@ -640,6 +654,35 @@ spring:
     out-of-order: false
     table: flyway_schema_history
     encoding: UTF-8
+    # ------------------------------------------------------------------------
+    # The demonstration-user gate. FALSE HERE IS THE POINT.
+    #
+    # V3__seed_data.sql carries ten CSUSR01Y users whose identifiers and whose
+    # single plaintext are both recorded in a frozen file in this repository.
+    # Hashed or not, a credential whose input is published is a demonstration
+    # credential, and installing one gives anyone who can read the repository
+    # administrative authority once sign-on is reachable.
+    #
+    # The gate is therefore DEFAULT-DENY, declared here in the base profile so
+    # that a profile which says nothing installs nothing. Only
+    # application-local.yml and application-test.yml open it, because only
+    # there is a demonstration corpus the point; application-prod.yml closes it
+    # again explicitly rather than relying on inheritance. A guard that had to
+    # be remembered in every new profile would be one forgotten profile away
+    # from being no guard at all.
+    #
+    # The key is deliberately all lower case with no separator: Spring's
+    # relaxed binding normalises configuration keys, and a placeholder name
+    # carrying an upper-case letter or a hyphen can arrive at Flyway under a
+    # different spelling than the script asks for - which surfaces as
+    # "No value provided for placeholder" at start-up, not as a silent default.
+    #
+    # Flyway checksums the RAW script, before substitution, so gating inside
+    # the script keeps ONE file with ONE checksum applying everywhere and
+    # leaves validate-on-migrate meaningful. A per-environment copy of the
+    # migration would make the checksum environment-dependent instead.
+    placeholders:
+      seeddemousers: false
 
   # --------------------------------------------------------------------------
   # Spring Batch - the JES2 replacement
@@ -668,11 +711,28 @@ spring:
   # --------------------------------------------------------------------------
   # AWS - S3, SQS FIFO and SNS via Spring Cloud AWS 3.3.0
   # --------------------------------------------------------------------------
-  # NO endpoint override and NO credentials appear in this base profile, by
-  # design. Endpoint overrides belong exclusively to the local and test
-  # profiles, which point at LocalStack; production uses the standard provider
-  # chain. That structural split is what makes it impossible for this file to
-  # carry a local endpoint or a dummy production credential (Rule 1 Clause D).
+  # EVERY profile - this base profile included - must point the application at
+  # the local emulator. An earlier revision of this file left the endpoint and
+  # the credentials out here on the reasoning that a base profile naming no
+  # endpoint cannot reach a real service. That reasoning is wrong, and it is
+  # worth stating why so it is not re-introduced: with no endpoint override
+  # the SDK DERIVES a real regional endpoint from the region above, and with no
+  # credentials it walks its default provider chain - environment variables,
+  # the shared profile file, then container and instance metadata. Silence is
+  # therefore not a refusal to call live infrastructure; it is a silent
+  # election to. com.cardemo.config.AwsConfig now refuses to start unless all
+  # three endpoints name the emulator, so this profile MUST supply them.
+  #
+  # AWS_ENDPOINT_URL has NO literal default here. That is deliberate: a default
+  # would hide an unset variable, and the whole point of the startup check is
+  # that the operator states the endpoint explicitly. The local and test
+  # profiles carry developer defaults; this profile does not.
+  #
+  # The credentials are non-live placeholders and are required because request
+  # signing needs a key pair even when the receiver is an emulator, which
+  # accepts any pair. They are environment-indirected with no default so that
+  # nothing credential-shaped is committed in this file (Rule 1 Clause D), and
+  # the values used against the emulator are placeholders rather than secrets.
   #
   # AWS_REGION is the primary variable name; AWS_DEFAULT_REGION is the
   # AWS-standard alternative that localstack-init/init-aws.sh also honours.
@@ -682,15 +742,50 @@ spring:
     aws:
       region:
         static: ${AWS_REGION:${AWS_DEFAULT_REGION}}
+      credentials:
+        access-key: ${AWS_ACCESS_KEY_ID}
+        secret-key: ${AWS_SECRET_ACCESS_KEY}
       # Only the three services the migration actually uses are enabled.
       # Nothing is declared for any other AWS service: the DynamoDB, Parameter
       # Store, Secrets Manager and CloudWatch clients are absent from the
       # classpath, so a property for them would be dead configuration that
       # Rule 1 Clause B forbids.
+      #
+      # ENDPOINT OVERRIDES. All three indirect through one variable so a single
+      # value moves the whole topology, and that variable carries NO literal
+      # default here. That omission is the control: a default would let an
+      # unset variable boot silently on a guess, and the whole point of the
+      # startup check is that the operator states the endpoint explicitly.
+      # Developer defaults belong to application-local.yml, which declares the
+      # same three keys with the compose emulator edge; this profile does not.
+      # An SDK client built with an endpoint override never performs regional
+      # endpoint discovery, which is why supplying one at all is what keeps a
+      # call off a real amazonaws.com host. AwsConfig validates whatever
+      # resolves - absolute http/https URI, explicit port, no user information,
+      # and a host on its permitted emulator list - and aborts the context
+      # refresh otherwise. The port is deliberately not pinned there, because a
+      # Testcontainers-managed emulator publishes on an ephemeral port; the
+      # test profile carries no endpoint at all and the harness registers the
+      # container's mapped address, which takes precedence over this value.
       s3:
         enabled: true
+        endpoint: ${AWS_ENDPOINT_URL}
+        # Required by the emulator, and therefore by every profile - including
+        # prod, which declares no AWS block of its own beyond the three
+        # endpoints. Virtual-host addressing would resolve bucket names as DNS
+        # subdomains - carddemo-batch-input.localhost - which does not resolve.
+        # Path-style keeps the bucket in the request path so one edge host
+        # serves all three. Unlike the endpoint and the credentials this key
+        # carries no host, no port and no credential material, so declaring it
+        # here is not the "silent election" the block above warns about; it is
+        # simply the addressing mode the emulator requires.
+        # application-local.yml and application-test.yml set the identical
+        # value, and they are left in place as documentation of the requirement
+        # at the point of use.
+        path-style-access-enabled: true
       sqs:
         enabled: true
+        endpoint: ${AWS_ENDPOINT_URL}
         # The library default is CREATE, which would silently conjure a queue
         # whose name was mistyped and whose FIFO attributes would then be
         # wrong. FAIL surfaces the mistake. Provision queues with the
@@ -698,6 +793,7 @@ spring:
         queue-not-found-strategy: FAIL
       sns:
         enabled: true
+        endpoint: ${AWS_ENDPOINT_URL}
 
 # ============================================================================
 # Embedded web layer
@@ -793,8 +889,16 @@ management:
         # .SQS_HEALTH_COMPONENT_NAME; cite those rather than retyping a literal.
         #
         # `s3` probes the three configured buckets with a metadata-only
-        # HeadBucket and `sqs` resolves the report queue with a read-only
-        # GetQueueUrl. Neither mutates anything, and neither may be added to the
+        # HeadBucket, then verifies with GetBucketVersioning that the
+        # batch-output bucket has versioning enabled - without it a generation
+        # key overwrites rather than versions, which silently loses a generation.
+        # `sqs` resolves the report queue with a read-only GetQueueUrl, then
+        # verifies with a two-attribute GetQueueAttributes that it is a FIFO
+        # queue with content-based deduplication, neither of which can be added
+        # after creation. Existence alone is therefore NOT sufficient for UP: a
+        # substrate that answers but cannot honour the contract reports DOWN.
+        # All four calls are read-only, all four are bounded inside a
+        # per-contributor budget, and none may be added to the
         # liveness group above: an emulator blip must not restart a healthy JVM.
         # Readiness therefore covers database + object storage + queue, which is
         # the three-way composite the migration requires.
@@ -850,6 +954,39 @@ management:
 carddemo:
 
   # --------------------------------------------------------------------------
+  # Time - consumed by the one java.time.Clock bean, which
+  # com.cardemo.config.ObservabilityConfig#clock(String) declares
+  # --------------------------------------------------------------------------
+  # Thirteen singleton constructors take a Clock: JwtTokenProvider, the
+  # authentication, report submission, date validation and file status
+  # services, the two menu services, the three administrative services, the
+  # billing service and the transaction detail and list services. All are built
+  # during context refresh, so one shared, explicit time source is a startup
+  # requirement rather than a convenience. There is exactly one declaration and
+  # it lives in ObservabilityConfig; SecurityConfig declares none, which
+  # SecurityConfigTest and RuntimeWiringAndAwsIsolationTest both assert in both
+  # directions so a second one cannot reappear unnoticed.
+  #
+  # THE KEY IS PINNED HERE, and that is the point of the key. The bean's own
+  # fallback, taken when this property is absent or blank, is a system clock in
+  # the DEPLOYMENT's zone - faithful to FUNCTION CURRENT-DATE, which returned
+  # the region's local civil time (app/cbl/CSUTLDTC.cbl:L343). This file does
+  # not rely on that fallback: spring.jpa.properties.hibernate.jdbc.time_zone
+  # above is UTC, so every timestamp this application writes to PostgreSQL is a
+  # UTC instant, and a clock ticking in the host's zone would render the
+  # PIC X(26) timestamp text of app/cbl/CBTRN02C.cbl:L678-L706 in one zone
+  # while storing the row in another - the two then disagree by the host's
+  # offset, silently. Pinning UTC here is what makes the rendered text and the
+  # stored instant the same instant on every machine.
+  #
+  # A default IS supplied here, unlike the signing key, because a zone
+  # identifier is not a secret and every deployment wants the same answer. An
+  # unrecognised value aborts startup with the value named rather than being
+  # silently replaced by UTC.
+  time:
+    zone: ${CARDDEMO_TIME_ZONE:UTC}
+
+  # --------------------------------------------------------------------------
   # Security - consumed by SecurityConfig, JwtTokenProvider and
   # CardDemoUserDetailsService
   # --------------------------------------------------------------------------
@@ -874,18 +1011,18 @@ carddemo:
       # ======================================================================
       # NO DEFAULT. NO EXAMPLE. NO FALLBACK. NO COMMITTED VALUE.
       # ======================================================================
-      # An absent JWT_SECRET leaves this placeholder unresolvable, which fails
-      # property resolution and therefore fails startup. That is the required
-      # behaviour: a generated or committed default would let the application
-      # boot with a signing key an attacker already knows. The previous
-      # migration attempt hardcoded this value, and that is the High-severity
-      # defect this line closes.
-      # JWT_SECRET is the one variable name used across the repository -
-      # .env.example:44 ships it empty and REQUIRED, and
-      # owasp-suppressions.xml:180, pom.xml:87 and
-      # docs/technical-specifications.md:1030 all name it. A second name would
-      # be the duplication Rule 1 Clause C forbids; see the discrepancy
-      # register.
+      # An absent JWT_SIGNING_KEY leaves this placeholder unresolvable, which
+      # fails property resolution and therefore fails startup. That is the
+      # required behaviour: a generated or committed default would let the
+      # application boot with a signing key an attacker already knows. The
+      # previous migration attempt hardcoded this value, and that is the
+      # High-severity defect this line closes.
+      # JWT_SIGNING_KEY is the mandated variable name and is now the one name
+      # used across the repository - .env.example ships it empty and REQUIRED,
+      # and SecurityConfig, JwtTokenProvider, the Dockerfile run recipe,
+      # pom.xml and owasp-suppressions.xml all name it. The earlier JWT_SECRET
+      # spelling was renamed in every one of those places in a single change,
+      # never partially; see the discrepancy register.
       # NOTE: there is deliberately NO
       # spring.security.oauth2.resourceserver.jwt.jwk-set-uri and NO
       # public-key-location anywhere in this file. The root pom.xml pins
@@ -893,11 +1030,18 @@ carddemo:
       # library, and a symmetric HMAC key has no built-in Boot property:
       # SecurityConfig builds a NimbusJwtDecoder from this value. Emitting
       # those two properties would be unreachable configuration.
-      signing-key: ${JWT_SECRET}
+      signing-key: ${JWT_SIGNING_KEY}
       # Non-secret metadata, so documented defaults are acceptable.
       issuer: ${JWT_ISSUER:carddemo}
-      # Seconds, matching .env.example:46 JWT_EXPIRATION_SECONDS=3600.
-      expiration-seconds: ${JWT_EXPIRATION_SECONDS:3600}
+      # MINUTES, not seconds, and the default is the approved 30-minute bearer
+      # lifetime. A bearer token cannot be revoked before it expires, so the
+      # lifetime IS the exposure window of a leaked token and Rule 1 Clause D's
+      # least-privilege requirement bounds it deliberately: 30 minutes, with
+      # JwtTokenProvider converting this value to a Duration exactly once and
+      # refusing anything below 1 minute or above 24 hours. The unit is part of
+      # the contract - the property was expressed in seconds with a 3,600-second
+      # default, which quietly doubled the approved window.
+      expiration-minutes: ${JWT_EXPIRATION_MINUTES:30}
     bcrypt:
       # Transformation Rule 15. The ten users inlined in
       # app/jcl/DUSRSECJ.jcl carry a literal plaintext password in the legacy
@@ -914,7 +1058,7 @@ carddemo:
     s3:
       # The three buckets are provisioned idempotently by
       # localstack-init/init-aws.sh:529-531 under exactly these variable names,
-      # which .env.example:80-82 also declares. None carries a literal default,
+      # which .env.example:153-155 also declares. None carries a literal default,
       # so a missing bucket name fails startup instead of writing a statement
       # run into whatever bucket happens to exist.
       batch-input-bucket: ${CARDDEMO_S3_BATCH_INPUT_BUCKET}
@@ -927,12 +1071,32 @@ carddemo:
       # timestamp prefix, and a current-generation (0) read becomes the
       # lexicographically greatest existing prefix. RECORD LENGTH IS PRESERVED
       # BYTE-EXACTLY AT THE S3 BOUNDARY - see carddemo.batch.record-length
-      # below. The batch-output bucket and the statements bucket are versioned.
+      # below.
+      # VERSIONING IS APPLIED TO THE OUTPUT BUCKET ALONE. An earlier revision
+      # of this comment said the batch-output bucket AND the statements bucket
+      # are versioned; that is wrong and the claim is withdrawn.
+      # localstack-init/init-aws.sh calls enable_and_verify_versioning only for
+      # the output bucket, at :1542, and merely READS the other two back
+      # without changing them, at :1544 and :1546; its versioning-policy note
+      # at :1104-1120 states the same and flags this file as the contradicting
+      # surface. AAP 0.5.1.1 specifies "three S3 buckets with versioning on the
+      # output bucket" and 0.5.2.2 puts every generation-data-group prefix in
+      # that bucket, so the seven bases above are the only objects whose
+      # relative (+1)/(0) references need object versions. The statements and
+      # input buckets carry no generation semantics - STMTFILE and HTMLFILE are
+      # pre-deleted by app/jcl/CREASTMT.JCL STEP030 and rewritten by STEP040
+      # under a deterministic account-and-month prefix - so versioning them
+      # would retain objects the legacy system never had.
       gdg-prefixes:
         # app/jcl/DALYREJS.jcl:L25 - the reject generations, 430 bytes each.
+        # Bound with NO default by com.cardemo.batch.writers.RejectWriter, so
+        # this key is load-bearing: removing it aborts context refresh rather
+        # than falling back to a literal prefix.
         daly-rejs: gdg/dalyrejs
         # app/jcl/DEFGDGB.jcl:L49 - the interest-generated transaction output
-        # of app/jcl/INTCALC.jcl, a fresh sequential generation per run.
+        # of app/jcl/INTCALC.jcl, a fresh sequential generation per run. Bound
+        # by com.cardemo.batch.jobs.InterestCalculationJob, which reads it with
+        # gdg/systran as its own default and fails on a blank value.
         systran: gdg/systran
         # app/jcl/DEFGDGB.jcl:L43 - the category-balance backup.
         tcatbalf-bkup: gdg/tcatbalf-bkup
@@ -946,6 +1110,22 @@ carddemo:
         transact-combined: gdg/transact-combined
         # app/jcl/DEFGDGB.jcl:L31 - the daily transaction generations.
         transact-daly: gdg/transact-daly
+      # THE POSTED-TRANSACTION MIRROR IS NOT A GDG BASE, AND IS DECLARED
+      # SEPARATELY FOR THAT REASON. app/jcl/POSTTRAN.jcl:L26-27 writes posted
+      # transactions to AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS, an INDEXED cluster
+      # catalogued at app/catlg/LISTCAT.txt with KEYS(16 0) - not to any of the
+      # seven 0GDG BASE entries above. Its byte-exact 350-byte S3 mirror
+      # therefore gets its own prefix rather than borrowing a generation
+      # namespace it does not belong to, and it is declared HERE so that
+      # exactly one authoritative value exists: batch/writers/TransactionWriter
+      # binds this key and carries no inline default of its own, because an
+      # inline default is a second declaration site and the two drift. That is
+      # also why the key is declared here rather than left to that class's
+      # in-code fallback: an active key that appears in no profile cannot be
+      # found by an operator reading the configuration, which Rule 1 Clause E
+      # forbids. The value matches the cluster name of app/jcl/TRANFILE.jcl so
+      # that an object listing and the legacy dataset name read alike.
+      transaction-object-prefix: transact
       # RETENTION CONFLICT, RESOLVED. app/jcl/DEFGDGB.jcl:L37-38 declares
       # LIMIT(5) for the TRANREPT base while app/jcl/REPTFILE.jcl:L26-27
       # declares LIMIT(10) for the same base. A single lifecycle value must be
@@ -958,14 +1138,25 @@ carddemo:
       # The 80-byte fixed-length OUTPUT transient data queue defined at
       # app/csd/CARDDEMO.CSD:L499-505 - DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
       # DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED)
-      # DISPOSITION(MOD) - becomes an SQS FIFO queue. The 18 eighty-byte job
-      # cards that app/cbl/CORPT00C.cbl:L80-L127 holds as literal constants and
+      # DISPOSITION(MOD) - becomes an SQS FIFO queue. The 17 eighty-byte job
+      # cards that app/cbl/CORPT00C.cbl:L83-L125 holds as literal constants and
       # writes one at a time collapse into ONE typed JSON message carrying the
       # report name and the start and end dates; an SQS listener replaces the
       # JES2 internal reader.
+      # THE COUNT IS SEVENTEEN, NOT EIGHTEEN. An earlier revision of this
+      # comment said eighteen, and the claim is withdrawn. JOB-DATA-1 spans
+      # app/cbl/CORPT00C.cbl:L82-L125 and holds fourteen
+      # 05 FILLER PIC X(80) VALUE literals - :L83, :L85, :L87, :L89, :L91,
+      # :L93, :L95, :L97, :L99, :L101, :L113, :L115, :L122, :L124 - plus three
+      # composed groups that each total exactly 80 bytes: FILLER-1 at :L103 as
+      # 18 + 10 + 52, FILLER-2 at :L108 as 16 + 10 + 54, and FILLER-3 at :L117
+      # as 10 + 1 + 10 + 59. That is 14 x 80 + 3 x 80 = 1360 bytes = 17 x 80.
+      # JOB-DATA-2 REDEFINES JOB-DATA-1 at :L126-L127 as JOB-LINES OCCURS 1000
+      # TIMES PIC X(80), so 17 of those thousand slots are populated.
+      # app/cbl/CORPT00C.cbl is the authority and prose is not.
       # The logical contract is carddemo-report-jobs. AWS requires a .fifo
       # suffix on the physical name, which is permitted and is what
-      # localstack-init/init-aws.sh:532 provisions and .env.example:84
+      # localstack-init/init-aws.sh:532 provisions and .env.example:157
       # declares; init-aws.sh:548 records the same logical-versus-physical
       # split.
       report-queue: ${CARDDEMO_SQS_REPORT_QUEUE}
@@ -976,7 +1167,7 @@ carddemo:
       report-message-group-id: carddemo-report-jobs
     sns:
       # Replaces operator notification. Provisioned by
-      # localstack-init/init-aws.sh:533; declared at .env.example:88.
+      # localstack-init/init-aws.sh:533; declared at .env.example:162.
       notification-topic: ${CARDDEMO_SNS_NOTIFICATION_TOPIC}
 
   # --------------------------------------------------------------------------
@@ -999,6 +1190,70 @@ carddemo:
   # and there is no other determinant.
   batch:
     chunk-size: 100
+    # THE JOB REGISTRY BELOW IS RETAINED DELIBERATELY, and the distinction from
+    # the documentary blocks removed elsewhere in this file is worth stating so
+    # it is not read as an oversight. carddemo.batch.jobs.intcalc.name is bound
+    # today by com.cardemo.batch.jobs.InterestCalculationJob. The remaining
+    # names and enabled flags are the binding surface of
+    # com.cardemo.config.BatchConfig, which the target design names as one of
+    # the classes of com.cardemo.config and which now exists, and of the job
+    # classes it wires - so these are the one place the value lives, not a
+    # second copy of something governed elsewhere. That is the test applied
+    # throughout this file: a key is REMOVED when something else already governs
+    # the value and the key therefore cannot, and KEPT when the key is the one
+    # place the value lives. A change that extends BatchConfig binds these rather
+    # than introducing a second spelling of them.
+
+    # ROWS PER DATABASE ROUND TRIP for the four read-only verification readers
+    # that replace app/cbl/CBACT01C.cbl, CBACT02C.cbl, CBACT03C.cbl and
+    # CBCUS01C.cbl. Each reader carries the same fallback in code, and each key
+    # is declared here because a key that is read at runtime but appears in no
+    # profile is invisible to whoever has to operate the job - the defect Rule 1
+    # Clause E names. The value stated here is 100, which is exactly each
+    # reader's own DEFAULT_PAGE_SIZE constant, so declaring it changes no
+    # behaviour - it only makes the effective value auditable. It comfortably
+    # exceeds the 50 rows every one of the four fixtures in app/data/ASCII/
+    # holds, so a fixture-sized run makes exactly one round trip. It is a fetch
+    # size and NOT a pagination contract: the parity page sizes of 7, 10 and 10
+    # live under carddemo.pagination below and are unrelated to these.
+    account-reader:
+      page-size: 100
+    card-reader:
+      page-size: 100
+    card-cross-reference-reader:
+      page-size: 100
+    customer-reader:
+      page-size: 100
+    # RETENTION BOUND for the statement job's in-memory transaction table. A
+    # SAFETY LIMIT, NOT A TUNING KNOB - read that before changing it.
+    #
+    # app/cbl/CBSTM03A.CBL:L225-L233 declares the table as 51 card entries of 10
+    # transactions each, a hard ceiling of 510, and the building loop at
+    # :L818-L848 increments both indices with NO bounds check whatsoever: a
+    # 511th transaction overran the storage silently. Removing that ceiling
+    # removes the silent corruption, so the table needs a bound of its own or an
+    # endlessly repeating dataset would exhaust the heap instead (Rule 1
+    # Clause A2, untrusted input). Exceeding this raises
+    # FatalProcessingException - it fails loudly and never truncates.
+    #
+    # Per-entry cost, so the worst case is arithmetic rather than a surprise:
+    # one projected record is 16 + 16 + 318 = 350 characters, which with two
+    # bytes per char and per-object overhead is on the order of 800 bytes
+    # retained. The value below therefore bounds the table at roughly 800 MB,
+    # which a default heap will NOT accommodate - deliberately, because the
+    # bound sits three orders of magnitude above the largest fixture so no
+    # legitimate run reaches it. A deployment whose input could approach it
+    # lowers this to a value its heap holds; it does not raise it. A parity run
+    # over the 300 records of app/data/ASCII/dailytran.txt retains 300 entries,
+    # about 240 kB.
+    #
+    # Declared here, and not only as a constant in code, for the same reason as
+    # the four reader page sizes above: a key that is read at runtime but
+    # appears in no profile is invisible to whoever operates the job. The value
+    # is exactly StatementProcessor.MAX_TRANSACTIONS_PER_RUN, so declaring it
+    # changes no behaviour.
+    statement-processor:
+      max-transactions-per-run: 1000000
     jobs:
       # app/jcl/POSTTRAN.jcl:L23 EXEC PGM=CBTRN02C, with app/cbl/CBTRN01C.cbl
       # folded in as the read-only pre-flight step described above.
@@ -1026,47 +1281,64 @@ carddemo:
         name: CREASTMT
         enabled: true
         steps: 5
-    # FIXED-WIDTH RECORD GEOMETRY. These are byte contracts, not preferences:
-    # the parity comparison is made on the emitted bytes, so a wrong length is
-    # a wrong output even when every field value is right.
-    record-length:
-      # app/cpy/CVTRA05Y.cpy and app/cpy/CVTRA06Y.cpy; also
-      # app/jcl/INTCALC.jcl:L39 and app/jcl/TRANREPT.jcl:L31.
-      transaction: 350
-      daily-transaction: 350
-      # app/jcl/POSTTRAN.jcl:L36 DCB=(RECFM=F,LRECL=430). Exactly 350 data
-      # bytes plus an 80-byte trailer, and the trailer is a four-digit reason
-      # code plus a 76-character description - app/cbl/CBTRN02C.cbl:L176-L182.
-      # 350 + 80 = 430 resolves the declared length precisely.
-      reject: 430
-      reject-data: 350
-      reject-trailer: 80
-      reject-reason-code: 4
-      reject-reason-description: 76
-      # app/jcl/TRANREPT.jcl:L78 and app/proc/TRANREPT.prc:L76,
-      # DCB=(LRECL=133,RECFM=FB); the layout is app/cpy/CVTRA07Y.cpy.
-      report-line: 133
-      # app/jcl/CREASTMT.JCL:L89 STMTFILE LRECL=80 and :L94 HTMLFILE
-      # LRECL=100, both at STEP040, the step that actually writes them. The
-      # 100-byte width is independently confirmed by the single
-      # hundred-character emission field of app/cbl/CBSTM03A.CBL:L149.
-      statement-text: 80
-      statement-html: 100
-      # app/csd/CARDDEMO.CSD:L502 RECORDSIZE(80) on DEFINE TDQUEUE(JOBS), and
-      # the DATEPARM control input the queue message reproduces.
-      queue-parameter: 80
-      # app/jcl/CREASTMT.JCL:L30 KEYS(32 0) on the statement work cluster; the
-      # 32 bytes are the 16-character card number plus the 16-character
-      # transaction identifier of app/cpy/COSTM01.CPY.
-      statement-work-key: 32
-    # app/jcl/INTCALC.jcl:L22 passes PARM='2022071800' - TEN numeric
-    # characters, being eight date digits followed by two zeros, with NO
-    # separators. It is NOT an ISO date, and the distinction matters because
+    # FIXED-WIDTH RECORD GEOMETRY IS DELIBERATELY NOT CONFIGURATION.
+    #
+    # Each length below is a byte contract, not a preference: the parity
+    # comparison is made on the emitted bytes, so a wrong length is a wrong
+    # output even when every field value is right. Precisely because they may
+    # never vary, they must not be settable - a `record-length` block here
+    # would let a deployment silently break parity by editing a profile, and
+    # an operator reading it would reasonably believe the values were in
+    # force. They were not: this block was executable YAML that NOTHING bound,
+    # while the real values were compile-time constants in Java, so the two
+    # could drift with nothing failing. That is the defect, and removing the
+    # keys is the fix; the evidence is what was worth keeping, so it is kept
+    # here as comments naming the constant that actually governs each value.
+    #
+    #   350  transaction and daily-transaction record
+    #        TransactionWriter.RECORD_LENGTH, and
+    #        RejectCode.REJECT_TRAN_DATA_LENGTH for the staged image
+    #        app/cpy/CVTRA05Y.cpy, app/cpy/CVTRA06Y.cpy; also
+    #        app/jcl/INTCALC.jcl:L39 and app/jcl/TRANREPT.jcl:L31
+    #   430  reject record = 350 data bytes + an 80-byte trailer, the trailer
+    #        being a four-digit reason code plus a 76-character description
+    #        RejectCode.REJECT_RECORD_LENGTH, computed from
+    #        REJECT_TRAN_DATA_LENGTH + VALIDATION_TRAILER_LENGTH, itself
+    #        FAIL_REASON_LENGTH (4) + FAIL_REASON_DESC_LENGTH (76) - so the
+    #        arithmetic is expressed in code rather than restated as a number
+    #        app/jcl/POSTTRAN.jcl:L36 DCB=(RECFM=F,LRECL=430) and
+    #        app/cbl/CBTRN02C.cbl:L176-L182; 350 + 80 = 430 resolves the
+    #        declared length precisely
+    #   133  report line
+    #        TransactionReportProcessor.REPORT_LINE_LENGTH
+    #        app/jcl/TRANREPT.jcl:L78 and app/proc/TRANREPT.prc:L76,
+    #        DCB=(LRECL=133,RECFM=FB); layout app/cpy/CVTRA07Y.cpy
+    #   80   statement text, and 100 statement markup
+    #        StatementTransaction.STATEMENT_TEXT_RECORD_LENGTH and
+    #        STATEMENT_HTML_RECORD_LENGTH, which StatementWriter reuses as
+    #        TEXT_RECORD_LENGTH and HTML_RECORD_LENGTH rather than redeclaring
+    #        app/jcl/CREASTMT.JCL:L89 STMTFILE LRECL=80 and :L94 HTMLFILE
+    #        LRECL=100, both at STEP040, the step that actually writes them;
+    #        the 100-byte width is independently confirmed by the single
+    #        hundred-character emission field of app/cbl/CBSTM03A.CBL:L149
+    #   80   queue parameter record
+    #        AwsConfig.QUEUE_RECORD_LENGTH
+    #        app/csd/CARDDEMO.CSD:L502 RECORDSIZE(80) on DEFINE TDQUEUE(JOBS),
+    #        and the DATEPARM control input the queue message reproduces
+    #   32   statement work-cluster key = 16-character card number plus
+    #        16-character transaction identifier
+    #        StatementTransaction.KEY_LENGTH
+    #        app/jcl/CREASTMT.JCL:L30 KEYS(32 0) and app/cpy/COSTM01.CPY
+    #
+    # The interest date parameter is documented on the same terms and for the
+    # same reason. app/jcl/INTCALC.jcl:L22 passes PARM='2022071800' - TEN
+    # numeric characters, being eight date digits followed by two zeros, with
+    # NO separators. It is NOT an ISO date, and the distinction matters because
     # the value is concatenated ahead of a six-digit suffix to form the
-    # sixteen-digit generated transaction identifier.
-    intcalc-date-parameter:
-      length: 10
-      pattern: "yyyyMMdd00"
+    # sixteen-digit generated transaction identifier. The width and the pattern
+    # are parity contracts and live as constants on
+    # com.cardemo.batch.jobs.InterestCalculationJob (PARM_DATE_LENGTH and its
+    # validator), which that class's own documentation states explicitly.
 
   # --------------------------------------------------------------------------
   # Pagination - PARITY CONTRACTS, NOT TUNABLES
@@ -1090,29 +1362,60 @@ carddemo:
     # app/cbl/COUSR00C.cbl:57, 02 USER-REC OCCURS 10 TIMES, with the loop
     # bounds at :293 and :347.
     user-list-page-size: 10
+    # The report page size is NOT declared here, and the asymmetry with the
+    # three keys above is deliberate rather than an oversight. Those three are
+    # bound - com.cardemo.service.card.CardListService,
+    # com.cardemo.service.transaction.TransactionListService and
+    # com.cardemo.service.admin.UserListService each read them - so declaring
+    # them puts one value in one place. A `report-lines-per-page: 20` key was
+    # declared alongside them and bound by nothing: the batch report processor
+    # holds 20 as a constant, so the YAML entry was inert while looking
+    # authoritative, which is worse than absent because an operator changing it
+    # would see no effect and no error. Evidence retained: 20 comes from
     # app/cbl/CBTRN03C.cbl:131-132, WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20,
-    # consumed at :282 by FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0.
-    report-lines-per-page: 20
+    # consumed at :282 by FUNCTION MOD(WS-LINE-COUNTER, WS-PAGE-SIZE) = 0, and
+    # it lives on com.cardemo.batch.processors.TransactionReportProcessor as
+    # PAGE_SIZE.
 
   # --------------------------------------------------------------------------
-  # Metrics contract - consumed by MetricsConfig
+  # Metrics contract - OWNED BY MetricsConfig, NOT DECLARED HERE
   # --------------------------------------------------------------------------
-  # Exactly four named counters, and these names are fixed by
-  # observability/prometheus.yml:9-12, which documents them as the replacement
-  # for the end-of-run DISPLAY statements. The legacy originals are
-  # app/cbl/CBTRN02C.cbl:227 DISPLAY 'TRANSACTIONS PROCESSED :' and :228
-  # DISPLAY 'TRANSACTIONS REJECTED  :' - note the two spaces before the colon
-  # on the rejected line, which is part of the emitted text and is preserved.
-  # The rejected counter is TAGGED BY REJECT CODE, whose only five values are
-  # 100, 101, 102, 103 and 109 per app/cbl/CBTRN02C.cbl; that tag is what turns
-  # five enum constants into an operable signal.
-  metrics:
-    counters:
-      records-processed: carddemo.batch.records.processed
-      records-rejected: carddemo.batch.records.rejected
-      authentication-attempts: carddemo.auth.attempts
-      transaction-amount-total: carddemo.transaction.amount.total
-    reject-code-tag: reject-code
+  # This section previously carried a `metrics:` block naming the four counters
+  # and the reject-code tag. It was headed "consumed by MetricsConfig" and was
+  # consumed by nothing: com.cardemo.observability.MetricsConfig declares all
+  # five strings as static final constants and binds no property, which its own
+  # specification requires of it. The block was therefore executable YAML that
+  # looked like the contract and was not it.
+  #
+  # That is not a tidiness point, and the proof is in the one value that had
+  # already drifted: the block declared the tag key as `reject-code` while the
+  # tag actually registered and actually incremented is `reject.code`. Anyone
+  # who trusted the YAML would have written a dashboard query grouping on the
+  # wrong label and seen an empty panel with no error anywhere - and, worse,
+  # would have had no reason to doubt the file. Two spellings of one label
+  # cannot both be right, so the copy that governs nothing is removed rather
+  # than corrected: correcting it would have preserved the very duplication
+  # that allowed the drift.
+  #
+  # The authoritative declarations, all in
+  # com.cardemo.observability.MetricsConfig:
+  #   METRIC_RECORDS_PROCESSED          carddemo.batch.records.processed
+  #   METRIC_RECORDS_REJECTED           carddemo.batch.records.rejected
+  #   METRIC_AUTHENTICATION_ATTEMPTS    carddemo.auth.attempts
+  #   METRIC_TRANSACTION_AMOUNT_TOTAL   carddemo.transaction.amount.total
+  #   TAG_REJECT_CODE                   reject.code
+  # Prometheus renders the tag as reject_code, which is what
+  # `sum by (reject_code)` in the dashboard JSON groups on.
+  #
+  # Evidence retained. The four counters replace the end-of-run DISPLAY
+  # statements: app/cbl/CBTRN02C.cbl:227 DISPLAY 'TRANSACTIONS PROCESSED :' and
+  # :228 DISPLAY 'TRANSACTIONS REJECTED  :' - note the two spaces before the
+  # colon on the rejected line, which is part of the emitted text and is
+  # preserved. The rejected counter is TAGGED BY REJECT CODE, whose only five
+  # values are 100, 101, 102, 103 and 109 per app/cbl/CBTRN02C.cbl; that tag is
+  # what turns five enum constants into an operable signal, and its cardinality
+  # is bounded by the enum rather than by discipline. The names are also quoted
+  # in the header of observability/prometheus.yml.
 
   # --------------------------------------------------------------------------
   # Decimal policy - consumed by every service and processor on a money path
@@ -1138,10 +1441,20 @@ carddemo:
   # never be rewritten as a division by 100 followed by a division by 12, and
   # the divisor must never become a decimal multiplier: either change alters
   # the rounding.
-  decimal:
-    rounding-mode: HALF_EVEN
-    monetary-scale: 2
-    interest-divisor: 1200
+  #
+  # NO `decimal:` KEYS ARE DECLARED, and the reason is the same one that makes
+  # the policy worth documenting. A `rounding-mode: HALF_EVEN`,
+  # `monetary-scale: 2`, `interest-divisor: 1200` block was declared here and
+  # bound by nothing at all. Every one of those three is a parity contract that
+  # may not vary - a settable rounding mode is a settable set of published
+  # figures, and a settable interest divisor is a settable interest charge - so
+  # they belong in code where they cannot be overridden, and they are there:
+  # RoundingMode.HALF_EVEN and the scale of 2 at each money boundary, and the
+  # divisor as MONTHLY_INTEREST_DIVISOR on
+  # com.cardemo.batch.processors.InterestCalculationProcessor - a BigDecimal
+  # built from the string "1200", never a double. Leaving inert keys behind
+  # would invite exactly the change the contract forbids while having no effect
+  # if made, which is the worst of both outcomes.
 
 # ============================================================================
 # Logging
@@ -1149,8 +1462,21 @@ carddemo:
 # logback-spring.xml is auto-detected from the classpath, so logging.config is
 # deliberately NOT set, and no encoder, appender or pattern is restated here
 # (Rule 1 Clause C, avoid duplication). That file owns JSON encoding, the
-# traceId, spanId and correlationId MDC fields, and the masking of credentials,
-# password hashes and social security numbers.
+# traceId, spanId and correlationId MDC fields, and the masking backstop.
+#
+# MASKING IS A BACKSTOP AND NOT THE CONTROL. An earlier revision of this header
+# described it as "the masking of credentials, password hashes and social
+# security numbers", which reads as complete exclusion; the claim is withdrawn.
+# The primary control is that sensitive values are NEVER EMITTED - withheld at
+# the point of rendering rather than caught downstream. The decorator holds 22
+# <paths> field-name entries and 13 <valueMask> regex rules, and 6 of those 13
+# fire only when a recognised label precedes the value: a bare 16-digit run is
+# indistinguishable from a TRAN-ID PIC X(16), a bare 9-digit run from the
+# PIC 9(09) counters displayed at app/cbl/CBTRN02C.cbl:L227-L228, and a bare
+# 3-4 digit run from any small number. logback-spring.xml records those reasons
+# against rules R4, R11, R12 and R13. An unlabelled value of those kinds passes
+# through unmasked, by design, because masking on shape alone would corrupt the
+# output Gate 1 compares byte for byte.
 #
 # Levels are conservative on purpose. Hibernate, Spring Security, the AWS SDK
 # and the web request loggers are NOT raised: at DEBUG or TRACE they emit SQL
@@ -1183,3 +1509,33 @@ logging:
     # The SDK logs signing canonical requests and headers below WARN.
     software.amazon.awssdk: WARN
     io.awspring.cloud: WARN
+    # ------------------------------------------------------------------------
+    # The parity-output tree. OFF, and it must stay OFF in every profile.
+    # ------------------------------------------------------------------------
+    # Finding, Medium severity, now closed. Three translated programs reproduce
+    # a COBOL DISPLAY that carries customer financial data, because the source
+    # wrote it to SYSOUT:
+    #   - app/cbl/CBACT01C.cbl:L78 and :L119-L129 - the whole 300-byte account
+    #     record image, then eleven labelled values including the current
+    #     balance, both credit limits and both current-cycle totals;
+    #   - app/cbl/CBTRN03C.cbl:L180, :L198 and :L199 - a transaction, then
+    #     TRAN-AMT and WS-PAGE-TOTAL;
+    #   - app/cbl/CBACT04C.cbl:L193 - an account identifier paired with
+    #     TRAN-CAT-BAL.
+    # Those emissions used to travel on the owning class's logger, where the
+    # masking rules in logback-spring.xml cannot reach them: masking matches
+    # labelled credentials, hashes and social security numbers, and none of the
+    # above is any of those - an unlabelled 300-character record image presents
+    # nothing to match at all. Two of the three were at INFO, so every profile
+    # carried them.
+    #
+    # They now travel on com.cardemo.parity.<PROGRAM>, an isolated tree with no
+    # other purpose, switched off here for the whole tree. The parity structure
+    # is preserved in code so a baseline comparison remains possible: a parity
+    # run enables exactly one program deliberately - for example
+    #   --logging.level.com.cardemo.parity.CBACT01C=DEBUG
+    # - in an isolated run, with the output routed where the diff needs it. It
+    # is never enabled in a deployment, and raising com.cardemo above does NOT
+    # enable it, because a child level overrides its parent. Owners:
+    # AccountReader, TransactionReportProcessor, InterestCalculationProcessor.
+    com.cardemo.parity: "OFF"

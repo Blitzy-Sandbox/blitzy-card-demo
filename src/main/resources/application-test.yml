@@ -109,7 +109,7 @@
 # is deliberately absent here, exactly as it is absent from application.yml.
 # A class opts in with @ActiveProfiles("test"). Hardcoding an active profile
 # inside a profile-specific file is circular and would fight the layering
-# contract application.yml:200-212 sets out.
+# contract the PROFILE LAYERING CONTRACT section of application.yml sets out.
 #
 # KEY CONFIGURATION AND DEFAULTS
 #
@@ -117,7 +117,7 @@
 # is load-bearing for the test tier, and each is already correct in the base,
 # so repeating it here would add a second place to get it wrong:
 #
-#   - spring.jpa.hibernate.ddl-auto is validate (application.yml:575-576).
+#   - spring.jpa.hibernate.ddl-auto is validate in the base profile.
 #     THIS MUST NEVER BE RELAXED FOR TESTS. Setting ddl-auto to create,
 #     create-drop or update would let Hibernate build the schema from the
 #     entity mapping and then "validate" its own output, which passes
@@ -125,7 +125,7 @@
 #     the opposite: assert that the Flyway-owned, copybook-derived DDL and the
 #     entity mapping agree. A schema drift must fail the build here, which is
 #     the "avoid unsafe defaults" obligation of Rule 1 Clause A.
-#   - The Flyway block (application.yml:622-635): enabled true, locations
+#   - The Flyway block (spring.flyway.* in the base profile): enabled true, locations
 #     classpath:db/migration, baseline-on-migrate false, validate-on-migrate
 #     true, clean-disabled true, out-of-order false. All five guards stay ON in
 #     this profile. clean-disabled in particular is NOT relaxed just because
@@ -140,14 +140,15 @@
 #     app/catlg/LISTCAT.txt:L3940 plus the DALYTRAN physical sequential
 #     staging dataset of app/jcl/POSTTRAN.jcl:L30. A validation gate asserts
 #     that count, so nothing may be appended to V1 and no V4 may appear.
-#   - spring.batch.job.enabled is false (application.yml:647). Jobs must not
+#   - spring.batch.job.enabled is false in the base profile. Jobs must not
 #     auto-launch when a test context refreshes; a test launches them
 #     explicitly through JobLauncherTestUtils or JobOperator so that the job
 #     parameters, the exit status and the reject count are all assertable.
 #     Return code 4 is set if and only if the reject count exceeds zero
 #     (app/cbl/CBTRN02C.cbl:L229-L231), and that is only observable when the
 #     launch is under the test's control.
-#   - The Actuator surface (application.yml:734-780): exposure limited to
+#   - The Actuator surface (management.endpoints.web.exposure.include and the
+#     management.endpoint.health.* groups): exposure limited to
 #     health, info and prometheus; show-details and show-components both
 #     never; probes enabled; liveness including livenessState only and
 #     readiness including readinessState and db. The exposure list is never
@@ -156,7 +157,7 @@
 #     explicitly. The two probe groups are left intact because
 #     GateVerificationTest asserts they resolve as distinct endpoints and
 #     Dockerfile:99-100 depends on the readiness path.
-#   - The conservative logging levels (application.yml:1139-1163), including
+#   - The conservative logging levels (logging.level.* in the base profile), including
 #     the org.hibernate.SQL and org.hibernate.orm.jdbc.bind protective floors.
 #     Hibernate SQL and bind-parameter logging, Spring Security DEBUG, AWS SDK
 #     wire logging and web body logging are all left OFF. At DEBUG or TRACE
@@ -196,6 +197,33 @@
 # SQS queue or SNS topic name; and no JWT signing key, default, example or
 # fallback. Every one of those omissions is deliberate and is explained under
 # THE DYNAMIC-INJECTION CONTRACT below.
+#
+# THE LOCAL-ONLY AWS GUARD IS INHERITED, NOT RE-DECLARED.
+#
+# This profile is protected by the same structural guard as every other
+# runnable profile, and it is protected WITHOUT declaring anything, which is
+# what makes the arrangement safe rather than merely conventional:
+#
+#   * application.yml carries the three service endpoints - indirected through
+#     ${AWS_ENDPOINT_URL} and defaulting to the emulator edge - and the inert
+#     static credential pair that displaces the SDK default provider chain. A
+#     standalone run under this profile alone therefore addresses the emulator
+#     rather than falling through to regional endpoint discovery, which is
+#     precisely what it used to do.
+#   * The integration harness registers spring.cloud.aws.s3.endpoint,
+#     .sqs.endpoint and .sns.endpoint from its LocalStack container's mapped
+#     address through @DynamicPropertySource. Those registrations take
+#     precedence over the base values, so a container-backed run talks to its
+#     own container and not to a shared emulator.
+#   * com.cardemo.config.AwsConfig validates whatever resolved, in its
+#     constructor, before any S3/SQS/SNS template it declares can exist: each
+#     endpoint must be an absolute http/https URI with an explicit port, no
+#     user information and a host on the permitted emulator list, and both
+#     credentials must be present with no AKIA/ASIA live-key prefix. A
+#     container's ephemeral mapped port satisfies this because the port is
+#     required to be present and in range but is deliberately not pinned.
+# Declaring any of those keys here would substitute a hardcoded assumption for
+# a validated one, which is why this file still declares none.
 #
 # COMMON FAILURE MODES AND TROUBLESHOOTING
 #
@@ -441,9 +469,11 @@
 #
 # All 300 dailytran.txt records carry the same originating timestamp text and a
 # BLANK 26-space processing timestamp, which is what makes the generated
-# processing timestamp - 26 characters ending in four zero digits, at
-# millisecond precision - an observable output of the job rather than an echo
-# of its input.
+# processing timestamp - 26 characters ending in four literal zero digits, at
+# CENTISECOND precision, two fraction digits and not three or nine, per
+# DB2-MIL PIC 9(002) and DB2-REST PIC X(04) at app/cbl/CBTRN02C.cbl:L159-L174,
+# giving yyyy-MM-dd-HH.mm.ss.SS0000 - an observable output of the job rather
+# than an echo of its input.
 #
 # app/data/EBCDIC is never read, parsed, transcoded or loaded by this profile
 # or by any test that activates it. Those twelve files are byte-level codepage
@@ -471,40 +501,49 @@
 #     who sources the environment file before running the tier therefore points
 #     every AWS client at the shared emulator named by that variable rather
 #     than at the per-test container, and the tier then passes or fails for
-#     reasons no code explains. application.yml:180-182 records the same
+#     reasons no code explains. The base profile's LocalStack commentary records the same
 #     hazard.
 #     Remediation: always register spring.cloud.aws.s3.endpoint,
 #     .sqs.endpoint and .sns.endpoint explicitly, because those properties take
 #     precedence over the variable; or unset AWS_ENDPOINT_URL for the run.
 #     Deliberately NOT remediated by writing an endpoint into this file, which
 #     would substitute a hardcoded assumption for an ambient one.
-#   - HIGH - a missing java.time.Clock bean stops ANY test that boots the whole
-#     application, this profile included, and the cause is outside this file.
-#     com.cardemo.security.JwtTokenProvider takes a Clock as constructor
-#     parameter 3 and no configuration class declares one, so a full-context
-#     boot fails with "Parameter 3 of constructor in
+#   - BLOCKER, NOW CLOSED - a missing java.time.Clock bean stopped ANY test that
+#     booted the whole application, this profile included, and the cause was
+#     outside this file. com.cardemo.security.JwtTokenProvider takes a Clock as
+#     constructor parameter 3, as do the services and batch processors that
+#     stamp a record, and no configuration class declared one, so a full-context
+#     boot failed with "Parameter 3 of constructor in
 #     com.cardemo.security.JwtTokenProvider required a bean of type
-#     'java.time.Clock' that could not be found". Measured directly: the
-#     container-tier boot described under RUNTIME VALIDATION EVIDENCE hit this
-#     before it reached a single assertion. It is a defect in the configuration
-#     layer, not in this profile - no property can supply a bean - and that
-#     layer is outside this file's scope, so it is reported rather than patched.
-#     Remediation: declare a Clock bean in the configuration layer, ideally
-#     Clock.system(ZoneOffset.UTC) so batch timestamps stay deterministic and
-#     the 26-character format ending in four zeros stays reproducible; a test
-#     may substitute Clock.fixed to pin generated timestamps.
-#   - MEDIUM - signing-key variable name. The instruction for this artefact
-#     names the variable JWT_SIGNING_KEY. The repository standardised on
-#     JWT_SECRET before this file existed: application.yml:874 reads it,
-#     .env.example ships it empty and required, and pom.xml and
-#     owasp-suppressions.xml both name it. Introducing a second spelling here
-#     would create exactly the duplication Rule 1 Clause C forbids while
-#     satisfying none of the instruction's normative requirements any better -
-#     those requirements are environment indirection, no committed value, no
-#     fallback and fail-fast, and all four hold as written because this file
-#     declares nothing at all about the key.
-#     Remediation if the repository later standardises on the other spelling:
-#     rename in every place at once, never partially.
+#     'java.time.Clock' that could not be found" - measured directly, before a
+#     single assertion ran. Severity is BLOCKER and not HIGH, and this is the
+#     severity of record: no complete context could refresh at all, so every
+#     container-tier assertion in this profile was unreachable rather than
+#     degraded.
+#     Resolution, applied in the configuration layer where it belonged:
+#     com.cardemo.config.ObservabilityConfig.clock() publishes exactly one
+#     production Clock bean, and it is Clock.systemDefaultZone() rather than a
+#     UTC clock. That zone is a parity decision: the legacy region rendered
+#     local civil time (EXEC CICS ASKTIME/FORMATTIME at
+#     app/cbl/COSGN00C.cbl:L177 and FUNCTION CURRENT-DATE at
+#     app/cbl/CBTRN02C.cbl:L689-L705), so a UTC clock would shift every CURDATE,
+#     CURTIME and generated 26-character timestamp by the deployment's offset and
+#     break the Gate 1 byte comparison. Determinism in the test tiers comes from
+#     overriding the bean rather than from forcing UTC in production: both
+#     integration harnesses import a @Primary Clock.fixed(...) of their own to
+#     pin generated timestamps against fixture bytes, so this profile still
+#     declares nothing about time.
+#   - MEDIUM, NOW CLOSED - signing-key variable name. The instruction for this
+#     artefact names the variable JWT_SIGNING_KEY, and the repository had
+#     standardised on JWT_SECRET before this file existed. The divergence has
+#     been resolved in the mandated direction and in every place at once -
+#     application.yml, SecurityConfig, JwtTokenProvider, .env.example, the
+#     Dockerfile, pom.xml and owasp-suppressions.xml - together with the token
+#     lifetime, which is now expressed as carddemo.security.jwt.expiration-
+#     minutes indirected through JWT_EXPIRATION_MINUTES with a 30-minute
+#     default. This profile is unaffected either way, because it declares
+#     nothing at all about the key: environment indirection, no committed
+#     value, no fallback and fail-fast all hold by omission.
 #   - MEDIUM - management.tracing.enabled is deliberately NOT set to false
 #     here, even though disabling tracing is the obvious-looking way to remove
 #     the collector dependency. It was measured not to be the mechanism that
@@ -680,27 +719,50 @@
 #     job launcher, the actuator exposure and its two probe groups, the
 #     fail-on-missing-queue strategy, the two log floors, the four parity page
 #     sizes and the 430 = 350 + 80 reject geometry - were each read back
-#     unchanged, proving this file overrides nothing it should inherit. The same
-#     run confirmed that no AWS endpoint property and no AWS credential property
-#     is declared anywhere under this profile.
+#     unchanged, proving this file overrides nothing it should inherit.
+#     ONE CLAUSE OF THAT RUN IS NOW SUPERSEDED. It also confirmed that no AWS
+#     endpoint property and no AWS credential property was declared anywhere
+#     under this profile. That is no longer the intended state: application.yml
+#     now declares spring.cloud.aws.{s3,sqs,sns}.endpoint and both credential
+#     keys in the BASE profile, with no default, so every profile inherits an
+#     emulator-only binding and com.cardemo.config.AwsConfig refuses to start
+#     unless each endpoint parses to an allowlisted local host. This profile still
+#     declares none of them ITSELF, which is correct: the integration tier
+#     supplies the container's own address through @DynamicPropertySource, at a
+#     higher precedence than any file, and that is the one route by which an
+#     ephemeral Testcontainers port can reach the application.
 #   - FAIL-FAST ON THE ABSENT SIGNING KEY SURVIVES THIS PROFILE, measured with
 #     the mechanism the application itself uses: a required constructor argument
-#     bound to carddemo.security.jwt.signing-key, which application.yml:874
-#     maps to a defaultless environment variable. With the variable absent the
+#     bound to carddemo.security.jwt.signing-key, which application.yml maps to
+#     the defaultless environment variable JWT_SIGNING_KEY. With it absent the
 #     refresh ABORTED with "Could not resolve placeholder" naming both the
 #     variable and the property; with it present the same context STARTED. Both
 #     directions were measured, so the result is a demonstrated sensitivity
 #     rather than an unconditional failure.
-#   - THE MODULE BUILDS AND ITS SUITE PASSES WITH THIS FILE PRESENT. A clean
-#     compile built 93 sources under release 25 with -Xlint:all and -Werror and
-#     copied 11 resources, reporting zero warnings and zero errors, exit 0. The
-#     unit tier ran 6858 tests with 0 failures, 0 errors and 0 skipped, exit 0.
-#     That tier neither started a container nor activated this profile - zero
-#     Testcontainers, Docker-client and Ryuk references in its output, and zero
-#     profile activations - because Surefire excludes the integration and
-#     end-to-end trees, which Failsafe owns. Those two trees do not exist yet,
-#     so no test class consumes this profile as at this commit; see the LOW
-#     finding above, which this measurement confirms rather than discovers.
+#   - THE MODULE BUILDS AND ITS SUITE PASSES WITH THIS FILE PRESENT. Every count
+#     in this entry is a measurement with a command beside it, because a bare
+#     count goes stale silently and a stale count presented as current is itself
+#     an evidence defect. The figures below were taken from the state of the tree
+#     at the time of writing, NOT copied forward from an earlier revision - the
+#     revision this replaces still claimed 93 sources and 6858 tests, both of
+#     which had been overtaken by later commits.
+#       Compile   ./mvnw -B -ntp -Ddependency-check.skip=true clean compile
+#                 release 25 with -Xlint:all, -Werror and failOnWarning; zero
+#                 warnings, zero errors, exit 0.
+#       Unit tier ./mvnw -B -ntp -Ddependency-check.skip=true test
+#                 0 failures, 0 errors, 0 skipped, exit 0. Re-derive the source
+#                 and test counts rather than trusting a transcription:
+#                   find src/main/java -name '*.java' | wc -l
+#                   grep -E '^\[INFO\] Tests run:' the Surefire summary line
+#     The unit tier neither starts a container nor activates this profile,
+#     because Surefire excludes the integration and end-to-end trees, which
+#     Failsafe owns. WHO CONSUMES THIS PROFILE is therefore decided entirely by
+#     what exists under src/test/java/com/cardemo/integration and .../e2e at the
+#     commit in question; the authoritative answer is
+#       find src/test/java/com/cardemo/integration src/test/java/com/cardemo/e2e \
+#            -name '*Test.java'
+#     and this file states no count for it, precisely so that adding the first
+#     concrete integration class cannot make this comment wrong.
 #   - THE CONTAINER TIER WAS RUN, NOT DESCRIBED. Because no integration or
 #     end-to-end test class exists yet, the contract was proved with a
 #     purpose-built harness on 2026-08-02: a real PostgreSQL container reporting
@@ -727,8 +789,8 @@
 #         declares exactly 10, named fk01 through fk10. That arithmetic is
 #         itself the cleanest proof the override took effect;
 #       V2 created exactly the 3 alternate-index B-trees, one per VSAM alternate
-#         index: ix_card_acct_id, ix_card_cross_reference_acct_id and
-#         ix_transaction_proc_ts;
+#         index: idx_card_acct_id, idx_card_cross_reference_acct_id and
+#         idx_transaction_proc_ts;
 #       the seed row counts came back 50, 50, 50, 50, 300, 51, 50, 18, 7 and 10
 #         for the nine fixtures and the ten in-stream users, with the
 #         transaction table empty because posting produces it;
@@ -795,7 +857,7 @@ spring:
   # --------------------------------------------------------------------------
   # 2. Let the framework create its own batch metadata schema
   # --------------------------------------------------------------------------
-  # application.yml:656 sets this to never, which is the conservative base
+  # spring.batch.jdbc.initialize-schema is never in the base profile, which is the conservative base
   # value: it is unconditional, unlike the framework default, which creates
   # nothing against a real PostgreSQL and would surface much later as a missing
   # BATCH_JOB_INSTANCE when a job launches.
@@ -821,6 +883,26 @@ spring:
     jdbc:
       initialize-schema: always
 
+  # --------------------------------------------------------------------------
+  # OPEN the demonstration-user gate, as the local profile does
+  # --------------------------------------------------------------------------
+  # application.yml closes this gate and application-prod.yml closes it
+  # explicitly, because the ten CSUSR01Y rows of V3__seed_data.sql carry a
+  # published credential and belong nowhere near a deployed system. The test
+  # tier is the other place they ARE the point: the fixture-validation and
+  # security gates - all ten rows present, every credential stored only as a
+  # BCrypt digest, no plaintext credential column anywhere in the schema - are
+  # provable only against those exact rows, and the sign-on, user-administration
+  # and repository tiers need a principal to authenticate at all.
+  #
+  # Nothing reachable from an open gate here leaves the run: the database is a
+  # disposable Testcontainers PostgreSQL created per run and every AWS call goes
+  # to LocalStack. A deployed system reads a different profile, where the gate
+  # is closed.
+  flyway:
+    placeholders:
+      seeddemousers: true
+
   cloud:
     aws:
       s3:
@@ -841,6 +923,26 @@ spring:
         # port, per THE DYNAMIC-INJECTION CONTRACT, and it is that separation
         # which keeps every literal address out of this file.
         #
+        # THE ENDPOINT IS MANDATORY, AND IT IS RESTATED BELOW ON PURPOSE.
+        # Path-style behaviour alone used to be all this profile said about the
+        # cloud edge, which left the tier's safety resting on ambient state: a
+        # class that forgot to register an endpoint inherited whatever
+        # AWS_ENDPOINT_URL happened to be exported, or - worse, before the base
+        # profile made the key mandatory - no override at all, which resolves
+        # the REAL regional endpoint. Severity of that gap: BLOCKER. The three
+        # keys are therefore declared here with NO default, matching the base
+        # profile, so a test that registers nothing fails to refresh instead of
+        # reaching outside its container. src/main/java/com/cardemo/config/
+        # AwsConfig.java then allow-lists whatever value arrives - loopback,
+        # localhost, ::1, localstack, carddemo-localstack or a
+        # *.localhost.localstack.cloud sub-domain - and aborts startup on
+        # anything else, so a mapped-port container endpoint passes and an
+        # external host cannot. @DynamicPropertySource contributes at a
+        # precedence above every profile file, so registering these keys from
+        # the container overrides the declarations below rather than colliding
+        # with them.
+        endpoint: ${AWS_ENDPOINT_URL}
+        #
         # The S3 objects at stake are the fixed-width outputs whose geometry is
         # the parity contract: 430-byte reject records, being the 350-byte
         # transaction image plus an 80-byte trailer of a four-digit reason code
@@ -850,11 +952,21 @@ spring:
         # at the S3 boundary, so a test that cannot reach the bucket cannot
         # verify the one thing that matters most about it.
         path-style-access-enabled: true
+      # The queue and notification edges carry the same mandatory, defaultless
+      # endpoint contract as the object-storage edge above, for the same
+      # reason: the queue that replaces DEFINE TDQUEUE(JOBS)
+      # (app/csd/CARDDEMO.CSD:L499-505) and the topic that replaces operator
+      # notification must both resolve inside the test's own container, and a
+      # test that registers neither has to fail rather than reach outside it.
+      sqs:
+        endpoint: ${AWS_ENDPOINT_URL}
+      sns:
+        endpoint: ${AWS_ENDPOINT_URL}
 
 # ============================================================================
 # 4. Logging - a protective floor over the container-control client
 # ============================================================================
-# The levels themselves are inherited from application.yml:1139-1163 and are
+# The levels themselves are inherited from logging.level.* in the base profile and are
 # NOT restated. Hibernate SQL and bind-parameter logging, Spring Security
 # DEBUG, AWS SDK wire logging and web body logging all stay off, because at
 # DEBUG or TRACE they emit statement text and bound parameter values - which

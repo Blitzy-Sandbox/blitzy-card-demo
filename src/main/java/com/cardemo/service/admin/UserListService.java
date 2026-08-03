@@ -37,8 +37,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -64,8 +64,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>Three things, and nothing else. It pages the security file in the file's own key order; it reports the
  * boundary conditions the source reports, with the source's exact message text; and it reports which row the
  * operator selected, together with the program the source would have transferred to, so that the caller can
- * navigate. It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*}, which {@code com.cardemo.config.SecurityConfig} restricts to the ADMIN role - the
+ * navigate. It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
+ * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
  * {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as {@code com.cardemo.model.enums.UserType}.
  *
@@ -91,7 +93,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       this package. Constructor injection and the complete absence of bean-held state are what make that
  *       reachable: every method below is exercisable by handing the constructor a fixed {@code Clock} and a
  *       stubbed repository, with no database and no Spring context.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -124,16 +126,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code java.time.Clock}, standing in for {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} at
  *       {@code app/cbl/COUSR00C.cbl:564}. Nothing here calls {@code LocalDateTime.now()} with no clock, so
  *       the rendering is deterministic and testable.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
  *   <li><strong>An empty list where rows were expected, with "You are at the top of the page...".</strong>
  *       The browse could not be positioned. Either the security table is empty, or a user identifier was
- *       supplied that does not exist <em>exactly</em>. Remedy: seed the table through
- *       {@code src/main/resources/db/migration/V3__seed_data.sql} and supply an identifier that exists, or
- *       none at all. The typed exception is
+ *       supplied that does not exist <em>exactly</em>. Remedy: apply the migrations, whose
+ *       {@code src/main/resources/db/migration/V3__seed_data.sql} seeds the ten operator rows, and supply
+ *       an identifier that exists, or none at all. The typed exception is
  *       {@code com.cardemo.exception.RecordNotFoundException}.</li>
  *   <li><strong>End of file reported as an error.</strong> It is not one. {@code DFHRESP(ENDFILE)} at
  *       {@code app/cbl/COUSR00C.cbl:634} and {@code :668} sets {@code USER-SEC-EOF} and leaves
@@ -141,9 +143,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       loop rather than failing the request. Remedy: never throw for it. Severity of getting this wrong:
  *       <strong>High</strong>.</li>
  *   <li><strong>Startup failure naming {@code Clock} or the page-size property.</strong> Both are
- *       constructor arguments. A {@code Clock} bean is a pre-existing requirement of this tree, and the
- *       page-size property must resolve. Remedy: publish a {@code Clock} bean and keep
- *       {@code carddemo.pagination.user-list-page-size} present in every profile.</li>
+ *       constructor arguments. The {@code Clock} bean is published by
+ *       {@code com.cardemo.config.ObservabilityConfig#clock(String)} and the page-size property must resolve.
+ *       Remedy:
+ *       keep that single {@code Clock} declaration in place - do not add a second, because bean-definition
+ *       overriding is disabled - and keep {@code carddemo.pagination.user-list-page-size} present in every
+ *       profile.</li>
  *   <li><strong>Pages that are not reproducible between two identical requests.</strong> The order was
  *       lost. Every page is taken through
  *       {@code UserSecurityRepository.findAllByOrderBySecUsrIdAsc}, whose name fixes a total order on the
@@ -166,7 +171,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code INITIALIZE-USER-DATA} at {@code app/cbl/COUSR00C.cbl:446-501} clears the identifier, both
  *       names and the type, and never {@code SELnnnnI}. Remedy: do not clear the selection flag in the row
  *       re-initialisation.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings carried from the translation, by severity</h2>
  *
@@ -218,7 +223,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code app/cbl/COUSR00C.cbl:64} while the map's {@code UTYPEnnI} is {@code PIC X(1)}. The screen
  *       carries one character and so does the projection; the eight-byte work area is not widened into the
  *       response.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Mechanism substitution: a keyed browse becomes ordinal positioning</h2>
  *
@@ -241,7 +246,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String, Pageable)} and
  * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} to
  * {@code UserSecurityRepository} and switch {@code startbrUserSecFile} to them; nothing else changes.
- * Tracked in DECISION_LOG.md.
+ * Owed an entry in the planned DECISION_LOG.md.
  *
  * <h2>Query budget</h2>
  *
@@ -269,7 +274,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       there is no per-record ownership, no field-level rule and no delegation model. What would be
  *       needed: a stated policy. Nothing finer is invented, and no password policy, lockout policy or audit
  *       trail is introduced.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Thread safety</h2>
  *
@@ -719,7 +724,7 @@ public class UserListService {
 
     // ------------------------------------------------------------------------------------------------
     // Source-mapped paragraphs. Sixteen labels, sixteen private methods, in source order.
-    // Never consolidate: TRACEABILITY_MATRIX.md is proved against this correspondence and Gate 7 reads
+    // Never consolidate: TRACEABILITY_MATRIX.md will be proved against this correspondence and Gate 7 reads
     // exactly it. Mapping fewer than sixteen is a Blocker.
     // ------------------------------------------------------------------------------------------------
 
@@ -740,7 +745,7 @@ public class UserListService {
      * {@code MOVE DFHCOMMAREA(1:EIBCALEN) TO CARDDEMO-COMMAREA} immediately restores
      * {@code CDEMO-CU00-NEXT-PAGE-FLG} from the communication area. It survives only on the
      * {@code EIBCALEN = 0} path, which transfers away at once. Reproduced verbatim - assign, then overwrite
-     * from the request - rather than deleted, and tracked in DECISION_LOG.md. Severity: Low.
+     * from the request - rather than deleted, and owed an entry in the planned DECISION_LOG.md. Severity: Low.
      *
      * @param commAreaPresent {@code false} models {@code EIBCALEN = 0} at {@code :110}
      * @param reenter         {@code false} models the first-display arm at {@code :115-119}, {@code true} the
@@ -753,8 +758,10 @@ public class UserListService {
      * @return the assembled screen
      * @throws com.cardemo.exception.CardDemoException the first typed failure retained while the screen was
      *                                                built, rethrown here so that
-     *                                                {@code com.cardemo.controller.AdminController} can map
-     *                                                it - there is no {@code @ControllerAdvice} in the tree
+     *                                                {@code com.cardemo.controller.AdminController} - which
+     *                                                is planned rather than authored - can map it; there is
+     *                                                no {@code @ControllerAdvice} in the tree, so each
+     *                                                controller declares its own handlers
      */
     private UserListScreen mainPara(final boolean commAreaPresent, final boolean reenter,
             final AttentionIdentifier aid, final UserListRequest request) {
@@ -834,13 +841,12 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The {@code WHEN OTHER} arm at {@code :211-215} sets the
      * message and the cursor but <em>not</em> {@code WS-ERR-FLG}, so an invalid selector still falls through
      * to {@code PROCESS-PAGE-FORWARD} and the list is re-sent with the advisory attached. Preserved; do not
-     * add an early exit. Severity: Low. Tracked in DECISION_LOG.md.
+     * add an early exit. Severity: Low. Owed an entry in the planned DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> {@code IF NOT ERR-FLG-ON MOVE SPACE TO USRIDINO} at
-     * {@code :231-233} runs <em>after</em> {@code PROCESS-PAGE-FORWARD} has already sent the screen at
-     * {@code :330}, and duplicates the clearing that {@code :328} performed before that send, so it has no
-     * observable effect. Reproduced as an explicit intentional no-op. Severity: Low. Tracked in
-     * DECISION_LOG.md.
+     * {@code :231-233} runs <em>after</em> {@code PROCESS-PAGE-FORWARD} has already sent the screen at {@code :330},
+     * and duplicates the clearing that {@code :328} performed before that send, so it has no observable effect.
+     * Reproduced as an explicit intentional no-op. Severity: Low. Owed an entry in the planned DECISION_LOG.md.
      *
      * @param work the per-invocation work area, mutated in place exactly as the source mutates
      *             working-storage and the shared map
@@ -974,7 +980,7 @@ public class UserListService {
      * {@code READNEXT} ends the file at once and the response carries
      * {@code 'You have reached the bottom of the page...'}. The combination is reachable only from a
      * malformed request, because the source sets {@code USRID-LAST} whenever a page fills and reports
-     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; tracked in DECISION_LOG.md.
+     * {@code NEXT-PAGE-NO} whenever it does not. Severity: Low; owed an entry in the planned DECISION_LOG.md.
      *
      * <p>The bottom-boundary response is distinguishable from {@code READNEXT}'s
      * {@code 'You have reached the bottom of the page...'} at {@code :637} by the absence of any read: this
@@ -1030,7 +1036,7 @@ public class UserListService {
      *
      * <p><strong>Retained parity artefact.</strong> {@code MOVE SPACE TO USRIDINO} at {@code :328} clears the
      * identifier field immediately before the send, which is why {@code PROCESS-ENTER-KEY}'s later clearing
-     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; tracked in DECISION_LOG.md.
+     * at {@code :231-233} is a no-op. Both are kept. Severity: Low; owed an entry in the planned DECISION_LOG.md.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} must already describe the browse position
@@ -1112,7 +1118,7 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> Unlike the forward path there is no
      * {@code MOVE SPACE TO USRIDINO} before the send, so a backward page echoes the identifier field back
      * while a forward page blanks it. The asymmetry is the behaviour; do not normalise it. Severity: Low;
-     * tracked in DECISION_LOG.md.
+     * owed an entry in the planned DECISION_LOG.md.
      *
      * <p><strong>Reachability note.</strong> If the backward loop reaches the front of the file before it
      * fills every slot, the low-numbered slots stay blank and the page displays with gaps at the top. That
@@ -1186,8 +1192,8 @@ public class UserListService {
      * modelling of an {@code OCCURS} table rather than a consolidation of distinct logic: every arm performs
      * the identical four moves, and the two index-specific extras are reproduced as explicit index tests.
      * The {@code WHEN OTHER CONTINUE} arm at {@code :439-440} is retained below as an intentional no-op and
-     * tracked in DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves the table, which the loop
-     * bounds prevent. Severity: Low.
+     * owed an entry in the planned DECISION_LOG.md; it is reachable only if {@code WS-IDX} leaves the table, which
+     * the loop bounds prevent. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.currentRecord} holds the record just read and
      *             {@code work.idx} selects the row
@@ -1233,7 +1239,7 @@ public class UserListService {
      * <p><strong>Mechanism substitution.</strong> As with {@code POPULATE-USER-DATA}, the ten-arm
      * {@code EVALUATE WS-IDX} addresses one {@code OCCURS} table and is modelled by index. The
      * {@code WHEN OTHER CONTINUE} arm at {@code :499-500} is retained below as an intentional no-op and
-     * tracked in DECISION_LOG.md. Severity: Low.
+     * owed an entry in the planned DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.idx} selects the row
      */
@@ -1263,7 +1269,7 @@ public class UserListService {
      * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)} at {@code :514-517}.
      * Routing is URL-based in the target and nothing is retained across a request, so the four collapse into
      * recording that control was transferred and to where. The label is nonetheless mapped one-to-one, as an
-     * intentional no-op with respect to state, and is tracked in DECISION_LOG.md. Severity: Low.
+     * intentional no-op with respect to state, and is owed an entry in the planned DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area; {@code work.navigationTarget} already holds the caller's
      *             intended target, or is unset when the caller had none
@@ -1291,7 +1297,7 @@ public class UserListService {
      * {@code IF SEND-ERASE-YES} decision inert - so the choice is recorded on the response instead of being
      * discarded, which keeps the {@code SET SEND-ERASE-NO} assignments at {@code :253} and {@code :275}
      * observable and testable. The commented-out option is retained in place, not deleted. Severity: Low;
-     * tracked in DECISION_LOG.md.
+     * owed an entry in the planned DECISION_LOG.md.
      *
      * <p>The source can send more than once in a single turn - the {@code NOTFND} arm of {@code STARTBR}
      * sends and then falls through to the page logic, which sends again. The send count is recorded so that
@@ -1324,7 +1330,7 @@ public class UserListService {
      * <p><strong>Retained parity artefact.</strong> The command captures {@code RESP(WS-RESP-CD)} and
      * {@code RESP2(WS-REAS-CD)} at {@code :554-555} and then <em>never examines either</em> - there is no
      * {@code EVALUATE} after this command, unlike every other I/O paragraph in the program. The capture is
-     * reproduced, unexamined, rather than dropped. Severity: Low; tracked in DECISION_LOG.md.
+     * reproduced, unexamined, rather than dropped. Severity: Low; owed an entry in the planned DECISION_LOG.md.
      *
      * <p>Note that the submitted selection flags are stored but the submitted row data is stored too, because
      * {@code INITIALIZE-USER-DATA} clears the four data fields while deliberately leaving the selectors
@@ -1377,7 +1383,8 @@ public class UserListService {
      *
      * <p><strong>Citation correction.</strong> The plan's general note on the BMS layer records
      * {@code CURTIME} as {@code X(9)}. The symbolic map and {@code CSDAT01Y.cpy} both say {@code X(8)}, and
-     * the source governs, so this method emits eight characters. Severity: Low; tracked in DECISION_LOG.md.
+     * the source governs, so this method emits eight characters. Severity: Low; owed an entry in the planned
+     * DECISION_LOG.md.
      *
      * @param work the per-invocation work area to stamp
      */
@@ -1404,7 +1411,7 @@ public class UserListService {
      * enabled: a supplied key must name a record that exists, and a key that names nothing takes the
      * {@code NOTFND} arm. The two sentinel keys the callers supply are handled as the callers mean them -
      * {@code LOW-VALUES} positions before the first record, {@code HIGH-VALUES} positions past the last.
-     * Severity: Low; tracked in DECISION_LOG.md.
+     * Severity: Low; owed an entry in the planned DECISION_LOG.md.
      *
      * <p><strong>Retained parity artefact.</strong> The {@code NOTFND} arm opens with a bare
      * {@code CONTINUE} at {@code :601} before its real body, which is a no-op the compiler discards. It is
@@ -1425,7 +1432,7 @@ public class UserListService {
      * identifier consequently gates and is echoed but does not itself reposition the window. Severity:
      * Medium. Remedy: add {@code findBySecUsrIdGreaterThanEqualOrderBySecUsrIdAsc(String, Pageable)} and
      * {@code findBySecUsrIdLessThanEqualOrderBySecUsrIdDesc(String, Pageable)} to the repository and
-     * position this method with them. Tracked in DECISION_LOG.md.
+     * position this method with them. Owed an entry in the planned DECISION_LOG.md.
      *
      * @param work the per-invocation work area; {@code work.startKey}, {@code work.startPastEnd} and
      *             {@code work.startOrdinal} describe the requested position
@@ -1570,7 +1577,7 @@ public class UserListService {
      * browse to release: JPA pagination subsumes the whole command. The label is nonetheless mapped
      * one-to-one, and it is given the one job that remains - discarding the page window, so that a later
      * browse in the same request cannot serve a stale row and so that the rows become collectable as soon as
-     * the source would have released them. Tracked in DECISION_LOG.md. Severity: Low.
+     * the source would have released them. Owed an entry in the planned DECISION_LOG.md. Severity: Low.
      *
      * @param work the per-invocation work area whose page window is released
      */
@@ -1677,7 +1684,10 @@ public class UserListService {
         if (!work.windowContains(ordinal)) {
             final int windowPageIndex = (int) (ordinal / pageSize);
             try {
-                final Page<UserSecurity> window = this.userSecurityRepository
+                // A Slice, not a Page: only the window content is consumed, so the count query a Page
+                // would issue alongside every window was pure waste. See the repository for the reasoning,
+                // including why a VSAM browse has no total to reproduce in the first place.
+                final Slice<UserSecurity> window = this.userSecurityRepository
                         .findAllByOrderBySecUsrIdAsc(PageRequest.of(windowPageIndex, pageSize));
                 work.loadWindow((long) windowPageIndex * pageSize, pageSize, window.getContent());
             } catch (final DataAccessException failure) {
@@ -1857,7 +1867,7 @@ public class UserListService {
      * {@code ON SIZE ERROR}, so COBOL discards the high-order digit and eight nines become zero. The
      * truncation is reproduced rather than replaced by a cap or an exception, because inventing either would
      * invent a policy the source does not have. Reaching it requires a hundred million pages. Severity: Low;
-     * tracked in DECISION_LOG.md.
+     * owed an entry in the planned DECISION_LOG.md.
      *
      * @param pageNumber the current page number
      * @return the incremented page number, wrapping to zero past eight digits
@@ -2048,12 +2058,11 @@ public class UserListService {
      * selector the operator typed survives {@code INITIALIZE-USER-DATA}. One set of row arrays reproduces the
      * redefinition exactly.
      *
-     * <p><strong>Not modelled.</strong> {@code WS-REC-COUNT} at {@code app/cbl/COUSR00C.cbl:52} is declared
-     * and never referenced anywhere in the program, and {@code WS-USER-DATA} at {@code :56-64} is a
-     * ten-occurrence work table the program never reads or writes - {@code POPULATE-USER-DATA} projects
-     * straight onto the map instead. Both are dead in the source rather than dead here; they are recorded in
-     * DECISION_LOG.md instead of being carried as fields that nothing would touch, which would be dead code
-     * in the target. Severity: Low.
+     * <p><strong>Not modelled.</strong> {@code WS-REC-COUNT} at {@code app/cbl/COUSR00C.cbl:52} is declared and never
+     * referenced anywhere in the program, and {@code WS-USER-DATA} at {@code :56-64} is a ten-occurrence work table
+     * the program never reads or writes - {@code POPULATE-USER-DATA} projects straight onto the map instead. Both are
+     * dead in the source rather than dead here; they are owed entries in the planned DECISION_LOG.md instead of being
+     * carried as fields that nothing would touch, which would be dead code in the target. Severity: Low.
      */
     private static final class ScreenWorkArea {
 
@@ -2360,4 +2369,3 @@ public class UserListService {
         }
     }
 }
-

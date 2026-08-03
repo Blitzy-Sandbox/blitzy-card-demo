@@ -96,7 +96,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=DateValidationServiceTest
+ * ./mvnw -B -ntp -o test -Dtest=DateValidationServiceTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -118,7 +118,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       preserved defect; restore it.</li>
  *   <li><strong>A leap-year case fails.</strong> The source divides by 400 when the last two year digits are
  *       zero and by 4 otherwise, then tests the remainder. It never calls a library predicate.</li>
- * </ul>
+ *   </ul>
  */
 class DateValidationServiceTest {
 

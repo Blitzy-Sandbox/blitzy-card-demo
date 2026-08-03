@@ -37,7 +37,6 @@ import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.item.ItemProcessor;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DuplicateKeyException;
@@ -59,7 +58,6 @@ import com.cardemo.model.key.TransactionCategoryBalanceId;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryBalanceRepository;
-import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 
 /**
@@ -79,14 +77,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  * The class is the direct Java form of the shaded region of the legacy main loop. The loop itself, the six
  * {@code OPEN}s, the six {@code CLOSE}s, the sequential {@code READ}, the reject write and the end-of-run
  * counters belong to the job and the writers, not here; the disposition table below names every one of the
- * 27 paragraphs so that the traceability audit can see that each was considered.
+ * 27 paragraphs so that a reader can see that each was considered.
  *
  * <h2>Paragraph disposition - all 27 paragraphs of app/cbl/CBTRN02C.cbl</h2>
  * <p>
  * AAP transformation rule 2 requires one private Java method per source paragraph with no consolidation
  * across paragraphs. The ten paragraphs that constitute per-record processing are translated here, one
  * method each. The other seventeen are named with their reason for living elsewhere, because "not
- * translated" and "not considered" must not look the same to a reviewer.
+ * translated" and "not considered" must not look the same to a reader.
  * <table border="1">
  * <caption>Paragraph to method mapping</caption>
  * <tr><th>Paragraph</th><th>Lines</th><th>Disposition</th></tr>
@@ -102,8 +100,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <tr><td>{@code 0400-ACCTFILE-OPEN}</td><td>309-325</td><td>Step scope, as above.</td></tr>
  * <tr><td>{@code 0500-TCATBALF-OPEN}</td><td>327-343</td><td>Step scope, as above.</td></tr>
  * <tr><td>{@code 1000-DALYTRAN-GET-NEXT}</td><td>345-369</td><td>Reader scope. Maps {@code '00'} to 0 and
- *     {@code '10'} to 16, so end of file terminates the loop and is never an exception; the Java form is
- *     {@link FileStatusMapper#requireSuccessOrEndOfFile(String, String, String)}.</td></tr>
+ *     {@code '10'} to 16, so end of file terminates the loop and is never an exception; the classification is
+ *     {@link FileStatusMapper#applResultForSequentialRead(String)} and the branch belongs to the reader,
+ *     which is where the paragraph's {@code DISPLAY} literal and abend culprit live.</td></tr>
  * <tr><td>{@code 1500-VALIDATE-TRAN}</td><td>370-378</td><td>{@link #validateTran(DailyTransaction)}</td></tr>
  * <tr><td>{@code 1500-A-LOOKUP-XREF}</td><td>380-392</td><td>{@link #lookupXref(DailyTransaction)}</td></tr>
  * <tr><td>{@code 1500-B-LOOKUP-ACCT}</td><td>393-422</td>
@@ -120,8 +119,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     <td>{@link #updateTcatbalRec(DailyTransaction, TransactionCategoryBalance)}</td></tr>
  * <tr><td>{@code 2800-UPDATE-ACCOUNT-REC}</td><td>545-560</td>
  *     <td>{@link #updateAccountRec(DailyTransaction, Account)}</td></tr>
- * <tr><td>{@code 2900-WRITE-TRANSACTION-FILE}</td><td>562-579</td>
- *     <td>{@link #writeTransactionFile(Transaction)}</td></tr>
+ * <tr><td>{@code 2900-WRITE-TRANSACTION-FILE}</td><td>562-579</td><td>Writer scope. Performs the
+ *     relational insert and the 350-byte emission; this class builds the record and returns it. See the
+ *     ownership note in {@link #postTransaction(DailyTransaction, CardCrossReference, Account)}.</td></tr>
  * <tr><td>{@code 9000-DALYTRAN-CLOSE}</td><td>582-598</td><td>Step scope.</td></tr>
  * <tr><td>{@code 9100-TRANFILE-CLOSE}</td><td>600-617</td><td>Step scope.</td></tr>
  * <tr><td>{@code 9200-XREFFILE-CLOSE}</td><td>619-635</td><td>Step scope.</td></tr>
@@ -198,7 +198,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * rearrangement, no folding into a single comparison and <b>no absolute value anywhere in the posting
  * path</b>.
  * <p>
- * A width note worth recording, severity Low. {@code WS-TEMP-BAL} is {@code PIC S9(09)V99}, that is
+ * A width note worth recording. {@code WS-TEMP-BAL} is {@code PIC S9(09)V99}, that is
  * {@code NUMERIC(11,2)} at {@code app/cbl/CBTRN02C.cbl:L187}, while both operands it is computed from are
  * {@code PIC S9(10)V99}, that is {@code NUMERIC(12,2)}, at {@code app/cpy/CVACT01Y.cpy:L13-L14}. <b>The
  * COMPUTE target is one digit narrower than its operands</b>, so the legacy program can silently truncate
@@ -246,7 +246,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * write order is still preserved even though the commit is now atomic, because the order is observable in
  * the log stream that the boundary-parity gate compares.
  *
- * <h2>Two labelled DEVIATIONS, both destined for DECISION_LOG.md</h2>
+ * <h2>Two labelled DEVIATIONS, neither of them parity</h2>
  * <ol>
  * <li><b>DEVIATION 1 - the orphaned-write hazard is closed as a side effect.</b> In the source, a failed
  * account rewrite at {@code app/cbl/CBTRN02C.cbl:L554-L559} sets reason code 109 and falls straight
@@ -276,7 +276,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * This is the one place in this file where clause B1 of Rule 1, which forbids dead code, meets the parity
  * mandate, which requires reproducing reachable defect paths. <b>Parity governs</b>, because B1 forbids
- * <i>untracked</i> dead code and this artefact is cited, marked and logged in {@code DECISION_LOG.md}.
+ * <i>untracked</i> dead code and this artefact is cited and marked at its single assignment site.
  *
  * <h2>Reject codes are business outcomes, never exceptions</h2>
  * <p>
@@ -302,13 +302,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>Key configuration and defaults</h2>
  * <ul>
- * <li><b>Clock.</b> The public constructor defaults to {@link Clock#systemDefaultZone()}. That is the
- * parity-preserving choice, not {@link Clock#systemUTC()}, because
- * {@code app/cbl/CBTRN02C.cbl:L693 MOVE FUNCTION CURRENT-DATE TO COBOL-TS} returns the local date and time
- * of the system the program runs on; reading it in another zone would stamp a value the source could not
- * have produced. It matches the precedent already set by {@code MainMenuService} and
- * {@code AdminMenuService}. Deployments needing a different zone set it for the process. Tests supply a
- * fixed clock through the package-private constructor.</li>
+ * <li><b>Clock.</b> Injected through the sole constructor, never constructed here. The application's single
+ * {@code java.time.Clock} bean is published by {@code com.cardemo.config.ObservabilityConfig#clock(String)} as
+ * a system clock in the deployment's own zone, and {@code carddemo.time.zone} pins that zone explicitly when a
+ * run must reproduce a baseline captured elsewhere - so
+ * {@code app/cbl/CBTRN02C.cbl:L693 MOVE FUNCTION CURRENT-DATE TO COBOL-TS} is reproduced against local civil
+ * time, as the region rendered it, and against a <em>declared</em> zone whenever byte-for-byte comparison
+ * across hosts requires one.
+ * The legacy statement read the CICS region's own date and time, which was one fixed zone for every run of
+ * the program, and the twenty-six character timestamp derived from it is compared byte for byte against the
+ * parity baseline - so a declared zone is what preserves parity and an inherited one is what breaks it
+ * across machines. A test injects {@link Clock#fixed(java.time.Instant, java.time.ZoneId)} through the same
+ * constructor.</li>
  * <li><b>Chunk size and the reader and writer types.</b> {@code Not available}. See the disclosure
  * below.</li>
  * <li><b>Rounding.</b> {@link RoundingMode#HALF_EVEN} at scale 2, applied wherever a monetary result is
@@ -326,17 +331,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How to build, run and test it</h2>
  * <p>
- * Build with {@code mvn -B clean compile}, which compiles this file under {@code -Xlint:all -Werror} with
- * {@code failOnWarning} against release 25. Run the unit tier with {@code mvn -B clean test}. The
+ * Build with {@code ./mvnw -B -ntp clean compile}, which compiles this file under {@code -Xlint:all -Werror} with
+ * {@code failOnWarning} against release 25. Run the unit tier with {@code ./mvnw -B -ntp clean test}. The
  * integration tier needs a container runtime because it stands up PostgreSQL 16 and LocalStack through
- * Testcontainers. {@code mvn -B clean verify} additionally runs the OWASP dependency check, which fails at
- * the CVSS 7 gate on the AAP-pinned dependency set for reasons unrelated to this file.
+ * Testcontainers. {@code mvn -B clean verify} additionally runs the OWASP dependency check, whose outcome
+ * follows from the pinned dependency set and not from anything in this file.
  * <p>
  * This class is deliberately shaped to be unit-testable without a container: its four repositories, its
  * status mapper and its clock are all constructor-injected, it holds no static mutable state, and every
- * decision it makes is reachable through {@link #process(DailyTransaction)}. Its test lives at
- * {@code src/test/java/com/cardemo/unit/batch/TransactionPostingProcessorTest.java} and is authored
- * separately. The named test obligation is the trap-1 case: drive one record that is simultaneously over
+ * decision it makes is reachable through {@link #process(DailyTransaction)}. The obligation any test of it
+ * must carry is the trap-1 case: drive one record that is simultaneously over
  * limit and past expiry and assert the resulting code is 103 - not 102, and not both.
  *
  * <h2>Error modes</h2>
@@ -409,48 +413,24 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@link #getDb2FormatTimestamp()}.</li>
  * </ul>
  *
- * <h2>Not available</h2>
- * <p>
- * Recorded explicitly rather than guessed, per clause F4 of Rule 1.
+ * <h2>Boundaries of this class, and what the corpus does not determine</h2>
  * <ul>
- * <li><b>Not available:</b> the concrete reader and writer types and the chunk size of the posting step.
- * {@code com.cardemo.batch.jobs}, {@code com.cardemo.batch.readers} and {@code com.cardemo.batch.writers}
- * are unplanned in this branch, so no type name can be cited. What is needed is
- * {@code DailyTransactionPostingJob}, {@code DailyTransactionReader} and {@code RejectWriter}. This class
- * is deliberately independent of all three: it consumes one {@link DailyTransaction} and returns one
- * {@link PostingResult}, which is the whole of its contract.</li>
- * <li><b>Not available:</b> {@code com.cardemo.observability.MetricsConfig}, so the identifiers of the four
- * sanctioned counters cannot be cited. What is needed is that class. No instrument is created here in the
- * meantime.</li>
- * <li><b>Not available:</b> any service-level objective for this step. The legacy corpus publishes no
- * throughput or latency target anywhere, so none is asserted and none may be invented; the performance gate
- * records a measured baseline instead.</li>
- * <li><b>Not available:</b> the time zone of the z/OS system that ran {@code CBTRN02C}, which
- * {@code FUNCTION CURRENT-DATE} at {@code :L693} implicitly depended on. What is needed is the legacy
- * region configuration. The documented default is the deployment's own zone, chosen for the reason given
+ * <li><b>The step wiring sits outside this class.</b> The job, the reader that supplies
+ * {@link DailyTransaction} items and the writer that renders the 430-byte reject record are all separate
+ * components. This class consumes one item and returns one {@link PostingResult}, which is the whole of its
+ * contract, so it is exercisable without any of them.</li>
+ * <li><b>No service-level objective exists.</b> The legacy corpus publishes no throughput or latency target
+ * anywhere, so none is asserted here and none may be invented; the performance gate records a measured
+ * baseline instead.</li>
+ * <li><b>The time zone of the z/OS system that ran {@code CBTRN02C} cannot be recovered from the corpus.</b>
+ * {@code FUNCTION CURRENT-DATE} at {@code :L693} implicitly depended on the region configuration, which the
+ * source does not record. The documented default is the deployment's own zone, chosen for the reason given
  * above.</li>
+ * <li><b>The over-limit {@code COMPUTE} is at {@code app/cbl/CBTRN02C.cbl:L403-L405}</b>, and every citation
+ * of the formula in this class reads those three lines. {@code L400} is {@code NOT INVALID KEY} and
+ * {@code L401-L402} are commented-out {@code DISPLAY} statements, so a citation of {@code L400-L402} points
+ * at the wrong lines and invites the conclusion that the formula moved.</li>
  * </ul>
- * <p>
- * Two inputs to this translation proved stale against the frozen corpus and are corrected here rather than
- * repeated. Both were re-established by direct inspection at {@code 7756d89}, and in each case the source
- * won.
- * <ul>
- * <li><b>Severity Medium - locator correction.</b> The over-limit {@code COMPUTE} is at
- * {@code app/cbl/CBTRN02C.cbl:L403-L405}, <b>not</b> at {@code L400-L402} as an upstream requirement stated.
- * {@code L401-L402} are commented-out {@code DISPLAY} statements. Every citation of the formula in this
- * class therefore reads {@code L403-L405}. Remediation, already applied: cite the verified lines. Anyone
- * re-deriving this file from the stale locator would document the wrong three lines and, worse, might
- * conclude the formula had moved and go looking for a different one.</li>
- * <li><b>Severity Low - stale absence claim.</b>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} <b>is present</b> in this branch, though an
- * upstream requirement listed it as unavailable. The column and constraint names cited above are therefore
- * read from real DDL rather than declared unavailable. Remediation, already applied: name the real
- * constraints, so a store failure reported by this class points at a constraint that actually exists.</li>
- * </ul>
- * <p>
- * A third divergence is environmental rather than textual and so is recorded in the delivery report rather
- * than here: the toolchain needed to compile this file is present on the host, so the compile evidence was
- * produced directly by the pinned {@code mvn} and JDK rather than through a container.
  *
  * <h2>Bean registration</h2>
  * <p>
@@ -541,12 +521,6 @@ public class TransactionPostingProcessor
     private static final String ABEND_CULPRIT = "CBTRN02C";
 
     /**
-     * Logical name of the transaction dataset: DD {@code TRANFILE} at {@code app/jcl/POSTTRAN.jcl:L28} over
-     * {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}.
-     */
-    private static final String DD_TRANFILE = "TRANFILE";
-
-    /**
      * Logical name of the category-balance dataset: DD {@code TCATBALF} at
      * {@code app/jcl/POSTTRAN.jcl:L41}.
      */
@@ -556,12 +530,6 @@ public class TransactionPostingProcessor
      * Logical name of the account dataset: DD {@code ACCTFILE} at {@code app/jcl/POSTTRAN.jcl:L39}.
      */
     private static final String DD_ACCTFILE = "ACCTFILE";
-
-    /**
-     * Relation behind {@link #DD_TRANFILE}, named by {@code V1__create_schema.sql}. Quoted in the DDL
-     * because {@code transaction} is a reserved word; the unquoted spelling is used in diagnostics.
-     */
-    private static final String RELATION_TRANSACTION = "transaction";
 
     /**
      * Relation behind {@link #DD_TCATBALF}, named by {@code V1__create_schema.sql}.
@@ -590,12 +558,6 @@ public class TransactionPostingProcessor
     private static final String ABEND_REASON = "DAILY TRANSACTION POSTING ABEND";
 
     /**
-     * {@code DISPLAY 'ERROR WRITING TO TRANSACTION FILE'} at {@code app/cbl/CBTRN02C.cbl:L574}, verbatim
-     * including case.
-     */
-    private static final String TRANFILE_WRITE_FAILURE_TEXT = "ERROR WRITING TO TRANSACTION FILE";
-
-    /**
      * {@code DISPLAY 'ERROR WRITING TRANSACTION BALANCE FILE'} at {@code app/cbl/CBTRN02C.cbl:L520},
      * verbatim. Distinct from {@link #TCATBAL_REWRITE_FAILURE_TEXT} because the source distinguishes the
      * create branch from the update branch, and collapsing them would lose that distinction.
@@ -607,6 +569,21 @@ public class TransactionPostingProcessor
      * verbatim.
      */
     private static final String TCATBAL_REWRITE_FAILURE_TEXT = "ERROR REWRITING TRANSACTION BALANCE FILE";
+
+    /**
+     * Stands in for every record key, identifier and monetary value this class declines to write to a log.
+     *
+     * <p>The {@code DISPLAY} statements of {@code app/cbl/CBTRN02C.cbl} are reproduced as emission points with
+     * their literals intact, because that structure is the traceability artefact; the values between those
+     * literals are not, because a log is aggregated, retained and replicated outside the boundary that protects
+     * the rows they came from. One shared marker is used deliberately, so no emission can carry a length or a
+     * digit count that would narrow the withheld value.
+     *
+     * <p>The reject-code emission is the deliberate exception: a reject code and its literal description are a
+     * bounded business outcome rather than record data, they drive the return-code decision at
+     * {@code :L229-L231}, and Gate 1 compares them.
+     */
+    private static final String WITHHELD_VALUE = "[withheld]";
 
     /**
      * First half of {@code DISPLAY 'TCATBAL record not found for key : '} at
@@ -650,11 +627,6 @@ public class TransactionPostingProcessor
     private final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository;
 
     /**
-     * {@code TRANSACT-FILE}, written at {@code app/cbl/CBTRN02C.cbl:L564}.
-     */
-    private final TransactionRepository transactionRepository;
-
-    /**
      * The single owner of the file-status vocabulary, including the {@code '00' OR '23'} carve-out at
      * {@code app/cbl/CBTRN02C.cbl:L481}.
      */
@@ -666,67 +638,42 @@ public class TransactionPostingProcessor
     private final Clock clock;
 
     /**
-     * Constructs the processor over its four datasets and the shared status mapper, defaulting the clock.
+     * Constructs the processor over its four datasets, the shared status mapper and the injected clock.
      *
-     * <p>This is the constructor the container uses, and it is marked {@code @Autowired} to say so
-     * explicitly. The marker is load bearing rather than decorative: implicit constructor selection applies
-     * only when a bean declares exactly one candidate, and this class declares two - this one and the
-     * package-private test seam below. Faced with two unannotated candidates the container does not prefer
-     * the public one; it falls back to a no-argument constructor, finds none, and fails context refresh with
-     * {@code BeanInstantiationException: No default constructor found}. Removing the marker therefore breaks
-     * startup even though the class still compiles and every unit test still passes.
+     * <p><strong>This is the only constructor, so the container performs implicit constructor injection and
+     * no {@code @Autowired} marker is needed.</strong> It previously had a five-argument sibling that
+     * defaulted the clock to {@link Clock#systemDefaultZone()}, which meant the one value in this class that
+     * reaches the parity baseline - the generated {@code TRAN-PROC-TS} - was taken from ambient state rather
+     * than from a configured dependency. Rule 1 Clause A requires determinism and Clause B prefers injection
+     * over ambient state, so the clock now arrives the same way every other collaborator does.
      *
-     * <p>The clock is defaulted rather than contributed because no {@code Clock} bean exists in this
-     * application and none should be required for this bean to wire.
-     * {@link Clock#systemDefaultZone()} is chosen over {@link Clock#systemUTC()} deliberately:
-     * {@code FUNCTION CURRENT-DATE} at {@code app/cbl/CBTRN02C.cbl:L693} yields the local date and time of
-     * the running system, so any other zone would stamp {@code TRAN-PROC-TS} with a value the source could
-     * not have produced.
+     * <p><strong>The injected clock belongs to one owner, and its zone is decided there.</strong>
+     * {@code com.cardemo.config.ObservabilityConfig#clock(String)} publishes the application's single
+     * {@code java.time.Clock} as a system clock in the deployment's own zone, which is what
+     * {@code FUNCTION CURRENT-DATE} at {@code app/cbl/CBTRN02C.cbl:L693} returned - the region's local civil
+     * time. The twenty-six character timestamp built from it is compared byte for byte against the parity
+     * baseline, and two hosts configured for different zones would emit different bytes for the same run;
+     * {@code carddemo.time.zone} exists for exactly that case and pins the zone explicitly, failing startup
+     * rather than guessing if the value is not a zone this runtime recognises. Either way the zone is decided
+     * in one place instead of read here, and a test supplies a fixed clock through this same constructor, so
+     * the timestamp remains assertable without controlling the host.
      *
-     * <p>Side effects: none. Every argument is checked by a static helper, so no overridable instance
-     * method runs and no partially constructed reference can escape.
+     * <p>Side effects: none. Every argument is checked by {@link Objects#requireNonNull}, so no overridable
+     * instance method runs and no partially constructed reference can escape.
      *
      * @param cardCrossReferenceRepository access to {@code XREF-FILE}; must not be {@code null}
      * @param accountRepository access to {@code ACCOUNT-FILE}; must not be {@code null}
      * @param transactionCategoryBalanceRepository access to {@code TCATBAL-FILE}; must not be {@code null}
-     * @param transactionRepository access to {@code TRANSACT-FILE}; must not be {@code null}
      * @param fileStatusMapper the shared file-status translator; must not be {@code null}
+     * @param clock the application clock supplying the current instant for the generated processing
+     *              timestamp; must not be {@code null}
      * @throws NullPointerException if any argument is {@code null}, which is a wiring defect rather than a
      *                             data condition and so is reported immediately
      */
-    @Autowired
     public TransactionPostingProcessor(
             final CardCrossReferenceRepository cardCrossReferenceRepository,
             final AccountRepository accountRepository,
             final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
-            final TransactionRepository transactionRepository,
-            final FileStatusMapper fileStatusMapper) {
-        this(cardCrossReferenceRepository, accountRepository, transactionCategoryBalanceRepository,
-                transactionRepository, fileStatusMapper, Clock.systemDefaultZone());
-    }
-
-    /**
-     * Test seam. Creates the processor over a caller-supplied clock.
-     *
-     * <p>It is package-private because production never uses it and must not be able to: the zone choice
-     * documented on the public constructor is a parity decision, not a preference. It is not dead code -
-     * the unit test fixes the clock so that the generated {@code TRAN-PROC-TS} of
-     * {@code app/cbl/CBTRN02C.cbl:L437-L438} is deterministic and can be asserted byte for byte.
-     *
-     * @param cardCrossReferenceRepository access to {@code XREF-FILE}; must not be {@code null}
-     * @param accountRepository access to {@code ACCOUNT-FILE}; must not be {@code null}
-     * @param transactionCategoryBalanceRepository access to {@code TCATBAL-FILE}; must not be {@code null}
-     * @param transactionRepository access to {@code TRANSACT-FILE}; must not be {@code null}
-     * @param fileStatusMapper the shared file-status translator; must not be {@code null}
-     * @param clock the clock supplying the current instant for the generated processing timestamp; must not
-     *              be {@code null}
-     * @throws NullPointerException if any argument is {@code null}
-     */
-    TransactionPostingProcessor(
-            final CardCrossReferenceRepository cardCrossReferenceRepository,
-            final AccountRepository accountRepository,
-            final TransactionCategoryBalanceRepository transactionCategoryBalanceRepository,
-            final TransactionRepository transactionRepository,
             final FileStatusMapper fileStatusMapper,
             final Clock clock) {
         this.cardCrossReferenceRepository = Objects.requireNonNull(cardCrossReferenceRepository,
@@ -736,8 +683,6 @@ public class TransactionPostingProcessor
         this.transactionCategoryBalanceRepository = Objects.requireNonNull(
                 transactionCategoryBalanceRepository,
                 "transactionCategoryBalanceRepository must not be null");
-        this.transactionRepository = Objects.requireNonNull(transactionRepository,
-                "transactionRepository must not be null");
         this.fileStatusMapper = Objects.requireNonNull(fileStatusMapper,
                 "fileStatusMapper must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -1047,7 +992,7 @@ public class TransactionPostingProcessor
      * {@code INDEXED} with {@code ACCESS MODE RANDOM} and {@code RECORD KEY IS FD-XREF-CARD-NUM}, so this is
      * a <b>primary key</b> read of the sixteen-character card number, not a use of the
      * {@code CARDXREF.VSAM.AIX} alternate index. The Java form is therefore
-     * {@code findById}, and {@code findByAccountIdOrderByCardNumberAsc} - which does model the alternate
+     * {@code findById}, and {@code findFirstByAccountIdOrderByCardNumberAsc} - which does model the alternate
      * index - is deliberately not used.
      *
      * <p>{@code :L385-L387} answer {@code INVALID KEY} with reason code 100 and the description
@@ -1278,7 +1223,19 @@ public class TransactionPostingProcessor
         updateAccountRec(item, account);
 
         // :L442 PERFORM 2900-WRITE-TRANSACTION-FILE
-        writeTransactionFile(transaction);
+        //
+        // WRITER SCOPE, exactly as 2500-WRITE-REJECT-REC is. The paragraph's single
+        // WRITE FD-TRANFILE-REC FROM TRAN-RECORD at :L564 becomes two effects - the relational insert and
+        // the byte-exact 350-byte emission - and BOTH belong to
+        // com.cardemo.batch.writers.TransactionWriter, which the Agent Action Plan names as the owner of
+        // this paragraph ("DB + S3"). This class builds the record and returns it; the step's ItemWriter
+        // persists it. Inserting here as well would make two components write the same row, which is the
+        // duplicate ownership this delegation removes: the second insert would either collide on
+        // pk_transaction or silently depend on which component flushed first.
+        //
+        // The guard of :L566-L578 is not lost by delegating - it travels with the write. TransactionWriter
+        // applies the same FILE STATUS translation around its saveAllAndFlush, so a duplicate key or a
+        // foreign-key rejection still surfaces as the same typed exception with the same literal text.
 
         // :L444 EXIT.
         return transaction;
@@ -1302,7 +1259,7 @@ public class TransactionPostingProcessor
      * selects the create branch. The decision is delegated to
      * {@link FileStatusMapper#requireCategoryBalanceReadSuccess(String)}, which is the sanctioned owner of
      * that carve-out and which cites this very paragraph. Delegating rather than testing statuses locally
-     * keeps the leniency scoped: were it ever widened, it would be widened in one place under review, not
+     * keeps the leniency scoped: were it ever widened, it would be widened in that one place, not
      * silently here.
      *
      * <p>{@code WS-CREATE-TRANCAT-REC} at {@code :L190} - the {@code 'N'} or {@code 'Y'} flag set at
@@ -1341,7 +1298,13 @@ public class TransactionPostingProcessor
         String tcatbalfStatus = located.isPresent() ? STATUS_SUCCESS : STATUS_RECORD_NOT_FOUND;
         if (located.isEmpty()) {
             // :L476-L477 DISPLAY 'TCATBAL record not found for key : ' FD-TRAN-CAT-KEY '.. Creating.'
-            LOG.info("{}{}{}", TCATBAL_CREATING_PREFIX, renderTranCatKey(key), TCATBAL_CREATING_SUFFIX);
+            //
+            // Both source literals are preserved and the emission point is preserved; the KEY between them is
+            // withheld. FD-TRAN-CAT-KEY is the 17-byte composite of XREF-ACCT-ID, the type code and the
+            // category code (:L469-L471), so it carries a customer's account identifier - and the upsert this
+            // line announces happens for most records, which made it high-volume disclosure at INFO. What an
+            // operator needs from it is that a category balance was created, which survives intact.
+            LOG.info("{}{}{}", TCATBAL_CREATING_PREFIX, WITHHELD_VALUE, TCATBAL_CREATING_SUFFIX);
         }
 
         // :L481-L493 IF TCATBALF-STATUS = '00' OR '23' ... ELSE DISPLAY + 9910 + 9999. Returns true when the
@@ -1397,13 +1360,18 @@ public class TransactionPostingProcessor
 
         // :L510 WRITE FD-TRAN-CAT-BAL-RECORD FROM TRAN-CAT-BAL-RECORD
         try {
+            // FLUSH INSIDE THE GUARD. save() only enrols the row with the persistence context; without
+            // the flush the INSERT/UPDATE would be issued at commit, OUTSIDE this try, and the constraint
+            // violation would surface with no paragraph attached - losing the FILE STATUS translation, the
+            // source literal and the return code that this guard exists to supply.
             transactionCategoryBalanceRepository.save(created);
+            transactionCategoryBalanceRepository.flush();
         } catch (DataAccessException storeFailure) {
             // :L512-L524 guard accepting '00' only, then DISPLAY + 9910 + 9999.
             throw translateStoreFailure(storeFailure, TCATBAL_WRITE_FAILURE_TEXT, DD_TCATBALF,
                     RELATION_TCATBAL, OPERATION_WRITE, renderTranCatKey(key));
         }
-        LOG.debug("Created transaction category balance for key {}", renderTranCatKey(key));
+        LOG.debug("Created transaction category balance for key {}", WITHHELD_VALUE);
     }
 
     /**
@@ -1437,13 +1405,18 @@ public class TransactionPostingProcessor
 
         // :L528 REWRITE FD-TRAN-CAT-BAL-RECORD FROM TRAN-CAT-BAL-RECORD
         try {
+            // FLUSH INSIDE THE GUARD. save() only enrols the row with the persistence context; without
+            // the flush the INSERT/UPDATE would be issued at commit, OUTSIDE this try, and the constraint
+            // violation would surface with no paragraph attached - losing the FILE STATUS translation, the
+            // source literal and the return code that this guard exists to supply.
             transactionCategoryBalanceRepository.save(existing);
+            transactionCategoryBalanceRepository.flush();
         } catch (DataAccessException storeFailure) {
             // :L530-L542 guard accepting '00' only, then DISPLAY + 9910 + 9999.
             throw translateStoreFailure(storeFailure, TCATBAL_REWRITE_FAILURE_TEXT, DD_TCATBALF,
                     RELATION_TCATBAL, OPERATION_REWRITE, renderTranCatKey(existing.getId()));
         }
-        LOG.debug("Updated transaction category balance for key {}", renderTranCatKey(existing.getId()));
+        LOG.debug("Updated transaction category balance for key {}", WITHHELD_VALUE);
     }
 
     /**
@@ -1475,7 +1448,7 @@ public class TransactionPostingProcessor
      * reject record, does not increment {@code WS-REJECT-COUNT}, and clears the field at {@code :L208} on the
      * next iteration. The assignment below is therefore retained and marked; the value reaches diagnostic
      * text only and is never returned as a {@link PostingResult} reject code. This is the tracked artefact
-     * that resolves the clause B1 conflict in favour of parity, and it belongs in {@code DECISION_LOG.md}.
+     * that resolves the clause B1 conflict in favour of parity: cited and marked at its single site below.
      *
      * <p><b>DEVIATION, and it must not be presented as equivalence.</b> Two things differ from the source
      * here, both consequences of the single unit of work:
@@ -1487,7 +1460,7 @@ public class TransactionPostingProcessor
      * <li>Consequently this method throws where the source continues. A failed flush poisons the unit of
      * work, so continuing to the transaction write would be neither possible nor honest.</li>
      * </ol>
-     * Both are recorded in {@code DECISION_LOG.md}.
+     * Both are labelled deviations and neither is parity.
      *
      * @param item the record being posted, already known to be non-{@code null}
      * @param account the record resolved by {@code 1500-B-LOOKUP-ACCT}, never {@code null}
@@ -1522,7 +1495,12 @@ public class TransactionPostingProcessor
 
         // :L554 REWRITE FD-ACCTFILE-REC FROM ACCOUNT-RECORD
         try {
+            // FLUSH INSIDE THE GUARD. save() only enrols the row with the persistence context; without
+            // the flush the INSERT/UPDATE would be issued at commit, OUTSIDE this try, and the constraint
+            // violation would surface with no paragraph attached - losing the FILE STATUS translation, the
+            // source literal and the return code that this guard exists to supply.
             accountRepository.save(account);
+            accountRepository.flush();
         } catch (DataAccessException storeFailure) {
             // :L555-L558 INVALID KEY -> MOVE 109 / MOVE 'ACCOUNT RECORD NOT FOUND'.
             // RETAINED, CITED AND ASSIGNED-BUT-NEVER-CONSUMED. The source sets this reason code and falls
@@ -1530,7 +1508,7 @@ public class TransactionPostingProcessor
             // clears it at :L208 on the next iteration. The value below therefore reaches diagnostic text
             // only: it is never returned as a PostingResult reject code and never counted. See the DEVIATION
             // on this method - the throw replaces the source's fall-through because the unit of work is
-            // already poisoned. Tracked in DECISION_LOG.md.
+            // already poisoned.
             RejectCode neverConsumedFailReason = RejectCode.ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE;
             throw translateStoreFailure(storeFailure,
                     "ACCOUNT REWRITE FAILED, app/cbl/CBTRN02C.cbl:L554 would have set reason "
@@ -1538,45 +1516,10 @@ public class TransactionPostingProcessor
                             + neverConsumedFailReason.getDescription() + " and continued",
                     DD_ACCTFILE, RELATION_ACCOUNT, OPERATION_REWRITE, renderAccountKey(account));
         }
-        LOG.debug("Applied transaction amount to account {}", renderAccountKey(account));
+        LOG.debug("Applied transaction amount to account {}", WITHHELD_VALUE);
 
         // :L560 EXIT. On the success path the source leaves WS-VALIDATION-FAIL-REASON untouched at zero.
         return null;
-    }
-
-    /**
-     * {@code 2900-WRITE-TRANSACTION-FILE}, {@code app/cbl/CBTRN02C.cbl:L562-L579}.
-     *
-     * <p>{@code :L563} primes {@code APPL-RESULT} with 8, {@code :L564} writes the transaction record, and
-     * {@code :L566-L578} apply the guard: {@code '00'} continues, anything else displays
-     * {@code 'ERROR WRITING TO TRANSACTION FILE'} at {@code :L574}, renders the status through
-     * {@code 9910} and abends through {@code 9999}. The priming value and the {@code APPL-AOK} and
-     * {@code APPL-EOF} condition names are published by {@link FileStatusMapper} and are not restated here.
-     *
-     * <p>This is the last of the three writes, so a duplicate transaction identifier surfaces here.
-     * {@code V1__create_schema.sql} declares {@code pk_transaction} on {@code tran_id} plus three foreign
-     * keys - {@code fk04_transaction_card}, {@code fk05_transaction_type} and
-     * {@code fk06_transaction_category} - any of which can reject the row. Each is translated to a typed
-     * exception carrying the driver's own detail as cause; none is retried and none is silently upserted,
-     * because {@code :L564} is a {@code WRITE} and a keyed dataset rejects a repeated key.
-     *
-     * @param transaction the record built by {@code 2000-POST-TRANSACTION}, never {@code null}
-     * @throws DuplicateRecordException if {@code pk_transaction} collides
-     * @throws DataIntegrityException if one of the three foreign keys rejects the row
-     * @throws FatalProcessingException if the store fails for any other reason
-     */
-    private void writeTransactionFile(final Transaction transaction) {
-        // :L563 MOVE 8 TO APPL-RESULT / :L564 WRITE FD-TRANFILE-REC FROM TRAN-RECORD
-        try {
-            transactionRepository.save(transaction);
-        } catch (DataAccessException storeFailure) {
-            // :L566-L578 guard accepting '00' only, then DISPLAY + 9910 + 9999.
-            throw translateStoreFailure(storeFailure, TRANFILE_WRITE_FAILURE_TEXT, DD_TRANFILE,
-                    RELATION_TRANSACTION, OPERATION_WRITE,
-                    "TRAN-ID " + transaction.getTransactionId());
-        }
-        // :L579 EXIT.
-        LOG.debug("Posted transaction {}", transaction.getTransactionId());
     }
 
     /**
@@ -1598,7 +1541,7 @@ public class TransactionPostingProcessor
      * differ from the legacy baseline.
      *
      * <p>The result is a {@link String} because {@code TRAN-PROC-TS} is {@code PIC X(26)} at
-     * {@code app/cpy/CVTRA05Y.cpy:L18} over a {@code CHAR(26)} column. It is never a
+     * {@code app/cpy/CVTRA05Y.cpy:L17} over a {@code CHAR(26)} column. It is never a
      * {@code LocalDateTime}, a {@code Timestamp} or an {@code Instant}: those types cannot represent the
      * four trailing zeros, and round-tripping through them would lose the very characters the format
      * mandates.
@@ -1781,11 +1724,15 @@ public class TransactionPostingProcessor
                     renderTransactionId(item.getTransactionId())), null);
         }
         if (origTs.length() < EXPIRY_COMPARISON_LENGTH) {
-            LOG.warn("DALYTRAN-ORIG-TS for TRAN-ID {} is {} characters, shorter than the {} the expiry "
-                            + "comparison at app/cbl/CBTRN02C.cbl:L414 slices; it is space-filled to the "
-                            + "PIC X(26) width and compares as the mainframe field would, which passes the "
-                            + "expiry test because a space sorts below every digit",
-                    renderTransactionId(item.getTransactionId()), origTs.length(), EXPIRY_COMPARISON_LENGTH);
+            // The transaction identifier is deliberately absent: the condition is a property of the staged
+            // data's shape, and the length alone is what diagnoses it. The identifier travels on the typed
+            // exception raised by the sibling branch above when the value is missing outright, which reaches an
+            // operator through the abend payload rather than through routine log volume.
+            LOG.warn("A DALYTRAN-ORIG-TS is {} characters, shorter than the {} the expiry comparison at "
+                            + "app/cbl/CBTRN02C.cbl:L414 slices; it is space-filled to the PIC X(26) width and "
+                            + "compares as the mainframe field would, which passes the expiry test because a "
+                            + "space sorts below every digit",
+                    origTs.length(), EXPIRY_COMPARISON_LENGTH);
         }
         return fixedWidth(fixedWidth(origTs, ORIG_TS_WIDTH), EXPIRY_COMPARISON_LENGTH);
     }
@@ -1956,15 +1903,35 @@ public class TransactionPostingProcessor
      * <p>The exception is returned rather than thrown so that the {@code throw} stays visible at the call
      * site and the compiler can see that control leaves there.
      *
-     * @param abendMessage what happened, carrying {@code ABEND-MSG PIC X(72)}
+     * <p><b>The payload and the log line are separate arguments, deliberately.</b> The payload may name the
+     * record that failed - that is what an operator diagnosing a terminated step needs, and
+     * {@code ABEND-MSG} is where the source puts it - while the log line must not, because a log outlives and
+     * outranges the incident. Callers that have nothing to redact pass the same text twice through
+     * {@link #abend(String, Throwable)}.
+     *
+     * @param abendMessage what happened, carrying {@code ABEND-MSG PIC X(72)}; may name a record key
+     * @param loggedMessage the same account of what happened with any record key withheld; this is the only
+     * form written to the log
      * @param cause the underlying throwable, or {@code null} when the condition originated here; when
      * present it is always preserved, per clause B4
      * @return the abend to throw
      */
-    private static FatalProcessingException abend(final String abendMessage, final Throwable cause) {
-        LOG.error(abendMessage, cause);
+    private static FatalProcessingException abend(final String abendMessage, final String loggedMessage,
+                                                 final Throwable cause) {
+        LOG.error(loggedMessage, cause);
         return new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
                 ABEND_CULPRIT, ABEND_REASON, abendMessage, cause);
+    }
+
+    /**
+     * Raises an abend whose payload carries no record key, so the same text is safe to log.
+     *
+     * @param abendMessage what happened, carrying {@code ABEND-MSG PIC X(72)}; must name no record key
+     * @param cause the underlying throwable, or {@code null} when the condition originated here
+     * @return the abend to throw
+     */
+    private static FatalProcessingException abend(final String abendMessage, final Throwable cause) {
+        return abend(abendMessage, abendMessage, cause);
     }
 
     /**
@@ -2042,32 +2009,40 @@ public class TransactionPostingProcessor
                                                           final String failureText, final String ddName,
                                                           final String relation, final String operation,
                                                           final String key) {
+        // The key is carried on the EXCEPTION and withheld from the LOG. The two have different audiences and
+        // different exposure: the exception reaches an operator through the abend payload of a step that has
+        // just failed, where knowing which record failed is the whole point, while the log is aggregated,
+        // retained and replicated well beyond that. Every message below is therefore built twice from the same
+        // template - once with the key for the exception, once with the marker for the log - rather than once
+        // and reused, so no future edit can quietly route the keyed form to the logger.
         if (storeFailure instanceof DuplicateKeyException) {
-            String message = String.format(Locale.ROOT,
-                    "%s. The %s of DD %s (relation %s) for key %s was rejected as a duplicate key, which is "
-                            + "FILE STATUS '22'. The COBOL verb writes a keyed dataset, so a repeated key "
-                            + "fails the step; do not retry and do not upsert.",
-                    failureText, operation, ddName, relation, key);
-            LOG.error(message);
-            return new DuplicateRecordException(message, ddName, key, storeFailure);
+            String template = "%s. The %s of DD %s (relation %s) for key %s was rejected as a duplicate key, "
+                    + "which is FILE STATUS '22'. The COBOL verb writes a keyed dataset, so a repeated key "
+                    + "fails the step; do not retry and do not upsert.";
+            LOG.error(String.format(Locale.ROOT, template, failureText, operation, ddName, relation,
+                    WITHHELD_VALUE));
+            return new DuplicateRecordException(String.format(Locale.ROOT, template, failureText, operation,
+                    ddName, relation, key), ddName, key, storeFailure);
         }
 
         if (storeFailure instanceof DataIntegrityViolationException) {
-            String message = String.format(Locale.ROOT,
-                    "%s. A constraint rejected the %s of DD %s (relation %s) for key %s. The exception does "
-                            + "not name the constraint in a portable field, so it is one of those "
-                            + "V1__create_schema.sql declares on this relation, with a duplicate key "
-                            + "excluded because that condition is handled separately; the retained cause "
-                            + "carries the driver's own constraint detail.",
-                    failureText, operation, ddName, relation, key);
-            LOG.error(message);
-            return new DataIntegrityException(message, null, relation, storeFailure);
+            String template = "%s. A constraint rejected the %s of DD %s (relation %s) for key %s. The "
+                    + "exception does not name the constraint in a portable field, so it is one of those "
+                    + "V1__create_schema.sql declares on this relation, with a duplicate key excluded "
+                    + "because that condition is handled separately; the retained cause carries the "
+                    + "driver's own constraint detail.";
+            LOG.error(String.format(Locale.ROOT, template, failureText, operation, ddName, relation,
+                    WITHHELD_VALUE));
+            return new DataIntegrityException(String.format(Locale.ROOT, template, failureText, operation,
+                    ddName, relation, key), null, relation, storeFailure);
         }
 
-        return abend(String.format(Locale.ROOT,
-                "%s. The %s of DD %s (relation %s) for key %s failed, and the condition is neither a "
-                        + "duplicate key nor a constraint violation, so the guard in "
-                        + "app/cbl/CBTRN02C.cbl reaches PERFORM 9999-ABEND-PROGRAM.",
-                failureText, operation, ddName, relation, key), storeFailure);
+        String template = "%s. The %s of DD %s (relation %s) for key %s failed, and the condition is neither "
+                + "a duplicate key nor a constraint violation, so the guard in app/cbl/CBTRN02C.cbl reaches "
+                + "PERFORM 9999-ABEND-PROGRAM.";
+        return abend(String.format(Locale.ROOT, template, failureText, operation, ddName, relation, key),
+                String.format(Locale.ROOT, template, failureText, operation, ddName, relation,
+                        WITHHELD_VALUE),
+                storeFailure);
     }
 }

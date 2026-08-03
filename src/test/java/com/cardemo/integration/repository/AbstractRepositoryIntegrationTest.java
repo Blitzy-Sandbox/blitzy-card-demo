@@ -42,23 +42,30 @@ package com.cardemo.integration.repository;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 
-import java.io.IOException;
-import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
+import java.net.InetAddress;
+import java.io.UncheckedIOException;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Primary;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.annotation.Transactional;
-import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.postgresql.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
+
+import com.cardemo.unit.model.FixtureLoader;
 
 /**
  * Shared harness for the CardDemo repository integration tier, extended by all eleven
@@ -103,8 +110,8 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       {@code version BIGINT NOT NULL} column appears on exactly <strong>four</strong> tables:
  *       {@code account}, {@code card}, {@code customer} and {@code "transaction"}.</li>
  *   <li><strong>{@code V2} creates exactly three non-unique B-tree indexes</strong>, one per alternate
- *       index in the catalogue. The names emitted by the migration are {@code ix_card_acct_id},
- *       {@code ix_card_cross_reference_acct_id} and {@code ix_transaction_proc_ts}. The count of
+ *       index in the catalogue. The names emitted by the migration are {@code idx_card_acct_id},
+ *       {@code idx_card_cross_reference_acct_id} and {@code idx_transaction_proc_ts}. The count of
  *       {@code CREATE UNIQUE INDEX} is <strong>0</strong> and the count of {@code CONCURRENTLY} is
  *       <strong>0</strong>; a legacy alternate key is non-unique, so no subclass may assert uniqueness on
  *       any of the three.</li>
@@ -116,7 +123,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       <strong>0, deliberately empty</strong>, because the posting job is what fills it.</li>
  *   <li>The transaction table is emitted by {@code V1} and {@code V2} in the double-quoted lowercase form
  *       {@code "transaction"}. Any native-SQL assertion must resolve to that same lowercase identifier.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -146,21 +153,39 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  * <h2>Key configs and defaults</h2>
  *
  * <p>This class reads no configuration of its own. It performs no environment-variable read, no
- * system-property read and no system-property write, and it contains no host name, port, database name,
+ * system-property read and no system-property write, and it contains no database host, port, database name,
  * user name, password or JDBC URL. Those are not stylistic omissions: the connection is injected, and a
  * literal would defeat the injection.
+ *
+ * <p>The one class of literal it does carry is the loopback AWS endpoint registered by
+ * {@link #registerApplicationProperties(DynamicPropertyRegistry)}, and that is the opposite of a leak. The base
+ * profile makes an approved emulator endpoint mandatory in every profile so that no configuration can resolve a
+ * real service edge, and a tier that refreshes the full context must therefore name one. A loopback literal is
+ * the narrowest thing it can name.
  *
  * <ul>
  *   <li><strong>Profile {@code test}</strong>, activated by {@link org.springframework.test.context.ActiveProfiles}.
  *       {@code src/main/resources/application-test.yml} deliberately declares no datasource URL, host,
  *       port, user name or password, and this class mirrors that discipline exactly.</li>
  *   <li><strong>Connection injection by {@code @ServiceConnection}</strong>. Spring Boot derives the URL,
- *       user name and password from the running container, so no property string and no literal appears
- *       here. This is why no {@code @DynamicPropertySource} method is needed: there is no property left
- *       for one to supply.</li>
- *   <li><strong>Container image {@code postgres:16.10-alpine}</strong>, the same PostgreSQL 16 tag the
- *       compose topology pins at {@code docker-compose.yml:51}. It is stated as an exact tag rather than a
- *       floating one so the engine under test cannot drift between runs.</li>
+ *       user name and password from the running container, so no <em>datasource</em> property string and no
+ *       literal appears here.
+ *       <p><strong>An earlier revision of this paragraph claimed that no {@code @DynamicPropertySource}
+ *       method was needed because "there is no property left for one to supply". That claim was wrong and
+ *       is withdrawn.</strong> It reasoned only about the datasource, but {@code @SpringBootTest} loads the
+ *       <em>whole</em> application context, and that context requires several properties the datasource
+ *       injection knows nothing about. Measured, not assumed: the first concrete subclass failed context
+ *       startup on an unresolvable token-signing-key placeholder, and the emulator binding guard in
+ *       {@code AwsConfig} then requires a resolved, allow-listed endpoint and static credentials for each of
+ *       S3, SQS and SNS. Those, together with the three bucket names, the report queue and the notification
+ *       topic - each of which {@code application.yml} maps to an environment variable carrying no default -
+ *       are supplied by {@link #registerApplicationProperties(DynamicPropertyRegistry)} below, which
+ *       registers no datasource property at all.</li>
+ *   <li><strong>Container image pinned by digest</strong> to
+ *       {@code postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1}, which is
+ *       PostgreSQL 16.10 on Debian 13 with glibc 2.41. A digest, not a tag, and the Debian image, not
+ *       {@code alpine}; the field documentation gives both reasons and names the sibling tier that uses the
+ *       identical digest.</li>
  *   <li><strong>Schema handling</strong>: {@code spring.jpa.hibernate.ddl-auto: validate},
  *       {@code spring.jpa.open-in-view: false}, {@code spring.jpa.show-sql: false} with no Hibernate SQL
  *       or bind-parameter logging in any profile, and Hibernate's JDBC time zone set to {@code UTC}.</li>
@@ -172,7 +197,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       a batch job as a side effect of a repository test.</li>
  *   <li><strong>Time is fixed and UTC.</strong> See {@link #fixedClock()}; the ambient clock is never read
  *       anywhere in this package.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -210,12 +235,19 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       deliberately declared with no {@code classes} attribute, so the whole application context starts
  *       and {@code validate} therefore validates against the real entity set. The cost of that choice is
  *       that a service bean whose own collaborator is not yet declared in the main configuration fails this
- *       tier even though the failure has nothing to do with persistence. <strong>The fix is upstream</strong>,
- *       in the {@code com.cardemo.config} class that owns the missing bean. Do not declare the bean in this
- *       harness or in a subclass: a bean defined in the test tree diverges from the one production will
- *       use, so the tier would then be validating a context that never ships. Narrowing the annotation to
- *       silence it is equally wrong, because it would retire the schema validation that is the whole point
- *       of starting a context here.</li>
+ *       tier even though the failure has nothing to do with persistence. <strong>For anything other than
+ *       the clock, the fix is upstream</strong>, in the {@code com.cardemo.config} class that owns the
+ *       missing bean: a bean defined in the test tree diverges from the one production will use, so the
+ *       tier would then be validating a context that never ships. Narrowing the annotation to silence it is
+ *       equally wrong, because it would retire the schema validation that is the whole point of starting a
+ *       context here.
+ *       <p>{@link java.time.Clock} is the one documented exception, and it is declared by
+ *       {@link FixedClockTestConfiguration} for two reasons stated there in full: the main configuration
+ *       publishes no {@code Clock} bean at all - a recorded finding owned by another boundary - so without
+ *       it no subclass of this harness can start a context and the schema validation never runs; and a test
+ *       tier must in any case pin its own clock, because an assertion that reads the ambient clock fails
+ *       intermittently on second, day, month and year boundaries. The published instant is the same one
+ *       {@link #fixedClock()} returns and the same one the sibling batch harness publishes.</li>
  *   <li><em>A fixture stream is null at run time and the failure surfaces far from its cause.</em> The
  *       daily transaction fixture is named {@code dailytran.txt}, with "daily" spelled in full. The
  *       mainframe data definition name and dataset are {@code DALYTRAN}, so {@code dalytran.txt} is the
@@ -225,7 +257,15 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *   <li><em>A test passes alone and fails in a suite, or vice versa.</em> Data written by a sibling test
  *       leaked. Every test method here runs inside a transaction that is rolled back; a subclass that
  *       commits deliberately, or that starts its own thread to write, steps outside that guarantee.</li>
- * </ul>
+ *   <li><em>One class in the tier passes when run alone but cannot connect when run after a sibling.</em>
+ *       A per-class container lifecycle has been reintroduced - almost always by adding
+ *       {@code org.testcontainers.junit.jupiter.Container} to {@link #POSTGRES}, which makes the extension
+ *       stop the container after each concrete subclass and restart it on a new mapped port while Spring
+ *       keeps the cached datasource pointed at the old one. The container is started once per JVM by the
+ *       static initialiser on {@link #POSTGRES} and must never be annotated or stopped; the field
+ *       documentation sets out why, and the two sibling subclasses in this package exist to make a
+ *       regression here fail immediately rather than intermittently.</li>
+ *   </ul>
  *
  * <h2>Not available</h2>
  *
@@ -253,7 +293,7 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
  *       codes the corpus actually tests are {@code NORMAL}, {@code NOTFND}, {@code ENDFILE},
  *       {@code DUPREC} and {@code DUPKEY}. The condition is therefore specification-derived only, so no
  *       test for it may be invented here and no parity claim is made for it.</p></li>
- * </ol>
+ *   </ol>
  *
  * <h2>Thread safety and side effects</h2>
  *
@@ -268,23 +308,53 @@ import org.testcontainers.postgresql.PostgreSQLContainer;
 @ActiveProfiles("test")
 @Testcontainers
 @Transactional
+@Import(AbstractRepositoryIntegrationTest.FixedClockTestConfiguration.class)
 public abstract class AbstractRepositoryIntegrationTest {
 
     /**
-     * The one PostgreSQL 16 container for the entire tier, and the only {@code static} member this class
-     * is permitted to hold.
+     * The one PostgreSQL 16 container for the entire tier, started once per JVM, and the only {@code static}
+     * member this class is permitted to hold.
      *
      * <p><strong>Why it is static, and why that is not a violation of "avoid global mutable state".</strong>
-     * The Testcontainers JUnit 5 lifecycle distinguishes a static {@code @Container} field, started once
-     * before the test class and shared, from an instance field, started and stopped around every single
-     * test method. Restarting a database engine and reapplying three migrations once per test method would
-     * cost minutes across the tier and would buy nothing, because the isolation that matters is isolation
-     * of <em>data</em>, not of the engine. This field is therefore the single deliberate, documented
-     * exception to the no-global-mutable-state rule, and it is a narrow one: it is {@code final}, it is
-     * fully constructed and started before any test observes it, it is never reassigned, and it exposes no
+     * Restarting a database engine and reapplying three migrations once per test method would cost minutes
+     * across the tier and would buy nothing, because the isolation that matters is isolation of
+     * <em>data</em>, not of the engine. This field is therefore the single deliberate, documented exception
+     * to the no-global-mutable-state rule, and it is a narrow one: it is {@code final}, it is fully
+     * constructed and started before any test observes it, it is never reassigned, and it exposes no
      * test-visible mutable state that one test could use to perturb another. Data isolation is provided
      * separately and completely by transactional rollback; see {@link #flushAndClear()}. No other
      * {@code static} field of any kind may be added to this class or to any subclass.
+     *
+     * <p><strong>Why it carries no {@code org.testcontainers.junit.jupiter.Container} annotation, and why
+     * that omission is load-bearing rather than an oversight.</strong> The JUnit 5 Testcontainers extension
+     * treats a shared {@code static @Container} as a <em>class-level</em> resource: it starts it in
+     * {@code beforeAll} and stops it in {@code afterAll} <em>of every concrete subclass</em>. With eleven
+     * subclasses that is eleven start-stop cycles of one field. Spring, meanwhile, caches the application
+     * context across sibling classes whose context key is identical - which every subclass of this harness
+     * has, because the annotations that form the key are all declared here. The two lifecycles then
+     * disagree: the first subclass stops the container in its {@code afterAll}, the extension restarts it
+     * for the second subclass on a <em>new mapped port</em>, and the second subclass runs against the
+     * cached datasource whose Hikari pool still addresses the port that no longer exists. The symptom is a
+     * connection failure in whichever class happens to run second, which looks like a defect in that class
+     * and is not one, and which does not reproduce when that class is run alone.
+     *
+     * <p>The remedy is this pair: start the container from a static initialiser, which runs exactly once
+     * per class loader, and never stop it. Nothing stops it because nothing needs to - the Testcontainers
+     * Ryuk reaper container removes it when the JVM exits, which is the sanctioned singleton-container
+     * lifecycle. The alternatives were considered and rejected on the merits.
+     * {@code org.springframework.test.annotation.DirtiesContext} would rebuild the whole context for every
+     * class and pay a far larger cost to fix a smaller problem; forcing a distinct context key per subclass
+     * cannot be enforced from a base class, so it would fail silently the first time a subclass omitted the
+     * marker. {@link #POSTGRES} is therefore started below, and
+     * {@code com.cardemo.integration.repository.RepositoryHarnessLifecycleTest} and
+     * {@code com.cardemo.integration.repository.RepositoryHarnessSeedStateTest} are two sibling subclasses
+     * that exist to prove the continuity holds when both run in one invocation.
+     *
+     * <p>The class-level {@code org.testcontainers.junit.jupiter.Testcontainers} annotation is kept
+     * deliberately even though no field here uses it: it registers the extension so that a subclass may
+     * still declare its own {@code @Container} field where a genuinely per-class lifecycle is what that
+     * subclass wants. This is the same arrangement the sibling batch harness uses, so the two tiers agree
+     * rather than each solving the problem its own way.
      *
      * <p><strong>Why the declared type is not parameterised.</strong> On the pinned 2.0.3 line the
      * canonical class {@code org.testcontainers.postgresql.PostgreSQLContainer} declares no type
@@ -299,21 +369,169 @@ public abstract class AbstractRepositoryIntegrationTest {
      * registers them as connection details, which is why no JDBC URL, host, port, database name, user name
      * or password literal appears anywhere in this package. Flyway then applies {@code V1}, {@code V2} and
      * {@code V3} to the fresh container, so the schema under test is the schema that ships.
+     *
+     * <p><strong>Why the image is pinned by digest, and why it is not the {@code alpine} variant.</strong>
+     * This field previously named {@code postgres:16.10-alpine}, on the reasoning that it matched the tag the
+     * compose topology uses for the developer database. Both halves of that were wrong for a tier whose
+     * contract is reproducing behaviour exactly.
+     *
+     * <p>The variant matters because Alpine is built on musl and Debian on glibc, and <em>text collation
+     * ordering differs between the two</em>. This tier exercises repositories whose derived and explicit
+     * queries carry {@code ORDER BY} over character columns - card numbers, identifiers, names - and the
+     * legacy browse order those queries reproduce is a parity contract, not a preference. Asserting sort
+     * order against musl collation and shipping against glibc would let a genuine ordering divergence pass
+     * here and appear in production, which is precisely the class of defect this tier exists to catch. The
+     * sibling batch harness had already reached that conclusion and refused Alpine for the same reason;
+     * disagreeing with it meant the two tiers were testing on different engines.
+     *
+     * <p>The digest matters because a tag is a mutable pointer. Even an apparently exact tag is only a name
+     * the registry may republish, and the sibling tier's {@code postgres:16} was measured resolving to 16.14
+     * while this one named 16.10 - so "the same PostgreSQL 16" was two different engines in one build. A
+     * digest is content-addressed and cannot move, so the engine under test is now the same one on every run,
+     * on every machine and after any registry change.
+     *
+     * <p>The digest below resolves to PostgreSQL 16.10 on Debian GNU/Linux 13 (trixie) with GLIBC 2.41,
+     * verified by inspecting the pulled image rather than inferred from its name.
+     * {@code asCompatibleSubstituteFor} is required because a digest reference carries no tag, so the
+     * library cannot otherwise recognise it as the PostgreSQL image its wait strategy and JDBC URL builder
+     * expect.
+     *
+     * <p><strong>The identical digest is named by
+     * {@code com.cardemo.integration.batch.AbstractBatchIntegrationTest}, and the two must stay equal.</strong>
+     * It is written out in both places rather than shared through a constant because each harness documents,
+     * as a deliberate invariant, that no further {@code static} field may be added to it - so a shared
+     * constant could not live in either without weakening a rule that exists to keep global mutable state out
+     * of the tiers - and because neither tier may own the other's substrate. The duplication is safe in a way
+     * a duplicated <em>name</em> would not be: a digest is self-verifying, so if the two ever diverge they
+     * name two visibly different immutable images rather than silently resolving to different content under
+     * one label.
      */
-    @Container
     @ServiceConnection
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16.10-alpine");
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
+            DockerImageName
+                    .parse("postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1")
+                    .asCompatibleSubstituteFor("postgres"));
+
+    /*
+     * The JVM-singleton start. It runs once, when this class is initialised, which is before any subclass
+     * instance exists and before Spring resolves the connection details off the container, and it is never
+     * paired with a stop. See the field documentation above for why a class-level @Container lifecycle is
+     * wrong here and what the failure looks like when it is used.
+     */
+    static {
+        POSTGRES.start();
+    }
 
     /**
-     * Fixed instant every test in this tier treats as "now", pinned to UTC.
+     * Supplies every property this tier cannot inherit, so that starting a context does not depend on how the
+     * machine running the build happens to be configured.
+     *
+     * <p><strong>Why this exists at all.</strong> {@code @ServiceConnection} covers the datasource and
+     * nothing else, but {@link org.springframework.boot.test.context.SpringBootTest} is declared with no
+     * {@code classes} attribute - so that Hibernate's {@code validate} checks the real entity set - and
+     * therefore refreshes the <em>whole</em> application context. Guards that fail fast by design then demand
+     * configuration the datasource injection knows nothing about, and each requirement below was established
+     * by measurement rather than by anticipation: the first concrete subclass aborted refresh on an
+     * unresolvable token-signing-key placeholder, and the cloud configuration then refused to build a client
+     * without a resolved, allow-listed endpoint and static credentials for each of S3, SQS and SNS.
+     *
+     * <ul>
+     *   <li><strong>The token signing key.</strong> {@code application.yml} binds
+     *       {@code carddemo.security.jwt.signing-key} to an environment variable with <em>no default</em>,
+     *       deliberately, so that a deployment cannot boot with a key an attacker already knows. That posture
+     *       is correct and is not weakened here: {@code application-test.yml} states plainly that the abort
+     *       is intended behaviour proving the fail-fast contract, and directs a test to supply the value from
+     *       its own registry rather than from a committed default, because a test-only default in a profile
+     *       would reintroduce exactly the High-severity hardcoded-key defect Rule 1 Clause D names. Until
+     *       this registration existed no subclass could refresh a context, which is why the tier reported
+     *       zero tests while appearing complete. Reading it from the environment instead is not an option:
+     *       the continuous integration workflow exports only {@code NVD_API_KEY}, so a build depending on an
+     *       exported key would pass locally and fail there.</li>
+     *   <li><strong>The three cloud endpoints and the static credentials.</strong> The cloud configuration
+     *       <em>rejects an absent endpoint override</em> rather than treating it as a neutral default,
+     *       because an absent override is precisely what makes the SDK fall back to standard endpoint
+     *       resolution and reach live AWS, which the Agent Action Plan forbids outright at sections 0.3.2 and
+     *       0.8.4. Registering the credentials as well is what stops an ambient credential chain on the build
+     *       host from being picked up by accident.</li>
+     *   <li><strong>The three bucket names, the report queue and the notification topic.</strong> Each is
+     *       mapped by {@code application.yml} to an environment variable with no default, so each aborts a
+     *       refresh on a machine that has not exported it. Registering them here makes the tier independent
+     *       of the ambient environment, which is the environment-specific assumption Clause C rules out.</li>
+     * </ul>
+     *
+     * <p><strong>Why no emulator container is started here.</strong> This tier asserts persistence behaviour
+     * against PostgreSQL and makes no S3, SQS or SNS call. The guard validates the <em>binding</em> at
+     * startup - it parses the endpoint and checks its scheme, host and port against the allow-list - and
+     * opens no socket, so an allow-listed loopback address satisfies it without a second container. Starting
+     * the emulator for eleven repository classes that never call it would add minutes to every build and
+     * prove nothing; the tier that does exercise those services starts it itself and overrides all three
+     * endpoints with its own container's mapped address, so nothing registered here constrains it.
+     *
+     * <p><strong>Why none of these values is a leak, and why the port is stated.</strong> The endpoint host
+     * comes from {@link java.net.InetAddress#getLoopbackAddress()} rather than from a typed-in host name, so
+     * the class still names no routable address. An earlier revision supplied no port at all and reasoned
+     * that the guard constrained only the scheme and the host; that is no longer true and the reasoning is
+     * withdrawn. The guard now refuses an endpoint that relies on a scheme default, because an endpoint with
+     * no port would not reach the emulator even when its host is correct, so the emulator's published port is
+     * stated explicitly. The credentials are the emulator's own well-known placeholders. The bucket, queue
+     * and topic names are the same logical names {@code localstack-init/init-aws.sh} provisions, and none is
+     * secret. The signing key is synthetic, is past the 32-byte minimum the HS256 signer enforces, and says
+     * what it is in its own text so that no deployment could mistake it for real key material; it never
+     * leaves the test JVM, because this tier issues no token and asserts nothing about one.
+     *
+     * @param registry the registry Spring's test context supplies for late-bound properties; never
+     *                 {@code null}
+     */
+    @DynamicPropertySource
+    static void registerApplicationProperties(final DynamicPropertyRegistry registry) {
+
+        // A deliberately unroutable but allow-listed endpoint: parsed and accepted by the cloud binding
+        // guard, never connected to. The port is the emulator's published 4566 and is stated explicitly
+        // because the guard refuses an endpoint that relies on a scheme default. It is a local constant
+        // rather than a static field, because this class documents that no further static field may be
+        // added to it.
+        final String emulatorEndpoint =
+                "http://" + InetAddress.getLoopbackAddress().getHostAddress() + ":4566";
+
+        registry.add("spring.cloud.aws.region.static", () -> "us-east-1");
+        registry.add("spring.cloud.aws.credentials.access-key", () -> "test");
+        registry.add("spring.cloud.aws.credentials.secret-key", () -> "test");
+        registry.add("spring.cloud.aws.s3.endpoint", () -> emulatorEndpoint);
+        registry.add("spring.cloud.aws.sqs.endpoint", () -> emulatorEndpoint);
+        registry.add("spring.cloud.aws.sns.endpoint", () -> emulatorEndpoint);
+
+        registry.add("carddemo.aws.s3.batch-input-bucket", () -> "carddemo-batch-input");
+        registry.add("carddemo.aws.s3.batch-output-bucket", () -> "carddemo-batch-output");
+        registry.add("carddemo.aws.s3.statements-bucket", () -> "carddemo-statements");
+        registry.add("carddemo.aws.sqs.report-queue", () -> "carddemo-report-jobs.fifo");
+        registry.add("carddemo.aws.sns.notification-topic", () -> "carddemo-notifications");
+
+        // Deliberately synthetic, deliberately not a secret, and deliberately past the 32-byte minimum the
+        // token signer enforces for HS256. Registered rather than committed to a profile so that the
+        // production fail-fast on an absent key stays intact and stays tested.
+        registry.add("carddemo.security.jwt.signing-key",
+                () -> "carddemo-repository-tier-test-signing-key-not-a-secret");
+    }
+
+    /**
+     * The fixed clock the whole application context is running on, injected back rather than rebuilt.
+     *
+     * <p>It is the bean {@link FixedClockTestConfiguration} publishes, not a second instance constructed
+     * here, and that distinction is what makes an assertion against it meaningful: a subclass comparing a
+     * persisted or rendered timestamp against this clock is comparing against the very object the production
+     * beans in the context consumed, so the two cannot drift apart. Before the context published a clock at
+     * all this field was a plain instance field, which meant the tier <em>documented</em> a fixed time source
+     * while every bean in the context read the ambient one.
      *
      * <p>The instant {@code 2022-06-10T19:27:53Z} is not arbitrary and is not a placeholder: it is the one
      * distinct originating timestamp carried by the frozen daily transaction fixture, which renders it in
      * all 300 rows as {@code 2022-06-10 19:27:53.000000} across columns 279 to 304. Choosing it means a
      * value derived from this clock can be compared against fixture bytes directly. It is also the instant
-     * the unit tier already standardised on, so the two tiers agree rather than drifting.
+     * the unit tier and the batch integration tier already standardised on, so all three agree rather than
+     * drifting.
      */
-    private final Clock fixedClock = Clock.fixed(Instant.parse("2022-06-10T19:27:53Z"), ZoneOffset.UTC);
+    @Autowired
+    private Clock fixedClock;
 
     /**
      * Persistence context used only to implement {@link #flushAndClear()}.
@@ -338,10 +556,10 @@ public abstract class AbstractRepositoryIntegrationTest {
      * implementation detail.
      *
      * <p>There is deliberately nothing to do here. The container is {@code static} and is started by the
-     * Testcontainers extension before any instance exists; the clock is assigned by its field initialiser;
-     * and the persistence context is injected by the Spring test framework after construction. A subclass
-     * therefore needs no constructor of its own, and must not attempt to obtain a repository or query the
-     * database from one, because injection has not yet happened at that point.
+     * Testcontainers extension before any instance exists; the clock and the persistence context are both
+     * injected by the Spring test framework after construction. A subclass therefore needs no constructor of
+     * its own, and must not attempt to obtain a repository, read the clock or query the database from one,
+     * because injection has not yet happened at that point.
      */
     protected AbstractRepositoryIntegrationTest() {
         // Intentionally empty: see the Javadoc above. All state is supplied by field initialisation,
@@ -357,6 +575,11 @@ public abstract class AbstractRepositoryIntegrationTest {
      * ambient clock is not merely impure, it is intermittently wrong: such failures cluster on second, day,
      * month and year boundaries and are close to impossible to reproduce on demand. Taking time from here
      * removes the variable outright.
+     *
+     * <p>It is the same instance the context's own beans received, because {@link FixedClockTestConfiguration}
+     * publishes it as the primary {@code java.time.Clock} and this class injects it back rather than building
+     * a copy. A subclass therefore needs no other time source, and the production beans under test cannot be
+     * reading a different one.
      *
      * @return an immutable, thread-safe {@link java.time.Clock} fixed at {@code 2022-06-10T19:27:53Z} in
      *         {@link java.time.ZoneOffset#UTC}; never {@code null}, and never a moving clock
@@ -417,42 +640,112 @@ public abstract class AbstractRepositoryIntegrationTest {
      * the empty string that the terminating line feed produces after the last record is discarded, so the
      * returned size is the row count rather than the row count plus one.
      *
+     * <p><strong>The read is delegated to {@link FixtureLoader}, which is the tier's single fixture
+     * authority, and this method holds no parser of its own.</strong> That matters for more than tidiness.
+     * A second reader here would be a second, weaker set of guards: it would tolerate a fixture converted
+     * to CRLF, a fixture whose terminating line feed had been dropped, a fixture re-encoded outside 7-bit
+     * ASCII, a short record produced by a whitespace trim, and a record count that no longer matches the
+     * frozen census - and it would hand every one of those to a parity assertion as though it were the
+     * legacy byte image. {@code FixtureLoader} refuses all six, and it is itself proved by
+     * {@code com.cardemo.unit.model.FixtureLoaderTest}, so the guarantee this method offers is an executed
+     * one rather than an asserted one. The name is resolved through the {@link FixtureLoader.Fixture}
+     * census, which is what supplies the record width the strict parse needs and what makes the
+     * {@code dalytran.txt} misspelling fail immediately, by name, instead of at some later offset.
+     *
      * @param resourceName bare classpath-root name of the fixture, for example {@code "dailytran.txt"};
-     *                     must be non-{@code null} and not blank
+     *                     must be non-{@code null}, not blank, and one of the nine catalogued names
      * @return an immutable list of the file's records in file order, each exactly as stored including any
      *         trailing spaces, and excluding the empty tail produced by the terminating line feed
      * @throws NullPointerException     if {@code resourceName} is {@code null}
      * @throws IllegalArgumentException if {@code resourceName} is blank
-     * @throws IllegalStateException    if no such classpath resource exists, or if reading it fails. The
-     *                                  message names the resource in both cases, and where an
-     *                                  {@link java.io.IOException} caused the failure it is preserved as
-     *                                  the cause rather than swallowed. Failing loudly here is deliberate:
-     *                                  the canonical mistake is spelling the daily transaction fixture
-     *                                  {@code dalytran.txt} after the mainframe dataset name instead of
-     *                                  {@code dailytran.txt}, and returning an empty list for that would
-     *                                  turn a typo into a confusing failure far from its cause
+     * @throws IllegalStateException    if the name is not one of the nine catalogued fixtures, if no such
+     *                                  classpath resource exists, if reading it fails, or if the resource
+     *                                  no longer matches its frozen census or byte-level invariants. The
+     *                                  message names the resource in every case and the underlying failure
+     *                                  is preserved as the cause rather than swallowed. Failing loudly is
+     *                                  deliberate: the canonical mistake is spelling the daily transaction
+     *                                  fixture {@code dalytran.txt} after the mainframe dataset name
+     *                                  instead of {@code dailytran.txt}, and returning an empty list for
+     *                                  that would turn a typo into a confusing failure far from its cause
      */
     protected final List<String> readFixture(String resourceName) {
         Objects.requireNonNull(resourceName, "resourceName must not be null");
         if (resourceName.isBlank()) {
             throw new IllegalArgumentException("resourceName must not be blank");
         }
-        try (InputStream stream = getClass().getClassLoader().getResourceAsStream(resourceName)) {
-            if (stream == null) {
-                throw new IllegalStateException("Fixture not found on the classpath root: '" + resourceName
-                        + "'. The nine fixtures are flat direct children of src/test/resources; note that "
-                        + "the daily transaction fixture is named 'dailytran.txt', not 'dalytran.txt'.");
+        FixtureLoader.Fixture catalogued = null;
+        for (FixtureLoader.Fixture candidate : FixtureLoader.Fixture.values()) {
+            if (candidate.resourceName().equals(resourceName)) {
+                catalogued = candidate;
             }
-            String content = new String(stream.readAllBytes(), StandardCharsets.US_ASCII);
-            String[] records = content.split("\n", -1);
-            int recordCount = records.length;
-            if (recordCount > 0 && records[recordCount - 1].isEmpty()) {
-                recordCount--;
-            }
-            return List.of(Arrays.copyOf(records, recordCount));
-        } catch (IOException cause) {
+        }
+        if (catalogued == null) {
+            throw new IllegalStateException("Fixture '" + resourceName + "' is not one of the nine "
+                    + "catalogued app/data/ASCII fixtures. They are flat direct children of "
+                    + "src/test/resources; note that the daily transaction fixture is named "
+                    + "'dailytran.txt', not 'dalytran.txt'.");
+        }
+        try {
+            return FixtureLoader.load(catalogued).records();
+        } catch (IllegalArgumentException | UncheckedIOException cause) {
             throw new IllegalStateException("Failed to read fixture '" + resourceName
                     + "' from the classpath root.", cause);
+        }
+    }
+
+    /**
+     * Publishes the fixed clock this tier's Spring context runs on.
+     *
+     * <p><strong>Why it has to be a bean rather than a field.</strong> This harness starts a full
+     * {@link org.springframework.boot.test.context.SpringBootTest} context, so every production bean that
+     * takes a {@code java.time.Clock} by constructor is instantiated for real. The application publishes one
+     * such bean - {@code com.cardemo.config.ObservabilityConfig} declares it - and without
+     * this configuration the eleven repository tests would run against a <em>moving</em> clock while this
+     * class advertised a fixed one. Registering it here makes the advertised time source the actual one.
+     *
+     * <p>The bean is marked {@code @Primary}, and carries a name of its own rather than the production
+     * spelling, for a single reason: {@code spring.main.allow-bean-definition-overriding} is {@code false} in
+     * this application, so a name that collided with a production bean would fail the context refresh
+     * outright. Being primary means this fixed clock wins wherever the type is injected, which is exactly the
+     * purpose. It is the same mechanism, the same instant and the same zone that
+     * {@code com.cardemo.integration.batch.AbstractBatchIntegrationTest} uses, so the two integration tiers
+     * cannot disagree about "now".
+     *
+     * <p>{@code @Import} on a test class registers the test class itself as a configuration source, which is
+     * why this nested type is imported explicitly rather than being picked up by scanning: nested
+     * {@code @TestConfiguration} classes are only auto-detected when they are nested in the class that
+     * <em>declares</em> the context, and every context here is declared by a subclass.
+     */
+    @TestConfiguration(proxyBeanMethods = false)
+    static class FixedClockTestConfiguration {
+
+        /**
+         * Creates the configuration.
+         *
+         * <p>Declared explicitly, and empty by design: the single bean below is stateless and there is
+         * nothing to initialise. Spring instantiates this type reflectively, so the constructor is
+         * package-private rather than public.
+         */
+        FixedClockTestConfiguration() {
+            // Intentionally empty; see the constructor documentation above.
+        }
+
+        /**
+         * The fixed UTC clock every time-dependent bean in this tier's context receives.
+         *
+         * <p>The instant is the single distinct originating timestamp of the frozen daily transaction
+         * fixture, rendered in all 300 of its rows as {@code 2022-06-10 19:27:53.000000} across columns 279
+         * to 304, so a value derived from this clock can be compared against fixture bytes directly. The zone
+         * is {@code UTC} and is stated rather than inherited, matching both the production clock and the
+         * persistence layer's own JDBC time zone, so a machine configured for any other zone renders
+         * identical timestamps.
+         *
+         * @return the fixed clock, never {@code null}
+         */
+        @Bean
+        @Primary
+        Clock carddemoFixedTestClock() {
+            return Clock.fixed(Instant.parse("2022-06-10T19:27:53Z"), ZoneOffset.UTC);
         }
     }
 }

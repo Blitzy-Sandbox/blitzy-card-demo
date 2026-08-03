@@ -50,6 +50,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.security.config.ObjectPostProcessor;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -64,6 +65,7 @@ import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthen
 import org.springframework.security.oauth2.server.resource.web.access.BearerTokenAccessDeniedHandler;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.context.SecurityContextHolderFilter;
+import org.springframework.security.web.header.HeaderWriterFilter;
 import org.springframework.security.web.savedrequest.NullRequestCache;
 import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
 
@@ -88,7 +90,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *   <li><strong>The plaintext password comparison.</strong> {@code app/cbl/COSGN00C.cbl:L223} compares
  *       {@code SEC-USR-PWD} with {@code WS-USER-PWD} byte for byte. The BCrypt encoder published here is
  *       what {@code com.cardemo.security.CardDemoUserDetailsService} uses instead.</li>
- * </ul>
+ *   </ul>
  *
  * <p>It additionally <strong>supersedes {@code app/jcl/CBADMCDJ.jcl}</strong>, the DFHCSDUP job that
  * installed those resource definitions into the region - {@code EXEC PGM=DFHCSDUP,REGION=0M} at
@@ -97,7 +99,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  * the target, because the authorisation surface is declared in code and applied at startup. It is recorded
  * here so that the traceability matrix can account for the member rather than leaving it unmapped.
  *
- * <p>Three beans are published and nothing else:
+ * <p>Four beans are published and nothing else:
  *
  * <ol>
  *   <li>{@link #securityFilterChain(HttpSecurity, JwtAuthenticationFilter)} - the chain, the session policy
@@ -144,9 +146,16 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       upper-cases <em>both</em> the identifier and the password, trimming neither and padding neither, and
  *       {@code com.cardemo.security.CardDemoUserDetailsService} is the single authority that reproduces it.
  *       Folding case here as well would give two places to disagree.</li>
- *   <li><strong>No {@code java.time.Clock} bean.</strong> See the findings register: it is a real gap, but it
- *       is not this file's to fill.</li>
- * </ul>
+ *   <li><strong>No {@code java.time.Clock} bean.</strong> This class publishes exactly three beans, and a
+ *       second declaration of a shared {@code Clock} would make the dependency ambiguous at startup. The
+ *       time surface belongs to the configuration class that owns observability.</li>
+ *   </ul>
+ *
+ * <p>This class does <strong>not</strong> publish the application's {@link java.time.Clock}, although an
+ * earlier revision did. {@code com.cardemo.config.ObservabilityConfig} is the single owner of the time
+ * surface, which is where the migration plan places it and where the parity argument for the zone belongs.
+ * The token lifetime this surface enforces is measured against that same injected clock, so issuance,
+ * verification and expiry cannot drift onto different time sources.
  *
  * <h2>The authorisation surface: exactly seventeen transactions</h2>
  *
@@ -156,9 +165,12 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *
  * <dl>
  *   <dt>{@code CC00} at {@code :L378} - {@code COSGN00C}, sign-on</dt>
- *   <dd>{@code POST} under {@value #PATH_SIGN_ON}, and the <strong>only unauthenticated operation in the
- *       application</strong>. The transaction identifier is declared by the program itself at
- *       {@code app/cbl/COSGN00C.cbl:L37}, {@code WS-TRANID PIC X(04) VALUE 'CC00'}.</dd>
+ *   <dd>{@code POST} to {@value #PATH_SIGN_ON} exactly - one concrete route, not a prefix - and the
+ *       <strong>only unauthenticated operation in the application</strong>. The transaction identifier is
+ *       declared by the program itself at {@code app/cbl/COSGN00C.cbl:L37},
+ *       {@code WS-TRANID PIC X(04) VALUE 'CC00'}. Every other path beneath {@code /api/auth} falls through
+ *       to {@code anyRequest().denyAll()}, so no future authentication operation can become anonymous
+ *       without an explicit rule being added here.</dd>
  *   <dt>{@code CM00} at {@code :L399} - {@code COMEN01C}, main menu</dt>
  *   <dd>{@code GET} {@value #PATH_MENU_MAIN}, either role.</dd>
  *   <dt>{@code CA00} at {@code :L327} - {@code COADM01C}, admin menu</dt>
@@ -190,29 +202,22 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       {@code COUSR03C}, user administration</dt>
  *   <dd>Everything under {@value #PATH_ADMIN}, <strong>administrator only</strong>. All four are one rule
  *       because all four are one resource group and one privilege level.</dd>
- * </dl>
+ *   </dl>
  *
  * <p>Nothing else in the application is reachable. The final rule is
  * {@code anyRequest().denyAll()}, so a path that no rule names is refused rather than served, and a new
  * controller added without a rule fails closed. That direction is deliberate: the opposite default turns
  * every future omission into an unauthenticated endpoint.
  *
- * <h2>The eighteenth transaction: {@code Not available}</h2>
+ * <h2>The eighteenth transaction has no program and therefore no rule</h2>
  *
  * <p>{@code app/csd/CARDDEMO.CSD} defines eighteen transactions, not seventeen. The eighteenth is
  * {@code CDV1} at {@code :L388}, whose body at {@code :L390} names {@code PROGRAM(COCRDSEC)}, and which the
- * definition itself describes as a developer transaction.
- *
- * <p><strong>The program source for that transaction is {@code Not available}.</strong> A repository-wide
- * search at {@code 7756d89} finds {@code COCRDSEC} in exactly two places, both inside the resource
- * definition file itself - {@code app/csd/CARDDEMO.CSD:L211}, the {@code DEFINE PROGRAM} entry, and
- * {@code :L390}, inside the transaction body - and finds {@code CDV1} in exactly one place, {@code :L388}.
- * There is no program member for it anywhere under {@code app/}.
- *
- * <p><em>What would be needed:</em> either a {@code COCRDSEC} source member added to {@code app/cbl}, or a
- * change to the resource definitions removing the dangling entry. Neither is available and neither may be
- * fabricated. <strong>Severity Low</strong> - it costs one line of the transaction inventory and nothing
- * else, because a transaction with no program could not have been dispatched in the legacy region either.
+ * definition itself describes as a developer transaction. {@code COCRDSEC} occurs in exactly two places
+ * repository-wide, both inside the resource definition file - {@code app/csd/CARDDEMO.CSD:L211}, the
+ * {@code DEFINE PROGRAM} entry, and {@code :L390} - and there is no program member for it anywhere under
+ * {@code app/}. It is a dangling legacy definition with nothing to translate, and a transaction with no
+ * program could not have been dispatched in the legacy region either.
  *
  * <p>Accordingly <strong>no rule, no matcher, no {@code permitAll}, no {@code denyAll}, no authority and no
  * placeholder exists for it in this file</strong>. Being unnamed, it falls to the deny-by-default rule like
@@ -249,9 +254,9 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  * require a defence of. The legacy system did not re-read the security file per screen, and neither does
  * this one.
  *
- * <p><strong>Accepted consequence, severity Low.</strong> Because nothing is re-read, a change to a user's
+ * <p><strong>Accepted consequence.</strong> Because nothing is re-read, a change to a user's
  * type takes effect only when their current token expires, bounded by
- * {@code carddemo.security.jwt.expiration-seconds}, which defaults to 3600. A revocation check would close
+ * {@code carddemo.security.jwt.expiration-minutes}, which defaults to 30. A revocation check would close
  * that window at the cost of reintroducing exactly the per-request read the source does not perform, so it
  * is deliberately not added. The window is documented rather than eliminated.
  *
@@ -274,7 +279,8 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  * <strong>reuses those constants and declares no second spelling of its own</strong>, and it reads the role
  * claim through {@code JwtTokenProvider.ROLE_CLAIM_NAME} rather than through a literal.
  *
- * <p><strong>Severity High, and it fails silently.</strong> If the claim name or an authority spelling used
+ * <p><strong>This drift fails silently, which is why it is bound rather than re-spelled.</strong> If the
+ * claim name or an authority spelling used
  * here ever diverged from the one the token was minted with, the token would still verify, no exception
  * would be raised and nothing would be logged - the authority set would simply come out empty and every
  * authorised request would be refused with no diagnostic. Binding to the published constants removes that
@@ -303,7 +309,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       CSRF is disabled, so a plain unauthenticated request that does not ask for JSON would have created
  *       a session on the way to its own 401. Substituting the null cache is what actually keeps the
  *       stateless promise, and it is why no {@code spring.session} configuration is needed to keep it.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Sign-off is likewise stateless: the framework's logout support is disabled, because a signed bearer
  * token cannot be invalidated server-side without the revocation store this design deliberately omits, there
@@ -317,8 +323,8 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  * than an oversight. The framework's defaults are already the conservative choice for an API, so every
  * response - including the rejected ones - carries {@code X-Content-Type-Options: nosniff},
  * {@code X-Frame-Options: DENY}, {@code X-XSS-Protection: 0} and a no-store cache triple of
- * {@code Cache-Control}, {@code Pragma} and {@code Expires}. Those values were confirmed on a running
- * instance rather than assumed. Two rules follow, and they pull in opposite directions only in appearance:
+ * {@code Cache-Control}, {@code Pragma} and {@code Expires}. Two rules follow, and they pull in opposite
+ * directions only in appearance:
  *
  * <ul>
  *   <li><strong>Do not disable them.</strong> Turning the defaults off, or relaxing the frame policy to
@@ -329,7 +335,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       framework already emits adds a second place to maintain the same decision and reads as configuration
  *       that is doing work when it is not. That is exactly the dead configuration Clause B prohibits, so the
  *       correct expression of "keep the defaults" is to say so here and write no code.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The one header this class does cause is the bearer challenge: a rejected request carries
  * {@code WWW-Authenticate: Bearer} with no realm and no error parameters, which is the bare RFC 6750 form
@@ -345,14 +351,13 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *
  * <ul>
  *   <li>The chain could not be built at all in any context that does not carry the full MVC infrastructure,
- *       which makes this policy untestable in isolation. That is not a hypothetical - it was observed while
- *       validating this class, as a hard startup failure reading "a bean named
- *       {@code mvcHandlerMappingIntrospector} ... is required".</li>
+ *       which makes this policy untestable in isolation: assembling it without an
+ *       {@code mvcHandlerMappingIntrospector} bean present is a hard startup failure.</li>
  *   <li>Matcher selection would depend on classpath contents rather than on a decision recorded in source,
  *       which is the opposite of the explicit behaviour Clause A asks for.</li>
  *   <li>The inferred matcher additionally resolves servlet mappings while configuring, so a second
  *       registered servlet turns a working configuration into an ambiguous-mapping failure.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The behaviour of the rules is unchanged by this choice. Spring MVC parses its own mappings with the same
  * pattern engine in this framework generation, so the same requests match either way; what changes is that
@@ -368,12 +373,15 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *
  * <ul>
  *   <li>{@code com.cardemo.observability.CorrelationIdFilter} publishes its own precedence as
- *       {@code Ordered.HIGHEST_PRECEDENCE}. Boot registers the whole security chain at
- *       {@code SecurityProperties.DEFAULT_FILTER_ORDER}, which is {@code -100}, so the correlation filter
- *       already runs <em>before</em> the entire chain - including before a 401 or a 403 - and every request
- *       is correlated whatever its outcome. <strong>It is therefore not added here.</strong> Adding it would
- *       register the same filter a second time, which is the duplication Clause C forbids and the cause of
- *       the doubled log lines that filter's own troubleshooting notes describe.</li>
+ *       {@code CorrelationIdFilter.ORDER}, which is {@code Ordered.HIGHEST_PRECEDENCE + 2}. Boot registers the
+ *       whole security chain at {@code SecurityProperties.DEFAULT_FILTER_ORDER}, which is {@code -100}, so the
+ *       correlation filter still runs <em>before</em> the entire chain - including before a 401 or a 403 - and
+ *       every request is correlated whatever its outcome. The offset of two exists so that it runs
+ *       <em>after</em> Boot's {@code ServerHttpObservationFilter} at
+ *       {@code Ordered.HIGHEST_PRECEDENCE + 1}, which is what opens the span that filter tags; its own
+ *       Javadoc records why. <strong>It is therefore not added here.</strong> Adding it would register the same
+ *       filter a second time, which is the duplication Clause C forbids and the cause of the doubled log lines
+ *       that filter's own troubleshooting notes describe.</li>
  *   <li>{@code com.cardemo.security.JwtAuthenticationFilter} is inserted <em>inside</em> the chain,
  *       immediately after {@code SecurityContextHolderFilter}. The direction matters: that filter publishes
  *       its servlet-level precedence as {@code DEFAULT_FILTER_ORDER + 10} deliberately, so that its
@@ -382,7 +390,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       the context-holder filter would replace it with an empty context and every request would come back
  *       401. Inserting after that filter is what makes the established authentication survive to the
  *       authorisation filter.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -398,9 +406,9 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *   <dd>The symmetric HMAC key. <strong>There is no default, no example and no fallback.</strong>
  *       {@code src/main/resources/application.yml} indirects it to the environment variable
  *       {@value #SIGNING_KEY_VARIABLE} with no default value, so an absent variable leaves the placeholder
- *       unresolvable and startup fails before a port is opened. That is the required behaviour: the previous
- *       migration attempt hardcoded this value, a <strong>High</strong>-severity defect this file closes. The
- *       key must be at least {@value #MINIMUM_SIGNING_KEY_BYTES} bytes when encoded as UTF-8.</dd>
+ *       unresolvable and startup fails before a port is opened. That is the required behaviour: a committed
+ *       default would be a shared, source-visible signing key. The key must be at least
+ *       {@value #MINIMUM_SIGNING_KEY_BYTES} bytes when encoded as UTF-8.</dd>
  *   <dt>{@value #KEY_ISSUER}</dt>
  *   <dd>The issuer claim, an opaque identifier rather than a URL. Non-secret, so it carries a documented
  *       default of {@code carddemo}. Bound here so that the decoder <em>verifies</em> the issuer rather than
@@ -411,7 +419,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       that exact cost, and a different value here would hash newly created users at a cost the seeded rows
  *       do not share. The constructor therefore rejects any other value at startup rather than accepting a
  *       silent split.</dd>
- * </dl>
+ *   </dl>
  *
  * <p>Two further keys are bound by {@code com.cardemo.security.JwtTokenProvider} and deliberately not
  * restated here: the token lifetime in seconds, and the issuer it stamps. The issuer is the one value both
@@ -421,7 +429,14 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *
  * <p>Build and unit-test with {@code ./mvnw -B -ntp clean verify}. This file compiles under
  * {@code -Xlint:all -Werror} with {@code failOnWarning} set, so any warning it introduced would fail the
- * build rather than be reported.
+ * build rather than be reported - though note that an <em>unused import</em> would not, because
+ * {@code javac} 25 publishes no {@code unused} lint key, and malformed Javadoc would not either, because no
+ * Javadoc plugin is bound in {@code pom.xml}; doclint is a separate explicit gate.
+ *
+ * <p>Measured gate results, test counts, coverage and the measured toolchain are deliberately
+ * <strong>not</strong> restated in this file. They are published once, with the commands that reproduce
+ * them, in section 0.4.5.1 of {@code docs/technical-specifications.md}; a figure copied into a Javadoc
+ * comment is wrong the moment the tree changes.
  *
  * <p>To run the application, supply {@value #SIGNING_KEY_VARIABLE} in the environment - the repository ships
  * {@code .env.example} documenting the variable with no value - and start the dependency stack with
@@ -454,10 +469,9 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *   <dd>{@value #KEY_BCRYPT_STRENGTH} was overridden. Restore {@value #REQUIRED_BCRYPT_STRENGTH}; the value
  *       is pinned to the cost the seed migration used.</dd>
  *   <dt>Startup fails with a duplicate bean definition for the decoder or the password encoder</dt>
- *   <dd><strong>The remedy is fixed by agreement so that it is applied the same way every time: remove the
- *       duplicate from the {@code com.cardemo.security} package, because this class is the designated
- *       owner of both.</strong> Two decoders are worse than a startup failure when they happen not to
- *       collide, because they can verify against different keys.</dd>
+ *   <dd>Remove the duplicate from the {@code com.cardemo.security} package: this class is the designated
+ *       owner of both beans. Two decoders are worse than a startup failure when they happen not to collide,
+ *       because they can verify against different keys.</dd>
  *   <dt>Every request returns 401 although the token looks valid</dt>
  *   <dd>Three candidates, in order of likelihood: a role-claim name or authority spelling that drifted from
  *       {@code JwtTokenProvider}'s constants; a decoder built from a different key than the issuer signed
@@ -478,33 +492,33 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *   <dd>Something reintroduced a session-backed request cache or a stateful configurer. The null request
  *       cache configured here is what prevents it; see the statelessness section for why removing it is not
  *       a simplification.</dd>
- * </dl>
+ *   </dl>
  *
- * <h2>Deferred hardening and residual risk</h2>
+ * <h2>Known limitations of this policy</h2>
  *
- * <p>Each item is disclosed rather than silently omitted, per Clause F, and each is recorded in
- * {@code DECISION_LOG.md} so that none is an untracked deferral under Clause B:
+ * <p>Each is a deliberate scope boundary rather than an oversight, and each is disclosed so that a reader
+ * does not mistake it for an omission:
  *
  * <ul>
  *   <li><strong>No transport security here.</strong> Termination is an infrastructure concern in this
  *       topology; a bearer token on a plaintext hop is replayable, so a real deployment must terminate TLS
- *       in front of the application. Severity Medium, deferred by scope.</li>
+ *       in front of the application.</li>
  *   <li><strong>No rate limiting.</strong> The sign-on path is anonymous by necessity and therefore
- *       brute-forceable; BCrypt's cost is the only throttle present. Severity Medium, deferred by scope.</li>
- *   <li><strong>No token revocation.</strong> Discussed above; bounded by the token lifetime. Severity
- *       Low.</li>
+ *       brute-forceable; BCrypt's cost is the only throttle present.</li>
+ *   <li><strong>No token revocation.</strong> A change to a user's type takes effect only when their current
+ *       token expires, for the reason given under the COMMAREA section above.</li>
  *   <li><strong>Anonymous management endpoints.</strong> The metrics endpoint discloses the exact runtime
  *       build through its JVM meters. The health bodies are status-only and the info body is empty, so
- *       nothing else leaks. Severity Low; the alternative - authenticating the scrape - would require the
- *       scrape configuration and the image health check to carry a credential, which is a larger change than
- *       the disclosure warrants.</li>
+ *       nothing else leaks. Authenticating the scrape would require both the scrape configuration and the
+ *       image health check to carry a credential, which is a larger change than the disclosure warrants.</li>
  *   <li><strong>No user-enumeration difference, deliberately.</strong> The legacy screen distinguished
  *       {@code 'User not found. Try again ...'} at {@code app/cbl/COSGN00C.cbl:L247-L251} from
  *       {@code 'Wrong Password. Try again ...'} at {@code :L241-L246}. The REST surface does not differentiate
  *       externally; the distinction survives as a typed exception and a structured log without the
  *       credential. This is a labelled deviation from parity, severity Medium, owned by
- *       {@code com.cardemo.service.auth.AuthenticationService} and recorded in {@code DECISION_LOG.md}.</li>
- * </ul>
+ *       {@code com.cardemo.service.auth.AuthenticationService} and owed an entry in the planned
+ *       {@code DECISION_LOG.md}.</li>
+ *   </ul>
  *
  * <h2>Findings register</h2>
  *
@@ -532,7 +546,9 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       paths could not be read from code the way the other six were. The rules for
  *       {@value #PATH_SIGN_ON} and {@value #PATH_ADMIN} are therefore asserted contracts rather than
  *       verified facts. They are not guesses: the administration base path is fixed by the migration plan,
- *       and the sign-on namespace is the convention the tree states of itself in
+ *       and the sign-on route is the one the repository's own test asserts - {@code POST /api/auth/signon} at
+ *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java} - on the namespace convention
+ *       the tree states of itself in
  *       {@code src/main/java/com/cardemo/controller/BillingController.java:309}, which names
  *       {@code /api/menu} for the menu transactions and {@code /api/auth} for sign-on alongside its own
  *       {@code /api/billing}. <em>What is needed:</em> those two files, mounted at those two base paths. If
@@ -550,23 +566,45 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       defect. The citable per-request identity evidence used instead is {@code app/csd/CARDDEMO.CSD},
  *       {@code app/cbl/COSGN00C.cbl:L37} and {@code app/cbl/COCRDLIC.cbl:L295}. <em>What is needed:</em> a
  *       monitor definition this repository does not contain. It costs a citation, not a behaviour.</dd>
- *   <dt>Medium - the signing-key variable name</dt>
- *   <dd>This file's own specification named the variable {@code JWT_SIGNING_KEY}. The repository had already
- *       standardised on {@value #SIGNING_KEY_VARIABLE}: it is what {@code application.yml} indirects the
- *       property to, what {@code .env.example} ships empty and required, and what
- *       {@code com.cardemo.security.JwtTokenProvider} names in its own failure messages. Introducing a
- *       second name would be the duplication Clause C forbids and would half-configure the application in a
- *       way no single failure message could explain. The property key is unchanged; only the variable name
- *       follows the repository. <em>Remediation if the repository later standardises the other way:</em>
- *       rename in {@code application.yml}, in the three sibling profiles, in {@code .env.example} and in the
- *       two Java constants together, never one alone.</dd>
- *   <dt>Medium - no {@code java.time.Clock} bean exists</dt>
- *   <dd>{@code com.cardemo.security.JwtTokenProvider} and several services require a {@code Clock} by
- *       constructor, and <strong>no configuration class in the tree declares one</strong>. It is
- *       deliberately not declared here: this file's bean set is fixed at three, and a second declaration
- *       elsewhere would produce an ambiguous dependency at startup - a worse failure than the missing one,
- *       because it is order-dependent. <em>What is needed:</em> exactly one {@code Clock} bean, published by
- *       the configuration class that owns the observability and time surface.</dd>
+ *   <dt>High - the signing-key variable name and the token lifetime</dt>
+ *   <dd>Closed. This file's own specification named the variable {@value #SIGNING_KEY_VARIABLE} and fixed the
+ *       bearer lifetime at thirty minutes. Both had drifted: the tree had settled on {@code JWT_SECRET}, and
+ *       the lifetime was expressed in seconds with a 3,600-second default - <em>double</em> the approved
+ *       window, which matters because a bearer token cannot be revoked before it expires, so the lifetime is
+ *       the exposure window of a leaked token. Keeping the drift was defensible only as long as it was
+ *       uniform; the correct resolution is a rename carried through every site at once, and that is what was
+ *       done: {@code application.yml} (both the key and the units, now
+ *       {@code expiration-minutes} defaulting to 30), the two Java constants here and in
+ *       {@code com.cardemo.security.JwtTokenProvider}, the environment template, the container image
+ *       documentation, the build file, the vulnerability-scan suppressions, the sibling profiles' prose and
+ *       the unit test that asserts the variable name. <em>The rule for any future rename is the same:</em>
+ *       all sites in one change, never one alone, because a partial rename produces a failure message naming
+ *       a variable the operator has already set.</dd>
+ *   <dt>Blocker - no {@code java.time.Clock} bean existed, so the application could not start</dt>
+ *   <dd>Closed, and <strong>not here</strong>. {@code com.cardemo.security.JwtTokenProvider} and the
+ *       services and batch processors that stamp a record require a {@code Clock} by constructor, and while
+ *       no configuration class declared one a packaged run failed context refresh with {@code No qualifying
+ *       bean of type java.time.Clock}; components that worked around it by constructing
+ *       {@code Clock.systemDefaultZone()} themselves were reading an ambient time source rather than a
+ *       configured one. The severity was <strong>Blocker</strong> and not Medium, because the effect was
+ *       total startup failure rather than a documentation gap. An interim revision of this class published
+ *       the bean, on the reasoning that a bean nothing declares is a startup failure whereas a bean two
+ *       classes declare is only an ambiguity. Both halves of that are true, and the conclusion still has to
+ *       be <em>one</em> owner rather than <em>two</em>: {@code com.cardemo.config.ObservabilityConfig} is
+ *       the designated owner of the time surface and publishes {@code Clock.systemDefaultZone()}, so the
+ *       declaration here was removed in favour of it - twice, because a later revision reinstated it and
+ *       the duplicate had to be taken out again. <em>Region-local rather than UTC</em> is itself a
+ *       parity decision, argued at that bean: the legacy region rendered local civil time, so a UTC clock
+ *       would shift every {@code CURDATE}, {@code CURTIME} and generated 26-character timestamp that Gate 1
+ *       compares byte for byte, while changing nothing about what is stored - the persistence layer converts
+ *       every instant to UTC on its own. The zone is still <em>pinnable</em>, by {@code carddemo.time.zone},
+ *       and an unrecognised value still aborts startup with the offending text named; that capability moved
+ *       to the owning class along with the bean rather than being dropped with it. <em>Invariant a reviewer
+ *       can check mechanically:</em>
+ *       {@code grep -rn -A2 "@Bean" src/main/java | grep "Clock clock"} returns exactly one line. Any
+ *       second production declaration must delete that one in the same commit rather than sit beside it,
+ *       because {@code spring.main.allow-bean-definition-overriding} is {@code false} in the base profile
+ *       and a duplicate is a startup failure, not a silent last-one-wins.</dd>
  *   <dt>Low - locator correction</dt>
  *   <dd>The password comparison in {@code app/cbl/COSGN00C.cbl} is at {@code :L223}, inside the
  *       {@code WHEN 0} branch that begins at {@code :L222}, and not at {@code :L222} itself as earlier
@@ -577,7 +615,7 @@ import org.springframework.security.web.servlet.util.matcher.PathPatternRequestM
  *       {@code :L253} both do. It is a real asymmetry in the source, it is preserved rather than corrected
  *       by the service that owns sign-on, and it is recorded here only so that a reader of this policy does
  *       not mistake the uniform 401 for a loss of it.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Thread safety and state</h2>
  *
@@ -613,8 +651,15 @@ public class SecurityConfig {
      * <p>Named in failure messages so that an operator is told exactly what to set. Its
      * <strong>value is never named anywhere</strong> - not logged, not echoed, not summarised and not
      * digested.
+     *
+     * <p>The spelling is the mandated one. This class previously named {@code JWT_SECRET}, matching what the
+     * rest of the tree had settled on first; the whole repository has since been renamed to this spelling in
+     * one change - the base profile, {@code com.cardemo.security.JwtTokenProvider}, the environment template,
+     * the container image documentation, the build file, the vulnerability-scan suppressions and the unit
+     * test that asserts the name. A partial rename is the one outcome to avoid, because a half-configured
+     * application fails with a message that names a variable the operator has already set.
      */
-    private static final String SIGNING_KEY_VARIABLE = "JWT_SECRET";
+    private static final String SIGNING_KEY_VARIABLE = "JWT_SIGNING_KEY";
 
     /**
      * Property key holding the token issuer, an opaque identifier rather than a URL.
@@ -679,8 +724,18 @@ public class SecurityConfig {
     // the transaction identifier, with the identifier and its CSD line number in the documentation.
     // =============================================================================================
 
-    /** Sign-on, transaction {@code CC00} at {@code app/csd/CARDDEMO.CSD:L378} - {@code COSGN00C}. */
-    private static final String PATH_SIGN_ON = "/api/auth/**";
+    /**
+     * Sign-on, transaction {@code CC00} at {@code app/csd/CARDDEMO.CSD:L378} - {@code COSGN00C}.
+     *
+     * <p><strong>The exact route, not a prefix.</strong> An earlier form of this constant was
+     * {@code /api/auth/**}, which granted anonymous access to every path under the namespace - including
+     * ones no resource definition sanctions and none that exist yet, such as a token refresh, a password
+     * reset or an enumeration helper. One transaction is defined at {@code CC00} and it is one endpoint, so
+     * the matcher names that endpoint. Anything else the namespace later acquires is caught by
+     * {@code anyRequest().denyAll()} until an authorisation rule is written for it deliberately, which is
+     * the fail-closed direction to be wrong in.
+     */
+    private static final String PATH_SIGN_ON = "/api/auth/signon";
 
     /** Main menu, transaction {@code CM00} at {@code app/csd/CARDDEMO.CSD:L399} - {@code COMEN01C}. */
     private static final String PATH_MENU_MAIN = "/api/menu/main";
@@ -815,7 +870,7 @@ public class SecurityConfig {
      * Declares the one security filter chain: stateless, deny-by-default, and authorising exactly the
      * seventeen sourced CICS transactions.
      *
-     * <h2>What each clause is for</h2>
+     * <h4>What each clause is for</h4>
      *
      * <dl>
      *   <dt>Cross-site request forgery state disabled</dt>
@@ -856,9 +911,31 @@ public class SecurityConfig {
      *   <dd>A container-internal error dispatch is not a client request. Without this clause the final
      *       deny-all rule would refuse the very forward that renders the error body, converting a clean
      *       {@code 400} into an opaque {@code 403}.</dd>
+     *
+     *   <dt>Eager response-header writing</dt>
+     *   <dd>This is the published workaround for <strong>CVE-2026-22732</strong> (CVSS 9.1), and it is
+     *       configuration rather than commentary. The advisory's condition is that when an application sets
+     *       HTTP response headers itself and Spring Security writes its own headers <em>lazily</em> - the
+     *       default - the security headers may never be written at all. Versions 6.5.0 through 6.5.8 are
+     *       affected; 6.5.9 carries the fix; eager header writing is the documented mitigation for anyone who
+     *       cannot move version. This application cannot move version: AAP section 0.6.1.1 pins
+     *       {@code spring-boot-starter-parent} at 3.5.11, which resolves Spring Security 6.5.8, and section
+     *       0.8.4 forbids advancing a pinned coordinate unilaterally. So the mitigation is applied instead:
+     *       the {@code HeaderWriterFilter} the headers configurer builds is post-processed with
+     *       {@code setShouldWriteHeadersEagerly(true)}, which writes the headers on the way in rather than on
+     *       the way out, before any handler can commit the response. The post-processor is an anonymous class
+     *       and not a lambda on purpose - the composite post-processor selects by resolved generic type, and a
+     *       lambda erases it, so a lambda would silently never run. It is verified rather than asserted:
+     *       {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java} drives a request through the
+     *       assembled chain and fails if any of the header writers has not run by the time the chain is
+     *       entered. <em>Residual risk, disclosed:</em> the mitigation removes the exposure, it does not
+     *       upgrade the dependency, so the advisory still matches the artefact by version. Remediation, owned
+     *       by the plan owner rather than by an implementing agent because it is an AAP amendment: raise the
+     *       pinned parent to a release whose managed Spring Security version is 6.5.9 or later, then delete
+     *       both this clause and the corresponding entry in {@code owasp-suppressions.xml}.</dd>
      * </dl>
      *
-     * <h2>Why the rules are in this order</h2>
+     * <h4>Why the rules are in this order</h4>
      *
      * <p>Matchers are evaluated in declaration order and the first match wins, so the order is part of the
      * behaviour rather than a formatting choice. Non-overlapping paths come first, then the two
@@ -868,7 +945,7 @@ public class SecurityConfig {
      * rules. No rule depends on a set's iteration order, satisfying Rule 1 Clause A's determinism
      * requirement.
      *
-     * <h2>Where the filter goes</h2>
+     * <h4>Where the filter goes</h4>
      *
      * <p>{@code com.cardemo.security.JwtAuthenticationFilter} is inserted immediately after
      * {@code SecurityContextHolderFilter}. Earlier is not merely suboptimal but wrong: the context-holder
@@ -878,9 +955,10 @@ public class SecurityConfig {
      * a second instance would double every token parse.
      *
      * <p>{@code com.cardemo.observability.CorrelationIdFilter} is deliberately <strong>not</strong> added.
-     * It registers at the servlet container's highest precedence, ahead of the entire security chain, so
-     * unauthenticated and rejected requests are already correlated. Adding it here would run it twice and
-     * produce two correlation identifiers for one request.
+     * It registers at {@code Ordered.HIGHEST_PRECEDENCE + 2} - immediately after Boot's server observation
+     * filter and far ahead of the entire security chain at {@code -100} - so unauthenticated and rejected
+     * requests are already correlated. Adding it here would run it twice and produce two correlation
+     * identifiers for one request.
      *
      * @param http                     the builder Spring Security supplies for this chain
      * @param jwtAuthenticationFilter  the token-validation filter, injected rather than constructed
@@ -901,6 +979,21 @@ public class SecurityConfig {
         return http
                 .csrf(AbstractHttpConfigurer::disable)
                 .logout(AbstractHttpConfigurer::disable)
+
+                // CVE-2026-22732 mitigation. Spring Security 6.5.8 writes its response headers lazily, and
+                // the advisory's condition is that an application which sets headers of its own can then
+                // leave the security headers unwritten. Eager writing is the published workaround, and the
+                // pinned parent forbids the version bump that would carry the fix. An anonymous class rather
+                // than a lambda: the composite post-processor selects by resolved generic type, which a lambda
+                // erases, so a lambda would compile, register and never run. See the class documentation.
+                .headers(headers -> headers.addObjectPostProcessor(
+                        new ObjectPostProcessor<HeaderWriterFilter>() {
+                            @Override
+                            public <O extends HeaderWriterFilter> O postProcess(final O headerWriterFilter) {
+                                headerWriterFilter.setShouldWriteHeadersEagerly(true);
+                                return headerWriterFilter;
+                            }
+                        }))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .requestCache(cache -> cache.requestCache(new NullRequestCache()))
                 .exceptionHandling(handling -> handling
@@ -926,7 +1019,10 @@ public class SecurityConfig {
 
                         // CC00 - app/csd/CARDDEMO.CSD:L378 - app/cbl/COSGN00C.cbl. The only unauthenticated
                         // business operation, because it is the operation that establishes identity. Bounded
-                        // to POST so no sign-on data can ever be placed in a query string.
+                        // to POST so no sign-on data can ever be placed in a query string, and bounded to
+                        // the EXACT route rather than to the /api/auth namespace: one transaction is defined
+                        // and one endpoint is opened. Every other path under that namespace, now or later,
+                        // falls through to anyRequest().denyAll() below.
                         .requestMatchers(path.matcher(HttpMethod.POST, PATH_SIGN_ON)).permitAll()
 
                         // CU00, CU01, CU02, CU03 - app/csd/CARDDEMO.CSD:L449, :L459, :L469, :L479.

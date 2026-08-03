@@ -39,6 +39,9 @@ import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.repository.UserSecurityRepository;
 
+import java.security.SecureRandom;
+import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -133,7 +136,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>{@link JwtTokenProvider} already records the same boundary from the other side: it states that
  *       case folding is owned by this class and that repeating it there would be the duplication clause C
  *       forbids. Two files, one agreed owner.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Why an explicit verification method exists, rather than DaoAuthenticationProvider</h2>
  *
@@ -198,7 +201,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       {@code RECORDSIZE(80,80)}, and {@code :L48} sets {@code LRECL=80} on the sequential feed;</li>
  *   <li>{@code app/csd/CARDDEMO.CSD:L88-L92} gives the cluster its online definition, which is what makes
  *       this table part of the request path rather than batch-only reference data.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Only three of the five fields are used here. The identifier is the key, the credential is compared,
  * and the type byte becomes the authority. The two name fields are personal data and their only
@@ -252,7 +255,11 @@ import org.springframework.transaction.annotation.Transactional;
  *   <tr>
  *     <td>{@code WHEN 13}</td>
  *     <td>{@code :L247-L251}</td>
- *     <td>{@link UsernameNotFoundException}. The legacy branch shows
+ *     <td>From {@link #authenticate(String, String)}, the <em>same</em> {@link BadCredentialsException}
+ *         with the <em>same</em> message that a password mismatch produces, after the same BCrypt work has
+ *         been performed - see the enumeration section below. {@link UsernameNotFoundException} survives on
+ *         {@link #loadUserByUsername(String)} alone, because the {@code UserDetailsService} contract
+ *         requires it there and that method verifies no credential. The legacy branch shows
  *         {@code 'User not found. Try again ...'}.</td>
  *   </tr>
  *   <tr>
@@ -272,12 +279,28 @@ import org.springframework.transaction.annotation.Transactional;
  * <strong>deliberately not reproduced</strong>. <b>Medium</b> severity, justified by clause D's
  * "principle of least privilege for tokens/credentials/config".
  *
- * <p>The distinction survives where it is useful and disappears where it is dangerous. Internally the two
- * outcomes remain different exception <em>types</em> - {@link UsernameNotFoundException} against
- * {@link BadCredentialsException} - and each logs its own branch at debug level, so an operator and a
- * test can still tell them apart. Externally both carry one identical message, and they do so
- * structurally rather than by convention: there is a single constant and both throw sites use it, so the
- * two messages cannot drift apart in a later edit.
+ * <p>The distinction survives where it is useful and disappears where it is dangerous. Internally each
+ * outcome logs its own branch at debug level, so an operator and a test can still tell them apart.
+ * Externally the two are indistinguishable in <strong>all three</strong> observable channels, and each is
+ * closed structurally rather than by convention:
+ *
+ * <ul>
+ *   <li><strong>Message.</strong> One constant, {@link #MESSAGE_CREDENTIALS_REJECTED}, used by both throw
+ *       sites, so the two texts cannot drift apart in a later edit.</li>
+ *   <li><strong>Exception type.</strong> {@link #authenticate(String, String)} throws
+ *       {@link BadCredentialsException} for an unknown identifier as well as for a wrong password. An
+ *       earlier form threw {@link UsernameNotFoundException} for the first, and because the caller maps
+ *       exception types onto HTTP outcomes, the <em>type</em> was itself the oracle - the message being
+ *       identical did not help. {@link UsernameNotFoundException} is therefore confined to
+ *       {@link #loadUserByUsername(String)}, whose contract requires it and which verifies no
+ *       credential.</li>
+ *   <li><strong>Elapsed time.</strong> When no row bears the identifier, this class still performs one
+ *       BCrypt verification - against {@link #dummyCredentialDigest}, a cost-10 digest computed at
+ *       construction - before refusing. Without it the absent-user path skipped the deliberately expensive
+ *       key schedule and returned in microseconds while a present-user path took tens of milliseconds,
+ *       which is a timing oracle that reveals exactly what the identical message was hiding. Both paths now
+ *       run the same key schedule exactly once.</li>
+ *   </ul>
  *
  * <p>Missing input is treated differently on purpose, and safely. A blank identifier and a blank password
  * are distinguishable failures here, reproducing {@code :L118-L121} and {@code :L123-L126}, because
@@ -345,28 +368,31 @@ import org.springframework.transaction.annotation.Transactional;
  *       {@code V3__seed_data.sql};</li>
  *   <li>{@code spring.jpa.open-in-view} is {@code false} in every profile, which is why both public
  *       methods declare a read-only transaction rather than relying on an open session.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Not available - an unverified contract, disclosed rather than asserted</h2>
+ * <h2>The encoder contract, now verified against code</h2>
  *
- * <p>Clause F requires that missing information be stated plainly. <strong>Not available:</strong> at the
- * time this file was written {@code src/main/java/com/cardemo/config/SecurityConfig.java} did not exist -
- * the configuration package contained only {@code JpaConfig} and {@code WebConfig}. Three things are
- * therefore asserted from the specification and <em>not</em> verified against code:
+ * <p>An earlier revision of this section disclosed three unverified assertions on the ground that
+ * {@code src/main/java/com/cardemo/config/SecurityConfig.java} did not exist and that the configuration
+ * package held only {@code JpaConfig} and {@code WebConfig}. Both halves are false and the claim is
+ * withdrawn: {@code SecurityConfig} is present and the package holds four classes. All three assertions are
+ * now verified by reading it:
  *
  * <ol>
- *   <li>that a {@link PasswordEncoder} bean is published at all;</li>
- *   <li>that it is BCrypt at strength <strong>10</strong>, matching the digests in
- *       {@code V3__seed_data.sql};</li>
- *   <li>that the authorisation rules consume the {@code ROLE_ADMIN} and {@code ROLE_USER} authorities
- *       this class grants.</li>
- * </ol>
+ *   <li>a {@link PasswordEncoder} bean <em>is</em> published, by {@code SecurityConfig.passwordEncoder()};</li>
+ *   <li>it <em>is</em> BCrypt at strength <strong>10</strong> - {@code REQUIRED_BCRYPT_STRENGTH} is 10, the
+ *       {@code carddemo.security.bcrypt.strength} property is 10, and start-up aborts on any other value -
+ *       matching the digests in {@code V3__seed_data.sql};</li>
+ *   <li>the authorisation rules <em>do</em> consume the authorities this class grants: every
+ *       {@code requestMatchers} rule binds to {@code JwtTokenProvider.ADMIN_AUTHORITY} and
+ *       {@code JwtTokenProvider.USER_AUTHORITY} rather than to its own string literals, which is the same
+ *       pair of constants this class grants from.</li>
+ *   </ol>
  *
- * <p><strong>What is needed to close this:</strong> {@code src/main/java/com/cardemo/config/SecurityConfig.java},
- * publishing a BCrypt {@link PasswordEncoder} of strength 10. Until it exists the application context
- * cannot satisfy this class's second constructor argument and will fail to refresh - which is the correct
- * failure. The alternative, constructing an encoder here to make start-up succeed, would substitute a
- * silent strength mismatch for a loud missing-bean error, and is exactly what clause C forbids.
+ * <p>What has <em>not</em> changed is the design decision behind them. This class still declines to
+ * construct an encoder of its own: if the bean were ever removed the context must fail to refresh loudly
+ * rather than fall back to a locally chosen strength, because a silent strength mismatch fails every
+ * verification while looking healthy. That is what clause C requires.
  *
  * <h2>Build, run and test</h2>
  *
@@ -386,13 +412,15 @@ import org.springframework.transaction.annotation.Transactional;
  *       is missing or was applied after {@code matches}. See {@link #normalisePresentedPassword(String)}.</li>
  *   <li><b>Sign-on fails only on one host.</b> Suspect a case operation without {@link Locale#ROOT}
  *       somewhere on the path; under a Turkish default locale a dotless {@code i} folds to {@code U+0130}.</li>
- *   <li><b>The context will not refresh, reporting no {@link PasswordEncoder} bean.</b> That is the
- *       disclosed gap above, not a defect in this class. Author {@code SecurityConfig}.</li>
+ *   <li><b>The context will not refresh, reporting no {@link PasswordEncoder} bean.</b> The bean is
+ *       published by {@code com.cardemo.config.SecurityConfig}, so suspect that its
+ *       {@code @Configuration} class is outside the component-scan root or that
+ *       {@code carddemo.security.bcrypt.strength} is absent, which aborts start-up by design.</li>
  *   <li><b>Authorisation refuses every request although sign-on succeeds.</b> The authority strings and
  *       the claim reader have diverged. This class binds to {@link JwtTokenProvider#ADMIN_AUTHORITY} and
  *       {@link JwtTokenProvider#USER_AUTHORITY} precisely so that they cannot; check that the filter and
  *       the security configuration bind to the same constants rather than to their own literals.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Thread safety: instances hold two immutable collaborator references and no mutable state, so a
  * single bean is safely shared across request threads.
@@ -429,6 +457,14 @@ public class CardDemoUserDetailsService implements UserDetailsService {
     private static final String MESSAGE_USER_ID_REQUIRED = "Please enter a user identifier.";
 
     /**
+     * Length of the random pre-image behind {@link #dummyCredentialDigest}, in bytes.
+     *
+     * <p>Thirty-two bytes is well beyond guessing range and beyond BCrypt's own 72-byte input ceiling once
+     * Base64-encoded to 44 characters, so the whole value participates in the digest.
+     */
+    private static final int DUMMY_CREDENTIAL_BYTES = 32;
+
+    /**
      * Message for an absent or blank password, reproducing the outcome of
      * {@code app/cbl/COSGN00C.cbl:L123-L126} ({@code 'Please enter Password ...'}).
      */
@@ -451,10 +487,31 @@ public class CardDemoUserDetailsService implements UserDetailsService {
     private final PasswordEncoder passwordEncoder;
 
     /**
+     * A digest that no account can ever present, verified against on the unknown-identifier path so that
+     * path costs the same as the known-identifier path.
+     *
+     * <p><strong>This is not a credential and it is not a secret.</strong> It is produced at construction by
+     * asking the injected {@link PasswordEncoder} to encode {@value #DUMMY_CREDENTIAL_BYTES} bytes of
+     * freshly generated randomness, which is then discarded unread, so no value exists anywhere that
+     * verifies against it and it is worthless to an attacker who reads it out of memory. Nothing is
+     * committed: unlike a literal digest in source, this one differs on every start.
+     *
+     * <p>It is produced <em>through the injected encoder</em> rather than written as a constant on purpose.
+     * A literal {@code $2a$10$...} string would be rejected as an unrecognised format by, for example, a
+     * delegating encoder, and {@link PasswordEncoder#matches(CharSequence, String)} would then return
+     * {@code false} immediately without running any key schedule - reintroducing the timing oracle while
+     * appearing to close it. Encoding through the same object that will later verify guarantees the format
+     * matches and the work is genuinely performed.
+     */
+    private final String dummyCredentialDigest;
+
+    /**
      * Creates the sign-on credential loader.
      *
-     * <p>Side effects: none beyond storing the two references; no query is issued and no row is read
-     * during construction.
+     * <p>Side effects: no query is issued and no row is read during construction. One BCrypt encode is
+     * performed, to build {@link #dummyCredentialDigest}; at strength 10 that costs a few tens of
+     * milliseconds once, at start-up, and it buys a constant-work unknown-identifier path for the life of
+     * the application.
      *
      * @param userSecurityRepository read access to {@code user_security}; must not be {@code null}
      * @param passwordEncoder        the BCrypt verifier published by
@@ -462,12 +519,41 @@ public class CardDemoUserDetailsService implements UserDetailsService {
      *                               to match {@code V3__seed_data.sql}; must not be {@code null}
      * @throws NullPointerException if either argument is {@code null}, because a missing collaborator must
      *                              fail loudly at start-up rather than at the first sign-on attempt
+     * @throws IllegalStateException if the supplied encoder produces no digest, which would leave the
+     *                               unknown-identifier path with nothing to verify against and would
+     *                               silently restore the timing oracle
      */
     public CardDemoUserDetailsService(final UserSecurityRepository userSecurityRepository,
             final PasswordEncoder passwordEncoder) {
         this.userSecurityRepository =
                 Objects.requireNonNull(userSecurityRepository, "userSecurityRepository must not be null");
         this.passwordEncoder = Objects.requireNonNull(passwordEncoder, "passwordEncoder must not be null");
+        this.dummyCredentialDigest = unmatchableDigest(this.passwordEncoder);
+    }
+
+    /**
+     * Builds the constant-work digest described on {@link #dummyCredentialDigest}.
+     *
+     * <p>The random material is generated, encoded and dropped inside this method, so the only surviving
+     * artefact is a digest whose pre-image was never retained by anything.
+     *
+     * @param encoder the encoder that will also perform verification
+     * @return a digest in the encoder's own format, never {@code null} or blank
+     * @throws IllegalStateException if the encoder returns nothing usable
+     */
+    private static String unmatchableDigest(final PasswordEncoder encoder) {
+        final byte[] material = new byte[DUMMY_CREDENTIAL_BYTES];
+        new SecureRandom().nextBytes(material);
+        final String digest = encoder.encode(Base64.getEncoder().encodeToString(material));
+        Arrays.fill(material, (byte) 0);
+        if (digest == null || digest.isBlank()) {
+            throw new IllegalStateException(
+                    "The configured PasswordEncoder produced no digest, so the unknown-identifier sign-on "
+                            + "path would have nothing to verify against and would return measurably faster "
+                            + "than a known-identifier path. Publish a BCrypt encoder of strength "
+                            + "10 from com.cardemo.config.SecurityConfig.");
+        }
+        return digest;
     }
 
     /**
@@ -543,8 +629,10 @@ public class CardDemoUserDetailsService implements UserDetailsService {
      * {@link JwtTokenProvider} needs to issue a token, and nothing more is exposed. The two name fields of
      * {@code app/cpy/CSUSR01Y.cpy:L19-L20} are personal data and are not carried.
      *
-     * <p>Side effects: none. One read-only query and one BCrypt comparison; nothing is written and no
-     * counter is incremented here - see the class documentation on why the attempts counter is emitted by
+     * <p>Side effects: none. One read-only query and <strong>exactly one</strong> BCrypt comparison on
+     * every path that reaches the store - against the stored digest when a row was found, and against
+     * {@link #dummyCredentialDigest} when none was, so that the two cost the same. Nothing is written and
+     * no counter is incremented here; see the class documentation on why the attempts counter is emitted by
      * the service layer instead.
      *
      * @param userId           the identifier as presented, in any case, unfolded and untrimmed; must not
@@ -555,14 +643,16 @@ public class CardDemoUserDetailsService implements UserDetailsService {
      * @return the authenticated principal, with the folded identifier as its name, exactly one of
      *         {@code ROLE_ADMIN} or {@code ROLE_USER} as its authority and <em>no</em> credential; never
      *         {@code null}
-     * @throws BadCredentialsException             if either value is {@code null} or blank - reproducing
+     * @throws BadCredentialsException             on every credential refusal this method makes: either
+     *                                             value {@code null} or blank, reproducing
      *                                             {@code app/cbl/COSGN00C.cbl:L118-L121} and
-     *                                             {@code :L123-L126} - or if the password does not match,
-     *                                             which is the {@code :L241-L246} branch
-     * @throws UsernameNotFoundException           if no row bears the identifier, the
-     *                                             {@code :L247-L251} branch. It carries the same message
-     *                                             as a password mismatch, so the two are indistinguishable
-     *                                             to the caller while remaining distinct types internally
+     *                                             {@code :L123-L126}; a password that does not match,
+     *                                             the {@code :L241-L246} branch; and <strong>an
+     *                                             identifier no row bears</strong>, the
+     *                                             {@code :L247-L251} branch. The last two carry one
+     *                                             identical message and one identical type and have
+     *                                             performed identical work, so a caller cannot tell them
+     *                                             apart by body, by status or by elapsed time
      * @throws InternalAuthenticationServiceException if the read fails, the {@code :L252-L256} branch
      * @throws IllegalStateException               if the loaded row carries no user class
      */
@@ -582,7 +672,26 @@ public class CardDemoUserDetailsService implements UserDetailsService {
 
         final String normalisedUserId = normaliseUserId(userId);
         final String normalisedPassword = normalisePresentedPassword(presentedPassword);
-        final UserSecurity userSecurity = loadUserSecurity(normalisedUserId);
+        final Optional<UserSecurity> located = findUserSecurity(normalisedUserId);
+
+        if (located.isEmpty()) {
+            // app/cbl/COSGN00C.cbl:L247-L251 - WHEN 13, 'User not found. Try again ...'.
+            //
+            // The verification below is performed even though there is nothing to verify against, and it is
+            // NOT dead work: it is what makes this path cost what the path below costs. Skipping it would
+            // let a caller distinguish a known identifier from an unknown one by elapsed time alone, which
+            // is the same disclosure the shared message exists to prevent. The digest is unmatchable by
+            // construction, so the result is always false and is deliberately discarded.
+            passwordEncoder.matches(normalisedPassword, this.dummyCredentialDigest);
+
+            LOG.debug("Sign-on refused: the presented user identifier resolved to no row "
+                    + "(app/cbl/COSGN00C.cbl:L247-L251).");
+            // The SAME type and the SAME message as the mismatch below. The type is part of the contract
+            // here: com.cardemo.service.auth.AuthenticationService maps exception types onto HTTP outcomes,
+            // so a distinct type would be an enumeration oracle however identical the message.
+            throw new BadCredentialsException(MESSAGE_CREDENTIALS_REJECTED);
+        }
+        final UserSecurity userSecurity = located.get();
 
         // app/cbl/COSGN00C.cbl:L223 - IF SEC-USR-PWD = WS-USER-PWD. Both operands were folded to upper
         // case at :L132-L136; the plaintext equality of the source is now a BCrypt verification. Called
@@ -704,9 +813,46 @@ public class CardDemoUserDetailsService implements UserDetailsService {
      * @throws InternalAuthenticationServiceException if the read fails
      */
     private UserSecurity loadUserSecurity(final String normalisedUserId) {
-        final Optional<UserSecurity> found;
+        final Optional<UserSecurity> found = findUserSecurity(normalisedUserId);
+
+        if (found.isEmpty()) {
+            // app/cbl/COSGN00C.cbl:L247-L251 - WHEN 13, 'User not found. Try again ...'. The message is
+            // deliberately the same one a password mismatch produces.
+            //
+            // This throw site is reached from loadUserByUsername only, which the framework invokes and
+            // which verifies no credential, so UsernameNotFoundException is both required by the
+            // UserDetailsService contract and harmless here. The application sign-on path does NOT come
+            // through here: authenticate() handles an absent row itself, so that it can perform the
+            // constant-work verification first and refuse with the same type a mismatch produces.
+            LOG.debug("Sign-on refused: the presented user identifier resolved to no row "
+                    + "(app/cbl/COSGN00C.cbl:L247-L251).");
+            throw new UsernameNotFoundException(MESSAGE_CREDENTIALS_REJECTED);
+        }
+        return found.get();
+    }
+
+    /**
+     * Performs the keyed read of {@code app/cbl/COSGN00C.cbl:L211-L219} and reports its outcome as an
+     * {@link Optional}, mapping only the {@code WHEN OTHER} store failure of {@code :L252-L256} onto an
+     * exception.
+     *
+     * <p>Extracted so that the two callers can treat an absent row differently <em>without</em> duplicating
+     * the read or its failure mapping: {@link #loadUserByUsername(String)} needs the
+     * {@link UsernameNotFoundException} its framework contract specifies, while
+     * {@link #authenticate(String, String)} must first spend the same BCrypt work a found row would have
+     * cost and then refuse indistinguishably. One read, one failure mapping, two documented outcomes.
+     *
+     * <p>Side effects: none. One read-only query; no write, no upsert, no lazy association to traverse -
+     * the aggregate has none, which is why a read-only transaction fully satisfies it even with
+     * {@code spring.jpa.open-in-view} disabled.
+     *
+     * @param normalisedUserId the already-folded identifier to read by; must not be {@code null}
+     * @return the loaded row, or empty when no row bears that identifier
+     * @throws InternalAuthenticationServiceException if the read itself fails
+     */
+    private Optional<UserSecurity> findUserSecurity(final String normalisedUserId) {
         try {
-            found = userSecurityRepository.findById(normalisedUserId);
+            return userSecurityRepository.findById(normalisedUserId);
         } catch (final DataAccessException cause) {
             // app/cbl/COSGN00C.cbl:L252-L256 - WHEN OTHER, 'Unable to verify the User ...'. The cause is
             // preserved; no credential, hash or identifier is placed in the message.
@@ -715,15 +861,6 @@ public class CardDemoUserDetailsService implements UserDetailsService {
             throw new InternalAuthenticationServiceException(
                     "The user security store could not be read while verifying a sign-on request.", cause);
         }
-
-        if (found.isEmpty()) {
-            // app/cbl/COSGN00C.cbl:L247-L251 - WHEN 13, 'User not found. Try again ...'. The message is
-            // deliberately the same one a password mismatch produces; only the type differs.
-            LOG.debug("Sign-on refused: the presented user identifier resolved to no row "
-                    + "(app/cbl/COSGN00C.cbl:L247-L251).");
-            throw new UsernameNotFoundException(MESSAGE_CREDENTIALS_REJECTED);
-        }
-        return found.get();
     }
 
     /**

@@ -74,7 +74,7 @@ import jakarta.validation.constraints.Size;
  *       invoked at {@code :3947-3948}, answers <em>"did someone else change the
  *       record while the user was editing?"</em> Its operands are the live
  *       record versus the OLD snapshot.</li>
- * </ul>
+ *   </ul>
  * <p>The regimes disagree field by field, which is why no shared comparison
  * helper can serve both. Selected contrasts, all verified in the source:
  * active status is upper-cased on both sides at {@code :1685-1688} but compared
@@ -143,7 +143,7 @@ import jakarta.validation.constraints.Size;
  *       must pass {@code java.util.Locale#ROOT}, because a Turkish-locale
  *       upper-casing maps {@code i} to a dotted capital and would silently
  *       change comparison outcomes.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The OLD / NEW social security number asymmetry</h2>
  * <p>{@code oldDetails} carries one flat nine-character field
@@ -298,7 +298,7 @@ import jakarta.validation.constraints.Size;
  *       {@code app/cpy/CVACT01Y.cpy:11} (sic, both). The misspelling is
  *       preserved in every citation; the Java member is named
  *       {@code expiraionDate}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security</h2>
  * <p>This is the highest personally-identifiable-data payload in the package,
@@ -313,9 +313,10 @@ import jakarta.validation.constraints.Size;
  * because insecure deserialization is a flagged risky pattern and this is the
  * object least suited to it. And no credential or hash member exists, because
  * the account-update map declares none and least privilege forbids adding one.
- * A log-level masking rule would be a second line of defence, but no
- * {@code logback-spring.xml} exists under {@code src/main/resources} yet, so
- * never emitting these values is the only defence, not the first of two.</p>
+ * A log-level masking rule is the second line of defence and
+ * {@code src/main/resources/logback-spring.xml} supplies one, applied identically
+ * in every profile; never emitting these values is still the first, because a mask
+ * matches only the names and shapes it was given.</p>
  *
  * <h2>Consuming this payload</h2>
  * <p><strong>Binding.</strong> The payload arrives as JSON on the request body and is bound member by
@@ -342,27 +343,28 @@ import jakarta.validation.constraints.Size;
  * {@code newDetails} alone.</p>
  * <p><strong>Build and verification.</strong> The class compiles under {@code -Xlint:all -Werror} with
  * {@code failOnWarning}, so a raw type, an unchecked cast or a deprecated call fails the build. Two
- * prohibitions are <em>not</em> mechanically enforced and are stated here so they are not mistaken for
- * gates. <strong>Not available:</strong> documentation well-formedness is not checked by the build - no
- * {@code maven-javadoc-plugin} is declared in {@code pom.xml} and {@code -Xdoclint} appears nowhere in it,
- * so an unbalanced tag in this comment would fail nothing; making that a gate would require adding a
- * pinned {@code maven-javadoc-plugin} execution configured with {@code -Xdoclint:all}. Until then the
- * check is manual, and it does work. Run it in two steps, because this type imports
- * {@code jakarta.validation} and so needs the resolved dependency classpath:
- * {@code ./mvnw -o -q dependency:build-classpath -Dmdep.outputFile=target/cp.txt}, then
- * {@code javadoc -Xdoclint:all -quiet -d target/jd -classpath "$(cat target/cp.txt)"
- * -sourcepath src/main/java src/main/java/com/cardemo/model/dto/AccountUpdateRequest.java}. That pair
- * exited 0 with zero errors and zero warnings on {@code javadoc} 25.0.3 on 1 August 2026.
- * <strong>Not available:</strong> an unused-import check -
- * {@code javac} 25.0.3 publishes no lint key for one, as {@code javac --help-lint} shows, and no
- * Checkstyle or Error Prone analyser is in the pinned dependency set. Both are therefore enforced by
- * review. Behavioural cover belongs to the model unit tests under
- * {@code src/test/java/com/cardemo/unit/model}, whose mandatory regression must assert that the snapshot
- * component offsets 1/5/7 yield the same year, month and day as offsets 1/6/9 taken from the
- * dash-separated live form. <strong>Not available, measured 1 August 2026:</strong> no
- * {@code AccountUpdateRequestTest} exists and this type is not referenced anywhere under
- * {@code src/test/java}, so that regression - the single most important assertion this type needs - is
- * owed and is asserted nowhere.</p>
+ * prohibitions are <em>not</em> enforced by {@code javac} and are stated here so they are not mistaken for
+ * compiler gates. <strong>Documentation well-formedness is not a Maven gate:</strong> {@code pom.xml}
+ * declares no {@code maven-javadoc-plugin} and no {@code -Xdoclint}, so an unbalanced tag in this comment
+ * fails no Maven phase. It is instead enforced by the explicit, repository-owned doclint command published
+ * once in {@code docs/technical-specifications.md} under the dated checkpoint section, which runs over the
+ * whole {@code src/main/java} and {@code src/test/java} trees rather than over one file, so a defect
+ * elsewhere cannot hide behind a narrow invocation. <strong>An unused-import check is
+ * {@code Not available}:</strong> {@code javac} 25.0.3 publishes no {@code unused} lint key at all - as
+ * {@code javac --help-lint} shows - and no Checkstyle or Error Prone analyser is in the pinned dependency
+ * set, so {@code -Werror} cannot catch an unused import; the same is true of malformed Javadoc, of which
+ * {@code javac} sees only {@code dangling-doc-comments}. Both prohibitions are therefore enforced by
+ * review and by the separate doclint command, never by the compiler. Behavioural cover belongs to the
+ * model unit tests under
+ * {@code src/test/java/com/cardemo/unit/model}, whose mandatory regression is that the snapshot component
+ * offsets 1/5/7 yield the same year, month and day as offsets 1/6/9 taken from the dash-separated live
+ * form. That regression exists: {@code AccountUpdateRequestTest} asserts it from both directions -
+ * {@code storesSnapshotDatesCompact} requires every snapshot date to be stored compact, and
+ * {@code refusesDashSeparatedSnapshotDate} requires a dash-separated snapshot date to be refused because
+ * the compact offsets cannot slice it, both citing
+ * {@code app/cbl/COACTUPC.cbl:4174-4179}. An earlier revision of this paragraph said no such test class
+ * existed and that this type was unreferenced from the test tree; both halves are false and the claim is
+ * withdrawn.</p>
  *
  * <h2>Error modes</h2>
  * <ul>
@@ -380,7 +382,7 @@ import jakarta.validation.constraints.Size;
  *       {@code null} member stays {@code null} and a blank member stays blank,
  *       so the service can still distinguish the source's blank message from its
  *       not-valid message.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings and severities</h2>
  * <p>Classified per the project's output standard, with the remediation each one
@@ -478,7 +480,7 @@ import jakarta.validation.constraints.Size;
  *       {@code 'Record changed by some one else. Please review'} and
  *       {@code 'Looks Good.... so far'}. Remediation: all are reproduced exactly
  *       and marked sic; none is corrected, because parity is the contract.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>The dash-separated live form is confirmed by example, not merely by
  * construction.</strong> Every one of the 50 customer records in
@@ -1413,6 +1415,77 @@ public class AccountUpdateRequest {
     /**
      * Creates an empty request. JSON binding populates the members through the accessors below; nothing is
      * defaulted, so an absent member stays absent.
+     *
+     *  @param transactionName            {@code TRNNAMEI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:24}
+     *  @param title01                    {@code TITLE01I} PIC X(40) &mdash; {@code app/cpy-bms/COACTUP.CPY:30}
+     *  @param currentDate                {@code CURDATEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:36}
+     *  @param programName                {@code PGMNAMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:42}
+     *  @param title02                    {@code TITLE02I} PIC X(40) &mdash; {@code app/cpy-bms/COACTUP.CPY:48}
+     *  @param currentTime                {@code CURTIMEI} PIC X(8) &mdash; {@code app/cpy-bms/COACTUP.CPY:54}
+     *  @param accountId                  {@code ACUP-NEW-ACCT-ID-X} PIC X(11) &mdash; {@code app/cbl/COACTUPC.cbl:759}
+     *  @param accountStatus              {@code ACSTTUSI} PIC X(1) &mdash; {@code app/cpy-bms/COACTUP.CPY:66}
+     *  @param openDateYear               {@code OPNYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:72}
+     *  @param openDateMonth              {@code OPNMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:78}
+     *  @param openDateDay                {@code OPNDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:84}
+     *  @param creditLimit                {@code ACUP-NEW-CREDIT-LIMIT} PIC X(12) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:766}
+     *  @param expiryDateYear             {@code EXPYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:96}
+     *  @param expiryDateMonth            {@code EXPMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:102}
+     *  @param expiryDateDay              {@code EXPDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:108}
+     *  @param cashCreditLimit            {@code ACUP-NEW-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:769}
+     *  @param reissueDateYear            {@code RISYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:120}
+     *  @param reissueDateMonth           {@code RISMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:126}
+     *  @param reissueDateDay             {@code RISDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:132}
+     *  @param currentBalance             {@code ACUP-NEW-CURR-BAL} PIC X(12) &mdash; {@code app/cbl/COACTUPC.cbl:763}
+     *  @param currentCycleCredit         {@code ACUP-NEW-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:790}
+     *  @param accountGroupId             {@code AADDGRPI} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:150}
+     *  @param currentCycleDebit          {@code ACUP-NEW-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:793}
+     *  @param customerId                 {@code ACUP-NEW-CUST-ID-X} PIC X(09) &mdash; {@code app/cbl/COACTUPC.cbl:798}
+     *  @param customerSsnPart1           {@code ACTSSN1I} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:168}
+     *  @param customerSsnPart2           {@code ACTSSN2I} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:174}
+     *  @param customerSsnPart3           {@code ACTSSN3I} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:180}
+     *  @param dateOfBirthYear            {@code DOBYEARI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:186}
+     *  @param dateOfBirthMonth           {@code DOBMONI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:192}
+     *  @param dateOfBirthDay             {@code DOBDAYI} PIC X(2) &mdash; {@code app/cpy-bms/COACTUP.CPY:198}
+     *  @param customerFicoScore          {@code ACSTFCOI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:204}
+     *  @param customerFirstName          {@code ACSFNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:210}
+     *  @param customerMiddleName         {@code ACSMNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:216}
+     *  @param customerLastName           {@code ACSLNAMI} PIC X(25) &mdash; {@code app/cpy-bms/COACTUP.CPY:222}
+     *  @param addressLine1               {@code ACUP-NEW-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:804}
+     *  @param addressStateCode           {@code ACUP-NEW-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:807}
+     *  @param addressLine2               {@code ACUP-NEW-CUST-ADDR-LINE-2} PIC X(50) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:805}
+     *  @param addressZip                 {@code ACUP-NEW-CUST-ADDR-ZIP} PIC X(10) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:809}
+     *  @param addressCity                {@code ACSCITYI} PIC X(50) &mdash; {@code app/cpy-bms/COACTUP.CPY:252}
+     *  @param addressCountryCode         {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:808}
+     *  @param phone1AreaCode             {@code ACSPH1AI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:264}
+     *  @param phone1Prefix               {@code ACSPH1BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:270}
+     *  @param phone1LineNumber           {@code ACSPH1CI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:276}
+     *  @param governmentIssuedId         {@code ACUP-NEW-CUST-GOVT-ISSUED-ID} PIC X(20) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:836}
+     *  @param phone2AreaCode             {@code ACSPH2AI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:288}
+     *  @param phone2Prefix               {@code ACSPH2BI} PIC X(3) &mdash; {@code app/cpy-bms/COACTUP.CPY:294}
+     *  @param phone2LineNumber           {@code ACSPH2CI} PIC X(4) &mdash; {@code app/cpy-bms/COACTUP.CPY:300}
+     *  @param eftAccountId               {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:843}
+     *  @param primaryCardHolderIndicator {@code ACUP-NEW-CUST-PRI-HOLDER-IND} PIC X(01) &mdash; {@code
+     *      app/cbl/COACTUPC.cbl:844}
+     *  @param informationMessage         {@code INFOMSGI} PIC X(45) &mdash; {@code app/cpy-bms/COACTUP.CPY:318}
+     *  @param errorMessage               {@code ERRMSGI} PIC X(78) &mdash; {@code app/cpy-bms/COACTUP.CPY:324}
+     *  @param functionKeys               {@code FKEYSI} PIC X(21) &mdash; {@code app/cpy-bms/COACTUP.CPY:330}
+     *  @param functionKey05              {@code FKEY05I} PIC X(7) &mdash; {@code app/cpy-bms/COACTUP.CPY:336}
+     *  @param functionKey12              {@code FKEY12I} PIC X(10) &mdash; {@code app/cpy-bms/COACTUP.CPY:342}
+     *  @param oldDetails                 Snapshot of the record as the screen was first populated: {@code
+     *      ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669-756}
+     *  @param newDetails                 The edited values: {@code ACUP-NEW-DETAILS} at {@code
+     *      app/cbl/COACTUPC.cbl:757-849}
      */
     @JsonCreator
     public AccountUpdateRequest(
@@ -2371,6 +2444,65 @@ public class AccountUpdateRequest {
         /**
          * Creates an empty group. JSON binding populates the members through the accessors below; nothing is
          * defaulted, so an absent member stays absent and a blank member stays blank.
+         *
+         *  @param accountId                  {@code ACUP-NEW-ACCT-ID-X} PIC X(11) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:759}
+         *  @param activeStatus               {@code ACUP-NEW-ACTIVE-STATUS} PIC X(01) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:762}
+         *  @param currentBalance             {@code ACUP-NEW-CURR-BAL} PIC X(12) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:763}
+         *  @param creditLimit                {@code ACUP-NEW-CREDIT-LIMIT} PIC X(12) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:766}
+         *  @param cashCreditLimit            {@code ACUP-NEW-CASH-CREDIT-LIMIT} PIC X(12) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:769}
+         *  @param openDate                   {@code ACUP-NEW-OPEN-DATE} PIC X(08) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:772}
+         *  @param expiraionDate              {@code ACUP-NEW-EXPIRAION-DATE} PIC X(08) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:778}
+         *  @param reissueDate                {@code ACUP-NEW-REISSUE-DATE} PIC X(08) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:784}
+         *  @param currentCycleCredit         {@code ACUP-NEW-CURR-CYC-CREDIT} PIC X(12) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:790}
+         *  @param currentCycleDebit          {@code ACUP-NEW-CURR-CYC-DEBIT} PIC X(12) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:793}
+         *  @param groupId                    {@code ACUP-NEW-GROUP-ID} PIC X(10) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:796}
+         *  @param customerId                 {@code ACUP-NEW-CUST-ID-X} PIC X(09) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:798}
+         *  @param firstName                  {@code ACUP-NEW-CUST-FIRST-NAME} PIC X(25) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:801}
+         *  @param middleName                 {@code ACUP-NEW-CUST-MIDDLE-NAME} PIC X(25) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:802}
+         *  @param lastName                   {@code ACUP-NEW-CUST-LAST-NAME} PIC X(25) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:803}
+         *  @param addressLine1               {@code ACUP-NEW-CUST-ADDR-LINE-1} PIC X(50) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:804}
+         *  @param addressLine2               {@code ACUP-NEW-CUST-ADDR-LINE-2} PIC X(50) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:805}
+         *  @param addressLine3               {@code ACUP-NEW-CUST-ADDR-LINE-3} PIC X(50) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:806}
+         *  @param addressStateCode           {@code ACUP-NEW-CUST-ADDR-STATE-CD} PIC X(02) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:807}
+         *  @param addressCountryCode         {@code ACUP-NEW-CUST-ADDR-COUNTRY-CD} PIC X(03) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:808}
+         *  @param addressZip                 {@code ACUP-NEW-CUST-ADDR-ZIP} PIC X(10) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:809}
+         *  @param phoneNumber1               {@code ACUP-OLD-CUST-PHONE-NUM-1} PIC X(15) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:722}
+         *  @param phoneNumber2               {@code ACUP-OLD-CUST-PHONE-NUM-2} PIC X(15) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:732}
+         *  @param ssn                        {@code ACUP-OLD-CUST-SSN-X} PIC X(09) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:742}
+         *  @param governmentIssuedId         {@code ACUP-NEW-CUST-GOVT-ISSUED-ID} PIC X(20) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:836}
+         *  @param dateOfBirth                {@code ACUP-NEW-CUST-DOB-YYYY-MM-DD PIC X(08)} at {@code
+         *      app/cbl/COACTUPC.cbl:837}
+         *  @param eftAccountId               {@code ACUP-NEW-CUST-EFT-ACCOUNT-ID} PIC X(10) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:843}
+         *  @param primaryCardHolderIndicator {@code ACUP-NEW-CUST-PRI-HOLDER-IND} PIC X(01) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:844}
+         *  @param ficoScore                  {@code ACUP-NEW-CUST-FICO-SCORE-X} PIC X(03) &mdash; {@code
+         *      app/cbl/COACTUPC.cbl:845}
          */
         @JsonCreator
         public OldDetails(
@@ -4305,7 +4437,8 @@ public class AccountUpdateRequest {
          * Returns {@code ACUP-NEW-CREDIT-LIMIT-N}, the {@code PIC S9(10)V99} REDEFINES view over
          * {@link #getCreditLimit()} declared at {@code app/cbl/COACTUPC.cbl:767-768}.
          *
-         * @param ficoScoreValue the value to store verbatim.
+         * @return the credit limit at scale {@value #AMOUNT_SCALE}, or {@code null} when the stored member is
+         *         absent, blank or not a zoned-decimal image of the declared twelve characters
          */
         public BigDecimal creditLimitAmount() {
             return zonedDecimalAmount(creditLimit);

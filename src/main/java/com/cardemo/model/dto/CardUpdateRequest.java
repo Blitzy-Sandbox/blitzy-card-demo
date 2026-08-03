@@ -29,6 +29,7 @@ package com.cardemo.model.dto;
 import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Null;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -133,19 +134,20 @@ import jakarta.validation.constraints.Size;
  * <p><strong>Which fields participate in which comparison.</strong> The two comparisons the source
  * performs read different subsets, and conflating them changes which updates are accepted.</p>
  * <ul>
- *   <li>The concurrency test at {@code app/cbl/COCRDUPC.cbl:1503-1508} compares the CVV code, the
- *       embossed name, the three {@code EXPIRAION} components and the active status. It does
- *       <em>not</em> compare the account identifier or the card number, those two being the read
- *       key rather than mutable data.</li>
+ *   <li>The concurrency test at {@code app/cbl/COCRDUPC.cbl:1503-1508} compares the embossed name, the
+ *       three {@code EXPIRAION} components and the active status. It does <em>not</em> compare the
+ *       account identifier or the card number, those two being the read key rather than mutable data.
+ *       The source additionally compared a card verification value at {@code :1503}; this type declares
+ *       no such component, and the predicate is gone with it - see the note below.</li>
  *   <li>The did-anything-change test at {@code :679-683} compares the whole
  *       {@code CCUP-NEW-CARDDATA} group against {@code CCUP-OLD-CARDDATA} to decide
  *       {@code 'No change detected with respect to values fetched.'} ({@code :187-188}). That group
- *       is the embossed name, the {@code EXPIRAION} components and the active status only; the CVV
- *       code, the account identifier and the card number sit outside it at
- *       {@code :292-294} and {@code :304-306} and are therefore excluded. The nested
+ *       is the embossed name, the {@code EXPIRAION} components and the active status only; the account
+ *       identifier and the card number sit outside it at {@code :292-293} and {@code :304-305} and are
+ *       therefore excluded, as was the verification value at {@code :294} and {@code :306}. The nested
  *       {@code CardData} type below reproduces exactly that grouping, so the subset is expressed by
  *       the shape rather than left to a comment.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>The expiry date is compared component-wise, never as a whole string.</strong> The
  * live record field is {@code CARD-EXPIRAION-DATE PIC X(10)} in dash-separated form, so the source
@@ -169,17 +171,19 @@ import jakarta.validation.constraints.Size;
  * with {@code Locale.ROOT} and pad to the declared widths before comparing. This type performs
  * neither operation, because it performs no comparison at all.</p>
  *
- * <p><strong>Two preserved quirks in the new group.</strong> First, {@code CCUP-NEW-CVV-CD} is
- * never populated from the screen, because {@code app/cpy-bms/COCRDUP.CPY} declares no CVV field
- * at all: {@code 1100-RECEIVE-MAP} at {@code app/cbl/COCRDUPC.cbl:586-635} populates every other
- * new leaf from the map and leaves the CVV as {@code INITIALIZE} left it, whereupon
- * {@code :1464-1465} moves that unpopulated field into {@code CARD-CVV-CD-X PIC X(03)} and
- * reinterprets it through the redefining alias {@code CARD-CVV-CD-N PIC 9(03)}
- * ({@code :107-109}) on the way to {@code CARD-UPDATE-CVV-CD PIC 9(03)} ({@code :317}). The
- * component exists below so that a service can reproduce that path exactly instead of inventing a
- * value; the quirk is preserved, not repaired. Second, {@code CCUP-NEW-EXPDAY} is moved
- * unconditionally at {@code :621}, whereas every other new leaf is guarded by an {@code '*'}-or-
- * SPACES test that substitutes LOW-VALUES. Both asymmetries are contract, not oversight.</p>
+ * <p><strong>The verification value has no component, and one preserved quirk in the new group.</strong>
+ * {@code CCUP-NEW-CVV-CD} is never populated from the screen, because {@code app/cpy-bms/COCRDUP.CPY}
+ * declares no such field at all: {@code 1100-RECEIVE-MAP} at {@code app/cbl/COCRDUPC.cbl:586-635}
+ * populates every other new leaf from the map and leaves that one as {@code INITIALIZE} left it,
+ * whereupon {@code :1464-1465} moves the unpopulated field into {@code CARD-CVV-CD-X PIC X(03)} and
+ * reinterprets it through the redefining alias {@code CARD-CVV-CD-N PIC 9(03)} ({@code :107-109}) on the
+ * way to {@code CARD-UPDATE-CVV-CD PIC 9(03)} ({@code :317}) - destroying the stored value on every
+ * successful update. That path is <strong>not</strong> reproduced and no component exists for it: card
+ * verification data is not persisted by this system, so there is nothing to destroy and nothing to
+ * accept. See the deviation on {@link com.cardemo.model.entity.Card}. The quirk that IS preserved is the
+ * second one: {@code CCUP-NEW-EXPDAY} is moved unconditionally at {@code :621}, whereas every other new
+ * leaf is guarded by an {@code '*'}-or-SPACES test that substitutes LOW-VALUES. That asymmetry is
+ * contract, not oversight.</p>
  *
  * <p><strong>Validation matches the source: no stricter, no looser.</strong> Each component
  * carries only {@code @Size(max = ...)} at exactly its PIC width. No regex is imposed that the
@@ -258,15 +262,17 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>Security.</strong> Two screen components are never-emit values: the card number, from
  * {@code app/cpy-bms/COCRDUP.CPY:66}, and the cardholder name, from
- * {@code app/cpy-bms/COCRDUP.CPY:72}. The snapshot groups add a third and graver one, the CVV code
- * of {@code app/cbl/COCRDUPC.cbl:294} and {@code :306}, together with their own copies of the card
- * number and the embossed name and the card expiry components. A record's implicitly generated
+ * {@code app/cpy-bms/COCRDUP.CPY:72}. The snapshot groups carry their own copies of the card number, the
+ * embossed name and the card expiry components. The graver value the legacy groups also carried, the
+ * verification value of {@code app/cbl/COCRDUPC.cbl:294} and {@code :306}, is handled by not being
+ * declared: a component that does not exist cannot be emitted, and cannot be accepted either. A
+ * record's implicitly generated
  * {@code toString()} renders <em>every</em> component, so an override is mandatory on this type and
  * on each of the three nested snapshot types; each emits only values that carry no cardholder or
  * authentication data, and omits the sensitive ones outright rather than masking or truncating
- * them, since a mask still discloses length. A masking rule in {@code logback-spring.xml} would be a
- * second line of defence, but no such file exists under {@code src/main/resources} yet, so never
- * emitting these values is the only defence rather than the first of two.
+ * them, since a mask still discloses length. {@code src/main/resources/logback-spring.xml} supplies a
+ * masking rule as the second line of defence, applied identically in every profile, but never emitting
+ * these values remains the first: a mask matches only the field names and value shapes it was given.
  * This type holds no password, hash, token or signing key, and none may be added - the card-update
  * screen exposes no such field. Neither it nor any nested type implements any interface, so none
  * can take part in Java native serialization, a pattern the security standard flags as risky. Its
@@ -285,9 +291,9 @@ import jakarta.validation.constraints.Size;
  * <p><strong>How this type is built and exercised.</strong> It compiles as part of the single Maven
  * module with {@code ./mvnw clean verify}, under {@code -Xlint:all -Werror}, so any warning here fails
  * the build. Its unit tests belong in {@code src/test/java/com/cardemo/unit/model} rather than
- * alongside it, and <strong>none exists at this commit</strong> - measured 1 August 2026 there is no
- * {@code CardUpdateRequestTest} and this type is not referenced anywhere under {@code src/test/java}.
- * One pitfall is worth stating for whoever writes them: a {@code @Size} constraint
+ * alongside it, and {@code CardUpdateRequestTest} is present there; the type is additionally referenced
+ * from four test classes. An earlier revision said neither existed; that is false and is withdrawn.
+ * One pitfall is worth stating for whoever extends them: a {@code @Size} constraint
  * declared on a record component is <em>not</em> readable through
  * {@code RecordComponent.getAnnotation}, because the constraint's own target list omits record
  * components; the compiler propagates it to the backing field, the accessor and the canonical
@@ -308,8 +314,8 @@ import jakarta.validation.constraints.Size;
  *       deserialization error.</li>
  *   <li>A leaf of {@code oldDetails} or {@code newDetails} longer than the width its COBOL
  *       declaration gives it fails {@code @Size} during the {@code @Valid} cascade, naming the
- *       leaf and its permitted width and never echoing the value - which matters most for the CVV
- *       code and the card number.</li>
+ *       leaf and its permitted width and never echoing the value - which matters most for the card
+ *       number.</li>
  *   <li>A JSON body carrying an unknown property is rejected by
  *       {@link #rejectUnrecognisedProperty(String, Object)}, which always throws. The rejection is
  *       local and therefore unconditional. The declarative alternative does not hold here: the
@@ -318,7 +324,7 @@ import jakarta.validation.constraints.Size;
  *       as protection while being inert - which is worse than absent.</li>
  *   <li>A malformed body fails before this type is constructed and never yields a partially
  *       populated instance, the canonical constructor being all-or-nothing.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Findings, classified by severity.</strong></p>
  * <ul>
@@ -362,6 +368,12 @@ import jakarta.validation.constraints.Size;
  * @param errorMessage {@code ERRMSGI}, {@code PIC X(80)}, {@code app/cpy-bms/COCRDUP.CPY:108}.
  * @param functionKeys {@code FKEYSI}, {@code PIC X(21)}, {@code app/cpy-bms/COCRDUP.CPY:114}.
  * @param functionKeysContinued {@code FKEYSCI}, {@code PIC X(18)}, {@code app/cpy-bms/COCRDUP.CPY:120}.
+ * @param oldDetails {@code 05 CCUP-OLD-DETAILS}, {@code app/cbl/COCRDUPC.cbl:291-301}. Not a screen field:
+ *     the snapshot that {@code 9000-READ-DATA} captures at {@code :1343-1370} and that
+ *     {@code 9300-CHECK-CHANGE-IN-REC} compares at {@code :1503-1508}. May be {@code null}.
+ * @param newDetails {@code 05 CCUP-NEW-DETAILS}, {@code app/cbl/COCRDUPC.cbl:303-313}. Not a screen field:
+ *     {@code 1100-RECEIVE-MAP} derives every leaf but the CVV code from the map at {@code :586-635}.
+ *     May be {@code null}.
  */
 public record CardUpdateRequest(
 
@@ -440,14 +452,15 @@ public record CardUpdateRequest(
         @Valid CardDetails oldDetails,
 
         // 05 CCUP-NEW-DETAILS. app/cbl/COCRDUPC.cbl:303-313 - not a screen field. 1100-RECEIVE-MAP
-        //    derives every leaf but the CVV code from the map at :586-635.
+        //    derives every leaf this type declares from the map at :586-635; the legacy leaf it did NOT
+        //    derive was the verification value, which this type does not declare.
         @Valid CardDetails newDetails) {
 
     /**
      * Returns a deliberately redacted rendering that exposes only the account identifier and the program name.
      *
-     * <p>The two snapshot groups are omitted as well. Each carries its own copy of the card number
-     * and the embossed name plus the CVV code, and each has its own redacted rendering; excluding
+     * <p>The two snapshot groups are omitted as well. Each carries its own copy of the card number and
+     * the embossed name, and each has its own redacted rendering; excluding
      * them here rather than delegating keeps this method's output bounded and removes any
      * possibility that a future change to a nested rendering widens what this one emits.</p>
      *
@@ -475,7 +488,7 @@ public record CardUpdateRequest(
      * <p>Neither the offending property name nor its value is reproduced in the thrown message.
      * Both are untrusted input, and copying either into a message that reaches a log record would
      * let a caller forge log content; on this payload the same rule is what keeps a rejected card
-     * number or CVV code out of the logs. The message instead names this type and its two sources,
+     * number out of the logs. The message instead names this type and its two sources,
      * which is what a caller needs in order to correct the payload. Nothing is stored: this type is
      * immutable, and the method exists only to fail.</p>
      *
@@ -507,13 +520,13 @@ public record CardUpdateRequest(
      * role each group plays rather than its shape.</p>
      *
      * <p><strong>The nesting is the source's nesting, and it is load-bearing.</strong> The account
-     * identifier, the card number and the CVV code sit directly under the group at {@code :292-294},
-     * whereas the embossed name, the expiry components and the active status sit one level deeper
-     * inside {@code 10 CCUP-OLD-CARDDATA.} at {@code :295-301}. That is not cosmetic: the
-     * did-anything-change test at {@code :679-683} compares the {@code CARDDATA} group as a whole,
-     * so the three leaves inside it participate and the three leaves outside it do not. Modelling
-     * {@link CardData} as a separate type makes that subset structural rather than a comment a
-     * future reader could miss.</p>
+     * identifier and the card number sit directly under the group at {@code :292-293} - as did the
+     * verification value at {@code :294}, which this type does not declare - whereas the embossed name,
+     * the expiry components and the active status sit one level deeper inside
+     * {@code 10 CCUP-OLD-CARDDATA.} at {@code :295-301}. That is not cosmetic: the
+     * did-anything-change test at {@code :679-683} compares the {@code CARDDATA} group as a whole, so
+     * the leaves inside it participate and the leaves outside it do not. Modelling {@link CardData} as a
+     * separate type makes that subset structural rather than a comment a future reader could miss.</p>
      *
      * <p><strong>Validation.</strong> Every leaf carries {@code @Size(max = ...)} at exactly the
      * width its COBOL declaration gives it, and the nested group member is marked {@code @Valid} so
@@ -522,11 +535,12 @@ public record CardUpdateRequest(
      * the source itself begins by executing {@code INITIALIZE} on the group at {@code :1345} and
      * {@code :586}, so a wholly unpopulated group is a state it produces rather than refuses.</p>
      *
-     * <p><strong>Security.</strong> The card number and the CVV code are never-emit values, the
-     * second more strictly than the first: a card verification value is authentication data. The
-     * generated rendering for a record lists every component, so {@link #toString()} is overridden
-     * to emit only the account identifier and the nested group, whose own rendering is equally
-     * redacted. Equality and hash code are left as the compiler generates them; they consider every
+     * <p><strong>Security.</strong> The card number is a never-emit value. The card verification value
+     * that this group would otherwise have carried is handled more strongly than by never emitting it:
+     * it is not declared at all, so it cannot be accepted, stored, compared or rendered. The generated
+     * rendering for a record lists every component, so {@link #toString()} is overridden to emit only
+     * the account identifier and the nested group, whose own rendering is equally redacted. Equality
+     * and hash code are left as the compiler generates them; they consider every
      * component, which is correct for value semantics and discloses nothing because neither renders
      * a value.</p>
      *
@@ -536,17 +550,6 @@ public record CardUpdateRequest(
      * @param cardNumber {@code CCUP-OLD-CARDID} / {@code CCUP-NEW-CARDID}, {@code PIC X(16)},
      *                   {@code app/cbl/COCRDUPC.cbl:293} and {@code :305}. Part of the read key and
      *                   likewise not compared. <strong>Never logged or rendered.</strong>
-     * @param cvvCode    {@code CCUP-OLD-CVV-CD} / {@code CCUP-NEW-CVV-CD}, {@code PIC X(3)},
-     *                   {@code app/cbl/COCRDUPC.cbl:294} and {@code :306}. Compared by
-     *                   {@code :1503}, yet outside {@code CARDDATA} and so absent from the
-     *                   did-anything-change test. <strong>Write-only, never logged, never
-     *                   rendered.</strong> The write-only marking is the faithful reading rather
-     *                   than an added restriction: {@code app/cpy-bms/COCRDUP.CPY} declares no CVV
-     *                   field at all, and where {@code app/cbl/COCRDUPC.cbl:1108-1112} sends the old
-     *                   embossed name, status and three expiry components back to the screen it
-     *                   sends no CVV, so the source never displays this value and neither may the
-     *                   target. The new group's copy is additionally never populated from the
-     *                   screen, for the same reason.
      * @param cardData   {@code 10 CCUP-OLD-CARDDATA.} / {@code 10 CCUP-NEW-CARDDATA.},
      *                   {@code app/cbl/COCRDUPC.cbl:295-301} and {@code :307-313}. The subgroup the
      *                   source compares as a unit.
@@ -561,24 +564,27 @@ public record CardUpdateRequest(
             @Size(max = 16, message = "cardNumber must be at most 16 characters")
             String cardNumber,
 
-            // 10 CCUP-xxx-CVV-CD  PIC X(3)   app/cbl/COCRDUPC.cbl:294 / :306 - authentication data;
-            //    write-only, because the symbolic map declares no CVV field and the source never
-            //    sends this value to a screen
-            @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
-            @Size(max = 3, message = "cvvCode must be at most 3 characters")
-            String cvvCode,
+            // 10 CCUP-xxx-CVV-CD  PIC X(3)   app/cbl/COCRDUPC.cbl:294 / :306 - DELIBERATELY ABSENT.
+            //    Card verification data is not persisted by this system at all: V1 declares no
+            //    card_cvv_cd column, the entity carries no field and the seed loads no value. There is
+            //    therefore nothing for a snapshot to be compared against and no reason to accept one over
+            //    the wire - a request component would be the same retention problem one hop earlier, and
+            //    a component that is accepted and then ignored fails silently, which is the worst of the
+            //    available behaviours. app/cpy-bms/COCRDUP.CPY declares no CVV field either, so no
+            //    symbolic-map contract is lost. See the deviation recorded on
+            //    com.cardemo.model.entity.Card.
 
             // 10 CCUP-xxx-CARDDATA  app/cbl/COCRDUPC.cbl:295-301 / :307-313 - compared as a group
             @Valid CardData cardData) {
 
         /**
-         * Returns a redacted rendering that omits the card number and the CVV code entirely.
+         * Returns a redacted rendering that omits the card number entirely.
          *
-         * <p>Both omitted values are cardholder or authentication data that may never reach a log
-         * record, a stack trace or a diagnostic message - not masked and not truncated to a last
-         * four, because a mask still discloses length. The account identifier is emitted, matching
-         * the treatment the enclosing request already gives it, and the nested group is delegated
-         * to because its own rendering is redacted in the same way.</p>
+         * <p>The omitted value is cardholder data that may never reach a log record, a stack trace or a
+         * diagnostic message - not masked and not truncated to a last four, because a mask still
+         * discloses length. The account identifier is emitted, matching the treatment the enclosing
+         * request already gives it, and the nested group is delegated to because its own rendering is
+         * redacted in the same way.</p>
          *
          * @return a rendering carrying only the account identifier and the nested card data group
          */
@@ -588,13 +594,15 @@ public record CardUpdateRequest(
         }
 
         /**
-         * Rejects any JSON property that is not one of the four leaves this group declares.
+         * Rejects any JSON property that is not one of the three components this group declares.
          *
          * <p>The rationale is the enclosing request's, given at
          * {@link CardUpdateRequest#rejectUnrecognisedProperty(String, Object)}: a nested object is
          * exactly where a silently discarded property does the most damage, because a caller
-         * misspelling {@code cvvCode} would otherwise submit a snapshot the service believes to be
-         * absent and compare against nothing.</p>
+         * misspelling {@code cardNumber} would otherwise submit a snapshot the service believes to be
+         * absent and compare against nothing. It also refuses a {@code cvvCode} property outright,
+         * which is the behaviour a caller migrating from the legacy field shape should see: a clear
+         * rejection rather than a silently ignored verification value.</p>
          *
          * @param name  the unrecognised property name, deliberately neither stored nor reproduced
          * @param value the unrecognised property value, deliberately neither stored nor reproduced
@@ -603,7 +611,7 @@ public record CardUpdateRequest(
         @JsonAnySetter
         void rejectUnrecognisedProperty(String name, Object value) {
             throw new IllegalArgumentException(
-                    "CardDetails accepts only the four leaves declared by "
+                    "CardDetails accepts only the three leaves it declares from "
                             + "app/cbl/COCRDUPC.cbl:291-301, and the request contained a property "
                             + "that is not one of them. The offending name and value are withheld "
                             + "because they are untrusted input.");

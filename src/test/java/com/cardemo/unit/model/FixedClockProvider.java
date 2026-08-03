@@ -124,7 +124,7 @@ import java.util.Objects;
  *       ten screen bytes occupy positions 1 to 10 and positions 11 to 26 become sixteen spaces. This
  *       is a width changing operation, not an identity, and it is reproduced by
  *       {@link #passThroughTimestamp(String)}.</li>
- * </ol>
+ *   </ol>
  *
  * <p><strong>The layouts above are written with {@code yyyy} by convention, but the formatter
  * patterns deliberately use {@code uuuu}.</strong> {@code y} is year-of-era and would render the
@@ -190,7 +190,7 @@ import java.util.Objects;
  *       factories on this class instead. The guard compares two successive reads, so it is a
  *       diagnostic aid rather than a proof: it cannot in principle distinguish a fixed clock from a
  *       moving clock whose two reads happen to coincide.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Thread safety and side effects.</strong> The class is final, cannot be instantiated,
  * and holds only immutable {@code static final} state, so there is no mutable static field, no

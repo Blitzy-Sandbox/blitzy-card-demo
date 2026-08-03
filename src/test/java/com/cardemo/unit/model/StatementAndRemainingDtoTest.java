@@ -16,7 +16,7 @@
  * Source      : app/cpy/COSTM01.CPY (32-byte TRNX-KEY, 350-byte record) @ 7756d89
  * Source      : app/cpy/CVTRA07Y.cpy (133-byte report lines) @ 7756d89
  * Source      : app/jcl/CREASTMT.JCL:STEP010 / STEP040 @ 7756d89
- * Source      : app/cbl/CBSTM03A.cbl:L225-L233 (51 x 10 table) @ 7756d89
+ * Source      : app/cbl/CBSTM03A.CBL:L225-L233 (51 x 10 table) @ 7756d89
  * Source      : app/cbl/CBTRN03C.cbl (control break, "Account Total") @ 7756d89
  * Source      : app/cpy-bms/COACTVW.CPY (36 fields) @ 7756d89
  * ******************************************************************
@@ -83,7 +83,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>The 350-byte record is {@code 32 key + 318 remainder}.</li>
  *   <li>The projection writes its last byte at position {@code 16 + 262 + 50 = 328}, so 22 of the 350 input
  *       bytes are dropped - the 20-byte filler plus a 2-byte timestamp truncation.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>The truncation is preserved, not corrected</h3>
  *
@@ -95,7 +95,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h3>The capacity ceiling is recorded, not reimposed</h3>
  *
- * <p>{@code app/cbl/CBSTM03A.cbl:L225-L233} declares a fixed table of 51 card entries holding 10 transactions
+ * <p>{@code app/cbl/CBSTM03A.CBL:L225-L233} declares a fixed table of 51 card entries holding 10 transactions
  * each - a hard ceiling of 510 transactions per run, incremented with <strong>no bounds check whatsoever</strong>.
  * The Java implementation streams and therefore has no ceiling, which removes a silent storage-overrun hazard.
  * That is a deliberate, labelled deviation rather than parity, so the constants exist to <em>document</em> the
@@ -111,7 +111,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=StatementAndRemainingDtoTest
+ * ./mvnw -B -ntp -o test -Dtest=StatementAndRemainingDtoTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -269,7 +269,7 @@ class StatementAndRemainingDtoTest {
                     .isEqualTo(80);
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)
                     .as("and HTMLFILE at LRECL=100, independently confirmed by the 100-character field "
-                            + "the HTML fragments are written through at app/cbl/CBSTM03A.cbl:L149. The "
+                            + "the HTML fragments are written through at app/cbl/CBSTM03A.CBL:L149. The "
                             + "80-versus-100 mismatch between that job's pre-delete and execution steps "
                             + "is a logged legacy defect, not a signal to change this width")
                     .isEqualTo(100);
@@ -629,7 +629,7 @@ class StatementAndRemainingDtoTest {
         @DisplayName("the ceiling is derived as 51 cards times 10 transactions")
         void theCeilingIsDerivedAs51Times10() {
             assertThat(StatementTransaction.LEGACY_MAX_CARDS_PER_RUN)
-                    .as("app/cbl/CBSTM03A.cbl:L225-L233 declares 51 card entries")
+                    .as("app/cbl/CBSTM03A.CBL:L225-L233 declares 51 card entries")
                     .isEqualTo(51);
             assertThat(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD)
                     .as("each holding 10 transaction entries")

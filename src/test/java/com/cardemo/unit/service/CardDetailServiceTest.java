@@ -47,7 +47,9 @@ import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -73,6 +75,7 @@ import com.cardemo.service.card.CardDetailService.CardDetailRequest;
 import com.cardemo.service.card.CardDetailService.CardDetailScreen;
 import com.cardemo.service.card.CardDetailService.EntryMode;
 import com.cardemo.service.card.CardDetailService.FilterState;
+import com.cardemo.unit.model.FixedClockProvider;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Constructor;
@@ -84,6 +87,7 @@ import java.math.RoundingMode;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Clock;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -136,7 +140,7 @@ import org.springframework.dao.QueryTimeoutException;
  *       {@code EIBAID} onto the action codes of {@code CVCRD01Y.cpy:10} - and whose {@code :34-35} and
  *       {@code :58-59} arms both resolve to {@code CCARD-AID-PFK03}. The gate at {@code :291-299} then
  *       admits only enter and that code, coercing every other key to enter in silence.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>2. How to run, build and test.</strong> This class is bound to the <em>Surefire</em> tier, not
  * Failsafe: the root build includes the two standard test name patterns while excluding the
@@ -161,16 +165,18 @@ import org.springframework.dao.QueryTimeoutException;
  * importing it here would leave an unused import. Money is {@link BigDecimal} at
  * {@link RoundingMode#HALF_EVEN}, compared with {@code compareTo} and never with {@code equals} - a rule
  * this file pins even though {@code CVACT02Y} declares no monetary field, so the discipline is executable
- * rather than vacuous. The service builds its own {@link java.time.Clock}, so the two header time fields
- * are asserted by <em>shape</em> and never by value; no {@code now()} call, no default zone and no default
+ * rather than vacuous. The service takes its {@link java.time.Clock} by constructor, and this file supplies
+ * the canonical fixed one, so the two header time fields are still asserted by <em>shape</em> - the shape is
+ * what the source's own edited fields fix - while no {@code now()} call, no default zone and no default
  * locale appears anywhere in this file.
  *
  * <p><strong>4. Common failure modes and troubleshooting.</strong>
  * <ul>
- *   <li><em>{@code warnings found and -Werror specified}.</em> Test compilation runs under
- *       {@code -Xlint:all -Werror} with {@code failOnWarning}, so one unused import or one dangling
- *       documentation comment fails the build. The licence banner above is a plain block comment and never
- *       {@code /*}{@code *}, precisely so it cannot be read as a dangling doc comment.</li>
+ *   <li><em>{@code warnings found and -Werror specified}.</em> Test compilation runs under {@code -Xlint:all -Werror}
+ *   with {@code failOnWarning}, so one dangling documentation comment, raw type or unchecked cast fails the build -
+ *   but <em>not</em> an unused import, for which {@code javac} 25 publishes no lint key, so that one is
+ *   review-enforced. The licence banner above is a plain block comment and never {@code /*} {@code *}, precisely so
+ *   it cannot be read as a dangling doc comment.</li>
  *   <li><em>A paragraph-correspondence test fails after a refactor.</em> Something consolidated a label.
  *       Restore the method; do not relax the assertion. Deleting the unreachable {@code 9150} pair is the
  *       specific case that breaks the paragraph map the scope-coverage gate is proved against.</li>
@@ -198,7 +204,7 @@ import org.springframework.dao.QueryTimeoutException;
  *       paragraphs of {@code :779-810}, {@code :820-832} and the {@code -EXIT} landing points, plus the
  *       redundant second input-error gate of {@code :386-391}. <em>Remediation:</em> none - deleting them
  *       to raise the number is the one change the scope-coverage gate is designed to catch.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Findings, classified per Rule 1 clause F.</strong>
  * <ul>
@@ -289,7 +295,7 @@ import org.springframework.dao.QueryTimeoutException;
  *       silence. Preserved: raising a validation error for the key would be an invention.</li>
  *   <li><strong>Low - {@code SEND-LONG-TEXT} and its exit are also never performed</strong>
  *       ({@code :820-836}), and are retained on the same terms as the {@code 9150} pair.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Validation evidence, per Rule 1 clause F.</strong> Recorded rather than asserted, on
  * OpenJDK 25.0.3 with Apache Maven 3.9.11 driven through {@code ./mvnw}. The commands, their exit codes
@@ -484,6 +490,15 @@ final class CardDetailServiceTest {
     private static final long ACCOUNT_ID_NUMERIC = 11L;
 
     /**
+     * A valid eleven-digit account filter that owns no card in this fixture. It is what a cross-tenant
+     * request looks like: well formed, so every edit passes, and simply not the card's owner.
+     */
+    private static final String FOREIGN_ACCOUNT_ID_11 = "99999999999";
+
+    /** The numeric value {@link #FOREIGN_ACCOUNT_ID_11} carries. */
+    private static final long FOREIGN_ACCOUNT_ID_NUMERIC = 99999999999L;
+
+    /**
      * A synthetic sixteen-digit card number: not a real primary account number, not Luhn valid and issued
      * by no scheme. It is fixture data only and is never placed in a log, an exception message or an
      * assertion description, which is the rule {@link SensitiveDataHandling} enforces.
@@ -499,9 +514,6 @@ final class CardDetailServiceTest {
     /** {@code CARD-ACTIVE-STATUS PIC X(01)}, {@code app/cpy/CVACT02Y.cpy:10}. */
     private static final String ACTIVE_STATUS = "Y";
 
-    /** {@code CARD-CVV-CD PIC 9(03)}, {@code app/cpy/CVACT02Y.cpy:7}. Held by the record, never projected. */
-    private static final String CVV_CODE = "123";
-
     /** {@code WS-CURDATE-MM-DD-YY} of {@code app/cpy/CSDAT01Y.cpy:30-35}, asserted by shape only. */
     private static final Pattern HEADER_DATE_MM_DD_YY = Pattern.compile("\\d{2}/\\d{2}/\\d{2}");
 
@@ -515,18 +527,35 @@ final class CardDetailServiceTest {
     private static final String JAVADOC_OPEN = "/**";
 
     /**
-     * The production source of the service under test, relative to the project base directory.
+     * The repository root, located by structure rather than inherited from the working directory.
      *
-     * <p>Surefire runs with the project base directory as its working directory, which is what makes this
-     * relative location resolvable from a test; two sibling classes in this package rely on the same
-     * guarantee. It is read - never written - and only to prove that documentation the compiler discards
-     * is actually present, which is the one property reflection cannot reach.
+     * <p>An earlier revision of this class resolved the three paths below as bare relative paths and
+     * documented the reason as "Surefire runs with the project base directory as its working directory".
+     * That was true and it was the defect: the guarantee was a plugin default that nothing declared and
+     * nothing enforced, so running this class from an IDE module directory, from an aggregator build, or
+     * under any runner that forks elsewhere turned every read into a missing-file error far from its cause.
+     * A test that only passes from one directory is not deterministic.
+     *
+     * <p>The remedy is to stop depending on the working directory at all. This walk starts wherever the
+     * process happens to be and climbs until it finds the directory holding {@code pom.xml}, {@code src/}
+     * and {@code app/} together - a triple no sub-directory of this repository satisfies - so the paths
+     * below resolve identically from any starting point. {@code pom.xml} additionally pins the working
+     * directory and {@code TestTierContractTest} asserts that pin, which protects the sibling classes that
+     * still resolve relatively; this class no longer needs either.
      */
-    private static final Path SERVICE_SOURCE = Path.of(
-            "src", "main", "java", "com", "cardemo", "service", "card", "CardDetailService.java");
+    private static final Path REPOSITORY_ROOT = locateRepositoryRoot();
 
     /**
-     * The frozen COBOL program this service replaces, relative to the project base directory.
+     * The production source of the service under test.
+     *
+     * <p>It is read - never written - and only to prove that documentation the compiler discards is
+     * actually present, which is the one property reflection cannot reach.
+     */
+    private static final Path SERVICE_SOURCE = REPOSITORY_ROOT.resolve(
+            Path.of("src", "main", "java", "com", "cardemo", "service", "card", "CardDetailService.java"));
+
+    /**
+     * The frozen COBOL program this service replaces.
      *
      * <p>It is opened <b>read-only</b>. {@code app/} is the parity oracle, the field-contract source and
      * the traceability anchor all at once, so nothing here may write to it; the sibling {@code unit/model}
@@ -534,7 +563,8 @@ final class CardDetailServiceTest {
      * an assertion about this test's own constant into an assertion against the system of record - the only
      * way to prove three leading spaces, fourteen trailing spaces or four dots really are the source's.
      */
-    private static final Path PROGRAM_SOURCE = Path.of("app", "cbl", "COCRDSLC.cbl");
+    private static final Path PROGRAM_SOURCE =
+            REPOSITORY_ROOT.resolve(Path.of("app", "cbl", "COCRDSLC.cbl"));
 
     /**
      * The line count {@link #PROGRAM_SOURCE} must have for every cited locator to mean what it says.
@@ -599,7 +629,8 @@ final class CardDetailServiceTest {
      * The procedural copybook that {@code COPY 'CSSTRPFY'} at {@code app/cbl/COCRDSLC.cbl:855} pulls into
      * the procedure division. Read read-only, on the same terms as {@link #PROGRAM_SOURCE}.
      */
-    private static final Path PF_KEY_COPYBOOK = Path.of("app", "cpy", "CSSTRPFY.cpy");
+    private static final Path PF_KEY_COPYBOOK =
+            REPOSITORY_ROOT.resolve(Path.of("app", "cpy", "CSSTRPFY.cpy"));
 
     /**
      * The two keys that resolve to {@code CCARD-AID-PFK03} and therefore take the exit branch.
@@ -627,14 +658,19 @@ final class CardDetailServiceTest {
     private ListAppender<ILoggingEvent> logEvents;
 
     /**
-     * Builds the bean over its single collaborator and attaches an in-memory log appender.
+     * Builds the bean over its repository and the canonical fixed clock, and attaches an in-memory log
+     * appender.
+     *
+     * <p>The clock is a constructor argument in production too - {@code ObservabilityConfig} publishes the
+     * one {@code Clock} bean and this service takes it by injection - so the fixed clock supplied here
+     * exercises the production wiring rather than a test-only seam.
      *
      * <p>No stubbing happens here. Under strict stubs a stubbing a given test does not consume fails that
      * test, so every {@code when(...)} lives in the test that needs it.
      */
     @BeforeEach
     void setUp() {
-        service = new CardDetailService(cardRepository);
+        service = new CardDetailService(cardRepository, FixedClockProvider.canonicalClock());
 
         serviceLogger = (Logger) LoggerFactory.getLogger(CardDetailService.class);
         logEvents = new ListAppender<>();
@@ -659,7 +695,7 @@ final class CardDetailServiceTest {
      * @return the record, never {@code null}
      */
     private static Card canonicalCard() {
-        return new Card(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC, CVV_CODE, EMBOSSED_NAME, EXPIRAION_DATE,
+        return new Card(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC, EMBOSSED_NAME, EXPIRAION_DATE,
                 ACTIVE_STATUS);
     }
 
@@ -670,7 +706,8 @@ final class CardDetailServiceTest {
      * @return the rendered screen, never {@code null}
      */
     private CardDetailScreen screenForFoundCard() {
-        when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+        when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
         return service.submitScreen(CardDetailRequest.reentry(ACCOUNT_ID_11, CARD_NUMBER_16));
     }
 
@@ -681,7 +718,8 @@ final class CardDetailServiceTest {
      * @return whatever the call threw, for the caller to classify
      */
     private Throwable notFoundOutcome() {
-        when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.empty());
+        when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.empty());
         return catchThrowable(() -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16));
     }
 
@@ -693,7 +731,8 @@ final class CardDetailServiceTest {
      * @return whatever the call threw, for the caller to classify
      */
     private Throwable readFailureOutcome(final RuntimeException cause) {
-        when(cardRepository.findById(CARD_NUMBER_16)).thenThrow(cause);
+        when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                .thenThrow(cause);
         return catchThrowable(() -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16));
     }
 
@@ -742,10 +781,39 @@ final class CardDetailServiceTest {
             return Files.readAllLines(SERVICE_SOURCE, StandardCharsets.UTF_8);
         } catch (final IOException unreadable) {
             throw new UncheckedIOException("could not read " + SERVICE_SOURCE.toAbsolutePath()
-                    + "; Surefire is expected to run with the project base directory as its working"
-                    + " directory", unreadable);
+                    + "; the repository root was located at " + REPOSITORY_ROOT, unreadable);
         }
     }
+
+    /**
+     * Locates the repository root by structure, so no assertion in this class depends on where the process
+     * was started.
+     *
+     * <p>Climbs from the process working directory until it finds a directory holding {@code pom.xml},
+     * {@code src/} and {@code app/} together. No sub-directory of this repository satisfies all three, so
+     * the first match is the root and the walk cannot stop early. Failure is loud and names both the
+     * starting point and the remedy, because the alternative - returning a wrong directory - would surface
+     * as a missing file in an unrelated assertion.
+     *
+     * @return the repository root
+     * @throws IllegalStateException if no ancestor of the working directory is the repository root
+     */
+    private static Path locateRepositoryRoot() {
+        final Path start = Path.of("").toAbsolutePath().normalize();
+        for (Path candidate = start; candidate != null; candidate = candidate.getParent()) {
+            if (Files.isRegularFile(candidate.resolve("pom.xml"))
+                    && Files.isDirectory(candidate.resolve("src"))
+                    && Files.isDirectory(candidate.resolve("app"))) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException(
+                "No directory from " + start + " upward holds pom.xml, src/ and app/ together, so the "
+                        + "frozen COBOL program and the service source this class reads cannot be located. "
+                        + "Run it with the repository root, or any directory beneath it, as the working "
+                        + "directory.");
+    }
+
 
     /**
      * Reads the frozen COBOL program, read-only.
@@ -758,8 +826,7 @@ final class CardDetailServiceTest {
             return Files.readAllLines(PROGRAM_SOURCE, StandardCharsets.UTF_8);
         } catch (final IOException unreadable) {
             throw new UncheckedIOException("could not read " + PROGRAM_SOURCE.toAbsolutePath()
-                    + "; app/ is frozen and read-only, and Surefire is expected to run with the project"
-                    + " base directory as its working directory", unreadable);
+                    + "; app/ is frozen and read-only. Repository root: " + REPOSITORY_ROOT, unreadable);
         }
     }
 
@@ -982,19 +1049,26 @@ final class CardDetailServiceTest {
     }
 
     /**
-     * The retrieval predicate: the card number, and only the card number.
+     * The retrieval predicate: the card number <strong>and</strong> the owning account.
      *
      * <p>{@code 9000-READ-DATA} at {@code app/cbl/COCRDSLC.cbl:726-730} performs exactly one range, and
      * that range's read at {@code :742-750} names {@code LIT-CARDFILENAME} - {@code 'CARDDAT '} at
      * {@code :187-188} - with {@code RIDFLD(WS-CARD-RID-CARDNUM)} at {@code :744}, the field
      * {@code :740} has just filled from {@code CC-CARD-NUM}. The account identifier is edited at
      * {@code :647-681} and echoed back to the screen at {@code :462-466}, and the {@code MOVE} that would
-     * have made it a read key is commented out at {@code :739}. The High finding recorded on this class is
-     * that routing this read through the {@code CARDAIX} account path would answer with a different record
-     * whenever an account holds more than one card, which the seven-row card list proves it can.
+     * have made it the other half of the read key is commented out at {@code :739}.
+     *
+     * <p><b>That {@code MOVE} is restored, and these tests assert the restored predicate.</b> Reproduced
+     * literally, the account filter was decoration: any card number resolved regardless of which account
+     * the caller named, and the record was then rendered under the named account. On a 3270 the operator
+     * had reached the card through that account's own list screen; over HTTP both values arrive in one
+     * caller-controlled request, which makes the filter the only thing scoping the read. The restoration is
+     * still a single keyed read on {@code CARDDAT} - it is emphatically <em>not</em> routed through the
+     * {@code CARDAIX} account path, which would answer with a different record whenever an account holds
+     * more than one card, as the seven-row card list proves it can.
      */
     @Nested
-    @DisplayName("retrieval resolves by card number only - :726-730, :740-750")
+    @DisplayName("retrieval resolves by card number AND owning account - :726-730, :739-750")
     final class CardNumberOnlyRetrievalPath {
 
         @Test
@@ -1003,7 +1077,7 @@ final class CardDetailServiceTest {
             final CardDetailScreen screen = screenForFoundCard();
 
             assertThat(screen.detail()).isNotNull();
-            verify(cardRepository).findById(CARD_NUMBER_16);
+            verify(cardRepository).findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
             verifyNoMoreInteractions(cardRepository);
         }
 
@@ -1017,29 +1091,60 @@ final class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("the account filter is validated and echoed, never used as the read key")
-        void accountFilterIsEchoedNeverQueriedOn() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+        @DisplayName("the account filter scopes the read - the same card under another account is not found")
+        void accountFilterScopesTheReadRatherThanBeingEchoed() {
+            // The shipped behaviour echoed the filter and read on the card number alone, so this second
+            // call returned the SAME record and rendered it under the account the caller had named. The
+            // filter is now half of the read predicate, so a card the account does not own is not found.
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
+            // The single-key read is stubbed leniently and MUST go unused. That is what makes this a probe
+            // rather than a restatement: were :739 dropped again, this stub would answer the foreign
+            // request with the card and the not-found assertion below would fail.
+            lenient().when(cardRepository.findById(CARD_NUMBER_16))
+                    .thenReturn(Optional.of(canonicalCard()));
 
-            final CardDto first = service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16);
-            final CardDto second = service.viewCardDetail("99999999999", CARD_NUMBER_16);
+            final CardDto owned = service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16);
 
-            assertThat(first.getAccountId()).isEqualTo(ACCOUNT_ID_11);
-            assertThat(second.getAccountId()).isEqualTo("99999999999");
-            verify(cardRepository, times(2)).findById(CARD_NUMBER_16);
+            assertThat(owned.getAccountId()).isEqualTo(ACCOUNT_ID_11);
+            assertThatExceptionOfType(RecordNotFoundException.class)
+                    .as("the same wording a non-existent card gets, so the response cannot be used to "
+                            + "learn that the card exists under some other account")
+                    .isThrownBy(() -> service.viewCardDetail(FOREIGN_ACCOUNT_ID_11, CARD_NUMBER_16))
+                    .withMessage(DID_NOT_FIND_ACCTCARD_COMBO_L154);
+            verify(cardRepository).findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
+            verify(cardRepository)
+                    .findByCardNumberAndAccountId(CARD_NUMBER_16, FOREIGN_ACCOUNT_ID_NUMERIC);
             verify(cardRepository, never()).findByAccountIdOrderByCardNumberAsc(any(), any());
         }
 
         @Test
-        @DisplayName("the pre-validated card-list arrival of :339-348 also resolves by card number")
-        void preValidatedArrivalAlsoResolvesByCardNumber() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+        @DisplayName("an account of zero does not opt out of the scoping")
+        void anAccountOfZeroDoesNotOptOutOfTheScoping() {
+            // The screen-rendering code at :1548 treats 0 as 'no filter to echo'. The read must NOT: the
+            // card-list arm at :339-348 sets INPUT-OK outright and takes the account straight from the
+            // commarea without running the edits, so a zero sentinel here would be a way to ask for an
+            // unscoped read.
+            assertThatExceptionOfType(RecordNotFoundException.class)
+                    .isThrownBy(() -> service.viewSelectedCard(0L, CARD_NUMBER_16))
+                    .withMessage(DID_NOT_FIND_ACCTCARD_COMBO_L154);
+
+            verify(cardRepository).findByCardNumberAndAccountId(CARD_NUMBER_16, 0L);
+            verify(cardRepository, never())
+                    .findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
+        }
+
+        @Test
+        @DisplayName("the pre-validated card-list arrival of :339-348 is scoped by its account too")
+        void preValidatedArrivalIsScopedByItsAccountToo() {
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDto detail = service.viewSelectedCard(ACCOUNT_ID_NUMERIC, CARD_NUMBER_16);
 
             assertThat(detail.getCardNumber()).isEqualTo(CARD_NUMBER_16);
             assertThat(detail.getAccountId()).isEqualTo(ACCOUNT_ID_11);
-            verify(cardRepository).findById(CARD_NUMBER_16);
+            verify(cardRepository).findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
             verifyNoMoreInteractions(cardRepository);
         }
 
@@ -1283,7 +1388,7 @@ final class CardDetailServiceTest {
                     .as("SET WS-PROMPT-FOR-INPUT at :460 and again at :491 moves the :132 literal")
                     .isEqualTo(PROMPT_FOR_INPUT_L132)
                     .isEqualTo("Please enter Account and Card Number");
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
@@ -1378,7 +1483,7 @@ final class CardDetailServiceTest {
                     .isInstanceOf(ValidationException.class)
                     .hasMessage(ACCOUNT_FILTER_NOT_NUMERIC_L670)
                     .hasNoCause();
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
@@ -1555,7 +1660,7 @@ final class CardDetailServiceTest {
                     .as(":615-627 REPLACE * WITH LOW-VALUES runs before either field edit")
                     .isInstanceOf(ValidationException.class)
                     .hasMessage(NO_SEARCH_CRITERIA_L143);
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @ParameterizedTest
@@ -1583,7 +1688,8 @@ final class CardDetailServiceTest {
                     .isEqualTo(FilterState.OK);
             assertThat(screen.cardFilterState()).isEqualTo(FilterState.OK);
             assertThat(screen.inputError()).isFalse();
-            verify(cardRepository, times(1)).findById(CARD_NUMBER_16);
+            verify(cardRepository, times(1))
+                    .findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
         }
 
         @Test
@@ -1594,14 +1700,15 @@ final class CardDetailServiceTest {
             assertThat(editRejection(ACCOUNT_ID_11, "999000111222333A"))
                     .isInstanceOf(ValidationException.class);
 
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
             verifyNoMoreInteractions(cardRepository);
         }
 
         @Test
         @DisplayName("the pre-validated card-list arrival skips the edits entirely, as :341 demands")
         void thePreValidatedArrivalSkipsTheEditsEntirely() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDto detail = service.viewSelectedCard(ACCOUNT_ID_NUMERIC, CARD_NUMBER_16);
 
@@ -1676,7 +1783,8 @@ final class CardDetailServiceTest {
         @Test
         @DisplayName("a not-found record reports the search-condition message and nothing else")
         void aNotFoundRecordReportsTheSearchConditionMessage() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.empty());
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.empty());
 
             assertThatExceptionOfType(RecordNotFoundException.class)
                     .isThrownBy(() -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16))
@@ -1789,7 +1897,8 @@ final class CardDetailServiceTest {
         @DisplayName("an unmodelled runtime fault becomes the online abend, carrying its culprit")
         void anUnmodelledRuntimeFaultBecomesTheOnlineAbend() {
             final IllegalStateException unmodelled = new IllegalStateException("store driver misbehaved");
-            when(cardRepository.findById(CARD_NUMBER_16)).thenThrow(unmodelled);
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenThrow(unmodelled);
 
             final Throwable thrown = catchThrowable(
                     () -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16));
@@ -1813,7 +1922,8 @@ final class CardDetailServiceTest {
         @DisplayName("the online abend code is never the batch abend code or the batch return code")
         void theOnlineAbendCodeIsNeverTheBatchContract() {
             final IllegalStateException unmodelled = new IllegalStateException("store driver misbehaved");
-            when(cardRepository.findById(CARD_NUMBER_16)).thenThrow(unmodelled);
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenThrow(unmodelled);
 
             final Throwable thrown = catchThrowable(
                     () -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16));
@@ -1846,7 +1956,7 @@ final class CardDetailServiceTest {
             assertThat(abend.getAbendMessage()).isEqualTo(UNEXPECTED_DATA_MESSAGE);
             assertThat(abend.getAbendCulprit()).isEqualTo(THIS_PROGRAM_L164);
             assertThat(abend).hasNoCause();
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
@@ -2010,7 +2120,7 @@ final class CardDetailServiceTest {
         @Test
         @DisplayName("the abend funnel logs the transaction and the code, never the card number")
         void theAbendFunnelLogsTheTransactionNotTheCardNumber() {
-            when(cardRepository.findById(CARD_NUMBER_16))
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
                     .thenThrow(new IllegalStateException("store driver misbehaved"));
 
             catchThrowable(() -> service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16));
@@ -2112,8 +2222,16 @@ final class CardDetailServiceTest {
         @DisplayName("a null repository is refused by the constructor, before a bean can exist")
         void aNullRepositoryIsRefusedByTheConstructor() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new CardDetailService(null))
+                    .isThrownBy(() -> new CardDetailService(null, FixedClockProvider.canonicalClock()))
                     .withMessage("cardRepository must not be null");
+        }
+
+        @Test
+        @DisplayName("a null clock is refused by the constructor, so no bean reads an ambient time source")
+        void aNullClockIsRefusedByTheConstructor() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new CardDetailService(cardRepository, null))
+                    .withMessage("clock must not be null");
         }
 
         @Test
@@ -2132,7 +2250,8 @@ final class CardDetailServiceTest {
         @Test
         @DisplayName("a seventeenth character is truncated rather than rejected")
         void aSeventeenthCharacterIsTruncatedRatherThanRejected() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDto detail = service.viewCardDetail(ACCOUNT_ID_11, CARD_NUMBER_16 + "7");
 
@@ -2140,13 +2259,15 @@ final class CardDetailServiceTest {
                     .as("the MOVE into CARDSIDI PIC X(16) at :596-605 discards the excess on the right;"
                             + " rejecting a seventeenth character would be an invention")
                     .isNotNull();
-            verify(cardRepository, times(1)).findById(CARD_NUMBER_16);
+            verify(cardRepository, times(1))
+                    .findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
         }
 
         @Test
         @DisplayName("a twelfth account character is truncated too, and the read still succeeds")
         void aTwelfthAccountCharacterIsTruncatedToo() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDto detail = service.viewCardDetail(ACCOUNT_ID_11 + "9", CARD_NUMBER_16);
 
@@ -2194,7 +2315,8 @@ final class CardDetailServiceTest {
                     .isInstanceOf(RecordNotFoundException.class)
                     .isNotInstanceOf(ValidationException.class)
                     .hasMessage(DID_NOT_FIND_ACCTCARD_COMBO_L154);
-            verify(cardRepository, times(1)).findById("1234567890123456");
+            verify(cardRepository, times(1))
+                    .findByCardNumberAndAccountId("1234567890123456", ACCOUNT_ID_NUMERIC);
         }
 
         @ParameterizedTest
@@ -2213,7 +2335,7 @@ final class CardDetailServiceTest {
                     .isInstanceOf(ValidationException.class)
                     .isInstanceOf(CardDemoException.class);
             assertThat(thrown.getMessage()).isEqualTo(CARD_FILTER_NOT_NUMERIC_L711);
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @ParameterizedTest
@@ -2226,7 +2348,7 @@ final class CardDetailServiceTest {
 
             assertThat(thrown).isInstanceOf(ValidationException.class);
             assertThat(thrown.getMessage()).isEqualTo(ACCOUNT_FILTER_NOT_NUMERIC_L670);
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
@@ -2248,7 +2370,7 @@ final class CardDetailServiceTest {
             editRejection("0000000001'; DROP TABLE card_data; --", CARD_NUMBER_16);
             editRejection(ACCOUNT_ID_11, "999000111222333' OR '1'='1");
 
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
             verifyNoMoreInteractions(cardRepository);
         }
 
@@ -2257,7 +2379,8 @@ final class CardDetailServiceTest {
         void theStoreIsReachedOnlyThroughABoundIdentifier() {
             screenForFoundCard();
 
-            verify(cardRepository, times(1)).findById(CARD_NUMBER_16);
+            verify(cardRepository, times(1))
+                    .findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC);
             verifyNoMoreInteractions(cardRepository);
             assertThat(serviceSourceLines())
                     .as("Spring Data binds the identifier; no line may build a query by concatenation")
@@ -2268,7 +2391,8 @@ final class CardDetailServiceTest {
         @Test
         @DisplayName("an unmapped attention identifier is coerced to enter, not rejected")
         void anUnmappedAttentionIdentifierIsCoercedToEnter() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDetailScreen screen = service.submitScreen(new CardDetailRequest(
                     AttentionIdentifier.PF7, true, EntryMode.REENTER, null, null, null, null, null,
@@ -2292,7 +2416,7 @@ final class CardDetailServiceTest {
                     .as(":313-320 falls back to the menu when the caller left no provenance")
                     .isEqualTo("COMEN01C");
             assertThat(screen.navigationTransactionId()).isEqualTo("CM00");
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
     }
 
@@ -2369,8 +2493,8 @@ final class CardDetailServiceTest {
         }
 
         @Test
-        @DisplayName("the bean has one constructor, taking the one repository it reads through")
-        void theBeanHasOneConstructorTakingOneRepository() {
+        @DisplayName("the bean has one constructor, taking the repository it reads and the clock it reads")
+        void theBeanHasOneConstructorTakingItsRepositoryAndClock() {
             final Constructor<?>[] constructors = CardDetailService.class.getDeclaredConstructors();
 
             assertThat(constructors)
@@ -2378,7 +2502,11 @@ final class CardDetailServiceTest {
                     .hasSize(1);
             final Constructor<?> only = constructors[0];
             assertThat(Modifier.isPublic(only.getModifiers())).isTrue();
-            assertThat(only.getParameterTypes()).containsExactly(CardRepository.class);
+            assertThat(only.getParameterTypes())
+                    .as("the time source is injected, not constructed: the clock arrives the same way the"
+                            + " repository does, from the one Clock bean ObservabilityConfig publishes, so"
+                            + " nothing in this service reads an ambient time source")
+                    .containsExactly(CardRepository.class, Clock.class);
         }
 
         @Test
@@ -2476,9 +2604,10 @@ final class CardDetailServiceTest {
      * {@code com.cardemo.unit.model} package owns both and duplicating them would violate the repository's
      * no-duplication standard.
      *
-     * <p>The header date and time are asserted by <b>shape only</b>. The service resolves its clock
-     * internally through {@link java.time.Clock}, so no test may pin an instant without changing production
-     * code, and asserting a value rather than a pattern would make the outcome depend on when the suite ran.
+     * <p>The header date and time are asserted by <b>shape only</b>. The instant itself is pinned - the
+     * service takes its {@link java.time.Clock} by constructor and this class injects the canonical fixed
+     * clock - but the assertion stays a shape assertion on purpose, because what the source fixes is the
+     * edited layout of {@code app/cpy/CSDAT01Y.cpy:30-41} rather than any particular moment.
      *
      * <p>Money discipline is asserted structurally rather than behaviourally, because
      * {@code app/cpy/CVACT02Y.cpy} declares <b>no monetary field at all</b> - the hundred and fifty bytes
@@ -2636,7 +2765,6 @@ final class CardDetailServiceTest {
             assertThat(card.getExpiraionDate())
                     .as("the copybook's misspelled CARD-EXPIRAION-DATE is preserved as the accessor name")
                     .isEqualTo(EXPIRAION_DATE);
-            assertThat(card.getCvvCode()).isEqualTo(CVV_CODE);
         }
     }
 
@@ -2679,9 +2807,10 @@ final class CardDetailServiceTest {
                                 + " ENTER", attentionIdentifier)
                         .isEqualTo("COMEN01C");
                 assertThat(screen.detail()).isNull();
-                verify(cardRepository, never()).findById(anyString());
+                verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
             } else {
-                when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+                when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
                 final CardDetailScreen screen = service.submitScreen(request);
 
@@ -2728,7 +2857,7 @@ final class CardDetailServiceTest {
             assertThat(screen.navigationProgram())
                     .as(":319-321 uses the caller's own program on identical terms")
                     .isEqualTo("COCRDLIC");
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
@@ -2744,13 +2873,14 @@ final class CardDetailServiceTest {
             assertThat(screen.inputError())
                     .as("the edits never run on this arm, so nothing can be in error")
                     .isFalse();
-            verify(cardRepository, never()).findById(anyString());
+            verify(cardRepository, never()).findByCardNumberAndAccountId(anyString(), anyLong());
         }
 
         @Test
         @DisplayName("the filters are protected only when the operator arrived from the card list")
         void theFiltersAreProtectedOnlyWhenArrivingFromTheCardList() {
-            when(cardRepository.findById(CARD_NUMBER_16)).thenReturn(Optional.of(canonicalCard()));
+            when(cardRepository.findByCardNumberAndAccountId(CARD_NUMBER_16, ACCOUNT_ID_NUMERIC))
+                    .thenReturn(Optional.of(canonicalCard()));
 
             final CardDetailScreen fromList = service.submitScreen(new CardDetailRequest(
                     AttentionIdentifier.ENTER, true, EntryMode.REENTER, "COCRDLIC", "CCLI", "COCRDLI",

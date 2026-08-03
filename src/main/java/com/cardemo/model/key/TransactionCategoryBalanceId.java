@@ -42,10 +42,10 @@ import java.util.Objects;
  * and has no collaborators.
  *
  * <p><strong>How it is built and verified.</strong> {@code ./mvnw -B clean verify} compiles this class under
- * {@code -Xlint:all -Werror} and enforces the project line coverage floor; its unit test belongs in
- * {@code src/test/java/com/cardemo/unit/model}, where <strong>none exists at this commit</strong> - no
- * {@code TransactionCategoryBalanceIdTest} has been written, so no test covers this class. The mapping
- * itself is to be verified by starting the application against a schema produced by the Flyway migrations,
+ * {@code -Xlint:all -Werror} and enforces the project line coverage floor; its unit tests live in
+ * {@code src/test/java/com/cardemo/unit/model}. The mapping
+ * itself is verified by starting the application against a schema produced by the Flyway migrations,
+ * because
  * because
  * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile and so any drift between
  * this class and the schema surfaces as a startup failure rather than as a latent fault. The measured
@@ -82,14 +82,15 @@ import java.util.Objects;
  *   <li>{@code app/catlg/LISTCAT.txt:L1372} reads {@code RKP--------------------0}, so the key sits at
  *       byte 0 and is the record prefix; {@code L1373} marks the cluster {@code UNIQUE} and
  *       {@code INDEXED}.</li>
- *   <li>The seed fixture {@code app/data/ASCII/tcatbal.txt:L1} splits 11/2/4 as
- *       {@code 00000000001} + {@code 01} + {@code 0001}, followed by the eleven character
+ *   <li>The seed fixture {@code app/data/ASCII/tcatbal.txt} splits its 50 byte record 11/2/4 into a
+ *       zero-padded account identifier, a two character type code and a four digit category code,
+ *       followed by the eleven character
  *       {@code S9(09)V99} balance with its trailing zoned decimal overpunch sign and 22 filler bytes,
  *       totalling the catalogued 50 byte record.</li>
  *   <li>{@code app/cbl/CBTRN02C.cbl:L60} declares {@code RECORD KEY IS FD-TRAN-CAT-KEY}, and
  *       {@code app/cbl/CBTRN02C.cbl:L93-L96} declares that key with the identical 11/2/4 composition.
  *       This is an independent FILE-CONTROL level proof of both the width and the component order.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Component order is load bearing, not cosmetic</h2>
  *
@@ -112,7 +113,7 @@ import java.util.Objects;
  * effects of {@code 1050-UPDATE-ACCOUNT} at {@code :L350-L370}. The Java flush must still happen, driven
  * by the end of data condition rather than by translating that dead {@code ELSE}, and that is a labelled
  * deviation from source behaviour rather than parity. See the fuller treatment on
- * {@code com.cardemo.repository.TransactionCategoryBalanceRepository}, which carries the same finding.
+ * {@code com.cardemo.repository.TransactionCategoryBalanceRepository}, which states the same constraint.
  *
  * <p>That break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component.
  * Reordering the declarations, for instance alphabetising them to {@code catCd}, {@code accountId},
@@ -125,8 +126,7 @@ import java.util.Objects;
  *
  * <p>Mapping the two numeric components to {@code Long} and {@code Integer} rather than to
  * {@code String} does not disturb that ordering. The fixture stores every numeric component as
- * zero padded, fixed width, unsigned digits ({@code 00000000001}, {@code 0001}), and for such values
- * lexicographic byte order and numeric order coincide. A {@code Long}/{@code Integer} mapping therefore
+ * zero padded, fixed width, unsigned digits, and for such values
  * preserves the control break sequence exactly as a {@code String} mapping would, while additionally
  * rejecting non numeric input at the type boundary.
  *
@@ -141,7 +141,7 @@ import java.util.Objects;
  *   <li>{@code app/cpy/CVTRA04Y.cpy} is a different key altogether: 6 bytes, two fields,
  *       {@code TRAN-} prefix ({@code TRAN-TYPE-CD}, {@code TRAN-CAT-CD}), belonging to the transaction
  *       category type record whose identifier is {@code TransactionCategoryId}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>They are distinct contracts that merely share a group name, and the field prefixes differ as well.
  * No abstraction is extracted across them: this class deliberately has no base class, no shared helper
@@ -163,45 +163,40 @@ import java.util.Objects;
  *   PRIMARY KEY (acct_id, tran_type_cd, tran_cat_cd)
  * </pre>
  *
- * <p><strong>Both dependencies are present, measured 1 August 2026.</strong> An earlier generation of
- * this comment recorded them as unavailable; that is no longer true.
+ * <p><strong>Both dependencies are present.</strong>
  * {@code src/main/resources/db/migration/V1__create_schema.sql} declares
- * {@code transaction_category_balance} at {@code :L1134-L1145} with {@code acct_id BIGINT} at
- * {@code :L1136}, {@code tran_type_cd VARCHAR(2)} at {@code :L1138} and {@code tran_cat_cd INTEGER} at
- * {@code :L1140}, closed by {@code CONSTRAINT pk_transaction_category_balance PRIMARY KEY (acct_id,
- * tran_type_cd, tran_cat_cd)} at {@code :L1144-L1145} - the component order above, exactly. And
+ * {@code CREATE TABLE transaction_category_balance} with {@code acct_id BIGINT},
+ * {@code tran_type_cd VARCHAR(2)} and {@code tran_cat_cd INTEGER}, closed by
+ * {@code CONSTRAINT pk_transaction_category_balance PRIMARY KEY (acct_id, tran_type_cd, tran_cat_cd)} -
+ * the component order above, exactly. And
  * {@code com.cardemo.model.entity.TransactionCategoryBalance} mounts this class through
  * {@code @EmbeddedId}. The column names and widths remain contracted by {@code app/cpy/CVTRA01Y.cpy} and
  * {@code app/catlg/LISTCAT.txt:L1371}; the SQL types are the ones this mapping validates against, as
  * recorded below.
  *
- * <h2>Measured type pairings, and one correction</h2>
+ * <h2>The type pairings this mapping depends on</h2>
  *
  * <p>The Hibernate schema validator compares JDBC type codes rather than merely widths, so the Java and
  * SQL types must be paired deliberately. The three pairings below were established by executing each
  * against PostgreSQL 16.10 with Hibernate 6.6.42.Final and {@code hibernate.hbm2ddl.auto=validate} on a
- * throwaway schema. <strong>Re-verified 1 August 2026, and reproducible from this tree without a Spring
- * context:</strong> applying {@code V1__create_schema.sql} into a throwaway schema on a PostgreSQL 16.10
+ * throwaway schema, and are reproducible from this tree without a Spring context: applying
+ * {@code V1__create_schema.sql} into a throwaway schema on a PostgreSQL 16.10
  * instance yields 11 tables, 10 foreign keys and 5 check constraints, and bootstrapping Hibernate
  * 6.6.42.Final directly over all eleven annotated entities with {@code hibernate.hbm2ddl.auto=validate}
  * reports no mismatch. That check exercises this class, because {@code TransactionCategoryBalance} mounts
- * it as its {@code @EmbeddedId} and a component name or type mismatch would fail it. An earlier
- * generation of this comment said the execution was not reproducible because no
- * {@code application*.yml} and no {@code @SpringBootApplication} entry point exists; that inference was
- * wrong - neither is needed, only Hibernate's {@code MetadataSources} bootstrap API.
- *
+ * it as its {@code @EmbeddedId} and a component name or type mismatch would fail it. Only Hibernate's
+ * {@code MetadataSources} bootstrap API is needed for it.
  * <ul>
  *   <li>{@code Long} over {@code BIGINT} validates. {@code Long} over {@code NUMERIC(11)}
  *       <strong>fails</strong>: "found [numeric (Types#NUMERIC)], but expecting [bigint
- *       (Types#BIGINT)]". Severity Medium. The remedy is to declare {@code BIGINT} in the migration,
+ *       (Types#BIGINT)]". The remedy is to declare {@code BIGINT} in the migration,
  *       not to widen the Java type, because the Java type is pinned by the {@code 9(11)} picture
  *       clause.</li>
  *   <li>{@code String} with {@code length = 2} over {@code VARCHAR(2)} validates.</li>
  *   <li>{@code String} with {@code length = 2} over {@code CHAR(2)} <strong>fails</strong>: "found
- *       [bpchar (Types#CHAR)], but expecting [varchar(2) (Types#VARCHAR)]". <strong>Severity High</strong>
- *       — this contradicts the {@code CHAR(2)} that a literal reading of the field contract suggests for
- *       a fixed width {@code PIC X(02)} field, and it manifests as a startup blocker on first boot
- *       because {@code ddl-auto} is {@code validate}. Adding
+ *       [bpchar (Types#CHAR)], but expecting [varchar(2) (Types#VARCHAR)]".
+ *       This contradicts the {@code CHAR(2)} that a literal reading of the field contract suggests for
+ *       a fixed width {@code PIC X(02)} field, and it stops startup on first boot
  *       {@code @Column(columnDefinition = "char(2)")} does <em>not</em> fix it: the expected type code
  *       stays {@code Types#VARCHAR}, so validation still fails. Forcing {@code CHAR} would require the
  *       provider specific {@code @JdbcTypeCode(SqlTypes.CHAR)}, which would couple this value type to
@@ -209,30 +204,31 @@ import java.util.Objects;
  *       {@code VARCHAR(2)}: the migration must declare {@code tran_type_cd VARCHAR(2) NOT NULL}. Nothing
  *       is lost by it, because the value is always exactly two characters, and {@code VARCHAR} avoids
  *       the trailing space semantics that {@code bpchar} comparison carries.</li>
- * </ul>
+ *   </ul>
  *
- * <p><strong>Both remedies are already in the migration, measured 1 August 2026.</strong> Reading
- * {@code src/main/resources/db/migration/V1__create_schema.sql} directly, the
- * {@code transaction_category_balance} table it declares carries {@code acct_id BIGINT NOT NULL},
- * {@code tran_type_cd VARCHAR(2) NOT NULL} and {@code tran_cat_cd INTEGER NOT NULL} - exactly the
- * three types the mapping table above requires, with neither
- * {@code NUMERIC(11)} nor {@code CHAR(2)} present. Neither failing pairing is therefore live against this
- * schema; both entries are retained as the reasoning that fixed the column types, not as open defects.
+ * <p><strong>Both remedies are already in the migration.</strong> The
+ * {@code transaction_category_balance} table that
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares carries
+ * {@code acct_id BIGINT NOT NULL}, {@code tran_type_cd VARCHAR(2) NOT NULL} and
+ * {@code tran_cat_cd INTEGER NOT NULL} - exactly the three types the mapping table above requires, with
+ * neither {@code NUMERIC(11)} nor {@code CHAR(2)} present. Neither failing pairing is therefore live
+ * against this schema; both entries are retained as the reasoning that fixed the column types, not as
+ * open defects.
  *
  * <h2>Provider attribute ordering does not follow declaration order</h2>
  *
- * <p>One further behaviour was measured and must be known to whoever authors the migration. Hibernate
+ * <p>One further provider behaviour must be known to whoever authors the migration. Hibernate
  * does not preserve the declaration order of an embeddable's attributes: it sorts them alphabetically,
  * so it resolves this key as {@code accountId}, {@code catCd}, {@code typeCd} and would emit a generated
  * primary key of {@code (acct_id, tran_cat_cd, tran_type_cd)}. That is <em>not</em> the COBOL key order.
  *
  * <p>The declaration order in this file is nevertheless correct and is deliberately left as the COBOL
  * order, for two reasons. First, the leading component is {@code accountId} under either ordering, so the
- * account level control break described above is unaffected. Second, {@code validate} was measured to
- * ignore primary key column order entirely: the pairing above validated cleanly against a table whose
- * primary key was physically declared as {@code (acct_id, tran_type_cd, tran_cat_cd)}, so the physical
- * order is set by the migration and not by the provider. Severity Medium, escalating to High only if DDL
- * is ever generated from the entity model. Remediation: {@code V1__create_schema.sql} must declare
+ * account level control break described above is unaffected. Second, {@code validate} ignores primary key
+ * column order entirely: the pairing above validates cleanly against a table whose primary key is
+ * physically declared as {@code (acct_id, tran_type_cd, tran_cat_cd)}, so the physical order is set by the
+ * migration and not by the provider. It matters only if DDL is ever generated from the entity model, and
+ * the rule that follows is that {@code V1__create_schema.sql} must declare
  * {@code PRIMARY KEY (acct_id, tran_type_cd, tran_cat_cd)} explicitly, and no schema for this table may
  * be derived from provider generated DDL.
  *

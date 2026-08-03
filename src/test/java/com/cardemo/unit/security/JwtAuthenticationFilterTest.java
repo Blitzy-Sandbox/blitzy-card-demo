@@ -102,6 +102,17 @@ class JwtAuthenticationFilterTest {
     /** Any non-blank value: the decoder under test carries no issuer validator, so this is inert. */
     private static final String ISSUER = "carddemo-test";
 
+    /**
+     * Token lifetime handed to every {@link JwtTokenProvider} this test constructs, in
+     * <strong>minutes</strong> - the unit the provider takes and the unit
+     * {@code carddemo.security.jwt.expiration-minutes} publishes. Sixty is chosen rather than the
+     * production default of thirty only because the expiry test below back-dates its issuing clock by two
+     * hours, and the assertion is clearer when the offset visibly exceeds the lifetime. The value is named
+     * rather than inlined because the contract was previously expressed in seconds, so a bare literal
+     * would read as either unit.
+     */
+    private static final long LIFETIME_MINUTES = 60L;
+
     /** Generated per test method. 48 random bytes, Base64-encoded, well above the 32-byte HS256 floor. */
     private String signingKey;
 
@@ -113,7 +124,7 @@ class JwtAuthenticationFilterTest {
     void setUp() {
         SecurityContextHolder.clearContext();
         signingKey = generatedKey();
-        provider = new JwtTokenProvider(signingKey, ISSUER, 60L, Clock.systemUTC());
+        provider = new JwtTokenProvider(signingKey, ISSUER, LIFETIME_MINUTES, Clock.systemUTC());
         decoder = new CountingDecoder(decoderFor(signingKey));
         filter = new JwtAuthenticationFilter(decoder, provider);
     }
@@ -260,7 +271,7 @@ class JwtAuthenticationFilterTest {
     @DisplayName("A well-formed token signed with a different key does not authenticate")
     void tokenSignedWithAnotherKeyIsRejected() throws Exception {
         final JwtTokenProvider foreign =
-                new JwtTokenProvider(generatedKey(), ISSUER, 60L, Clock.systemUTC());
+                new JwtTokenProvider(generatedKey(), ISSUER, LIFETIME_MINUTES, Clock.systemUTC());
         final String foreignToken = foreign.issueToken("ADMIN001", UserType.ADMIN);
 
         final CapturingChain chain = run(requestWith("Bearer " + foreignToken));
@@ -299,7 +310,8 @@ class JwtAuthenticationFilterTest {
     @DisplayName("An expired token is rejected and is structurally distinguishable from a malformed one")
     void expiredTokenIsRejectedAndDistinguishedFromMalformed() throws Exception {
         final Clock twoHoursAgo = Clock.fixed(Instant.now().minus(Duration.ofHours(2)), ZoneOffset.UTC);
-        final JwtTokenProvider stale = new JwtTokenProvider(signingKey, ISSUER, 60L, twoHoursAgo);
+        final JwtTokenProvider stale =
+                new JwtTokenProvider(signingKey, ISSUER, LIFETIME_MINUTES, twoHoursAgo);
         final String expired = stale.issueToken("USER0001", UserType.USER);
 
         // The decoder itself must classify this as a validation failure, not a decoding failure: that

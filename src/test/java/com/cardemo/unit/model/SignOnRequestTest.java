@@ -45,8 +45,6 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validator;
-import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
 import java.lang.reflect.Field;
@@ -108,7 +106,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       corroborate it independently by testing {@code SPACES OR LOW-VALUES} as two separate
  *       sentinels. Absent, blank and low-values are therefore distinct states here, never
  *       collapsed.</li>
- * </ol>
+ *   </ol>
  *
  * <p>What this suite deliberately does <em>not</em> assert is the sign-on <em>behaviour</em>: no
  * upper-casing, no credential comparison, no menu routing and no token issuance. Those belong to
@@ -143,12 +141,12 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       unnecessary stubbing, but the point is moot: this record is a pure data carrier with no
  *       collaborator to mock, so a test double here would be dead code.</li>
  *   <li><strong>Validation runs against a real engine, not a stub.</strong> Each check builds a
- *       {@link ValidatorFactory} from the default provider and closes it, which is pure JVM work -
+ *       {@code jakarta.validation.ValidatorFactory} from the default provider and closes it, which is pure JVM work -
  *       no Spring context is started and no container is required.</li>
  *   <li><strong>BCrypt strength 10 is context only.</strong> No hash is computed here and no BCrypt
  *       library is on this tier's classpath; hashing belongs to {@code UserSecurityTest} and the
  *       service layer.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -177,7 +175,7 @@ import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException
  *       password component or the {@code toString()} override has been removed or overridden by a
  *       custom serialiser. Those two, not the log masking configuration, are the primary defence.
  *       See {@link #serialisedFormOmitsBothTheCredentialKeyAndItsValue()}.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("SignOnRequest - BMS field contract, credential containment and the tri-state model")
 final class SignOnRequestTest {
@@ -519,7 +517,7 @@ final class SignOnRequestTest {
     }
 
     /**
-     * Validates a request against a freshly built default {@link Validator} and closes the factory.
+     * Validates a request against a freshly built default {@code jakarta.validation.Validator} and closes the factory.
      *
      * @param request the request to validate; may contain {@code null} components
      * @return the constraint violations, empty when the request satisfies every declared bound

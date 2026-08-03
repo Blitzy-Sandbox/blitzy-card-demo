@@ -71,8 +71,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * inserts one 80-byte security record. It reports the three outcomes the source reports - added, identifier
  * already taken, or the write failed - with the source's exact message text in each case.
  *
- * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
- * {@code /api/admin/*}, which {@code com.cardemo.config.SecurityConfig} restricts to the ADMIN role - the
+ * <p>It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
+ * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the
  * {@code 'A'} against {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at
  * {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as {@code com.cardemo.model.enums.UserType}.
  *
@@ -90,8 +92,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
- *       {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning at all fails the build, an
- *       unused import fails the build, and malformed Javadoc fails JDK 25 doclint.</li>
+ *       {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning {@code javac} emits fails the
+ *       build. Two things it does <em>not</em> emit: an unused import, for which {@code javac} 25 publishes
+ *       no lint key, and malformed Javadoc, which no Maven phase checks because no Javadoc plugin is bound in
+ *       {@code pom.xml} - both are covered by review and by the explicit doclint command in
+ *       {@code docs/technical-specifications.md}.</li>
  *   <li>{@code ./mvnw -B -ntp test} - runs the unit tier through {@code maven-surefire-plugin:3.5.4}. This
  *       bean's tests belong in {@code src/test/java/com/cardemo/unit/**} and never in this package, which
  *       holds exactly four source files and no {@code package-info.java}.</li>
@@ -101,7 +106,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       reachable: every method below is exercisable by handing the constructor a fixed {@code Clock}, a
  *       stubbed repository and a real {@code BCryptPasswordEncoder}, with no database and no Spring
  *       context.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -141,7 +146,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code Locale.ROOT}.</li>
  *   <li><strong>Route</strong> - ADMIN only. Least privilege is enforced by the security configuration, not
  *       here; this bean neither reads a token nor inspects a role.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -149,34 +154,30 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>A request with several empty fields reports the wrong field.</strong> The five checks were
  *       reordered, or their ordering was delegated to {@code jakarta.validation}, whose constraint evaluation
  *       order is unspecified. Remedy: keep the explicit ordered chain of {@code processEnterKey} exactly as
- *       written and never annotate the five fields into a declarative cascade. Severity:
- *       <strong>High</strong>.</li>
+ *       written and never annotate the five fields into a declarative cascade.</li>
  *   <li><strong>A message no longer matches the baseline.</strong> A literal was normalised. All five empty
  *       field messages read {@code can NOT} with a capital N, O and T, and every ellipsis in this program is
  *       exactly three periods. Remedy: never re-case, re-space or re-punctuate them; the parity gates compare
  *       them byte for byte.</li>
  *   <li><strong>{@code "User ID already exist..."} was corrected to "exists".</strong> The missing {@code s}
  *       is a grammatical defect in the system of record at {@code app/cbl/COUSR01C.cbl}:263 and is reproduced
- *       deliberately. Remedy: revert the correction. Severity: <strong>Low</strong> as a defect,
- *       <strong>High</strong> as a parity break.</li>
+ *       deliberately. Remedy: revert the correction; a corrected literal is a parity break.</li>
  *   <li><strong>Two distinct duplicate outcomes appear.</strong> {@code DFHRESP(DUPKEY)} at
  *       {@code app/cbl/COUSR01C.cbl}:260 and {@code DFHRESP(DUPREC)} at {@code :261} are adjacent
  *       {@code WHEN} clauses sharing one body, so they are one outcome, not two. Remedy: keep the single
- *       branch. Severity: <strong>Medium</strong>.</li>
+ *       branch.</li>
  *   <li><strong>A duplicate identifier eventually succeeds.</strong> Something retried. There is no retry, no
  *       backoff, no identifier regeneration, no {@code @Retryable}, no upsert and no database sequence: a
  *       collision is terminal and reportable, exactly as the source reports it. Remedy: remove the retry.
- *       Severity: <strong>High</strong>.</li>
+ *       </li>
  *   <li><strong>A password or digest appears in a log line, a response or an exception message.</strong> It
  *       cannot come from here. The plaintext is read once, hashed immediately, and never assigned to a field,
  *       never logged, never returned and never placed in a message; {@code UserAddScreen} declares no
  *       password component at all; and the {@code ValidationException} raised for an empty password carries
  *       the field <em>name</em> only. Remedy: keep all four properties true, and treat the masking rules of
- *       {@code logback-spring.xml} as a backstop rather than a licence. Severity:
- *       <strong>High</strong>.</li>
+ *       {@code logback-spring.xml} as a backstop rather than a licence.</li>
  *   <li><strong>The commented-out diagnostic at {@code app/cbl/COUSR01C.cbl}:268 was enabled.</strong>
- *       Enabling it changes observable output. Remedy: leave it commented, as it is below. Severity:
- *       <strong>Low</strong>.</li>
+ *       Enabling it changes observable output. Remedy: leave it commented, as it is below.</li>
  *   <li><strong>Startup fails naming {@code PasswordEncoder} or {@code Clock}.</strong> Both are constructor
  *       arguments and neither is published here. Remedy: publish the encoder from
  *       {@code com.cardemo.config.SecurityConfig} at strength 10 and a {@code Clock} bean for the tree.</li>
@@ -185,20 +186,16 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>A partially written user survives a failure.</strong> The write is not inside the
  *       transaction. Remedy: keep {@code @Transactional(rollbackFor = Exception.class)} on the entry points
  *       that write.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried from the translation, by severity</h2>
+ * <h2>Paragraph correspondence, and the ways parity gets broken</h2>
  *
- * <h3>Blocker</h3>
- *
- * <p>Mapping fewer than nine private methods. All nine paragraph labels of {@code app/cbl/COUSR01C.cbl} are
+ * <p>All nine paragraph labels of {@code app/cbl/COUSR01C.cbl} are
  * present one-to-one and none is consolidated: {@code MAIN-PARA}:71, {@code PROCESS-ENTER-KEY}:115,
  * {@code RETURN-TO-PREV-SCREEN}:165, {@code SEND-USRADD-SCREEN}:184, {@code RECEIVE-USRADD-SCREEN}:201,
  * {@code POPULATE-HEADER-INFO}:214, {@code WRITE-USER-SEC-FILE}:238, {@code CLEAR-CURRENT-SCREEN}:279 and
  * {@code INITIALIZE-ALL-FIELDS}:287. The source-citing Javadoc on each is the evidence the scope-coverage
- * gate reads, and {@code TRACEABILITY_MATRIX.md} is proved against exactly this correspondence.
- *
- * <h3>High</h3>
+ * gate reads; mapping fewer than nine breaks it.
  *
  * <p>Four ways to break parity, all avoided above and all listed under troubleshooting: reordering the five
  * validations; returning, logging or storing the presented password or its digest; placing the password value
@@ -208,12 +205,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code app/cbl/CBACT04C.cbl}:422 and {@code :436}, and {@code CBSTM03B}'s acceptance of {@code '04'}. All
  * three are scoped to batch; none of {@code FileStatusMapper}'s carve-out methods is called from this file.
  *
- * <h3>Medium</h3>
+ * <p>Two further ways, both avoided: treating the two duplicate conditions as separate branches, and relying
+ * on {@code jakarta.validation} ordering for the five checks.
  *
- * <p>Treating the two duplicate conditions as separate branches; relying on {@code jakarta.validation}
- * ordering for the five checks. Both avoided.
- *
- * <p>One Medium finding is <strong>not</strong> avoided and is disclosed instead: this bean rejects a user
+ * <p>One source characteristic is <strong>not</strong> avoided and is disclosed instead: this bean rejects a user
  * type outside {@code 'A'} and {@code 'U'}, which the source does not do. See the labelled deviation below.
  *
  * <h3>Low</h3>
@@ -231,7 +226,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>The plan's general note on the symbolic maps records {@code CURTIME} as {@code X(9)}. Both
  *       {@code app/cpy-bms/COUSR01.CPY}:54 and {@code app/cpy/CSDAT01Y.cpy} say eight. The source governs, so
  *       eight is used. Citation correction only.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Labelled deviation: the user type is validated against its domain</h2>
  *
@@ -245,8 +240,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <em>supplied-but-invalid</em> state rather than persisted. This is a deviation, stated as one: it rejects
  * input the source accepts. It is the narrower of the two available deviations - the alternative is to widen
  * the column back to a free-form character, which would let a meaningless type reach the authorisation model
- * that {@code SecurityConfig} builds on {@code 'A'} against {@code 'U'}. Severity: Medium; tracked in
- * DECISION_LOG.md.
+ * that {@code SecurityConfig} builds on {@code 'A'} against {@code 'U'}.
  *
  * <h2>Labelled mechanism note: the presented password is a separate argument</h2>
  *
@@ -258,7 +252,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>The presented password is consequently handed to this bean as an <em>explicit separate argument</em>
  * alongside the request. The request supplies the eleven readable presented fields; the credential travels on
  * its own, is read exactly once, is hashed immediately, and is never stored on this bean, never assigned to a
- * field of the work area, and never returned. Tracked in DECISION_LOG.md.
+ * field of the work area, and never returned.
  *
  * <h2>Labelled mechanism note: the declarative transaction boundary</h2>
  *
@@ -267,8 +261,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * is no {@code SYNCPOINT} and no {@code SYNCPOINT ROLLBACK} anywhere in the 299 lines. Scoping the write in
  * one {@code @Transactional(rollbackFor = Exception.class)} method reproduces the same all-or-nothing outcome
  * without any conditional logic. This is a <strong>mechanism substitution, not a behaviour change</strong>,
- * and transaction management itself is owned by {@code com.cardemo.config.JpaConfig}. Tracked in
- * DECISION_LOG.md.
+ * and transaction management itself is owned by {@code com.cardemo.config.JpaConfig}.
  *
  * <h2>Preserve the contrast with the sibling update program</h2>
  *
@@ -276,26 +269,25 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code CDEMO-TO-PROGRAM} and transfers, so it <strong>exits without saving</strong>. The sibling
  * {@code app/cbl/COUSR02C.cbl}:111-112 instead performs its update paragraph on {@code DFHPF3}, so
  * {@code PF3} <strong>saves</strong> there. The two behaviours are genuinely different and the conventional
- * one here is part of the evidence that the sibling's is the quirk. A reviewer comparing the two must
+ * one here is part of the evidence that the sibling's is the quirk. A reader comparing the two must
  * <em>not</em> harmonise them.
  *
- * <h2>Not available</h2>
+ * <h2>Behaviour the source does not define, and which is therefore not invented</h2>
  *
  * <ul>
- *   <li><strong>Latency and throughput objectives.</strong> Not available. No service level is published
+ *   <li><strong>Latency and throughput objectives.</strong> No service level is published
  *       anywhere in the source, and none is invented; the performance gate records a measured baseline, never
- *       a target. What would be needed is a stated objective that does not exist.</li>
+ *       a target.</li>
  *   <li><strong>Password strength, complexity, minimum length, expiry, reuse, history and lockout
- *       policy.</strong> Not available. {@code app/cbl/COUSR01C.cbl}:136 tests emptiness and nothing else,
- *       and {@code SEC-USR-PWD} is a bare {@code PIC X(08)}. No rule is invented here. What would be needed
- *       is a source rule that does not exist.</li>
- *   <li><strong>An audit trail for user creation.</strong> Not available. The source writes one record and
+ *       policy.</strong> {@code app/cbl/COUSR01C.cbl}:136 tests emptiness and nothing else,
+ *       and {@code SEC-USR-PWD} is a bare {@code PIC X(08)}. No rule is invented here.</li>
+ *   <li><strong>An audit trail for user creation.</strong> The source writes one record and
  *       records nothing about who wrote it - indeed the two moves that would have carried the acting user's
  *       identity are commented out at {@code :172-173}. None is invented.</li>
- *   <li><strong>A literal {@code FILE STATUS '22'} test in the corpus.</strong> Not available: a census of
+ *   <li><strong>A literal {@code FILE STATUS '22'} test in the corpus.</strong> A census of
  *       {@code app/cbl} finds zero of them, so {@code '22'} is reachable only through the batch guard's
  *       {@code ELSE} branch. It is cited as evidence, not as a source locator.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Thread safety</h2>
  *
@@ -518,6 +510,32 @@ public class UserAddService {
     private static final String FIELD_PASSWORD = "password";
 
     /**
+     * The width of the presented credential, from {@code PASSWDI PIC X(8)} at
+     * {@code app/cpy-bms/COUSR01.CPY}:78, corroborated by the persisted {@code SEC-USR-PWD PIC X(08)} at
+     * {@code app/cpy/CSUSR01Y.cpy}:21 and by the outbound {@code PASSWDO PIC X(8)} at
+     * {@code app/cpy-bms/COUSR01.CPY}:152. Three independent declarations, one width.
+     *
+     * <p>It is declared here rather than taken from {@code UserSecurityDto}, because that record deliberately
+     * carries no password component and therefore no password width; borrowing the identifier width, which
+     * happens to be eight as well, would tie the two together by coincidence. The sibling
+     * {@code com.cardemo.service.admin.UserUpdateService} declares the same constant for the same reason, and
+     * the two paths now bound the credential identically - which is the point, because a create path that
+     * accepted a ninth character while the update path rejected it would let one record hold a credential the
+     * other could never reproduce.
+     *
+     * <p>THE GUARD REJECTS AND NEVER TRUNCATES, and the distinction matters for a credential specifically. The
+     * 3270 field is {@code PIC X(8)}: a ninth character cannot be keyed, so {@code :157 MOVE PASSWDI TO
+     * SEC-USR-PWD} is an eight-to-eight move that never truncates and the source needs no over-length arm.
+     * Silently truncating here would store the first eight characters of a longer value, so an operator who
+     * believed they had set nine would authenticate on eight - a credential-strength illusion the source
+     * cannot produce. Rejecting is the faithful translation of "the ninth character does not exist".
+     *
+     * <p>The width bounds what the 3270 map could physically accept and nothing more. It is not a
+     * password-strength policy: the source defines none, and none is invented here.
+     */
+    private static final int PRESENTED_PASSWORD_WIDTH = 8;
+
+    /**
      * The name reported for {@code USRTYPEI PIC X(1)}.
      */
     private static final String FIELD_USER_TYPE = "userType";
@@ -555,8 +573,8 @@ public class UserAddService {
      * <p>Recorded for completeness of the vocabulary boundary. The duplicate arm does <em>not</em> route
      * through {@code FileStatusMapper}, because the mapper would supply its own message and the arm has to
      * carry the source's exact literal from {@code app/cbl/COUSR01C.cbl}:263. A census of {@code app/cbl}
-     * finds no literal {@code '22'} test anywhere, so this value has no source locator to cite - see the
-     * "Not available" section on the class.
+     * finds no literal {@code '22'} test anywhere, so this value has no source locator to cite; see the
+     * class documentation on behaviour the source does not define.
      */
     private static final String IO_STATUS_DUPLICATE_KEY = "22";
 
@@ -762,8 +780,8 @@ public class UserAddService {
 
     // ------------------------------------------------------------------------------------------------
     // Source-mapped paragraphs. Nine labels, nine private methods, in source order.
-    // Never consolidate: TRACEABILITY_MATRIX.md is proved against this correspondence and Gate 7 reads
-    // exactly it. Mapping fewer than nine is a Blocker.
+    // Never consolidate: the scope-coverage gate is read out of exactly this correspondence, so mapping
+    // fewer than nine breaks it.
     // ------------------------------------------------------------------------------------------------
 
     /**
@@ -786,12 +804,12 @@ public class UserAddService {
      * point the source would have returned to CICS. It is rethrown <em>before</em> the response record is
      * materialised, so no object is built only to be discarded.
      *
-     * @param aid               the attention identifier evaluated at {@code :90-103}; ignored when
-     *                          {@code reenter} is {@code false}, exactly as the source ignores {@code EIBAID}
-     *                          on that arm
      * @param commAreaPresent   {@code false} models {@code EIBCALEN = 0} at {@code :78}
      * @param reenter           {@code false} models the first-display arm at {@code :83-87}, {@code true} the
      *                          received-map arm at {@code :88-104}
+     * @param aid               the attention identifier evaluated at {@code :90-103}; ignored when
+     *                          {@code reenter} is {@code false}, exactly as the source ignores {@code EIBAID}
+     *                          on that arm
      * @param request           the submitted screen, standing in for the restored communication area and the
      *                          received map; {@code null} on the arms that read no input field
      * @param presentedPassword the value of {@code PASSWDI PIC X(8)}, passed straight through to the
@@ -869,7 +887,7 @@ public class UserAddService {
      *       {@code :146}</li>
      * </ol>
      *
-     * <p><strong>Reordering these is a parity break of High severity</strong>, because the order decides which
+     * <p><strong>Reordering these breaks parity</strong>, because the order decides which
      * message a multi-field-empty request receives. The chain is written out explicitly for exactly that
      * reason: {@code jakarta.validation} does not guarantee constraint evaluation order, so the five checks
      * are never delegated to it. The cursor that {@code MOVE -1} parks on a field's length item becomes the
@@ -880,8 +898,7 @@ public class UserAddService {
      * <p><strong>Retained parity artefact: {@code WHEN OTHER} at {@code :148-150}.</strong> The final arm
      * parks the cursor on the first-name field and then does nothing - a literal {@code CONTINUE}. It is the
      * success path, and it is reproduced as the cursor assignment plus a comment rather than deleted, because
-     * the arm's existence is what makes the {@code EVALUATE} exhaustive. Severity: Low; tracked in
-     * DECISION_LOG.md.
+     * the arm's existence is what makes the {@code EVALUATE} exhaustive.
      *
      * <p><strong>Then the record is populated in the source's order</strong> - {@code :154} identifier,
      * {@code :155} first name, {@code :156} last name, {@code :157} password, {@code :158} type - and
@@ -943,10 +960,18 @@ public class UserAddService {
         }
 
         if (!work.errFlgOn) {                                       // :153 IF NOT ERR-FLG-ON
+            // Java-only width guard on the credential, matching the ten the request fields already receive in
+            // receiveUsraddScreen and the five the sibling update service applies. It sits HERE, on the
+            // success arm, so the five-arm EVALUATE above keeps first-match-wins: a blank password is still
+            // reported as blank with the source's own literal, and only a non-blank over-length one is
+            // rejected on width. Reject, never truncate - see PRESENTED_PASSWORD_WIDTH.
+            final String boundedPassword =
+                    requireWidth(presentedPassword, PRESENTED_PASSWORD_WIDTH, FIELD_PASSWORD);
+
             work.secUsrId = work.userId;                            // :154 MOVE USERIDI  TO SEC-USR-ID
             work.secUsrFname = work.firstName;                      // :155 MOVE FNAMEI   TO SEC-USR-FNAME
             work.secUsrLname = work.lastName;                       // :156 MOVE LNAMEI   TO SEC-USR-LNAME
-            work.passwordHash = hashPresentedPassword(presentedPassword);
+            work.passwordHash = hashPresentedPassword(boundedPassword);
                                                                     // :157 MOVE PASSWDI  TO SEC-USR-PWD
             work.secUsrType = resolveUserType(work.userType);       // :158 MOVE USRTYPEI TO SEC-USR-TYPE
             writeUserSecFile(work);                                 // :159 PERFORM WRITE-USER-SEC-FILE
@@ -959,7 +984,7 @@ public class UserAddService {
      * {@code EXEC CICS XCTL PROGRAM(CDEMO-TO-PROGRAM) COMMAREA(CARDDEMO-COMMAREA)} at {@code :175-178}.
      *
      * <p><strong>Every field this paragraph sets is an intentional no-op here</strong>, and the label is
-     * nonetheless mapped one-to-one because {@code TRACEABILITY_MATRIX.md} is proved against paragraph
+     * nonetheless mapped one-to-one because the scope-coverage gate is read out of paragraph
      * correspondence. Under the stateless mandate navigation collapses into URL-based routing:
      * {@code CDEMO-FROM-TRANID} at {@code :170}, {@code CDEMO-FROM-PROGRAM} at {@code :171},
      * {@code CDEMO-PGM-CONTEXT} at {@code :174} and the control transfer itself have no counterpart, and
@@ -974,8 +999,7 @@ public class UserAddService {
      * first - {@code :79} moves {@code COSGN00C} before performing it, and {@code :94} moves
      * {@code COADM01C} - so no path within this program can reach the guard with the field unset. It is
      * reproduced rather than optimised away because it is a real statement of the paragraph and Gate 7 reads
-     * line-level correspondence. It therefore shows as an uncovered branch by design. Severity: Low; tracked
-     * in DECISION_LOG.md.
+     * line-level correspondence. It therefore shows as an uncovered branch by design.
      *
      * <p><strong>Retained parity artefacts: the two commented-out moves at {@code :172-173}.</strong> The
      * source carries {@code MOVE WS-USER-ID TO CDEMO-USER-ID} and
@@ -983,7 +1007,7 @@ public class UserAddService {
      * {@code CDEMO-USER-ID} in any of the four {@code COUSR0*C} programs, and it is inert - which is part of
      * the evidence that no self-delete guard exists anywhere in this package, since no program here ever
      * compares a target identifier against the signed-on one. Both lines are retained below as comments and
-     * neither is enabled. Severity: Low; tracked in DECISION_LOG.md.
+     * neither is enabled.
      *
      * @param work the per-invocation work area; {@code work.toProgram} carries the requested target
      */
@@ -1087,8 +1111,8 @@ public class UserAddService {
      * {@code WS-CURDATE-YEAR(3:2)} - the last two digits - and the time at {@code :229-233} as
      * {@code HH:MM:SS}, also eight. Both formatters carry {@code Locale.ROOT}.
      *
-     * <p><strong>Citation correction, severity Low.</strong> The plan's general note on the symbolic maps
-     * records {@code CURTIME} as {@code X(9)}. Both {@code app/cpy-bms/COUSR01.CPY}:54 and
+     * <p><strong>The time field is eight characters, not nine.</strong> Both
+     * {@code app/cpy-bms/COUSR01.CPY}:54 and
      * {@code app/cpy/CSDAT01Y.cpy} say eight, and the source governs.
      *
      * @param work the per-invocation work area; its six header fields are populated in place
@@ -1119,7 +1143,7 @@ public class UserAddService {
      *       {@code :255-258} and sends at {@code :259}.</li>
      *   <li><strong>{@code DFHRESP(DUPKEY)} at {@code :260} and {@code DFHRESP(DUPREC)} at {@code :261}.</strong>
      *       The two {@code WHEN} clauses are adjacent and <strong>share one body</strong> at {@code :262-266}.
-     *       Splitting them into separate branches is a Medium-severity parity break.</li>
+     *       Splitting them into separate branches is a parity break.</li>
      *   <li><strong>{@code WHEN OTHER} at {@code :267}.</strong> Message at {@code :270}, cursor
      *       {@code FNAMEL} at {@code :272}.</li>
      * </ul>
@@ -1146,7 +1170,7 @@ public class UserAddService {
      * source carries {@code *            DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} as a comment on the
      * {@code WHEN OTHER} arm. It is retained below as a comment and <strong>not</strong> enabled: enabling it
      * would add observable output the source does not produce, and the response codes are carried on the typed
-     * failure instead. Severity: Low; tracked in DECISION_LOG.md.
+     * failure instead.
      *
      * @param work the per-invocation work area, carrying the populated record fields and the digest
      * @throws com.cardemo.exception.DuplicateRecordException if the identifier is already present
@@ -1352,7 +1376,7 @@ public class UserAddService {
      * Maps the single character of {@code USRTYPEI} onto {@code UserType}, standing in for
      * {@code MOVE USRTYPEI TO SEC-USR-TYPE} at {@code app/cbl/COUSR01C.cbl}:158.
      *
-     * <p><strong>Labelled deviation, severity Medium, tracked in DECISION_LOG.md.</strong> The source
+     * <p><strong>Labelled deviation, not parity.</strong> The source
      * validates only that the field is non-empty, at {@code :142}. It never checks membership of
      * {@code 'A'} or {@code 'U'}, so {@code MOVE} would write any character at all into the one-byte
      * {@code SEC-USR-TYPE} and the resulting user would match neither
@@ -1528,8 +1552,8 @@ public class UserAddService {
 
     // ------------------------------------------------------------------------------------------------
     // Nested types. Declared inside the service so that the fixed four-file budget of
-    // com.cardemo.service.admin is unaffected: UserListService, UserAddService, UserUpdateService,
-    // UserDeleteService, and no package-info.java.
+    // com.cardemo.service.admin is unaffected: UserListService, UserAddService, UserUpdateService and
+    // UserDeleteService (that fourth one is planned and not yet authored), and no package-info.java.
     // ------------------------------------------------------------------------------------------------
 
     /**

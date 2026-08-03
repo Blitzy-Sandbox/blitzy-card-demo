@@ -25,7 +25,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -91,13 +90,14 @@ import org.springframework.stereotype.Repository;
  *       anywhere against it. Note the {@code INPUT} open mode: the file is opened read-only at
  *       the source level, not merely used read-only.</li>
  *   <li><strong>Read-only pre-flight</strong> - {@code app/cbl/CBTRN01C.cbl} has no distinct
- *       JCL job and is folded into {@code DailyTransactionPostingJob} as an explicitly
- *       labelled pre-flight step. Its six {@code SELECT} statements sit at {@code :L29-L58}
- *       ({@code DALYTRAN} first, at {@code :L29}), and a verb census over that member returns
+ *       JCL job and is to be folded into {@code DailyTransactionPostingJob} (<strong>planned</strong>;
+ *       that class has not been authored yet) as an explicitly labelled pre-flight step. Its six
+ *       {@code SELECT} statements sit at {@code :L29-L58} ({@code DALYTRAN} first, at
+ *       {@code :L29}), and a verb census over that member returns
  *       {@code OPEN} 18, {@code READ} 17, {@code CLOSE} 18, {@code DISPLAY} 42 and zero each
  *       of {@code WRITE}, {@code REWRITE}, {@code DELETE}, {@code STARTBR} and
  *       {@code READPREV}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Finding: HIGH - no VSAM cluster, no catalogued key length, no alternate index</h2>
  * <p>This is the one repository in {@code com.cardemo.repository} whose source is not a VSAM
@@ -126,12 +126,12 @@ import org.springframework.stereotype.Repository;
  *       declares exactly three alternate-key finders in total, over
  *       {@code card.card_acct_id}, {@code card_cross_reference.xref_acct_id} and
  *       {@code "transaction".tran_proc_ts}, and none of them belongs to this table;</li>
- *   <li>{@code V2__create_indexes.sql} (planned; absent at this commit) is therefore to create no index for
+ *   <li>{@code V2__create_indexes.sql} is therefore to create no index for
  *       {@code daily_transaction};</li>
  *   <li><strong>{@code dalytran_id} is not the primary key and must never be made one.</strong>
  *       See the identity finding immediately below, which is the reason this repository's
  *       identifier type argument is {@code Long} rather than {@code String}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>One adjacent trap deserves naming because the two are easy to conflate. The
  * {@code DCB=(RECFM=F,LRECL=430,BLKSIZE=0)} at {@code app/jcl/POSTTRAN.jcl:L36}, whose
@@ -229,7 +229,7 @@ import org.springframework.stereotype.Repository;
  *       {@code (1:10)} is COBOL reference modification - a substring of the first ten
  *       characters - and the comparison is a character comparison against a text field whose
  *       name is itself misspelled in the copybook. A date comparison is never performed.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Finding: BLOCKER - the amount is NUMERIC(11,2) and its sign is load-bearing</h2>
  * <p>{@code DALYTRAN-AMT} at {@code app/cpy/CVTRA06Y.cpy:L10} is {@code PIC S9(09)V99}, which
@@ -281,7 +281,7 @@ import org.springframework.stereotype.Repository;
  *       exist: the Apache-2.0 provenance banner every file in {@code app/cbl} carries, and the
  *       repository {@code .editorconfig} - UTF-8, LF, four-space indent, a final newline, no
  *       trailing whitespace and a 120-column ceiling.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Finding: BLOCKER - the origin column is text, never the origin enum</h2>
  * <p>{@code dalytran_source} is a plain {@code String} and is deliberately not mapped to
@@ -341,8 +341,9 @@ import org.springframework.stereotype.Repository;
  * <p>Two things follow, and the second is a standing constraint on other packages:</p>
  * <ul>
  *   <li>the only legitimate consumers are in {@code com.cardemo.batch} -
- *       {@code DailyTransactionPostingJob}, {@code TransactionPostingProcessor} and
- *       {@code DailyTransactionReader};</li>
+ *       {@code TransactionPostingProcessor}, which is authored, plus
+ *       {@code DailyTransactionPostingJob} and {@code DailyTransactionReader}, which are
+ *       <strong>planned</strong> and not yet authored;</li>
  *   <li><strong>no controller operation, no REST endpoint and no administrative management
  *       surface may be created for this staging table</strong>, nor for {@code TCATBALF},
  *       {@code DISCGRP}, {@code TRANCATG} or {@code TRANTYPE}. The online surface is exactly
@@ -350,7 +351,7 @@ import org.springframework.stereotype.Repository;
  *       transaction definitions, and none of them touches any of these five. Exposing staging
  *       data over HTTP would grant reach the legacy system never granted, which is the
  *       least-privilege violation Rule 1 Clause D prohibits.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Finding: HIGH - the card number is never projected and never logged</h2>
  * <p>This table carries {@code dalytran_card_num}, a 16-character primary account number. No
@@ -410,7 +411,7 @@ import org.springframework.stereotype.Repository;
  *       could not offer, and it is not a substitute for the per-record tally. Since that same
  *       counter is what the ingestion ordinal models, the count of a fully staged file equals
  *       its highest ordinal.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Error modes</h2>
  * <ul>
@@ -447,7 +448,7 @@ import org.springframework.stereotype.Repository;
  *       over-limit and the expiry check fail - the two checks at {@code :L403-L420} being
  *       sequential and unguarded, so exactly one reject record bearing 103 is written - is
  *       reproduced in {@code TransactionPostingProcessor}, not in this interface.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Build, test and troubleshooting</h2>
  * <p>Rule 1 Clause E requires every component to document what it does, how it is built and
@@ -495,25 +496,27 @@ import org.springframework.stereotype.Repository;
  *       absolute-value normalisation was introduced somewhere on the path. A load that drops
  *       exactly 50 of 300 rows means the origin column was bound to the enum. A load that
  *       drops all 300 means a stamp was bound to a temporal type.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Not available - information this contract still lacks</h2>
  * <p>Rule 1 Clause F requires that missing information be stated plainly rather than guessed
- * at, together with what would be needed. Four items qualify.</p>
+ * at, together with what would be needed. Three items qualify; a fourth, recorded below, has since
+ * been closed.</p>
  *
- * <p><strong>Not available: two of the three Flyway migrations.</strong>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} now exists and declares this
+ * <p><strong>Closed: all three Flyway migrations are present.</strong>
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares this
  * table exactly as the column contract above states - primary key {@code ingest_seq NUMERIC(9)},
  * {@code dalytran_id CHAR(16) NOT NULL} with no uniqueness, {@code dalytran_amt NUMERIC(11,2)},
  * both stamps {@code CHAR(26)}, no foreign key, no version column and no index. So that contract
- * is now a reproduction rather than a specification, and it is retained here because
+ * is a reproduction rather than a specification, and it is retained here because
  * {@code ddl-auto} is {@code validate} and any disagreement fails context startup outright
- * rather than degrading quietly. <strong>{@code V2__create_indexes.sql} and
- * {@code V3__seed_data.sql} do not yet exist</strong>, and are what is needed. {@code V2} must
- * create no index for this table. {@code V3} must seed 300 rows of 350 bytes each from
+ * rather than degrading quietly. An earlier revision of this paragraph said
+ * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} did not yet exist; that is no longer
+ * true and the claim is withdrawn. {@code V2} creates no index for this table, as required.
+ * {@code V3} seeds 300 rows of 350 bytes each from
  * {@code app/data/ASCII/dailytran.txt}, a file of exactly 105,300 bytes, which is 300 records of
  * 350 bytes plus one line terminator each, assigning {@code ingest_seq} as the one-based row
- * ordinal in file order. Its signed amounts must be decoded position-aware from the PIC clauses
+ * ordinal in file order. Its signed amounts are decoded position-aware from the PIC clauses
  * - {@code &#123;} to positive zero, {@code A} through {@code I} to positive one through nine,
  * {@code &#125;} to negative zero, {@code J} through {@code R} to negative one through nine -
  * and never by a global text replacement, because those same letters occur legitimately inside
@@ -558,7 +561,8 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      *
      * <p><strong>Purpose.</strong> This is the forward sequential read, and it is the only
      * declared method of this interface. It is what
-     * {@code com.cardemo.batch.readers.DailyTransactionReader} uses to reproduce
+     * {@code com.cardemo.batch.readers.DailyTransactionReader} (<strong>planned</strong>; not yet
+     * authored) will use to reproduce
      * {@code 1000-DALYTRAN-GET-NEXT} at {@code app/cbl/CBTRN02C.cbl:L345} chunk by chunk, which
      * is the closest available analogue to the legacy behaviour of holding one record live at a
      * time between {@code OPEN INPUT DALYTRAN-FILE} at {@code :L238} and
@@ -597,14 +601,17 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      * tie-breaker and can never displace it; passing an unsorted pageable, for example one built
      * from a size alone, remains the expected usage.</p>
      *
-     * <p><strong>Named call sites.</strong>
+     * <p><strong>Named call sites - all three still to be authored.</strong> This method has no
+     * production caller yet, which is a statement about sequencing rather than about the method:
      * {@code com.cardemo.batch.readers.DailyTransactionReader}, feeding
-     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}; the read-only pre-flight step
-     * of that same job, derived from {@code app/cbl/CBTRN01C.cbl}, which iterates the staged
-     * input to report on it without writing anything; and the repository tier under
-     * {@code src/test/java/com/cardemo/integration/repository}, which asserts the ordering, the
-     * acceptance of a repeated {@code dalytran_id}, and the round-trip of a negative amount, a
-     * blank processing stamp and an {@code OPERATOR} origin value.</p>
+     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, are both <strong>planned</strong>,
+     * as is the read-only pre-flight step of that same job derived from
+     * {@code app/cbl/CBTRN01C.cbl}, which iterates the staged
+     * input to report on it without writing anything. On the test side,
+     * {@code src/test/java/com/cardemo/integration/repository} exists and holds the Testcontainers
+     * base, but no concrete subclass yet asserts the ordering, the
+     * acceptance of a repeated {@code dalytran_id}, or the round-trip of a negative amount, a
+     * blank processing stamp and an {@code OPERATOR} origin value. Those remain owed.</p>
      *
      * <p><strong>Side effects.</strong> None. The call is read-only: it inserts, updates and
      * deletes nothing, mutates no argument, holds no state between calls and writes no log

@@ -12,7 +12,7 @@
  *               app/jcl/CREASTMT.JCL:STEP010 (the OUTREC projection)
  *               app/jcl/CREASTMT.JCL:STEP040 (LRECL 80 and 100)
  *               app/cbl/CBTRN03C.cbl       (control break and totals)
- *               app/cbl/CBSTM03A.cbl:L225-L233 (the 51x10 ceiling)
+ *               app/cbl/CBSTM03A.CBL:L225-L233 (the 51x10 ceiling)
  *               frozen at commit 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.

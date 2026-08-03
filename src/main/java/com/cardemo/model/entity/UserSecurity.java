@@ -20,7 +20,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -91,7 +90,7 @@ import org.hibernate.type.SqlTypes;
  *       {@code :L66} declares {@code RECORDSIZE(80,80)};</li>
  *   <li>the IEBGENER step that materialises the seed: {@code app/jcl/DUSRSECJ.jcl:L48} declares
  *       {@code DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0)} on the output dataset.</li>
- * </ol>
+ *   </ol>
  *
  * <p>The copybook itself supplies the fourth, arithmetic confirmation - see the field contract below -
  * and {@code app/catlg/LISTCAT.txt:L3888} reports {@code REC-TOTAL 10}, matching the ten seed rows
@@ -128,8 +127,8 @@ import org.hibernate.type.SqlTypes;
  *
  * <p>Field 4 is the single place where the column width deliberately departs from the PIC width. The
  * eight bytes still count towards the source record geometry above, because that arithmetic describes
- * the legacy record; the <em>column</em> is 60 characters because that is what a BCrypt hash needs. See
- * the Blocker finding below.
+ * the legacy record; the <em>column</em> is 60 characters because that is what a BCrypt hash needs, for
+ * the reason set out under the credential column below.
  *
  * <p>{@code SEC-USR-FILLER} is not modelled. Two things about it are worth recording. First, it is a
  * <em>named</em> trailing filler, unlike the anonymous {@code FILLER} items that pad the other ten
@@ -189,12 +188,11 @@ import org.hibernate.type.SqlTypes;
  *
  * <p>Every one of the ten carries the same credential: a single shared literal plaintext value, recorded
  * at {@code app/jcl/DUSRSECJ.jcl:L35-L44}. That value is referred to by citation only and is
- * transcribed nowhere in this file, nowhere in any test, and nowhere else under {@code src/}. See the
- * third Blocker finding below.
+ * transcribed nowhere in this file, nowhere in any test, and nowhere else under {@code src/}.
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>Mapping decisions that must not be undone</h2>
  *
- * <p><b>Blocker - the credential column holds a BCrypt hash and nothing else.</b> The source field is
+ * <p><b>The credential column holds a BCrypt hash and nothing else.</b> The source field is
  * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21}, and the sign-on program compares it
  * in plaintext: {@code app/cbl/COSGN00C.cbl:L223} reads {@code IF SEC-USR-PWD = WS-USER-PWD}. The target
  * is {@code sec_usr_pwd VARCHAR(60) NOT NULL}, holding a BCrypt strength 10 hash. {@code VARCHAR} and
@@ -206,7 +204,7 @@ import org.hibernate.type.SqlTypes;
  * assertion - every password BCrypt hashed, no literal secret anywhere - provable against the ten
  * seeded users rather than merely asserted.
  *
- * <p><b>Blocker - the user type needs an explicit converter, because neither enumerated mode works.</b>
+ * <p><b>The user type needs an explicit converter, because neither enumerated mode works.</b>
  * {@code SEC-USR-TYPE PIC X(01)} at {@code app/cpy/CSUSR01Y.cpy:L22} carries {@code A} or {@code U},
  * the two codes declared as condition names in {@code app/cpy/COCOM01Y.cpy:L27-L28} against
  * {@code CDEMO-USER-TYPE PIC X(01)} at {@code :L26}. Mapping {@link UserType} with a string enumerated
@@ -217,7 +215,7 @@ import org.hibernate.type.SqlTypes;
  * {@link UserTypeConverter} declared at the bottom of this class. Grepping this file for
  * {@code Enumerated} returns nothing, and that is deliberate.
  *
- * <p><b>Blocker - the shared plaintext seed literal is never transcribed.</b> Rule 1 clause D1 is
+ * <p><b>The shared plaintext seed literal is never transcribed.</b> Rule 1 clause D is
  * unconditional: no secrets in code, logs, tests or config. The value shared by all ten rows at
  * {@code app/jcl/DUSRSECJ.jcl:L35-L44} therefore appears nowhere in this file - not in code, not in a
  * comment, not in this documentation - and must appear nowhere else under {@code src/}. The downstream
@@ -225,7 +223,7 @@ import org.hibernate.type.SqlTypes;
  * strength 10 hashes, and must never embed the plaintext value it hashes. No BCrypt hash literal appears
  * in this file either, in any of its version prefixes.
  *
- * <p><b>Blocker - fixed width CHAR columns need an explicit JDBC type code.</b> Four of the five
+ * <p><b>Fixed width CHAR columns need an explicit JDBC type code.</b> Four of the five
  * columns are {@code CHAR(n)} and every profile is required to set
  * {@code spring.jpa.hibernate.ddl-auto: validate}, which makes this a startup concern rather than a
  * cosmetic one. Hibernate maps a {@code String} attribute to JDBC {@code VARCHAR} by default, and
@@ -238,10 +236,10 @@ import org.hibernate.type.SqlTypes;
  * from {@code passwordHash}, whose {@code VARCHAR} expectation is the correct one and is exactly what
  * keeps the never-a-CHAR-credential-column requirement true under validation.
  *
- * <p><b>High - this class is not a security principal.</b> It does not implement Spring Security's
+ * <p><b>This class is not a security principal.</b> It does not implement Spring Security's
  * user-details contract and declares none of that contract's authorisation state: no activation flag, no
  * expiry or lock flags, no granted-authority collection, no roles. None of those exists in the 80 byte
- * source record, so adding one would break the record contract, and importing the interface would drag
+ * <p><b>This class is not a security principal.</b> It does not implement Spring Security's
  * Spring Security into a pure data holder - this file imports nothing from Spring at all. The
  * adaptation from this entity to a principal belongs to
  * {@code com.cardemo.security.CardDemoUserDetailsService}, and this package must not import from the
@@ -249,7 +247,7 @@ import org.hibernate.type.SqlTypes;
  * {@code com.cardemo.exception}, or from the repository, service, controller, batch, config or
  * observability packages is imported here.
  *
- * <p><b>Medium - fixed width text semantics: a blank but non null value must load.</b> Four columns are
+ * <p><b>Fixed width text semantics: a blank but non null value must load.</b> Four columns are
  * fixed width {@code CHAR}, so values arrive blank padded to their declared widths and a value of
  * nothing but spaces is legitimate legacy data. Consequently there is no bean validation on any field:
  * no not-blank, not-empty, pattern or minimum size constraint annotation appears anywhere in this class,
@@ -276,32 +274,24 @@ import org.hibernate.type.SqlTypes;
  * entity neither implements nor interferes with. Were any case or format operation ever added here it
  * would have to pin {@code Locale.ROOT} to stay deterministic under Rule 1 clause C2, but none is
  * needed and none is present.
- *
- * <p><b>Low - no alternate index, and none is wanted.</b> {@code USRSEC} has no alternate index: the
+ * <p><b>No alternate index, and none is wanted.</b> {@code USRSEC} has no alternate index: the
  * catalogue's three alternate indexes belong to {@code CARDDATA}, {@code CARDXREF} and
- * {@code TRANSACT}. {@code V2__create_indexes.sql} (planned; absent at this commit) is therefore to create nothing
- * for this table beyond its
- * primary key. That is sufficient rather than merely economical - the user list screen
+ * {@code TRANSACT}, and {@code V2__create_indexes.sql} accordingly creates nothing for this table beyond
+ * its primary key. That is sufficient rather than merely economical - the user list screen
  * {@code app/cbl/COUSR00C.cbl} pages in primary key order at ten rows per page, which the primary key
  * index already serves, so a second index would be write amplification for no read benefit.
  *
- * <h2>Required schema, and what is Not available</h2>
+ * <h2>The schema this mapping requires</h2>
  *
- * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
- * <b>present</b> and declares {@code CREATE TABLE user_security} with 5
- * columns whose names are identical, as a set, to the 5 {@code @Column(name = ...)} declarations above,
- * verified by direct comparison, so the mapping is reconciled against real DDL rather than asserted in
- * its absence. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not
- * available</b>, which is why no seeded row can be cited from the migration here. None of the four
- * {@code application*.yml} profile files is available either, so the
- * {@code spring.jpa.hibernate.ddl-auto: validate} setting cited throughout this documentation is the
- * mandated configuration rather than an observed one - and it is precisely why the contract below must
- * be met exactly: under {@code validate}, any divergence in column name, type, length or nullability
- * fails application context startup outright rather than degrading quietly. The resolved expectations
- * were confirmed instead by binding this class with Hibernate 6.6.42 against the PostgreSQL dialect,
- * which yields {@code sec_usr_id char(8)}, {@code sec_usr_fname char(20)},
- * {@code sec_usr_lname char(20)}, {@code sec_usr_pwd varchar(60)} and {@code sec_usr_type char(1)}, all
- * non null. What is needed, precisely:
+ * <p>The mapping is reconciled against real DDL rather than asserted: {@code V1__create_schema.sql}
+ * declares {@code CREATE TABLE user_security} with 5 columns whose names are identical, as a set, to the
+ * 5 {@code @Column(name = ...)} declarations above. Under
+ * {@code spring.jpa.hibernate.ddl-auto: validate}, mandated in every profile, any divergence in column
+ * name, type, length or nullability fails application context startup outright rather than degrading
+ * quietly - which is why the contract below has to be met exactly. Binding this class with Hibernate
+ * against the PostgreSQL dialect resolves to {@code sec_usr_id char(8)},
+ * {@code sec_usr_fname char(20)}, {@code sec_usr_lname char(20)}, {@code sec_usr_pwd varchar(60)} and
+ * {@code sec_usr_type char(1)}, all non null. The contract is:
  *
  * <ul>
  *   <li>table {@code user_security} with {@code sec_usr_id CHAR(8) NOT NULL PRIMARY KEY};</li>
@@ -317,13 +307,12 @@ import org.hibernate.type.SqlTypes;
  *   <li>no index beyond the primary key;</li>
  *   <li>no foreign key in either direction: the source record has no relationship to any other
  *       cluster;</li>
- *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit, so no hash is stored yet) with the
- *       ten users from
+ *   <li>seeded by {@code V3__seed_data.sql} with the ten users from
  *       {@code app/jcl/DUSRSECJ.jcl:L35-L44}, stored only as precomputed BCrypt strength 10 hashes. The
  *       shared plaintext literal must never be embedded in that migration or in any other file under
  *       {@code src/}. There is no {@code usrsec.txt} fixture to load; the seed source is inline JCL
  *       data.</li>
- * </ul>
+ *   </ul>
  *
  * <p>For the migration author's wider orientation: the first migration creates exactly 11 tables with
  * 10 foreign keys and 5 check constraints, of which this table is one and contributes one check
@@ -344,8 +333,9 @@ import org.hibernate.type.SqlTypes;
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>Source the pinned toolchain first, then build from the repository root:
- * {@code source /etc/profile.d/10-carddemo-toolchain.sh} for Java 25 and Maven 3.9.11;
+ * <p>Build from the repository root with the pinned wrapper. The one prerequisite is stated as a capability
+ * rather than as a host path: JDK 25 on {@code PATH} with {@code JAVA_HOME} set, however the host provides
+ * it, with Maven 3.9.11 supplied by the wrapper itself. Then:
  * {@code ./mvnw -B clean compile} to compile, which runs under {@code -Xlint:all -Werror} with
  * {@code failOnWarning} set, so any warning at all is a build failure; {@code ./mvnw -B clean test} for
  * the unit suite; {@code ./mvnw -B clean verify} for the full gate, which additionally enforces the 80
@@ -379,7 +369,7 @@ import org.hibernate.type.SqlTypes;
  *       through a DTO before it reaches any sink.</li>
  *   <li><b>A row of blank names fails to load</b>: a bean validation constraint was added to a name
  *       field. None is permitted; blank but non null is legitimate fixed width data.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Behaviour that deliberately lives elsewhere</h2>
  *
@@ -459,7 +449,7 @@ public class UserSecurity {
      *
      * <p>The pattern is expressed with a character class for the version tag rather than by spelling
      * the three concrete prefixes out, so that no BCrypt prefix literal appears anywhere in this file
-     * in any of its versions - the prohibition recorded in the third Blocker finding above. It is
+     * in any of its versions - the prohibition recorded above. It is
      * compiled once into a constant rather than per call, because it is evaluated on every credential
      * assignment and on every insert and update of this table.
      */
@@ -657,7 +647,7 @@ public class UserSecurity {
      * Re-asserts the credential invariant immediately before this row is inserted or updated, so that
      * the invariant holds at the database boundary and not merely at the two setters that lead to it.
      *
-     * <h2>Why a callback is needed when the constructor and setter already guard</h2>
+     * <h4>Why a callback is needed when the constructor and setter already guard</h4>
      *
      * <p>Those two guards cover every path application code can take, but they are not the only paths a
      * persistent field has. The persistence provider populates a materialised instance through field
@@ -672,7 +662,7 @@ public class UserSecurity {
      * not-null violation naming a column, from inside the driver, after the statement was built. Here it
      * fails before the statement exists, naming the invariant and the entity.
      *
-     * <h2>Why this is the enforcement point rather than a sixth CHECK constraint</h2>
+     * <h4>Why this is the enforcement point rather than a sixth CHECK constraint</h4>
      *
      * <p>A database {@code CHECK} would be the obvious place for a shape rule, and it is deliberately
      * not used. The migration's constraint budget is fixed at exactly five {@code CHECK} constraints by
@@ -683,7 +673,7 @@ public class UserSecurity {
      * invariant lives here instead, where it is additionally portable across dialects and testable
      * without a database.
      *
-     * <h2>Inputs, outputs and error modes</h2>
+     * <h4>Inputs, outputs and error modes</h4>
      *
      * <p>Takes nothing, returns nothing and mutates nothing: it reads one field and either returns or
      * throws. It performs no I/O, so it cannot slow a flush by more than a regular expression match over
@@ -709,7 +699,7 @@ public class UserSecurity {
     /**
      * Returns the argument if it is a BCrypt digest at the pinned strength of 10, and throws otherwise.
      *
-     * <h2>What it checks, and in what order</h2>
+     * <h4>What it checks, and in what order</h4>
      *
      * <p>Three tests, ordered so that the message can name the most specific defect it can prove. First
      * {@code null}, which is the staged-construction mistake. Then the length, because a wrong length is
@@ -717,7 +707,7 @@ public class UserSecurity {
      * reporting the observed length is far more useful than reporting that a pattern did not match.
      * Then the shape, which covers the version tag, the cost factor and the radix-64 alphabet together.
      *
-     * <h2>Why the message never contains the value</h2>
+     * <h4>Why the message never contains the value</h4>
      *
      * <p>The argument is credential material, so no branch interpolates it. Rule 1 clause D is
      * unconditional about secrets in logs, and an exception message is a log line in every deployment
@@ -733,7 +723,7 @@ public class UserSecurity {
      * category code and wrong for a credential, and the difference is the reason this helper is written
      * out rather than delegated to a shared one.
      *
-     * <h2>Why static</h2>
+     * <h4>Why static</h4>
      *
      * <p>It observes no instance state and it is called from a constructor. A non static helper called
      * from a constructor of a non final class is precisely the {@code this-escape} pattern that

@@ -98,13 +98,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The literals the interest program writes are valid keys.</strong>
  *       {@code app/cbl/CBACT04C.cbl:L482-L483} moves the literals {@code '01'} and {@code '05'} into the
  *       type and category fields of every generated interest transaction, so that exact pair is exercised.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test                                          # whole unit tier
- * mvn -B -o test -Dtest=TransactionCategoryIdTest          # this class alone
+ * ./mvnw -B -ntp -o test                                          # whole unit tier
+ * ./mvnw -B -ntp -o test -Dtest=TransactionCategoryIdTest          # this class alone
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>

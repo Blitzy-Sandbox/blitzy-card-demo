@@ -56,23 +56,30 @@
  */
 package com.cardemo.integration.batch;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.UncheckedIOException;
+import java.lang.reflect.Method;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
-import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 
+import javax.sql.DataSource;
+
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.TestInfo;
 import org.springframework.batch.core.Job;
 import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.JobExecutionException;
@@ -97,6 +104,8 @@ import org.testcontainers.localstack.LocalStackContainer;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import com.cardemo.unit.model.FixtureLoader;
+
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
@@ -104,6 +113,10 @@ import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyExistsException;
 import software.amazon.awssdk.services.s3.model.BucketAlreadyOwnedByYouException;
 import software.amazon.awssdk.services.s3.model.BucketVersioningStatus;
+import software.amazon.awssdk.services.s3.model.DeleteObjectRequest;
+import software.amazon.awssdk.services.s3.model.ListObjectVersionsRequest;
+import software.amazon.awssdk.services.s3.model.NoSuchBucketException;
+import software.amazon.awssdk.services.s3.model.ObjectVersion;
 import software.amazon.awssdk.services.s3.model.VersioningConfiguration;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.QueueAttributeName;
@@ -118,41 +131,28 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *
  * <p>This class is {@code abstract} and declares <strong>no test method</strong>. It exists so that every
  * concrete batch integration test starts from an identical, deterministic substrate rather than assembling
- * one of its own. It contributes exactly five things and nothing else:
- *
- * <ul>
- *   <li>One PostgreSQL 16 container, bound to the application datasource by injected connection details, so
- *       that {@code spring.jpa.hibernate.ddl-auto: validate} genuinely validates all 11 entities against the
- *       schema the three Flyway migrations create.</li>
- *   <li>One LocalStack container exposing the object store and the queue, so that the byte-exact outputs the
- *       parity contract is measured on - the 430-byte reject record, being the 350-byte transaction image
- *       plus an 80-byte trailer of a four-digit reason code and a 76-character description, the 133-byte
- *       report line and the 80-byte and 100-byte statement lines - can be written and read back.</li>
- *   <li>Deterministic property values for the object store, the queue and the token signing key, every one
- *       of them read from a container accessor or fixed as a logical resource name.</li>
- *   <li>A clock pinned to one instant, published as a bean so the production tier consumes it.</li>
- *   <li>A protected surface of seven members, documented one by one below.</li>
- * </ul>
+ * one of its own. It contributes exactly five things: one PostgreSQL 16 container bound to the application
+ * datasource by injected connection details, so that {@code spring.jpa.hibernate.ddl-auto: validate}
+ * genuinely validates every entity against the schema the Flyway migrations create; one LocalStack container
+ * exposing the object store and the queue, so that the byte-exact outputs the parity contract is measured on
+ * can be written and read back; deterministic property values for the object store, the queue and the token
+ * signing key, every one of them read from a container accessor or fixed as a logical resource name; a clock
+ * pinned to one instant, published as a bean so the production tier consumes it; and a protected surface of
+ * seven members, documented one by one below.
  *
  * <p><strong>Why this tier needs two containers where the repository tier needs one.</strong> The five data
- * jobs of the migrated batch stream span both substrates in a single run: they read and write the 11
- * PostgreSQL tables, they emit fixed-width objects to the object store in place of the seven generation data
- * group bases catalogued in {@code app/jcl/DEFGDGB.jcl}, and the report path publishes to the FIFO queue that
- * replaces {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80)
- * RECORDFORMAT(FIXED)} at {@code app/csd/CARDDEMO.CSD:499-505}. A harness with only a database container
- * could not exercise the object-store or queue half of any of them, so the sibling repository tier's
- * single-container exception is deliberately widened to two here. That widening is the whole of the
- * justification, and it is recorded rather than assumed.
+ * jobs of the migrated batch stream span both substrates in a single run: they read and write the relational
+ * tables, they emit fixed-width objects to the object store in place of the generation data group bases
+ * catalogued in {@code app/jcl/DEFGDGB.jcl}, and the report path publishes to the FIFO queue that replaces
+ * {@code DEFINE TDQUEUE(JOBS)} at {@code app/csd/CARDDEMO.CSD:499-505}. A harness with only a database
+ * container could not exercise the object-store or queue half of any of them.
  *
- * <p><strong>Shared containers, isolated data - and why those are not in conflict.</strong> One deterministic
- * container lifecycle each is wanted for correctness and for cost: a per-test restart would add tens of
- * seconds per test and would prove nothing a rollback does not. Avoiding global mutable state is wanted for
- * the same reason. The two are reconciled by <em>per-test transactional rollback</em>, not by per-test
- * container restart: this class carries {@code @Transactional}, so Spring opens a transaction before each
- * subclass test method and rolls it back afterwards. <strong>The containers are shared; the data is
- * not.</strong> Nothing is truncated, no seeded row is deleted and no cleanup script runs - the three
- * migrations own the schema and the seed data, and wiping seeded rows would break every other test's
- * expected counts.
+ * <p><strong>Shared containers, isolated data.</strong> One deterministic container lifecycle each is wanted
+ * for correctness and for cost; a per-test restart would add tens of seconds per test and would prove nothing
+ * a rollback does not. The two are reconciled by <em>per-test transactional rollback</em>: this class carries
+ * {@code @Transactional}, so Spring opens a transaction before each subclass test method and rolls it back
+ * afterwards. Nothing is truncated, no seeded row is deleted and no cleanup script runs - the migrations own
+ * the schema and the seed data, and wiping seeded rows would break every other test's expected counts.
  *
  * <p><strong>The one carve-out: a job launch is not, and cannot be, inside that rollback.</strong> Spring
  * Batch refuses job repository work while a transaction is active and commits every chunk on its own
@@ -161,35 +161,23 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  * org.springframework.batch.core.JobParameters)} must therefore be annotated
  * {@code @Transactional(propagation = Propagation.NOT_SUPPORTED)}, and must treat everything the job reads as
  * committed seed data and everything it writes as permanent for the remainder of the run. That method
- * documents the constraint, the measurement behind it and the one-line remedy in full; it refuses loudly
- * rather than letting the framework fail several frames away.
+ * refuses loudly rather than letting the framework fail several frames away.
  *
- * <p><strong>The two container fields are the only static state in this package.</strong> They are static
- * because one lifecycle has to span the whole class hierarchy rather than restart per class or per test, and
- * they are {@code final} so they are immutable after start. Neither carries test-visible mutable state. Every
- * other value this class needs - the pinned instant, the property keys, the logical bucket and queue names -
- * is an inline literal at its single point of use or a bean, precisely so that no further static field is
- * introduced. That is the entire exception, and it is not widened again.
- *
- * <p><strong>Why the container fields are started by a static initialiser and carry no
- * {@code org.testcontainers.junit.jupiter.Container} annotation.</strong> A shared {@code @Container} is
- * started in {@code beforeAll} and <em>stopped in {@code afterAll} of every test class</em>, because the
- * extension holds it in the class-level store. Spring's test context is cached on a key that does not include
- * the test class, so two subclasses of this harness with the same configuration share one context. Together
- * those two facts strand the cached connection pool on a removed container, and every test in the second class
- * fails on pool exhaustion rather than on anything it asserted. That was reproduced with two identically
- * configured probe classes before this harness was settled, which is why the containers are started once here
- * instead and left for the resource reaper to remove at JVM exit. The block beside the fields records the
- * measurement and why each alternative was rejected.
+ * <p><strong>The two container fields are the only static state in this package, and they carry no
+ * {@code org.testcontainers.junit.jupiter.Container} annotation.</strong> They are static because one
+ * lifecycle has to span the whole class hierarchy, and {@code final} so they are immutable after start. A
+ * shared {@code @Container} would instead be started in {@code beforeAll} and <em>stopped in {@code afterAll}
+ * of every test class</em>, while Spring caches its test context on a key that does not include the test
+ * class - so two subclasses with the same configuration share one context and the second class finds its
+ * cached connection pool addressing a removed container. The containers are therefore started once by a
+ * static initialiser and left for the resource reaper to remove at JVM exit. Every other value this class
+ * needs is an inline literal at its single point of use or a bean, so no further static field is introduced.
  *
  * <h2>Numeric comparison policy, stated once so no subclass restates it</h2>
  *
  * <p>Money and rates are {@code java.math.BigDecimal} throughout, with {@code RoundingMode.HALF_EVEN}, at the
- * precision each COBOL picture clause dictates: {@code S9(10)V99} becomes {@code NUMERIC(12,2)} - the five
- * account money columns; {@code S9(09)V99} becomes {@code NUMERIC(11,2)} - {@code TRAN-AMT},
- * {@code DALYTRAN-AMT} and {@code TRAN-CAT-BAL}; and {@code S9(04)V99} becomes {@code NUMERIC(6,2)} -
- * {@code DIS-INT-RATE} alone. <strong>No {@code float} and no {@code double} appears in any financial
- * field.</strong>
+ * precision each COBOL picture clause dictates. <strong>No {@code float} and no {@code double} appears in any
+ * financial field.</strong>
  *
  * <p><strong>Compare by {@code compareTo}, never by {@code equals}.</strong>
  * {@code new BigDecimal("194.00").equals(new BigDecimal("194.0"))} is {@code false} while their
@@ -202,10 +190,10 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *
  * <p>Build and run everything with the pinned wrapper: {@code ./mvnw clean verify}.
  *
- * <p><strong>Which plugin collects this tier, and why the path is load-bearing.</strong> Failsafe 3.5.4 is
- * bound to {@code src/test/java/com/cardemo/integration/**} and {@code .../e2e/**} and runs them at
+ * <p><strong>Which plugin collects this tier, and why the path is load-bearing.</strong> Failsafe is bound to
+ * {@code src/test/java/com/cardemo/integration/**} and {@code .../e2e/**} and runs them at
  * {@code integration-test} and {@code verify}, even though the classes keep the {@code Test} suffix. Surefire
- * 3.5.4 is bound to {@code .../unit/**} and explicitly excludes both of those trees. A class moved out of
+ * is bound to {@code .../unit/**} and explicitly excludes both of those trees. A class moved out of
  * {@code integration/**} therefore matches neither include set and is collected by <em>neither</em> plugin:
  * the build stays green, both plugins report success, and the tests silently never run. Do not rename or
  * relocate this class or any subclass of it.
@@ -222,8 +210,7 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *   <li>Profile {@code test} is active. It deliberately declares no datasource URL, host, port, username or
  *       password, and this class mirrors that exactly: the datasource is bound from injected connection
  *       details, so no address and no credential is written anywhere in this source. Neither is there any
- *       ambient-environment lookup, nor any read or write of a JVM-wide system property - a build that
- *       reaches for the surrounding environment is not deterministic.</li>
+ *       ambient-environment lookup, nor any read or write of a JVM-wide system property.</li>
  *   <li>Container image tags are stated, never defaulted: PostgreSQL {@code postgres:16} and LocalStack
  *       {@code localstack/localstack:4.14.0}. An image tag is the one literal a deterministic build
  *       requires; the database field documents why that tag names the major line and the Debian-based
@@ -234,30 +221,24 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       explicit. This class adds no runner, no scheduler and no {@code @EnableBatchProcessing} - on Spring
  *       Boot 3.x that annotation <em>disables</em> Batch auto-configuration and would remove the
  *       {@code JobLauncher} this harness depends on.</li>
- *   <li>The Spring Batch {@code BATCH_*} metadata tables come from {@code spring.batch.jdbc.initialize-schema},
- *       which the {@code test} profile sets to {@code always}. They are framework bookkeeping, never a fourth
- *       Flyway migration and never part of the 11-table business schema.</li>
- *   <li>Exactly three migrations apply from {@code classpath:db/migration}, in order:
- *       {@code V1__create_schema.sql} creates 11 tables with every column {@code NOT NULL}, 5 {@code CHECK}
- *       constraints, 10 foreign keys and a {@code version BIGINT NOT NULL} column on exactly four of them -
- *       {@code account}, {@code card}, {@code customer} and the reserved-word table emitted double-quoted
- *       lowercase as {@code "transaction"}; {@code V2__create_indexes.sql} creates three
- *       <strong>non-unique</strong> B-tree indexes, matching the three {@code NONUNIQKEY} alternate indexes
- *       at {@code app/catlg/LISTCAT.txt:285}, {@code :488} and {@code :3678}, and creates no unique index at
- *       all; {@code V3__seed_data.sql} seeds ten tables and leaves {@code "transaction"} empty.</li>
+ *   <li>The Spring Batch {@code BATCH_*} metadata tables come from
+ *       {@code spring.batch.jdbc.initialize-schema}, which the {@code test} profile sets to {@code always}.
+ *       They are framework bookkeeping, never a further Flyway migration and never part of the business
+ *       schema.</li>
+ *   <li>The migrations under {@code classpath:db/migration} own the schema, the three non-unique alternate
+ *       indexes and the seed data; this class asserts none of that and adds nothing to it.</li>
  *   <li>{@code spring.main.allow-bean-definition-overriding} is {@code false}, so a bean-name collision fails
  *       the context refresh instead of silently shadowing. The clock bean this class publishes is therefore
  *       given a name of its own and marked primary rather than reusing a production bean name.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Determinism: why the clock is pinned, and to that instant</h2>
  *
  * <p>{@code TRAN-PROC-TS} is generated at post time, not carried on the input. In
- * {@code app/data/ASCII/dailytran.txt} columns 305-330 hold 26 blanks on all 300 records - exactly one
- * distinct all-space value - so the processing timestamp comes <em>entirely</em> from the clock. The
- * transaction report then filters the processing date twice: once at the sort layer, where
- * {@code app/proc/TRANREPT.prc:39-42} declares {@code PARM-START-DATE,C'2022-01-01'} and
- * {@code PARM-END-DATE,C'2022-07-06'} and {@code :45-46} applies
+ * {@code app/data/ASCII/dailytran.txt} columns 305-330 hold 26 blanks on all 300 records, so the processing
+ * timestamp comes <em>entirely</em> from the clock. The transaction report then filters the processing date
+ * twice: once at the sort layer, where {@code app/proc/TRANREPT.prc:39-42} declares
+ * {@code PARM-START-DATE,C'2022-01-01'} and {@code PARM-END-DATE,C'2022-07-06'} and {@code :45-46} applies
  * {@code INCLUDE COND=(TRAN-PROC-DT,GE,PARM-START-DATE,AND,TRAN-PROC-DT,LE,PARM-END-DATE)}, inclusive at both
  * ends; and again inside the processor. A batch tier that read the ambient clock would stamp every generated
  * processing date far outside that window, both filters would exclude every record, and the transaction
@@ -265,20 +246,14 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  * one.
  *
  * <p>The pinned value is {@code 2022-06-10T19:27:53Z}. It is not chosen for convenience: columns 279-304 of
- * all 300 fixture records carry exactly one distinct originating timestamp, {@code 2022-06-10 19:27:53.000000},
- * so pinning to that instant makes the generated processing timestamp agree with the input's own notion of
- * present moment, and places it comfortably inside the inclusive 2022-01-01 to 2022-07-06 window. Nothing in
- * this package may reach the wall clock by any route - no current-instant or current-date accessor on
- * {@code java.time}, no epoch-millisecond reading, no legacy date construction. The injected clock is the
- * only time source, and {@link #clock()} is how a subclass obtains it.
- *
- * <p>Timestamps themselves stay {@code CHAR(26)} strings, never a temporal column type, and are rendered to
- * six fractional digits of which the trailing four are literal zeros. Three incompatible producers exist in
- * the source - a batch rendering, an online rendering and a pure pass-through - and they are not normalised
- * into one. Every case and format operation uses {@code java.util.Locale#ROOT}: the source's comparison
- * asymmetry is case-based, and a platform-default locale would silently diverge on the first Turkish-locale
- * machine that ran the suite. Nothing here depends on randomness, on hash order or on map iteration order,
- * and no second thread or second connection is opened to demonstrate locking.
+ * all 300 fixture records carry exactly one distinct originating timestamp,
+ * {@code 2022-06-10 19:27:53.000000}, so pinning to that instant makes the generated processing timestamp
+ * agree with the input's own notion of present moment, and places it comfortably inside the inclusive
+ * 2022-01-01 to 2022-07-06 window. Nothing in this package may reach the wall clock by any route. The
+ * injected clock is the only time source, and {@link #clock()} is how a subclass obtains it. Every case and
+ * format operation uses {@code java.util.Locale#ROOT}, because the source's comparison asymmetry is
+ * case-based and a platform-default locale would silently diverge on the first Turkish-locale machine that
+ * ran the suite.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -292,20 +267,21 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       {@code localstack} and {@code junit-jupiter} ids under {@code org.testcontainers} do not exist at
  *       2.0.3. The remedy has two halves and <em>both</em> are required: pin the managed version by
  *       overriding the version property - never by importing a second bill of materials, since Spring Boot
- *       3.5.11 already imports one at a 1.x version and a competing import resolves in whichever order it
+ *       already imports one at a 1.x version and a competing import resolves in whichever order it
  *       likes - and use only the four prefixed coordinates {@code testcontainers},
  *       {@code testcontainers-postgresql}, {@code testcontainers-localstack} and
  *       {@code testcontainers-junit-jupiter}. Overriding without renaming resolves artefacts that do not
- *       exist; renaming without overriding resolves the wrong version. This is a Blocker, and the build file
- *       is not the place to work around it.</dd>
+ *       exist; renaming without overriding resolves the wrong version.</dd>
  *
  *   <dt>{@code warnings found and -Werror specified}</dt>
- *   <dd>Compilation escalates every warning to an error, so one unused import, one raw type or one deprecated
- *       call fails the whole build. The most common trigger in this tier is the deprecated Testcontainers
- *       types: import {@code org.testcontainers.postgresql.PostgreSQLContainer} and
+ *   <dd>Compilation escalates every warning {@code javac} emits to an error, so one raw type, one unchecked cast or
+ *       one deprecated call fails the whole build. An unused import is <em>not</em> among them - {@code javac} 25
+ *       publishes no {@code unused} lint key - so that prohibition is review-enforced. The most common trigger in
+ *       this tier is the deprecated Testcontainers types: import
+ *       {@code org.testcontainers.postgresql.PostgreSQLContainer} and
  *       {@code org.testcontainers.localstack.LocalStackContainer}, never the legacy
- *       {@code org.testcontainers.containers} equivalents. Note also that the 2.x PostgreSQL container type
- *       is <em>not</em> generic, so it is declared without a type argument.</dd>
+ *       {@code org.testcontainers.containers} equivalents. Note also that the 2.x PostgreSQL container type is
+ *       <em>not</em> generic, so it is declared without a type argument.</dd>
  *
  *   <dt>The transaction report comes back empty</dt>
  *   <dd>Something in the path under test read the ambient clock instead of the injected one. See the
@@ -334,8 +310,8 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *
  *   <dt>{@code JobInstanceAlreadyCompleteException} on a second launch</dt>
  *   <dd>The same job was launched twice with the same identifying parameters, and a job launch is outside the
- *       rollback so the first instance survived. Vary a parameter. This exposure is deliberate: the migration
- *       plan requires a repeated run to collide rather than be silently absorbed.</dd>
+ *       rollback so the first instance survived. Vary a parameter. This exposure is deliberate: a repeated run
+ *       must collide rather than be silently absorbed.</dd>
  *
  *   <dt>{@code BeanDefinitionOverrideException} naming a clock</dt>
  *   <dd>A production configuration has published a clock bean under the same name as the one here. Bean
@@ -346,17 +322,16 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
  *       class, and the class-level {@code @Transactional} here then makes it a proxy target. Leave concrete
  *       subclasses non-final. A subclass that needs extra beans of its own may declare its own nested
  *       {@code @TestConfiguration}, which is detected normally.</dd>
- * </dl>
+ *   </dl>
  *
- * <p><strong>Evidence not available, stated rather than invented.</strong> No captured legacy output exists
- * anywhere in the repository to compare against: a search for expected, baseline and golden artefacts, for
- * {@code .out} and system-output captures, and for reject, report, statement and HTML dataset captures
- * returned dataset <em>definition</em> job control only and zero captured data. Producing a boundary-parity
- * baseline needs a captured 430-byte reject dataset plus the resulting transaction, account and
- * category-balance images from a real posting run at a known input state. Until those exist this harness
- * creates no baseline file and no subclass may invent one. Likewise, file status {@code '35'} and its
- * file-unavailable response code do not occur anywhere in the COBOL corpus, so no test for that path is
- * fabricated here.
+ * <p><strong>There is no captured legacy output to compare against, and none may be invented.</strong> The
+ * repository holds dataset <em>definition</em> job control and zero captured data: no expected, baseline or
+ * golden artefact, no system-output capture, and no reject, report, statement or HTML dataset capture.
+ * Producing a boundary-parity baseline needs a captured 430-byte reject dataset plus the resulting
+ * transaction, account and category-balance images from a real posting run at a known input state. Until
+ * those exist this harness creates no baseline file and no subclass may invent one. Likewise, file status
+ * {@code '35'} and its file-unavailable response code do not occur anywhere in the COBOL corpus, so no test
+ * for that path is fabricated here.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -366,6 +341,23 @@ import software.amazon.awssdk.services.sqs.model.QueueNameExistsException;
 public abstract class AbstractBatchIntegrationTest {
 
     /**
+     * Name of the identifying job parameter every launch in this tier must carry.
+     *
+     * <p>Spring Batch derives a job instance from the identifying parameters and refuses to run a completed
+     * instance again, so without a per-test discriminator two tests that launch the same job with the same
+     * business parameters are the same instance: the second fails with instance-already-complete, and which
+     * of the two fails depends on class and method order. This parameter is that discriminator.
+     * {@link #jobParameters(java.util.Map)} refuses a map that omits it and
+     * {@link #launchJob(org.springframework.batch.core.Job, org.springframework.batch.core.JobParameters)}
+     * refuses parameters that omit it, so no path into a launch can bypass the requirement.
+     *
+     * <p>It is a compile-time constant rather than an inline literal because three methods here and every
+     * subclass that inspects a launched execution's parameters must name the same key; a retyped literal in
+     * any one of them would silently create a second, ignored parameter.
+     */
+    public static final String RUN_ID_PARAMETER = "carddemo.test.runId";
+
+    /**
      * The relational substrate: one PostgreSQL 16 container, started once per JVM and shared by every subclass.
      *
      * <p>{@code @ServiceConnection} is what keeps every address and every credential out of this source. It
@@ -373,16 +365,55 @@ public abstract class AbstractBatchIntegrationTest {
      * properties, so the URL, the database name, the user and the password all come from the running
      * container and none of them is written here - not even the container defaults.
      *
-     * <p>The image tag is stated rather than defaulted, because the migrated schema is written against
-     * PostgreSQL 16 and letting the library pick would make the build's outcome depend on the day it ran. It
-     * names the major line, not a patch level or a digest, and that is a deliberate choice with two reasons
-     * rather than an oversight. It is the tag the provisioned environment has already pulled for this tier, so
-     * the suite runs without reaching the network - and a test that needs the network to start is not
-     * deterministic. And it is the Debian-based image: the {@code alpine} variant the compose stack uses for
-     * the developer database is built on musl, whose text collation orders differently from glibc, which in a
-     * tier whose contract includes reproducing sort order exactly is a divergence worth refusing. The residual
-     * risk is small and real - a republished {@code 16} tag could move the patch level - and the remedy, once
-     * the environment's image cache is refreshed to match, is to name a digest here.
+     * <p>The image is stated rather than defaulted, because the migrated schema is written against
+     * PostgreSQL 16 and letting the library pick would make the build's outcome depend on the day it ran. Two
+     * properties of the reference are deliberate.
+     *
+     * <p>It is the Debian-based image, not the {@code alpine} variant the compose stack uses for the developer
+     * database. <strong>The collation argument that originally justified that choice is withdrawn, because it
+     * was never measured against this schema.</strong> The argument was that Alpine is built on musl, whose
+     * text collation can order differently from glibc, and that in a tier whose contract includes reproducing
+     * sort order exactly such a divergence is worth refusing. Measured, the divergence does not arise here:
+     * every column any repository orders by is either numeric or a fixed-width string drawn only from
+     * {@code [0-9A-Z]} - {@code card_num CHAR(16)} and {@code tran_id CHAR(16)} are digits,
+     * {@code sec_usr_id CHAR(8)} is values such as {@code ADMIN001} and {@code USER0001},
+     * {@code tran_type_cd} is a two-character code, and {@code acct_id}, {@code tran_cat_cd} and
+     * {@code ingest_seq} are numeric - and on that subset musl and glibc agree, because digits sort below
+     * uppercase letters in both. Should a future ordering contract ever depend on collation, the remedy is to
+     * state the collation on the column rather than to pick a base image and hope. What keeps the Debian
+     * image here is therefore not collation but two verifiable facts: this digest is the one already resident
+     * in the provisioned environment's image cache, so the suite starts without reaching the network, and it
+     * is the reference the sibling repository harness names, so the two tiers cannot drift onto different
+     * engines.
+     *
+     * <p>It is a <strong>digest</strong> rather than the {@code postgres:16} tag this field previously
+     * named. The earlier note called the residual risk of a republished tag "small and real" and deferred the
+     * remedy until the environment's image cache was refreshed. The risk was neither hypothetical nor small:
+     * {@code postgres:16} was measured resolving to <em>16.14</em> while the sibling repository harness named
+     * 16.10, so a single build was exercising the migrated schema against two different engines while both
+     * files claimed to pin "PostgreSQL 16". Severity of what that left in place: <strong>Medium</strong>. A
+     * mutable tag also defeats the very determinism the stated literal was there to provide - the same source
+     * can produce a different engine tomorrow with nothing in the build changing. An exact patch-level tag
+     * would narrow that risk; a digest removes it, because a digest is content-addressed and cannot move at
+     * all.
+     *
+     * <p>The deferral's precondition is met: the digest below is pulled into the provisioned environment's
+     * cache, so the suite still starts without reaching the network, and a test that needs the network to
+     * start remains something this tier refuses. The digest resolves to PostgreSQL 16.10 on Debian
+     * GNU/Linux 13 (trixie) with GLIBC 2.41, verified by inspecting the pulled image rather than inferred
+     * from its name. {@code asCompatibleSubstituteFor} is required because a digest reference carries no tag,
+     * so the library cannot otherwise recognise it as the PostgreSQL image its wait strategy and JDBC URL
+     * builder expect.
+     *
+     * <p><strong>The identical digest is named by
+     * {@code com.cardemo.integration.repository.AbstractRepositoryIntegrationTest}, and the two must stay
+     * equal.</strong> It is written out in both places rather than shared through a constant because each
+     * harness documents, as a deliberate invariant, a hard limit on its {@code static} fields - this one
+     * permits exactly two, and both are containers - so a shared constant could not live in either without
+     * weakening a rule that exists to keep global mutable state out of the tiers; and because neither tier
+     * may own the other's substrate. The duplication is safe in a way a duplicated <em>tag</em> would not be:
+     * a digest is self-verifying, so if the two ever diverge they name two visibly different immutable images
+     * rather than silently resolving to different content under one label.
      *
      * <p>Note the declaration has no type argument: on the Testcontainers 2.x line this type is not generic,
      * unlike its deprecated predecessor in {@code org.testcontainers.containers}. Adding one does not
@@ -393,7 +424,10 @@ public abstract class AbstractBatchIntegrationTest {
      * {@code org.testcontainers.junit.jupiter.Container} annotation.
      */
     @ServiceConnection
-    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(DockerImageName.parse("postgres:16"));
+    static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer(
+            DockerImageName
+                    .parse("postgres@sha256:21f6013073bc6b92830a2129570e2f5ec42a6c734b5a985a41e83aa58f54c3c1")
+                    .asCompatibleSubstituteFor("postgres"));
 
     /**
      * The cloud substrate: one LocalStack container exposing the object store and the queue, started once per
@@ -432,13 +466,13 @@ public abstract class AbstractBatchIntegrationTest {
      * class's now-removed container: the pool logs "This connection has been closed" and every test then
      * fails with "Connection is not available, request timed out after 30000ms (total=0, active=0, idle=0)".
      * That was reproduced here with two probe classes carrying identical configuration - the first passed,
-     * the second failed exactly that way - which makes it a Blocker for a seven-subclass tier rather than a
-     * theoretical concern. Remediation is this static start plus the absence of @Container; the alternatives
-     * were all rejected on the merits: @DirtiesContext would rebuild the context for every class and is ruled
-     * out for this tier, withReuse(true) cannot help because GenericContainer.stop() carries no reuse guard
-     * and reuse additionally depends on host-level configuration this build must not assume, and forcing a
-     * distinct context key per subclass cannot be enforced from a base class, so it would fail silently the
-     * first time a subclass omitted the marker.
+     * the second failed exactly that way - so it is a certainty for a multi-subclass tier rather than a
+     * theoretical concern. The resolution is this static start plus the absence of @Container; the
+     * alternatives were all rejected on the merits: @DirtiesContext would rebuild the context for every
+     * class and is ruled out for this tier, withReuse(true) cannot help because GenericContainer.stop()
+     * carries no reuse guard and reuse additionally depends on host-level configuration this build must not
+     * assume, and forcing a distinct context key per subclass cannot be enforced from a base class, so it
+     * would fail silently the first time a subclass omitted the marker.
      *
      * The class-level @Testcontainers annotation is kept: it registers the extension so that a subclass may
      * still declare its own @Container field where a per-class lifecycle is genuinely what that subclass
@@ -695,6 +729,28 @@ public abstract class AbstractBatchIntegrationTest {
     private Clock clock;
 
     /**
+     * The datasource, used only by {@link #resetCommittedState()} to reach the database outside the test's
+     * transaction.
+     *
+     * <p>It has to be the datasource rather than the persistence context, because the state being cleaned up
+     * was committed by a job on its own transactions and a persistence-context operation would either join
+     * the test transaction, and therefore be rolled back along with it, or see a stale first-level cache.
+     * Instance state, never static: it is injected per test instance and discarded with it.
+     */
+    @Autowired
+    private DataSource dataSource;
+
+    /**
+     * The current test's deterministic identity, set by {@link #captureTestIdentity(TestInfo)} before every
+     * test method.
+     *
+     * <p>Instance state, never static, and never read by production code. It is the source of both
+     * {@link #runId()} and {@link #cloudNamespace()}, which is what makes those two values a pure function
+     * of which test is running rather than of when it ran or of what ran before it.
+     */
+    private String testIdentity = "unknown";
+
+    /**
      * Creates the harness for one test instance.
      *
      * <p>Declared explicitly rather than left implicit, and {@code protected} rather than {@code public},
@@ -782,6 +838,274 @@ public abstract class AbstractBatchIntegrationTest {
     }
 
     /**
+     * Captures the running test's identity and resets every piece of committed state before the test body
+     * runs.
+     *
+     * <p><strong>Why this hook is mandatory rather than optional.</strong> A job launched through
+     * {@link #launchJob(org.springframework.batch.core.Job, org.springframework.batch.core.JobParameters)}
+     * runs outside the class-level rollback and therefore <em>commits</em> three separate kinds of state:
+     * business rows, Spring Batch metadata rows, and object-store keys. All three survive the test method,
+     * the test class and the whole Failsafe invocation, and every subclass in this package shares the one
+     * PostgreSQL container and the one LocalStack container. Without a reset, an assertion on a row count,
+     * on an execution count, or on the presence of an object is not an assertion about the code under test
+     * at all - it is an assertion about which tests happened to run first, and it changes answer when a
+     * class is added, renamed or run alone. That is the class of order dependence Clause A rules out, and it
+     * cannot be fixed by a subclass remembering to clean up, because the subclass that forgets is exactly
+     * the one that breaks its neighbours.
+     *
+     * <p>The reset therefore runs here, before every test, unconditionally for the whole hierarchy, and
+     * again in {@link #resetCommittedStateAfterTest()} so that nothing is handed to the next class either.
+     * Running it in both places is not redundant: the {@code before} call is what makes a test independent
+     * of its predecessors, and the {@code after} call is what keeps a failure from cascading into every
+     * later class in the invocation.
+     *
+     * @param testInfo the running test's identity, supplied by JUnit; used to derive {@link #runId()} and
+     *                 {@link #cloudNamespace()} deterministically
+     */
+    @BeforeEach
+    final void captureTestIdentity(final TestInfo testInfo) {
+        final String className = testInfo.getTestClass().map(Class::getSimpleName).orElse("UnknownClass");
+        final String methodName = testInfo.getTestMethod().map(Method::getName).orElse("unknownMethod");
+        this.testIdentity = className + "." + methodName;
+        resetCommittedState();
+    }
+
+    /**
+     * Resets every piece of committed state after the test body runs, so nothing is handed to the next test.
+     *
+     * <p>See {@link #captureTestIdentity(TestInfo)} for why the reset runs on both sides of the test body.
+     */
+    @AfterEach
+    final void resetCommittedStateAfterTest() {
+        resetCommittedState();
+    }
+
+    /**
+     * Returns the committed database and object-store state to exactly what the three migrations leave
+     * behind, so that every test in this tier starts from one known point.
+     *
+     * <p>Purpose: make a launched job's effects undoable even though the job commits them. Inputs: none.
+     * Output: none. Side effects: deliberately extensive, and all of them are restorations rather than
+     * inventions - see the four steps below.
+     *
+     * <p><strong>Step one, Spring Batch metadata.</strong> Every {@code BATCH_*} row is deleted, in
+     * foreign-key order. This is what makes a job instance re-creatable: Spring Batch derives an instance
+     * from the identifying parameters, so a second launch with the same parameters fails with
+     * instance-already-complete rather than running. It is also what makes an assertion on an execution
+     * count meaningful, because that count otherwise accumulates across the whole invocation.
+     *
+     * <p><strong>Step two, the transaction relation.</strong> Every row is deleted, which restores the
+     * documented seed state exactly: {@code V3} seeds <em>zero</em> transaction rows deliberately, because
+     * the posting job is what fills the relation. Deleting is therefore a restoration, not a wipe.
+     *
+     * <p><strong>Step three, the mutable money columns.</strong> The posting job updates the account balance
+     * and both cycle accumulators, the interest job zeroes the two accumulators, and both update the category
+     * balance. Those columns are restored from the frozen fixtures themselves - {@code acctdata.txt} and
+     * {@code tcatbal.txt}, decoded position-aware through {@link FixtureLoader} - so the restored value is
+     * the seeded value by construction rather than by a hand-typed literal that could drift from it. Nothing
+     * is invented and no row is created or removed: the fifty accounts and fifty category balances are the
+     * ones {@code V3} seeded, and only the columns a job can change are written.
+     *
+     * <p><strong>Step four, the object store.</strong> Every object under the three buckets is removed, so a
+     * test cannot observe a key an earlier test wrote. The queue is deliberately <em>not</em> purged here:
+     * LocalStack rate-limits a FIFO purge to once every sixty seconds, so purging per test would either fail
+     * or serialise the tier; a subclass that asserts on queue content must therefore key its assertion on
+     * {@link #cloudNamespace()}, which is unique per test by construction.
+     *
+     * <p><strong>Why it skips while a transaction is active.</strong> When the calling test method is
+     * transactional, nothing it did was committed, so there is nothing committed to restore; and issuing
+     * these statements on the test's own connection would enlist them in the transaction that is about to
+     * roll back, which would leave the database in whatever state the previous <em>launching</em> test left
+     * it. Skipping is therefore correct rather than a shortcut, and the statements are issued on a fresh
+     * auto-committing connection precisely so that they cannot be undone by anyone else's rollback.
+     *
+     * @throws IllegalStateException if the reset cannot be issued, with the SQL failure preserved as the
+     *                               cause; a reset that silently failed would reintroduce the order
+     *                               dependence it exists to remove, so it is never swallowed
+     */
+    protected final void resetCommittedState() {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            return;
+        }
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(true);
+            deleteBatchMetadata(connection);
+            deleteCommittedTransactions(connection);
+            restoreSeededMoneyColumns(connection);
+        } catch (final SQLException failure) {
+            throw new IllegalStateException("The committed-state reset could not be issued, so this test "
+                    + "would run against whatever an earlier test left behind. Fix the reset rather than "
+                    + "removing it.", failure);
+        }
+        emptyObjectStore();
+    }
+
+    /**
+     * Deletes every Spring Batch metadata row, in an order the foreign keys accept.
+     *
+     * @param connection an auto-committing connection outside any test transaction
+     * @throws SQLException if a delete cannot be issued
+     */
+    private static void deleteBatchMetadata(final Connection connection) throws SQLException {
+        final String[] ordered = {
+            "DELETE FROM batch_step_execution_context",
+            "DELETE FROM batch_job_execution_context",
+            "DELETE FROM batch_step_execution",
+            "DELETE FROM batch_job_execution_params",
+            "DELETE FROM batch_job_execution",
+            "DELETE FROM batch_job_instance",
+        };
+        for (final String statementText : ordered) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate(statementText);
+            }
+        }
+    }
+
+    /**
+     * Deletes every committed transaction row, restoring the deliberately empty seed state of {@code V3}.
+     *
+     * @param connection an auto-committing connection outside any test transaction
+     * @throws SQLException if the delete cannot be issued
+     */
+    private static void deleteCommittedTransactions(final Connection connection) throws SQLException {
+        try (Statement statement = connection.createStatement()) {
+            statement.executeUpdate("DELETE FROM \"transaction\"");
+        }
+    }
+
+    /**
+     * Restores the money columns a batch job can change, taking every value from the frozen fixtures.
+     *
+     * <p>The five account columns are the balance, the two credit limits and the two cycle accumulators, at
+     * the {@code S9(10)V99} offsets {@code app/cpy/CVACT01Y.cpy} declares; the one category-balance column
+     * is the {@code S9(09)V99} balance at the {@code app/cpy/CVTRA01Y.cpy} offset. Both are decoded through
+     * {@link FixtureLoader}, which is position aware and proved by its own test, so a restored value cannot
+     * drift from the seeded value.
+     *
+     * @param connection an auto-committing connection outside any test transaction
+     * @throws SQLException if an update cannot be issued
+     */
+    private static void restoreSeededMoneyColumns(final Connection connection) throws SQLException {
+        final FixtureLoader.FixtureData accounts = FixtureLoader.load(FixtureLoader.Fixture.ACCOUNT);
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE account SET acct_curr_bal = ?, acct_credit_limit = ?, acct_cash_credit_limit = ?, "
+                        + "acct_curr_cyc_credit = ?, acct_curr_cyc_debit = ? WHERE acct_id = ?")) {
+            for (int row = 0; row < accounts.recordCount(); row++) {
+                update.setBigDecimal(1, accounts.signedDecimal(row, 13, FixtureLoader.MONEY_FIELD_WIDTH));
+                update.setBigDecimal(2, accounts.signedDecimal(row, 25, FixtureLoader.MONEY_FIELD_WIDTH));
+                update.setBigDecimal(3, accounts.signedDecimal(row, 37, FixtureLoader.MONEY_FIELD_WIDTH));
+                update.setBigDecimal(4, accounts.signedDecimal(row, 79, FixtureLoader.MONEY_FIELD_WIDTH));
+                update.setBigDecimal(5, accounts.signedDecimal(row, 91, FixtureLoader.MONEY_FIELD_WIDTH));
+                update.setLong(6, Long.parseLong(accounts.field(row, 1, 11)));
+                update.addBatch();
+            }
+            update.executeBatch();
+        }
+
+        final FixtureLoader.FixtureData balances =
+                FixtureLoader.load(FixtureLoader.Fixture.TRANSACTION_CATEGORY_BALANCE);
+        try (PreparedStatement update = connection.prepareStatement(
+                "UPDATE transaction_category_balance SET tran_cat_bal = ? "
+                        + "WHERE acct_id = ? AND tran_type_cd = ? AND tran_cat_cd = ?")) {
+            for (int row = 0; row < balances.recordCount(); row++) {
+                update.setBigDecimal(1, balances.signedDecimal(row, 18, FixtureLoader.AMOUNT_FIELD_WIDTH));
+                update.setLong(2, Long.parseLong(balances.field(row, 1, 11)));
+                update.setString(3, balances.field(row, 12, 2));
+                update.setInt(4, Integer.parseInt(balances.field(row, 14, 4)));
+                update.addBatch();
+            }
+            update.executeBatch();
+        }
+    }
+
+    /**
+     * Removes every object from the three buckets, so no test can observe a key an earlier test wrote.
+     *
+     * <p>A missing bucket is tolerated: the provisioning is idempotent and a bucket that does not yet exist
+     * holds nothing to remove, so treating its absence as a failure would make the reset more fragile than
+     * the thing it protects.
+     */
+    private static void emptyObjectStore() {
+        final StaticCredentialsProvider credentials = StaticCredentialsProvider.create(
+                AwsBasicCredentials.create(LOCALSTACK.getAccessKey(), LOCALSTACK.getSecretKey()));
+        try (S3Client s3 = S3Client.builder()
+                .endpointOverride(LOCALSTACK.getEndpoint())
+                .region(Region.of(LOCALSTACK.getRegion()))
+                .credentialsProvider(credentials)
+                .forcePathStyle(true)
+                .build()) {
+            for (final String bucket : List.of("carddemo-batch-input", "carddemo-batch-output",
+                    "carddemo-statements")) {
+                emptyBucket(s3, bucket);
+            }
+        }
+    }
+
+    /**
+     * Removes every object, and every object version, from one bucket.
+     *
+     * @param s3     the client to use
+     * @param bucket the bucket to empty
+     */
+    private static void emptyBucket(final S3Client s3, final String bucket) {
+        try {
+            for (final ObjectVersion version : s3.listObjectVersionsPaginator(
+                    ListObjectVersionsRequest.builder().bucket(bucket).build())
+                    .versions().stream().toList()) {
+                s3.deleteObject(DeleteObjectRequest.builder()
+                        .bucket(bucket)
+                        .key(version.key())
+                        .versionId(version.versionId())
+                        .build());
+            }
+        } catch (final NoSuchBucketException absent) {
+            // Nothing to empty. The provisioning is idempotent, so a bucket that does not yet exist is a
+            // state this reset has to tolerate rather than a failure it has to report.
+        }
+    }
+
+    /**
+     * Returns the deterministic, unique identifying run identifier the current test must launch with.
+     *
+     * <p>Purpose: give every launch an identity that is unique across the invocation and yet identical on
+     * every re-run of the same test. Spring Batch derives a job instance from the identifying parameters, so
+     * two tests that launch the same job with the same parameters are the same instance: the second one fails
+     * with instance-already-complete, and which of the two fails depends on class and method order. Adding
+     * this value removes that coupling outright.
+     *
+     * <p><strong>It is derived from the test's own name, never from a clock or a random source.</strong> A
+     * timestamp or a random identifier would also make the launch unique, and would also make it
+     * irreproducible: the job instance would differ between runs, a failure could not be re-executed against
+     * the same instance, and the value would appear in the metadata as noise. The name of the test is the one
+     * identifier that is both unique among launches and stable across runs.
+     *
+     * <p>Where a single test method genuinely needs two independent launches, append a discriminator of its
+     * own - {@code runId() + "-second"} - rather than mutating this value.
+     *
+     * @return the run identifier, for example {@code PostingJobTest.postsEveryValidRecord}; never
+     *         {@code null} and never blank
+     */
+    protected final String runId() {
+        return testIdentity;
+    }
+
+    /**
+     * Returns the deterministic object-store key prefix reserved for the current test.
+     *
+     * <p>Purpose: let a subclass write and assert object keys that no sibling test can collide with, without
+     * needing a container of its own. The three buckets are shared by the whole hierarchy, so two tests that
+     * both write "the output object" would otherwise be asserting about each other. Prefixing with this value
+     * makes the namespace disjoint by construction, and because the value is derived from the test's name it
+     * is the same prefix on every re-run.
+     *
+     * @return the prefix, ending in a slash so it concatenates directly with a key; never {@code null}
+     */
+    protected final String cloudNamespace() {
+        return "it/" + testIdentity + "/";
+    }
+
+    /**
      * Launches one job and returns its completed execution.
      *
      * <p>Purpose: give all seven subclasses a single uniform way to start a job, so that none reimplements
@@ -805,14 +1129,18 @@ public abstract class AbstractBatchIntegrationTest {
      *
      * <p>Side effects, and they matter for isolation. A job launched from this method runs entirely
      * <em>outside</em> the tier's rollback scope: the business rows it writes and the Spring Batch metadata
-     * rows it records are committed and survive the test. Three consequences follow, and a subclass must plan
-     * for all three. A job reads only <em>committed</em> state, which on this branch means the three Flyway
-     * migrations' seed - notably the 300 {@code daily_transaction} rows - and not anything a test persisted
-     * inside a transaction that is still open. A subclass must not assert on the absolute number of executions
-     * in the job repository, because that count accumulates across the run. And relaunching the same job with
-     * the same identifying parameters fails with an instance-already-complete error rather than running again,
-     * which is the duplicate-instance exposure the migration plan requires to surface rather than be smoothed
-     * over; vary a parameter when a second run is genuinely wanted.
+     * rows it records are committed and cannot be undone by the test transaction. Three consequences follow,
+     * and a subclass must plan for all three. A job reads only <em>committed</em> state, which on this branch
+     * means the three Flyway migrations' seed - notably the 300 {@code daily_transaction} rows - and not
+     * anything a test persisted inside a transaction that is still open. Every committed effect is undone
+     * again by {@link #resetCommittedState()}, which runs before and after each test method, so a subclass
+     * asserts against the seeded starting point rather than against whatever an earlier test left; that is
+     * also why an assertion on the number of executions in the job repository is meaningful here, because the
+     * metadata is emptied per test rather than accumulating across the run. And relaunching the same job with
+     * the same identifying parameters fails with an instance-already-complete error rather than running
+     * again, which is the duplicate-instance exposure the migration plan requires to surface rather than be
+     * smoothed over; that is what {@link #RUN_ID_PARAMETER} makes impossible to trip over by accident, and
+     * within one test method a second launch needs its own discriminator.
      *
      * <p>Error modes: an active transaction is refused with an {@code IllegalStateException} naming the remedy
      * above, and any of the four checked launch failures - already running, restart refused, instance already
@@ -844,6 +1172,21 @@ public abstract class AbstractBatchIntegrationTest {
                             + "transaction and commits each chunk on its own transaction regardless. Annotate "
                             + "the launching test method @Transactional(propagation = Propagation.NOT_SUPPORTED)"
                             + " and treat everything the job writes as committed.");
+        }
+
+        // Belt and braces. jobParameters(...) already refuses a map without the run identifier, but a
+        // subclass could assemble JobParameters through the builder directly, and that route would bypass the
+        // guard and reintroduce the ordering coupling. Checking here means every path into a launch is
+        // covered. The value is not quoted in the message: it is a test name rather than data, but the rule
+        // that parameter values never reach a message is easier to keep when it has no exceptions.
+        if (parameters.getString(RUN_ID_PARAMETER) == null
+                || parameters.getString(RUN_ID_PARAMETER).isBlank()) {
+            throw new IllegalStateException(
+                    "Job '" + job.getName() + "' was launched without the identifying parameter '"
+                            + RUN_ID_PARAMETER + "'. Spring Batch derives the job instance from the "
+                            + "identifying parameters, so without it two tests launching this job are one "
+                            + "instance and the second fails with instance-already-complete depending on run "
+                            + "order. Build the parameters with runIdParameters(...).");
         }
 
         try {
@@ -898,11 +1241,55 @@ public abstract class AbstractBatchIntegrationTest {
             }
         }
 
+        final String runIdentifier = parameters.get(RUN_ID_PARAMETER);
+        if (runIdentifier == null || runIdentifier.isBlank()) {
+            throw new IllegalArgumentException(
+                    "Job parameters must carry the identifying parameter '" + RUN_ID_PARAMETER + "'. Spring "
+                            + "Batch derives a job instance from the identifying parameters, so two launches "
+                            + "that agree on every parameter are one instance: the second fails with "
+                            + "instance-already-complete, and which of the two fails depends on class and "
+                            + "method order. Build the map with runIdParameters(...), or add "
+                            + RUN_ID_PARAMETER + " with the value of runId().");
+        }
+
         final JobParametersBuilder builder = new JobParametersBuilder();
         for (final Map.Entry<String, String> parameter : new TreeMap<>(parameters).entrySet()) {
             builder.addString(parameter.getKey(), parameter.getValue());
         }
         return builder.toJobParameters();
+    }
+
+    /**
+     * Builds job parameters from a name-to-value map, stamping in this test's deterministic run identifier.
+     *
+     * <p>Purpose: make the correct thing the easy thing. {@link #jobParameters(java.util.Map)} refuses a map
+     * that omits the run identifier, and this is the one-call way to satisfy it: pass the job's own
+     * parameters and the identifier is added for you, taken from {@link #runId()} so it is unique across the
+     * invocation and identical on every re-run of the same test.
+     *
+     * <p>Inputs: a non-null map, which may be empty when a job takes no parameters of its own, and whose
+     * every name is non-null and not blank and whose every value is non-null. A map that already carries the
+     * run identifier is refused rather than silently overwritten, because a test that supplied its own value
+     * meant something by it and quietly replacing it would hide the conflict. Output: an immutable
+     * {@code JobParameters}. Side effects: none.
+     *
+     * @param parameters the job's own parameters, must not be {@code null}
+     * @return the assembled parameters including the run identifier, never {@code null}
+     * @throws NullPointerException     if {@code parameters} is {@code null}
+     * @throws IllegalArgumentException if any name is {@code null} or blank, if any value is {@code null}, or
+     *                                 if the map already carries {@link #RUN_ID_PARAMETER}
+     */
+    protected final JobParameters runIdParameters(final Map<String, String> parameters) {
+        Objects.requireNonNull(parameters, "The job parameter map must not be null.");
+        if (parameters.containsKey(RUN_ID_PARAMETER)) {
+            throw new IllegalArgumentException(
+                    "The parameter map already carries '" + RUN_ID_PARAMETER + "'. This method supplies it "
+                            + "from runId(); pass the job's own parameters only, or call jobParameters(...) "
+                            + "directly if a bespoke identifier is genuinely wanted.");
+        }
+        final Map<String, String> stamped = new TreeMap<>(parameters);
+        stamped.put(RUN_ID_PARAMETER, runId());
+        return jobParameters(stamped);
     }
 
     /**
@@ -936,12 +1323,25 @@ public abstract class AbstractBatchIntegrationTest {
      * cause, and a misspelling that looks like a defect in the reader. A read failure is wrapped with the
      * resource name and keeps the original as its cause; nothing is swallowed.
      *
-     * @param resourceName bare name of the fixture at the classpath root, must not be {@code null} or blank
+     * <p><strong>Every guarantee above is delegated to {@link FixtureLoader} and none of it is reimplemented
+     * here.</strong> A private parser in this class would be a second, weaker authority on what a legacy
+     * record looks like: it would accept a fixture converted to CRLF, one whose terminating line feed had
+     * been dropped, one re-encoded outside 7-bit ASCII, a record shortened by a whitespace trim, and a record
+     * count that no longer matches the frozen census - and it would then feed each of those into a byte-exact
+     * parity assertion as though nothing had changed. {@code FixtureLoader} refuses all of them, and it is
+     * itself executed by {@code com.cardemo.unit.model.FixtureLoaderTest}, so the strictness stated in this
+     * documentation is proved rather than asserted. Resolving the name through the
+     * {@link FixtureLoader.Fixture} census is also what supplies the record width the strict parse needs, and
+     * what makes the one-letter-short misspelling fail by name rather than at an arbitrary later offset.
+     *
+     * @param resourceName bare name of the fixture at the classpath root, must not be {@code null} or blank,
+     *     and must be one of the nine catalogued names
      * @return the records in file order, trailing spaces intact, never {@code null}
      * @throws NullPointerException     if {@code resourceName} is {@code null}
      * @throws IllegalArgumentException if {@code resourceName} is blank
-     * @throws IllegalStateException    if the resource cannot be found, or cannot be read, with the underlying
-     *     failure preserved as the cause in the latter case
+     * @throws IllegalStateException    if the name is not one of the nine catalogued fixtures, if the resource
+     *     cannot be found or read, or if it no longer satisfies its frozen census or byte-level invariants,
+     *     with the underlying failure preserved as the cause
      */
     protected final List<String> readFixture(final String resourceName) {
         Objects.requireNonNull(resourceName, "The fixture resource name must not be null.");
@@ -949,31 +1349,25 @@ public abstract class AbstractBatchIntegrationTest {
             throw new IllegalArgumentException("The fixture resource name must not be blank.");
         }
 
-        final byte[] content;
-        try (InputStream fixture =
-                AbstractBatchIntegrationTest.class.getClassLoader().getResourceAsStream(resourceName)) {
-            if (fixture == null) {
-                throw new IllegalStateException(
-                        "Fixture '" + resourceName + "' was not found at the root of the test classpath. The "
-                                + "fixtures are flat direct children of the test resource root, so the name "
-                                + "must carry no directory segment, and the ASCII files spell each dataset "
-                                + "name in full even where the mainframe DD name abbreviates it.");
+        FixtureLoader.Fixture catalogued = null;
+        for (final FixtureLoader.Fixture candidate : FixtureLoader.Fixture.values()) {
+            if (candidate.resourceName().equals(resourceName)) {
+                catalogued = candidate;
             }
-            content = fixture.readAllBytes();
-        } catch (final IOException readFailure) {
+        }
+        if (catalogued == null) {
             throw new IllegalStateException(
-                    "Fixture '" + resourceName + "' was found but could not be read.", readFailure);
+                    "Fixture '" + resourceName + "' is not one of the nine catalogued app/data/ASCII "
+                            + "fixtures. They are flat direct children of the test resource root, so the "
+                            + "name must carry no directory segment, and the ASCII files spell each dataset "
+                            + "name in full even where the mainframe DD name abbreviates it.");
         }
-
-        final String[] records = new String(content, StandardCharsets.US_ASCII).split("\n", -1);
-        final int recordCount = records.length > 0 && records[records.length - 1].isEmpty()
-                ? records.length - 1
-                : records.length;
-        final List<String> lines = new ArrayList<>(recordCount);
-        for (int index = 0; index < recordCount; index++) {
-            lines.add(records[index]);
+        try {
+            return FixtureLoader.load(catalogued).records();
+        } catch (final IllegalArgumentException | UncheckedIOException readFailure) {
+            throw new IllegalStateException(
+                    "Fixture '" + resourceName + "' was catalogued but could not be read.", readFailure);
         }
-        return List.copyOf(lines);
     }
 
     /**

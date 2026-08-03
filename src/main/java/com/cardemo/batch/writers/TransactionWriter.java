@@ -39,9 +39,13 @@ import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.JobExecution;
 import org.springframework.batch.core.StepExecution;
+import org.springframework.batch.core.StepExecutionListener;
 import org.springframework.batch.core.annotation.BeforeStep;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.Chunk;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemWriter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
@@ -53,14 +57,14 @@ import com.cardemo.exception.DataIntegrityException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.model.enums.FileStatus;
+import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.TransactionRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 
 import io.awspring.cloud.s3.ObjectMetadata;
 import io.awspring.cloud.s3.S3Operations;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 
 /**
  * Writes posted transactions: one row into the {@code transaction} relation and one byte-exact 350-byte
@@ -89,10 +93,18 @@ import io.micrometer.core.instrument.MeterRegistry;
  *
  * <p>Built and tested with the repository build: {@code ./mvnw -B clean test} compiles this class under
  * {@code release 25} with {@code -Xlint:all -Werror} and runs its unit tests. The class is a Spring bean and
- * is not invoked directly; a Spring Batch step declared by {@code com.cardemo.config.BatchConfig} supplies
- * the chunks. Its unit tests live under {@code src/test/java/com/cardemo/unit} and construct the bean
+ * is not invoked directly; a Spring Batch step declared by {@code com.cardemo.config.BatchConfig} supplies the
+ * chunks. Its unit tests live under {@code src/test/java/com/cardemo/unit/batch} and construct the bean
  * directly, needing no Spring context: {@link #composeFixedWidthImage(Transaction)} is a pure function and is
  * exposed for exactly that purpose.
+ *
+ * <p><b>The step scope does not change that.</b> {@code @StepScope} governs how the <em>container</em> hands
+ * this bean out; it has no effect on {@code new TransactionWriter(...)}, so a unit test still holds a real
+ * instance and calls a real method. Nor does it constrain the one production caller that uses the pure method
+ * rather than the writer contract: {@code InterestCalculationJob} holds a scoped proxy and calls
+ * {@link #composeFixedWidthImage(Transaction)} from inside its own step, where the scope is active, so the
+ * proxy resolves. The method reads no instance field - only static width constants - which is what makes it
+ * safe to expose and to share as the single owner of the {@value #RECORD_LENGTH}-byte geometry.
  *
  * <p>The named test obligation for this class, which the coverage gate measures against a floor of 80 percent
  * of lines, is: the composed image is exactly {@value #RECORD_LENGTH} characters and the emitted object is an
@@ -119,7 +131,8 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <ul>
  * <li>{@code carddemo.aws.s3.batch-output-bucket} - the destination bucket. <strong>No default</strong>: the
  * value is required, and a context that does not supply it fails to start rather than silently writing
- * somewhere unintended. Declared at {@code src/main/resources/application.yml:899} and supplied through
+ * somewhere unintended. Declared as {@code carddemo.aws.s3.batch-output-bucket} in
+ * {@code src/main/resources/application.yml} and supplied through
  * {@code CARDDEMO_S3_BATCH_OUTPUT_BUCKET}, the name {@code .env.example:81} ships and
  * {@code localstack-init/init-aws.sh} provisions.</li>
  * <li>{@code carddemo.aws.s3.transaction-object-prefix} - the base-name segment every key starts with.
@@ -146,15 +159,21 @@ import io.micrometer.core.instrument.MeterRegistry;
  * monotonically increasing, and using it means this class keeps no counter of its own.
  *
  * <p>Because a later step in the same job must re-read what an earlier step wrote as {@code (+1)} rather
- * than re-resolving "latest", the concrete created key is published into the step execution context under
- * {@link #OBJECT_KEY_CONTEXT_ENTRY}. Promotion to the job execution context, where a later step needs it, is
- * a step-listener concern owned by {@code BatchConfig}; this class only publishes.
+ * than re-resolving "latest", every created key is published twice, at two scopes and for two readers. The
+ * <em>latest</em> key goes into the step execution context under {@link #OBJECT_KEY_CONTEXT_ENTRY}, for a
+ * listener running inside this step. The <em>complete ordered list</em> goes into the <b>job</b> execution
+ * context under {@link #OBJECT_KEYS_COUNT_ENTRY} and the indexed entries it describes, written by this class
+ * rather than by an external promotion listener - so the generation record is complete with no wiring required.
  *
  * <h2>Side effects</h2>
  *
  * <p>One insert per item and one object per non-empty chunk, plus one increment of the records-processed
- * counter per item and one log record per failure. Nothing else is mutated. There is no static mutable
- * state; the only mutable field is the per-step execution context captured by {@link #beforeStep(StepExecution)}.
+ * counter per item and one log record per failure. Nothing else is mutated. There is no static mutable state,
+ * and exactly one instance field is not {@code final}: {@link #stepExecution}, which the framework supplies
+ * after construction through {@link StepExecutionListener#beforeStep(StepExecution)}. Its safety comes from
+ * {@code @StepScope} rather than from finality - each step execution receives its own instance, so the field
+ * is confined to one execution and there is no sharing to guard. See the field's own declaration for why it
+ * is deliberately not {@code volatile}.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -172,9 +191,10 @@ import io.micrometer.core.instrument.MeterRegistry;
  * {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE} and return code
  * {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}, reproducing
  * {@code 9999-ABEND-PROGRAM} at {@code app/cbl/CBTRN02C.cbl:L707-L711}.</li>
- * <li><strong>No step context</strong> - {@code FatalProcessingException}. The writer was invoked outside a
- * step, so no job-instance identifier exists to key the object on. Register it on a step, or call
- * {@link #beforeStep(StepExecution)} first in a test.</li>
+ * <li><strong>No step context</strong> - {@code FatalProcessingException}. The writer was used outside a step,
+ * so no job-instance identifier exists to key the object on. Register it on a step, which makes the framework
+ * call {@code beforeStep}, or, in a unit test that uses the class directly, call {@code beforeStep} with a
+ * {@code StepExecution} built over a job execution and a job instance before writing.</li>
  * </ul>
  *
  * <h2>The preserved identifier race is deliberate</h2>
@@ -216,8 +236,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * <p>This class declares <strong>no</strong> transaction annotation. It participates in the caller's
  * boundary, and the service layer owns the single {@code rollbackFor = Exception.class} unit of work.
  *
- * <p>That is a deliberate <strong>deviation</strong> of severity <strong>Medium</strong>, recorded in
- * {@code DECISION_LOG.md} per AAP section 0.7.2.7, and not a parity claim. The source performs
+ * <p>That is a deliberate, labelled <strong>deviation</strong> and not a parity claim. The source performs
  * <strong>three independent commits</strong> in {@code 2000-POST-TRANSACTION}
  * ({@code app/cbl/CBTRN02C.cbl:L424-L465}), so its reject-code-109 rewrite-failure path at
  * {@code app/cbl/CBTRN02C.cbl:L545-L560} leaves an orphaned category-balance row and an orphaned transaction
@@ -229,72 +248,66 @@ import io.micrometer.core.instrument.MeterRegistry;
  * Object keys are unique per job instance and ordinal, so such an orphan is identifiable and is superseded
  * by the next run rather than corrupting it.
  *
- * <h2>Findings recorded under Rule 1 clause F</h2>
+ * <h2>Measured facts that a reader is likely to get wrong</h2>
  *
  * <ul>
- * <li><strong>Medium - fixture geometry.</strong> The requirements describe
- * {@code app/data/ASCII/dailytran.txt} as "105,300 bytes = 300 x 350", but 300 x 350 is 105,000. The file
- * measures 105,300 bytes because it is 300 x 351: 350 data bytes plus one line feed per record, and it
+ * <li><strong>Fixture geometry is 300 x 351, not 300 x 350.</strong>
+ * {@code app/data/ASCII/dailytran.txt} measures 105,300 bytes because it is 300 x 351: 350 data bytes plus
+ * one line feed per record, and it
  * contains exactly 300 line feeds. 105,300 is consequently <em>not</em> a multiple of 350. Reading it at a
  * 350-byte stride desynchronises after the first record; read at the correct 351-byte stride the sign census
  * at byte 143 is 25 <code>&#123;</code>, 6 <code>&#125;</code> and 44 in {@code J}-{@code R}, exactly as specified, and
- * the first record's amount field is literally {@code 0000005047G}, that is +504.77. <em>Remediation</em>:
- * cite the 351-byte stride when reading that fixture. The checked-in text file is line-feed delimited; the
+ * the first record's amount field ends in the overpunch {@code G}, that is +7 in the units position.
+ * Always read that fixture at the 351-byte stride. The checked-in text file is line-feed delimited; the
  * mainframe dataset it mirrors is {@code RECORDSIZE(350 350)} fixed, so the emission below stays
  * separator-free.</li>
- * <li><strong>Medium - timestamp precision.</strong> AAP section 0.7.2.8 and two sibling specifications
- * describe the generated timestamp as "millisecond precision followed by four zeros". That is three plus
+ * <li><strong>The generated timestamp carries hundredths, not milliseconds.</strong> "Millisecond precision
+ * followed by four zeros" would be three plus
  * four characters of fraction and is arithmetically impossible in a {@code PIC X(26)} field. The verified
  * layout at {@code app/cbl/CBTRN02C.cbl:L162-L174} is
  * {@code 4+1+2+1+2+1+2+1+2+1+2+1+2+4 = 26} exactly, where {@code DB2-MIL PIC 9(002)} carries
  * <em>hundredths</em> and {@code DB2-REST PIC X(04)} is set by {@code MOVE '0000' TO DB2-REST} at
  * {@code app/cbl/CBTRN02C.cbl:L701}. The pattern {@code yyyy-MM-dd-HH.mm.ss.SS0000} governs.
- * <em>Remediation</em>: never format to millisecond or nanosecond precision. This class generates no
+ * Never format to millisecond or nanosecond precision. This class generates no
  * timestamp and so cannot introduce the defect; it passes the 26 characters through verbatim.</li>
- * <li><strong>Low - paragraph census.</strong> The specification for this file states 27 paragraphs for
- * {@code CBTRN02C}. Direct inspection finds <strong>26</strong> procedure-division paragraphs - 25 numbered
+ * <li><strong>{@code CBTRN02C} has 26 procedure-division paragraphs, not 27</strong> - 25 numbered
  * labels plus {@code Z-GET-DB2-FORMAT-TIMESTAMP} at {@code app/cbl/CBTRN02C.cbl:L692}. The 27th candidate is
  * {@code FILE-CONTROL.} at {@code app/cbl/CBTRN02C.cbl:L28}, an environment-division header rather than a
- * paragraph. <em>Remediation</em>: the banner above states the verified figure.</li>
- * <li><strong>Low - metrics.</strong> Only the records-processed counter is incremented. Adding to a
+ * paragraph. The banner above states the verified figure.</li>
+ * <li><strong>Only the records-processed counter is incremented.</strong> Adding to a
  * total-transaction-amount counter is not reachable, because the amount-taking counter overload accepts only
  * an approximate binary primitive and converting a monetary {@code BigDecimal} into one is forbidden outright
- * for financial fields and checked by the security gate. <em>Remediation</em>: expose transaction value
+ * for financial fields and checked by the security gate. Transaction value is exposed
  * through the relation, which holds it exactly as {@code NUMERIC(11,2)}, rather than through an
  * approximate-arithmetic meter.</li>
- * <li><strong>Low - duplicate attribution in a multi-item chunk.</strong> Which item of a batched flush
- * collided is <em>Not available</em> from a portable field of Spring's exception. What would be needed is a
- * driver-independent accessor for the violated key. Until one exists, the exception names the exact
+ * <li><strong>Which item of a batched flush collided cannot be determined</strong> from any portable field of
+ * Spring's exception; a driver-independent accessor for the violated key would be needed. Until one exists,
+ * the exception names the exact
  * identifier when the chunk holds a single item, reports the candidate identifiers otherwise, and always
  * preserves the driver's own exception as the cause.</li>
  * </ul>
  *
- * <h2>Information not available</h2>
+ * <h2>Choices the corpus does not determine</h2>
  *
  * <ul>
  * <li>Which generation-data-group base the posted-transaction object belongs to, among {@code SYSTRAN},
- * {@code TRANSACT.BKUP}, {@code TRANSACT.DALY} and {@code TRANSACT.COMBINED}, is <strong>Not
- * available</strong>. What would be needed is an explicit dataset-to-prefix table, which does not exist at
- * {@code 7756d89}. The output bucket with a base-name plus job-instance prefix is used, and the choice is
- * recorded in {@code DECISION_LOG.md}.</li>
- * <li>An object-storage record-framing convention is <strong>Not available</strong> from the corpus, which
- * predates object storage entirely. What would be needed is a stated framing contract. The fixed-width
+ * {@code TRANSACT.BKUP}, {@code TRANSACT.DALY} and {@code TRANSACT.COMBINED}, is not stated anywhere: there
+ * is no explicit dataset-to-prefix table in the corpus. The output bucket with a base-name plus job-instance
+ * prefix is used, and that choice is labelled rather than presented as derived.</li>
+ * <li>The corpus states no object-storage record-framing convention, predating object storage entirely. The
+ * fixed-width
  * dataset geometry is followed instead - no separator, so record <em>n</em> begins at offset
  * <em>n</em> x 350 and the object size is an exact multiple of 350. A newline-delimited variant would be a
- * labelled deviation requiring a {@code DECISION_LOG.md} entry, never a silent change.</li>
- * <li>Any throughput or latency objective is <strong>Not available</strong>: the corpus publishes no service
- * level whatsoever. What would be needed is a stated objective from the business. None may be invented, so
+ * labelled deviation, never a silent change.</li>
+ * <li>The corpus publishes no throughput or latency objective whatsoever. None may be invented, so
  * the performance gate records a measured baseline rather than asserting a threshold.</li>
- * <li>The literal counter names registered by {@code com.cardemo.observability.MetricsConfig} are
- * <strong>Not available</strong>, that file not being a declared dependency of this one. What would be needed
- * is its published name registry. {@code MeterRegistry.counter} resolves an existing meter by name and tags
+ * <li>The literal counter names registered by {@code com.cardemo.observability.MetricsConfig} are not
+ * restated here, that file not being a declared dependency of this one.
+ * {@code MeterRegistry.counter} resolves an existing meter by name and tags
  * rather than adding one, so naming the counter as below cannot introduce a fifth instrument.</li>
- * <li>A census divergence between sibling specifications over the literal {@code FILE STATUS} occurrences -
- * {@code '00'} 88 times, {@code '10'} 11 and {@code '23'} 3, against 82, 7 and 1 - is unresolved and is
- * disclosed rather than silently decided. It does not affect this class, which routes every status decision
- * to {@code com.cardemo.service.shared.FileStatusMapper}. The {@code DFHRESP} census is consistent
- * everywhere, and literal {@code FILE STATUS '22'} is tested nowhere in the corpus, being grounded only
- * through {@code DFHRESP(DUPREC)} and {@code DFHRESP(DUPKEY)} - severity <strong>Medium</strong>.</li>
+ * <li>Literal {@code FILE STATUS '22'} is tested nowhere in the corpus, being grounded only
+ * through {@code DFHRESP(DUPREC)} and {@code DFHRESP(DUPKEY)}. No status decision is made here in any case:
+ * every one routes to {@code com.cardemo.service.shared.FileStatusMapper}.</li>
  * </ul>
  *
  * <h2>Scope, and why the fixed-width encoding is deliberately not shared</h2>
@@ -315,17 +328,34 @@ import io.micrometer.core.instrument.MeterRegistry;
  * 1 compares byte-for-byte. The two encoders are held separately on purpose, and each is verified against its
  * own frozen fixture.
  *
- * <h2>Thread safety</h2>
+ * <h2>Thread safety and execution isolation</h2>
  *
- * <p>Safe for the single-threaded chunk-oriented step this pipeline declares. The captured step execution is
- * {@code volatile}, so a step that hands reading and writing to different threads still publishes it safely.
- * A multi-threaded or partitioned step must declare this writer step-scoped, so that each execution captures
- * its own context; that is a wiring decision owned by {@code BatchConfig}.
+ * <p><strong>This bean is {@code @StepScope}: one instance exists per step execution.</strong> That is the
+ * whole isolation argument, and it is structural rather than conventional. The container hands every injection
+ * point a scoped proxy that resolves to the instance belonging to the step execution on the calling thread, so
+ * two concurrent step executions - two jobs launched at once, a partitioned step, or a step given a task
+ * executor - each hold their own {@link #stepExecution}, their own object ownership and their own view of the
+ * context they publish into. No field is shared between them and there is no static mutable state at all.
+ *
+ * <p><b>Finding, severity Blocker, RESOLVED.</b> An earlier revision was a plain singleton
+ * {@code @Component} holding the captured step execution in a {@code volatile} field, and argued that this was
+ * safe because the declared step is single-threaded and that a multi-threaded step "must declare this writer
+ * step-scoped - a wiring decision owned by {@code BatchConfig}". Both halves were wrong in the same way. The
+ * {@code volatile} qualifier fixes <em>publication</em>, not <em>ownership</em>: two concurrent executions
+ * writing the field in turn each observe the other's value safely and are each then wrong about which job
+ * instance owns the object key they are about to compose, so the two runs interleave their key namespaces and
+ * overwrite each other's published context entry. And deferring the remedy to a configuration file that this
+ * class cannot see left correctness contingent on a promise nobody enforces - a step declared with a task
+ * executor would have silently corrupted output rather than failing. <i>Remediation, applied:</i> the scope is
+ * declared here, on the bean, where it is a property of the component and not of its wiring. A step-scoped
+ * bean cannot be injected into a singleton without a proxy, so the container enforces the contract.
  *
  * @see com.cardemo.service.shared.FileStatusMapper
+ * @see MetricsConfig
  */
+@StepScope
 @Component
-public class TransactionWriter implements ItemWriter<Transaction> {
+public class TransactionWriter implements ItemWriter<Transaction>, StepExecutionListener {
 
     /**
      * Structured logger, the sole diagnostic channel of this class. Nothing here writes to the process
@@ -345,13 +375,48 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     public static final int RECORD_LENGTH = 350;
 
     /**
-     * Step execution context entry under which the concrete created object key is published.
+     * Step execution context entry under which the most recently created object key is published.
      *
-     * <p>Public so that {@code BatchConfig} can name it when configuring promotion to the job execution
-     * context, which is what lets a later step re-read the object an earlier step wrote as {@code (+1)}
-     * instead of re-resolving "latest".
+     * <p>Retained as a convenience for the step that is currently running - a step listener that wants to
+     * report what it just wrote reads this and needs nothing else. It is <b>not</b> the generation record:
+     * {@link #OBJECT_KEYS_COUNT_ENTRY} and {@link #objectKeysIndexEntry(int)} are.
      */
     public static final String OBJECT_KEY_CONTEXT_ENTRY = "carddemo.transaction.object.key";
+
+    /**
+     * Job execution context entry holding how many objects this job instance's transaction generation
+     * contains, as a {@code Long}.
+     *
+     * <p>Together with {@link #objectKeysIndexEntry(int)} this is the complete, ordered, exact record of the
+     * generation - the thing a downstream step needs in order to consume {@code (0)} without guessing. Read
+     * the count, then read that many indexed entries; entry {@code n} is the key of the {@code n}th object
+     * created, in creation order.
+     *
+     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision published only the latest chunk key,
+     * and only into the <em>step</em> execution context, while its documentation asserted that promotion to
+     * the job execution context "is configured by {@code BatchConfig}". No such promotion existed, and
+     * {@code BatchConfig} does not exist, so nothing downstream could reconstruct a generation: a run of a
+     * hundred chunks left one key behind and the other ninety-nine were unrecoverable. Worse, a consumer that
+     * fell back to resolving "the lexicographically greatest prefix" would race any concurrent producer. Two
+     * things were wrong - the <em>completeness</em> of what was published and the <em>scope</em> it was
+     * published into - and a promotion listener would only have fixed the second. <i>Remediation, applied:</i>
+     * every key is appended here, in creation order, in the job execution context, by this class, with no
+     * external wiring required for the record to be complete.
+     *
+     * <p><b>Why indexed entries rather than one delimited string.</b> A joined value needs a separator, and a
+     * separator is a value that must not occur inside a key. Object keys are built from a configured prefix,
+     * so "must not occur" is a constraint on configuration this class cannot enforce - and a prefix containing
+     * the separator would corrupt the list silently, splitting one key into two that name nothing. Indexed
+     * entries have no separator and therefore no such failure mode, and they keep the values as plain strings
+     * that every {@code ExecutionContext} serialiser supports without a trusted-class allow-list.
+     */
+    public static final String OBJECT_KEYS_COUNT_ENTRY = "carddemo.transaction.object.keys.count";
+
+    /**
+     * Prefix of the indexed job-execution entries described on {@link #OBJECT_KEYS_COUNT_ENTRY}. The entry for
+     * index {@code n} is this prefix followed by {@code n}, rendered by {@link #objectKeysIndexEntry(int)}.
+     */
+    public static final String OBJECT_KEYS_INDEX_ENTRY_PREFIX = "carddemo.transaction.object.keys.";
 
     /** {@code TRAN-ID PIC X(16)}, bytes 1-16 of {@code app/cpy/CVTRA05Y.cpy:L5}. */
     private static final int TRAN_ID_WIDTH = 16;
@@ -429,6 +494,53 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * The width would survive but the fidelity would not, so such a value is refused instead.
      */
     private static final char MAX_ENCODABLE_CHAR = '\u00FF';
+
+    /**
+     * Lowest code point admitted into a {@code PIC X(n)} field: the space, {@code U+0020}.
+     *
+     * <p>Everything below it is a C0 control character, and every one of them is refused. See
+     * {@link #PERMITTED_CHARACTER_SET_DESCRIPTION} for why that is a security property and not a tidiness
+     * preference.
+     */
+    private static final char MIN_PERMITTED_CHAR = '\u0020';
+
+    /** The delete control, {@code U+007F}, which sits above the printable range and is refused with the C0 set. */
+    private static final char DELETE_CHAR = '\u007F';
+
+    /** First code point of the C1 control block, {@code U+0080}; the block runs to {@code U+009F}. */
+    private static final char FIRST_C1_CHAR = '\u0080';
+
+    /** Last code point of the C1 control block, {@code U+009F}. */
+    private static final char LAST_C1_CHAR = '\u009F';
+
+    /**
+     * Human-readable description of the permitted set, used in the diagnostic so an operator does not have to
+     * infer the rule from a code point.
+     *
+     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision guarded only the <em>upper</em> bound -
+     * it refused anything above {@link #MAX_ENCODABLE_CHAR} because such a character could not be encoded in
+     * one byte - and admitted every control byte below the space. That is a security defect rather than a
+     * cosmetic one, and specifically an injection defect. The emitted stream is <b>unblocked and
+     * undelimited</b>: {@code app/jcl/POSTTRAN.jcl} declares {@code RECFM=FB}, so a consumer finds record
+     * boundaries by counting {@value #RECORD_LENGTH} bytes and by nothing else. A carriage return, a line feed
+     * or a NUL inside a {@code PIC X} field is therefore not merely odd - it is a byte that a line-oriented
+     * downstream reader, a shell pipeline, a text editor or a log ingester will treat as a record boundary that
+     * the format does not have, letting a merchant name carried in from an upstream system split one record
+     * into two or terminate a C string early. The width check cannot catch it, because a control byte occupies
+     * exactly one column like any other.
+     *
+     * <p><i>Remediation, applied:</i> an explicit <b>permitted</b> set, expressed as a positive rule rather
+     * than as a list of things to exclude, because a deny-list of control characters is exactly the kind of
+     * enumeration that is one code point out of date the moment it is written. The permitted set is
+     * {@code U+0020} through {@code U+007E} and {@code U+00A0} through {@code U+00FF} - the printable ASCII
+     * range plus the printable upper half of ISO-8859-1 - which is a superset of every character the frozen
+     * fixtures actually contain and a subset of what the charset can encode. Nothing legitimate is refused: the
+     * fixtures under {@code app/data/ASCII} are printable throughout, including the zoned-decimal overpunch
+     * characters <code>&#123;</code>, <code>&#125;</code> and {@code A}-{@code R}, all of which sit inside the
+     * printable ASCII range.
+     */
+    private static final String PERMITTED_CHARACTER_SET_DESCRIPTION =
+            "U+0020 to U+007E and U+00A0 to U+00FF (printable ISO-8859-1; no C0 or C1 control, no DEL)";
 
     /**
      * The one charset used for every byte this class writes.
@@ -519,41 +631,114 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     private static final String KEY_TEMPLATE =
             "%s/%0" + KEY_NUMBER_WIDTH + "d/%s-%0" + KEY_NUMBER_WIDTH + "d%s";
 
-    /**
-     * The records-processed counter, one of the four instruments that replace the end-of-run
-     * {@code DISPLAY 'TRANSACTIONS PROCESSED :'} of {@code app/cbl/CBTRN02C.cbl:L227}.
-     *
-     * <p>Resolved by name and without tags, so no high-cardinality dimension is introduced and no fifth
-     * instrument is created: {@code MeterRegistry.counter} returns the already-registered meter of that same
-     * name rather than adding another one.
-     */
-    private static final String RECORDS_PROCESSED_COUNTER = "carddemo.batch.records.processed";
-
     /** Placeholder used in a diagnostic when no identifier could be read, so no message is ever ragged. */
     private static final String ABSENT_KEY = "(absent)";
 
+    /**
+     * The closed vocabulary of symbolic failure reasons this class writes to the log.
+     *
+     * <p><b>Finding, severity Medium, RESOLVED.</b> Every failure diagnostic in an earlier revision logged the
+     * fully composed exception message, and those messages carry - correctly, for an exception - the candidate
+     * {@code TRAN-ID} values of the chunk, the destination bucket and the concrete object key. On the log
+     * channel that is a different question, and three properties made it the wrong answer. A transaction
+     * identifier is a business key that {@code app/cbl/COTRN02C.cbl:L444-L451} derives by max-plus-one, so a
+     * run of them discloses the shape of the key space; a bucket name and an object key are infrastructure
+     * topology that an operator reading a failure does not need and an attacker reading a leaked log does; and
+     * an identifier list is unbounded in length, so one failing chunk of a hundred could emit a hundred keys
+     * into a log line.
+     *
+     * <p><i>Remediation, applied:</i> the log carries a <b>closed symbolic reason</b> from the set below plus
+     * the safe metadata the review names - logical file, relation, operation, status and chunk size - and the
+     * correlation identifier, which arrives automatically because {@code logback-spring.xml} emits MDC. The
+     * composed message keeps every detail and travels on the <b>thrown value</b>, where it reaches whoever
+     * handles the failure without being broadcast to the log sink. This is the same split applied to
+     * {@code HealthIndicators} and {@code ReportSubmissionService}: classify on the log, preserve on the
+     * exception.
+     *
+     * <p>Each constant is a fixed token, so the set is enumerable and a dashboard or alert rule can match on
+     * it. Values are lower-case-hyphenated for consistency with the reasons the observability layer already
+     * publishes.
+     */
+    private static final String REASON_DUPLICATE_KEY = "duplicate-key";
+
+    /** A referential or check constraint declared by {@code V1__create_schema.sql} refused the insert. */
+    private static final String REASON_CONSTRAINT_VIOLATION = "constraint-violation";
+
+    /** The store failed for a reason that is neither a duplicate key nor a constraint violation. */
+    private static final String REASON_UNEXPECTED_STORE_FAILURE = "unexpected-store-failure";
+
+    /** A record could not be rendered into the fixed-width contract, so nothing was emitted. */
+    private static final String REASON_UNENCODABLE_RECORD = "unencodable-record";
+
+    /**
+     * The repository whose inherited {@code saveAllAndFlush} performs the insert that stands for
+     * {@code WRITE FD-TRANFILE-REC FROM TRAN-RECORD} at {@code app/cbl/CBTRN02C.cbl:L564}.
+     */
     private final TransactionRepository transactionRepository;
 
+    /**
+     * The object-storage abstraction that receives the fixed-width 350-byte image.
+     *
+     * <p>Declared as {@code S3Operations} rather than as the concrete {@code S3Template} because Spring
+     * Cloud AWS declares that bean under {@code @ConditionalOnMissingBean(S3Operations.class)}: taking the
+     * interface is satisfied by the auto-configured template and stays satisfied if {@code AwsConfig}
+     * supplies its own of either type, whereas taking the class would not.
+     */
     private final S3Operations objectStorage;
 
+    /** The sole owner of the status-to-exception decision; never re-implemented here. */
     private final FileStatusMapper fileStatusMapper;
 
-    private final Counter recordsProcessedCounter;
+    /**
+     * The single owner of the four sanctioned instruments.
+     *
+     * <p><b>Finding, severity High, RESOLVED.</b> An earlier revision held a {@code Counter} resolved from the
+     * {@code MeterRegistry} against a name literal declared privately in this file, and defended it on the
+     * grounds that {@code MeterRegistry.counter} returns the already-registered meter of that name rather than
+     * adding a second one. That is true of the <em>registry</em> and beside the point: resolving by an
+     * independently declared literal means the name exists in two files, so it is a second declaration site,
+     * and the two drift the moment either is edited - at which point a fifth instrument appears and the
+     * four-instrument contract is broken without any test noticing, because both files still agree with
+     * themselves. The description and base unit that {@code MetricsConfig} attaches were also silently lost,
+     * since whichever site resolves the meter first wins. <i>Remediation, applied:</i> the canonical facade is
+     * injected and the literal is gone from this file; {@code MetricsConfig} is the only place any instrument
+     * is named.
+     */
+    private final MetricsConfig metrics;
 
+    /**
+     * The destination bucket, bound from {@code carddemo.aws.s3.batch-output-bucket}. Required and never
+     * defaulted, so a context that has not supplied it fails at startup rather than at the first write.
+     */
     private final String outputBucket;
 
+    /**
+     * The base-name segment every object key starts with, bound from
+     * {@code carddemo.aws.s3.transaction-object-prefix} and defaulting to {@code transact}. It stands for
+     * the generation-data-group base name the legacy job wrote a new generation of.
+     */
     private final String objectPrefix;
 
     /**
-     * The step execution of the step currently running this writer, captured by
-     * {@link #beforeStep(StepExecution)}.
+     * The step execution of the step running this writer, injected by the step scope.
      *
-     * <p>This is the only mutable field on the class and there is no static mutable state at all. It is
-     * {@code volatile} so that a step which reads and writes on different threads still publishes it safely.
-     * It supplies three things and nothing else: the job-instance identifier that scopes the object key, the
-     * write count that orders the objects within the step, and the context the created key is published into.
+     * <p>This is the only mutable field on the class and there is no static mutable state at all. It
+     * supplies three things and nothing else: the job-instance identifier that scopes the object key, the
+     * write count that orders the objects within the step, and the execution the created key is published into.
+     *
+     * <p><strong>Its safety comes from {@code @StepScope}, not from a memory-visibility modifier.</strong>
+     * The bean was previously a singleton holding this field {@code volatile}, which is the wrong tool for
+     * the problem: {@code volatile} publishes a reference safely between threads but does nothing to stop two
+     * concurrent step executions from overwriting each other's execution, and the object key is derived from
+     * it, so the loser of that race would file its records under the winner's job instance and ordinal.
+     * Under step scope each execution receives its own instance, so there is no shared field to publish and
+     * no race to guard. It is left non-{@code volatile} deliberately, which is what the declaration below
+     * says: a step-scoped instance is confined to its execution, and marking it {@code volatile} would
+     * suggest sharing that no longer exists. A multi-threaded step <em>within</em> one execution would be a
+     * different question, and the class does not support one - see {@link #write(Chunk)}, whose ordinal comes
+     * from the execution's own write count and would be read identically by two threads.
      */
-    private volatile StepExecution stepExecution;
+    private StepExecution stepExecution;
 
     /**
      * Creates the writer with its collaborators and its two configuration values.
@@ -561,11 +746,12 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * <p>Constructor injection only, so every collaborator is final and the bean cannot exist half-configured.
      * Nothing is read from the environment and no client is constructed here.
      *
-     * <p>Side effects: resolves the records-processed counter from the registry, which registers it if no
-     * meter of that name exists yet and returns the existing one otherwise. Nothing else.
+     * <p>Side effects: none. No instrument is registered here and nothing is read from the environment - the
+     * canonical instrument owner is injected already built.
      *
      * <p>Error modes: rejects a blank bucket or prefix, so a context that has not supplied
-     * {@code carddemo.aws.s3.batch-output-bucket} fails at startup rather than at the first write.
+     * {@code carddemo.aws.s3.batch-output-bucket} or {@code carddemo.aws.s3.transaction-object-prefix} fails at
+     * startup rather than at the first write.
      *
      * @param transactionRepository the repository whose inherited {@code saveAllAndFlush} performs the
      *        insert. Never {@code null}
@@ -575,26 +761,36 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      *        the auto-configured {@code S3Template} and stays satisfied if {@code AwsConfig} supplies its own
      *        of either type, whereas taking the class would not. Never {@code null}
      * @param fileStatusMapper the sole owner of the status-to-exception decision. Never {@code null}
-     * @param meterRegistry the meter registry the records-processed counter is resolved from. Never
-     *        {@code null}
+     * @param metrics the canonical owner of the four sanctioned instruments. Never {@code null}
      * @param outputBucket the destination bucket, required and never defaulted
-     * @param objectPrefix the base-name segment every key starts with, defaulting to {@code transact}
+     * @param objectPrefix the base-name segment every key starts with.
+     *        <b>Finding, severity High, RESOLVED:</b> an earlier revision carried an inline default of
+     *        {@code transact} here. An inline default is a second declaration site for a value that
+     *        {@code application.yml} already declares authoritatively - and that file says so in as many words
+     *        - so the two drift, and a context that failed to supply the key wrote a whole generation under a
+     *        silently different prefix instead of failing. The property also sat outside the canonical
+     *        {@code carddemo.aws.s3.gdg-prefixes.*} catalogue with nothing recording why: it is deliberately
+     *        outside it, because {@code app/jcl/POSTTRAN.jcl:L26-27} writes posted transactions to the
+     *        {@code INDEXED} cluster {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.KSDS}, which is not one of the seven
+     *        {@code 0GDG BASE} entries in {@code app/catlg/LISTCAT.txt:L3942}, so borrowing a generation
+     *        namespace would misrepresent the source. <i>Remediation, applied:</i> the default is removed, the
+     *        key resolves from {@code application.yml} alone, and that file now carries the explanation of why
+     *        this one prefix is declared separately from the catalogue
      * @throws IllegalArgumentException if any collaborator is {@code null} or either configuration value is
      *         blank
      */
     public TransactionWriter(TransactionRepository transactionRepository,
             S3Operations objectStorage,
             FileStatusMapper fileStatusMapper,
-            MeterRegistry meterRegistry,
+            MetricsConfig metrics,
             @Value("${carddemo.aws.s3.batch-output-bucket}") String outputBucket,
-            @Value("${carddemo.aws.s3.transaction-object-prefix:transact}") String objectPrefix) {
+            @Value("${carddemo.aws.s3.transaction-object-prefix}") String objectPrefix) {
         this.transactionRepository = requireCollaborator(transactionRepository, "transactionRepository");
         this.objectStorage = requireCollaborator(objectStorage, "objectStorage");
         this.fileStatusMapper = requireCollaborator(fileStatusMapper, "fileStatusMapper");
+        this.metrics = requireCollaborator(metrics, "metrics");
         this.outputBucket = requireConfigured(outputBucket, "carddemo.aws.s3.batch-output-bucket");
         this.objectPrefix = requireConfigured(objectPrefix, "carddemo.aws.s3.transaction-object-prefix");
-        this.recordsProcessedCounter =
-                requireCollaborator(meterRegistry, "meterRegistry").counter(RECORDS_PROCESSED_COUNTER);
     }
 
     /**
@@ -605,16 +801,27 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * created key is published into. None of the three is reachable through the {@code ItemWriter} contract,
      * which takes only a chunk, so this listener callback is the supported way to obtain them.
      *
+     * <p><strong>Declared by implementing {@link StepExecutionListener}, not by annotation, and the
+     * difference is load bearing.</strong> {@code SimpleStepBuilder} auto-registers a reader, processor or
+     * writer as a step listener when {@code StepListenerFactoryBean.isListener} recognises it, and that check
+     * succeeds two ways: the object implements a listener interface, or the object's class carries a listener
+     * annotation. The two are not equally reliable here. A writer that needs the job instance is step-scoped,
+     * step scope proxies by subclassing, and a proxy reliably presents the <em>interfaces</em> of its target
+     * while an annotation on the target's method is reached only if the check unwraps the proxy. Declaring the
+     * interface therefore makes registration a property of the type rather than of how the bean happens to be
+     * proxied - and it matches {@code StatementWriter}, which already declares it this way, so both writers now
+     * announce the same contract instead of two.
+     *
      * <p>Side effects: replaces the captured context. Idempotent per step.
      *
      * <p>Error modes: none. A {@code null} argument is stored as {@code null} and reported later, by
-     * {@link #write(Chunk)}, with the wiring remediation attached - which is a better diagnostic than failing
+     * {@link #write(Chunk)}, naming the missing wiring - which is a better diagnostic than failing
      * here, before the step name is known.
      *
      * @param execution the step execution supplied by the framework, or {@code null} if a caller supplies
      *        none
      */
-    @BeforeStep
+    @Override
     public void beforeStep(StepExecution execution) {
         this.stepExecution = execution;
     }
@@ -636,11 +843,11 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * <li><strong>Emit the object</strong>, under the guard reproduced from
      * {@code app/cbl/CBTRN02C.cbl:L562-L579}.</li>
      * <li><strong>Publish the created key</strong> into the step execution context.</li>
-     * <li><strong>Count the records.</strong></li>
+     * <li><strong>Report the records</strong> on the two instruments this path owns.</li>
      * </ol>
      *
-     * <p>Side effects: one row per item, one object per call, one counter increment per item, and one context
-     * entry. No timestamp is generated: the two 26-character timestamp fields are passed through exactly as
+     * <p>Side effects: one row per item, one object per call, two counter increments per item, and one
+     * context entry. No timestamp is generated: the two 26-character timestamp fields are passed through exactly as
      * they arrive.
      *
      * <p>Error modes: as listed on the class. Every failure is a {@code com.cardemo.exception} subtype and
@@ -669,7 +876,11 @@ public class TransactionWriter implements ItemWriter<Transaction> {
         String objectKey = writeTransactionFile(payload, execution, ordinal);
         publishObjectKey(execution, objectKey);
 
-        countRecords(items.size());
+        // Reported only after the row and the object are both durable, so neither instrument can claim work
+        // that a failure abandoned. The order matters for the same reason the legacy program counts after the
+        // write at app/cbl/CBTRN02C.cbl:L226 rather than before it.
+        metrics.countRecordsProcessed(items.size());
+        countTransactionAmounts(items);
     }
 
     /**
@@ -779,7 +990,7 @@ public class TransactionWriter implements ItemWriter<Transaction> {
         if (declaredLength > Integer.MAX_VALUE) {
             throw unloadable(null, String.format(Locale.ROOT,
                     "a chunk of %d records of %d bytes exceeds the largest array this runtime can hold; "
-                            + "reduce the configured chunk size in BatchConfig",
+                            + "reduce the chunk size configured on the owning step",
                     Integer.valueOf(items.size()), Integer.valueOf(RECORD_LENGTH)));
         }
 
@@ -857,12 +1068,27 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      *
      * <p>The pessimistic initialisation to {@code APPL_RESULT_INITIAL} is retained even though the guard
      * overwrites it, exactly as {@code :L563} is overwritten by {@code :L567} or {@code :L569}. It is
-     * reproduced control flow rather than untracked residue and is recorded in {@code DECISION_LOG.md}: its
+     * reproduced control flow rather than untracked residue: its
      * purpose in the source is that a write which neither succeeds nor raises cannot be mistaken for success.
      *
      * <p>The constants are referenced from {@code FileStatusMapper}, which already declares
      * {@code APPL_RESULT_INITIAL}, {@code APPL_AOK}, {@code APPL_EOF} and {@code APPL_FAILURE} from
      * {@code app/cbl/CBTRN02C.cbl:L142-L144}; restating them here would duplicate a published contract.
+     *
+     * <p><b>Deadline and retry, and where they come from. Finding, severity High, RESOLVED.</b> The upload is
+     * synchronous, so an unbounded call would hold the chunk transaction open for as long as the endpoint chose
+     * to stall - which on a step with a hundred chunks means a stalled emulator wedges the job rather than
+     * failing it. This method deliberately configures <b>no</b> per-call override, because a deadline written
+     * here would be a second policy that drifts from the one every other call already obeys.
+     * {@code AwsConfig.applyBoundedPolicy} installs the policy on the client itself through an
+     * {@code S3ClientCustomizer} - a 30 second whole-call deadline, a 10 second per-attempt deadline and
+     * {@code RetryMode.STANDARD}, which bounds both the attempt count and the backoff - and
+     * {@code AwsConfig.s3Template} consumes that same auto-configured {@code S3Client} rather than building
+     * one, so this upload inherits it. The finding's own remedy is "use clients configured with bounded
+     * deterministic policies", and that is the mechanism: one policy, one definition site, applied to S3, SQS
+     * and SNS alike. A timeout therefore arrives here as a {@code RuntimeException} from the SDK, is mapped to
+     * the {@code '9x'} status like any other physical failure, and abends the step exactly as
+     * {@code app/cbl/CBTRN02C.cbl:L574-L577} does.
      *
      * <p>Side effects: creates exactly one object.
      *
@@ -939,9 +1165,9 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      *
      * <p>The trailing construction is a total-function guard, not residue. {@code requireSuccess} throws for
      * every status this method can be reached with, so it is unreachable in practice; retaining it means a
-     * future relaxation of that contract could never turn an abend into a silent success. It is documented and
-     * tracked in {@code DECISION_LOG.md}, which is what Rule 1 clause B requires of a deliberately retained
-     * branch. Returning the exception rather than throwing it internally keeps the control flow explicit at
+     * future relaxation of that contract could never turn an abend into a silent success. It is documented
+     * here rather than left as unexplained residue. Returning the exception rather than throwing it
+     * internally keeps the control flow explicit at
      * the call site, which writes {@code throw abendProgram(...)}.
      *
      * <p>The message names the bucket, the object key and the operation. It deliberately carries no record
@@ -956,16 +1182,21 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     private RuntimeException abendProgram(String ioStatus, String objectKey, Throwable cause) {
         LOG.error(ABEND_DISPLAY_TEXT);
 
+        // The reason carried by the EXCEPTION keeps the bucket and the object key, because an operator holding
+        // the exception is already inside the failure and needs to know which object to look at. The reason
+        // LOGGED carries neither: see the class documentation's logging contract.
         String reason = String.format(Locale.ROOT, "%s (bucket %s, object %s, operation %s)",
                 WRITE_FAILURE_TEXT, outputBucket, objectKey, OPERATION_WRITE);
-        LOG.error(reason);
+        LOG.error("{}; logicalFile={} operation={} status={}",
+                WRITE_FAILURE_TEXT, LOGICAL_FILE, OPERATION_WRITE, ioStatus);
         fileStatusMapper.requireSuccess(ioStatus, LOGICAL_FILE, OPERATION_WRITE, cause);
 
         String message = String.format(Locale.ROOT,
                 "%s. app/cbl/CBTRN02C.cbl:L562-L579 2900-WRITE-TRANSACTION-FILE could not complete and the "
                         + "status mapper returned instead of raising, so the failure is escalated here.",
                 reason);
-        LOG.error(message);
+        LOG.error("status mapper returned on a failed {} write; logicalFile={} operation={} status={}",
+                LOGICAL_FILE, LOGICAL_FILE, OPERATION_WRITE, ioStatus);
         return new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
                 ABEND_CULPRIT, reason, message, cause);
     }
@@ -980,10 +1211,9 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * key happens to sort last.
      *
      * <p>Which generation base a posted-transaction object belongs to, among {@code SYSTRAN},
-     * {@code TRANSACT.BKUP}, {@code TRANSACT.DALY} and {@code TRANSACT.COMBINED}, is <strong>Not
-     * available</strong> from the corpus; an explicit dataset-to-prefix table would be needed and none exists
-     * at {@code 7756d89}. The configured prefix is used instead and the choice is recorded in
-     * {@code DECISION_LOG.md}.
+     * {@code TRANSACT.BKUP}, {@code TRANSACT.DALY} and {@code TRANSACT.COMBINED}, is not stated anywhere in
+     * the corpus; there is no dataset-to-prefix table. The configured prefix is used instead and that choice
+     * is labelled rather than presented as derived.
      *
      * @param execution the captured step execution
      * @param ordinal the zero-based index of the chunk's first record within the step
@@ -1006,61 +1236,108 @@ public class TransactionWriter implements ItemWriter<Transaction> {
     }
 
     /**
-     * Publishes the concrete created key into the step execution context.
+     * Publishes the concrete created key: the latest into the step execution context, and the complete ordered
+     * generation into the job execution context.
      *
-     * <p>Within one job a later step must re-read what an earlier step wrote as {@code (+1)}, so the exact key
-     * is recorded rather than left to be re-resolved as "latest" - a resolution that would race with any
-     * concurrent producer. Promotion to the job execution context, where a later step needs it, is configured
-     * by {@code BatchConfig} against {@link #OBJECT_KEY_CONTEXT_ENTRY}.
+     * <p>Within one job a later step must re-read exactly what an earlier step wrote as {@code (+1)}, so every
+     * key is recorded rather than left to be re-resolved as "latest" - a resolution that would race any
+     * concurrent producer. The job-scoped list is appended to here, by this class, so the record is complete
+     * without any external promotion listener; see {@link #OBJECT_KEYS_COUNT_ENTRY} for the finding this
+     * resolves and for the read protocol a consumer follows.
      *
-     * <p>Side effects: writes one context entry, overwriting any previous value so that the entry always names
-     * the most recently created object.
+     * <p>Side effects: writes one step-context entry, overwriting any previous value so that it always names the
+     * most recently created object, and appends two job-context entries - the new indexed key and the updated
+     * count. Performs no I/O.
      *
      * @param execution the captured step execution
      * @param objectKey the key just created
      */
     private void publishObjectKey(StepExecution execution, String objectKey) {
         execution.getExecutionContext().putString(OBJECT_KEY_CONTEXT_ENTRY, objectKey);
+
+        JobExecution jobExecution = execution.getJobExecution();
+        if (jobExecution == null) {
+            // Only reachable when a unit test builds a StepExecution without one. The step-scoped entry above
+            // is still written, so the writer stays testable, and objectKeyFor() has already refused to
+            // compose a key at all if the job instance was missing - so nothing silently lands in the wrong
+            // generation namespace.
+            return;
+        }
+
+        ExecutionContext jobContext = jobExecution.getExecutionContext();
+        int published = Math.toIntExact(jobContext.getLong(OBJECT_KEYS_COUNT_ENTRY, 0L));
+        jobContext.putString(objectKeysIndexEntry(published), objectKey);
+        jobContext.putLong(OBJECT_KEYS_COUNT_ENTRY, published + 1L);
     }
 
     /**
-     * Advances the records-processed counter once per record written.
+     * Names the job-execution entry holding the key at one index of the ordered generation.
      *
-     * <p>This is one of the four instruments that replace the end-of-run
-     * {@code DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT} of
-     * {@code app/cbl/CBTRN02C.cbl:L227}. No new instrument is introduced and no tag is attached, so no
-     * high-cardinality dimension - never a card number, an account identifier or a transaction identifier -
-     * can enter the metric namespace.
+     * <p>Static and pure, so the same rule is available to a consumer and to a test without either needing an
+     * instance. {@code Locale.ROOT} is not required because the index is appended as a plain decimal with no
+     * grouping, but {@code Integer.toString} is used explicitly rather than concatenation so the rendering
+     * cannot become locale-sensitive if the expression is ever changed.
      *
-     * <p>The counter is advanced one step at a time rather than by the batch size in a single call. The
-     * amount-taking overload of the counter accepts only an approximate binary numeric primitive, and this
-     * class holds monetary and count values as exact types; converting to an approximate type purely to move a
-     * meter is not a trade worth making, and the security gate forbids approximate arithmetic on financial
-     * fields outright. The loop is therefore the exact-arithmetic way to advance by N, and its cost is one
-     * atomic add per record.
-     *
-     * @param written the number of records written, never negative
+     * @param index the zero-based position in creation order; must not be negative
+     * @return the context entry name, never {@code null}
+     * @throws IllegalArgumentException if {@code index} is negative, which would name an entry no writer emits
      */
-    private void countRecords(int written) {
-        for (int index = 0; index < written; index++) {
-            recordsProcessedCounter.increment();
+    public static String objectKeysIndexEntry(int index) {
+        if (index < 0) {
+            throw new IllegalArgumentException("index must not be negative but was " + index);
+        }
+        return OBJECT_KEYS_INDEX_ENTRY_PREFIX + Integer.toString(index);
+    }
+
+    /**
+     * Reports every posted amount to the signed total, one call per record.
+     *
+     * <p>This is the fourth of the four instruments that replace the end-of-run {@code DISPLAY} statements of
+     * {@code app/cbl/CBTRN02C.cbl:L226-L227}, and this method is the caller it was missing.
+     * {@code MetricsConfig} accumulates the values exactly, as {@link BigDecimal}, and <b>takes no absolute
+     * value</b>: {@code app/cbl/CBTRN02C.cbl:L547-L552} adds a negative amount to the cycle <em>debit</em>
+     * accumulator, so the debit accumulator legitimately holds negative values, and
+     * {@code app/data/ASCII/dailytran.txt} carries both the <code>&#123;</code> and <code>&#125;</code>
+     * overpunch characters, which decode to {@code +0} and {@code -0}. A signed stream reported through a
+     * monotonic counter would discard every debit; the instrument is a gauge over an exact accumulator for that
+     * reason, and this method must not normalise a sign on its way there.
+     *
+     * <p>Reported per record rather than per chunk sum, deliberately. Summing here would be exact - these are
+     * {@code BigDecimal} values - but it would move the arithmetic that produces the reported figure out of the
+     * one class that owns monetary accumulation, and the amounts are already in hand one at a time. The
+     * accumulator does the adding.
+     *
+     * <p>Side effects: advances {@link MetricsConfig#METRIC_TRANSACTION_AMOUNT_TOTAL}. No I/O and no logging.
+     *
+     * @param items the chunk just written, never {@code null}
+     */
+    private void countTransactionAmounts(List<? extends Transaction> items) {
+        for (Transaction item : items) {
+            BigDecimal amount = item == null ? null : item.getAmount();
+            if (amount != null) {
+                metrics.countTransactionAmount(amount);
+            }
         }
     }
 
     /**
-     * Returns the captured step execution, or fails with the wiring remediation attached.
+     * Returns the captured step execution, or fails naming the missing wiring.
      *
      * @return the step execution, never {@code null}
-     * @throws FatalProcessingException if no step execution was captured
+     * @throws FatalProcessingException if no step execution has been captured, which means the writer was
+     *         used outside a step and no listener callback ever reached it
      */
     private StepExecution requireStepContext() {
         StepExecution captured = this.stepExecution;
         if (captured == null) {
             String reason = "no step execution was captured before the first write";
             String message = reason
-                    + ". This writer must be registered on a Spring Batch step so that the framework "
-                    + "invokes its listener callback; a test must call beforeStep first. Without it there "
-                    + "is no job instance to scope the object key on.";
+                    + ". This writer must be registered on a Spring Batch step so that the framework calls "
+                    + "beforeStep on it; a unit test that uses the class directly must call beforeStep with "
+                    + "a StepExecution before writing. Without it there is no job instance to scope the "
+                    + "object key on. It is reported here, at the first write, rather than at construction, "
+                    + "because at construction the step name is not yet known and the diagnostic would be "
+                    + "the poorer for it.";
             LOG.error(message);
             throw new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
                     ABEND_CULPRIT, reason, message);
@@ -1075,7 +1352,7 @@ public class TransactionWriter implements ItemWriter<Transaction> {
      * A driver's constraint-violation text commonly embeds the offending value, which on this record could be a
      * card number; echoing it would put that value into a log line. This message names identifiers only.
      *
-     * <p>Which item of a batched flush collided is <strong>Not available</strong> from any portable field of
+     * <p>Which item of a batched flush collided cannot be determined from any portable field of
      * Spring's exception; a driver-independent accessor for the violated key would be needed. The exact
      * identifier is therefore reported when the chunk holds a single item, and the candidate identifiers
      * otherwise.
@@ -1097,7 +1374,9 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                         + "the existing row, and do not substitute a sequence. Set the chunk size to 1 to "
                         + "attribute a collision exactly.",
                 LOGICAL_FILE, RELATION, candidateIdentifiers(items));
-        LOG.error(message);
+        LOG.error("duplicate TRAN-ID rejected the chunk insert; logicalFile={} relation={} operation={} "
+                        + "chunkSize={} reason={}",
+                LOGICAL_FILE, RELATION, OPERATION_WRITE, Integer.valueOf(items.size()), REASON_DUPLICATE_KEY);
         return new DuplicateRecordException(message, LOGICAL_FILE, collidingKey, cause);
     }
 
@@ -1122,7 +1401,10 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                         + "it is one of the referential or check constraints that V1__create_schema.sql "
                         + "declares on this relation. The retained cause carries the driver's own detail.",
                 Integer.valueOf(items.size()), RELATION, candidateIdentifiers(items));
-        LOG.error(message);
+        LOG.error("a constraint violation rejected the chunk insert; logicalFile={} relation={} operation={} "
+                        + "chunkSize={} reason={}",
+                LOGICAL_FILE, RELATION, OPERATION_WRITE, Integer.valueOf(items.size()),
+                REASON_CONSTRAINT_VIOLATION);
         return new DataIntegrityException(message, null, RELATION, cause);
     }
 
@@ -1142,7 +1424,10 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                         + "'00' as fatal, and the condition is neither a duplicate key nor a constraint "
                         + "violation, so it abends.",
                 reason);
-        LOG.error(message);
+        LOG.error("an unexpected store failure rejected the chunk insert; logicalFile={} relation={} "
+                        + "operation={} chunkSize={} reason={}",
+                LOGICAL_FILE, RELATION, OPERATION_WRITE, Integer.valueOf(items.size()),
+                REASON_UNEXPECTED_STORE_FAILURE);
         return new FatalProcessingException(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE),
                 ABEND_CULPRIT, reason, message, cause);
     }
@@ -1181,17 +1466,57 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                     field, Integer.valueOf(text.length()), Integer.valueOf(width)));
         }
         for (int index = 0; index < text.length(); index++) {
-            if (text.charAt(index) > MAX_ENCODABLE_CHAR) {
+            char candidate = text.charAt(index);
+            if (candidate > MAX_ENCODABLE_CHAR) {
                 throw unloadable(transactionId, String.format(Locale.ROOT,
                         "%s holds a character at position %d that %s cannot represent in a single byte, so "
                                 + "the record could not be emitted without substituting it",
                         field, Integer.valueOf(index + 1), FIXED_WIDTH_CHARSET.name()));
+            }
+            if (!isPermittedCharacter(candidate)) {
+                // Wording deliberately identical to RejectWriter's: one rule stated one way across both
+                // writers, so an operator who has seen the diagnostic once recognises it anywhere and a test
+                // can assert the contract in one place rather than per class.
+                throw unloadable(transactionId, String.format(Locale.ROOT,
+                        "%s holds a character at position %d (code point U+%04X) outside the permitted set %s. "
+                                + "The stream is unblocked and undelimited, so a consumer finds record "
+                                + "boundaries by counting %d bytes; a control byte inside a picture-clause "
+                                + "field would let a line-oriented reader see a boundary this format does not "
+                                + "have",
+                        field, Integer.valueOf(index + 1), Integer.valueOf(candidate),
+                        PERMITTED_CHARACTER_SET_DESCRIPTION, Integer.valueOf(RECORD_LENGTH)));
             }
         }
         image.append(text);
         for (int index = text.length(); index < width; index++) {
             image.append(' ');
         }
+    }
+
+    /**
+     * Decides whether one code point belongs to the permitted single-byte set of a {@code PIC X(n)} field.
+     *
+     * <p>Expressed as a <b>positive</b> rule: everything from the space to the tilde, plus everything from the
+     * no-break space to the end of the ISO-8859-1 range. Everything else in the encodable range is a control
+     * character - the C0 block below the space, {@code DEL}, or the C1 block - and is refused. Writing the rule
+     * this way rather than as a list of forbidden code points is deliberate: a deny-list of controls is a fixed
+     * enumeration that quietly stops being exhaustive, whereas a permitted range cannot admit something nobody
+     * thought of. See {@link #PERMITTED_CHARACTER_SET_DESCRIPTION} for the injection finding this closes.
+     *
+     * <p>Static and pure, so it can be exercised across the whole code-point range by a test without an
+     * instance and without composing a record.
+     *
+     * @param candidate the code point to test
+     * @return {@code true} when the character may appear in a fixed-width alphanumeric field
+     */
+    private static boolean isPermittedCharacter(char candidate) {
+        if (candidate < MIN_PERMITTED_CHAR) {
+            return false;
+        }
+        if (candidate == DELETE_CHAR) {
+            return false;
+        }
+        return candidate < FIRST_C1_CHAR || candidate > LAST_C1_CHAR;
     }
 
     /**
@@ -1325,7 +1650,8 @@ public class TransactionWriter implements ItemWriter<Transaction> {
                         + "RECORDSIZE(350 350); app/cbl/CBTRN02C.cbl:L562-L579 "
                         + "2900-WRITE-TRANSACTION-FILE.",
                 renderKey(transactionId), detail);
-        LOG.error(message);
+        LOG.error("the fixed-width encoder rejected a record; logicalFile={} relation={} operation={} reason={}",
+                LOGICAL_FILE, RELATION, OPERATION_WRITE, REASON_UNENCODABLE_RECORD);
         return new DataIntegrityException(message, null, RELATION, null);
     }
 

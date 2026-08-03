@@ -95,7 +95,7 @@ import java.util.Objects;
  *       Only the <em>name</em> differs — both declare {@code PIC X(10)}.</li>
  *   <li>{@code :L25}, the trailing version comment, differs by one second
  *       (23:16:00 CDT versus 23:15:59 CDT).</li>
- * </ol>
+ *   </ol>
  * <p>
  * The raw {@code diff} runs to 42 lines, every one of which is tab-versus-space
  * indentation. Both groups are {@code 01 CUSTOMER-RECORD}, both total 500 bytes, and
@@ -151,32 +151,30 @@ import java.util.Objects;
  * {@code BigDecimal} — and, in common with every entity in this package, no IEEE 754
  * binary numeric type of either width anywhere, which the security-audit gate asserts
  * by inspection across the whole tree. {@code ficoCreditScore} is a code rather than an
- * amount and is therefore text; see the Medium finding below.
+ * amount and is therefore text; see the numeric-declaration note below.
  * </p>
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>Mapping decisions that must not be undone</h2>
  * <dl>
- *   <dt><strong>Blocker — a {@code String} attribute maps to JDBC {@code VARCHAR} by
+ *   <dt><strong>A {@code String} attribute maps to JDBC {@code VARCHAR} by
  *       default, and schema validation rejects that against a {@code CHAR}
  *       column</strong></dt>
- *   <dd>Found by starting this mapping against a live PostgreSQL 16.10, not by
- *       compiling it: every unit assertion and every data round-trip passed while
- *       application startup could not have succeeded at all. The provider derives the
- *       expected JDBC type from the Java type, so a {@code String} resolves to
- *       {@code VARCHAR}, and {@code columnDefinition} steers only the generated DDL and
- *       not that expectation. PostgreSQL reports a {@code CHAR(n)} column as
- *       {@code bpchar}, which is {@code Types.CHAR}, so validation failed on the first
- *       text column with "wrong column type encountered in column
+ *   <dd>This is a startup concern rather than a compile-time one: unit assertions and
+ *       data round-trips all pass while application startup cannot succeed at all. The
+ *       provider derives the expected JDBC type from the Java type, so a {@code String}
+ *       resolves to {@code VARCHAR}, and {@code columnDefinition} steers only the
+ *       generated DDL and not that expectation. PostgreSQL reports a {@code CHAR(n)}
+ *       column as {@code bpchar}, which is {@code Types.CHAR}, so validation fails on the
+ *       first text column with "wrong column type encountered in column
  *       [cust_addr_country_cd] in table [customer]; found [bpchar (Types#CHAR)], but
  *       expecting [char(3) (Types#VARCHAR)]". Because {@code ddl-auto} is
- *       {@code validate} in every profile, this aborts every boot.
- *       <em>Remediation, already applied:</em> declare
+ *       {@code validate} in every profile, that aborts every boot. The fix is to declare
  *       {@code @JdbcTypeCode(SqlTypes.CHAR)} on all seventeen text columns alongside
  *       {@code columnDefinition}. Widening the columns to {@code VARCHAR} would also
- *       have silenced it and was rejected, because that destroys the blank padding on
- *       which fixed-width re-emission depends. A unit assertion now pins the annotation
+ *       silence it and is rejected, because that destroys the blank padding on
+ *       which fixed-width re-emission depends. A unit assertion pins the annotation
  *       on all seventeen text columns, and its absence on both numeric columns.</dd>
- *   <dt><strong>High — this record is the personally-identifiable-information
+ *   <dt><strong>This record is the personally-identifiable-information
  *       epicentre of the application, so {@code toString} exposes none of it</strong></dt>
  *   <dd>Thirteen of the eighteen fields are personal data: the three name fields, the
  *       three address lines, the postal code, both telephone numbers, the social
@@ -189,11 +187,11 @@ import java.util.Objects;
  *       This class therefore restricts {@code toString} to {@code customerId} and
  *       {@code version}, and offers no wider alternative. See the method's own
  *       documentation for the standing prohibition.</dd>
- *   <dt><strong>High — {@code dateOfBirth} is ten-character dash-separated text, and
+ *   <dt><strong>{@code dateOfBirth} is ten-character dash-separated text, and
  *       the update-request snapshot is a different width</strong></dt>
- *   <dd>The live record is {@code PIC X(10)}: row 1 of
- *       {@code app/data/ASCII/custdata.txt} holds {@code 1961-06-08} at bytes 309-318,
- *       and a shape census across all 50 rows finds the dash-separated form and nothing
+ *   <dd>The live record is {@code PIC X(10)}: every row of
+ *       {@code app/data/ASCII/custdata.txt} holds a dash-separated date at bytes 309-318,
+ *       and a shape census across all 50 rows finds that form and nothing
  *       else. The account-update snapshot, however, is eight characters:
  *       {@code app/cbl/COACTUPC.cbl:L746} declares
  *       {@code ACUP-OLD-CUST-DOB-YYYY-MM-DD PIC X(08)} with a {@code REDEFINES} into
@@ -205,14 +203,14 @@ import java.util.Objects;
  *       or stripping the separators, would silently corrupt the stored representation;
  *       comparing the two whole would report a change on every single request and make
  *       the update endpoint permanently unusable.</dd>
- *   <dt><strong>Medium — two {@code PIC 9(n)} fields are mapped as text, while a third
+ *   <dt><strong>Two {@code PIC 9(n)} fields are mapped as text, while a third
  *       stays numeric</strong></dt>
  *   <dd>{@code CUST-SSN} and {@code CUST-FICO-CREDIT-SCORE} are declared numeric in the
  *       copybook but carry significant leading zeros in the fixture, so they are
  *       {@code String}. {@code CUST-ID} is also declared numeric and does stay
  *       numeric. The asymmetry is deliberate; both halves are justified on the fields
  *       themselves.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Behaviour that deliberately lives elsewhere</h2>
  * <ul>
@@ -240,7 +238,7 @@ import java.util.Objects;
  *   <li><strong>Business-field change detection.</strong> See the {@code version}
  *       field's documentation — the optimistic-locking column is necessary but not
  *       sufficient.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Design decisions</h2>
  * <ul>
@@ -300,9 +298,6 @@ import java.util.Objects;
  * assert the 500-byte width arithmetic, the nine-byte key, that {@code ssn},
  * {@code ficoCreditScore} and {@code dateOfBirth} are {@code String}, and that
  * {@code toString} discloses none of the thirteen personal fields.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code CustomerTest}
- * exists, so that is the coverage owed rather than coverage that runs.
- * </p>
  *
  * <h2>Key configuration and defaults</h2>
  * <p>
@@ -342,23 +337,19 @@ import java.util.Objects;
  *   <li><em>Personal data appears in the logs.</em> {@code toString} is not the
  *       source — it exposes only the identifier and the version. Look for a caller
  *       logging individual getters.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Schema reconciliation, and what is still not available</h2>
+ * <h2>The schema this mapping requires</h2>
  *
- * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
- * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
- * It declares {@code CREATE TABLE customer} with 19 columns whose names are identical, as a
- * set, to the 19 {@code @Column(name = ...)} declarations below, verified by direct comparison.
- * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
- * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, any
- * divergence between that migration and this mapping would fail application-context startup
- * outright rather than going unnoticed. What remains <strong>not available</strong> is
- * {@code V2__create_indexes.sql}, {@code V3__seed_data.sql} and all four {@code application*.yml}
- * profiles, so that {@code validate} behaviour is the mandated configuration rather than an observed one.
+ * <p>The mapping is reconciled against real DDL rather than asserted.
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares 11 tables, 10 named
+ * foreign keys, 5 CHECK constraints and 4 {@code version} columns, and among them
+ * {@code CREATE TABLE customer} with 19 columns whose names are identical, as a
+ * set, to the 19 {@code @Column(name = ...)} declarations below.
+ * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile, any
+ * divergence between that migration and this mapping fails application-context startup
+ * outright rather than going unnoticed.
  * </p>
- * <p>
  * What that migration declares for this table, and what this mapping asserts, is table
  * {@code customer} with
  * {@code cust_id NUMERIC(9) PRIMARY KEY}, {@code cust_first_name CHAR(25) NOT NULL},
@@ -371,7 +362,7 @@ import java.util.Objects;
  * {@code cust_dob_yyyy_mm_dd CHAR(10) NOT NULL}, {@code cust_eft_account_id CHAR(10) NOT NULL},
  * {@code cust_pri_card_holder_ind CHAR(1) NOT NULL},
  * {@code cust_fico_credit_score CHAR(3) NOT NULL} and {@code version BIGINT NOT NULL}.
- * </p>
+ *
  * <p>
  * Two scope facts constrain that migration and are recorded here so this entity's
  * expectations are unambiguous. {@code V1} creates exactly eleven tables, with ten
@@ -506,15 +497,14 @@ public class Customer {
      *
      * <p>
      * Mapped numerically as {@code Long} over {@code NUMERIC(9)}, and deliberately so,
-     * even though row 1 of {@code app/data/ASCII/custdata.txt} stores it as
-     * {@code 000000001}. This is the opposite of the decision taken for {@code ssn} and
+     * Mapped numerically as {@code Long} over {@code NUMERIC(9)}, and deliberately so,
+     * even though the fixture stores it zero-padded to nine digits.
+     * This is the opposite of the decision taken for {@code ssn} and
      * {@code ficoCreditScore}, and the asymmetry is intentional rather than an
-     * oversight a reviewer should "fix": for an identifier the zero padding is purely a
+     * oversight to "fix": for an identifier the zero padding is purely a
      * fixed-width <em>emission</em> concern, discharged by the batch writers when they
      * rebuild the 500-byte image, and the composite-key types in the sibling
      * {@code key} package already fix account identifiers as {@code Long}. Making this
-     * field text instead would fracture that convention and force every key comparison
-     * through string handling. For {@code ssn} and {@code ficoCreditScore} no such
      * convention applies and the leading zero is part of the value itself.
      * </p>
      *

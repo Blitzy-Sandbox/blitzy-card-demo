@@ -137,14 +137,14 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       message number and result text including deliberate trailing spaces; eight are reached from
  *       real input; the ninth is reached through the public resolve path and its unreachability from
  *       input is proved structurally rather than asserted.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>3. How to build, run and test</h2>
  *
  * <pre>
- * mvn -B -o test -Dtest=DateValidationServiceSweepTest   # this class alone
- * mvn -B clean test                                 # the whole unit tier
- * mvn -B clean verify                               # unit tier plus coverage and dependency gates
+ * ./mvnw -B -ntp -o test -Dtest=DateValidationServiceSweepTest   # this class alone
+ * ./mvnw -B -ntp clean test                                 # the whole unit tier
+ * ./mvnw -B -ntp clean verify                               # unit tier plus coverage and dependency gates
  * </pre>
  *
  * <p>{@code maven-surefire-plugin} collects {@code **}{@code /*Test.java} outside the
@@ -177,7 +177,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *       accepted where the expectation is rejection. Cause: the delimiter precondition has been
  *       dropped, so omission is being honoured for a picture that cannot disambiguate it. Remedy: the
  *       permission is conditional on the picture carrying delimiters.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("DateValidationService: the documented CEEDAYS input domain")
 class DateValidationServiceSweepTest {

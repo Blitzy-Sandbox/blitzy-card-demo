@@ -151,7 +151,7 @@
  *       {@code BUFSPACE} and {@code CISIZE} differ from the rest, at 24576 and 8192), corroborated by
  *       {@code app/jcl/DUSRSECJ.jcl:L65-L66 KEYS(8,0) RECORDSIZE(80,80)}. Layout
  *       {@code app/cpy/CSUSR01Y.cpy}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Note the delimiter inconsistency preserved in those citations: {@code ACCTFILE.jcl},
  * {@code CARDFILE.jcl}, {@code TCATBALF.jcl}, {@code DISCGRP.jcl}, {@code TRANTYPE.jcl} and
@@ -191,13 +191,12 @@
  * therefore given twice.
  *
  * <ul>
- *   <li><strong>{@code CARDDATA.VSAM.AIX}</strong> — {@code KEYLEN 11}
- *       ({@code app/catlg/LISTCAT.txt:L281}), {@code RKP 5} ({@code :L282}), <strong>{@code AXRKP 16}</strong>
- *       ({@code :L283}), and {@code NONUNIQKEY} ({@code :L285}). Corroborated by
- *       {@code app/jcl/CARDFILE.jcl:L83-L85}, which declares
+ *   <li><strong>{@code CARDDATA.VSAM.AIX}</strong> — {@code KEYLEN 11} ({@code app/catlg/LISTCAT.txt:L281}),
+ *       {@code RKP 5} ({@code :L282}), <strong>{@code AXRKP 16}</strong> ({@code :L283}), and {@code NONUNIQKEY}
+ *       ({@code :L285}). Corroborated by {@code app/jcl/CARDFILE.jcl:L83-L85}, which declares
  *       {@code DEFINE ALTERNATEINDEX … RELATE(…CARDDATA.VSAM.KSDS) KEYS(11 16)}. Zero-based offset 16 is
- *       <strong>one-based record byte 17</strong>, where {@code CARD-ACCT-ID PIC 9(11)} begins and runs to
- *       byte 27. Realised as {@link CardRepository}'s account finder,
+ *       <strong>one-based record byte 17</strong>, where {@code CARD-ACCT-ID PIC 9(11)} begins and runs to byte 27.
+ *       Realised as {@link CardRepository}'s account finder,
  *       {@code findByAccountIdOrderByCardNumberAsc(Long, Pageable)}, returning {@code Page}.</li>
  *   <li><strong>{@code CARDXREF.VSAM.AIX}</strong> — {@code KEYLEN 11}
  *       ({@code app/catlg/LISTCAT.txt:L482}), {@code RKP 5} ({@code :L485}), <strong>{@code AXRKP 25}</strong>
@@ -206,7 +205,8 @@
  *       {@code DEFINE ALTERNATEINDEX … RELATE(…CARDXREF.VSAM.KSDS) KEYS(11,25)}. Zero-based 25 is
  *       <strong>one-based byte 26</strong>, where {@code XREF-ACCT-ID PIC 9(11)} begins and runs to byte 36.
  *       Realised as {@link CardCrossReferenceRepository}'s account finder,
- *       {@code findByAccountIdOrderByCardNumberAsc(Long)}, returning {@code List}. Two points of care here:
+ *       {@code findFirstByAccountIdOrderByCardNumberAsc(Long)}, returning {@code Optional}. Two points of
+ *       care here:
  *       the migration specification body omits this offset entirely, so <strong>25 is the verified value</strong>
  *       taken from the catalogue and the IDCAMS card rather than from prose, and it is logged as a
  *       {@code DECISION_LOG.md} discrepancy; and the {@code RKP} line sits at {@code :L485} rather than
@@ -221,7 +221,7 @@
  *       and runs to byte 330 ({@code app/cpy/CVTRA05Y.cpy:L17}). Realised as
  *       {@link TransactionRepository}'s processing-timestamp finder,
  *       {@code findByProcessingDateRangeOrderByCardNumberAsc(String, String)}, returning {@code List}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The count is closed, not open-ended: {@code grep -n AXRKP app/catlg/LISTCAT.txt} returns
  * <strong>exactly three</strong> hits, matching the {@code AIX 3} and {@code PATH 3} figures in the summary
@@ -293,7 +293,7 @@
  *   <li><strong>User list: 10.</strong> {@code app/cbl/COUSR00C.cbl:L57} declares
  *       {@code 02 USER-REC OCCURS 10 TIMES.} Consumed through {@link UserSecurityRepository}'s
  *       {@code findAllByOrderBySecUsrIdAsc(Pageable)}.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Three behavioural control paths, each documented in the interface that owns it</h3>
  *
@@ -316,10 +316,10 @@
  *       {@link DisclosureGroupRepository} exposes {@code findDefaultGroupRate(String, Integer)} as a
  *       deliberately separate second query, because {@code app/cbl/CBACT04C.cbl} performs two distinct reads
  *       and treats their failures differently.</li>
- * </ul>
+ *   </ul>
  *
 
- * <h2>How to run/build/test</h2>
+ * <h2>How to run, build and test</h2>
  *
  * <p>There is nothing to run in this package: it declares eleven interfaces and no {@code main} method, no
  * bean with behaviour of its own and no entry point. Spring Data generates the implementations at context
@@ -342,25 +342,33 @@
  *       <strong>Maven 3.9.11</strong> ({@code requireMavenVersion [3.9.11,)}). Maven 4 is deliberately not
  *       used: the plugin ecosystem this build depends on is validated against the 3.9 line.</li>
  *   <li><strong>{@code maven-compiler-plugin:3.14.1}</strong> compiles with
- *       <strong>{@code -Xlint:all -Werror}</strong> and {@code -parameters}. Every warning is an error, so an
- *       unused import, a raw type, an unchecked cast, a use of deprecated API, a switch fall-through or a
- *       missing {@code serialVersionUID} is a <strong>hard build failure</strong>. That is why this file
- *       declares <strong>no import and no annotation</strong>: it needs neither, and an unused one would stop
- *       the build.</li>
+ *       <strong>{@code -Xlint:all -Werror}</strong> and {@code -parameters}. Every warning {@code javac}
+ *       emits is an error, so a raw type, an unchecked cast, a use of deprecated API, a switch fall-through,
+ *       a dangling documentation comment or a missing {@code serialVersionUID} is a <strong>hard build
+ *       failure</strong>. An unused import is <em>not</em> among them - {@code javac} 25 publishes no
+ *       {@code unused} lint key - so that prohibition is review-enforced. That is why this file declares
+ *       <strong>no import and no annotation</strong>: it needs neither, and an unused one would be a Rule 1
+ *       Clause B defect even though the build would not report it.</li>
  *   <li><strong>{@code jacoco-maven-plugin}</strong> enforces a <strong>0.80 LINE {@code COVEREDRATIO}
- *       floor</strong> at {@code verify}, with no exclusions and no getter-only padding. The pinned version
- *       is <strong>0.8.13</strong>, and the reason it is not the 0.8.12 named in the migration requirement is
- *       recorded in {@code pom.xml} and in {@code DECISION_LOG.md}: JaCoCo 0.8.12 cannot read the class files
- *       this project produces. Java 25 emits <strong>class file major version 69</strong>, the ASM build
- *       inside 0.8.12 rejects it outright, and the report goal then fails before any coverage figure is
- *       computed — the effect is not a lenient gate but <em>no gate at all</em>. Measured on this toolchain,
- *       0.8.12 fails, 0.8.13 succeeds and 0.8.14 also succeeds, so 0.8.13 is chosen as the smallest viable
- *       increment: it keeps the instruction's preference for the lower version and avoids the 0.8.14 figure
- *       that the requirement explicitly superseded. Classified <strong>Blocker</strong>, since the alternative
- *       is a {@code verify} phase that can never exit zero.</li>
+ *       floor</strong> at {@code verify}, with no exclusions and no getter-only padding. The pinned version is
+ *       <strong>0.8.12</strong> - the version the migration requirement names - and it is <strong>not</strong>
+ *       raised. An earlier revision of this entry said it had been raised to 0.8.13 because "JaCoCo 0.8.12
+ *       cannot read the class files this project produces"; the symptom was real and the attribution was
+ *       wrong, so the claim is withdrawn. Java 25 emits <strong>class file major version 69</strong>, and the
+ *       component that rejects it is <strong>ASM</strong>: the string
+ *       {@code "Unsupported class file major version"} occurs on the plugin classpath only inside
+ *       {@code org/objectweb/asm/ClassReader.class} and in no {@code org.jacoco} artefact at all. Because a
+ *       plugin classpath is overridable, the pin stays literal and only the reader moves - the plugin
+ *       declaration raises {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to
+ *       <strong>9.9</strong> and the runtime agent to the matching <strong>0.8.14</strong> build. Both halves
+ *       are required: overriding {@code org.jacoco.core} and {@code org.jacoco.report} alone leaves ASM at 9.7
+ *       and fails identically, which was measured rather than assumed. Classified <strong>Blocker</strong>
+ *       without the override, since the alternative is a {@code verify} phase that can never exit zero. The
+ *       divergence is <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>, which does not
+ *       exist at this commit; the measurement itself is recorded beside the property in {@code pom.xml}.</li>
  *   <li><strong>{@code org.owasp:dependency-check-maven:12.1.0}</strong> supplies the vulnerability scan
  *       behind the security gate.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Test</h3>
  *
@@ -388,7 +396,7 @@
  *       and {@code testcontainers-junit-jupiter}. The bare 1.x identifiers {@code postgresql},
  *       {@code localstack} and {@code junit-jupiter} <strong>do not exist</strong> at that version and fail
  *       resolution outright.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Overriding without renaming resolves artefacts that do not exist; renaming without overriding resolves
  * the wrong version. Severity <strong>Blocker</strong>. A related consequence of {@code -Werror} applies to
@@ -396,21 +404,24 @@
  * {@code org.testcontainers.postgresql.PostgreSQLContainer}, because the legacy
  * {@code org.testcontainers.containers.*} classes are deprecated at 2.0.3 and a deprecation warning is fatal.
  *
- * <h3>Toolchain actually present in this environment</h3>
+ * <h3>Toolchain prerequisite</h3>
  *
- * <p>Measured rather than assumed, so the statement can be relied on: {@code java} and {@code javac} report
- * OpenJDK <strong>25.0.3</strong>, {@code mvn} reports Apache Maven <strong>3.9.11</strong>, and
- * <strong>Docker Engine 29.7.0 with {@code docker compose} v5.3.1 is available</strong> and is what
- * provisions PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana. The host toolchain is activated by
- * sourcing {@code /etc/profile.d/10-carddemo-toolchain.sh}. Where a host JDK is not provisioned, the identical
- * build runs inside the pinned Java 25 and Maven 3.9.11 container image with the repository mounted, and
- * produces the same result because every plugin and every non-managed dependency version is pinned. Any claim
- * that the Java toolchain or the container runtime is absent is <strong>stale and must not be repeated</strong>;
- * the container runtime in particular is present, so the Testcontainers-backed tier for this package is
- * executable rather than blocked.
+ * <p>The prerequisite is stated as a capability, never as a host path or a measured version: JDK 25 on
+ * {@code PATH} with {@code JAVA_HOME} set, however the host provides it, Maven from the pinned wrapper, and a
+ * reachable container runtime for the Testcontainers-backed tier. No file under {@code /etc/profile.d} is part
+ * of this repository's contract - that is a property of one machine image - and the repository's own contract
+ * is {@code .env} plus {@code ./mvnw}, with {@code .env.example} documenting every variable. Where a host JDK
+ * is not provisioned, the identical build runs inside the pinned Java 25 and Maven 3.9.11 container image with
+ * the repository mounted and produces the same result, because every plugin and every non-managed dependency
+ * version is pinned.
+ *
+ * <p>The measured readings that used to be restated here - toolchain versions and container-runtime
+ * availability - are deliberately not duplicated in this Javadoc comment. The authoritative dated inventory is
+ * section 0.4.5.1 of {@code docs/technical-specifications.md}; re-measure against that section rather than
+ * quoting this file.
  *
 
- * <h2>Key configs and defaults</h2>
+ * <h2>Key configuration and defaults</h2>
  *
  * <p>No type in this package reads configuration itself. There is no {@code @ConfigurationProperties} class
  * here, no {@code @Value} injection, no {@code Environment} lookup, and — by package rule — no direct
@@ -419,79 +430,74 @@
  * permitted to assert. Each is a real key of {@code src/main/resources/application*.yml}; none is invented.
  *
  * <ul>
- *   <li><strong>{@code spring.jpa.hibernate.ddl-auto: validate} in every profile</strong> — base,
- *       {@code local}, {@code test} and {@code prod} alike; never {@code create}, {@code update} or
- *       {@code create-drop}. <strong>This is the single most important sentence in this file: every derived
- *       property name, column name, SQL type and precision asserted by the eleven interfaces must align with
- *       {@code V1__create_schema.sql} and {@code V2__create_indexes.sql}, or the Spring application context
- *       fails to start outright.</strong> There is no partial-success mode and no warning-only mode. A
- *       misspelled property in a derived finder is not a latent bug that shows up under load; it is a boot
- *       failure on the first startup after the change.</li>
- *   <li><strong>{@code spring.jpa.open-in-view: false}</strong> — the persistence context does not span the
- *       web request, so nothing lazily loads outside a transaction. The obligation this places on the
- *       package is concrete: a finder must return results already initialised for what its caller needs,
- *       rather than relying on a session that will not be open when the serialiser runs.</li>
+ *   <li><strong>{@code spring.jpa.hibernate.ddl-auto: validate} in every profile</strong> — base, {@code local},
+ *       {@code test} and {@code prod} alike; never {@code create}, {@code update} or {@code create-drop}.
+ *       <strong>This is the single most important sentence in this file: every derived property name, column name,
+ *       SQL type and precision asserted by the eleven interfaces must align with {@code V1__create_schema.sql} and
+ *       {@code V2__create_indexes.sql}, or the Spring application context fails to start outright.</strong> There is
+ *       no partial-success mode and no warning-only mode. A misspelled property in a derived finder is not a latent
+ *       bug that shows up under load; it is a boot failure on the first startup after the change.</li>
+ *   <li><strong>{@code spring.jpa.open-in-view: false}</strong> — the persistence context does not span the web
+ *       request, so nothing lazily loads outside a transaction. The obligation this places on the package is
+ *       concrete: a finder must return results already initialised for what its caller needs, rather than relying on
+ *       a session that will not be open when the serialiser runs.</li>
  *   <li><strong>{@code spring.jpa.show-sql: false}, and no Hibernate SQL or bind-parameter logging in any
- *       profile</strong> — not in {@code prod}, and not in {@code local} or {@code test} either. The rows
- *       these interfaces carry are full of personal data: {@code CUST-SSN PIC 9(09)}
- *       ({@code app/cpy/CVCUS01Y.cpy:L17}), two telephone numbers ({@code :L15-L16}), a government-issued
- *       identifier ({@code :L18}), a date of birth ({@code :L19}), plus card numbers, electronic funds
- *       account identifiers and a BCrypt password-hash column. Bind-parameter logging would print all of it
- *       in clear. The masking configured in {@code logback-spring.xml} is the <em>secondary</em> defence; the
- *       <em>primary</em> defence is never selecting or returning what is not needed, which is a design
- *       obligation on the finders in this package.</li>
- *   <li><strong>Hibernate's JDBC time zone is UTC — but the timestamp columns are text.</strong>
- *       {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are {@code PIC X(26)}
- *       ({@code app/cpy/CVTRA05Y.cpy:L16-L17}) and are mapped as {@code CHAR(26)} character columns, never as
- *       a temporal type. The time-zone setting therefore does not touch them, and the processing-timestamp
- *       finder is <strong>lexical over {@code CHAR(26)}</strong> — it compares the leading ten characters as
- *       {@code String}, exactly as {@code app/proc/TRANREPT.prc:L40} declares
- *       {@code TRAN-PROC-DT,305,10,CH} and {@code :L45-L46} applies it with an inclusive
- *       {@code GE}/{@code LE} pair.</li>
+ *       profile</strong> — not in {@code prod}, and not in {@code local} or {@code test} either. The rows these
+ *       interfaces carry are full of personal data: {@code CUST-SSN PIC 9(09)} ({@code app/cpy/CVCUS01Y.cpy:L17}),
+ *       two telephone numbers ({@code :L15-L16}), a government-issued identifier ({@code :L18}), a date of birth
+ *       ({@code :L19}), plus card numbers, electronic funds account identifiers and a BCrypt password-hash column.
+ *       Bind-parameter logging would print all of it in clear. The masking configured in {@code logback-spring.xml}
+ *       is the <em>secondary</em> defence; the <em>primary</em> defence is never selecting or returning what is not
+ *       needed, which is a design obligation on the finders in this package.</li>
+ *   <li><strong>Hibernate's JDBC time zone is UTC — but the timestamp columns are text.</strong> {@code TRAN-ORIG-TS}
+ *       and {@code TRAN-PROC-TS} are {@code PIC X(26)} ({@code app/cpy/CVTRA05Y.cpy:L16-L17}) and are mapped as
+ *       {@code CHAR(26)} character columns, never as a temporal type. The time-zone setting therefore does not touch
+ *       them, and the processing-timestamp finder is <strong>lexical over {@code CHAR(26)}</strong> — it compares the
+ *       leading ten characters as {@code String}, exactly as {@code app/proc/TRANREPT.prc:L40} declares
+ *       {@code TRAN-PROC-DT,305,10,CH} and {@code :L45-L46} applies it with an inclusive {@code GE}/{@code LE}
+ *       pair.</li>
  *   <li><strong>Flyway: exactly three migrations</strong> under {@code classpath:db/migration}, with
  *       {@code validate-on-migrate: true}, {@code clean-disabled: true}, {@code out-of-order: false} and
- *       {@code baseline-on-migrate: false}. Spring Batch's {@code BATCH_*} metadata tables come from the
- *       framework's own script through {@code spring.batch.jdbc.initialize-schema} — <strong>never a fourth
- *       Flyway migration and never extra tables in {@code V1}</strong>, because a gate asserts that
- *       {@code V1} creates exactly 11 tables, 10 foreign keys and 5 check constraints, which the committed
- *       {@code V1__create_schema.sql} does. {@code spring.batch.job.enabled: false} keeps batch jobs from
- *       launching merely because the context started.</li>
+ *       {@code baseline-on-migrate: false}. Spring Batch's {@code BATCH_*} metadata tables come from the framework's
+ *       own script through {@code spring.batch.jdbc.initialize-schema} — <strong>never a fourth Flyway migration and
+ *       never extra tables in {@code V1}</strong>, because a gate asserts that {@code V1} creates exactly 11 tables,
+ *       10 foreign keys and 5 check constraints, which the committed {@code V1__create_schema.sql} does.
+ *       {@code spring.batch.job.enabled: false} keeps batch jobs from launching merely because the context
+ *       started.</li>
  *   <li><strong>{@code V2__create_indexes.sql} creates exactly three non-unique B-tree indexes</strong> — on
- *       {@code card.card_acct_id}, {@code card_cross_reference.xref_acct_id} and
- *       {@code "transaction".tran_proc_ts}, one for each alternate index of the corpus and not one more. The
- *       three columns already exist in the committed {@code V1__create_schema.sql} with the shapes those
- *       indexes require: {@code card_acct_id NUMERIC(11) NOT NULL}, {@code xref_acct_id NUMERIC(11) NOT NULL}
- *       and {@code tran_proc_ts CHAR(26) NOT NULL}. Note that {@code transaction} is a reserved word in SQL
- *       and the table is therefore quoted as {@code "transaction"} throughout.</li>
- *   <li><strong>{@code carddemo.pagination.*} defaults are 7, 10 and 10</strong> for the card, transaction
- *       and user lists respectively, with the citations given under "What it does". They are parity contracts
- *       rather than tuning knobs.</li>
+ *       {@code card.card_acct_id}, {@code card_cross_reference.xref_acct_id} and {@code "transaction".tran_proc_ts},
+ *       one for each alternate index of the corpus and not one more. The three columns already exist in the committed
+ *       {@code V1__create_schema.sql} with the shapes those indexes require:
+ *       {@code card_acct_id NUMERIC(11) NOT NULL}, {@code xref_acct_id NUMERIC(11) NOT NULL} and
+ *       {@code tran_proc_ts CHAR(26) NOT NULL}. Note that {@code transaction} is a reserved word in SQL and the table
+ *       is therefore quoted as {@code "transaction"} throughout.</li>
+ *   <li><strong>{@code carddemo.pagination.*} defaults are 7, 10 and 10</strong> for the card, transaction and user
+ *       lists respectively, with the citations given under "What it does". They are parity contracts rather than
+ *       tuning knobs.</li>
  *   <li><strong>Three numeric precision tiers, never collapsed into one.</strong> {@code S9(10)V99} becomes
- *       <strong>{@code NUMERIC(12,2)}</strong> and occurs exactly five times, on the {@code Account} balance
- *       and cycle fields; {@code S9(09)V99} becomes <strong>{@code NUMERIC(11,2)}</strong> and occurs exactly
- *       three times, on {@code TRAN-AMT}, {@code DALYTRAN-AMT} and {@code TRAN-CAT-BAL}; {@code S9(04)V99}
- *       becomes <strong>{@code NUMERIC(6,2)}</strong> and occurs exactly once, on {@code DIS-INT-RATE}, the
- *       only field in the corpus at that precision. Those counts are verifiable in the committed
- *       {@code V1__create_schema.sql}, which contains five {@code NUMERIC(12,2)} columns, three
- *       {@code NUMERIC(11,2)} and one {@code NUMERIC(6,2)}. Rounding everything to a single width would widen
- *       or truncate a field and break the parity comparison. <strong>Zero {@code float} and zero
- *       {@code double} appear in any financial field</strong>; the Java type is {@code BigDecimal} with
- *       {@code RoundingMode.HALF_EVEN}, and equality is tested with {@code compareTo()}, never
- *       {@code equals()}, because {@code BigDecimal.equals} distinguishes {@code 1.0} from {@code 1.00}.</li>
- *   <li><strong>HikariCP connection-pool tuning is explicitly out of scope.</strong> No pool size, timeout,
- *       fetch size or query hint is set by or for this package, and none may be added without a cited
- *       justification. This is not an oversight: it is recorded as residual risk in {@code DECISION_LOG.md}
- *       and {@code docs/validation-gates.md}, which is the honest discharge of Rule 1 Clause A's
- *       "Performance: avoid obvious inefficiencies; justify tradeoffs only when needed" — the legacy system
- *       publishes no service-level objective, so there is no target to tune towards and inventing one would
- *       be fabrication.</li>
- *   <li><strong>No secrets, here or anywhere near here.</strong> The JWT signing key resolves from the
- *       environment with <strong>no committed default</strong>, so a missing value fails fast rather than
- *       falling back to something guessable. This package holds no credential of any kind, and
- *       {@link UserSecurityRepository} deliberately exposes <strong>no password-hash projection</strong>: the
- *       hash travels only as far as {@code com.cardemo.security.CardDemoUserDetailsService}, which is the one
- *       component that has to verify it.</li>
- * </ul>
+ *       <strong>{@code NUMERIC(12,2)}</strong> and occurs exactly five times, on the {@code Account} balance and
+ *       cycle fields; {@code S9(09)V99} becomes <strong>{@code NUMERIC(11,2)}</strong> and occurs exactly three
+ *       times, on {@code TRAN-AMT}, {@code DALYTRAN-AMT} and {@code TRAN-CAT-BAL}; {@code S9(04)V99} becomes
+ *       <strong>{@code NUMERIC(6,2)}</strong> and occurs exactly once, on {@code DIS-INT-RATE}, the only field in the
+ *       corpus at that precision. Those counts are verifiable in the committed {@code V1__create_schema.sql}, which
+ *       contains five {@code NUMERIC(12,2)} columns, three {@code NUMERIC(11,2)} and one {@code NUMERIC(6,2)}.
+ *       Rounding everything to a single width would widen or truncate a field and break the parity comparison.
+ *       <strong>Zero {@code float} and zero {@code double} appear in any financial field</strong>; the Java type is
+ *       {@code BigDecimal} with {@code RoundingMode.HALF_EVEN}, and equality is tested with {@code compareTo()},
+ *       never {@code equals()}, because {@code BigDecimal.equals} distinguishes {@code 1.0} from {@code 1.00}.</li>
+ *   <li><strong>HikariCP connection-pool tuning is explicitly out of scope.</strong> No pool size, timeout, fetch
+ *       size or query hint is set by or for this package, and none may be added without a cited justification. This
+ *       is not an oversight: it is recorded as residual risk owed to the planned {@code DECISION_LOG.md} and
+ *       {@code docs/validation-gates.md}, which is the honest discharge of Rule 1 Clause A's "Performance: avoid
+ *       obvious inefficiencies; justify tradeoffs only when needed" — the legacy system publishes no service-level
+ *       objective, so there is no target to tune towards and inventing one would be fabrication.</li>
+ *   <li><strong>No secrets, here or anywhere near here.</strong> The JWT signing key resolves from the environment
+ *       with <strong>no committed default</strong>, so a missing value fails fast rather than falling back to
+ *       something guessable. This package holds no credential of any kind, and {@link UserSecurityRepository}
+ *       deliberately exposes <strong>no password-hash projection</strong>: the hash travels only as far as
+ *       {@code com.cardemo.security.CardDemoUserDetailsService}, which is the one component that has to verify
+ *       it.</li>
+ *   </ul>
  *
 
  * <h2>Common failure modes and troubleshooting</h2>
@@ -502,20 +508,19 @@
  * well-meaning correction would destroy, and those are marked as accepted so that nobody "fixes" them twice.
  *
  * <ol>
- *   <li><p><strong>Symptom: the application context fails to start with a Hibernate schema-validation
- *       error.</strong> Cause: a derived property name, a column name, a SQL type or a precision asserted
- *       here diverges from {@code V1__create_schema.sql} or {@code V2__create_indexes.sql}, and
- *       {@code ddl-auto: validate} refuses to boot rather than silently adapting.
- *       <em>Remediation:</em> reconcile the derived method name against the entity property spelling and the
- *       entity's {@code @Column(name=…)} mapping. The entity is authoritative for the Java property; the
- *       migration is authoritative for the column. Change whichever one is wrong — never relax
+ *   <li><p><strong>Symptom: the application context fails to start with a Hibernate schema-validation error.</strong>
+ *       Cause: a derived property name, a column name, a SQL type or a precision asserted here diverges from
+ *       {@code V1__create_schema.sql} or {@code V2__create_indexes.sql}, and {@code ddl-auto: validate} refuses to
+ *       boot rather than silently adapting. <em>Remediation:</em> reconcile the derived method name against the
+ *       entity property spelling and the entity's {@code @Column(name=…)} mapping. The entity is authoritative for
+ *       the Java property; the migration is authoritative for the column. Change whichever one is wrong — never relax
  *       {@code ddl-auto} to make the error disappear, because that converts a boot failure into silent data
  *       corruption. <strong>Severity: Blocker.</strong></p></li>
  *   <li><p><strong>Symptom: an account finder fails to resolve, or Hibernate reports an unknown path for
  *       {@code accountId}.</strong> Cause: {@code Card.accountId} or {@code CardCrossReference.accountId} was
  *       turned into a {@code @ManyToOne} association. Both are declared as <strong>plain scalar {@code Long}
  *       properties named exactly {@code accountId}</strong>, precisely so that
- *       {@code findByAccountIdOrderByCardNumberAsc} resolves against a column rather than traversing a
+ *       {@code findFirstByAccountIdOrderByCardNumberAsc} resolves against a column rather than traversing a
  *       relationship — which also keeps the query a single statement against the indexed column.
  *       <em>Remediation:</em> restore the scalar property; do not introduce an association. Navigate from
  *       card to account through {@link AccountRepository} explicitly, as the legacy programs did through the
@@ -523,79 +528,70 @@
  *   <li><p><strong>Symptom: a processing-timestamp query returns nothing, or a conversion error appears on
  *       {@code tran_proc_ts}.</strong> Cause: a {@code LocalDateTime}, {@code Timestamp}, {@code Instant} or
  *       {@code OffsetDateTime} was introduced on that path. The column is {@code CHAR(26)} text
- *       ({@code app/cpy/CVTRA05Y.cpy:L17}) written by three mutually incompatible legacy producers, so it is
- *       not reliably parseable as a temporal value at all.
- *       <em>Remediation:</em> keep the comparison <strong>lexical over {@code String}</strong>, comparing the
- *       first ten characters where the source does so — {@code app/proc/TRANREPT.prc:L40} defines
- *       {@code TRAN-PROC-DT,305,10,CH} and {@code :L45-L46} applies it inclusively at both ends.
- *       <strong>Severity: Blocker.</strong></p></li>
- *   <li><p><strong>Symptom: an alternate-key finder returns a single value and rows are silently
- *       dropped.</strong> Cause: the finder was typed {@code Optional} or as a scalar entity. All three
- *       alternate indexes carry {@code NONUNIQKEY} ({@code app/catlg/LISTCAT.txt:L285}, {@code :L488},
- *       {@code :L3678}), so many base records legitimately share one key value.
- *       <em>Remediation:</em> return {@code List}, {@code Slice} or {@code Page}. If a caller genuinely wants
- *       one row it must select it explicitly from the collection, so that the choice is visible rather than
- *       accidental. <strong>Severity: High.</strong></p></li>
- *   <li><p><strong>Symptom: a duplicate-key violation on transaction insert under concurrency.</strong>
- *       Cause: the descending top-one maximum-key identifier algorithm is <strong>inherently racy — exactly
- *       as the legacy {@code STARTBR} / {@code READPREV} / {@code ENDBR} browse was</strong>
- *       ({@code app/cbl/COTRN02C.cbl:L444-L449}, {@code app/cbl/COBIL00C.cbl:L212-L217}). Two callers can read
- *       the same maximum and both add one. This is <strong>preserved on purpose</strong>.
- *       <em>Remediation:</em> let the primary-key constraint surface it as
- *       {@code com.cardemo.exception.DuplicateRecordException} and let the caller retry at the business
- *       level. Do <strong>not</strong> add a database sequence, a {@code @GeneratedValue} strategy, a retry
- *       loop inside the repository or an upsert: every one of those changes the generated identifier values
- *       and breaks the parity baseline the migration is measured against. Recorded in
- *       {@code DECISION_LOG.md}. <strong>Severity: Medium (accepted, documented).</strong></p></li>
- *   <li><p><strong>Symptom: the first transaction inserted into an empty table receives identifier 0, or the
- *       insert fails.</strong> Cause: the empty result of the top-one descending query was not defaulted.
+ *       ({@code app/cpy/CVTRA05Y.cpy:L17}) written by three mutually incompatible legacy producers, so it is not
+ *       reliably parseable as a temporal value at all. <em>Remediation:</em> keep the comparison <strong>lexical over
+ *       {@code String}</strong>, comparing the first ten characters where the source does so —
+ *       {@code app/proc/TRANREPT.prc:L40} defines {@code TRAN-PROC-DT,305,10,CH} and {@code :L45-L46} applies it
+ *       inclusively at both ends. <strong>Severity: Blocker.</strong></p></li>
+ *   <li><p><strong>Symptom: an alternate-key finder returns a single value and rows are silently dropped.</strong>
+ *       Cause: the finder was typed {@code Optional} or as a scalar entity. All three alternate indexes carry
+ *       {@code NONUNIQKEY} ({@code app/catlg/LISTCAT.txt:L285}, {@code :L488}, {@code :L3678}), so many base records
+ *       legitimately share one key value. <em>Remediation:</em> return {@code List}, {@code Slice} or {@code Page}.
+ *       If a caller genuinely wants one row it must select it explicitly from the collection, so that the choice is
+ *       visible rather than accidental. <strong>Severity: High.</strong></p></li>
+ *   <li><p><strong>Symptom: a duplicate-key violation on transaction insert under concurrency.</strong> Cause: the
+ *       descending top-one maximum-key identifier algorithm is <strong>inherently racy — exactly as the legacy
+ *       {@code STARTBR} / {@code READPREV} / {@code ENDBR} browse was</strong>
+ *       ({@code app/cbl/COTRN02C.cbl:L444-L449}, {@code app/cbl/COBIL00C.cbl:L212-L217}). Two callers can read the
+ *       same maximum and both add one. This is <strong>preserved on purpose</strong>. <em>Remediation:</em> let the
+ *       primary-key constraint surface it as {@code com.cardemo.exception.DuplicateRecordException} and let the
+ *       caller retry at the business level. Do <strong>not</strong> add a database sequence, a
+ *       {@code @GeneratedValue} strategy, a retry loop inside the repository or an upsert: every one of those changes
+ *       the generated identifier values and breaks the parity baseline the migration is measured against. Owed an
+ *       entry in the planned {@code DECISION_LOG.md}. <strong>Severity: Medium (accepted,
+ *       documented).</strong></p></li>
+ *   <li><p><strong>Symptom: the first transaction inserted into an empty table receives identifier 0, or the insert
+ *       fails.</strong> Cause: the empty result of the top-one descending query was not defaulted.
  *       {@code app/cbl/COBIL00C.cbl:L487-L488} reads {@code WHEN DFHRESP(ENDFILE)} then
- *       {@code MOVE ZEROS TO TRAN-ID}, and {@code :L217} then adds one, so <strong>the first generated
- *       identifier is 1</strong>, not 0 and not a failure.
- *       <em>Remediation:</em> default the empty result to zero, increment, then zero-pad to sixteen
- *       characters so the {@code X(16)} key sorts correctly as text. <strong>Severity:
+ *       {@code MOVE ZEROS TO TRAN-ID}, and {@code :L217} then adds one, so <strong>the first generated identifier is
+ *       1</strong>, not 0 and not a failure. <em>Remediation:</em> default the empty result to zero, increment, then
+ *       zero-pad to sixteen characters so the {@code X(16)} key sorts correctly as text. <strong>Severity:
  *       High.</strong></p></li>
- *   <li><p><strong>Symptom: the daily posting job abends on a missing transaction-category-balance
- *       row.</strong> Cause: a not-found result was mapped to
- *       {@code com.cardemo.exception.RecordNotFoundException}. {@code app/cbl/CBTRN02C.cbl:L481} reads
- *       {@code IF  TCATBALF-STATUS = '00'  OR '23'}, so a missing row is an <strong>accepted create
- *       branch</strong>, not an error.
- *       <em>Remediation:</em> treat not-found on that read as the create path. Scope the leniency precisely:
- *       it applies to the <strong>read guard only</strong> — the subsequent write verification at
- *       {@code :L512} and rewrite verification at {@code :L530} both accept <strong>only {@code '00'}</strong>,
- *       so a failure there is still fatal. Widening the leniency to the writes would mask a lost update.
- *       <strong>Severity: Blocker.</strong></p></li>
- *   <li><p><strong>Symptom: the interest calculation job abends on a disclosure-group lookup.</strong> Cause:
- *       the two-query fallback was collapsed into a single query, or the second miss was swallowed.
- *       {@code app/cbl/CBACT04C.cbl:L422} accepts {@code '00'} or {@code '23'} on the first read;
- *       {@code :L436-L439} tests for {@code '23'}, substitutes the literal {@code 'DEFAULT'} into the group
- *       identifier <em>only</em> and retries; {@code :L446} then accepts <strong>only {@code '00'}</strong>,
- *       and {@code :L458} performs the abend.
- *       <em>Remediation:</em> keep two distinct queries — the keyed lookup, then
- *       {@link DisclosureGroupRepository}'s {@code findDefaultGroupRate}. The first miss is not an exception;
- *       the <strong>second miss is fatal</strong> and must raise
- *       {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and return code 12.
- *       Note that only the group identifier is replaced on retry: the type and category codes are carried
- *       through unchanged. <strong>Severity: Blocker.</strong></p></li>
- *   <li><p><strong>Symptom: an interest rate from a previous row is applied to the current row.</strong>
- *       Cause: the legacy {@code READ … INTO} leaves the previous iteration's record in the buffer on
- *       {@code INVALID KEY} until the default read overwrites it, so a translation that caches rate state
- *       inherits a stale value instead of a miss.
- *       <em>Remediation:</em> never retain rate state across iterations. Resolve the rate freshly for every
+ *   <li><p><strong>Symptom: the daily posting job abends on a missing transaction-category-balance row.</strong>
+ *       Cause: a not-found result was mapped to {@code com.cardemo.exception.RecordNotFoundException}.
+ *       {@code app/cbl/CBTRN02C.cbl:L481} reads {@code IF  TCATBALF-STATUS = '00'  OR '23'}, so a missing row is an
+ *       <strong>accepted create branch</strong>, not an error. <em>Remediation:</em> treat not-found on that read as
+ *       the create path. Scope the leniency precisely: it applies to the <strong>read guard only</strong> — the
+ *       subsequent write verification at {@code :L512} and rewrite verification at {@code :L530} both accept
+ *       <strong>only {@code '00'}</strong>, so a failure there is still fatal. Widening the leniency to the writes
+ *       would mask a lost update. <strong>Severity: Blocker.</strong></p></li>
+ *   <li><p><strong>Symptom: the interest calculation job abends on a disclosure-group lookup.</strong> Cause: the
+ *       two-query fallback was collapsed into a single query, or the second miss was swallowed.
+ *       {@code app/cbl/CBACT04C.cbl:L422} accepts {@code '00'} or {@code '23'} on the first read; {@code :L436-L439}
+ *       tests for {@code '23'}, substitutes the literal {@code 'DEFAULT'} into the group identifier <em>only</em> and
+ *       retries; {@code :L446} then accepts <strong>only {@code '00'}</strong>, and {@code :L458} performs the abend.
+ *       <em>Remediation:</em> keep two distinct queries — the keyed lookup, then {@link DisclosureGroupRepository}'s
+ *       {@code findDefaultGroupRate}. The first miss is not an exception; the <strong>second miss is fatal</strong>
+ *       and must raise {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and return code
+ *       12. Note that only the group identifier is replaced on retry: the type and category codes are carried through
+ *       unchanged. <strong>Severity: Blocker.</strong></p></li>
+ *   <li><p><strong>Symptom: an interest rate from a previous row is applied to the current row.</strong> Cause: the
+ *       legacy {@code READ … INTO} leaves the previous iteration's record in the buffer on {@code INVALID KEY} until
+ *       the default read overwrites it, so a translation that caches rate state inherits a stale value instead of a
+ *       miss. <em>Remediation:</em> never retain rate state across iterations. Resolve the rate freshly for every
  *       category-balance row, and let an empty {@code Optional} mean "not found" rather than "unchanged".
  *       <strong>Severity: High.</strong></p></li>
- *   <li><p><strong>Symptom: sequential category-balance processing produces wrong per-account totals.</strong>
- *       Cause: the scan is not in primary-key order. The legacy control break at
- *       {@code app/cbl/CBACT04C.cbl:L194}, {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM}, detects an
- *       account change by comparing consecutive rows only, which is correct <strong>solely</strong> because
- *       {@code TRANCAT-ACCT-ID} leads the 17-byte composite key and VSAM returns the file in key order. An
- *       unordered scan interleaves accounts and the break fires repeatedly on the same account.
- *       <em>Remediation:</em> order by {@code (acct_id, tran_type_cd, tran_cat_cd)}, which is what
- *       {@link TransactionCategoryBalanceRepository}'s
- *       {@code findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(Pageable)} spells out in its name for
- *       exactly this reason. <strong>Severity: High.</strong></p></li>
- *   <li><p><strong>Symptom: page contents differ between two requests for the same page.</strong> Cause: a
- *       paged query without an explicit {@code ORDER BY}. Row order is not guaranteed by the database, so
+ *   <li><p><strong>Symptom: sequential category-balance processing produces wrong per-account totals.</strong> Cause:
+ *       the scan is not in primary-key order. The legacy control break at {@code app/cbl/CBACT04C.cbl:L194},
+ *       {@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM}, detects an account change by comparing consecutive rows
+ *       only, which is correct <strong>solely</strong> because {@code TRANCAT-ACCT-ID} leads the 17-byte composite
+ *       key and VSAM returns the file in key order. An unordered scan interleaves accounts and the break fires
+ *       repeatedly on the same account. <em>Remediation:</em> order by {@code (acct_id, tran_type_cd, tran_cat_cd)},
+ *       which is what {@link TransactionCategoryBalanceRepository}'s
+ *       {@code findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(Pageable)} spells out in its name for exactly this
+ *       reason. <strong>Severity: High.</strong></p></li>
+ *   <li><p><strong>Symptom: page contents differ between two requests for the same page.</strong> Cause: a paged
+ *       query without an explicit {@code ORDER BY}. Row order is not guaranteed by the database, so
  *       {@code LIMIT}/{@code OFFSET} over an unordered result can repeat or skip rows across pages.
  *       <em>Remediation:</em> every paged or multi-row query in this package carries a deterministic ordering
  *       in its own signature — which is why every finder name here ends in an {@code OrderBy…} clause or
@@ -617,34 +613,39 @@
  *       {@code testcontainers.version} property to exactly {@code 2.0.3}, <em>and</em> use only the four
  *       prefixed coordinates {@code testcontainers}, {@code testcontainers-postgresql},
  *       {@code testcontainers-localstack} and {@code testcontainers-junit-jupiter}. Either alone still fails.
- *       If the container itself will not start, check the runtime rather than the coordinates: Docker Engine
- *       29.7.0 is present in this environment, so an absent-daemon diagnosis is wrong.
+ *       If the container itself will not start, check the runtime rather than the coordinates: verify the
+ *       daemon and socket directly instead of inferring their state from this comment.
  *       <strong>Severity: Blocker.</strong></p></li>
- *   <li><p><strong>Symptom: the build fails with an unused-import or deprecation warning attributed to this
- *       package.</strong> Cause: {@code -Xlint:all -Werror} promotes both to errors.
- *       <em>Remediation:</em> remove the import, or replace the deprecated API. Every finder declared in this
- *       package must have a named call site, and every import must be used. <strong>Note explicitly that no
- *       retained-parity no-op artefact lives in {@code com.cardemo.repository}</strong>, so Rule 1 Clause B's
+ *   <li><p><strong>Symptom: the build fails with a deprecation warning attributed to this package, or review
+ *       reports an unused import.</strong> Cause: {@code -Xlint:all -Werror} promotes a deprecation to an
+ *       error; an unused import reaches review instead, because {@code javac} 25 publishes no
+ *       {@code unused} lint key. <em>Remediation:</em> remove the import, or replace the deprecated API. Every finder
+ *       declared in this package must have a named call site, and every import must be used. <strong>Note explicitly
+ *       that no retained-parity no-op artefact lives in {@code com.cardemo.repository}</strong>, so Rule 1 Clause B's
  *       "No dead code, no unused imports, no TODOs without owners or tracking reference" applies here at
  *       <strong>full strength with zero exemptions</strong>: an unused finder or an unused import in this
  *       package is a defect, never a preserved legacy quirk, and it may not be justified by appeal to the
  *       parity mandate. <strong>Severity: Blocker.</strong></p></li>
- * </ol>
+ *   </ol>
  *
  * <h2>The one documented conflict, and why it is not instantiated here</h2>
  *
  * <p>The project has exactly one rule conflict on record, and it is worth stating in this package precisely
  * in order to rule it out. Rule 1 Clause B forbids dead code, while the migration's parity mandate requires
- * preserving reachable no-ops so that paragraph-level traceability stays provable. Three artefacts sit in
- * that tension: the empty but genuinely performed {@code 1400-COMPUTE-FEES} paragraph
- * ({@code app/cbl/CBACT04C.cbl:L518-L520}, performed at {@code :L216}); reject code 109, assigned at
- * {@code app/cbl/CBTRN02C.cbl:L556} on an already-validated path and therefore never consumed as a reject
- * outcome; and the redundant index assignment in {@code app/cbl/CBSTM03A.CBL:L316-L338}. Parity governs in
- * all three cases, because Clause B forbids <em>untracked</em> dead code and each of the three is cited,
- * tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}, and marked in code with an explicit
- * intentional-no-op comment.
+ * preserving reachable no-ops so that paragraph-level traceability stays provable. Parity governs, because
+ * Clause B forbids dead code that is <em>untracked</em>.
  *
- * <p><strong>None of those three artefacts lives in {@code com.cardemo.repository}.</strong> This package
+ * <p><strong>What makes one tracked is stated per artefact, at its own declaration</strong>, and nowhere else:
+ * its COBOL locator, a proof of reachability, an explicit intentional-no-op marker, and - until the file exists
+ * - an acknowledgement that it is owed an entry in the planned {@code DECISION_LOG.md}. Neither
+ * {@code DECISION_LOG.md} nor {@code TRACEABILITY_MATRIX.md} exists at this commit, so nothing may yet be
+ * described as already tracked in them; an earlier revision of this paragraph said otherwise and is corrected.
+ * That revision also enumerated the set as three specific artefacts, while {@code com.cardemo.exception} gave
+ * the same set as five. Both tallies are withdrawn and neither is replaced with a corrected number: a census
+ * kept by hand in several unrelated comments is a claim no build step maintains, which is precisely how the two
+ * came to disagree. Severity of what that left in place: <strong>High</strong>.
+ *
+ * <p><strong>No declaration in {@code com.cardemo.repository} carries such a marker.</strong> This package
  * therefore has <strong>zero exemptions</strong> from Clause B, which is the point made under failure mode 14
  * above and is restated here so that the exemption is not borrowed by analogy from a neighbouring package.
  *
@@ -735,27 +736,36 @@
  *       suggestions" is met by the remediation sentence in each of those entries. "If information is missing,
  *       state &quot;Not available&quot; and list what's needed" is met by the disclosure immediately
  *       below.</p></li>
- * </ul>
+ *   </ul>
  *
  * <h2>Not available</h2>
  *
- * <p>Rule 1 Clause F requires that missing information be stated plainly rather than glossed over. Three items
- * are <strong>"Not available"</strong> as at the authoring of this package, and each is recorded with what
- * would be needed to close it. The inventory is deliberately precise about which migration files exist,
- * because an over-broad claim would be as much an evidence defect as an omission.
+ * <p>Rule 1 Clause F requires that missing information be stated plainly rather than glossed over.
+ * <strong>One</strong> item is genuinely {@code Not available}; two that earlier revisions of this section
+ * listed have since been closed, and both are recorded here as withdrawn rather than quietly deleted, because
+ * a disclosure that vanishes leaves no trail.
  *
  * <ul>
- *   <li><p><strong>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are "Not available".</strong>
- *       {@code V1__create_schema.sql} <em>is</em> present under {@code src/main/resources/db/migration} and was
- *       inspected for this file: it creates exactly 11 tables, 10 foreign keys and 5 check constraints, and
- *       deliberately no index, since indexes belong to {@code V2}. What is needed is therefore the remaining
- *       two migrations in that same directory — {@code V2} carrying the three non-unique B-tree indexes
- *       enumerated above, and {@code V3} carrying the seed data.</p></li>
- *   <li><p><strong>The four {@code src/main/resources/application*.yml} profile files are "Not available".</strong>
- *       Every configuration key quoted under "Key configs and defaults" is a required setting of those files
- *       rather than an observed one, and is stated here as the contract they must satisfy. What is needed is
- *       {@code application.yml}, {@code application-local.yml}, {@code application-test.yml} and
- *       {@code application-prod.yml}, each setting {@code spring.jpa.hibernate.ddl-auto: validate}.</p></li>
+ *   <li><p><strong>Withdrawn: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} are present.</strong>
+ *       All three migrations exist under {@code src/main/resources/db/migration}. {@code V1__create_schema.sql}
+ *       creates exactly 11 tables, 10 foreign keys and 5 check constraints, and
+ *       deliberately no index, since indexes belong to {@code V2}. {@code V2} declares exactly the three
+ *       non-unique B-tree indexes enumerated above - {@code idx_card_acct_id},
+ *       {@code idx_card_cross_reference_acct_id} and {@code idx_transaction_proc_ts} - and {@code V3} seeds the
+ *       ten fixture-backed tables plus the ten BCrypt-hashed users.</p></li>
+ *   <li><p><strong>Withdrawn: the four {@code src/main/resources/application*.yml} profile files are
+ *       present.</strong> {@code application.yml}, {@code application-local.yml},
+ *       {@code application-test.yml} and {@code application-prod.yml} all exist and every one sets
+ *       {@code spring.jpa.hibernate.ddl-auto: validate}, so each configuration key quoted under "Key configs
+ *       and defaults" is an observed setting rather than a required one. What no profile can supply is a
+ *       concrete integration subclass, which is the item that remains open below.</p></li>
+ *   <li><p><strong>Not available: behavioural coverage against a real dialect.</strong>
+ *       {@code src/test/java/com/cardemo/integration/repository} exists and holds
+ *       {@code AbstractRepositoryIntegrationTest}, the Testcontainers base, but no concrete subclass extends
+ *       it yet, so no derived query in this package has been proved against PostgreSQL. Structural coverage
+ *       does exist, by reflection, in {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest}.
+ *       What is needed is one concrete subclass per interface with a finder, seeded from the fixtures, plus a
+ *       reachable container runtime to execute it.</p></li>
  *   <li><p><strong>Direct corpus evidence for FILE STATUS {@code '35'} is "Not available".</strong> The status
  *       for an unavailable file has <strong>no grounding anywhere in the frozen corpus</strong>: there is no
  *       literal {@code '35'} in {@code app/cbl} at all, and the complete {@code DFHRESP} census across those
@@ -765,7 +775,7 @@
  *       What would be needed to ground it is a source occurrence, and none exists; the type is retained
  *       because a JDBC-level unavailability still has to be representable, but no parity claim is made for
  *       it.</p></li>
- * </ul>
+ *   </ul>
  *
  * <p>Because {@code spring.jpa.hibernate.ddl-auto: validate} is set in every profile, the consequence of the
  * first two items is not merely documentary. The table names, column names, SQL types, precisions and index
@@ -817,11 +827,12 @@
  *       read. Configuration reaches it only through Spring property binding in the layers above.</li>
  *   <li><strong>No dead code, with zero exemptions.</strong> Every declared finder must have a named call
  *       site and every import must be used. The parity mandate's allowance for retained no-ops does not reach
- *       this package, because none of the three retained artefacts lives here.</li>
+ *       this package, because no declaration here carries an intentional-no-op marker - the per-artefact form
+ *       in which such an allowance is claimed, described later in this file.</li>
  *   <li><strong>The frozen corpus stays frozen.</strong> Nothing here reads {@code app/} at build or run time.
  *       Those files are cited as evidence and must survive byte for byte; {@code git status --porcelain app/ samples/}
  *       is expected to be empty after any change to this package.</li>
- * </ul>
+ *   </ul>
  *
 
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>

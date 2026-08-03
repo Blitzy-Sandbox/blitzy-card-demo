@@ -157,7 +157,7 @@ import org.springframework.stereotype.Component;
  *       {@code CDEMO-USRTYP-ADMIN} and transfers an administrator to {@code COADM01C}, the admin menu, and a
  *       standard user to {@code COMEN01C}, the main menu. In the target that navigation is URL based; the
  *       role claim no longer routes, it only <em>authorises</em>.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The minimal claim set - a Blocker level constraint</h2>
  *
@@ -175,7 +175,7 @@ import org.springframework.stereotype.Component;
  *       {@value #ROLE_CLAIM_NAME};</li>
  *   <li>the registered claims that make the token valid and expiring: <strong>issuer</strong>,
  *       <strong>issued-at</strong> and <strong>expiry</strong>.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Five claims, no more. Enriching the token with a card number, an account identifier, a customer
  * identifier or a customer name is a <strong>Blocker</strong> under Rule 1 Clause D, which forbids secrets in
@@ -223,7 +223,7 @@ import org.springframework.stereotype.Component;
  *       {@code com.cardemo.security.CardDemoUserDetailsService};</li>
  *   <li>per request authentication, which belongs to
  *       {@code com.cardemo.security.JwtAuthenticationFilter}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Four responsibilities, four owners, no overlap - which is Rule 1 Clause A's separation of concerns
  * applied to this package.
@@ -250,7 +250,7 @@ import org.springframework.stereotype.Component;
  *   <tr><th>Property</th><th>Environment variable</th><th>Default</th></tr>
  *   <tr>
  *     <td>{@code carddemo.security.jwt.signing-key}</td>
- *     <td>{@code JWT_SECRET}</td>
+ *     <td>{@code JWT_SIGNING_KEY}</td>
  *     <td><strong>None. No example, no fallback, no committed literal.</strong></td>
  *   </tr>
  *   <tr>
@@ -259,24 +259,23 @@ import org.springframework.stereotype.Component;
  *     <td>{@code carddemo} - non secret metadata, so a documented default is acceptable</td>
  *   </tr>
  *   <tr>
- *     <td>{@code carddemo.security.jwt.expiration-seconds}</td>
- *     <td>{@code JWT_EXPIRATION_SECONDS}</td>
- *     <td>{@code 3600}</td>
+ *     <td>{@code carddemo.security.jwt.expiration-minutes}</td>
+ *     <td>{@code JWT_EXPIRATION_MINUTES}</td>
+ *     <td>{@code 30}</td>
  *   </tr>
  * </table>
  *
- * <p>Two of those spellings differ from the ones this file's own generation instructions anticipated, which
- * named {@code JWT_SIGNING_KEY} and {@code carddemo.security.jwt.expiration-minutes} with a default of 30.
- * The instructions also stated that the keys bound must be the ones {@code application.yml} publishes, and
- * the published file is authoritative, so the spellings above are the ones bound. This is not a stylistic
- * preference: {@code @Value("${carddemo.security.jwt.expiration-minutes}")} would be an unresolvable
- * placeholder and would abort every context refresh. The evidence is
- * {@code src/main/resources/application.yml}, where the signing key reads {@code ${JWT_SECRET}} and the
- * lifetime reads {@code ${JWT_EXPIRATION_SECONDS:3600}}, corroborated by {@code .env.example}, which ships
- * {@code JWT_SECRET} empty and marked required and declares {@code JWT_EXPIRATION_SECONDS=3600}.
- * {@code application.yml} additionally records why a second variable name was rejected: it would be the
- * duplication Rule 1 Clause C forbids. Severity of the discrepancy: <strong>Medium</strong>, resolved here in
- * favour of the source of truth and recorded rather than silently absorbed.
+ * <p>Both of those spellings once differed from the mandated ones. This class first bound
+ * {@code JWT_SECRET} and {@code carddemo.security.jwt.expiration-seconds} with a 3,600-second default,
+ * because that is what {@code src/main/resources/application.yml} published at the time and binding anything
+ * else would have been an unresolvable placeholder aborting every context refresh. The drift has since been
+ * closed at its root: the published file now reads {@code ${JWT_SIGNING_KEY}} with no default and
+ * {@code expiration-minutes: ${JWT_EXPIRATION_MINUTES:30}}, and the rename was carried through this class,
+ * {@code com.cardemo.config.SecurityConfig}, the environment template, the container image documentation, the
+ * build file, the vulnerability-scan suppressions and the unit test that asserts the variable name, in one
+ * change. Severity of the original discrepancy: <strong>High</strong>, because the unit was not cosmetic -
+ * 3,600 seconds is double the approved thirty-minute bearer window, and a bearer token cannot be revoked
+ * before it expires.
  *
  * <p>Note also that {@code src/main/resources} deliberately sets neither
  * {@code spring.security.oauth2.resourceserver.jwt.jwk-set-uri} nor the corresponding public key location,
@@ -298,13 +297,13 @@ import org.springframework.stereotype.Component;
  *
  * <p><strong>No failure message contains any part of the key</strong> - not the value, not a prefix, not a
  * suffix, not the observed length and not a digest of it. Each message names the property, names the
- * environment variable and states the remedy, and nothing else. A missing {@code JWT_SECRET} is therefore an
+ * environment variable and states the remedy, and nothing else. A missing {@code JWT_SIGNING_KEY} is therefore an
  * expected and documented startup failure rather than a bug; the operator facing remedy is summarised for the
  * whole package in {@code package-info.java}.
  *
  * <p>This closes a <strong>High</strong> severity defect recorded against the previous migration attempt,
  * which hardcoded the signing key. <strong>High (closed).</strong> The token lifetime is likewise bounded
- * rather than trusted: a non positive value is rejected, and so is one above 86400 seconds, which is 24
+ * rather than trusted: a non positive value is rejected, and so is one above 1440 minutes, which is 24
  * hours, because Rule 1 Clause D's least privilege requirement is what makes "short lived" enforceable
  * instead of merely aspirational rather than a comment nobody checks.
  *
@@ -379,7 +378,8 @@ import org.springframework.stereotype.Component;
  *
  * <ul>
  *   <li><em>The context refuses to refresh, reporting an unresolvable placeholder for
- *       {@code carddemo.security.jwt.signing-key} or for {@code JWT_SECRET}.</em> The variable is absent.
+ *       {@code carddemo.security.jwt.signing-key} or for {@code JWT_SIGNING_KEY}.</em> The variable is
+ *       absent.
  *       This is intended behaviour. Export a key of at least 32 bytes of entropy; {@code .env.example}
  *       documents how to generate one. Never add a default to silence it.</li>
  *   <li><em>The context refuses to refresh with a message about a blank or too short signing key.</em> The
@@ -397,7 +397,7 @@ import org.springframework.stereotype.Component;
  *       opaque identifier, not a URL. {@code org.springframework.security.oauth2.jwt.JwtClaimAccessor} coerces
  *       the issuer claim to a {@code java.net.URL}, so the issuer must be compared as a raw string
  *       instead.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Build and test with {@code ./mvnw -B -ntp clean verify}; the unit tests for this class live under
  * {@code src/test/java/com/cardemo/unit}, never in this package, and construct it with a locally generated
@@ -457,8 +457,12 @@ public final class JwtTokenProvider {
     /**
      * The one environment variable name used repository-wide for the signing key. Named in failure messages
      * so that an operator is told what to set; its value is never named anywhere.
+     *
+     * <p>This is the only spelling honoured. No alias is read, and {@link #SIGNING_KEY_PROPERTY} carries no
+     * default in any profile, so a deployment that sets some other variable fails to start rather than
+     * starting on an unintended key.
      */
-    private static final String SIGNING_KEY_VARIABLE = "JWT_SECRET";
+    private static final String SIGNING_KEY_VARIABLE = "JWT_SIGNING_KEY";
 
     /** Property key holding the token issuer, an opaque identifier rather than a URL. */
     private static final String ISSUER_PROPERTY = "carddemo.security.jwt.issuer";
@@ -466,11 +470,18 @@ public final class JwtTokenProvider {
     /** Environment variable behind {@link #ISSUER_PROPERTY}, which does carry a documented default. */
     private static final String ISSUER_VARIABLE = "JWT_ISSUER";
 
-    /** Property key holding the token lifetime in seconds. */
-    private static final String LIFETIME_PROPERTY = "carddemo.security.jwt.expiration-seconds";
+    /**
+     * Property key holding the token lifetime <strong>in minutes</strong>.
+     *
+     * <p>Minutes, not seconds, and the unit is part of the contract rather than a presentation choice: the
+     * approved bearer lifetime is thirty minutes, and expressing it in seconds is how a 3,600-second default
+     * came to double it. The value is converted to a {@link Duration} exactly once, in
+     * {@link #validatedLifetime(long)}, so no other member of this class handles a raw number.
+     */
+    private static final String LIFETIME_PROPERTY = "carddemo.security.jwt.expiration-minutes";
 
     /** Environment variable behind {@link #LIFETIME_PROPERTY}, which does carry a documented default. */
-    private static final String LIFETIME_VARIABLE = "JWT_EXPIRATION_SECONDS";
+    private static final String LIFETIME_VARIABLE = "JWT_EXPIRATION_MINUTES";
 
     /**
      * The JWS algorithm. HS256 is chosen because both {@code .env.example} and
@@ -483,15 +494,16 @@ public final class JwtTokenProvider {
     /** Minimum key length in bytes that {@link #SIGNATURE_ALGORITHM} requires: 256 bits. */
     private static final int MINIMUM_SIGNING_KEY_BYTES = 32;
 
-    /** A token must outlive its own issuance by at least one second to be usable at all. */
-    private static final long MINIMUM_LIFETIME_SECONDS = 1L;
+    /** A token must outlive its own issuance by at least one minute to be usable at all. */
+    private static final long MINIMUM_LIFETIME_MINUTES = 1L;
 
     /**
-     * Ceiling on the configured lifetime, 24 hours. A deliberate least privilege policy under Rule 1
-     * Clause D: a bearer token cannot be revoked before it expires, so an unbounded lifetime would turn a
-     * single leaked token into indefinite access.
+     * Ceiling on the configured lifetime, 24 hours expressed in minutes. A deliberate least privilege policy
+     * under Rule 1 Clause D: a bearer token cannot be revoked before it expires, so an unbounded lifetime
+     * would turn a single leaked token into indefinite access. The approved default is thirty minutes; this
+     * is the outer bound an operator may deliberately choose, not a recommendation.
      */
-    private static final long MAXIMUM_LIFETIME_SECONDS = 86_400L;
+    private static final long MAXIMUM_LIFETIME_MINUTES = 1_440L;
 
     /**
      * Maximum length of the subject claim, from {@code CDEMO-USER-ID PIC X(08)} at
@@ -532,28 +544,34 @@ public final class JwtTokenProvider {
      * I/O is performed and no static state is touched.
      *
      * @param signingKey      the HMAC signing key, bound from {@code carddemo.security.jwt.signing-key},
-     *                        which resolves {@code JWT_SECRET} with no default
+     *                        which resolves {@code JWT_SIGNING_KEY} with no default
      * @param issuer          the issuer claim value, bound from {@code carddemo.security.jwt.issuer}, which
      *                        resolves {@code JWT_ISSUER} and defaults to {@code carddemo}
-     * @param lifetimeSeconds the token lifetime in seconds, bound from
-     *                        {@code carddemo.security.jwt.expiration-seconds}, which resolves
-     *                        {@code JWT_EXPIRATION_SECONDS} and defaults to {@code 3600}
-     * @param clock           the time source for the issued-at and expiry claims; the configuration package
-     *                        is expected to publish {@code Clock.systemUTC()}
+     * @param lifetimeMinutes the token lifetime in minutes, bound from
+     *                        {@code carddemo.security.jwt.expiration-minutes}, which resolves
+     *                        {@code JWT_EXPIRATION_MINUTES} and defaults to {@code 30}
+     * @param clock           the time source for the issued-at and expiry claims, injected from the one
+     *                        production definition in the tree,
+     *                        {@code com.cardemo.config.ObservabilityConfig#clock()}, which publishes
+     *                        {@code Clock.systemDefaultZone()}. The zone is the deployment's rather than UTC
+     *                        because the legacy region rendered local civil time and Gate 1 compares the
+     *                        rendered values byte-for-byte; the claims themselves are instants, so this
+     *                        class's own output is unaffected by the choice. A test injects
+     *                        {@code Clock.fixed(...)} to make expiry deterministic
      * @throws IllegalStateException if the signing key is {@code null}, empty, whitespace only, or shorter
      *                               than 32 bytes; if the issuer is {@code null} or blank; if the lifetime is
-     *                               below one second or above 86400 seconds; or if no clock was supplied. No
+     *                               below one minute or above 1440 minutes; or if no clock was supplied. No
      *                               such message reveals any part of the signing key
      */
     public JwtTokenProvider(
             @Value("${" + SIGNING_KEY_PROPERTY + "}") final String signingKey,
             @Value("${" + ISSUER_PROPERTY + "}") final String issuer,
-            @Value("${" + LIFETIME_PROPERTY + "}") final long lifetimeSeconds,
+            @Value("${" + LIFETIME_PROPERTY + "}") final long lifetimeMinutes,
             final Clock clock) {
 
         this.jwtEncoder = macSigner(signingKey);
         this.issuer = validatedIssuer(issuer);
-        this.tokenLifetime = validatedLifetime(lifetimeSeconds);
+        this.tokenLifetime = validatedLifetime(lifetimeMinutes);
         this.clock = validatedClock(clock);
     }
 
@@ -836,30 +854,37 @@ public final class JwtTokenProvider {
      * <p>The value is non secret configuration, so it is safe to quote back in a failure message, which makes
      * the message directly actionable.
      *
-     * @param lifetimeSeconds the bound lifetime in seconds
+     * <p><strong>This is the one and only place a lifetime number becomes a {@link Duration}.</strong> The
+     * property is expressed in minutes and nothing downstream sees the raw number: the field it produces is a
+     * {@code Duration}, and the issuance path adds that duration to the issued-at instant. Converting in one
+     * place is what makes the unit unambiguous - the earlier seconds-based property with a 3,600-second
+     * default silently doubled the approved thirty-minute window, which is exactly the class of mistake a
+     * single typed conversion prevents.
+     *
+     * @param lifetimeMinutes the bound lifetime in minutes
      * @return the equivalent duration, never {@code null}
-     * @throws IllegalStateException if the lifetime is below {@link #MINIMUM_LIFETIME_SECONDS} or above
-     *                               {@link #MAXIMUM_LIFETIME_SECONDS}
+     * @throws IllegalStateException if the lifetime is below {@link #MINIMUM_LIFETIME_MINUTES} or above
+     *                               {@link #MAXIMUM_LIFETIME_MINUTES}
      */
-    private static Duration validatedLifetime(final long lifetimeSeconds) {
-        if (lifetimeSeconds < MINIMUM_LIFETIME_SECONDS) {
+    private static Duration validatedLifetime(final long lifetimeMinutes) {
+        if (lifetimeMinutes < MINIMUM_LIFETIME_MINUTES) {
             throw new IllegalStateException(
-                    "Property " + LIFETIME_PROPERTY + " is " + lifetimeSeconds + " seconds, which would "
+                    "Property " + LIFETIME_PROPERTY + " is " + lifetimeMinutes + " minutes, which would "
                             + "issue tokens that have already expired at the instant they are signed. Set "
                             + "the environment variable " + LIFETIME_VARIABLE + " to at least "
-                            + MINIMUM_LIFETIME_SECONDS + ", or leave it unset to accept the documented "
-                            + "default.");
+                            + MINIMUM_LIFETIME_MINUTES + ", or leave it unset to accept the documented "
+                            + "default of 30 minutes.");
         }
-        if (lifetimeSeconds > MAXIMUM_LIFETIME_SECONDS) {
+        if (lifetimeMinutes > MAXIMUM_LIFETIME_MINUTES) {
             throw new IllegalStateException(
-                    "Property " + LIFETIME_PROPERTY + " is " + lifetimeSeconds + " seconds, which exceeds "
-                            + "the " + MAXIMUM_LIFETIME_SECONDS + " second ceiling this application imposes. "
+                    "Property " + LIFETIME_PROPERTY + " is " + lifetimeMinutes + " minutes, which exceeds "
+                            + "the " + MAXIMUM_LIFETIME_MINUTES + " minute ceiling this application imposes. "
                             + "A bearer token cannot be revoked before it expires, so an unbounded lifetime "
                             + "would turn one leaked token into indefinite access. Set the environment "
-                            + "variable " + LIFETIME_VARIABLE + " to " + MAXIMUM_LIFETIME_SECONDS
-                            + " or below.");
+                            + "variable " + LIFETIME_VARIABLE + " to " + MAXIMUM_LIFETIME_MINUTES
+                            + " or below; the approved value is 30.");
         }
-        return Duration.ofSeconds(lifetimeSeconds);
+        return Duration.ofMinutes(lifetimeMinutes);
     }
 
     /**
@@ -877,9 +902,9 @@ public final class JwtTokenProvider {
         if (clock == null) {
             throw new IllegalStateException(
                     "No java.time.Clock was supplied, so the issued-at and expiry claims cannot be derived. "
-                            + "The configuration package is expected to publish a Clock bean, defaulting to "
-                            + "Clock.systemUTC(); a unit test should pass a fixed clock so that expiry is "
-                            + "deterministic.");
+                            + "com.cardemo.config.ObservabilityConfig.clock() publishes the application's only "
+                            + "Clock bean, as Clock.systemDefaultZone(); a unit test should pass a fixed clock "
+                            + "so that expiry is deterministic.");
         }
         return clock;
     }

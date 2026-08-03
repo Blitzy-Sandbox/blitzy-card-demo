@@ -148,7 +148,7 @@ import org.junit.jupiter.api.Test;
  *   <li>{@code app/data/ASCII/cardxref.txt} - 1850 bytes, 50 rows of 36 data bytes each, already
  *       strictly ascending by card number, which is the precondition that makes the early-exit scan in
  *       {@code app/cbl/CBSTM03A.CBL} correct.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run, build and test</h2>
  *
@@ -236,7 +236,7 @@ import org.junit.jupiter.api.Test;
  *       rows carries primary account numbers and a page of user rows carries identities.
  *       {@link PageResponse#toString()} emits page number, page size and the next-page indicator only,
  *       and this class proves it.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Deliberately not asserted - "Not available"</h2>
  *
@@ -261,13 +261,23 @@ import org.junit.jupiter.api.Test;
  *       {@code moveToAlphanumericField}, {@code toFamilyA}, {@code toFamilyB}, {@code fromFamilyA},
  *       {@code fromFamilyB} and {@code toFamilyBLastPageMarker} re-implement, as test-local oracles,
  *       the {@code 'Y'} / {@code 'N'} family of {@code app/cbl/COTRN00C.cbl:L63-L68} and the inverted
- *       zero-or-nine last-page family of {@code app/cbl/COCRDLIC.cbl:L239-L244}. The services that
- *       will own those encodings, {@code TransactionListService} from {@code app/cbl/COTRN00C.cbl} and
- *       {@code CardListService} from {@code app/cbl/COCRDLIC.cbl}, do not exist at this checkpoint, so
- *       the oracles are retained deliberately to record the contract rather than lose it, and this
- *       entry is their tracking record. What would be needed: those two services; the moment either
- *       arrives, re-point the dependent assertions at the production encoder and delete the oracle.</li>
- * </ul>
+ *       zero-or-nine last-page family of {@code app/cbl/COCRDLIC.cbl:L239-L244}.
+ *       <b>Re-measured at this commit, the availability half of this entry is withdrawn:</b> both owning
+ *       services exist - {@code com.cardemo.service.transaction.TransactionListService} and
+ *       {@code com.cardemo.service.card.CardListService} - and the production encodings are asserted against
+ *       them by {@code TransactionListServiceTest} and {@code CardListServiceTest}, so this file is no longer
+ *       the only record of the contract. An earlier revision said the two services "do not exist at this
+ *       checkpoint". What remains true, and is the actual reason the helpers stay, is narrower: neither
+ *       service exposes a <em>public encoder</em> to delegate to - the sentinels are produced inside
+ *       {@code listCards} and the list-screen methods - so these six helpers remain test-local constructors
+ *       of sentinel values for this DTO tier, not a second copy of the contract. Deleting them would leave
+ *       these DTO assertions with no way to build an input; re-pointing them would require widening the
+ *       production API purely for tests, which is worse. What would be needed to remove them: a public
+ *       encoder on either service, or moving these assertions up to the service tier that already owns it.
+ *       Re-derive with
+ *       {@code ls src/main/java/com/cardemo/service/card/CardListService.java} and
+ *       {@code ls src/test/java/com/cardemo/unit/service/CardListServiceTest.java}.</li>
+ *   </ul>
  */
 class PageResponseTest {
 

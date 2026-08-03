@@ -1,6 +1,7 @@
 /*
  * ******************************************************************
  * Program     : package-info.java
+ * Package     : com.cardemo.model.enums
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
  * Function    : Documents com.cardemo.model.enums - typed COBOL 88-levels,
@@ -18,7 +19,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -50,7 +50,7 @@
  *       {@code app/cbl/COBIL00C.cbl:L222}.</li>
  *   <li>{@link RejectCode} - exactly five constants, 100, 101, 102, 103 and 109, each carrying the verbatim
  *       description literal the posting program moves into the reject trailer.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Three package-wide invariants matter more than the individual constants. First, mapping a file status onto
  * an outcome is <strong>not context-free</strong>: {@code '23'} is an accepted control path at
@@ -93,7 +93,7 @@
  *       as three expanded digits, not as the raw character.</li>
  *   <li>An unexpected source value fails to bind - the persisted column is free text. Bind the raw
  *       {@code String} and resolve it through the lookup, which returns empty rather than throwing.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Reject codes are business outcomes, never exceptions.</strong> They are assigned into a
  * working-storage reason field, drive whether a record is posted or written to the reject dataset, and
@@ -115,7 +115,7 @@
  * <p>Two legacy quirks are preserved here rather than repaired, because parity is the contract:
  *
  * <ul>
- *   <li><strong>103 overwrites 102.</strong> Severity High if got wrong. At
+ *   <li><strong>103 overwrites 102.</strong> At
  *       {@code app/cbl/CBTRN02C.cbl:L403-L420} the over-limit test and the expiry test are two
  *       <em>sequential, unguarded</em> {@code IF} blocks with no alternative branch and no early exit
  *       between them. When both conditions fail, the second assignment overwrites the first and a single
@@ -124,9 +124,9 @@
  *   <li><strong>109 is reachable but never consumed.</strong> It is assigned on the account-rewrite
  *       failure path at {@code :L556-L558}, but that paragraph only runs on the already-validated posting
  *       path, so no reject record is written, the reject count is not incremented, and the value is
- *       cleared by the per-iteration reset at {@code :L208-L209} on the next record. It is retained
- *       deliberately, cited in TRACEABILITY_MATRIX.md and justified in DECISION_LOG.md.</li>
- * </ul>
+ *       cleared by the per-iteration reset at {@code :L208-L209} on the next record. The constant is
+ *       nonetheless retained deliberately, because the assignment is real code on a reachable path.</li>
+ *   </ul>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -155,7 +155,8 @@
  *       a <strong>hard build failure</strong>, not a warning to triage later. An <em>unused import</em> is
  *       not in that set: {@code javac} 25.0.3 publishes no lint key for one, as {@code javac --help-lint}
  *       shows, and no Checkstyle or Error Prone analyser is in the pinned dependency set, so Rule 1
- *       Clause B's prohibition on unused imports and dead code is review-enforced. This is precisely why this
+ *       Clause B's prohibition on unused imports and dead code is a convention rather than a compiler
+ *       check. This is precisely why this
  *       file carries zero imports and zero annotations: there is no nullability annotation available to
  *       use, since no JSR-305 and no JSpecify artefact is declared anywhere in {@code pom.xml}, and
  *       reaching for a framework annotation instead would risk a deprecation that the build treats as
@@ -163,28 +164,19 @@
  *   <li><strong>No Lombok, no annotation processor, no new dependency.</strong> This package adds none.
  *       Every accessor, every lookup and every {@code toString} in the four enums is written out
  *       explicitly, so what is compiled is exactly what is read.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Test</h3>
  *
  * <ul>
- *   <li><strong>Location, and what exists today.</strong> Unit tests for these types live in the sibling
- *       test tree at {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package,
- *       which stays free of test scaffolding. Measured 1 August 2026, <strong>three of the four</strong>
- *       types have a test class - {@code FileStatusTest}, {@code RejectCodeTest} and {@code UserTypeTest}.
- *       A test class for {@link TransactionSource} is <strong>not available</strong>; the assertions listed
- *       below for that type are consequently obligations rather than existing coverage.</li>
+ *   <li><strong>Location.</strong> Unit tests for these types live in the sibling test tree at
+ *       {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package, which stays
+ *       free of test scaffolding.</li>
  *   <li><strong>Coverage gate.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor
  *       on the merged bundle at the {@code verify} phase with {@code haltOnFailure}, and there are
  *       <strong>no exclusions</strong> for this package. Coverage must come from meaningful assertions; the
  *       figure must not be padded by calling getters. This file is documentation only, contributes no
  *       executable lines, and therefore neither helps nor harms the figure.</li>
- *   <li><strong>Coverage plugin version.</strong> Pinned to <strong>0.8.13</strong>. The requirements named
- *       0.8.12, but that release physically cannot run on this target: Java 25 emits class file major
- *       version 69, which the ASM build inside 0.8.12 rejects outright, failing the report goal before any
- *       coverage figure is computed. 0.8.13 is the smallest release that reads it, so the preference for
- *       the lower version is kept while the gate is made able to run at all. Recorded in
- *       DECISION_LOG.md.</li>
  *   <li><strong>Assertions that actually matter</strong> for this package, as distinct from mechanical
  *       getter coverage:
  *       <ul>
@@ -192,34 +184,18 @@
  *             source lines, including the {@code ACCT} abbreviation in 103 and the intentional textual
  *             duplication between 101 and 109.</li>
  *         <li>Both {@link TransactionSource} literals, and their ten-character right-padded forms, since
- *             the padded form is what reaches the fixed-width boundary. <strong>Planned, not present</strong>
- *             - no {@code TransactionSourceTest} exists yet, so nothing asserts this today.</li>
+ *             the padded form is what reaches the fixed-width boundary.</li>
  *         <li>{@link UserType} having <em>exactly two</em> constants, asserted on the length of the
  *             constant array rather than on individual lookups, so a third constant fails the test.</li>
  *         <li><em>Both</em> branches of the four-character {@link FileStatus} rendering, each asserted to
  *             be exactly four characters long, with {@code '23'} rendering {@code 0023}.</li>
- *       </ul>
+ *   </ul>
  *   </li>
  *   <li><strong>Determinism.</strong> No static mutable state, no dependence on a clock, and no reliance on
  *       the platform default locale, charset or time zone. Every case-folding, parsing and formatting
  *       operation passes {@code Locale.ROOT} explicitly, so behaviour cannot differ between a developer
  *       machine and CI. The types are immutable and therefore safe to share across threads.</li>
- * </ul>
- *
- * <h3>Toolchain actually present in this environment, measured 1 August 2026</h3>
- *
- * <p>Measured rather than assumed, on <strong>1 August 2026</strong> in this container after
- * {@code source /etc/profile.d/10-carddemo-toolchain.sh}, so the statement can be relied on as a reading
- * of that date rather than as a requirement: {@code java} and {@code javac}
- * report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache Maven
- * <strong>3.9.11</strong> from the pinned wrapper distribution, and
- * <strong>Docker Engine 29.7.0 with {@code docker compose} v5.3.1 is available</strong> and is what
- * provisions PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana for the integration tiers. The host
- * toolchain is activated by sourcing {@code /etc/profile.d/10-carddemo-toolchain.sh}. Where a host JDK is
- * not provisioned, the identical build runs inside the pinned Java 25 and Maven 3.9.11 container image with
- * the repository mounted, and produces the same result because every plugin and every non-managed
- * dependency version is pinned. Any claim that the Java toolchain or the container runtime is absent is
- * stale and must not be repeated.
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -254,89 +230,89 @@
  *       are serializable by identity through the language, and declaring the interface would additionally
  *       raise the {@code serial} lint over a missing {@code serialVersionUID}, which the build escalates to
  *       an error.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
- * <p>Each entry below is a real, specific way this package can break the migration, with a severity and a
- * remediation. They are ordered by the type they affect, not by severity.
+ * <p>Each entry below is a real, specific way this package can break the migration, with its symptom and
+ * its cure. They are ordered by the type they affect.
  *
  * <ul>
- *   <li><strong>A sixth {@link RejectCode} constant.</strong> Severity <strong>High</strong>. Symptom: the
+ *   <li><strong>A sixth {@link RejectCode} constant.</strong> Symptom: the
  *       five-file completion gate for this folder fails, the reject-code metric tag stops being bounded and
- *       its cardinality inflates, and the enum diverges from DECISION_LOG.md, which reserves exactly 100,
- *       101, 102, 103 and 109. <em>Remediation:</em> delete the extra constant. The "no reject" state is
+ *       its cardinality inflates, and the enum no longer holds exactly the five codes the posting program
+ *       assigns - 100, 101, 102, 103 and 109. <em>Fix:</em> delete the extra constant. The "no reject" state is
  *       <strong>not</strong> a constant - it is the numeric {@code 0} written by the per-iteration reset at
  *       {@code app/cbl/CBTRN02C.cbl:L208-L209}, and it is represented as a plain integer, not as an enum
  *       member.</li>
- *   <li><strong>Deleting {@link RejectCode} 109 as "dead code".</strong> Severity
- *       <strong>Blocker</strong>. Symptom: paragraph-level coverage of {@code CBTRN02C} becomes incomplete
- *       and the scope-coverage gate fails, because the assignment at
+ *   <li><strong>Deleting {@link RejectCode} 109 as "dead code".</strong> Symptom: paragraph-level
+ *       coverage of {@code CBTRN02C} becomes incomplete and the scope-coverage gate fails, because the
+ *       assignment at
  *       {@code app/cbl/CBTRN02C.cbl:L556-L558} is real code on a reachable path with no Java counterpart
- *       left to cite. <em>Remediation:</em> restore the constant with its intentional-retention marker. The
- *       no-dead-code standard forbids <em>untracked</em> dead code; 109 is cited, tracked in
- *       TRACEABILITY_MATRIX.md and justified in DECISION_LOG.md, so it is tracked by definition.</li>
- *   <li><strong>A wrong or "tidied" reject literal.</strong> Severity <strong>High</strong>. Symptom: a
+ *       left to cite. <em>Fix:</em> restore the constant with its intentional-retention marker. The
+ *       no-dead-code standard forbids <em>untracked</em> dead code, and 109 is cited to its source lines
+ *       and marked as intentionally retained at its declaration.</li>
+ *   <li><strong>A wrong or "tidied" reject literal.</strong> Symptom: a
  *       reject-record diff against the legacy baseline. The usual mistakes are re-casing a description,
  *       expanding {@code ACCT} to {@code ACCOUNT} in code 103, or "fixing" 109's text because it duplicates
- *       101's. <em>Remediation:</em> diff each string character by character against its cited source
+ *       101's. <em>Fix:</em> diff each string character by character against its cited source
  *       lines. The duplication between 101 and 109 is intentional and present in the source.</li>
- *   <li><strong>Guarding the 102 to 103 overwrite.</strong> Severity <strong>High</strong>. Symptom: a
+ *   <li><strong>Guarding the 102 to 103 overwrite.</strong> Symptom: a
  *       record that fails both the over-limit and the expiry test is rejected with 102 instead of 103, or
- *       produces two reject records instead of one. <em>Remediation:</em> read
+ *       produces two reject records instead of one. <em>Fix:</em> read
  *       {@code app/cbl/CBTRN02C.cbl:L403-L420} again - the two {@code IF} blocks are sequential and
  *       unguarded, so the later assignment wins. Reproduce that, do not repair it.</li>
- *   <li><strong>A third {@link TransactionSource} constant.</strong> Severity <strong>Medium</strong>, and
+ *   <li><strong>A third {@link TransactionSource} constant.</strong> and
  *       almost always {@code OPERATOR}. Symptom: the enum starts to look like the column's full domain,
  *       which invites an enum-typed persistence mapping, which then rejects or mangles real fixture data
- *       and fails the end-to-end and fixture gates on the 350-byte record. <em>Remediation:</em> run the
+ *       and fails the end-to-end and fixture gates on the 350-byte record. <em>Fix:</em> run the
  *       whitespace-tolerant census {@code grep -rnE "TO +TRAN-SOURCE" app/cbl/}. It returns exactly four
  *       sites and only two of them are literals. A naive {@code grep "TO TRAN-SOURCE"} with a single space
  *       returns only three and is actively misleading, because
  *       {@code app/cbl/CBTRN02C.cbl:L428} separates the operands with several spaces.</li>
- *   <li><strong>A three- or five-character {@link FileStatus} rendering.</strong> Severity
- *       <strong>Medium</strong>. Symptom: a log diff against the legacy baseline on every diagnostic line.
- *       <em>Remediation:</em> the field is {@code PIC 9} followed by {@code PIC 999} at
+ *   <li><strong>A three- or five-character {@link FileStatus} rendering.</strong> Symptom: a log diff
+ *       against the legacy baseline on every diagnostic line.
+ *       <em>Fix:</em> the field is {@code PIC 9} followed by {@code PIC 999} at
  *       {@code app/cbl/CBTRN02C.cbl:L138-L140}, so the rendering is <strong>exactly four
  *       characters</strong>. Assert length four on both branches and assert that {@code '23'} renders
  *       {@code 0023}.</li>
- *   <li><strong>"Fixing" the {@code FILE STATUS IS: NNNN} prefix.</strong> Severity
- *       <strong>Medium</strong>. Symptom: a log diff. COBOL {@code DISPLAY} concatenates its operands with
- *       no separator, so at {@code app/cbl/CBTRN02C.cbl:L721} and {@code :L725} a status of {@code '23'}
+ *   <li><strong>"Fixing" the {@code FILE STATUS IS: NNNN} prefix.</strong> Symptom: a log diff. COBOL
+ *       {@code DISPLAY} concatenates its operands with no separator, so at
+ *       {@code app/cbl/CBTRN02C.cbl:L721} and {@code :L725} a status of {@code '23'}
  *       emits the single string {@code FILE STATUS IS: NNNN0023}. The stray {@code NNNN} is a
  *       <strong>preserved legacy quirk</strong>, not a placeholder someone forgot to substitute.
- *       <em>Remediation:</em> keep the prefix literal byte-exact and do not prepend it a second time at the
+ *       <em>Fix:</em> keep the prefix literal byte-exact and do not prepend it a second time at the
  *       call site.</li>
  *   <li><strong>A third {@link UserType} constant</strong>, typically {@code UNKNOWN} or {@code NONE}.
- *       Severity <strong>Medium</strong>. Symptom: the enum diverges from the two 88-levels at
+ *. Symptom: the enum diverges from the two 88-levels at
  *       {@code app/cpy/COCOM01Y.cpy:L26-L28} and from the ten-row seed census, and an "unknown" role starts
- *       to leak into authorisation decisions. <em>Remediation:</em> delete it. An unrecognised code is
+ *       to leak into authorisation decisions. <em>Fix:</em> delete it. An unrecognised code is
  *       handled at the boundary, by returning an empty {@code Optional} or by throwing
  *       {@code IllegalArgumentException} naming the offending value - never by inventing a constant to
  *       absorb it.</li>
  *   <li><strong>Importing from {@code com.cardemo.exception}, or any other outward package.</strong>
- *       Severity <strong>High</strong>. Symptom: the dependency direction of a leaf package inverts, a
+ *. Symptom: the dependency direction of a leaf package inverts, a
  *       cycle becomes possible, and the "business outcome, not exception" mandate for reject codes is
- *       contradicted in the type system itself. <em>Remediation:</em> signal failure with an empty
+ *       contradicted in the type system itself. <em>Fix:</em> signal failure with an empty
  *       {@code Optional} or with {@code IllegalArgumentException}; never reference a project exception type
  *       from this package.</li>
- *   <li><strong>A static mutable field.</strong> Severity <strong>High</strong>. The tempting precedent is
+ *   <li><strong>A static mutable field.</strong>. The tempting precedent is
  *       the interest job's run-sequential suffix counter at {@code app/cbl/CBACT04C.cbl:L474}, which is
  *       incremented globally and never reset per account. Symptom: tests become order-dependent and
- *       non-deterministic, and concurrent batch steps interfere. <em>Remediation:</em> that counter is
+ *       non-deterministic, and concurrent batch steps interfere. <em>Fix:</em> that counter is
  *       job-scoped state and belongs in the batch layer, not here. Every field in this package is
  *       {@code final}; any lookup map is {@code private static final} and immutable.</li>
  *   <li><strong>Adding a fifth file to this folder</strong> - a README, a helper, a mapper or a
- *       lookup-table class. Severity <strong>Medium</strong>. Symptom: the five-file gate for this folder
- *       fails and the tree-wide source-file count drifts. <em>Remediation:</em> delete it. The
+ *       lookup-table class.. Symptom: the five-file gate for this folder
+ *       fails and the tree-wide source-file count drifts. <em>Fix:</em> delete it. The
  *       documentation standard is satisfied by <em>this docstring</em>, not by a README, and there must be
  *       no Markdown file in this folder. A mapper belongs in the service layer; a lookup table belongs in
  *       {@code src/main/resources/validation}.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Not available: direct corpus evidence for file status {@code '35'}</h2>
+ * <h2>File status {@code '35'} has no direct corpus evidence</h2>
  *
- * <p><strong>Not available.</strong> The frozen corpus contains <strong>no literal {@code '35'} comparison
+ * <p>The frozen corpus contains <strong>no literal {@code '35'} comparison
  * and no {@code DFHRESP(NOTOPEN)} handler anywhere under {@code app/}</strong>. A full census of the CICS
  * response conditions actually present returns {@code DFHRESP(NORMAL)} 43 times,
  * {@code DFHRESP(NOTFND)} 23, {@code DFHRESP(ENDFILE)} 8, {@code DFHRESP(DUPREC)} 7,
@@ -347,14 +323,10 @@
  * {@code com.cardemo.exception.FileUnavailableException} a status value to be raised from. It is documented
  * here rather than quietly presented as though it had the same provenance as {@code '00'} or {@code '23'}.
  *
- * <p><strong>Severity: Medium.</strong> Not a Blocker, because the package compiles and every other
- * constant is fully evidenced, so nothing is blocked by the gap. Not Low, because a file-unavailable path
- * that no legacy program exercises cannot be parity-tested against a baseline, which means its behaviour
- * rests on the specification alone.
- *
- * <p><strong>What would be needed to close it:</strong> either a literal {@code '35'} status comparison, or
- * a {@code DFHRESP(NOTOPEN)} handler, somewhere in {@code app/}. <strong>Neither exists.</strong> Absent
- * one of those, the constant stays specification-derived and this note stays in place.
+ * <p>The consequence is worth stating plainly: a file-unavailable path that no legacy program exercises
+ * cannot be parity-tested against a baseline, so its behaviour rests on the specification alone. Were a
+ * literal {@code '35'} comparison or a {@code DFHRESP(NOTOPEN)} handler ever to appear in {@code app/}, the
+ * constant would become corpus-derived and this note could go.
  *
  * <p>By contrast, {@code '22'} is <em>not</em> in the same position even though it too has no literal
  * comparison in the corpus. It is grounded through the CICS duplicate conditions, canonically at
@@ -396,8 +368,8 @@
  *       The ten seed users at {@code app/jcl/DUSRSECJ.jcl:L35-L44} do share one plaintext credential in the
  *       legacy inline data, and that value is <strong>deliberately not reproduced anywhere in
  *       {@code src/}</strong>, here included; the seeded credentials are stored only as BCrypt hashes,
- *       to be written by {@code V3__seed_data.sql} (planned; absent at this commit). Nothing in this package needs
- * masking because nothing
+ *       written by {@code V3__seed_data.sql}. Nothing in this package needs
+ *       masking because nothing
  *       sensitive is present, and nothing sensitive may be added.</li>
  *   <li><strong>Least privilege.</strong> {@link UserType} exposes only the one-character code and performs
  *       no authorisation. Granted authorities are derived in {@code com.cardemo.security}, so a model type
@@ -423,14 +395,13 @@
  *       local tests pass. Both are honoured.</li>
  *   <li><strong>No untracked deferred work.</strong> This file contains no deferred-work marker of any
  *       kind. The one artefact that could be mistaken for abandoned residue, {@link RejectCode} 109, is
- *       cited to its source lines, recorded in TRACEABILITY_MATRIX.md and justified in DECISION_LOG.md, and
- *       the one genuine evidence gap, file status {@code '35'}, is disclosed above with a severity and an
- *       explicit list of what would close it.</li>
+ *       cited to its source lines and marked as intentionally retained at its declaration, and the one
+ *       genuine evidence gap, file status {@code '35'}, is disclosed above.</li>
  *   <li><strong>Directory shape.</strong> This package contains exactly <strong>five</strong> {@code .java}
  *       files: {@code UserType.java}, {@code FileStatus.java}, {@code TransactionSource.java},
  *       {@code RejectCode.java} and this file. No sixth file may be added, and in particular no README and
  *       no Markdown file of any kind, because this docstring is the module documentation.</li>
- * </ul>
+ *   </ul>
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */

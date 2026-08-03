@@ -54,21 +54,15 @@
 # `.env.*` genuinely matches .env.example, which holds variable names
 # and empty placeholders only and must stay available.
 #
-# No glob below matches a content format this repository ships. There is
+# No glob below matches a content format this repository ships: there is
 # deliberately no *.txt, *.md, *.json, *.sql, *.yml, *.html or *.zip
-# rule, and no bare `app`, `build` or `data` rule either: the
+# rule, and no bare `app`, `build` or `data` rule either, because the
 # fixed-width parity fixtures and the VSAM catalogue listing are .txt,
-# the application and dashboard resources are .json, and `data` is a
-# real path component of app/data. Deliverables also land in this tree
-# over time, so a broad rule that looks harmless today would hide one on
-# the day it arrives, silently and with no error. The extension globs
-# that do appear cover only build output, runtime files, private key
-# material and editor state, none of which this repository tracks.
-#
-# The last matching pattern wins, so a `!` negation must follow the rule it
-# re-includes. There is exactly one negation here and it is live: `.env.*`
-# matches .env.example, so `!.env.example` is required to keep that template -
-# variable names and empty placeholders only - in the build context.
+# application and dashboard resources are .json, and `data` is a
+# real path component of app/data. A broad rule that looks harmless today
+# hides the next deliverable on the day it arrives, silently and with no
+# error. The extension globs that do appear cover only build output,
+# runtime files, private key material and editor state.
 #
 # Four things are deliberately NOT excluded. diagrams/, .github/,
 # .gitignore and .gitattributes, because all four are tracked shared

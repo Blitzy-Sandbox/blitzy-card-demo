@@ -48,13 +48,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.atLeastOnce;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import com.cardemo.exception.CardDemoException;
+import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.CardDto;
 import com.cardemo.model.dto.PageResponse;
@@ -81,7 +85,8 @@ import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Slice;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.data.domain.Pageable;
 
 /**
@@ -123,7 +128,7 @@ import org.springframework.data.domain.Pageable;
  *   <li>{@code app/cpy-bms/COCRDLI.CPY:60} {@code PAGENOI PIC X(3)}, and {@code :108}, {@code :138},
  *       {@code :168}, {@code :198}, {@code :228} and {@code :258} - {@code CRDSTP2I} through
  *       {@code CRDSTP7I}, with no {@code CRDSTP1I} declared anywhere.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  * <p>This class is bound to <strong>Surefire</strong> {@code 3.5.4}, which includes
@@ -138,7 +143,7 @@ import org.springframework.data.domain.Pageable;
  *   <li>{@code ./mvnw -B -ntp -Dtest=CardListServiceTest test} - runs this class alone.</li>
  *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - the full gate. Note the
  *       skip property is hyphenated.</li>
- * </ul>
+ *   </ul>
  * <p>Compilation is {@code maven-compiler-plugin:3.14.1} at {@code release 25} with
  * {@code -Xlint:all -Werror} and {@code failOnWarning}, so a single warning anywhere in the test
  * tree fails the build. Coverage is {@code jacoco-maven-plugin:0.8.12} with an 80 percent LINE
@@ -161,8 +166,10 @@ import org.springframework.data.domain.Pageable;
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  * <ul>
- *   <li><strong>Compilation fails on a warning.</strong> {@code -Werror} is fatal in the test tree
- *       too. One unused import, one raw type or one deprecated call is enough.</li>
+ *   <li><strong>Compilation fails on a warning.</strong> {@code -Werror} is fatal in the test tree too. One
+ *       raw type, one unchecked cast or one deprecated call is enough. An unused import is not - {@code javac}
+ *       25 publishes no {@code unused} lint key - so remove one because Rule 1 Clause B requires it, not
+ *       because the build will stop.</li>
  *   <li><strong>{@code lastPageDisplayed} sentinel inverted.</strong> Passing 1 for "the last page
  *       has been shown" is the natural mistake and it silently loses the
  *       {@code NO MORE PAGES TO DISPLAY} error, because the condition tests for 0. Severity High.</li>
@@ -181,7 +188,7 @@ import org.springframework.data.domain.Pageable;
  *       response metadata. Asserting a commarea page field is severity High.</li>
  *   <li><strong>{@code UnnecessaryStubbingException}.</strong> A test that suppresses the browse -
  *       any filter validation failure, or a transfer of control - must not stub the repository.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Findings register (Rule 1 Clause F)</h2>
  * <ol>
@@ -228,13 +235,13 @@ import org.springframework.data.domain.Pageable;
  *   <li><strong>Low - preserved legacy defect.</strong> Neither {@code READPREV} has a
  *       {@code DFHRESP(ENDFILE)} arm ({@code :1294-1318}, {@code :1322-1370}), so exhausting the
  *       records while paging up is reported as a file error. Asserted rather than corrected.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>6. The documented conflict - parity governs</h2>
  * <p>Rule 1 Clause B forbids dead code; the parity mandate requires that the bare-{@code EXIT} exit
  * paragraphs and the {@code ELSE CONTINUE} no-op arms of {@code 9500} be retained. Parity governs,
  * and Clause B is satisfied on its own wording: the prohibition is on artefacts without an owner or
- * a tracking reference, and every retained item carries a {@code DECISION_LOG.md} entry, a
+ * a tracking reference, and every retained item carries an entry in the planned {@code DECISION_LOG.md}, a
  * {@code TRACEABILITY_MATRIX.md} row and Javadoc citing its source locator. This class asserts that
  * those methods exist, so deleting one breaks a test instead of silently breaking the paragraph map
  * that Gate 7 verifies. No other conflict exists.</p>
@@ -278,8 +285,11 @@ final class CardListServiceTest {
     private static final String CARD_UPDATE_MAP = "CCRDUPA";
 
     /**
-     * {@code 88 CCARD-AID-ENTER VALUE 'ENTER'} at {@code app/cpy/CVCRD01Y.cpy:001000}. The only
-     * identifier whose inbound and stored spellings coincide.
+     * {@code 88 CCARD-AID-ENTER VALUE 'ENTER'} at {@code app/cpy/CVCRD01Y.cpy:L4}, COBOL sequence number
+     * {@code 001000}. The only identifier whose inbound and stored spellings coincide.
+     *
+     * <p>This copybook carries sequence numbers in columns 1-6, so {@code 001000} is a sequence number and
+     * not a file line - the declaration sits on physical line 4 of the 46-line member.
      */
     private static final String AID_ENTER = "ENTER";
 
@@ -347,10 +357,10 @@ final class CardListServiceTest {
      */
     private static final int LAST_PAGE_NAIVE_TRUE = 1;
 
-    /** {@code CC-ACCT-ID PIC X(11)} at {@code app/cpy/CVCRD01Y.cpy:004400}. */
+    /** {@code CC-ACCT-ID PIC X(11)} at {@code app/cpy/CVCRD01Y.cpy:L34}, sequence number {@code 004400}. */
     private static final int ACCOUNT_FILTER_WIDTH = 11;
 
-    /** {@code CC-CARD-NUM PIC X(16)} at {@code app/cpy/CVCRD01Y.cpy:004600}. */
+    /** {@code CC-CARD-NUM PIC X(16)} at {@code app/cpy/CVCRD01Y.cpy:L37}, sequence number {@code 004600}. */
     private static final int CARD_FILTER_WIDTH = 16;
 
     /** {@code PAGENOI PIC X(3)} at {@code app/cpy-bms/COCRDLI.CPY:60}. */
@@ -484,7 +494,7 @@ final class CardListServiceTest {
      */
     private static Card card(final int ordinal, final long accountId) {
         return new Card(
-                cardNumber(ordinal), accountId, CVV, EMBOSSED_NAME, EXPIRY_DATE, STATUS_ACTIVE);
+                cardNumber(ordinal), accountId,  EMBOSSED_NAME, EXPIRY_DATE, STATUS_ACTIVE);
     }
 
     /**
@@ -538,11 +548,18 @@ final class CardListServiceTest {
      * the build, which is precisely how a test that expects the browse to be suppressed proves
      * it.</p>
      *
+     * <p>The row count is stubbed leniently alongside the window. {@code startBrowse} takes the total as
+     * the upper bound of its binary search, and it needs one only when a start key is supplied - the
+     * unfiltered entry positions at offset zero and never asks. A strict stub would therefore fail every
+     * unfiltered test for being unused, while omitting it would make every filtered test see an empty
+     * table. Lenient is the accurate statement: available to the paths that position by key.
+     *
      * @param file the card file in ascending card-number order
      */
     private void givenCardFile(final List<Card> file) {
         when(cardRepository.findAllByOrderByCardNumberAsc(any(Pageable.class)))
                 .thenAnswer(invocation -> window(file, invocation.getArgument(0, Pageable.class)));
+        lenient().when(cardRepository.count()).thenReturn((long) file.size());
     }
 
     /**
@@ -552,10 +569,10 @@ final class CardListServiceTest {
      * @param pageable the window the service asked for
      * @return the requested window, carrying the file's total element count
      */
-    private static Page<Card> window(final List<Card> file, final Pageable pageable) {
+    private static Slice<Card> window(final List<Card> file, final Pageable pageable) {
         final int offset = (int) Math.min(pageable.getOffset(), file.size());
         final int end = Math.min(offset + pageable.getPageSize(), file.size());
-        return new PageImpl<>(new ArrayList<>(file.subList(offset, end)), pageable, file.size());
+        return new SliceImpl<>(new ArrayList<>(file.subList(offset, end)), pageable, end < file.size());
     }
 
     /**
@@ -2328,5 +2345,73 @@ final class CardListServiceTest {
             }
         }
         assertThat(helpers).isNotEmpty();
+    }
+
+    /**
+     * Pins the round-trip cost of the key-positioning binary search: exactly one count per request.
+     *
+     * <p>{@code startBrowse} locates a supplied start key by binary search, so it fetches roughly
+     * log2(n) windows per request. While the window fetch returned a {@code Page}, every one of those
+     * probes carried a {@code count(*)} that the search discarded, even though the total it needed was
+     * needed exactly once as the upper bound. The window is now a {@code Slice} and the total comes from
+     * one explicit {@code count()}, memoised in the per-request working storage.
+     */
+    @Test
+    @DisplayName("A key-positioned browse counts the table once, however many window probes it makes")
+    void aKeyPositionedBrowseCountsTheTableOnce() {
+        givenCardFile(cardFile(64, ACCOUNT_A));
+
+        // Paging down from a saved key is the entry that positions the browse by key, which is the only
+        // path that runs the binary search. The CARDSIDI filter is not a start key: 9500-FILTER-RECORDS
+        // applies it as an exclusion while the browse walks, so a filtered first entry still starts at
+        // offset zero and asks for no total.
+        final CardListResult result = service().listCards(
+                pagingEntry(AID_PF08, FIRST_PAGE, true, cardNumber(1), cardNumber(40)));
+
+        assertThat(result).as("the browse must have run for the counts below to mean anything").isNotNull();
+        verify(cardRepository, times(1))
+                .count();
+        verify(cardRepository, atLeast(2))
+                .findAllByOrderByCardNumberAsc(any(Pageable.class));
+    }
+
+    /**
+     * The unfiltered entry positions at offset zero, so it needs no upper bound and asks for no total.
+     *
+     * <p>This is why the count stub in {@link #givenCardFile(List)} is lenient: a strict stub would fail
+     * every unfiltered test for being unused, which is exactly the state this test asserts.
+     */
+    @Test
+    @DisplayName("An unfiltered browse never counts the table at all - it positions at offset zero")
+    void anUnfilteredBrowseNeverCountsTheTable() {
+        givenCardFile(cardFile(20, ACCOUNT_A));
+
+        final CardListResult result = service().listCards(firstEntry());
+
+        assertThat(result.page.getRows()).hasSize(SCREEN_LINES);
+        verify(cardRepository, never()).count();
+    }
+
+    /**
+     * The count is not merely moved: its failure must latch, not escape.
+     *
+     * <p>An unreadable table must latch the same {@code RESP} condition a failed window fetch latches, so
+     * that {@code throwLatchedFileError} rethrows it after {@code EXEC CICS ENDBR} has run - the four
+     * unexpected-condition arms at {@code app/cbl/COCRDLIC.cbl:1226-1230}, {@code :1250-1254},
+     * {@code :1312-1316} and {@code :1365-1369} are all reached only after the browse is terminated. A
+     * count that threw in place would skip the {@code ENDBR} and leave the browse open.
+     */
+    @Test
+    @DisplayName("An unreadable table surfaces as a latched file error, rethrown after ENDBR")
+    void anUnreadableTableSurfacesAsALatchedFileError() {
+        when(cardRepository.findAllByOrderByCardNumberAsc(any(Pageable.class)))
+                .thenAnswer(invocation -> window(List.of(), invocation.getArgument(0, Pageable.class)));
+        when(cardRepository.count()).thenThrow(new QueryTimeoutException("CARDDAT unavailable"));
+
+        assertThatExceptionOfType(FileAccessException.class)
+                .as("the condition must surface as the service's own file-error outcome at the normal "
+                        + "point, never as a raw DataAccessException escaping mid-browse")
+                .isThrownBy(() -> service().listCards(
+                        pagingEntry(AID_PF08, FIRST_PAGE, true, cardNumber(1), cardNumber(5))));
     }
 }

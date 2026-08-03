@@ -30,7 +30,6 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -90,7 +89,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       constant zero.</li>
  *   <li><strong>A zero balance is rejected.</strong> The guard at {@code app/cbl/COBIL00C.cbl:198} reads
  *       {@code ACCT-CURR-BAL &lt;= ZEROS}, so nothing-to-pay covers zero as well as negative.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Sixteen private methods correspond one-to-one to the sixteen {@code PROCEDURE DIVISION} paragraphs of
  * the source, enumerated in section 5. No paragraph is consolidated with another, and no seventeenth is
@@ -146,7 +145,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       public entry points. Transaction management itself is registered by {@code JpaConfig}; this class
  *       declares no {@code @EnableTransactionManagement}. Because {@code spring.jpa.open-in-view} is
  *       {@code false}, nothing is lazily loaded outside that boundary.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -191,11 +190,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>Low - the double space in the success message is tidied.</strong> Remedy: restore it; the
  *       {@code STRING} at {@code :527}-{@code :531} concatenates a trailing and a leading blank.</li>
  *   <li><strong>Low - a retained parity artefact is deleted to please a linter.</strong> Remedy: restore
- *       it; the four are listed in section 6 and each is tracked in {@code DECISION_LOG.md}.</li>
+ *       it; the four are listed in section 6 and each is owed an entry in the planned {@code DECISION_LOG.md}.</li>
  *   <li><strong>Low - {@code PIC X(26)} timestamps are converted to a temporal type.</strong> Remedy: keep
  *       them as text; three mutually incompatible producers write those columns and the fixture's
  *       {@code TRAN-PROC-TS} is twenty-six blanks, which no format parses.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Provenance</h2>
  *
@@ -224,11 +223,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ol>
  *
  * <p>The paragraph-level correspondence is deliberate and overrides the industry guidance against literal
- * transliteration. Behavioural parity is the contract of this migration and {@code TRACEABILITY_MATRIX.md}
- * must be mechanically provable against the correspondence. The readability concern that guidance raises is
- * answered by the source-citing Javadoc on every method and by the matrix, not by restructuring. Where the
- * guidance can be honoured without touching control flow it is: naming is idiomatic, {@code BigDecimal}
- * replaces packed decimal, and injected collaborators replace static linkage.</p>
+ * transliteration. Behavioural parity is the contract of this migration and the planned
+ * {@code TRACEABILITY_MATRIX.md} must be mechanically provable against the correspondence. The readability concern
+ * that guidance raises is answered by the source-citing Javadoc on every method and by the matrix, not by
+ * restructuring. Where the guidance can be honoured without touching control flow it is: naming is idiomatic,
+ * {@code BigDecimal} replaces packed decimal, and injected collaborators replace static linkage.</p>
  *
  * <p>The source's own header comment at {@code app/cbl/COBIL00C.cbl:1}-{@code :22} contains the typo
  * {@code tractionsaction}. It is cited here as evidence and deliberately not propagated into the banner
@@ -236,10 +235,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>6. Preserved-defect and parity-artefact register</h2>
  *
- * <p>Each of the following is a faithful reproduction of something the system of record does. None is an
- * oversight of this migration, none may be deleted to satisfy a linter, and every one carries a tracking
- * reference in {@code DECISION_LOG.md}. Rule 1 Clause B forbids <em>untracked</em> dead code and work items
- * without an owner or tracking reference; a tracked, cited, justified parity artefact satisfies it.</p>
+ * <p>Each of the following is a faithful reproduction of something the system of record does. None is an oversight of
+ * this migration, none may be deleted to satisfy a linter, and every one carries a tracking reference owed to the
+ * planned {@code DECISION_LOG.md}. Rule 1 Clause B forbids <em>untracked</em> dead code and work items without an
+ * owner or tracking reference; a tracked, cited, justified parity artefact satisfies it.</p>
  *
  * <ul>
  *   <li><strong>P1 - Low. {@code WS-USR-MODIFIED} is written and never read.</strong> Declared at
@@ -300,7 +299,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       either for this paragraph - unlike every other I/O paragraph, which follows its command with an
  *       {@code EVALUATE}. This is a second absent guard and it is preserved as absent:
  *       {@link #receiveBillpayScreen} records a normal response and checks nothing.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Labelled deviations</h2>
  *
@@ -333,7 +332,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       preserving, so the condition is asserted and raised as a {@code FatalProcessingException} carrying
  *       abend code {@code 9999}. Classified Low because the account entity bounds the balance at ten integer
  *       digits, making the condition reachable only between one and ten billion.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>8. Reconciliations</h2>
  *
@@ -370,7 +369,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       produces it: the empty-table case must reach {@code READPREV}'s {@code ENDFILE} arm at
  *       {@code :487}-{@code :488} so that {@code MOVE ZEROS TO TRAN-ID} yields a first identifier of one.
  *       Routing an empty table to {@code STARTBR}'s arm instead would make a first payment impossible.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>9. Performance</h2>
  *
@@ -922,7 +921,7 @@ public class BillPaymentService {
      *       no-op.</strong> {@code WS-USR-MODIFIED} and its two condition names at {@code :48}-{@code :50}
      *       are written here and tested nowhere in the program's 572 lines. The assignment is reproduced
      *       because deleting it would break the statement-level correspondence that
-     *       {@code TRACEABILITY_MATRIX.md} proves; it is tracked in {@code DECISION_LOG.md} and is
+     *       {@code TRACEABILITY_MATRIX.md} proves; it is owed an entry in the planned {@code DECISION_LOG.md} and is
      *       classified Low.</li>
      *   <li>{@code :104}-{@code :105} blank {@code WS-MESSAGE} and the screen message field.</li>
      *   <li>{@code :107} the no-context test. {@code EIBCALEN = 0} means the program was reached with no
@@ -947,13 +946,12 @@ public class BillPaymentService {
      * any screen has been sent, which is why a deep-linked pass can send twice. Classified Medium and
      * reproduced exactly; it is not repaired.</p>
      *
-     * <p><strong>Parity artefact P9, the attention-key-three originating-program arm.</strong> The
-     * {@code ELSE} at {@code :131}-{@code :133} copies {@code CDEMO-FROM-PROGRAM} into the transfer target,
-     * and is reached only when that communication-area field is populated. A stateless invocation carries no
-     * communication area, so the field is blank and the {@code :130} arm is the one that runs - exactly as it
-     * would for a CICS caller that transferred in with a zero-filled area. Both arms are implemented so the
-     * resolution logic is complete and provable; classified Low and tracked in
-     * {@code DECISION_LOG.md}.</p>
+     * <p><strong>Parity artefact P9, the attention-key-three originating-program arm.</strong> The {@code ELSE} at
+     * {@code :131}-{@code :133} copies {@code CDEMO-FROM-PROGRAM} into the transfer target, and is reached only when
+     * that communication-area field is populated. A stateless invocation carries no communication area, so the field
+     * is blank and the {@code :130} arm is the one that runs - exactly as it would for a CICS caller that transferred
+     * in with a zero-filled area. Both arms are implemented so the resolution logic is complete and provable;
+     * classified Low and owed an entry in the planned {@code DECISION_LOG.md}.</p>
      *
      * @param context the per-invocation working storage, mutated in place
      */
@@ -1090,12 +1088,18 @@ public class BillPaymentService {
                     context.confPayYes = true;
                     readAcctdatFile(context);
                 }
+                // The source arm at :178-:181 does exactly two things - PERFORM CLEAR-CURRENT-SCREEN and
+                // MOVE 'Y' TO WS-ERR-FLG - and notably NOT a third: it leaves WS-MESSAGE untouched, moves no
+                // -1 to any field, and performs no SEND-BILLPAY-SCREEN. Compare the WHEN OTHER arm at
+                // :185-:190, which sets the flag AND a message AND the cursor AND sends the screen; that one
+                // is a real validation failure. Here WS-ERR-FLG is a pure control-flow suppressor that skips
+                // the downstream IF NOT ERR-FLG-ON guards, so the operator declining at the prompt is a
+                // successful no-write termination with nothing to report. It is structurally the PF4 arm at
+                // :136 plus the flag, which is why it records the same way.
                 case NO_UPPER, NO_LOWER -> {
                     clearCurrentScreen(context);
                     context.errFlagOn = true;
-                    retainFailure(context, PaymentOutcome.CONFIRMATION_DECLINED,
-                            new ValidationException("Bill payment was declined at the confirmation prompt.",
-                                    FIELD_CONFIRMATION, ValidationException.FailureKind.INVALID));
+                    markSuccess(context, PaymentOutcome.CONFIRMATION_DECLINED);
                 }
                 case BLANK, LOW_VALUES -> readAcctdatFile(context);
                 case INVALID -> {
@@ -1289,14 +1293,13 @@ public class BillPaymentService {
     /**
      * {@code RECEIVE-BILLPAY-SCREEN.} at {@code app/cbl/COBIL00C.cbl:306}-{@code :314} - request binding.
      *
-     * <p>{@code :308}-{@code :314} receives the map into the input area, capturing the response and reason
-     * codes. <strong>Parity artefact P10: the program never evaluates them.</strong> There is no
-     * {@code EVALUATE WS-RESP-CD} after this receive anywhere in the 572 lines, so a map that could not be
-     * bound is silently accepted and the input area is left holding whatever it held. That absent guard is
-     * preserved as absent: a {@code null} request leaves the buffer untouched rather than raising, and the
-     * blank account field it presents then takes the empty-identifier guard of {@code :159} and yields
-     * {@code Acct ID can NOT be empty...} - which is precisely the legacy outcome. Classified Low and tracked
-     * in {@code DECISION_LOG.md}.</p>
+     * <p>{@code :308}-{@code :314} receives the map into the input area, capturing the response and reason codes.
+     * <strong>Parity artefact P10: the program never evaluates them.</strong> There is no {@code EVALUATE WS-RESP-CD}
+     * after this receive anywhere in the 572 lines, so a map that could not be bound is silently accepted and the
+     * input area is left holding whatever it held. That absent guard is preserved as absent: a {@code null} request
+     * leaves the buffer untouched rather than raising, and the blank account field it presents then takes the
+     * empty-identifier guard of {@code :159} and yields {@code Acct ID can NOT be empty...} - which is precisely the
+     * legacy outcome. Classified Low and owed an entry in the planned {@code DECISION_LOG.md}.</p>
      *
      * <p>Only the three input-bearing members are bound. The six header members and the message member of
      * {@code app/cpy-bms/COBIL00.CPY} are output fields that the map round-trips; {@code :291} overwrites
@@ -1600,8 +1603,9 @@ public class BillPaymentService {
      * any would be a behaviour change, because a failing {@code ENDBR} in the source is silently ignored and
      * the flow continues into identifier generation.</p>
      *
-     * <p>Classified Low and tracked in {@code DECISION_LOG.md}. The single statement closes the browse state
-     * that {@link #startbrTransactFile} opened, which is the whole of the operation's observable effect.</p>
+     * <p>Classified Low and owed an entry in the planned {@code DECISION_LOG.md}. The single statement closes the
+     * browse state that {@link #startbrTransactFile} opened, which is the whole of the operation's observable
+     * effect.</p>
      *
      * @param context the per-invocation working storage; the browse state is closed
      */
@@ -1827,12 +1831,15 @@ public class BillPaymentService {
             return recordResponse(context, CICS_RESP_NOTFND, IO_STATUS_RECORD_NOT_FOUND);
         }
         try {
-            final List<CardCrossReference> matches =
-                    this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(context.xrefAcctId);
-            if (matches.isEmpty()) {
+            // LIMIT 1 at the database: a keyed read through the CXACAIX path yields one record, and only
+            // the first was ever used here. See CardCrossReferenceRepository for the full reasoning.
+            final Optional<CardCrossReference> found =
+                    this.cardCrossReferenceRepository
+                            .findFirstByAccountIdOrderByCardNumberAsc(context.xrefAcctId);
+            if (found.isEmpty()) {
                 return recordResponse(context, CICS_RESP_NOTFND, IO_STATUS_RECORD_NOT_FOUND);
             }
-            context.crossReference = matches.get(0);
+            context.crossReference = found.get();
             return recordResponse(context, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
         } catch (final DataAccessException failure) {
             context.ioFailureCause = failure;
@@ -2735,7 +2742,15 @@ public class BillPaymentService {
         /** {@code :185}-{@code :190}: {@code Invalid value. Valid values are (Y/N)...} */
         CONFIRMATION_INVALID,
 
-        /** {@code :178}-{@code :181}: the operator answered no; the screen was cleared and the pass flagged. */
+        /**
+         * {@code :178}-{@code :181}: the operator answered no; the screen was cleared and the pass flagged.
+         *
+         * <p><b>A successful no-write termination, not a failure.</b> The source arm sets {@code WS-ERR-FLG}
+         * purely to suppress the downstream {@code IF NOT ERR-FLG-ON} guards; it moves no message, positions
+         * no cursor and sends no screen, so there is nothing to report to the operator. Declining at the
+         * prompt is the operator exercising a documented choice, so it records through
+         * {@code markSuccess} exactly as {@link #SCREEN_CLEARED} does.</p>
+         */
         CONFIRMATION_DECLINED,
 
         /**
@@ -3111,12 +3126,12 @@ public class BillPaymentService {
         /**
          * {@code WS-USR-MODIFIED} at {@code :48}-{@code :50}.
          *
-         * <p><strong>Parity artefact P1, classified Low - an intentional no-op, tracked in
-         * {@code DECISION_LOG.md}.</strong> {@code :102} assigns it and no statement anywhere in the five
-         * hundred and seventy-two lines ever tests it. It is retained because deleting the assignment would
-         * break the one-to-one paragraph correspondence that the scope-coverage gate reads, and because Rule 1
-         * Clause B forbids <em>untracked</em> dead code rather than a cited, justified parity artefact. Never
-         * read here either - deliberately, because reading it would be the divergence.</p>
+         * <p><strong>Parity artefact P1, classified Low - an intentional no-op, owed an entry in the planned
+         * {@code DECISION_LOG.md}.</strong> {@code :102} assigns it and no statement anywhere in the five hundred and
+         * seventy-two lines ever tests it. It is retained because deleting the assignment would break the one-to-one
+         * paragraph correspondence that the scope-coverage gate reads, and because Rule 1 Clause B forbids
+         * <em>untracked</em> dead code rather than a cited, justified parity artefact. Never read here either -
+         * deliberately, because reading it would be the divergence.</p>
          */
         private String userModified;
 
@@ -3226,21 +3241,21 @@ public class BillPaymentService {
         /**
          * {@code WS-TRAN-AMT PIC +99999999.99} at {@code app/cbl/COBIL00C.cbl:55}.
          *
-         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, tracked in
-         * {@code DECISION_LOG.md}.</strong> The item is declared in working storage and referenced by no
-         * statement in the procedure division; the amount echo the program actually performs goes through
-         * {@code WS-CURR-BAL}. Retained, seeded and never read, for the reason given on {@link #userModified}.
-         * Deleting it would misrepresent the data division that the traceability matrix cites.</p>
+         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, owed an entry in the planned
+         * {@code DECISION_LOG.md}.</strong> The item is declared in working storage and referenced by no statement in
+         * the procedure division; the amount echo the program actually performs goes through {@code WS-CURR-BAL}.
+         * Retained, seeded and never read, for the reason given on {@link #userModified}. Deleting it would
+         * misrepresent the data division that the traceability matrix cites.</p>
          */
         private String unreferencedTransactionAmount;
 
         /**
          * {@code WS-TRAN-DATE PIC X(08) VALUE '00/00/00'} at {@code app/cbl/COBIL00C.cbl:58}.
          *
-         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, tracked in
-         * {@code DECISION_LOG.md}.</strong> Declared with an initial value and referenced by no statement; the
-         * dates the program actually renders come from {@code app/cpy/CSDAT01Y.cpy}. Retained, seeded with its
-         * declared {@code VALUE} and never read.</p>
+         * <p><strong>Parity artefact P2, classified Low - an intentional no-op, owed an entry in the planned
+         * {@code DECISION_LOG.md}.</strong> Declared with an initial value and referenced by no statement; the dates
+         * the program actually renders come from {@code app/cpy/CSDAT01Y.cpy}. Retained, seeded with its declared
+         * {@code VALUE} and never read.</p>
          */
         private String unreferencedTransactionDate;
 

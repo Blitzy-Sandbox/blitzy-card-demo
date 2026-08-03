@@ -38,8 +38,10 @@ import java.util.Collections;
 import java.util.EnumMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
 import org.springframework.context.annotation.Bean;
@@ -64,10 +66,19 @@ import com.cardemo.model.enums.RejectCode;
  * meaningful errors, and measurable behavior (metrics/tracing where relevant)."</em> That makes it a
  * rule-mandated artefact that ships <em>with</em> the initial implementation rather than as follow-up work.
  * Because it is new capability, <strong>no part of it may be justified as "preserved for parity"</strong>,
- * and it contains no intentional no-op. The three documented sites where the no-dead-code rule yields to
- * the parity mandate are {@code RejectCode.ACCOUNT_RECORD_NOT_FOUND_ON_REWRITE} (code 109),
- * {@code app/cbl/CBACT04C.cbl} paragraph {@code 1400-COMPUTE-FEES} and a redundant index assignment in
- * {@code app/cbl/CBSTM03A.CBL}. None of them is in this package.
+ * and it contains no intentional no-op.
+ *
+ * <p>That claim is deliberately scoped to <em>this class</em> and states no global tally. An earlier revision
+ * said "the three documented sites where the no-dead-code rule yields to the parity mandate are ..." and then
+ * listed three. Neighbouring documentation gave the same tally as three in one place and five in another, so at
+ * least one was wrong, and a fixed count maintained by hand in several unrelated files cannot stay true.
+ * Severity of what that left in place: <strong>High</strong>. The count is withdrawn in favour of the rule that
+ * actually governs: <strong>each retained no-op is justified at its own declaration</strong>, and to be
+ * legitimate it must carry, in that one place, its COBOL locator, a proof of reachability, an explicit
+ * intentional-no-op marker, and an acknowledgement that it is owed an entry in the planned
+ * {@code DECISION_LOG.md}. No file enumerates the set, because no build step maintains such an enumeration.
+ * What this class asserts is only the local fact: nothing in {@code com.cardemo.observability} carries such a
+ * marker, so anything here that looks like dead code is dead code and must be removed rather than explained.
  *
  * <h2>What it replaces</h2>
  *
@@ -109,7 +120,7 @@ import com.cardemo.model.enums.RejectCode;
  * <p>Every consumer of these metrics - {@code observability/prometheus.yml}, the panels in
  * {@code observability/grafana/dashboards/carddemo-dashboard.json}, and any alert rule - binds to the
  * rendered name and tag key, not to a Java symbol. <strong>A rename therefore empties a dashboard panel
- * silently, with no error anywhere: severity High.</strong> The contract is consequently stated in full:
+ * silently, with no error anywhere.</strong> The contract is consequently stated in full:
  *
  * <table border="1">
  *   <caption>The four sanctioned instruments</caption>
@@ -138,9 +149,18 @@ import com.cardemo.model.enums.RejectCode;
  *
  * <p>Nine series in total, and the ceiling is a property of the types involved rather than of discipline:
  * the reject dimension is an enum with five constants and the outcome dimension is an enum with two, so no
- * caller can widen either. The names are mirrored, for review rather than for binding, at
- * {@code src/main/resources/application.yml} under {@code carddemo.metrics.counters.*}, and are quoted in
- * the header of {@code observability/prometheus.yml}.
+ * caller can widen either.
+ *
+ * <p><strong>The five strings below are declared here and nowhere else.</strong> They used to be mirrored as
+ * executable YAML at {@code src/main/resources/application.yml} under {@code carddemo.metrics.*}, described
+ * there as the metrics contract and headed "consumed by MetricsConfig". This class binds no property and its
+ * specification requires that it bind none, so that block was consumed by nothing - and the copy had already
+ * drifted where it mattered most, declaring the tag key as {@code reject-code} against the
+ * {@link #TAG_REJECT_CODE} value of {@code reject.code} that is actually registered. A dashboard author who
+ * trusted the file would have grouped on a label that does not exist and seen an empty panel with no error
+ * anywhere. The mirror is gone; the evidence it carried survives as comments in that file naming these
+ * constants. The names are still quoted in the header of {@code observability/prometheus.yml}, which is
+ * documentation of the scrape target rather than a second declaration.
  *
  * <p><strong>No instrument declares a Micrometer base unit, and that omission is deliberate and
  * load-bearing.</strong> Micrometer's Prometheus naming convention appends an underscore followed by the
@@ -159,7 +179,7 @@ import com.cardemo.model.enums.RejectCode;
  * memory by the process and persisted by the backend. <strong>No account identifier, card number, customer
  * identifier, transaction identifier, user identifier, user name, correlation identifier, trace identifier,
  * timestamp, object-store key, queue message identifier or job execution identifier is ever used as a tag
- * key or a tag value here: severity Blocker if one ever is.</strong> The only two dimensions are the two
+ * key or a tag value here.</strong> The only two dimensions are the two
  * closed enumerations named above.
  *
  * <p>Counters are resolved once - eagerly, for every value of both enumerations - and held in immutable
@@ -169,10 +189,10 @@ import com.cardemo.model.enums.RejectCode;
  * <h2>Money crosses a reporting boundary here, and is not computed here</h2>
  *
  * <p>{@link #countTransactionAmount(BigDecimal)} accepts a {@link BigDecimal} because Transformation Rule 1
- * admits no floating-point type on any financial path and the security gate greps for exactly that.
- * Micrometer's {@link Counter#increment(double)} accepts a primitive, so the conversion happens
- * <strong>exactly once</strong>, on a single line flagged in that method's own documentation as the
- * reporting boundary.
+ * admits no floating-point type on any financial path and the security gate greps for exactly that. The
+ * running total is accumulated exactly, as a {@link BigDecimal}, and a gauge converts it to a primitive
+ * <strong>exactly once</strong> per scrape - on a single line flagged as the reporting boundary. No caller
+ * ever performs that conversion.
  *
  * <p>That boundary is legitimate because <strong>this counter is a telemetry mirror and is not the
  * authoritative financial total</strong>. The authoritative value is the {@link BigDecimal} held in the
@@ -183,18 +203,20 @@ import com.cardemo.model.enums.RejectCode;
  * <h2>Ownership: this class defines, others register, scrape and display</h2>
  *
  * <p>Four responsibilities, four owners, no overlap. <strong>This class defines the instruments.</strong>
- * {@code com.cardemo.config.ObservabilityConfig} owns registration and exposure of the observability layer
- * and the wiring of its three classes. {@code observability/prometheus.yml} owns the scrape. The dashboard
+ * {@code com.cardemo.config.ObservabilityConfig} - <strong>planned, not yet authored</strong> - is to own
+ * registration and exposure of the observability layer and the wiring of its three classes; until it exists
+ * these three classes are self-registering, so nothing here is disabled by its absence.
+ * {@code observability/prometheus.yml} owns the scrape. The dashboard
  * JSON owns display. Accordingly this file declares no {@code @Enable...} annotation, no component scan, no
  * {@code MeterRegistry} implementation bean, no meter filter or common-tag customiser, no exporter or
  * endpoint configuration and no tracing configuration.
  *
  * <p><strong>Troubleshooting a duplicate bean definition.</strong> If the context fails to start reporting a
- * duplicate definition for any of the four beans below, the duplicate must be removed from
- * {@code com.cardemo.config.ObservabilityConfig}, <em>not</em> from this file: this file is the
- * plan-designated definition site. Note that a duplicate <em>meter</em> cannot arise however often a name is
- * resolved - {@code MeterRegistry.counter} and {@code Counter.Builder.register} both return the existing
- * meter for a given name and tag set rather than adding a second one - so re-resolving a counter is always
+ * duplicate definition for any of the four beans below, the duplicate must be removed from wherever it was introduced
+ * - most likely {@code com.cardemo.config.ObservabilityConfig} once that class is authored - <em>not</em> from this
+ * file: this file is the plan-designated definition site. Note that a duplicate <em>meter</em> cannot arise however
+ * often a name is resolved - {@code MeterRegistry.counter} and {@code Counter.Builder.register} both return the
+ * existing meter for a given name and tag set rather than adding a second one - so re-resolving a counter is always
  * safe and never creates a fifth instrument.
  *
  * <h2>This class does not touch logging</h2>
@@ -235,7 +257,8 @@ import com.cardemo.model.enums.RejectCode;
  * <h2>How to build and test this class</h2>
  *
  * <p>Build with {@code ./mvnw -B -ntp clean compile}; the compiler runs {@code -Xlint:all -Werror} with
- * warnings failing the build, so an unused import or a raw type is fatal. Verify with
+ * warnings failing the build, so a raw type or an unchecked cast is fatal. An unused import is not:
+ * {@code javac} 25 publishes no {@code unused} lint key, so that prohibition is review-enforced. Verify with
  * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. Unit tests live under
  * {@code src/test/java/com/cardemo/unit/**} and never in this package; every member below is reachable
  * against a plain {@code SimpleMeterRegistry} with no Spring context, because this class holds no static
@@ -246,51 +269,35 @@ import com.cardemo.model.enums.RejectCode;
  * counter behind {@code SimpleMeterRegistry} accepts it. The consequence for negative monetary amounts is
  * spelled out on {@link #countTransactionAmount(BigDecimal)}.
  *
- * <h2>Findings, severities and remediation</h2>
+ * <h2>Constraints that must hold for the dashboard to keep working</h2>
  *
  * <ul>
- *   <li><strong>Blocker if ever introduced</strong> - a fifth instrument, or any high-cardinality tag.
- *       Timers, gauges, distribution summaries and long-task timers described elsewhere in the
- *       specification are complementary and additive, and are out of scope here. Remediation: keep the
- *       instrument count at four and both tag dimensions enum-closed.</li>
- *   <li><strong>High</strong> - renaming a metric, changing a tag key, or declaring a Micrometer base unit
- *       on any of these counters. Each silently empties a dashboard panel and raises no error. Remediation:
- *       change the constant and the dashboard JSON in the same commit, and never set a base unit.</li>
- *   <li><strong>Medium</strong> - {@code src/main/resources/application.yml:1093} documents the reject tag
- *       key as {@code reject-code} while the authored producer
- *       {@code com.cardemo.batch.writers.RejectWriter:224} uses {@code reject.code}. Both render to the
- *       Prometheus label {@code reject_code}, so the dashboard is unaffected, but they are distinct
- *       Micrometer tag keys and Prometheus rejects one metric name carrying inconsistent label sets. This
- *       class therefore uses {@code reject.code}, matching the producer. Remediation: align the comment in
- *       {@code application.yml} on {@code reject.code}; not done here because that file is owned elsewhere
- *       and the value is documentation rather than a binding.</li>
- *   <li><strong>Medium</strong> - a Micrometer counter is monotonic, so the legitimately negative
- *       transaction amounts of {@code app/cbl/CBTRN02C.cbl:L548-L552} cannot lower an exported total. This
- *       is disclosed on {@link #countTransactionAmount(BigDecimal)} rather than hidden behind an absolute
- *       value. Remediation would require a second instrument or a gauge, which the four-instrument contract
- *       forbids; the limitation is therefore accepted and documented.</li>
- *   <li><strong>Low</strong> - the facade methods below have no in-tree caller yet.
- *       {@code com.cardemo.batch.writers.TransactionWriter:285-288},
- *       {@code com.cardemo.batch.processors.TransactionPostingProcessor:421-423} and
- *       {@code com.cardemo.batch.readers.AccountReader:679} each record this class, or its published name
- *       registry, as <em>Not available</em> and defer to it. This is published API awaiting its consumers,
- *       not dead code; the name and tag constants are public precisely so those files can cite a symbol
- *       instead of retyping a literal.</li>
- * </ul>
+ *   <li><strong>The instrument count stays at four and both tag dimensions stay enum-closed.</strong> A fifth
+ *       instrument, or any high-cardinality tag, breaks the contract this class publishes. Timers, gauges,
+ *       distribution summaries and long-task timers described elsewhere in the specification are
+ *       complementary and additive, and are out of scope here.</li>
+ *   <li><strong>Renaming a metric, changing a tag key or declaring a Micrometer base unit silently empties a
+ *       dashboard panel and raises no error.</strong> Change the constant and
+ *       {@code observability/grafana/dashboards/carddemo-dashboard.json} in the same commit, and never set a
+ *       base unit.</li>
+ *   <li><strong>The reject tag key is {@code reject.code}</strong>, matching the producer
+ *       {@code com.cardemo.batch.writers.RejectWriter}. Micrometer tag keys are distinct even when they
+ *       render to the same Prometheus label, and Prometheus rejects one metric name carrying inconsistent
+ *       label sets, so the two must not diverge.</li>
+ *   <li><strong>A Micrometer counter is monotonic</strong>, so the legitimately negative transaction amounts
+ *       of {@code app/cbl/CBTRN02C.cbl:L548-L552} cannot lower an exported total. That limitation is accepted
+ *       and disclosed on {@link #countTransactionAmount(BigDecimal)} rather than hidden behind an absolute
+ *       value, because taking the absolute value would misreport the figure and lowering it would require a
+ *       second instrument the four-instrument contract forbids.</li>
+ *   </ul>
  *
- * <h2>Not available</h2>
+ * <p>What this class can prove on its own is that all four series appear on the scrape endpoint with the
+ * expected names and tag keys. Demonstrating a <em>populated</em> dashboard additionally needs a container
+ * runtime with an accessible socket, the compose stack up, and batch or sign-on traffic to move the counters.
+ * No throughput or latency threshold is asserted anywhere, because the COBOL corpus publishes no service
+ * level; the performance gate records a measured baseline instead.
  *
- * <ul>
- *   <li>Evidence of a <em>populated</em> dashboard is <strong>Not available</strong> from this class alone.
- *       What is needed is a container runtime with an accessible socket, the compose stack up, and a batch
- *       run or sign-on traffic to move the counters. What can be and is proven without any of that is that
- *       all four series appear on the scrape endpoint with the expected names and tag keys.</li>
- *   <li>Any throughput or latency objective is <strong>Not available</strong>: the COBOL corpus publishes no
- *       service level anywhere. What is needed is a stated objective from the business. None is invented, so
- *       the performance gate records a measured baseline rather than asserting a threshold.</li>
- * </ul>
- *
- * @see RejectCode
+ * * @see RejectCode
  */
 @Configuration
 public class MetricsConfig {
@@ -298,11 +305,10 @@ public class MetricsConfig {
     // =============================================================================================
     // Published name registry.
     //
-    // These are public because three authored files - TransactionWriter, TransactionPostingProcessor
-    // and AccountReader - each record this class's "published name registry" as Not available and
-    // retype the literal instead. A public compile-time constant lets them cite a symbol. Every
-    // constant here is a final reference to an immutable String, so the class still holds no static
-    // mutable state of any kind.
+    // These are public so that producers cite a symbol rather than retype a literal: a metric name or
+    // tag key that drifts between producer and dashboard empties a panel without raising an error.
+    // Every constant here is a final reference to an immutable String, so the class still holds no
+    // static mutable state of any kind.
     // =============================================================================================
 
     /**
@@ -341,13 +347,14 @@ public class MetricsConfig {
      * The one tag key on {@link #METRIC_RECORDS_REJECTED}, rendered by Prometheus as {@code reject_code},
      * which is what {@code sum by (reject_code)} in the dashboard JSON groups on.
      *
-     * <p><strong>This value must stay byte-identical to
-     * {@code com.cardemo.batch.writers.RejectWriter.REJECT_CODE_TAG}, which is {@code reject.code}.</strong>
-     * That class is the other registration site for the same metric name, and Prometheus refuses a single
-     * metric name whose series carry different label sets, so a divergence here breaks the export rather
-     * than merely looking untidy. It is declared separately rather than imported because that class is a
-     * batch component and this one is a cross-cutting observability component; an observability class
-     * importing from the batch layer would invert the dependency direction.
+     * <p><strong>This is the only declaration of the tag key anywhere in the tree.</strong> It used to be
+     * declared twice - here and as {@code RejectWriter.REJECT_CODE_TAG} - with a comment on each requiring
+     * the two to stay byte-identical, because Prometheus refuses a single metric name whose series carry
+     * different label sets and a divergence would have broken the export rather than merely looked untidy.
+     * A requirement that two constants stay equal is a defect with a comment on it, not a design: the
+     * duplicate is gone, that writer now increments through {@link #countRecordRejected(RejectCode)}, and
+     * the dependency direction stays right because the batch layer depends on this observability class
+     * rather than the reverse.
      */
     public static final String TAG_REJECT_CODE = "reject.code";
 
@@ -361,18 +368,6 @@ public class MetricsConfig {
      * telemetry, breaching Rule 1 Clauses A and D at once.
      */
     public static final String TAG_OUTCOME = "outcome";
-
-    /** Bean name of the processed-records counter. Qualify by this rather than by type. */
-    public static final String BEAN_RECORDS_PROCESSED_COUNTER = "cardDemoRecordsProcessedCounter";
-
-    /** Bean name of the immutable per-reject-code counter map. Qualify by this rather than by type. */
-    public static final String BEAN_RECORDS_REJECTED_COUNTERS = "cardDemoRecordsRejectedCounters";
-
-    /** Bean name of the immutable per-outcome counter map. Qualify by this rather than by type. */
-    public static final String BEAN_AUTHENTICATION_ATTEMPT_COUNTERS = "cardDemoAuthenticationAttemptCounters";
-
-    /** Bean name of the cumulative transaction-amount counter. Qualify by this rather than by type. */
-    public static final String BEAN_TRANSACTION_AMOUNT_TOTAL_COUNTER = "cardDemoTransactionAmountTotalCounter";
 
     // =============================================================================================
     // Descriptions. Micrometer keeps the description of whichever registration happened first; these
@@ -466,8 +461,28 @@ public class MetricsConfig {
     /** Immutable, total map holding one counter series per outcome. Never contains a null value. */
     private final Map<AuthenticationOutcome, Counter> authenticationAttemptCounters;
 
-    /** The single untagged cumulative transaction-amount counter. */
-    private final Counter transactionAmountTotalCounter;
+    /**
+     * The authoritative accumulator behind {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}: an exact
+     * {@link BigDecimal} running total, published to the registry through a gauge that reads it.
+     *
+     * <p>It is a gauge rather than a counter, and that is the whole point of the instrument. A Micrometer
+     * counter is monotonic and its Prometheus implementation <em>ignores</em> any non-positive increment, so a
+     * negative amount contributed nothing and could never lower the exported total. Negative amounts are not
+     * an edge case here: {@code app/cbl/CBTRN02C.cbl:L548-L552} adds a negative amount to the cycle
+     * <em>debit</em> accumulator, so debits genuinely hold negative values, and
+     * {@code app/data/ASCII/dailytran.txt} genuinely carries negative overpunch signs. Reporting the sum of a
+     * signed stream through a monotonic instrument is not a limitation to disclose; it is the wrong instrument.
+     *
+     * <p><strong>No sign is normalised anywhere.</strong> The accumulator is updated with
+     * {@link BigDecimal#add(BigDecimal)} and never with an absolute value, so the exported figure is the true
+     * signed total and can fall as well as rise.
+     *
+     * <p>Held in an {@link AtomicReference} and updated with a compare-and-set loop, because a gauge is read
+     * from the scrape thread while batch and request threads write to it, and {@code BigDecimal} arithmetic is
+     * not one instruction. The reference is final; the value it holds is the only mutable state in this class.
+     */
+    private final AtomicReference<BigDecimal> transactionAmountTotal =
+            new AtomicReference<>(BigDecimal.ZERO);
 
     /**
      * Resolves all four instruments - nine series in total - once, eagerly, from the injected registry.
@@ -496,93 +511,24 @@ public class MetricsConfig {
         this.recordsProcessedCounter = resolveRecordsProcessedCounter(meterRegistry);
         this.recordsRejectedCounters = resolveRecordsRejectedCounters(meterRegistry);
         this.authenticationAttemptCounters = resolveAuthenticationAttemptCounters(meterRegistry);
-        this.transactionAmountTotalCounter = resolveTransactionAmountTotalCounter(meterRegistry);
+        registerTransactionAmountTotalGauge(meterRegistry, this.transactionAmountTotal);
     }
 
     // =============================================================================================
-    // Bean definitions - one per instrument, four in total.
+    // NO BEAN DEFINITIONS FOR THE INSTRUMENTS THEMSELVES, and their absence is the fix.
     //
-    // Each takes the registry as a parameter and delegates to the same helper the constructor used, so
-    // each instrument is described in exactly one place. Micrometer returns the already-registered meter
-    // for a given name and tag set, so resolving twice yields the identical object and cannot produce a
-    // fifth instrument.
+    // Four @Bean methods used to expose the counters - one per instrument, plus four published bean names to
+    // qualify them by. Nothing in the application or the test tree ever injected one of them: every consumer
+    // injects this class and calls the facade below. They were therefore four unused beans, which Rule 1
+    // Clause B forbids, and - worse for a metrics layer - a SECOND way to obtain an instrument, which is how
+    // a caller ends up registering its own series against a name this class owns. That is precisely the
+    // defect found in the three batch writers, each of which had resolved its own counter from the registry.
+    //
+    // With them gone the facade is the only path, so this class is the single registration owner in fact and
+    // not merely by convention. Nothing is lost: Micrometer resolves a meter by name and tag set, so any
+    // component that genuinely needs the raw instrument can still obtain the identical object from the
+    // registry - but no component does, and none should, because the facade is what carries the validation.
     // =============================================================================================
-
-    /**
-     * Exposes the processed-records counter as a bean.
-     *
-     * <p>Side effects: registers {@link #METRIC_RECORDS_PROCESSED} on the registry if it is not already
-     * present, and returns the existing meter if it is. Configuration: none; this instrument has no tags
-     * and no configurable value. Troubleshooting: an empty "Records processed" panel almost always means
-     * the metric name changed - it is declared once, in {@link #METRIC_RECORDS_PROCESSED}, and mirrored in
-     * the dashboard JSON, so the two must move together.
-     *
-     * @param meterRegistry the application's meter registry; must not be {@code null}
-     * @return the untagged processed-records counter, never {@code null}
-     * @throws NullPointerException if {@code meterRegistry} is {@code null}
-     */
-    @Bean(name = BEAN_RECORDS_PROCESSED_COUNTER)
-    public Counter cardDemoRecordsProcessedCounter(final MeterRegistry meterRegistry) {
-        return resolveRecordsProcessedCounter(meterRegistry);
-    }
-
-    /**
-     * Exposes the five rejected-records counter series as one immutable bean, keyed by reject code.
-     *
-     * <p>The map is <em>total</em>: it is built from {@code RejectCode.values()}, so it holds an entry for
-     * every constant and {@link Map#get(Object)} cannot return {@code null} for a non-null key. It is
-     * unmodifiable, and being backed by an {@link EnumMap} it iterates in ordinal order rather than hash
-     * order, so any report derived from it is deterministic.
-     *
-     * <p>Side effects: registers the five {@link #METRIC_RECORDS_REJECTED} series if absent. Configuration:
-     * none. Troubleshooting: if the "Rejections by reject code" panel is empty while the total panel is
-     * populated, the tag key diverged - see {@link #TAG_REJECT_CODE}, which must match the other
-     * registration site exactly.
-     *
-     * @param meterRegistry the application's meter registry; must not be {@code null}
-     * @return an immutable map holding one counter for each of the five reject codes, never {@code null}
-     * @throws NullPointerException if {@code meterRegistry} is {@code null}
-     */
-    @Bean(name = BEAN_RECORDS_REJECTED_COUNTERS)
-    public Map<RejectCode, Counter> cardDemoRecordsRejectedCounters(final MeterRegistry meterRegistry) {
-        return resolveRecordsRejectedCounters(meterRegistry);
-    }
-
-    /**
-     * Exposes the two authentication-attempt counter series as one immutable bean, keyed by outcome.
-     *
-     * <p>Total and unmodifiable on the same terms as {@link #cardDemoRecordsRejectedCounters(MeterRegistry)}.
-     *
-     * <p>Side effects: registers the two {@link #METRIC_AUTHENTICATION_ATTEMPTS} series if absent.
-     * Configuration: none. Troubleshooting: both series exist from startup, so a flat line means no traffic
-     * rather than a missing meter.
-     *
-     * @param meterRegistry the application's meter registry; must not be {@code null}
-     * @return an immutable map holding one counter for each outcome, never {@code null}
-     * @throws NullPointerException if {@code meterRegistry} is {@code null}
-     */
-    @Bean(name = BEAN_AUTHENTICATION_ATTEMPT_COUNTERS)
-    public Map<AuthenticationOutcome, Counter> cardDemoAuthenticationAttemptCounters(
-            final MeterRegistry meterRegistry) {
-        return resolveAuthenticationAttemptCounters(meterRegistry);
-    }
-
-    /**
-     * Exposes the cumulative transaction-amount counter as a bean.
-     *
-     * <p>Side effects: registers {@link #METRIC_TRANSACTION_AMOUNT_TOTAL} if absent. Configuration: none -
-     * in particular no base unit, because one would change the published series name. Troubleshooting: this
-     * counter is advisory only; reconcile money against the database, never against this meter, for the
-     * reason given on {@link #countTransactionAmount(BigDecimal)}.
-     *
-     * @param meterRegistry the application's meter registry; must not be {@code null}
-     * @return the untagged cumulative transaction-amount counter, never {@code null}
-     * @throws NullPointerException if {@code meterRegistry} is {@code null}
-     */
-    @Bean(name = BEAN_TRANSACTION_AMOUNT_TOTAL_COUNTER)
-    public Counter cardDemoTransactionAmountTotalCounter(final MeterRegistry meterRegistry) {
-        return resolveTransactionAmountTotalCounter(meterRegistry);
-    }
 
     // =============================================================================================
     // Increment facade. Validated, bounded, and the only place money crosses into a primitive.
@@ -593,14 +539,47 @@ public class MetricsConfig {
      *
      * <p>Mirrors {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code app/cbl/CBTRN02C.cbl:L206}, which the
      * legacy program executes once per record read, so this is called once per record and increments by
-     * exactly one. There is deliberately no batched variant: a per-chunk increment would not correspond to
-     * any statement in the source.
+     * exactly one.
      *
      * <p>Side effects: increments {@link #METRIC_RECORDS_PROCESSED} by one. Failure modes: none - it takes
      * no argument, so there is nothing to validate and nothing that can be rejected.
      */
     public void countRecordProcessed() {
         recordsProcessedCounter.increment();
+    }
+
+    /**
+     * Records that {@code count} daily-transaction records were processed, in one advance.
+     *
+     * <p>Numerically identical to calling {@link #countRecordProcessed()} {@code count} times, and that
+     * equivalence is exact rather than approximate: the argument is an {@code int}, every {@code int} is
+     * representable in a {@code double} without loss, and a counter's value is a sum. Nothing rounds.
+     *
+     * <p>It exists because a chunk-oriented writer knows how many records it wrote and has no reason to loop.
+     * An earlier revision of {@code com.cardemo.batch.writers.TransactionWriter} performed one atomic
+     * increment per row on the grounds that the amount-taking overload accepts only a primitive and this
+     * application holds counts as exact types - true of <em>money</em>, where Transformation Rule 1 admits no
+     * floating-point type, and irrelevant to a record count, which is a small integer. The loop was a real if
+     * modest inefficiency on the hottest path in the batch tier, rated <strong>Low</strong>, and it is
+     * replaced by this method.
+     *
+     * <p>Note what this does <em>not</em> change: the legacy program still counts once per record, and the
+     * exported total is the same number either way. Only the number of atomic operations differs.
+     *
+     * <p>Side effects: increments {@link #METRIC_RECORDS_PROCESSED} by {@code count}. A count of zero is a
+     * no-op, which is the correct outcome for an empty chunk.
+     *
+     * @param count how many records were processed; must not be negative
+     * @throws IllegalArgumentException if {@code count} is negative, because a negative count would lower a
+     *     monotonic counter, which Micrometer would silently discard rather than report
+     */
+    public void countRecordsProcessed(final int count) {
+        if (count < 0) {
+            throw new IllegalArgumentException("count must not be negative but was " + count);
+        }
+        if (count > 0) {
+            recordsProcessedCounter.increment(count);
+        }
     }
 
     /**
@@ -674,11 +653,22 @@ public class MetricsConfig {
      * than hidden: a Micrometer counter is monotonic, and its Prometheus implementation ignores any
      * non-positive increment, so a negative amount contributes nothing to the exported total and cannot
      * lower it. Representing a signed total faithfully would need a second instrument or a gauge, which the
-     * four-instrument contract forbids, so the limitation is disclosed here instead - severity Medium.
+     * four-instrument contract forbids, so the limitation is disclosed here instead.
      *
-     * <p>Side effects: increments {@link #METRIC_TRANSACTION_AMOUNT_TOTAL} by the reported amount.
-     * Configuration: none. Troubleshooting: if this series disagrees with the database, the database is
-     * right - see the monotonicity note above before treating the difference as a defect.
+     * <p>An earlier revision reported this series through a Micrometer counter and <em>disclosed</em> the
+     * consequence rather than fixing it: a counter is monotonic and its Prometheus implementation ignores any
+     * non-positive increment, so every debit contributed nothing and the exported total was the sum of the
+     * credits alone. It also argued that a gauge was forbidden by the four-instrument contract, which
+     * confuses the number of instruments with their <em>type</em> - the contract fixes four names, and this is
+     * still one of them. That combination - an instrument that silently discards half its input, and an API
+     * with no caller at all to notice - was rated <strong>High</strong>. It is now a gauge over the exact
+     * {@link BigDecimal} accumulator described on {@link #transactionAmountTotal}, and its caller is
+     * {@code com.cardemo.batch.writers.TransactionWriter}, which reports each posted amount as it writes it.
+     *
+     * <p>Side effects: adds the amount to the exact accumulator that {@link #METRIC_TRANSACTION_AMOUNT_TOTAL}
+     * publishes. Configuration: none. Troubleshooting: if this series disagrees with the database, the
+     * database is right - the gauge converts to a double for the scrape, so a total far beyond a double's
+     * 53-bit significand will round in the export while the accumulator stays exact.
      *
      * @param amount the transaction amount to report, of any sign and any scale; must not be {@code null}
      * @throws NullPointerException if {@code amount} is {@code null}
@@ -688,14 +678,16 @@ public class MetricsConfig {
      */
     public void countTransactionAmount(final BigDecimal amount) {
         Objects.requireNonNull(amount, "amount must not be null");
-        // REPORTING BOUNDARY - the one and only conversion out of BigDecimal in this class. Permitted
-        // because the counter is advisory telemetry and never a financial computation. Sign preserved.
-        final double reportedAmount = amount.doubleValue();
-        if (!Double.isFinite(reportedAmount)) {
+        if (!Double.isFinite(amount.doubleValue())) {
+            // Rejected here rather than at the scrape, because a value the gauge cannot report must not be
+            // allowed into the accumulator: it would poison every subsequent reading. The message carries the
+            // precision and the scale and never the value itself.
             throw new IllegalArgumentException("amount has no finite double representation and cannot be "
                     + "reported as a metric: precision=" + amount.precision() + ", scale=" + amount.scale());
         }
-        transactionAmountTotalCounter.increment(reportedAmount);
+        // Exact accumulation, and NO absolute value: a negative amount lowers the total, which is the
+        // behaviour a signed stream requires and the reason this is not a monotonic counter.
+        transactionAmountTotal.accumulateAndGet(amount, BigDecimal::add);
     }
 
     // =============================================================================================
@@ -769,13 +761,19 @@ public class MetricsConfig {
      * dashboard queries the name without it.
      *
      * @param meterRegistry the registry to resolve against; must not be {@code null}
-     * @return the counter, never {@code null}
-     * @throws NullPointerException if {@code meterRegistry} is {@code null}
+     * @param accumulator the exact accumulator the gauge reads; must not be {@code null}
+     * @throws NullPointerException if either argument is {@code null}
      */
-    private static Counter resolveTransactionAmountTotalCounter(final MeterRegistry meterRegistry) {
+    private static void registerTransactionAmountTotalGauge(final MeterRegistry meterRegistry,
+            final AtomicReference<BigDecimal> accumulator) {
+
         Objects.requireNonNull(meterRegistry, "meterRegistry must not be null");
-        return Counter.builder(METRIC_TRANSACTION_AMOUNT_TOTAL)
+        // THE REPORTING BOUNDARY - the one and only conversion out of BigDecimal in this class, evaluated by
+        // the scrape thread rather than by any caller. Permitted because the gauge is advisory telemetry and
+        // never a financial computation; the accumulator above remains the exact value. Sign preserved.
+        Gauge.builder(METRIC_TRANSACTION_AMOUNT_TOTAL, accumulator, reference -> reference.get().doubleValue())
                 .description(DESCRIPTION_TRANSACTION_AMOUNT_TOTAL)
+                .strongReference(true)
                 .register(meterRegistry);
     }
 }

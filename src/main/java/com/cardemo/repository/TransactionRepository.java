@@ -37,6 +37,7 @@
  */
 package com.cardemo.repository;
 
+import java.util.List;
 import java.util.Optional;
 
 import org.springframework.data.domain.Pageable;
@@ -73,7 +74,7 @@ import com.cardemo.model.entity.Transaction;
  *       compared against the bare {@code procTs} property so the plain B-tree serves the predicate. The
  *       source's inclusive end date is converted to that exclusive bound by the <em>calling service</em>,
  *       not here: deriving it would be text manipulation, and this interface performs none.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Everything else stays out. This interface parses no text, generates no timestamp, performs no
  * balance arithmetic, computes no control break, emits no fixed-width record, declares no transaction
@@ -96,7 +97,7 @@ import com.cardemo.model.entity.Transaction;
  *   <li>{@code app/jcl/TRANFILE.jcl} corroborates it in IDCAMS: {@code DEFINE CLUSTER} at {@code :L49},
  *       {@code KEYS(16 0)} at {@code :L53}, {@code RECORDSIZE(350 350)} at {@code :L54} and
  *       {@code INDEXED} at {@code :L57}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>A 16-byte key at relative byte position zero can only be {@code TRAN-ID PIC X(16)}, declared at
  * {@code app/cpy/CVTRA05Y.cpy:L5} as the first field of {@code 01 TRAN-RECORD.} at {@code :L4}. That is
@@ -118,7 +119,7 @@ import com.cardemo.model.entity.Transaction;
  *       {@code app/jcl/TRANIDX.jcl:L25-L27} declares the same {@code KEYS(26 304)} with its
  *       {@code DEFINE PATH} at {@code :L42-L44}. Both members also spell the non-uniqueness out as
  *       {@code NONUNIQUEKEY}, at {@code TRANFILE.jcl:L85} and {@code TRANIDX.jcl:L28}.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Medium - discrepancy #7: TRANIDX.jcl belongs to this repository, not to the card repository</h3>
  * <strong>Severity Medium.</strong> The transformation plan's file-by-file table maps
@@ -252,7 +253,7 @@ import com.cardemo.model.entity.Transaction;
  *       {@code com.cardemo.service.shared.FileStatusMapper}, not here. Exception types are referenced in
  *       this documentation as prose and are deliberately not imported, so that the repository layer
  *       depends on nothing but the model and the framework.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build, run and test</h2>
  * <pre>
@@ -286,7 +287,7 @@ import com.cardemo.model.entity.Transaction;
  *   <li>The Spring Batch {@code BATCH_*} metadata tables come from the framework's own script via
  *       {@code spring.batch.jdbc.initialize-schema}. They are never a fourth Flyway migration and never
  *       extra tables in {@code V1}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
@@ -327,22 +328,24 @@ import com.cardemo.model.entity.Transaction;
  *       interchangeable and each documents the source path it reproduces.</li>
  *   <li><em>Text comes back space-padded</em> - that is {@code CHAR(n)} behaving correctly. The columns
  *       are fixed width by design; trim at the point of comparison rather than widening the column.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Not available - what could not be read when this interface was authored</h2>
  * Stated plainly rather than assumed, with what is needed in each case.
  *
  * <ul>
- *   <li><strong>Not available:</strong> {@code V2__create_indexes.sql} and
- *       {@code V3__seed_data.sql}. Measured 1 August 2026,
- *       {@code src/main/resources/db/migration/V1__create_schema.sql} <strong>is present</strong> and
+ *   <li><strong>All three Flyway migrations are present</strong>, and an earlier revision of this bullet
+ *       recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available - that is no
+ *       longer true and the claim is withdrawn.
+ *       {@code src/main/resources/db/migration/V1__create_schema.sql}
  *       declares {@code CREATE TABLE "transaction"} with a {@code version BIGINT} column
  *       and the three foreign keys {@code fk04_transaction_card},
- *       {@code fk05_transaction_type} and {@code fk06_transaction_category}. <em>What is needed:</em>
- *       the two remaining Flyway migration files. Because {@code ddl-auto: validate} is mandated in
- *       every planned profile, the following is <strong>what V1 declares and what this interface is
- *       typed over</strong>, and a mismatch would fail context startup rather than degrading
- *       gracefully - the table name {@code transaction} (written
+ *       {@code fk05_transaction_type} and {@code fk06_transaction_category}; {@code V2} declares
+ *       {@code idx_transaction_proc_ts}, the non-unique B-tree index that backs the processing-timestamp
+ *       finder below in place of {@code TRANSACT.VSAM.AIX}; and {@code V3} seeds the table. Because
+ *       {@code ddl-auto: validate} is set in all four profiles, which are present too, the following is
+ *       <strong>what V1 declares and what this interface is typed over</strong>, and a mismatch fails
+ *       context startup rather than degrading gracefully - the table name {@code transaction} (written
  *       {@code "transaction"} only where a quoted identifier is required in SQL), the primary key
  *       {@code tran_id CHAR(16)}, the columns {@code tran_amt NUMERIC(11,2)},
  *       {@code tran_card_num CHAR(16)}, {@code tran_orig_ts CHAR(26)} and
@@ -362,7 +365,7 @@ import com.cardemo.model.entity.Transaction;
  *       publishes no throughput and no latency target anywhere, so the performance gate records a
  *       <em>measured baseline</em> and no threshold may be invented. <em>What is needed:</em> a
  *       stakeholder-supplied objective, if one is ever to be asserted.</li>
- * </ul>
+ *   </ul>
  *
  * @see Transaction
  */
@@ -490,7 +493,7 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      *           Unchanged with enable_seqscan = off: the planner had no index-based alternative at all.
      *
      *   AFTER   ... where t1_0.tran_proc_ts&gt;=$1 and t1_0.tran_proc_ts&lt;$2
-     *           Index Scan using ix_transaction_proc_ts on transaction t1_0
+     *           Index Scan using idx_transaction_proc_ts on transaction t1_0
      *             Index Cond: ((tran_proc_ts &gt;= '2022-03-01'::bpchar) AND (tran_proc_ts &lt; '2022-03-04'::bpchar))
      *             Buffers: shared hit=1505
      *
@@ -711,4 +714,38 @@ public interface TransactionRepository extends JpaRepository<Transaction, String
      */
     Slice<Transaction> findByTransactionIdLessThanOrderByTransactionIdDesc(
             String beforeTransactionIdExclusive, Pageable pageable);
+
+    /**
+     * Reads the next window of the statement sort order, positioned by the last key already consumed.
+     *
+     * <p>This is the Java counterpart of {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)} at
+     * {@code app/jcl/CREASTMT.JCL:L53}: card number ascending, then transaction identifier ascending, both
+     * compared as character data because both source fields are character. The sorted result is what
+     * {@code STEP020} REPROs into the {@code KEYS(32 0)} work cluster that {@code CBSTM03A} then reads
+     * through its {@code TRNXFILE} DD, so this ordering is a precondition of the statement program's
+     * lookup: {@code app/cbl/CBSTM03A.CBL:L417-L419} exits its scan as soon as a stored card number
+     * exceeds the one sought, which is only correct while the sequence ascends.
+     *
+     * <p><strong>Keyset positioning, not page-number positioning.</strong> The caller passes the composite
+     * key of the last row it consumed and the query returns the rows strictly after it, so every window
+     * costs one index seek regardless of how far into the sort order it lies. A page-number
+     * {@code Pageable} would translate to {@code OFFSET}, which re-reads and discards every preceding row
+     * and degrades linearly across a full-table statement run. The first window is requested with two
+     * empty strings, which precede every non-empty card number and identifier under character comparison.
+     * The {@code Pageable} supplies the window size only; its sort is ignored because the ordering is
+     * fixed in the query, and its page number must be zero.
+     *
+     * @param cardNumber the card number of the last row already consumed, or the empty string to start at
+     *     the beginning of the sort order.
+     * @param transactionId the identifier of the last row already consumed, or the empty string to start
+     *     at the beginning of the sort order.
+     * @param pageable the window size; page number zero, sort ignored.
+     * @return the next window of rows in card-then-identifier ascending order, never {@code null} and
+     *     empty once the sort order is exhausted.
+     */
+    @Query("select t from Transaction t where t.cardNumber > :cardNumber "
+            + "or (t.cardNumber = :cardNumber and t.transactionId > :transactionId) "
+            + "order by t.cardNumber asc, t.transactionId asc")
+    List<Transaction> findStatementOrderAfter(@Param("cardNumber") String cardNumber,
+            @Param("transactionId") String transactionId, Pageable pageable);
 }

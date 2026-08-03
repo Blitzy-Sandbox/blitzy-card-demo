@@ -47,8 +47,6 @@ import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Constraint;
 import jakarta.validation.ConstraintViolation;
-import jakarta.validation.Validation;
-import jakarta.validation.ValidatorFactory;
 import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Size;
 import java.io.Serializable;
@@ -126,7 +124,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       states. That file also carries the gated cross field pattern at {@code :1664-1675}, where the
  *       cross field edit runs only once both single field edits have passed - which is why no
  *       unconditional class level constraint may model it.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -150,14 +148,15 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       from {@link FixedClockProvider#canonicalClock()} and every format, parse and case operation
  *       passes {@link Locale#ROOT} explicitly.</li>
  *   <li><strong>No global mutable state.</strong> Every constant here is an immutable {@code String},
- *       {@code int} or {@link List#of} value, and every {@link ValidatorFactory} is opened and closed
+ *       {@code int} or {@link List#of} value, and every {@code jakarta.validation.ValidatorFactory} is opened and
+ *       closed
  *       inside the test that needs it.</li>
  *   <li><strong>No mock objects.</strong> The subject is a payload with no collaborator, so Mockito
  *       would have nothing to stub and is deliberately not referenced.</li>
  *   <li><strong>Reflection is read only.</strong> It is used to introspect declared fields and their
  *       {@link Size} annotations, which is the only way to assert a declared width. Mutation goes
  *       through the real setters via an explicit switch, never through reflective invocation.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -222,7 +221,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@link AutoCloseable} opened in a try with resources block must be referenced inside that
  *       block, or {@code -Xlint:try} fails the build. <em>Remediation:</em> read the first
  *       {@code [ERROR]} line; the compiler names the exact construct.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Not available</h2>
  *
@@ -236,10 +235,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       used by this test. To supply one, a fixture would have to be extracted from that JCL member,
  *       which is frozen, and its credential column would have to be replaced before it could be
  *       committed.</li>
- *   <li><strong>Child migrations of {@code V1__create_schema.sql} are Not available.</strong> No
- *       further schema artefacts are planned beyond the three migrations named in the plan, so none is
- *       referenced. This test is a pure JVM unit test and reaches no schema in any case.</li>
- * </ul>
+ *   <li><strong>No schema artefact beyond the three planned migrations exists, and none is expected.</strong>
+ *       All three - {@code V1__create_schema.sql}, {@code V2__create_indexes.sql} and
+ *       {@code V3__seed_data.sql} - are present at this commit; an earlier revision of this entry said
+ *       "child migrations of {@code V1__create_schema.sql} are Not available", which conflated "no fourth
+ *       migration is planned" with "the later migrations are missing" and is withdrawn. Nothing here
+ *       references any of them: this is a pure JVM unit test and reaches no schema in any case.</li>
+ *   </ul>
  *
  * @see UserCreateRequest
  * @see UserType
@@ -544,11 +546,8 @@ class UserCreateRequestTest {
 
     /**
      * The twelve Java property names in the copybook's declaration order, which is also the order the
-     * {@code @JsonCreator} constructor declares its parameters.
-     *
-     * @param target the payload to mutate, never {@code null}
-     * @param property the Java property name, which must name one of the twelve fields
-     * @param value the presented value, which may be {@code null}
+     * {@code @JsonCreator} constructor declares its parameters. Every name in this list must be one of the
+     * twelve fields translated from {@code app/cpy-bms/COUSR01.CPY}.
      */
     private static final List<String> PROPERTY_ORDER = List.of(
             "transactionName",

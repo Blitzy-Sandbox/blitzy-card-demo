@@ -32,10 +32,12 @@ package com.cardemo.service.shared;
 
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.enums.FileStatus;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -43,6 +45,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.configuration.annotation.JobScope;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.stereotype.Service;
 
 /**
@@ -76,8 +80,10 @@ import org.springframework.stereotype.Service;
  * <h2>How to build and test</h2>
  *
  * <p>Java 25 with {@code maven.compiler.release} 25 and no preview features, Maven 3.9.11, parent
- * {@code spring-boot-starter-parent} 3.5.11. The compiler runs {@code -Xlint:all -Werror}, so an unused
- * import or a raw type fails the build outright. Build with {@code ./mvnw -B clean compile} and verify with
+ * {@code spring-boot-starter-parent} 3.5.11. The compiler runs {@code -Xlint:all -Werror}, so a raw type, an
+ * unchecked cast or a dangling documentation comment fails the build outright; an unused import does not,
+ * because {@code javac} 25 publishes no {@code unused} lint key, and malformed Javadoc does not either,
+ * because no Javadoc plugin is bound in {@code pom.xml}. Build with {@code ./mvnw -B clean compile} and verify with
  * {@code ./mvnw -B verify}, which enforces an 80 percent JaCoCo line floor with no exclusions. Unit tests for
  * this class belong in {@code src/test/java/com/cardemo/unit/} only; they need no database and no container,
  * because a dataset binding is an interface a test can implement directly.
@@ -108,7 +114,7 @@ import org.springframework.stereotype.Service;
  *       {@code '04'} are success at the nine open, close and initial-read sites; {@code '00'} alone is
  *       success at the four get-next sites, where {@code '10'} means end of file; everything else abends.
  *       Both guards are owned by {@code FileStatusMapper} and are never reimplemented here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The implemented matrix, 12 of 24 cells</h2>
  *
@@ -121,7 +127,7 @@ import org.springframework.stereotype.Service;
  *       (L189-L190) and {@code 'C'} (L196).</li>
  *   <li>{@code ACCTFILE} - {@code 4000-ACCTFILE-PROC.} at L206 implements {@code 'O'} (L209), {@code 'K'}
  *       (L214-L215) and {@code 'C'} (L221).</li>
- * </ul>
+ *   </ul>
  *
  * <p>The eight remaining cells are unreachable in the source and are reproduced as unreachable here.
  * {@code 'W'} and {@code 'Z'} are declared at L107 and L108 and then referenced by no handler at all; the
@@ -130,23 +136,25 @@ import org.springframework.stereotype.Service;
  * {@code CUSTFILE} and {@code ACCTFILE}, and {@code 'K'} from {@code TRNXFILE} and {@code XREFFILE}, which
  * follows directly from the access-mode split. All eight, the two write operation codes and the four pure
  * terminator paragraphs are retained rather than deleted, are marked as intentional no-ops at the point of
- * definition, and are tracked in DECISION_LOG.md so that they are not mistaken for abandoned dead code.
+ * definition, so that they are not mistaken for abandoned dead code.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>A call returns a stale return code and an untouched payload (defect A, High).</strong> A
+ *   <li><strong>A stale return code with an untouched payload (defect A, High) - now refused.</strong> A
  *       valid DD combined with an operation that dataset does not implement, for example {@code TRNXFILE}
  *       with {@code 'K'}, performs no input or output at all: no {@code IF} in the handler fires, control
  *       falls through to the status epilogue, and the epilogue publishes the status register left behind by
- *       the previous call on that same DD. Remedy: call {@code supports} before dispatching, or use the
- *       guarded convenience methods, which cannot select an unimplemented cell.</li>
- *   <li><strong>An unknown DD name reports success (defect B, High).</strong> {@code WHEN OTHER GO TO
- *       9999-GOBACK.} at L127-L128 performs no input or output and never assigns the return code, so the
- *       caller observes the value it pre-set itself. Because the caller pre-sets {@code MOVE ZERO} into a
- *       two byte alphanumeric field at {@code app/cbl/CBSTM03A.CBL:L349}, that value is {@code '00'}, and
- *       {@code MOVE SPACES} at L350 leaves an all-spaces payload. Remedy: pass a resolved DD through the
- *       guarded methods, which cannot express an unknown name.</li>
+ *       the previous call on that same DD, so the second call inherits the first call's verdict.
+ *       {@link #execute(FileServiceRequest)} refuses the combination; call {@link #supports} first, or use a
+ *       guarded method, which cannot select an unimplemented cell.</li>
+ *   <li><strong>An unknown DD name reporting success (defect B, High) - now refused.</strong> {@code WHEN
+ *       OTHER GO TO 9999-GOBACK.} at L127-L128 performs no input or output and never assigns the return code,
+ *       so the caller observes the value it pre-set itself. Because the caller pre-sets {@code MOVE ZERO}
+ *       into a two byte alphanumeric field at {@code app/cbl/CBSTM03A.CBL:L349}, that value is {@code '00'},
+ *       and {@code MOVE SPACES} at L350 leaves an all-spaces payload - a blank record reported as a
+ *       successful read. {@link #execute(FileServiceRequest)} refuses the name and names the four it
+ *       accepts.</li>
  *   <li><strong>An out-of-range key length is rejected.</strong> The source applies COBOL reference
  *       modification with a runtime length, which is undefined behaviour outside 1 to 25. This class
  *       validates the bound explicitly and abends with context instead.</li>
@@ -158,52 +166,48 @@ import org.springframework.stereotype.Service;
  *       the DD name in the message. Remedy: contribute a binding for that DD to the application context.
  *       Construction never fails for a missing binding, so a context that does not run the statement job
  *       still starts.</li>
- *   <li><strong>Reading the source with a lowercase-only glob loses it (Blocker).</strong> The primary source
+ *   <li><strong>Reading the source with a lowercase-only glob loses it.</strong> The primary source
  *       is {@code app/cbl/CBSTM03B.CBL} with an uppercase extension, and its caller
  *       {@code app/cbl/CBSTM03A.CBL} likewise, so a {@code *.cbl} pattern silently drops both. Match
  *       {@code app/cbl} case-insensitively.</li>
- *   <li><strong>Counting lines without stripping the carriage return shifts every citation (Blocker).</strong>
+ *   <li><strong>Counting lines without stripping the carriage return shifts every citation.</strong>
  *       Both source members are CRLF terminated on every line. Strip the carriage return before counting.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried by this translation, classified</h2>
+ * <h2>Ways this translation gets broken</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - reading {@code app/cbl/CBSTM03B.CBL} with a lowercase-only glob, or
- *       counting its lines without stripping the carriage return. Remedy: match case-insensitively and strip
+ *   <li>Reading {@code app/cbl/CBSTM03B.CBL} with a lowercase-only glob, or
+ *       counting its lines without stripping the carriage return. Match case-insensitively and strip
  *       the carriage return first.</li>
- *   <li><strong>High</strong> - defect A, the stale-status fall-through; defect B, the unknown DD reporting
+ *   <li>Removing either reproduced legacy defect - the stale-status fall-through or the unknown DD reporting
  *       success; admitting {@code '04'} on a general status path; exposing a write capability for {@code 'W'}
- *       or {@code 'Z'}; logging the payload or the key. Remedy for each: reproduce the first two behind the
- *       guarded methods, delegate all status decisions to {@code FileStatusMapper}, keep the surface read
- *       only, and log nothing but DD name, operation and return code.</li>
- *   <li><strong>Medium</strong> - the specification cites the dispatch three lines high, at L117, L119, L121
- *       and L131, where the carriage-return-stripped source has L114, L116, L118 and L128; collapsing a
- *       status epilogue into its terminator, which would drop four paragraphs from the map; the
- *       {@code FD-ACCT-ID PIC 9(11)} numeric-key asymmetry against three alphanumeric keys. Remedy: cite the
- *       verified lines, which this file does throughout; keep the epilogue and terminator separate, which
- *       this file does; validate the numeric key explicitly, which this file does. The citation drift is
- *       tracked in DECISION_LOG.md rather than silently absorbed.</li>
- *   <li><strong>Low</strong> - {@code FD-ACCT-DATA} is declared twice, as {@code PIC X(318)} under
- *       {@code TRNX-FILE} at L63 and as {@code PIC X(289)} under {@code ACCT-FILE} at L78, a duplicate data
- *       name legal only under qualification; the header comments at L25-L26 read "This program is to called
- *       by the statement create program" and "It does file handling". Remedy: none. Both are recorded, and
- *       neither is corrected, because {@code app/} is frozen.</li>
- * </ul>
+ *       or {@code 'Z'}; logging the payload or the key. Both defects are reproduced behind the
+ *       guarded methods, all status decisions are delegated to {@code FileStatusMapper}, the surface stays
+ *       read only, and nothing but DD name, operation and return code is logged.</li>
+ *   <li>Collapsing a status epilogue into its terminator, which would drop four paragraphs from the map, or
+ *       ignoring the {@code FD-ACCT-ID PIC 9(11)} numeric-key asymmetry against three alphanumeric keys. The
+ *       epilogue and terminator stay separate and the numeric key is validated explicitly. The
+ *       carriage-return-stripped source puts the dispatch at L114, L116, L118 and L128, and those are the
+ *       lines cited throughout this file.</li>
+ *   </ul>
  *
- * <h2>Information that is genuinely absent</h2>
+ * <h2>Two source curiosities, recorded and not corrected</h2>
  *
  * <ul>
- *   <li><strong>Not available</strong> - a fifteenth PROCEDURE DIVISION paragraph. The specification counts
- *       fifteen paragraphs; the source has fourteen in the PROCEDURE DIVISION plus {@code FILE-CONTROL.} at
- *       L30, which is an Area A paragraph of the ENVIRONMENT DIVISION INPUT-OUTPUT SECTION and carries no
- *       behaviour, so it maps to the four dataset bindings rather than to a method. Fourteen behavioural plus
- *       one non-behavioural is the fifteen. What would be needed to support the residual claim is a source
- *       line that does not exist; no paragraph was consolidated to make the count fit.</li>
- *   <li><strong>Not available</strong> - any throughput or latency objective for file access. The source
+ *   <li>{@code FD-ACCT-DATA} is declared twice, as {@code PIC X(318)} under
+ *       {@code TRNX-FILE} at L63 and as {@code PIC X(289)} under {@code ACCT-FILE} at L78, a duplicate data
+ *       name legal only under qualification; and the header comments at L25-L26 read "This program is to called
+ *       by the statement create program" and "It does file handling". Neither is corrected, because
+ *       {@code app/} is frozen.</li>
+ *   <li>The PROCEDURE DIVISION has fourteen paragraphs, not fifteen: the fifteenth Area A paragraph is
+ *       {@code FILE-CONTROL.} at L30, in the ENVIRONMENT DIVISION INPUT-OUTPUT SECTION, which carries no
+ *       behaviour and maps to the four dataset bindings rather than to a method. No paragraph was
+ *       consolidated to make a count fit.</li>
+ *   <li>No throughput or latency objective for file access exists. The source
  *       publishes no service level, so none is invented here; the performance gate records a measured
  *       baseline rather than a target.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Concurrency and state</h2>
  *
@@ -231,7 +235,19 @@ import org.springframework.stereotype.Service;
  * @see FileStatusMapper
  */
 @Service
-public class FileService {
+@JobScope
+public class FileService implements InitializingBean {
+
+    // SCOPE AND WIRING VALIDATION, and why BOTH are present. Finding, severity High, RESOLVED. The four status
+    // registers below are per-instance, but a singleton has exactly one instance, so two overlapping job
+    // executions would still have shared them - and a status register is read immediately after the call that
+    // set it, which makes a cross-execution overwrite a wrong-status decision rather than a lost log line.
+    // @JobScope gives one instance per job execution, which is the isolation CBSTM03B had by construction: the
+    // subprogram's WORKING-STORAGE belonged to the invoking job step and to nothing else. InitializingBean is
+    // orthogonal and is kept: afterPropertiesSet refuses to complete wiring unless all four Dd values are
+    // bound, so a missing binding fails when the instance is created rather than at the first read. With the
+    // job scope that is the first job execution rather than context refresh, which is the only observable
+    // consequence of pairing the two.
 
     /**
      * Logger for the per-call diagnostic line.
@@ -339,6 +355,21 @@ public class FileService {
     private static final String BROKEN_BINDING_REASON = "DATASET BINDING BREACHED THE CBSTM03B CONTRACT";
 
     /**
+     * Abend reason for defect B, refused at the public adapter: a DD name no handler recognises.
+     *
+     * <p>Worded as the corpus words its own abend reasons - upper case, terse, naming the subprogram - so a
+     * log line from this class is indistinguishable in shape from one the frozen batch programs produce.
+     */
+    private static final String UNKNOWN_DD_REASON = "UNRECOGNISED CBSTM03B DD NAME";
+
+    /**
+     * Abend reason for defect A, refused at the public adapter: an operation the resolved dataset does not
+     * implement, which in the source performs no input or output and republishes a stale status.
+     */
+    private static final String UNIMPLEMENTED_OPERATION_REASON =
+            "UNIMPLEMENTED CBSTM03B DD AND OPERATION COMBINATION";
+
+    /**
      * The dispatch table: one handler per DD name, keyed by the resolved DD and built exactly once.
      *
      * <p>This is the Java form of {@code EVALUATE LK-M03B-DD} at {@code app/cbl/CBSTM03B.CBL:L118}. It is an
@@ -385,6 +416,29 @@ public class FileService {
      * mutable by design. This is the only state this bean retains between calls, and it is retained
      * deliberately, because a COBOL subprogram's WORKING-STORAGE survives from one call to the next and that
      * survival is precisely what defect A exposes.
+     *
+     * <h4>The scope of that survival, proved from the source rather than assumed</h4>
+     *
+     * <p>Cross-call survival is required; process-wide sharing is not, and the difference is what the
+     * {@code @JobScope} on this class establishes. {@code CBSTM03B} is a separately compiled subprogram
+     * reached by {@code CALL 'CBSTM03B' USING WS-M03B-AREA} from {@code app/cbl/CBSTM03A.CBL:L347-L351} and
+     * its sibling call sites, and it declares no {@code INITIAL} attribute on its {@code PROGRAM-ID}, so its
+     * WORKING-STORAGE persists for the life of the <em>run unit</em> - one enclosing job step - and is
+     * released with it. There is exactly one such run unit per execution of {@code app/jcl/CREASTMT.JCL}, and
+     * the legacy system ran one at a time. A process-wide singleton would therefore be <em>more</em> shared
+     * than the source, not equally shared: two concurrent statement jobs would read each other's residual
+     * statuses, so the very defect this state reproduces would fire across job boundaries where the source
+     * cannot produce it. Scoping the bean to the job reproduces the source's own lifetime exactly - survival
+     * within one run, isolation between runs.
+     *
+     * <p>Isolating the registers per <em>invocation</em> is deliberately NOT done, and that is the one place
+     * where an obvious hardening would break parity: defect A is observable only because a call that performs
+     * no input or output leaves the previous call's status in place, and a per-invocation reset would silently
+     * repair it. The acceptance is therefore an explicit exception to Rule 1 Clause B's preference against
+     * retained mutable state, justified by the parity mandate, and it is <strong>owed an entry in the planned
+     * {@code DECISION_LOG.md}</strong>; measured at this commit that file does not exist, so the register of
+     * record is this Javadoc together with the analysis in {@code docs/technical-specifications.md}. Nothing
+     * here may be described as already recorded or tracked until the entry and its stable identifier exist.
      */
     private final Map<Dd, AtomicReference<String>> statusRegisters;
 
@@ -394,8 +448,10 @@ public class FileService {
      *
      * @param fileStatusMapper the sole owner of return-code interpretation and four character status
      * rendering. Must not be {@code null}
-     * @param datasetBindings every dataset binding present in the context, in any order. May be empty, which
-     * is the normal case for a context that does not run the statement job. Must not be {@code null}, and no
+     * @param datasetBindings every dataset binding present in the context, in any order. A caller that
+     * constructs this service directly may supply any subset, which is what lets a unit test exercise one DD
+     * in isolation; a <strong>Spring managed</strong> instance must be given all four, and
+     * {@link #afterPropertiesSet()} refuses to complete wiring otherwise. Must not be {@code null}, and no
      * element may be {@code null} or report a {@code null} DD
      * @throws NullPointerException if {@code fileStatusMapper} or {@code datasetBindings} is {@code null}, or
      * if any binding is {@code null} or reports a {@code null} DD
@@ -408,6 +464,45 @@ public class FileService {
         this.statusRegisters = buildStatusRegisters();
         LOG.info("CBSTM03B file service ready: {} of {} dataset bindings contributed",
                 this.datasets.size(), Dd.values().length);
+    }
+
+    /**
+     * Fails wiring unless every DD the subprogram declares has exactly one binding.
+     *
+     * <p>{@code app/cbl/CBSTM03B.CBL:L58-L78} declares four files and {@code app/cbl/CBSTM03A.CBL} reaches
+     * all of its input through them, so a context that offers three bindings is not a reduced-function
+     * context - it is a context in which the statement run abends part way through, after it has already
+     * opened files and emitted records. Refusing to finish the refresh converts that into a startup failure
+     * naming the missing DD, which is the difference between a diagnosable configuration defect and a
+     * mid-run abend.
+     *
+     * <p>Deliberately here and not in the constructor. The container calls this method; a direct constructor
+     * call does not, which is what lets a unit test build the service with a single binding and exercise one
+     * DD in isolation. The completeness requirement is a <em>wiring</em> requirement, so it belongs to the
+     * wiring callback.
+     *
+     * @throws IllegalStateException if any DD has no binding, naming every missing DD and the configuration
+     * class that is expected to declare them
+     */
+    @Override
+    public void afterPropertiesSet() {
+        final Set<Dd> missing = EnumSet.allOf(Dd.class);
+        missing.removeAll(this.datasets.keySet());
+        if (!missing.isEmpty()) {
+            final StringBuilder ddNames = new StringBuilder();
+            for (final Dd dd : missing) {
+                if (ddNames.length() > 0) {
+                    ddNames.append(", ");
+                }
+                ddNames.append(dd.ddName());
+            }
+            throw new IllegalStateException("no dataset binding is registered for DD " + ddNames
+                    + "; app/cbl/CBSTM03B.CBL:L58-L78 declares all " + Dd.values().length
+                    + " files and every one of them must have exactly one repository backed binding. "
+                    + "com.cardemo.config.BatchConfig is the class that declares them; a sliced test that "
+                    + "imports only part of the configuration must import it too.");
+        }
+        LOG.info("CBSTM03B dataset bindings verified: all {} DDs are bound", Dd.values().length);
     }
 
     /**
@@ -505,22 +600,73 @@ public class FileService {
      * Performs one call against the shared area: the exact Java equivalent of
      * {@code CALL 'CBSTM03B' USING WS-M03B-AREA} ({@code app/cbl/CBSTM03A.CBL:L351}).
      *
-     * <p>This is the faithful, unguarded entry point and the one every other public method is built on. It
-     * reports the outcome as a return code and <strong>never throws for an input or output condition</strong>,
-     * because the subprogram it replaces does not either: {@code CBSTM03B} has no abend path of its own, it
-     * moves a {@code FILE STATUS} into the return code and returns, leaving every accept-or-abend decision to
-     * its caller. Interpreting the code is therefore the caller's job, exactly as it is at the thirteen guard
+     * <p>This is the entry point every other public method is built on. For a <em>dispatchable</em> cell - a
+     * recognised DD paired with an operation that dataset implements - it behaves exactly as the subprogram
+     * does: it reports the outcome as a return code and <strong>never throws for an input or output
+     * condition</strong>, because {@code CBSTM03B} has no abend path of its own. It moves a
+     * {@code FILE STATUS} into the return code and returns, leaving every accept-or-abend decision to its
+     * caller. Interpreting the code is therefore the caller's job, exactly as it is at the thirteen guard
      * sites in {@code app/cbl/CBSTM03A.CBL}, and {@code FileStatusMapper} is where that interpretation lives.
      *
-     * <p>Both latent defects of the source are reachable through this method and only through this method.
-     * An unrecognised DD name yields the request's own pre-set return code and payload untouched, which for
-     * the pre-sets a caller normally supplies means {@code '00'} and a blank record - defect B. A recognised
-     * DD combined with an operation that dataset does not implement performs no input or output and yields
-     * the status register left behind by the previous call on that DD - defect A. The guarded methods cannot
-     * express either condition, which is why they are the safer default.
+     * <p><strong>It fails closed on the two cells the source leaves unimplemented.</strong> An unrecognised
+     * DD name (defect B) and a recognised DD paired with an unimplemented operation (defect A) are refused
+     * with an abend rather than answered with a pre-set or stale success - see
+     * {@link #requireDispatchableCell(FileServiceRequest)} for the two conditions, and the class
+     * documentation for why refusing them is the faithful choice rather than a deviation. The byte-exact
+     * legacy behaviour remains available, deliberately under its own name, through
+     * {@link #executeInLegacyParityMode(FileServiceRequest)}.
      *
      * @param request the shared area to act on, carrying the DD name, the operation, the key, the key length
      * and the caller's pre-set return code and payload. Must not be {@code null}
+     * @return the outcome, always carrying a two character return code and a payload of exactly
+     * {@link #PAYLOAD_WIDTH} characters. Never {@code null}
+     * @throws NullPointerException if {@code request} is {@code null}
+     * @throws com.cardemo.exception.FatalProcessingException if the DD name is unrecognised, if the resolved
+     * dataset does not implement the requested operation, if a validated shared-area field is out of range
+     * for the resolved dataset, if the resolved dataset has no binding in this context, or if a binding
+     * breaches its contract. Carries abend culprit {@code CBSTM03B}
+     */
+    public FileServiceResult execute(final FileServiceRequest request) {
+        Objects.requireNonNull(request, "request must not be null");
+        requireDispatchableCell(request);
+        return executeInLegacyParityMode(request);
+    }
+
+    /**
+     * Performs one call with the source's fail-open behaviour intact: the parity mode.
+     *
+     * <p><strong>This is the only entry point through which defects A and B are reachable, and it exists so
+     * that they remain <em>provable</em> without being <em>reachable by accident</em>.</strong> An earlier
+     * revision made this the behaviour of {@link #execute(FileServiceRequest)} itself, on the reasoning that
+     * {@code CBSTM03B} has no abend path of its own and leaves every accept-or-abend decision to its caller.
+     * That reasoning is right about the subprogram and wrong about the adapter, and the distinction is the
+     * point of this method's existence:
+     *
+     * <ul>
+     *   <li>In the source, the fail-open paths are <strong>unreachable</strong>. The single caller,
+     *       {@code app/cbl/CBSTM03A.CBL}, only ever sets a DD name from its own literals and only ever pairs
+     *       it with an operation that dataset implements, so no live execution can select an unknown name or
+     *       an unimplemented cell. The defects are latent, not active.</li>
+     *   <li>In Java, {@link FileServiceRequest} accepts an arbitrary DD-name string, so the same paths are
+     *       <strong>reachable</strong>. Reproducing them on the default adapter therefore does not preserve
+     *       the source's behaviour - it manufactures a fail-open path the source never had, and it
+     *       contradicts the migration's own invariant that a file status becomes a typed exception on every
+     *       I/O path and is never swallowed.</li>
+     * </ul>
+     *
+     * <p>So {@link #execute(FileServiceRequest)} now fails closed - see
+     * {@link #requireDispatchableCell(FileServiceRequest)} - and this method carries the byte-exact legacy
+     * behaviour for the tests that assert both defects and for any future parity comparison that needs it. It
+     * is named for what it is rather than being hidden behind a flag, because a boolean parameter on
+     * {@code execute} would put the dangerous behaviour one typo away from a production call site.
+     *
+     * <p>Two consequences of calling this method, restated because they are the whole of the defects. An
+     * unrecognised DD name yields the request's own pre-set return code and payload untouched, which for the
+     * pre-sets a caller normally supplies means {@code '00'} and a blank record - defect B. A recognised DD
+     * combined with an operation that dataset does not implement performs no input or output and yields the
+     * status register left behind by the previous call on that DD - defect A.
+     *
+     * @param request the shared area to act on. Must not be {@code null}
      * @return the outcome, always carrying a two character return code and a payload of exactly
      * {@link #PAYLOAD_WIDTH} characters. Never {@code null}
      * @throws NullPointerException if {@code request} is {@code null}
@@ -528,7 +674,7 @@ public class FileService {
      * for the resolved dataset, if the resolved dataset has no binding in this context, or if a binding
      * breaches its contract. Carries abend culprit {@code CBSTM03B}
      */
-    public FileServiceResult execute(final FileServiceRequest request) {
+    public FileServiceResult executeInLegacyParityMode(final FileServiceRequest request) {
         Objects.requireNonNull(request, "request must not be null");
         final SharedArea area = new SharedArea(request);
         dispatch(area);
@@ -538,6 +684,69 @@ public class FileService {
                     request.ddName(), request.operation().code(), result.returnCode());
         }
         return result;
+    }
+
+    /**
+     * Refuses a request that would select a cell the source leaves unimplemented, closing defects A and B at
+     * the public adapter.
+     *
+     * <p>Two conditions are refused, and each is refused because the alternative is a caller that believes an
+     * operation succeeded when nothing happened:
+     *
+     * <ul>
+     *   <li><strong>An unrecognised DD name</strong> - defect B. The dispatch would assign no return code at
+     *       all, so the caller would read back its own pre-set {@code '00'} and an all-spaces payload and
+     *       conclude it had read a blank record.</li>
+     *   <li><strong>A recognised DD paired with an operation that dataset does not implement</strong> -
+     *       defect A. No handler branch fires, no input or output occurs, and the status epilogue republishes
+     *       whatever the previous call on that DD left in the register - so the second call inherits the
+     *       first call's verdict.</li>
+     * </ul>
+     *
+     * <p>Both are refused with {@code FatalProcessingException} carrying abend culprit {@code CBSTM03B} and
+     * abend code 999, which is the same terminal outcome the corpus produces for any status its guards do not
+     * accept ({@code app/cbl/CBTRN02C.cbl:L707-L711}). Nothing is swallowed and the message names the DD and
+     * the operation, so the diagnosis does not require reading this class.
+     *
+     * @param request the request about to be dispatched; must not be {@code null}
+     * @throws com.cardemo.exception.FatalProcessingException if the DD name is unrecognised, or if the
+     * resolved dataset does not implement the requested operation
+     */
+    private static void requireDispatchableCell(final FileServiceRequest request) {
+        final Optional<Dd> resolved = Dd.fromDdName(request.ddName());
+        if (resolved.isEmpty()) {
+            throw new FatalProcessingException(FileStatusMapper.ABEND_CODE_UNSET, ABEND_CULPRIT,
+                    UNKNOWN_DD_REASON,
+                    String.format(Locale.ROOT,
+                            "DD name '%s' is not one of %s, so no handler exists for it. The source reaches "
+                                    + "GOBACK without assigning LK-M03B-RC on this path "
+                                    + "(app/cbl/CBSTM03B.CBL:L127-L131), which would report the caller's own "
+                                    + "pre-set '00' as a successful read of a blank record. That fail-open "
+                                    + "path is unreachable in the corpus, where the only caller supplies DD "
+                                    + "names from its own literals, and it is refused here rather than "
+                                    + "reproduced because a Java caller can reach it. Use "
+                                    + "executeInLegacyParityMode if the legacy behaviour is what you need.",
+                            FileStatus.escapeForDiagnostics(request.ddName()),
+                            Arrays.stream(Dd.values()).map(Dd::ddName).toList()));
+        }
+
+        final Dd dd = resolved.get();
+        if (!IMPLEMENTED_OPERATIONS.get(dd).contains(request.operation())) {
+            throw new FatalProcessingException(FileStatusMapper.ABEND_CODE_UNSET, ABEND_CULPRIT,
+                    UNIMPLEMENTED_OPERATION_REASON,
+                    String.format(Locale.ROOT,
+                            "Dataset %s does not implement operation '%s'; it implements %s. No handler "
+                                    + "branch would fire, so the source falls through to its status epilogue "
+                                    + "and republishes the register left by the previous call on this DD "
+                                    + "(app/cbl/CBSTM03B.CBL:L151-L152), which makes the second call inherit "
+                                    + "the first call's verdict. That fail-open path is unreachable in the "
+                                    + "corpus and is refused here rather than reproduced. Call supports(...) "
+                                    + "first, use a guarded method, or use executeInLegacyParityMode if the "
+                                    + "legacy behaviour is what you need.",
+                            dd.ddName(),
+                            request.operation().code(),
+                            IMPLEMENTED_OPERATIONS.get(dd).stream().map(Operation::code).toList()));
+        }
     }
 
     /**
@@ -719,9 +928,8 @@ public class FileService {
      * evaluate are preserved: the unrecognised name reaches the return through that explicit branch, and a
      * recognised name reaches it by natural fall-through once its handler has finished.
      *
-     * <p>Note that the specification cites this paragraph at L119 and its evaluate at L121; the
-     * carriage-return-stripped source has L116 and L118. The verified lines are used here, and the drift is
-     * tracked in DECISION_LOG.md.
+     * <p>The carriage-return-stripped source puts this paragraph at L116 and its evaluate at L118, and those
+     * are the lines used here.
      *
      * @param area the shared area, mutated in place exactly as {@code LK-M03B-AREA} is. Must not be
      * {@code null}
@@ -750,8 +958,7 @@ public class FileService {
      * <p>Returning control to the caller is implicit in Java, so this paragraph has no executable
      * counterpart. It is retained rather than elided because it is a genuine paragraph with two distinct
      * entries - the {@code WHEN OTHER} branch and the fall-through - and because eliding it would drop a
-     * label from the paragraph map the scope-coverage gate reads. Intentional no-op, tracked in
-     * DECISION_LOG.md.
+     * label from the paragraph map the scope-coverage gate reads. Intentional no-op.
      *
      * <p>Its emptiness is also the whole of defect B: reaching {@code GOBACK} without having assigned
      * {@code LK-M03B-RC} is what lets an unknown DD name report success. It takes no shared area precisely
@@ -826,7 +1033,7 @@ public class FileService {
      * <p>{@code EXIT} is COBOL's no-operation, present solely so that
      * {@code PERFORM 1000-TRNXFILE-PROC THRU 1999-EXIT} (L120) has a paragraph to stop at. It has no
      * executable counterpart in Java and is retained as an explicit, intentional no-op so that the paragraph
-     * map stays complete and one-to-one. Tracked in DECISION_LOG.md.
+     * map stays complete and one-to-one.
      */
     private void trnxfileTerminator() {
         // EXIT. (L155) - COBOL's no-operation. Intentionally empty; see the Javadoc above.
@@ -879,8 +1086,7 @@ public class FileService {
 
     /**
      * Carries {@code 2999-EXIT.} ({@code app/cbl/CBSTM03B.CBL:L178}), whose body is {@code EXIT.} at L179.
-     * The terminator for {@code PERFORM 2000-XREFFILE-PROC THRU 2999-EXIT} (L122). Intentional no-op, tracked
-     * in DECISION_LOG.md.
+     * The terminator for {@code PERFORM 2000-XREFFILE-PROC THRU 2999-EXIT} (L122). Intentional no-op.
      */
     private void xreffileTerminator() {
         // EXIT. (L179) - COBOL's no-operation. Intentionally empty.
@@ -937,8 +1143,7 @@ public class FileService {
 
     /**
      * Carries {@code 3999-EXIT.} ({@code app/cbl/CBSTM03B.CBL:L203}), whose body is {@code EXIT.} at L204.
-     * The terminator for {@code PERFORM 3000-CUSTFILE-PROC THRU 3999-EXIT} (L124). Intentional no-op, tracked
-     * in DECISION_LOG.md.
+     * The terminator for {@code PERFORM 3000-CUSTFILE-PROC THRU 3999-EXIT} (L124). Intentional no-op.
      */
     private void custfileTerminator() {
         // EXIT. (L204) - COBOL's no-operation. Intentionally empty.
@@ -994,7 +1199,7 @@ public class FileService {
     /**
      * Carries {@code 4999-EXIT.} ({@code app/cbl/CBSTM03B.CBL:L228}), whose body is {@code EXIT.} at L229.
      * The terminator for {@code PERFORM 4000-ACCTFILE-PROC THRU 4999-EXIT} (L126) and the last paragraph of
-     * the program. Intentional no-op, tracked in DECISION_LOG.md.
+     * the program. Intentional no-op.
      */
     private void acctfileTerminator() {
         // EXIT. (L229) - COBOL's no-operation. Intentionally empty.
@@ -1524,7 +1729,7 @@ public class FileService {
      *
      * <p>All six are retained even though two are unreachable, because both are declared in the source on a
      * field the source really does inspect, and deleting them would misrepresent the contract this bean
-     * carries. Retained deliberately and tracked in DECISION_LOG.md; use {@link #supports(Dd, Operation)} to
+     * carries. Retained deliberately; use {@link #supports(Dd, Operation)} to
      * discover which pairs are actually implemented.
      */
     public enum Operation {
@@ -1557,7 +1762,7 @@ public class FileService {
          *
          * <p><strong>Implemented by no dataset.</strong> The condition name is declared and then referenced
          * nowhere in the program, because every dataset is opened {@code OPEN INPUT} and so cannot be written.
-         * Retained as an intentional parity artefact, never given behaviour, and tracked in DECISION_LOG.md.
+         * Retained as an intentional parity artefact and never given behaviour.
          */
         WRITE('W'),
 
@@ -1565,7 +1770,7 @@ public class FileService {
          * {@code M03B-REWRITE VALUE 'Z'} ({@code app/cbl/CBSTM03B.CBL:L108}).
          *
          * <p><strong>Implemented by no dataset</strong>, for exactly the same reason as {@link #WRITE}.
-         * Retained as an intentional parity artefact and tracked in DECISION_LOG.md.
+         * Retained as an intentional parity artefact.
          */
         REWRITE('Z');
 

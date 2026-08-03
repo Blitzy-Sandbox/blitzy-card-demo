@@ -136,7 +136,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       deliberately live in the service tier instead.</li>
  *   <li><b>The seeded users.</b> The ten rows of {@code app/jcl/DUSRSECJ.jcl:L35-L44}, asserted by
  *       identifier, name and user class only, each carrying a synthetic BCrypt shaped value.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Three physical facts underpin the whole file and each is corroborated twice over, which is why they
  * are asserted as settled rather than inferred. The record is <b>80 bytes</b>:
@@ -152,13 +152,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>Source the pinned toolchain first, then work from the repository root:
  *
  * <ul>
- *   <li>{@code source /etc/profile.d/10-carddemo-toolchain.sh} - OpenJDK 25.0.3 and Maven 3.9.11, the
- *       exact pair {@code maven-enforcer-plugin} asserts;</li>
+ *   <li><strong>Prerequisite, stated as a capability rather than as a host path:</strong> JDK 25 on
+ *       {@code PATH} with {@code JAVA_HOME} set, however the host provides it. Maven comes from the pinned
+ *       wrapper, so the pair {@code maven-enforcer-plugin} asserts is satisfied without naming any file
+ *       outside this repository. The repository's own contract is {@code .env} plus {@code ./mvnw}, and
+ *       {@code .env.example} documents every variable;</li>
  *   <li>{@code ./mvnw -B clean test} - compiles and runs this tier;</li>
  *   <li>{@code ./mvnw -B test -Dtest=UserSecurityTest} - this class alone;</li>
  *   <li>{@code ./mvnw -B clean verify} - adds the 80 percent line coverage floor and the vulnerability
  *       scan.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>This class is bound to Surefire, not to Failsafe, and the binding is positional.</b>
  * {@code maven-surefire-plugin} 3.5.4 includes {@code **}{@code /*Test.java} and excludes
@@ -170,7 +173,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * file name nor the directory may change.
  *
  * <p><b>Every test method here is declared at the top level; none is nested.</b> That is a deliberate
- * consequence of the reporting artefact recorded as the Low finding below: with the current include
+ * consequence of the reporting artefact described below: with the current include
  * patterns a class whose tests live only inside {@code @Nested} groups is reported as
  * {@code Tests run: 0} in its own {@code target/surefire-reports} file even though the tests do execute.
  * Keeping every method at the top level makes the per class report show a real, non zero count, so
@@ -203,7 +206,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><b>No Mockito.</b> {@code mockito-core} 5.17.0 is on the classpath and its strict stub checking
  *       would apply, but a data holder with no collaborator has nothing to mock; introducing a double
  *       would test the double instead of the entity.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -233,107 +236,100 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><b>An unrecognised user class resolves to something.</b> A converter that defaulted would hand a
  *       privilege class to a row the schema never authorised. Movement 2 asserts that every code outside
  *       {@code 'A'} and {@code 'U'} throws, and that the message names the offending code.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>5. Findings, classified by severity</h2>
+ * <h2>5. Constraints that must continue to hold</h2>
  *
- * <p><b>Blocker - a plaintext credential literal must never appear under {@code src/}.</b> Rule 1 clause
+ * <p><b>A plaintext credential literal must never appear under {@code src/}.</b> Rule 1 clause
  * D names tests explicitly: no secrets in code, logs, tests or config. All ten seeded rows at
  * {@code app/jcl/DUSRSECJ.jcl:L35-L44} share one 8 character plaintext value in the
  * {@code SEC-USR-PWD PIC X(08)} field. That value is referred to here by citation only and is
  * transcribed nowhere - not in a constant, not in an assertion message, not in a comment and not in this
  * documentation. Movement 3 asserts the property from the other side instead: every credential this test
  * constructs is a synthetic 60 character BCrypt shaped value, no value of the source's 8 byte width can
- * satisfy that shape, and the compiled entity's own string constant pool contains no candidate.
- * Remediation if ever violated: delete the literal, rotate nothing (the value is public legacy sample
- * data, not a live secret) and re-derive the assertion from the shape.
+ * satisfy that shape, and the compiled entity's own string constant pool contains no candidate. Should a
+ * literal ever be introduced, delete it and re-derive the assertion from the shape; the value is public
+ * legacy sample data rather than a live secret, so nothing needs rotating.
  *
- * <p><b>Blocker - the credential column is {@code VARCHAR(60)}, never {@code CHAR(8)}.</b> The source
+ * <p><b>The credential column is {@code VARCHAR(60)}, never {@code CHAR(8)}.</b> The source
  * field is 8 bytes because it held plaintext; the column is 60 because that is the exact length of a
  * BCrypt hash, and {@code VARCHAR} because a {@code CHAR} column would blank pad one. A {@code CHAR(8)}
- * column truncates every hash to garbage and no test that only checks a name would notice. Remediation:
- * the migration must declare {@code sec_usr_pwd VARCHAR(60) NOT NULL}.
+ * column truncates every hash to garbage and no test that only checks a name would notice, so the
+ * migration must declare {@code sec_usr_pwd VARCHAR(60) NOT NULL}.
  *
- * <p><b>Blocker - the user class needs the explicit converter.</b> See the fourth failure mode above.
- * Remediation: keep {@link UserTypeConverter}, and keep {@code @Enumerated} out of the entity entirely.
+ * <p><b>The user class needs the explicit converter.</b> See the fourth failure mode above: keep
+ * {@link UserTypeConverter}, and keep {@code @Enumerated} out of the entity entirely.
  *
- * <p><b>High - a multi character code was silently truncated to its first character.</b> The converter
- * strips padding with {@code trim()} and then read only the first character of what remained, so a
- * malformed non blank value such as {@code "AA"} or {@code "AU"} resolved to
- * {@link UserType#ADMIN} instead of being rejected. Because the padding is already stripped before the
- * length is measured, the leniency could never help the case it was written for - a driver padding a
- * {@code CHAR(1)} - and admitted only values a {@code CHAR(1)} column cannot hold. Silently accepting a
+ * <p><b>A multi character code must be rejected, never truncated to its first character.</b> Padding is
+ * stripped with {@code trim()} before the length is measured, so reading only the first character of what
+ * remains would resolve a malformed non blank value such as {@code "AA"} or {@code "AU"} to
+ * {@link UserType#ADMIN} instead of rejecting it - and, because the padding is already gone, such a
+ * leniency could never help the case it would be written for, a driver padding a {@code CHAR(1)}. It would
+ * admit only values a {@code CHAR(1)} column cannot hold. Silently accepting a
  * malformed privilege code is exactly the unsafe default Rule 1 clause A forbids and the boundary
- * condition clause B requires validating. Remediation, applied: the resolution was switched from
- * {@code UserType.fromCode(char)} to {@link UserType#fromCode(String)}, which already reports an empty
- * result for any length but one, so the domain check is delegated to the type that owns the domain rather
- * than restated; the rejection message now names the whole offending value with its length and code
- * units, and the converter's documentation was corrected to match. That string overload had no other
- * caller anywhere in the main sources, which is itself evidence that it was declared for precisely this
- * call site and that the wrong overload had simply been reached for. Movement 2 pins the tightened
- * contract, and no import was added to the entity by the fix.
+ * condition clause B requires validating, so the converter resolves through
+ * {@link UserType#fromCode(String)}, which reports an empty
+ * result for any length but one: the domain check is delegated to the type that owns the domain rather
+ * than restated, and the rejection message names the whole offending value with its length and code
+ * units. Movement 2 pins that contract, and the entity needs no import to satisfy it.
  *
- * <p><b>High - the entity must not become a security principal.</b> It does not implement Spring
+ * <p><b>The entity must not become a security principal.</b> It does not implement Spring
  * Security's user details contract, extends no framework type and references nothing from
  * {@code org.springframework}; the adaptation belongs to
  * {@code com.cardemo.security.CardDemoUserDetailsService}, one layer out. Importing the interface would
- * drag a security framework into the model layer and invert the dependency direction. Remediation:
- * adapt in the security package, never here. Movement 5 asserts it against the compiled class file, so
- * the assertion cannot be satisfied by an import that merely looks absent.
+ * drag a security framework into the model layer and invert the dependency direction, so the adaptation
+ * belongs in the security package and never here. Movement 5 asserts it against the compiled class file,
+ * so the assertion cannot be satisfied by an import that merely looks absent.
  *
- * <p><b>High - no version column belongs on this entity.</b> Exactly four entities carry
+ * <p><b>No version column belongs on this entity.</b> Exactly four entities carry
  * {@code @Version}: the account, card, customer and transaction entities. Adding a fifth here would
  * introduce a column the 80 byte record has no room for and an optimistic locking failure mode the four
  * user administration screens never had. Movement 1 asserts the absence, and cross checks that the four
  * versioned entities are exactly those four.
  *
- * <p><b>Medium - {@code USRSEC} is catalogued, contrary to the plan.</b> The technical specification
- * states that this cluster is defined in JCL rather than catalogued. It is catalogued:
+ * <p><b>{@code USRSEC} is catalogued, so the catalogue is the primary authority for its geometry.</b>
  * {@code app/catlg/LISTCAT.txt:L3881} names {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} and {@code :L3883}
  * reports {@code KEYLEN 8} with {@code AVGLRECL 80}. The IDCAMS declaration at
  * {@code app/jcl/DUSRSECJ.jcl:L65-L66} corroborates the same geometry from a second, independent source
- * rather than being the only one. Remediation: cite {@code app/catlg/LISTCAT.txt:L3883} as the primary
- * authority for this cluster's geometry, exactly as the sibling ten clusters are cited. Both citations
- * are asserted in movement 1, so the correction is machine checked and not merely written down.
+ * rather than being the only one, and this cluster is therefore cited exactly as the sibling ten are.
+ * Both citations
+ * are asserted in movement 1, so the geometry is machine checked and not merely written down.
  *
- * <p><b>Low - a nested only test class reports zero tests.</b> With Surefire's include patterns matching
+ * <p><b>A class whose tests all live in {@code @Nested} groups reports {@code Tests run: 0} of its
+ * own.</b> With Surefire's include patterns matching
  * on {@code *Test.java}, the tests of a {@code @Nested} group execute and count towards the aggregate but
- * are attributed to their display name, leaving the outer class's own report file reading
- * {@code Tests run: 0}. Five sibling classes in this package are in that position today, and one that
- * mixes both forms reports only its top level methods. It is a reporting artefact and not a
- * non execution: the aggregate is correct. Remediation, for the build owner and deliberately not
- * attempted from a test source: add {@code **}{@code /*Test$*.java} to the Surefire includes. This file
+ * are attributed to their display name, leaving the outer class's own report file empty. It is a reporting
+ * artefact and not a non execution: the aggregate is correct. This file
  * side steps the artefact entirely by declaring no nested class.
  *
- * <p><b>Low - {@code USRSEC} has no alternate index and needs none.</b> The catalogue's totals at
+ * <p><b>{@code USRSEC} has no alternate index and needs none.</b> The catalogue's totals at
  * {@code app/catlg/LISTCAT.txt:L3938} and {@code :L3946} are {@code AIX 3} and {@code PATH 3}, and all
  * three belong to the card, cross reference and transaction clusters. The user list screen pages in
  * primary key order at ten rows per page, which the primary key index already serves, so a second index
  * would be write amplification for no read benefit.
  *
- * <h2>6. What is Not available</h2>
+ * <h2>6. Boundaries of this class</h2>
  *
  * <ul>
- *   <li><b>Closed: the schema text is now available.</b> This bullet previously recorded that
- *       {@code src/main/resources/db/migration} had no children and that the check constraint restricting
- *       {@code sec_usr_type} to {@code 'A'} and {@code 'U'} could not be asserted as SQL. Both statements
- *       are withdrawn: {@code V1__create_schema.sql} exists, declares {@code user_security},
- *       and {@code ck_user_security_type} is one of its five {@code CHECK} constraints. That constraint is
- *       now asserted as SQL - by {@code SchemaStructureTest}, which parses the migration and pins the
- *       check census at exactly five, so a sixth could not be added unnoticed. This class continues to
- *       assert the enforceable Java side counterpart rather than duplicating that work: {@link
+ *   <li><b>The check constraint is asserted as SQL elsewhere.</b> {@code V1__create_schema.sql} declares
+ *       {@code user_security}, and {@code ck_user_security_type} - which restricts {@code sec_usr_type} to
+ *       {@code 'A'} and {@code 'U'} - is one of its five {@code CHECK} constraints.
+ *       {@code SchemaStructureTest} parses the migration and pins the
+ *       check census at exactly five, so a sixth could not be added unnoticed. This class asserts the
+ *       enforceable Java side counterpart rather than duplicating that work: {@link
  *       UserTypeConverter} accepts those two codes and rejects every other, which is the same domain
  *       expressed where a unit test can reach it without a database. No DDL is invented here.</li>
- *   <li><b>Not available: a {@code usrsec.txt} fixture.</b> The user records exist only as the in stream
+ *   <li><b>There is no {@code usrsec.txt} fixture, deliberately.</b> The user records exist only as the in
+ *       stream
  *       {@code SYSUT1 DD *} data at {@code app/jcl/DUSRSECJ.jcl:L34-L45}. Nothing needs to be supplied,
  *       because the in stream data is the authority, but no fixture derived assertion is possible and
  *       none is faked. Movement 8 asserts the absence explicitly, so a future fixture cannot appear
  *       unnoticed.</li>
- *   <li><b>Not available: the ten stored hashes.</b> {@code V3__seed_data.sql} will hold precomputed
- *       BCrypt values and does not exist yet, so no real hash can be read or asserted. Movement 8 uses
- *       synthetic shaped values, which is sufficient because the property under test is the shape and
+ *   <li><b>No stored hash is read from the seed.</b> {@code V3__seed_data.sql} holds the ten precomputed
+ *       BCrypt values, but this class deliberately does not reach for them: movement 8 uses
+ *       synthetic shaped values, because the property under test is the shape and
  *       the column width, never a particular digest.</li>
- * </ul>
+ *   </ul>
  *
  * @see UserSecurity
  * @see UserTypeConverter

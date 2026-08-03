@@ -62,6 +62,7 @@ import java.lang.reflect.Modifier;
 import java.lang.reflect.RecordComponent;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterAll;
@@ -102,10 +103,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  * break the traceability the migration is measured on, so the corrected spelling is asserted to be
  * <em>rejected</em> rather than merely unused.</p>
  *
- * <p><strong>The card verification value must be accepted and never emitted.</strong> The symbolic
+ * <p><strong>The card verification value must be refused in both directions.</strong> The symbolic
  * map declares no CVV field at all, and where {@code :1108-1112} sends the old embossed name, status
- * and three expiry components back to the screen it sends no CVV. The value is therefore inbound
- * only.</p>
+ * and three expiry components back to the screen it sends no CVV. Finding F13 then removed the
+ * operational column, the entity field and the request component outright, so the contract asserted
+ * here is not "inbound only" but "absent in both directions": an inbound verification value is
+ * <em>refused</em> by the unknown-property rejector rather than accepted and discarded, and no
+ * component exists that could serialise one outbound.</p>
  *
  * <p><strong>An unrecognised property must fail loudly, at every level of the payload.</strong> The
  * framework disables failure on unknown properties by default and no profile in this repository
@@ -115,7 +119,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>How to run it</h2>
  *
- * <p>{@code mvn -B test -Dtest=CardUpdateRequestApiContractTest} for this class alone, or {@code mvn -B test}
+ * <p>{@code ./mvnw -B -ntp test -Dtest=CardUpdateRequestApiContractTest} for this class alone, or
+ * {@code ./mvnw -B -ntp test}
  * for the tier. It needs no container, no Spring context, no database and no network.</p>
  *
  * <h2>Key configuration and defaults</h2>
@@ -138,7 +143,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       has become readable on the wire.</li>
  *   <li>A failure in {@code UnknownPropertyRejection} means the local guard has been removed in favour
  *       of a mapper setting. A mapper setting is not equivalent: the lenient case proves it.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("CardUpdateRequest - app/cpy-bms/COCRDUP.CPY (17) + app/cbl/COCRDUPC.cbl:291-313")
 final class CardUpdateRequestApiContractTest {
@@ -149,17 +154,19 @@ final class CardUpdateRequestApiContractTest {
     /** The two WORKING-STORAGE snapshot groups the stateless contract has to carry. */
     private static final int SNAPSHOT_GROUPS = 2;
 
-    /** Leaves per snapshot group: account, card, verification value, name, three date parts, status. */
-    private static final int SNAPSHOT_LEAVES = 8;
+    /**
+     * Leaves per snapshot group: account, card, name, three date parts, status.
+     *
+     * <p>Seven, not eight. The verification value was the eighth until finding F13 removed it from the
+     * operational record; the group carries no substitute leaf in its place.</p>
+     */
+    private static final int SNAPSHOT_LEAVES = 7;
 
     /** {@code ACCTSIDI PIC X(11)} at {@code app/cpy-bms/COCRDUP.CPY:60}, and both snapshot copies. */
     private static final int ACCOUNT_ID_WIDTH = 11;
 
     /** {@code CARDSIDI PIC X(16)} at {@code app/cpy-bms/COCRDUP.CPY:66}, and both snapshot copies. */
     private static final int CARD_NUMBER_WIDTH = 16;
-
-    /** {@code CCUP-xxx-CVV-CD PIC X(3)} at {@code app/cbl/COCRDUPC.cbl:294} and {@code :306}. */
-    private static final int CVV_WIDTH = 3;
 
     /** {@code CRDNAMEI PIC X(50)} at {@code app/cpy-bms/COCRDUP.CPY:72}, and both snapshot copies. */
     private static final int CARDHOLDER_NAME_WIDTH = 50;
@@ -217,10 +224,10 @@ final class CardUpdateRequestApiContractTest {
     /**
      * Builds a fully populated snapshot group whose every leaf sits at its declared width.
      *
-     * @return a snapshot carrying a value in all eight leaves
+     * @return a snapshot carrying a value in all seven leaves
      */
     private static CardDetails populatedSnapshot() {
-        return new CardDetails(text(ACCOUNT_ID_WIDTH), text(CARD_NUMBER_WIDTH), "123",
+        return new CardDetails(text(ACCOUNT_ID_WIDTH), text(CARD_NUMBER_WIDTH),
                 new CardData(text(CARDHOLDER_NAME_WIDTH),
                         new ExpiraionDate("2026", "11", "30"), "Y"));
     }
@@ -295,7 +302,6 @@ final class CardUpdateRequestApiContractTest {
         return Stream.of(
                 Arguments.of(CardDetails.class, "accountId", ACCOUNT_ID_WIDTH),
                 Arguments.of(CardDetails.class, "cardNumber", CARD_NUMBER_WIDTH),
-                Arguments.of(CardDetails.class, "cvvCode", CVV_WIDTH),
                 Arguments.of(CardData.class, "cardholderName", CARDHOLDER_NAME_WIDTH),
                 Arguments.of(CardData.class, "cardStatusCode", 1),
                 Arguments.of(ExpiraionDate.class, "expiryYear", EXPIRY_YEAR_WIDTH),
@@ -420,7 +426,7 @@ final class CardUpdateRequestApiContractTest {
     }
 
     @Nested
-    @DisplayName("Snapshot contract: two groups, eight leaves each, nested as the source nests them")
+    @DisplayName("Snapshot contract: two groups, seven leaves each, nested as the source nests them")
     class SnapshotContract {
 
         @Test
@@ -431,11 +437,11 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("the group declares the read key and the verification value at its own level, "
-                + "and the comparable subgroup one level deeper")
+        @DisplayName("the group declares the two-part read key at its own level, and the comparable "
+                + "subgroup one level deeper")
         void theGroupNestsAsTheSourceNests() {
             assertThat(componentNames(CardDetails.class))
-                    .containsExactly("accountId", "cardNumber", "cvvCode", "cardData");
+                    .containsExactly("accountId", "cardNumber", "cardData");
             assertThat(componentNames(CardData.class))
                     .containsExactly("cardholderName", "expiraionDate", "cardStatusCode");
             assertThat(componentNames(ExpiraionDate.class))
@@ -443,9 +449,9 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("the three nested types resolve to exactly eight leaves, matching the source's "
-                + "eight elementary items per group")
-        void theGroupResolvesToEightLeaves() {
+        @DisplayName("the three nested types resolve to exactly seven leaves, matching the source's "
+                + "elementary items per group that survive finding F13")
+        void theGroupResolvesToSevenLeaves() {
             final long detailLeaves = componentNames(CardDetails.class).stream()
                     .filter(name -> !"cardData".equals(name)).count();
             final long dataLeaves = componentNames(CardData.class).stream()
@@ -457,7 +463,7 @@ final class CardUpdateRequestApiContractTest {
 
         @Test
         @DisplayName("the comparable subgroup holds exactly the three members the source compares as "
-                + "a unit, and excludes the read key and the verification value")
+                + "a unit, and excludes the read key")
         void theComparableSubgroupHoldsOnlyItsThreeMembers() {
             assertThat(componentNames(CardData.class))
                     .containsExactly("cardholderName", "expiraionDate", "cardStatusCode")
@@ -524,7 +530,7 @@ final class CardUpdateRequestApiContractTest {
                 + "violation path naming every level")
         void anOverWideLeafIsReportedWithItsFullPath() {
             final CardUpdateRequest request = requestWithSnapshots(
-                    new CardDetails(null, null, null,
+                    new CardDetails(null, null, 
                             new CardData(null, new ExpiraionDate("20266", null, null), null)),
                     null);
 
@@ -538,18 +544,24 @@ final class CardUpdateRequestApiContractTest {
         @Test
         @DisplayName("the new group is validated as well as the old, both being cascaded")
         void theNewGroupIsValidatedToo() {
+            // Re-vehicled onto an over-wide expiry year after finding F13 removed the verification leaf
+            // whose width constraint used to trigger here. The probe is stronger for it: an empty group
+            // could only ever prove that one leaf was constrained, whereas this proves the cascade
+            // reaches three levels down through the NEW group exactly as it does through the old.
             final CardUpdateRequest request = requestWithSnapshots(null,
-                    new CardDetails(null, null, text(CVV_WIDTH + 1), null));
+                    new CardDetails(null, null,
+                            new CardData(text(CARDHOLDER_NAME_WIDTH + 1), null, null)));
 
             final Set<ConstraintViolation<CardUpdateRequest>> violations = VALIDATOR.validate(request);
 
             assertThat(violations).hasSize(1);
             assertThat(violations.iterator().next().getPropertyPath().toString())
-                    .isEqualTo("newDetails.cvvCode");
+                    .isEqualTo("newDetails.cardData.cardholderName");
         }
 
         @Test
-        @DisplayName("a fully populated pair of groups raises no violation at all")
+        @DisplayName("a populated pair of groups raises no violation once the verification value is "
+                + "omitted, which is the only shape a client may send")
         void aPopulatedPairRaisesNoViolation() {
             assertThat(VALIDATOR.validate(
                     requestWithSnapshots(populatedSnapshot(), populatedSnapshot()))).isEmpty();
@@ -566,7 +578,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("a wholly empty group is not a violation either, an empty leaf being the state "
                 + "INITIALIZE leaves behind")
         void aWhollyEmptyGroupIsNotAViolation() {
-            final CardDetails empty = new CardDetails("", "", "",
+            final CardDetails empty = new CardDetails("", "",
                     new CardData("", new ExpiraionDate("", "", ""), ""));
 
             assertThat(VALIDATOR.validate(requestWithSnapshots(empty, empty))).isEmpty();
@@ -622,28 +634,46 @@ final class CardUpdateRequestApiContractTest {
     }
 
     @Nested
-    @DisplayName("Confidentiality: the verification value is inbound only and nothing renders it")
+    @DisplayName("Confidentiality: no verification value is accepted, held or rendered anywhere")
     class Confidentiality {
 
         private final ObjectMapper mapper = new ObjectMapper();
 
+        /**
+         * No type anywhere in the request graph declares a verification value.
+         *
+         * <p>This replaced an assertion that {@code CardDetails.cvvCode} carried Jackson's
+         * {@code WRITE_ONLY} access. That assertion described a field which finding F13 removed, and a
+         * write-only annotation was always the weaker guarantee: it kept the value out of the response
+         * while still binding it into memory and writing it onto the record. Asserting absence across all
+         * four types is both the stronger property and the one that cannot rot, because it names no member
+         * that has to keep existing for the test to stay meaningful.</p>
+         */
         @Test
-        @DisplayName("the verification value is marked write-only, the map declaring no CVV field")
-        void theVerificationValueIsWriteOnly() throws NoSuchFieldException {
-            final JsonProperty declared =
-                    CardDetails.class.getDeclaredField("cvvCode").getAnnotation(JsonProperty.class);
-
-            assertThat(declared).isNotNull();
-            assertThat(declared.access()).isEqualTo(JsonProperty.Access.WRITE_ONLY);
+        @DisplayName("no type in the request graph declares a verification value at all")
+        void noTypeInTheRequestGraphDeclaresAVerificationValue() {
+            assertThat(List.of(CardUpdateRequest.class, CardDetails.class, CardData.class,
+                    ExpiraionDate.class))
+                    .allSatisfy(type -> assertThat(type.getRecordComponents())
+                            .noneMatch(component -> component.getName()
+                                    .toLowerCase(Locale.ROOT).contains("cvv")));
         }
 
         @Test
-        @DisplayName("the verification value is accepted on the way in, because the comparison needs it")
-        void theVerificationValueIsAcceptedInbound() throws Exception {
-            final CardUpdateRequest bound = mapper.readValue(
-                    "{\"oldDetails\":{\"cvvCode\":\"123\"}}", CardUpdateRequest.class);
-
-            assertThat(bound.oldDetails().cvvCode()).isEqualTo("123");
+        @DisplayName("an inbound verification value is REFUSED at bind time, not accepted and discarded")
+        void anInboundVerificationValueIsRefusedAtBindTime() {
+            // The strongest of the three possible behaviours, and the one a caller migrating from the
+            // legacy field shape should meet. Accepting the property and validating it away would still
+            // have bound the value into memory; ignoring it would have returned success while silently
+            // discarding it, which is the failure mode that teaches a caller the wrong contract. The
+            // nested group's unknown-property guard refuses it outright instead.
+            assertThatThrownBy(() -> mapper.readValue(
+                    "{\"oldDetails\":{\"cvvCode\":\"123\"}}", CardUpdateRequest.class))
+                    .hasRootCauseInstanceOf(IllegalArgumentException.class)
+                    .rootCause()
+                    .hasMessageContaining("CardDetails")
+                    .hasMessageNotContaining("cvvCode")
+                    .hasMessageNotContaining("123");
         }
 
         @Test
@@ -652,7 +682,13 @@ final class CardUpdateRequestApiContractTest {
             final String json = mapper.writeValueAsString(
                     requestWithSnapshots(populatedSnapshot(), populatedSnapshot()));
 
-            assertThat(json).doesNotContain("cvv").doesNotContain("\"123\"");
+            // Now structural rather than behavioural: no component exists to serialise. The assertion is
+            // kept because it is the property a reader of the API cares about, and because it would fail
+            // the moment a component were reintroduced.
+            assertThat(json).doesNotContain("cvv").doesNotContain("Cvv").doesNotContain("CVV");
+            assertThat(CardDetails.class.getRecordComponents())
+                    .noneMatch(component ->
+                            component.getName().toLowerCase(Locale.ROOT).contains("cvv"));
         }
 
         @Test
@@ -671,9 +707,9 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("the group rendering omits the card number and the verification value")
+        @DisplayName("the group rendering omits the card number, and declares no verification value")
         void theGroupRenderingIsRedacted() {
-            final CardDetails snapshot = new CardDetails("00000000001", "4111111111111111", "123",
+            final CardDetails snapshot = new CardDetails("00000000001", "4111111111111111", 
                     new CardData("JANE DOE", new ExpiraionDate("2026", "11", "30"), "Y"));
 
             assertThat(snapshot.toString())
@@ -726,15 +762,25 @@ final class CardUpdateRequestApiContractTest {
         }
 
         @Test
-        @DisplayName("equality still considers every leaf, including the verification value, which is "
-                + "correct value semantics and discloses nothing")
+        @DisplayName("equality considers every surviving leaf, which is correct value semantics and "
+                + "discloses nothing")
         void equalityConsidersEveryLeaf() {
-            final CardDetails first = new CardDetails(null, null, "123", null);
-            final CardDetails second = new CardDetails(null, null, "456", null);
+            // Distinguished on the card number after finding F13 removed the verification leaf this probe
+            // used to vary. Two instances differing in exactly one leaf must compare unequal, or the
+            // record has stopped deriving equality from its state.
+            final CardDetails first = new CardDetails(null, "0000000000000011", null);
+            final CardDetails second = new CardDetails(null, "0000000000000022", null);
 
             assertThat(first).isNotEqualTo(second);
-            assertThat(first).isEqualTo(new CardDetails(null, null, "123", null));
+            assertThat(first).isEqualTo(new CardDetails(null, "0000000000000011", null));
+
+            // Equality and rendering diverge deliberately, and that divergence is the point: the leaf
+            // that distinguishes these two instances is the card number, which the redacted toString()
+            // withholds. So the two render identically even though they are unequal. Asserting the
+            // renderings equal is therefore asserting the redaction still holds - an assertion that they
+            // differed would be asserting the key had leaked into the rendering.
             assertThat(first.toString()).isEqualTo(second.toString());
+            assertThat(first.toString()).doesNotContain("0000000000000011");
         }
     }
 
@@ -802,7 +848,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("a payload made only of declared properties binds without complaint")
         void aWellFormedPayloadBinds() throws Exception {
             final String json = "{\"accountId\":\"00000000001\",\"expiryDay\":\"31\","
-                    + "\"oldDetails\":{\"accountId\":\"00000000001\",\"cvvCode\":\"123\","
+                    + "\"oldDetails\":{\"accountId\":\"00000000001\","
                     + "\"cardData\":{\"cardStatusCode\":\"Y\"}}}";
 
             final CardUpdateRequest bound = strict.readValue(json, CardUpdateRequest.class);
@@ -859,9 +905,9 @@ final class CardUpdateRequestApiContractTest {
         void absenceEmptinessAndMarkingRemainDistinct() {
             final String lowValues = "\u0000";
 
-            assertThat(new CardDetails(null, null, null, null).cvvCode()).isNull();
-            assertThat(new CardDetails(null, null, "", null).cvvCode()).isEmpty();
-            assertThat(new CardDetails(null, null, lowValues, null).cvvCode()).isEqualTo(lowValues);
+            assertThat(new CardDetails(null, null, null).cardNumber()).isNull();
+            assertThat(new CardDetails(null, "", null).cardNumber()).isEmpty();
+            assertThat(new CardDetails(null, lowValues, null).cardNumber()).isEqualTo(lowValues);
         }
 
         @Test
@@ -881,7 +927,7 @@ final class CardUpdateRequestApiContractTest {
         @DisplayName("a leading zero survives, because every identifier is textual and never numeric")
         void aLeadingZeroSurvives() {
             final CardDetails snapshot =
-                    new CardDetails("00000000001", "0000000000000001", null, null);
+                    new CardDetails("00000000001", "0000000000000001", null);
 
             assertThat(snapshot.accountId()).isEqualTo("00000000001");
             assertThat(snapshot.cardNumber()).isEqualTo("0000000000000001");
@@ -892,10 +938,19 @@ final class CardUpdateRequestApiContractTest {
                 + "service that binds without validating still sees the caller's bytes rather than "
                 + "an exception in place of the source's own message")
         void theConstructorDefersToTheValidator() {
-            final CardDetails snapshot = new CardDetails(null, null, text(CVV_WIDTH + 1), null);
+            final CardDetails snapshot =
+                    new CardDetails(null, "X".repeat(CARD_NUMBER_WIDTH + 1), null);
 
-            assertThat(snapshot.cvvCode()).hasSize(CVV_WIDTH + 1);
-            assertThat(VALIDATOR.validate(requestWithSnapshots(snapshot, null))).hasSize(1);
+            assertThat(snapshot.cardNumber()).hasSize(CARD_NUMBER_WIDTH + 1);
+            // One violation, on the over-wide leaf: the constructor accepted the caller's bytes and the
+            // validator is what refuses them, so the service still reports the source's own message rather
+            // than an exception raised during binding. Asserting the count keeps a silently dropped
+            // constraint visible.
+            final Set<ConstraintViolation<CardUpdateRequest>> violations =
+                    VALIDATOR.validate(requestWithSnapshots(snapshot, null));
+            assertThat(violations).hasSize(1);
+            assertThat(violations).extracting(violation -> violation.getPropertyPath().toString())
+                    .containsOnly("oldDetails.cardNumber");
         }
     }
 }

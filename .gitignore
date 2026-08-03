@@ -94,14 +94,16 @@
 #   bin/mvn.cmd read it from the working tree, so hiding it would make
 #   the warning-free build a per-developer accident instead of a
 #   property of the repository. See the "Repository controlled JVM
-#   configuration" note in pom.xml for its tracked removal plan.
+#   configuration" note in pom.xml for the full rationale and the
+#   condition under which the file stops being needed.
 #
 #   No glob below matches a content format this repository tracks -
 #   there is no *.txt, *.json, *.sql, *.html or *.zip rule - and no
-#   bare `build/` or `data/` either. Thirteen tracked .txt files are
-#   fixed-width parity fixtures, three tracked .json files are
-#   application resources, two tracked .zip files are the legacy
-#   runtime archives, and `data` is a real path component of app/data,
+#   bare `build/` or `data/` either. Tracked .txt files are
+#   fixed-width parity fixtures and expected-output baselines, tracked
+#   .json files are application and observability resources, tracked
+#   .zip files are the legacy runtime archives, and `data` is a real
+#   path component of app/data,
 #   so any of those patterns would silently hide shipped content. The
 #   extension globs that do appear cover only build output, runtime
 #   files, private key material and editor state, none of which this

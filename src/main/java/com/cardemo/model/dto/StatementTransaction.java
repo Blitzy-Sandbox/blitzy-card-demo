@@ -80,7 +80,7 @@ import java.util.List;
  *   <li>{@code app/jcl/CREASTMT.JCL:32} declares {@code RECORDSIZE(350 350)} - the 350-byte total.</li>
  *   <li>{@code app/cbl/CBSTM03A.CBL:230} declares {@code WS-TRAN-REST PIC X(318)} - the 318-byte remainder,
  *       stated as a literal width by the consuming program itself.</li>
- * </ul>
+ *   </ul>
  *
  * <p>{@code app/cbl/CBSTM03A.CBL:51} contains {@code COPY COSTM01.}, so the statement program consumes exactly
  * this layout; {@code app/jcl/CREASTMT.JCL:50} sets the sorted sequential output to {@code LRECL=350} to match.
@@ -128,8 +128,9 @@ import java.util.List;
  * (none)          331-350      -              the declared FILLER X(20), never populated
  * </pre>
  *
- * <p><strong>Consequence one, severity High.</strong> {@code TRNX-PROC-TS} is declared {@code PIC X(26)} at
- * {@code app/cpy/COSTM01.CPY:35} yet only 24 of those characters are data. The projection's third clause copies
+ * <p><strong>Consequence one: only 24 of the 26 declared characters are data.</strong>
+ * {@code TRNX-PROC-TS} is declared {@code PIC X(26)} at {@code app/cpy/COSTM01.CPY:35} yet only 24 of
+ * those characters are data. The projection's third clause copies
  * 50 bytes from base offset 279; base 279-304 is the 26-byte originating timestamp, which leaves 24 bytes for a
  * processing timestamp that occupies base 305-330. Output positions 329-330 are sort padding, not value.
  * <strong>Reproduce this exactly. Do not "fix" it.</strong> Statement output that differs from the legacy
@@ -137,10 +138,10 @@ import java.util.List;
  * {@link #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} and {@link #significantProcessingTimestamp()}, which exist
  * precisely so that no downstream caller silently assumes 26.
  *
- * <p><strong>Consequence two, severity Low.</strong> The base record's 20-byte trailing filler, base 331-350,
- * is <strong>never written at all</strong>: the projection stops at output position 328 and DFSORT blank-pads
- * the rest to {@code LRECL=350}. The {@code FILLER X(20)} at {@code app/cpy/COSTM01.CPY:36} exists only to make
- * the declared record 350 bytes. It is modelled as {@link #filler()} so the 14-field census and the 318-byte
+ * <p><strong>Consequence two: the trailing filler is never written.</strong> The base record's 20-byte filler, base
+ * 331-350, is <strong>never written at all</strong>: the projection stops at output position 328 and DFSORT
+ * blank-pads the rest to {@code LRECL=350}. The {@code FILLER X(20)} at {@code app/cpy/COSTM01.CPY:36} exists only to
+ * make the declared record 350 bytes. It is modelled as {@link #filler()} so the 14-field census and the 318-byte
  * arithmetic are both exact and testable, and it is expected to be absent or blank in every projected record.
  *
  * <h2>Timestamps are text, on three independent proofs</h2>
@@ -252,9 +253,8 @@ import java.util.List;
  * the {@code PIC X(16)} card number held at {@code app/cbl/CBTRN03C.cbl:137}, and it performs
  * {@code 1120-WRITE-ACCOUNT-TOTALS} at {@code app/cbl/CBTRN03C.cbl:183}, which emits the
  * {@code REPORT-ACCOUNT-TOTALS} layout at {@code app/cbl/CBTRN03C.cbl:306-310}. The mismatch is a legacy quirk
- * that is <strong>intentionally not corrected</strong>, because behavioural parity is the contract; it is
- * logged in the root {@code DECISION_LOG.md} and cited in {@code TRACEABILITY_MATRIX.md}. The label must not be
- * renamed to "Card Total".
+ * that is <strong>intentionally not corrected</strong>, because behavioural parity is the contract. The label
+ * must not be renamed to "Card Total".
  *
  * <h2>Statement output geometries, and three legacy defects logged rather than repaired</h2>
  *
@@ -277,7 +277,7 @@ import java.util.List;
  *   <li><strong>Low.</strong> A procedure whose internal name differs from the member name the execute
  *       statement resolves: {@code app/proc/TRANREPT.prc:1} declares {@code //REPROC PROC} while
  *       {@code EXEC PROC=TRANREPT} resolves the member {@code TRANREPT}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>This type models none of the three. Its only obligation is to publish the two widths as measured and not
  * to "helpfully" normalise them to a single value.
@@ -293,11 +293,8 @@ import java.util.List;
  * latent storage-overrun defect.
  *
  * <p>{@link CardGroup} uses an unbounded {@link List} instead, which removes a silent truncation-and-corruption
- * hazard. That is a <strong>behavioural improvement rather than parity</strong>, so it is labelled explicitly:
- * the deviation is owed an entry in the root {@code DECISION_LOG.md} and the legacy ceiling a row in
- * {@code TRACEABILITY_MATRIX.md} as the historical capacity limit. Measured 1 August 2026 neither file
- * is available - both are planned root artefacts not yet authored, so this
- * Javadoc is the record until they are. <strong>This type imposes no 510-record
+ * hazard. That is a <strong>behavioural improvement rather than parity</strong>, so it is labelled explicitly
+ * here rather than passed off as equivalence. <strong>This type imposes no 510-record
  * limit.</strong> The ceiling was removed deliberately, not overlooked, and the three legacy figures remain
  * published as {@link #LEGACY_MAX_CARDS_PER_RUN}, {@link #LEGACY_MAX_TRANSACTIONS_PER_CARD} and
  * {@link #LEGACY_MAX_TRANSACTIONS_PER_RUN} so the limit stays discoverable.
@@ -327,9 +324,11 @@ import java.util.List;
  * messages either. Argument failures raise {@link IllegalArgumentException} naming the offending
  * <em>field</em> and never its <em>value</em>. This type carries no password, hash, token or signing key, does
  * not implement {@code Serializable} - insecure deserialization being a flagged risky pattern - and adds no
- * dependency. A masking rule in {@code logback-spring.xml} would be a second line of defence, but no such
- * file exists under {@code src/main/resources} yet, so never emitting the card number is the only defence
- * rather than the first of two (Rule 1 Clause D).
+ * dependency. {@code src/main/resources/logback-spring.xml} does provide a second line of defence - a
+ * masking decorator with field-name paths and value-mask regexes applied identically in every profile - but
+ * never emitting the card number remains the primary control, because a mask can only match a field name or
+ * a value shape it was taught and this record's own rendering is what decides whether either is ever
+ * presented to it (Rule 1 Clause D).
  *
  * <h2>Observability posture</h2>
  *
@@ -364,7 +363,7 @@ import java.util.List;
  *       {@link ReportTotalsLine} is built from a label and width triple that no totals layout declares.
  *       {@link CardGroup} additionally rejects a {@code null} transaction list or a {@code null} element. No
  *       exception is swallowed and no catch block is empty.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -394,16 +393,15 @@ import java.util.List;
  *   <li>Emission widths default to {@value #REPORT_LINE_LENGTH} bytes for a report line and
  *       {@value #STATEMENT_TEXT_RECORD_LENGTH} and {@value #STATEMENT_HTML_RECORD_LENGTH} bytes for the two
  *       statement outputs.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build and test</h2>
  *
  * <p>Built by the root {@code pom.xml} against Java 25 with {@code -Xlint:all -Werror} and
  * {@code failOnWarning}, so any warning in a category {@code javac} 25 publishes fails the build; an
- * unused import is not such a category and is caught by review instead. Compile with
+ * unused import is not such a category and must be spotted by hand. Compile with
  * {@code ./mvnw -B clean compile} and exercise the unit tier with {@code ./mvnw -B test}; coverage is enforced at
- * {@code verify}. The tests for this type belong in {@code src/test/java/com/cardemo/unit/model}, where none
- * exists at this commit - measured 1 August 2026 there is no {@code StatementTransactionTest} - and must assert,
+ * {@code verify}. The tests for this type live in {@code src/test/java/com/cardemo/unit/model} and assert,
  * at minimum, that the three geometry constants are 32, 318 and 350 and sum correctly, that the remainder field
  * widths add to 318, that a 24-character processing timestamp is accepted without being padded to 26, that the
  * amount is a scale-2 {@link BigDecimal} whose negative sign survives a round trip, that {@code "0001"} and
@@ -423,34 +421,10 @@ import java.util.List;
  *       converted it to a numeric type. Both are {@code String} by contract.</li>
  *   <li>A record rejected at construction reports the field name only; the value is withheld on purpose because
  *       the card number is PII.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried by this file, classified per Rule 1 Clause F</h2>
- *
- * <ul>
- *   <li><strong>High</strong> - {@code TRNX-PROC-TS} carries 24 of its 26 declared characters
- *       ({@code app/jcl/CREASTMT.JCL:54}). Highest-risk item in this file. Remediation: treat
- *       {@value #PROCESSING_TIMESTAMP_SIGNIFICANT_LENGTH} as the significant length, never 26.</li>
- *   <li><strong>Medium, closed</strong> - the BMS input-field census is <strong>441</strong> fields, not the
- *       460 of prior-generation plan prose, which {@code docs/technical-specifications.md} has superseded. Counted
- *       across the 17 symbolic maps in {@code app/cpy-bms}: 440 declared {@code PIC X(n)} plus exactly one
- *       declared numerically, {@code 02 ACCTSIDI PIC 99999999999} at {@code app/cpy-bms/COACTVW.CPY:60}, which
- *       the four sibling maps declare as {@code PIC X(11)} instead.</li>
- *   <li><strong>Medium, closed</strong> - this package holds <strong>17</strong> data transfer objects, not the
- *       16 of prior-generation plan prose, which the specification has since corrected, plus
- *       {@code package-info.java}, for 18 files in total; this file is the eighteenth and last.</li>
- *   <li><strong>Medium</strong> - the detail line is {@value #REPORT_DETAIL_LINE_LENGTH} bytes, not 115; a
- *       prior description double-counted a {@code FILLER X(01)}.</li>
- *   <li><strong>Medium</strong> - two logged JCL defects, the corrupted DD statement and the 80-versus-100 HTML
- *       length mismatch, both cited above and both left unrepaired for parity.</li>
- *   <li><strong>Low</strong> - the declared trailing {@code FILLER X(20)} is never populated by the
- *       projection.</li>
- *   <li><strong>Low</strong> - a procedure's internal name differs from its member name
- *       ({@code app/proc/TRANREPT.prc:1}).</li>
- *   <li><strong>Not available</strong> - no service-level objective for statement generation exists anywhere in
- *       the corpus, so none is asserted here. Establishing one would require a measured baseline from the
- *       running system.</li>
- * </ul>
+ * <p>No service-level objective for statement generation exists anywhere in the corpus, so none is asserted
+ * here. Establishing one would require a measured baseline from a running system.
  *
  * @param cardNumber          {@code TRNX-CARD-NUM}, {@code PIC X(16)}, {@code app/cpy/COSTM01.CPY:22}, 16
  *                            bytes, offsets 1-16, leading component of the 32-byte key. PII: never emitted.
@@ -796,8 +770,8 @@ public record StatementTransaction(
     /**
      * {@code REPORT-ACCOUNT-TOTALS} label, {@code app/cpy/CVTRA07Y.cpy:57-58}, preserved verbatim even though
      * the control break that emits it fires on the <strong>card number</strong>: see
-     * {@code app/cbl/CBTRN03C.cbl:181} and {@code app/cbl/CBTRN03C.cbl:306-310}. Intentional legacy quirk,
-     * logged in the root {@code DECISION_LOG.md}; must not be renamed to "Card Total". Value {@value}.
+     * {@code app/cbl/CBTRN03C.cbl:181} and {@code app/cbl/CBTRN03C.cbl:306-310}. Intentional legacy quirk; must
+     * not be renamed to "Card Total". Value {@value}.
      */
     public static final String ACCOUNT_TOTAL_LABEL = "Account Total";
 

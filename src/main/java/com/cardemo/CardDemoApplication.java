@@ -40,8 +40,9 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * legacy z/OS runtime at once.
  *
  * <p>This type is deliberately the smallest class in the tree. It bootstraps and delegates; it configures
- * nothing. Bean definitions live in the six {@code com.cardemo.config} classes, and the exhaustive package
- * narrative lives in {@code com.cardemo.package-info.java}, which this summary does not restate.
+ * nothing. Bean definitions live in the {@code com.cardemo.config} classes - four authored today of a
+ * target six - and the exhaustive package narrative lives in {@code com.cardemo.package-info.java}, which
+ * this summary does not restate.
  *
  * <p><strong>What it does.</strong> It replaces the <em>CICS region</em> - 17 online transaction programs
  * driven from 3270 terminals in pseudo-conversational mode, with screen state held in the COMMAREA and
@@ -63,20 +64,28 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * writes across service boundaries would require compensating transactions and would forfeit the behavioural
  * parity that is this migration's acceptance contract.
  *
- * <p>Component scanning rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication}, which
- * is why no {@code scanBasePackages} attribute appears below - reaches the entire target tree of 132
- * {@code .java} files: 117 implementation types, 14 {@code package-info.java} files and this entry point,
- * spread over nine subpackages. Those are {@code config} (6), {@code security} (3), {@code model}
- * (entity 11, key 3, enums 4, dto 17), {@code repository} (11), {@code service} (21 across nine
- * subpackages), {@code controller} (8, exposing the 17 operations), {@code batch} (jobs 6, processors 5,
- * readers 7, writers 3), {@code exception} (9) and {@code observability} (3). Dependencies are supplied by
- * constructor injection throughout the tree; field and setter injection are not used anywhere.
+ * <p>Component scanning is rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication},
+ * which is why no {@code scanBasePackages} attribute appears below - so it reaches whatever is authored,
+ * without enumeration. The subpackage counts below are stated as <strong>present / target</strong> wherever
+ * the two differ, so that a planned type is never read as a delivered one: {@code config}
+ * <strong>4 / 6</strong>, {@code security} 3, {@code model} (entity 11, key 3, enums 4, dto 17),
+ * {@code repository} 11, {@code service} <strong>20 / 21</strong> across nine leaves, {@code controller}
+ * <strong>6 / 8</strong> exposing <strong>12 operations today of a target 17</strong>, {@code batch}
+ * (jobs <strong>1 / 6</strong>, processors 5, readers <strong>4 / 7</strong>, writers 3),
+ * {@code exception} 9 and {@code observability} 3. The target total is 132 {@code .java} files - 118
+ * production classes including this entry point, plus 14 {@code package-info.java} files, all fourteen of
+ * which now exist. <strong>The tree has not reached that target yet</strong>; the authoritative dated
+ * inventory, with the command that reproduces it, is section 0.4.5.1 of
+ * {@code docs/technical-specifications.md}. Dependencies are supplied by constructor injection throughout;
+ * field and setter injection are not used anywhere.
  *
  * <p><strong>Batch jobs do not run at startup.</strong> {@code spring.batch.job.enabled} is {@code false},
- * because the framework default of {@code true} would run every job on every boot. Launching is explicit:
- * either {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator}, or the SQS listener that replaces the JES2
- * internal reader behind {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA) DDNAME(INREADER) TYPEFILE(OUTPUT)
- * RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD)} at {@code app/csd/CARDDEMO.CSD:L499-L505}.
+ * because the framework default of {@code true} would run every job on every boot. Launching is explicit.
+ * The two intended launch paths are the planned {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and the SQS
+ * listener that replaces the JES2 internal reader behind {@code DEFINE TDQUEUE(JOBS) TYPE(EXTRA)
+ * DDNAME(INREADER) TYPEFILE(OUTPUT) RECORDSIZE(80) RECORDFORMAT(FIXED) DISPOSITION(MOD)} at
+ * {@code app/csd/CARDDEMO.CSD:L499-L505}; <strong>both are planned rather than authored</strong>, so a job is
+ * currently driven from a test or by launching its {@code Job} bean directly.
  *
  * <p><strong>How to build, run and test.</strong> Build with the pinned wrapper: {@code ./mvnw clean verify}.
  * {@code maven-enforcer-plugin:3.5.0} floors the toolchain at Java {@code [25,)} and Maven
@@ -99,17 +108,21 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * authority and carries the full rationale per property; the startup-critical few are:
  *
  * <ul>
- *   <li>{@code carddemo.security.jwt.signing-key} resolves from {@code ${JWT_SECRET}} with <em>no default, no
- *       example, no fallback and no committed value</em>. An absent variable leaves the placeholder
+ *   <li>{@code carddemo.security.jwt.signing-key} resolves from {@code ${JWT_SIGNING_KEY}} with <em>no
+ *       default, no example, no fallback and no committed value</em>. An absent variable leaves the placeholder
  *       unresolvable, which fails property resolution and therefore fails startup - the required behaviour,
- *       since a committed default would let the application boot with a key an attacker already knows. Note
- *       the variable name: it is {@code JWT_SECRET}, not {@code JWT_SIGNING_KEY}. {@code .env.example:44}
- *       ships {@code JWT_SECRET} empty and required, and it is the single name used across the repository, so
- *       introducing a second one would be duplication. The divergence is registered at
- *       {@code application.yml:220-237}.</li>
+ *       since a committed default would let the application boot with a key an attacker already knows. The
+ *       variable is {@code JWT_SIGNING_KEY}: {@code .env.example} ships that name empty and marked required,
+ *       and one repository-wide rename made it the single name used everywhere, so the superseded
+ *       {@code JWT_SECRET} is not an accepted alternative spelling. An environment still exporting the old
+ *       name produces the fail-fast below, and the remedy is to rename the variable rather than to reintroduce
+ *       a second name for one secret. The correction is registered in {@code application.yml}.</li>
  *   <li>{@code carddemo.security.jwt.issuer} defaults to {@code carddemo} and
- *       {@code carddemo.security.jwt.expiration-seconds} to 3600; both are non-secret metadata, so documented
- *       defaults are acceptable where the signing key admits none.</li>
+ *       {@code carddemo.security.jwt.expiration-minutes} to 30, bound from {@code ${JWT_EXPIRATION_MINUTES}}
+ *       and accepted only within 1..1440. Both are non-secret metadata, so documented defaults are acceptable
+ *       where the signing key admits none. The lifetime is expressed in <em>minutes</em>: it was previously
+ *       {@code expiration-seconds} with a 3,600-second default, which is double the approved bearer window,
+ *       and a bearer token cannot be revoked before it expires.</li>
  *   <li>{@code spring.batch.job.enabled} is {@code false}; {@code spring.jpa.hibernate.ddl-auto} is
  *       {@code validate} in every profile, never {@code update} or {@code create};
  *       {@code spring.jpa.open-in-view} is {@code false}; the Hibernate JDBC time zone is UTC.</li>
@@ -122,20 +135,22 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *       {@code db} contributor. Object-storage and queue contributors join the readiness group in the same
  *       change that introduces {@code com.cardemo.observability.HealthIndicators} - Spring Cloud AWS 3.3.0
  *       ships none, and because health group-membership validation is left at its secure default, naming a
- *       contributor before it exists would make the application unbootable
- *       ({@code application.yml:238-253}).</li>
+ *       contributor before it exists would make the application unbootable; see the object-storage and
+ *       queue-readiness entry in the residual-risk commentary of
+ *       {@code src/main/resources/application.yml}.</li>
  *   <li>BCrypt strength is 10; {@code /api/admin/*} is restricted to the administrator role; sign-on is the
  *       only unauthenticated operation; the session policy is {@code STATELESS}, since the COMMAREA has no
  *       server-side successor.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Common failure modes and troubleshooting.</strong>
  *
  * <ul>
- *   <li><em>Absent or invalid {@code JWT_SECRET}</em> - a deliberate fail-fast during context refresh. The
+ *   <li><em>Absent or invalid {@code JWT_SIGNING_KEY}</em> - a deliberate fail-fast during context refresh. The
  *       reported cause names both the variable and the property that needs it: a placeholder resolution
- *       failure for {@code JWT_SECRET} within {@code carddemo.security.jwt.signing-key}. Remedy: export the
- *       variable from the environment. Adding a default is not an available remedy.</li>
+ *       failure for {@code JWT_SIGNING_KEY} within {@code carddemo.security.jwt.signing-key}. Remedy: export
+ *       the variable from the environment with at least 32 bytes of entropy, which HS256 requires. Adding a
+ *       default is not an available remedy, and neither is exporting the superseded {@code JWT_SECRET}.</li>
  *   <li><em>Flyway validation failure</em> - schema drift, or an attempt to introduce migrations or tables
  *       beyond the three-migration, 11-table contract. Because {@code clean-disabled} is {@code true},
  *       recovery is by correcting the migration, never by cleaning the schema.</li>
@@ -145,8 +160,10 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *   <li><em>{@code @EnableBatchProcessing} added to this class</em> - the single most likely regression in
  *       this file, which is why it is called out here. On Spring Boot 3.x that annotation <em>disables</em>
  *       Boot's Spring Batch auto-configuration, so the {@code JobRepository}, {@code JobLauncher} and
- *       {@code JobExplorer} beans that {@code com.cardemo.config.BatchConfig} and
- *       {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} depend on silently disappear. Remedy: remove
+ *       {@code JobExplorer} beans that the authored batch layer needs - and that the authored
+ *       {@code com.cardemo.config.BatchConfig} and the planned
+ *       {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} will depend on - silently disappear.
+ *       Remedy: remove
  *       it and rely on auto-configuration. This class therefore carries {@code @SpringBootApplication} and
  *       nothing else.</li>
  *   <li><em>Batch exit codes are contracts, not diagnostics.</em> Return code 4 is set if and only if the
@@ -156,13 +173,17 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  *       bootstrap.</li>
  *   <li><em>Diagnosis.</em> Structured JSON logs carry {@code traceId}, {@code spanId} and
  *       {@code correlationId} in the MDC, the last populated by
- *       {@code com.cardemo.observability.CorrelationIdFilter}, which replaces {@code EIBTRNID} as the thread
- *       of identity. Batch events additionally carry the job instance identifier, which is what makes a run's
- *       logs and its object-storage prefixes correlatable.</li>
+ *       {@code com.cardemo.observability.CorrelationIdFilter}. That filter is <strong>additive
+ *       request-correlation capability, not a translation of source code</strong>: the frozen corpus has no
+ *       per-request identifier to translate, and {@code EIBTRNID} - a CICS-supplied field - occurs
+ *       <strong>zero times anywhere under {@code app/**}</strong>. It fills the role CICS played implicitly,
+ *       which is a different claim from replacing a construct that exists in the source. Batch events
+ *       additionally carry the job instance identifier, which is what makes a run's logs and its
+ *       object-storage prefixes correlatable.</li>
  *   <li><em>Container-runtime prerequisite.</em> The Testcontainers tiers and {@code docker compose up}
  *       require a running daemon and an accessible socket. Where that evidence cannot be produced the gate is
  *       reported as "Not available" together with the prerequisite, never as an untested pass.</li>
- * </ul>
+ *   </ul>
  *
  * <p>No throughput, latency or availability target is asserted here or anywhere else: the legacy corpus
  * publishes no service-level objective, so the performance gate records a measured baseline rather than an
@@ -178,9 +199,11 @@ public class CardDemoApplication {
      * <p>First, {@code @SpringBootApplication} carries {@code @Configuration}, whose bean methods are
      * CGLIB-proxied, so the class must not be {@code final} and must expose a non-private no-argument
      * constructor - proxy creation fails otherwise. Second, an implicit default constructor carries no
-     * comment, which {@code -Xdoclint} reports and which would escalate to an error the moment doclint or a
-     * {@code module-info.java} is introduced, since the latter makes javac's {@code missing-explicit-ctor}
-     * lint fire under the build's {@code -Werror} setting.
+     * comment, which {@code -Xdoclint} reports as a warning; that is now a build failure rather than a
+     * remark, because {@code pom.xml} binds a {@code maven-javadoc-plugin} execution to {@code verify}
+     * with {@code doclint} set to {@code all} and {@code failOnWarnings} true. It would additionally
+     * become a javac error were a {@code module-info.java} introduced, since that makes javac's
+     * {@code missing-explicit-ctor} lint fire under the build's {@code -Werror} setting.
      *
      * <p>The constructor takes no arguments and holds no state: this type has no fields, and every dependency
      * in the tree is supplied by constructor injection into the beans themselves, never into the bootstrap.
@@ -204,7 +227,7 @@ public class CardDemoApplication {
      * Actuator endpoints. No Spring Batch job is executed, because {@code spring.batch.job.enabled} is
      * {@code false}.
      *
-     * <p><strong>Error modes.</strong> Any startup failure - an unresolvable {@code JWT_SECRET} placeholder,
+     * <p><strong>Error modes.</strong> Any startup failure - an unresolvable {@code JWT_SIGNING_KEY} placeholder,
      * a Flyway validation mismatch, an unreachable datasource or a bean wiring defect - propagates out of
      * this method unhandled, so the JVM terminates with a non-zero status and the framework's failure
      * analysis reaches the operator intact. The call is deliberately not wrapped in {@code try}/{@code catch}:

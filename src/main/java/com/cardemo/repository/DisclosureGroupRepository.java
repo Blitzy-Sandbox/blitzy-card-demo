@@ -81,7 +81,7 @@ import org.springframework.stereotype.Repository;
  *   <li>the consuming program's own file record area at {@code app/cbl/CBACT04C.cbl:L76-L82}, where
  *       {@code FD-DISCGRP-KEY} re-declares the same three fields in the same order and is followed by
  *       {@code FD-DISCGRP-DATA PIC X(34)}, giving 16 + 34 = 50.</li>
- * </ol>
+ *   </ol>
  * <p>Citing {@code :L896} precisely matters: {@code app/catlg/LISTCAT.txt:L202} (CARDDATA) and
  * {@code :L403} (CARDXREF) also report {@code KEYLEN 16} for entirely different clusters, so a vaguer
  * citation would point at the wrong dataset.</p>
@@ -308,10 +308,9 @@ import org.springframework.stereotype.Repository;
  * justification. <b>Severity: Low</b> as an observation, since it shapes the authorisation model and the
  * integration-test surface rather than describing a defect.</p>
  * <p>The cluster has no alternate index either. The catalogue's three alternate indexes belong to
- * {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, and {@code V2__create_indexes.sql} (planned; absent at
- * this commit) is to create
- * correspondingly exactly three non-unique indexes - {@code card.card_acct_id},
- * {@code card_cross_reference.xref_acct_id} and {@code "transaction".tran_proc_ts} - <b>none of them on
+ * {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, and {@code V2__create_indexes.sql}
+ * correspondingly declares exactly three non-unique indexes - {@code idx_card_acct_id},
+ * {@code idx_card_cross_reference_acct_id} and {@code idx_transaction_proc_ts} - <b>none of them on
  * {@code disclosure_group}</b>. No secondary-key finder is declared here for that reason: adding one
  * would imply a fourth index and break alignment with that migration. None is needed, because the
  * composite primary key serves both lookups on this table - each supplies the group id as the leading
@@ -344,7 +343,7 @@ import org.springframework.stereotype.Repository;
  *       as a data-access exception from the provider and must be allowed to propagate as
  *       {@code com.cardemo.exception.FatalProcessingException}, never caught and turned into a miss - which
  *       would silently reroute a hard failure into the fallback.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Declared surface, and what is deliberately absent</h2>
  * <p>Two lookups, and nothing else. The primary lookup is the inherited
@@ -390,7 +389,7 @@ import org.springframework.stereotype.Repository;
  *       approximate binary numeric type could enter a financial field.</li>
  *   <li><b>No state.</b> No field, no constant, no static member, no default method, no caching
  *       annotation - see the stale-rate hazard above.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  * <ul>
@@ -420,7 +419,7 @@ import org.springframework.stereotype.Repository;
  *       be justified <i>only when needed</i>: this table is 51 rows and read with an indexed keyed lookup,
  *       so pool sizing has no measurable bearing on it. The honest discharge is to state the decision, not
  *       to tune speculatively.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build, run and test</h2>
  * <p>{@code ./mvnw -B clean compile} compiles this interface under {@code --release 25} with
@@ -447,16 +446,22 @@ import org.springframework.stereotype.Repository;
  * <p>Case 2 must additionally assert that the fallback row is matched when the account group id is
  * supplied space-padded and when it is supplied bare, since {@code CHAR} semantics are what make both
  * work and a change of column type would silently break one of them.</p>
- * <p><b>Not available, measured 1 August 2026 - none of the verification above has been executed.</b>
- * No test exercises {@code DisclosureGroup} or this interface. The only occurrence of the name anywhere
- * under {@code src/test} is a string literal in an entity-name census at
- * {@code UserSecurityTest.java:L607}, which asserts that the class is loadable and nothing about its
- * behaviour. {@code src/test/java/com/cardemo} contains only
- * {@code unit/model}; there is no repository, integration or end-to-end tier, and no
- * {@code application*.yml} exists, so {@code hibernate.hbm2ddl.auto=validate} cannot be configured and no
- * application context starts. {@code ./mvnw -B -o clean test} runs 1,651 unit tests over model types and
- * reaches no database. The four query cases above are therefore the coverage this interface
- * <em>owes</em>, not coverage it has.</p>
+ * <p><b>Not available: the four query cases have not been executed against a database.</b> That is narrower
+ * than "untested", and an earlier revision of this paragraph overstated it in three separate ways, all now
+ * withdrawn. First, this interface <em>is</em> exercised:
+ * {@code src/test/java/com/cardemo/unit/batch/InterestCalculationJobTest} mocks it and verifies
+ * {@link #findDefaultGroupRate(String, Integer)} is reached on the fallback path, and
+ * {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest} pins its structural contract by
+ * reflection; the {@code DisclosureGroup} entity is additionally asserted on by five model test classes.
+ * Second, {@code src/test/java/com/cardemo} holds nine unit sub-trees - {@code batch}, {@code config},
+ * {@code exception}, {@code infrastructure}, {@code model}, {@code repository}, {@code security},
+ * {@code service} and {@code validation} - plus an {@code integration} tree carrying the two Testcontainers
+ * bases, and the earlier "only {@code unit/model}" and "1,651 unit tests" figures are both stale; the
+ * current unit-tier figure is a moving number and is not restated here. Third, all four
+ * {@code application*.yml} profiles exist and every one sets {@code ddl-auto: validate}, so a context does
+ * start. What genuinely remains owed is behaviour rather than structure: no concrete integration subclass
+ * binds this interface to a real dialect yet, so the four query cases above are coverage this interface
+ * <em>owes</em>.</p>
  * <p><b>What <em>was</em> verified on 1 August 2026, and how.</b> Two of the three claims above were
  * substantiated by execution rather than left as assertions. First, the column contract: applying
  * {@code src/main/resources/db/migration/V1__create_schema.sql} into a throwaway schema on a PostgreSQL
@@ -510,22 +515,25 @@ import org.springframework.stereotype.Repository;
  *       widths and against the unsigned four-digit domain of {@code PIC 9(04)}; the message names the
  *       offending component. Note that it accepts a group id <i>shorter</i> than ten characters, so the
  *       bare fallback literal is a legal key value.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Information gaps, stated rather than guessed</h2>
  * <p>Rule 1 Clause F requires that missing information be declared instead of invented. Two gaps apply to
  * this interface.</p>
  *
  * <p><b>1. {@code V1__create_schema.sql} exists; {@code V2} and {@code V3} are planned and absent.</b>
- * An earlier revision recorded all three Flyway migrations as "Not available"; that is now accurate only
- * for two of them. {@code src/main/resources/db/migration/V1__create_schema.sql} exists and declares the
+ * An earlier revision recorded all three Flyway migrations as "Not available", and a later one narrowed that
+ * to two; both are now withdrawn, because all three exist.
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares the
  * {@code disclosure_group} table, and the contract below has been reconciled against it — mechanically, by
  * {@code SchemaStructureTest}, which parses the DDL and cross-checks it against
- * {@code app/cpy/CVTRA02Y.cpy}. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} have never
- * existed in this repository; {@code V1} declares no {@code CREATE INDEX} and loads no rows, so any
- * reference to a secondary index or to seeded disclosure-group data describes <b>planned</b> work.
- * <i>What is needed to close the remainder:</i> exactly those two files. Because
- * {@code spring.jpa.hibernate.ddl-auto: validate} is mandated in every profile, the contract below is
+ * {@code app/cpy/CVTRA02Y.cpy}. {@code V2__create_indexes.sql} declares three indexes and deliberately
+ * none on this table, for the reason given above; {@code V1} itself declares no {@code CREATE INDEX} at all,
+ * because indexes are {@code V2}'s responsibility rather than a gap. {@code V3__seed_data.sql} seeds
+ * {@code disclosure_group} from {@code app/data/ASCII/discgrp.txt}, including the seventeen
+ * {@code DEFAULT}-group rows that make the two-stage fallback below reachable and the zero-rate rows that
+ * make case 4 distinguishable. Because
+ * {@code spring.jpa.hibernate.ddl-auto: validate} is set in all four profiles, the contract below is
  * <b>normative</b> and a mismatch fails context startup rather than degrading gracefully:</p>
  * <pre>
  * table disclosure_group

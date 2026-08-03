@@ -55,7 +55,7 @@ import jakarta.validation.constraints.Size;
  *   <li>the field is annotated write-only for JSON binding, so the serializer never emits it; and</li>
  *   <li><strong>no {@code getPassword()} accessor exists at all</strong>, so there is no public read path
  *       to the credential from any caller, serializer or reflective mapper that honours bean accessors.</li>
- * </ul>
+ *   </ul>
  * The persisted layout {@code app/cpy/CSUSR01Y.cpy} is an 80-byte record — {@code SEC-USR-ID PIC X(08)} at
  * line 18, {@code SEC-USR-FNAME PIC X(20)} at line 19, {@code SEC-USR-LNAME PIC X(20)} at line 20,
  * {@code SEC-USR-PWD PIC X(08)} at line 21, {@code SEC-USR-TYPE PIC X(01)} at line 22 and
@@ -84,7 +84,7 @@ import jakarta.validation.constraints.Size;
  *   <li><strong>The identifier field name differs.</strong> This map declares {@code USERIDI}; the update
  *       map declares the input-suffixed {@code USRIDINI}, as does the user-list map at
  *       {@code app/cpy-bms/COUSR00.CPY:66}. The citation carried by this class is {@code USERIDI}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>The six recurring header fields are declared inline, by design.</strong> They are not
  * extracted into a shared helper, base class, interface or mixin, because the recurrence is not uniform:
@@ -166,52 +166,38 @@ import jakarta.validation.constraints.Size;
  *   <li><em>Credential leakage through a rejected value.</em> Spring's field-error object retains the
  *       submitted value alongside the message, so a validation failure on the password puts the plaintext
  *       inside the framework's error object. The default Spring Boot error body does not render it, but a
- *       custom exception handler that serialises field errors wholesale would leak it. Remediation, which
- *       belongs to the exception-handling layer and not to this class: emit the field name and message only,
- *       never the rejected value. Severity: <strong>High</strong> if such a handler is written.</li>
+ *       custom exception handler that serialised field errors wholesale would leak it. Any such handler
+ *       belongs to the exception-handling layer rather than to this class, and must emit the field name and
+ *       message only, never the rejected value.</li>
  *   <li><em>Unknown JSON property.</em> Rejected outright, by this class rather than by configuration
  *       elsewhere. {@link #rejectUnrecognisedProperty} refuses any property outside the twelve, so the
- *       guarantee no longer depends on the object mapper's fail-on-unknown-properties feature remaining
- *       enabled - which matters, because the framework disables that feature by default and this
- *       repository publishes no {@code application*.yml} in which to enable it. The class-level
+ *       guarantee does not depend on the object mapper's fail-on-unknown-properties feature remaining
+ *       enabled - which matters, because the framework disables that feature by default. The class-level
  *       {@code ignoreUnknown = false} is retained as a declaration of intent, but it is the any-setter
  *       that does the rejecting.</li>
  *   <li><em>Out-of-domain user type.</em> A one-character value outside {@code 'A'} and {@code 'U'} binds
  *       successfully and is carried into the service, which reports it using the source's own message. This
  *       is intentional; see the user-type note above.</li>
- * </ul>
+ *   </ul>
  *
- * <p><strong>Findings carried by this class, classified by severity.</strong>
+ * <p><strong>Two structural guarantees, and why each is expressed the way it is.</strong>
  * <ul>
- *   <li><strong>Medium, resolved</strong> — the payload was mutable after validation. This class exposed a
- *       no-argument constructor and twelve public setters, so every field stayed writable for the object's
- *       whole lifetime. Bean Validation runs once, at the boundary, which means a request could be
- *       validated and then mutated into a state the {@code @Size} bounds had never seen before the service
- *       read it; the credential could likewise be replaced after the fact. Remediation applied: the
- *       setters are removed, all twelve fields are {@code final}, and binding goes through a single
- *       {@code @JsonCreator} constructor, so what validation saw is what the service reads.</li>
- *   <li><strong>Medium, resolved</strong> — unrecognised JSON properties were silently discarded.
+ *   <li><strong>The payload is immutable after validation.</strong> Bean Validation runs once, at the
+ *       boundary, so a class with a no-argument constructor and public setters could be validated and then
+ *       mutated into a state the {@code @Size} bounds had never seen before the service read it, and the
+ *       credential could be replaced after the fact. There is therefore no setter, all twelve fields are
+ *       {@code final}, and binding goes through the single {@code @JsonCreator} constructor, so what
+ *       validation saw is what the service reads.</li>
+ *   <li><strong>An unrecognised JSON property is rejected, by this class.</strong>
  *       {@code @JsonIgnoreProperties(ignoreUnknown = false)} reads as protection but cannot provide it: it
- *       can only decline to suppress the unknown-property check, never enable it, and the feature it
- *       defers to is disabled by default with no {@code application*.yml} in this repository to enable it.
- *       An undeclared property was therefore accepted and dropped - so a misspelled {@code password}
- *       created a user with an absent credential. Remediation applied: see
- *       {@link #rejectUnrecognisedProperty}.</li>
- *   <li><strong>Medium, closed</strong> — corpus census correction. The prior-generation plan prose headline
- *       figure of 460 BMS input fields was wrong in both directions. Counting the input group of the seventeen
- *       symbolic maps yields 441: {@code COACTUP} 54, {@code COACTVW} 37, {@code COADM01} 20,
- *       {@code COBIL00} 10, {@code COCRDLI} 45, {@code COCRDSL} 15, {@code COCRDUP} 17, {@code COMEN01} 20,
- *       {@code CORPT00} 17, {@code COSGN00} 11, {@code COTRN00} 59, {@code COTRN01} 21, {@code COTRN02} 21,
- *       {@code COUSR00} 59, {@code COUSR01} 12, {@code COUSR02} 12 and {@code COUSR03} 11. The
- *       per-map table accompanying that prose summed to 440 because it recorded {@code COACTVW} as 36 rather
- *       than 37. The verified total is <strong>441</strong>. Impact is documentation-only: this class's own
- *       count of 12 is unaffected and independently confirmed. The remediation has been applied - both the
- *       headline and the {@code COACTVW} row now read 441 and 37 in
- *       {@code docs/technical-specifications.md}, verified on 1 August 2026.</li>
- *   <li><strong>Low</strong> — the map reserves a 78-character error-message field, an outbound screen
- *       concern that arrives on an inbound payload purely because the BMS input group carries every field.
- *       It is retained for field-contract completeness and is not treated as operator input.</li>
- * </ul>
+ *       can only decline to suppress the unknown-property check, never enable it, and the feature it defers
+ *       to is disabled by default. An undeclared property would otherwise be accepted and dropped, so a
+ *       misspelled {@code password} would create a user with an absent credential. The rejection is done by
+ *       {@link #rejectUnrecognisedProperty}; the annotation is retained as a declaration of intent.</li>
+ *   <li><strong>The 78-character error-message field is an outbound screen concern.</strong> It arrives on
+ *       an inbound payload purely because the BMS input group carries every field, and is retained for
+ *       field-contract completeness rather than treated as operator input.</li>
+ *   </ul>
  *
  * <p><strong>Build and test.</strong> This class is compiled by the project's Maven build against Java 25
  * under {@code -Xlint:all -Werror} with warnings failing the build; there is nothing to run standalone. Its
@@ -322,8 +308,27 @@ public class UserCreateRequest {
     private final String errorMessage;
 
     /**
-     * Creates an empty request. Every field starts as {@code null}, which is the distinct <em>absent</em> state
-     * of the three-state model described on this class and is deliberately not initialised to an empty string.
+     * Binds a submitted screen, assigning every component exactly as presented.
+     *
+     * <p>No value is normalised on the way in: nothing is trimmed, case-folded, padded or defaulted, and an
+     * omitted property arrives as {@code null} rather than as an empty string. That distinction is
+     * load bearing, because {@code null} is the <em>absent</em> state of the three-state model described on
+     * this class while an empty string is a <em>present but blank</em> submission, and the two produce
+     * different validation outcomes.
+     *
+     * @param transactionName the terminal transaction identifier, {@code TRNNAMEI}
+     * @param title01         the first screen title line, {@code TITLE01I}
+     * @param currentDate     the screen date field, {@code CURDATEI}
+     * @param programName     the painting program name, {@code PGMNAMEI}
+     * @param title02         the second screen title line, {@code TITLE02I}
+     * @param currentTime     the screen time field, {@code CURTIMEI}
+     * @param firstName       the operator-supplied first name, {@code FNAMEI}
+     * @param lastName        the operator-supplied last name, {@code LNAMEI}
+     * @param userId          the operator-supplied user identifier, {@code USERIDI}
+     * @param password        the operator-supplied credential, {@code PASSWDI}, never logged and never echoed
+     * @param userType        the operator-supplied user type, {@code USRTYPEI}
+     * @param errorMessage    the outbound message slot, {@code ERRMSGI}, an outbound screen concern rather
+     *                        than operator input
      */
     @JsonCreator
     public UserCreateRequest(
@@ -463,10 +468,12 @@ public class UserCreateRequest {
      * {@code @JsonIgnoreProperties(ignoreUnknown = false)} pins this class to non-permissive binding, but
      * pinning is not rejecting: that annotation can only decline to suppress the unknown-property check,
      * never enable it, so it defers the actual decision to the object mapper's
-     * {@code FAIL_ON_UNKNOWN_PROPERTIES} feature. The framework disables that feature by default and this
-     * repository publishes no {@code application*.yml} in which to enable it, so an unrecognised property
-     * was in practice accepted and discarded. This guard is the mechanism that actually refuses one, and
-     * it holds under a lenient mapper as well as a strict one.</p>
+     * {@code FAIL_ON_UNKNOWN_PROPERTIES} feature. The framework disables that feature by default;
+     * {@code application.yml} turns it back on by setting
+     * {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true}, and no profile
+     * overlay disables it. That is a property value rather than a property of this type, so this guard is
+     * the mechanism that actually refuses an unrecognised property, and it holds under a lenient mapper as
+     * well as a strict one.</p>
      *
      * <p>Silent discarding matters here more than on most payloads: a client that misspells
      * {@code password} would otherwise create a user whose credential is absent, and

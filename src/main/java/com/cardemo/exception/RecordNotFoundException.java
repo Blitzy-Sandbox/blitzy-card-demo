@@ -56,9 +56,7 @@ import java.util.Optional;
  * repeated on each citation. Filename case is reproduced as it appears on disk, which is not uniform:
  * of the 28 members of {@code app/cbl} only {@code CBSTM03A.CBL} and {@code CBSTM03B.CBL} carry an
  * uppercase extension and the other 26 are lowercase, and in {@code app/cpy} only
- * {@code COSTM01.CPY} is uppercase. Every figure quoted below was measured against the anchor rather
- * than inherited, and where a measurement contradicted an inherited figure the measurement is
- * published together with its method so that it is reproducible.
+ * {@code COSTM01.CPY} is uppercase.
  *
  * <h2>The one idiom behind the decision</h2>
  *
@@ -148,7 +146,7 @@ import java.util.Optional;
  *   <li>{@code EXEC CICS} response codes - {@code DFHRESP(NORMAL)} 43,
  *       <strong>{@code DFHRESP(NOTFND)} 23</strong>, {@code DFHRESP(ENDFILE)} 8,
  *       {@code DFHRESP(DUPREC)} 7, {@code DFHRESP(DUPKEY)} 3, {@code DFHRESP(NOTOPEN)} 0.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The 23 {@code DFHRESP(NOTFND)} sites are spread across 11 of the 17 online programs -
  * {@code COACTUPC.cbl} 3, {@code COACTVWC.cbl} 3, {@code COBIL00C.cbl} 4, {@code COCRDSLC.cbl} 2,
@@ -156,24 +154,20 @@ import java.util.Optional;
  * {@code COUSR00C.cbl} 1, {@code COUSR02C.cbl} 2 and {@code COUSR03C.cbl} 2. That makes not found
  * the most frequently handled failure in the whole corpus, and this the busiest type in the package.
  *
- * <p><strong>Finding, severity Medium - the literal {@code '23'} tests are not the antecedent of
- * this type.</strong> The comparison-site count of 1 above is an artefact of the counting pattern,
- * which only matches a literal in the first comparand position. Counting occurrences of the literal
- * instead, with {@code grep -c "'23'" app/cbl/*}, returns <strong>three</strong> sites:
+ * <p><strong>The literal {@code '23'} tests are not the antecedent of this type.</strong> Exactly
+ * <strong>three</strong> sites in the batch corpus compare against that literal:
  * {@code app/cbl/CBTRN02C.cbl:L481}, {@code app/cbl/CBACT04C.cbl:L422} and
  * {@code app/cbl/CBACT04C.cbl:L436}. Every one of the three is an accepted control path, detailed
  * below; not one of them is an error. <strong>The batch corpus therefore never treats a literal
  * {@code '23'} as a failure, and the entire error-reading antecedent of this type is the 23 online
- * {@code DFHRESP(NOTFND)} sites.</strong> Remediation: keep the {@code '23'} row in the map above,
- * because a keyed read against the migrated store genuinely can find nothing on paths the source
- * reaches by other means, but do not claim batch parity for it against a legacy baseline, and record
- * the asymmetry in {@code DECISION_LOG.md} rather than presenting it as a translated batch
- * behaviour.
+ * {@code DFHRESP(NOTFND)} sites.</strong> The {@code '23'} row is kept in the map above, because a
+ * keyed read against the migrated store genuinely can find nothing on paths the source reaches by
+ * other means; batch parity must not be claimed for it against a legacy baseline.
  *
  * <h2>The three scoped sites where not found is success</h2>
  *
- * <p><strong>Finding, severity Blocker.</strong> Mapping not found onto this exception
- * unconditionally abends three working legacy paths. Each is transcribed here with its locators so
+ * <p><strong>Mapping not found onto this exception unconditionally abends three working legacy
+ * paths.</strong> Each is transcribed here with its locators so
  * that the boundary is checkable rather than remembered. The leniency is owned by
  * {@code com.cardemo.service.shared.FileStatusMapper}, which is the only component permitted to
  * decide; this type is only ever the target of that decision.
@@ -209,12 +203,12 @@ import java.util.Optional;
  * nothing else, displaying {@code 'ERROR READING DEFAULT DISCLOSURE GROUP'} (L455) and abending
  * (L458) otherwise.
  *
- * <p><strong>Finding, severity High - the inversion.</strong> A missing default row therefore
+ * <p><strong>The inversion.</strong> A missing default row therefore
  * <em>terminates the job</em>. The same status, on the same file, two reads apart, means opposite
  * things: not found on the first lookup is a control path that must not throw, and not found on the
  * retry is fatal and must raise {@code FatalProcessingException}, never this type. Getting the two
  * the wrong way round is the specific error a naive implementation makes, and it is invisible until
- * the seed data is missing a default row. Remediation: implement the fallback as two distinct
+ * the seed data is missing a default row. Implement the fallback as two distinct
  * lookups with two distinct outcomes rather than one retried lookup with one shared handler.
  *
  * <p><strong>Site 3 - the file service secondary success.</strong> {@code app/cbl/CBSTM03A.CBL},
@@ -270,12 +264,13 @@ import java.util.Optional;
  *       default mechanism inherited from {@link Throwable} is used as is, the two fields below are
  *       plain immutable strings, and no instance is ever rebuilt from untrusted input. The only
  *       concession is the pinned identity below, which exists to satisfy the compiler lint.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The masking contract for the carried key</h2>
  *
- * <p><strong>Finding, severity Blocker if breached.</strong> This type is naturally keyed by "the
- * record we could not find", and in this domain that key is very often a card number, which the
+ * <p><strong>The carried key must never be an unmasked sensitive value.</strong> This type is
+ * naturally keyed by "the record we could not find", and in this domain that key is very often a
+ * card number, which the
  * legacy layouts declare as {@code PIC X(16)}. Exception messages are logged. Callers must therefore
  * never pass an unmasked card number, and never pass any of the personally identifiable values the
  * customer layout carries: {@code CUST-PHONE-NUM-1} and {@code CUST-PHONE-NUM-2 PIC X(15)}
@@ -320,7 +315,7 @@ import java.util.Optional;
  *       changed: the value is not trimmed, not case folded and not validated against any list of
  *       known file names, so no locale, charset or clock is consulted anywhere in this class and its
  *       behaviour is fully deterministic.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Failure modes and troubleshooting</h2>
  *
@@ -341,13 +336,13 @@ import java.util.Optional;
  *   <li><em>{@link #recordType()} or {@link #recordKey()} is empty when a value was supplied.</em>
  *       The supplied value was blank or whitespace only and was collapsed to absent by the documented
  *       policy above. Supply a real value at the throwing site.</li>
- *   <li><em>A card number appears in a log.</em> Treat as a Blocker. The masking contract was
+ *   <li><em>A card number appears in a log.</em> The masking contract was
  *       breached at the throwing site, which is the only place that can fix it.</li>
  *   <li><em>The build fails with a {@code serial} warning.</em> The pinned identity below was
  *       removed. Every type here is a {@link java.io.Serializable} descendant through
  *       {@link Throwable}, and the build compiles with {@code -Xlint:all -Werror} and
  *       {@code failOnWarning}, so the declaration is mandatory rather than advisory.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Instances are immutable, carry no static state and consult no clock, locale or charset, so
  * behaviour is deterministic and unit testable. Tests live under

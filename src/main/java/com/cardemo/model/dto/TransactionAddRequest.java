@@ -338,10 +338,10 @@ import jakarta.validation.constraints.Size;
  *     {@code -Xlint:all -Werror} and {@code failOnWarning}, so a deprecation or a raw type in this file
  *     is a hard build failure. An unused import is not - {@code javac} 25.0.3 publishes no lint key for
  *     one - so that prohibition is review-enforced.</li>
- * <li><strong>Test.</strong> {@code ./mvnw -B clean test}. The unit contract for this type belongs in
- *     {@code src/test/java/com/cardemo/unit/model} - <strong>not available</strong>, measured
- *     1 August 2026: no {@code TransactionAddRequestTest} exists and this type is not referenced anywhere
- *     under {@code src/test/java}. That contract is to assert the component count of 21, that
+ * <li><strong>Test.</strong> {@code ./mvnw -B clean test}. The unit contract for this type lives in
+ *     {@code src/test/java/com/cardemo/unit/model} as {@code TransactionAddRequestTest}; an earlier
+ *     revision of this bullet said no such class existed and that this type was unreferenced from the test
+ *     tree, and both halves are false and withdrawn. That contract asserts the component count of 21, that
  *     {@code amount} carries a currency-decorated value such as a dollar-prefixed thousands-separated
  *     figure without a binding failure while {@code accountId} and {@code cardNumber} are carried
  *     verbatim, that {@code accountId} round-trips {@code 00000000001} with its leading zeros intact,
@@ -380,13 +380,15 @@ import jakarta.validation.constraints.Size;
  * <ul>
  * <li><strong>Medium, resolved - unrecognised JSON properties were silently discarded.</strong> This
  *     type previously relied on {@code spring.jackson.deserialization.fail-on-unknown-properties} to
- *     reject a JSON member outside the 21-field contract. That reliance was misplaced: the framework
- *     disables the setting by default and this repository publishes no {@code application*.yml} in
- *     which it could be enabled, so an unrecognised property was in fact accepted and dropped. A
- *     misspelled {@code confirmation} therefore bound as absent, which the program reads as "not yet
- *     confirmed". Remediation applied: {@link #rejectUnrecognisedProperty} refuses any undeclared
- *     property on the type itself, so the guard holds under a lenient mapper as well as a strict one
- *     and cannot be disabled by configuration elsewhere.</li>
+ *     reject a JSON member outside the 21-field contract. Two successive readings of that reliance were
+ *     wrong and both are withdrawn: it is not true that no {@code application*.yml} exists in which the
+ *     setting could be enabled, and it is not true that the setting is unset. {@code application.yml} sets
+ *     {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true} and no profile
+ *     overlay disables it. What remains true is that the guarantee would be one configuration edit deep,
+ *     and that the framework default is permissive, so a misspelled {@code confirmation} would bind as
+ *     absent - which the program reads as "not yet confirmed" - the moment the property changed.
+ *     Remediation retained: {@link #rejectUnrecognisedProperty} refuses any undeclared property on the type
+ *     itself, so the guard holds under a lenient mapper as well as a strict one.</li>
  * <li><strong>Medium, closed - corpus census correction.</strong> The prior-generation plan prose
  *     aggregate of 460 BMS input fields was overstated. Counting the {@code 02 xxxI PIC} entries in the
  *     input group of each of the seventeen symbolic maps yields <strong>441</strong>, and the account-view
@@ -593,11 +595,13 @@ public record TransactionAddRequest(
      * {@code app/cbl/COTRN02C.cbl} reads as "not yet confirmed" rather than as the malformed request it
      * is.</p>
      *
-     * <p>This guard is declared on the type rather than configured on the object mapper because a
-     * mapper-level setting is not in force here: this repository publishes no {@code application*.yml}
-     * at all, so the framework default - which is to ignore unknown properties - would otherwise
-     * apply. Declaring the guard here means it holds under a lenient mapper as well as a strict one,
-     * and it does so by rejecting rather than merely by declining to suppress.</p>
+     * <p>This guard is declared on the type rather than left to the object mapper. The mapper-level
+     * setting is in force - {@code application.yml} sets
+     * {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true} and no profile
+     * overlay disables it - but the framework default is to ignore unknown properties, so the strict
+     * behaviour is a property value rather than a property of this type. Declaring the guard here means it
+     * holds under a lenient mapper as well as a strict one, and it does so by rejecting rather than merely
+     * by declining to suppress.</p>
      *
      * <p>Neither the offending name nor the offending value is echoed. Both are untrusted input, and
      * this type's whole security posture rests on never echoing a value that reached it from a client.</p>

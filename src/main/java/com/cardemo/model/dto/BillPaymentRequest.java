@@ -61,12 +61,11 @@ import jakarta.validation.constraints.Size;
  *       </li>
  *   <li>{@code app/cbl/COBIL00C.cbl:234} subtracts that amount from the balance, driving the
  *       balance to exactly zero.</li>
- * </ul>
+ *   </ul>
  * <p>Adding an amount field - optional, nullable, "for future flexibility" or to enable partial
  * payments - would invent capability the system of record does not have, break behavioural parity
- * at lines 224 and 234, and widen the request surface beyond what the screen exposed. Any such
- * change is a <strong>Blocker</strong>. No partial-payment path may be introduced here or
- * downstream.</p>
+ * at lines 224 and 234, and widen the request surface beyond what the screen exposed. No
+ * partial-payment path may be introduced here or downstream.</p>
  *
  * <p><strong>The submitted balance is display text, not an authoritative value.</strong> Because
  * line 193 reads the balance from the account record and line 194 merely echoes it to the screen,
@@ -143,8 +142,8 @@ import jakarta.validation.constraints.Size;
  *
  * <p><strong>The account identifier is text, never a number.</strong> {@code ACTIDINI} is
  * {@code X(11)} at {@code app/cpy-bms/COBIL00.CPY:60} and is carried as an eleven-character
- * {@code String}. The seeded identifiers are zero-padded - the first account record in
- * {@code app/data/ASCII/acctdata.txt} is {@code 00000000001} - so a numeric type would strip the
+ * {@code String}. The seeded identifiers are zero-padded to the full eleven characters in
+ * {@code app/data/ASCII/acctdata.txt}, so a numeric type would strip the
  * padding and break byte-exact baseline comparison. A related divergence in the corpus is recorded
  * for completeness: the account-identifier field named {@code ACCTSIDI} is alphanumeric
  * {@code X(11)} on {@code COACTUP.CPY:60}, {@code COCRDUP.CPY:60}, {@code COCRDSL.CPY:60} and
@@ -152,7 +151,7 @@ import jakarta.validation.constraints.Size;
  * {@code app/cpy-bms/COACTVW.CPY:60} - the sole numeric declaration of it in the corpus. The
  * divergence is cited, not unified. It does not apply to this map directly, because
  * {@code COBIL00.CPY} declares no {@code ACCTSIDI} at all; its account identifier is
- * {@code ACTIDINI}. That correction is classified <strong>Low</strong>.</p>
+ * {@code ACTIDINI}.</p>
  *
  * <p><strong>Absent, blank and marked are three distinct states.</strong> The legacy field-error
  * model is not two-valued. {@code app/cpy/CSSETATY.cpy} is a parameterised
@@ -198,7 +197,7 @@ import jakarta.validation.constraints.Size;
  *       for both would accept input the legacy rejects, or reject input it accepts.</li>
  *   <li>No normalisation on ingest - no trimming, no case folding - so the three-state model and
  *       the exact confirmation character survive transport.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Unknown JSON properties are rejected by this type itself.</strong> A payload carrying,
  * say, an invented amount property must fail loudly instead of being quietly dropped, because on
@@ -209,15 +208,13 @@ import jakarta.validation.constraints.Size;
  * has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, an {@code ignoreUnknown = false} annotation does
  * not re-enable it once the mapper has it off, and the framework has it off by default. Delegating
  * to central configuration does not hold either, and the reason is concrete rather than
- * precautionary: <strong>this repository contains no {@code application*.yml} of any kind</strong> -
- * {@code src/main/resources} holds one migration and three validation resources and nothing else -
- * and there is no configuration class that builds a mapper. A type-level annotation or a documented
- * dependency on a property that no file sets would read as protection that is not in force, which
- * is worse than no protection at all, because a reviewer would stop looking.</p>
+ * precautionary: a documented dependency on a mapper feature that is disabled by default would read as
+ * protection that is not in force, which is worse than no protection at all because it invites a reader
+ * to stop looking.</p>
  *
  * <p>{@link #rejectUnrecognisedProperty} is therefore declared on this type and rejects
  * unconditionally, which makes the behaviour a property of the payload rather than of whichever
- * mapper happens to bind it. When the profiles are introduced they may enable the feature as well;
+ * mapper happens to bind it. A profile may enable the mapper feature as well;
  * that would be redundant with this guard rather than a replacement for it.</p>
  *
  * <p><strong>Error modes.</strong> A component longer than its declared width raises a bean
@@ -248,63 +245,41 @@ import jakarta.validation.constraints.Size;
  * <p><strong>Build, run and test.</strong> The whole tree builds with {@code ./mvnw -B clean verify}
  * on JDK 25 and Maven 3.9.11; compilation runs with {@code -Xlint:all -Werror}, so any warning is a
  * build failure. The unit tests that are to pin this contract belong in
- * {@code src/test/java/com/cardemo/unit/model}, not beside this file, and are to assert by reflection
+ * {@code src/test/java/com/cardemo/unit/model}, not beside this file, and assert by reflection
  * that the component count is exactly ten, that no component name contains "amount", "amt" or
  * "payment" in any case, that the balance size maximum is 14 rather than 15, that the confirmation
  * component is declared as {@code String} and carries {@code null}, empty, {@code Y}, {@code N} and
- * an invalid character as five distinguishable values, that the account identifier round-trips
- * {@code 00000000001} with its leading zeros intact, that no positive or minimum constraint exists
+ * an invalid character as five distinguishable values, that an eleven-character zero-padded account
+ * identifier round-trips with its leading zeros intact, that no positive or minimum constraint exists
  * on the balance, that a blank balance stays distinguishable from {@code 0} and {@code 0.00}, and
  * that no component is a floating-point type. They additionally assert that
  * {@link #toString()} renders neither the account identifier nor the balance, and that an
  * unrecognised property is refused under a strict mapper and under a lenient one alike.</p>
  *
- * <p><strong>Findings recorded for this file, classified by severity.</strong></p>
+ * <p><strong>Constraints that must continue to hold.</strong></p>
  * <ul>
- *   <li><strong>Blocker</strong> - introducing any payment-amount component, or any partial-payment
- *       path derived from one. Remediation: do not add it; the full-balance semantics of lines 224
- *       and 234 are the contract.</li>
- *   <li><strong>High</strong> - computing a payment, or evaluating the at-or-below-zero rejection,
- *       from the submitted {@code currentBalance} instead of the re-read account balance.
- *       Remediation: the service reads the account record first, exactly as line 193 does, and uses
- *       only that value.</li>
- *   <li><strong>High, resolved</strong> - the record's implicit rendering emitted every submitted
- *       component into any log record, stack trace or diagnostic message that interpolated an
- *       instance, and an earlier revision of this documentation described that as acceptable
- *       provided callers logged individual fields. Three components carry caller-supplied bytes:
- *       the account identifier ({@code ACTIDINI PIC X(11)} at {@code app/cpy-bms/COBIL00.CPY:60}),
- *       the balance ({@code CURBALI PIC X(14)} at {@code app/cpy-bms/COBIL00.CPY:66}) and the error
- *       text ({@code ERRMSGI PIC X(78)} at {@code app/cpy-bms/COBIL00.CPY:78}). Rendering them
- *       verbatim is both an information exposure (CWE-532) and a log-injection vector (CWE-117),
- *       because a carriage-return/line-feed pair inside any {@code X(n)} field forges a whole log
- *       line and no {@code @Size} bound can prevent it. Remediation applied: {@link #toString()}
- *       describes each component structurally - a width for a multi-character value, a code point
- *       for a single character, {@code empty} or {@code absent} otherwise - so no submitted byte
- *       reaches the output at all, and the six presentation members are omitted wholesale. This
- *       type's own rendering is the only defence available: the repository contains no
- *       {@code logback-spring.xml}, so there is no downstream masking layer to fall back on.</li>
- *   <li><strong>Medium, resolved</strong> - an unrecognised JSON property was silently discarded,
- *       and an earlier revision of this documentation asserted that a central
- *       {@code fail-on-unknown-properties} setting covered it. No such setting exists: this
- *       repository contains no {@code application*.yml} at all. Remediation applied:
- *       {@link #rejectUnrecognisedProperty} refuses unconditionally, independently of mapper
- *       configuration.</li>
- *   <li><strong>Medium, closed</strong> - a corpus census correction. A direct count of the
- *       {@code 02 ...I PIC} declarations across all seventeen symbolic maps in
- *       {@code app/cpy-bms} totals <strong>441</strong> input fields, of which this map contributes
- *       10, and not the 460 of prior-generation plan prose; the per-map table that accompanied that
- *       figure itself summed to 440 because it counted {@code COACTVW.CPY} as 36 while the file
- *       declares 37, the extra one being the numeric {@code ACCTSIDI} at line 60. Documentation only,
- *       no code impact. The remediation has been applied: {@code docs/technical-specifications.md}
- *       cites 441 and 37 and records both supersessions in its section 0.2.2.1 corrections table,
- *       verified on 1 August 2026.</li>
- *   <li><strong>Low</strong> - {@code ACCTSIDI} does not appear on this map, so the alphanumeric
- *       against numeric divergence recorded above concerns the four maps that declare it plus
- *       {@code COACTVW.CPY:60}, and not this one, whose account identifier is {@code ACTIDINI} at
- *       line 60. Remediation: the wording is corrected above.</li>
- * </ul>
+ *   <li><strong>No payment-amount component, and no partial-payment path derived from one.</strong> The
+ *       full-balance semantics of lines 224 and 234 are the contract.</li>
+ *   <li><strong>The payment and the at-or-below-zero rejection are computed from the re-read account
+ *       balance, never from the submitted {@code currentBalance}.</strong> The service reads the account
+ *       record first, exactly as line 193 does, and uses only that value.</li>
+ *   <li><strong>{@link #toString()} emits no submitted byte.</strong> Three components carry
+ *       caller-supplied bytes: the account identifier ({@code ACTIDINI PIC X(11)} at
+ *       {@code app/cpy-bms/COBIL00.CPY:60}), the balance ({@code CURBALI PIC X(14)} at {@code :66}) and the
+ *       error text ({@code ERRMSGI PIC X(78)} at {@code :78}). Rendering them verbatim would be both an
+ *       information exposure (CWE-532) and a log-injection vector (CWE-117), because a
+ *       carriage-return/line-feed pair inside any {@code X(n)} field forges a whole log line and no
+ *       {@code @Size} bound can prevent it. The rendering therefore describes each component
+ *       structurally - a width for a multi-character value, a code point for a single character,
+ *       {@code empty} or {@code absent} otherwise - and omits the six presentation members wholesale.</li>
+ *   <li><strong>An unrecognised JSON property is refused by the payload itself</strong>, through
+ *       {@link #rejectUnrecognisedProperty}, independently of mapper configuration.</li>
+ *   <li><strong>{@code ACCTSIDI} does not appear on this map.</strong> The alphanumeric-versus-numeric
+ *       divergence recorded above concerns the four maps that declare it plus {@code COACTVW.CPY:60}, and
+ *       not this one, whose account identifier is {@code ACTIDINI} at line 60.</li>
+ *   </ul>
  *
- * <p><strong>Not available in the source, and deliberately not invented.</strong> There is no
+ * <p><strong>Surface the source does not have, and that is deliberately not invented.</strong> There is no
  * payment-amount input, no partial-payment capability and no client-supplied transaction identifier
  * anywhere in {@code app/cpy-bms/COBIL00.CPY} - the verified census of 10 fields is exhaustive.
  * Introducing any of them would require changing that map, which is frozen. There is likewise no

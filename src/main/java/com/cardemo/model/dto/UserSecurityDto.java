@@ -63,16 +63,15 @@ import java.util.List;
  *       eight-byte credential column becomes a 60-character BCrypt digest column. <b>Neither the
  *       credential nor its digest is ever projected onto this type</b>, so no accessor, no serialised
  *       field and no diagnostic rendering of this type is able to disclose one.</li>
- * </ul>
+ *   </ul>
  *
  * <p>There is therefore deliberately no component here capable of holding a credential or a digest - not
  * even a permanently {@code null} placeholder added "for symmetry" with the create and update requests.
  * A BCrypt digest is recognisable by the version-tagged prefix it writes ahead of its cost factor; no
  * value of that shape can arise from any component declared below, because no component is ever populated
- * from the credential column. A structured logging configuration that masked credentials and digests
- * would be a second line of defence, but no {@code logback-spring.xml} exists under
- * {@code src/main/resources} yet, so this is the only defence rather than the first of two: never
- * carrying them in the first place.
+ * from the credential column. The structured logging configuration that masks credentials and digests
+ * is a second line of defence; this component set is the first and the decisive one: never carrying
+ * them in the first place.
  *
  * <p><b>Seed data provenance.</b> The ten seeded users are held in no fixture under
  * {@code app/data/ASCII}; they exist only as inline {@code SYSUT1 DD *} card images inside
@@ -126,7 +125,7 @@ import java.util.List;
  *       redundant - a shared abstraction would have to assert a single width that the corpus does not
  *       have. All six header fields are therefore declared inline on every map DTO, including this
  *       one.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Why the row type is not shared.</b> {@link UserRow} carries five values per row, which
  * coincidentally matches the five-per-row shape of the transaction-list projection. The coincidence is
@@ -134,19 +133,17 @@ import java.util.List;
  * therefore assert a contract that neither map actually has, so the row type is nested inside this file
  * and used by this type alone.
  *
- * <p><b>Findings and severities.</b> Classified per the project's output standard:
+ * <p><b>Two source facts a reader may look for.</b>
  *
  * <ul>
- *   <li><b>Medium, closed</b> - corpus census correction. Prior-generation plan prose stated 460 input
- *       fields across the seventeen symbolic maps in {@code app/cpy-bms}, while a direct count of the
- *       maps totals <b>441</b> (and that prose's own per-map table summed to 440, differing from its
- *       own text). The count for this map is unaffected and independently verified at <b>59</b>, so the
- *       correction carried no build or behavioural impact. It is closed rather than outstanding:
- *       {@code docs/technical-specifications.md} publishes 441 and records the supersession in its
- *       section 0.2.2.1 corrections table, verified on 1 August 2026.</li>
- *   <li><b>Low</b> - the fourteen bytes of slack between the populated fields and the declared record
- *       size of the security cluster are not modelled, because no source field occupies them.</li>
- * </ul>
+ *   <li><b>The input-field census.</b> A direct count of the {@code 02 &lt;name&gt;I PIC} declarations
+ *       inside the input groups of all seventeen symbolic maps in {@code app/cpy-bms} totals <b>441</b>,
+ *       not the 460 that plan prose states. The count for this map is unaffected and is independently
+ *       verified at <b>59</b>, so nothing about this type follows from the difference; it is recorded
+ *       only so that a reader recounting the maps is not misled.</li>
+ *   <li><b>The fourteen bytes of slack</b> between the populated fields and the declared record size of
+ *       the security cluster are not modelled, because no source field occupies them.</li>
+ *   </ul>
  *
  * <p><b>Null, blank and marked values are three distinct states.</b> Every textual component is carried
  * exactly as supplied. A {@code null} means the field was absent, an empty string means it was present

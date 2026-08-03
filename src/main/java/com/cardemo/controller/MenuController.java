@@ -31,6 +31,7 @@ import java.util.Collection;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -47,6 +48,7 @@ import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.MenuResponse;
 import com.cardemo.model.enums.UserType;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.menu.AdminMenuService;
 import com.cardemo.service.menu.MainMenuService;
 
@@ -138,10 +140,11 @@ import com.cardemo.service.menu.MainMenuService;
  *       together with {@code SessionCreationPolicy.STATELESS}. Nothing in this class contradicts
  *       those rules, and no method-level security annotation is declared here.</li>
  *   <li>{@code server.port}, defaulting to 8080, fixes the port both operations answer on.</li>
- *   <li>{@code carddemo.security.jwt.issuer} and {@code carddemo.security.jwt.expiration-seconds}
- *       govern the bearer token that both operations require. The signing key has no default at all,
+ *   <li>{@code carddemo.security.jwt.issuer} and {@code carddemo.security.jwt.expiration-minutes}
+ *       govern the bearer token that both operations require. The lifetime is expressed in minutes and
+ *       defaults to 30; the signing key, bound from {@code JWT_SIGNING_KEY}, has no default at all,
  *       by design.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -181,8 +184,8 @@ import com.cardemo.service.menu.MainMenuService;
  *   <tr>
  *     <td>{@code 500 Internal Server Error} with a problem detail</td>
  *     <td>A {@code CardDemoException} surfaced, or an unexpected runtime failure was wrapped as a
- *         {@code FatalProcessingException} carrying abend code {@code 999} and return code
- *         {@code 12}. The problem detail is deliberately fixed and reveals nothing about the cause;
+ *         {@code FatalProcessingException} whose abend code {@code 999} and return code {@code 12} are
+ *         logged rather than returned. The problem detail is deliberately fixed and reveals nothing;
  *         the cause is preserved on the exception and logged at {@code ERROR} with the correlation
  *         identifier, so correlate by that identifier rather than by response body.</td>
  *   </tr>
@@ -241,8 +244,8 @@ import com.cardemo.service.menu.MainMenuService;
  *
  * <h2>6. Deviations from the source, with severities</h2>
  *
- * <p>Recorded here and in {@code DECISION_LOG.md} under the entries named below. Nothing in this list
- * is a silent improvement.</p>
+ * <p>Owed an entry in the planned {@code DECISION_LOG.md} under the entries named below. Nothing in this list is a
+ * silent improvement.</p>
  *
  * <ul>
  *   <li><strong>Medium - the administrator menu is role-gated, which the source program is not.</strong>
@@ -276,7 +279,7 @@ import com.cardemo.service.menu.MainMenuService;
  *       and not here. This class relays the resulting {@code ValidationException} byte for byte rather
  *       than restating those rules, because a second statement of them could drift from the first.
  *       Decision log entry: <em>URL navigation replaces XCTL dispatch</em>.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. The two coming-soon messages differ, and are not unified</h2>
  *
@@ -296,7 +299,7 @@ import com.cardemo.service.menu.MainMenuService;
  *       The message therefore <strong>omits the option caption</strong> entirely and reads
  *       {@code This option is coming soon ...}, which is what
  *       {@code AdminMenuService.COMING_SOON_MESSAGE} holds.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>The two must not be unified.</strong> Unifying them would change observable behaviour and
  * would breach the parity contract; the commented-out lines are not dead Java code, they are the
@@ -326,8 +329,12 @@ import com.cardemo.service.menu.MainMenuService;
 public class MenuController {
 
     /**
-     * The base path both operations are mounted under. Fixed by {@code docs/project-guide.md:431},
-     * which records the verified invocation {@code curl -s http://localhost:8080/api/menu/main}.
+     * The base path both operations are mounted under. Fixed by {@code docs/project-guide.md:431}, which
+     * records the invocation {@code curl -s http://localhost:8080/api/menu/main} - reproduced here with the
+     * header that command omits, {@code -H "Authorization: Bearer $TOKEN"}, because
+     * {@code com.cardemo.config.SecurityConfig} requires either authority on {@code GET /api/menu/main} and
+     * the administrator authority on {@code GET /api/menu/admin}. Without the header either path returns
+     * 401, so the recorded command as written no longer reproduces the documented response.
      */
     static final String BASE_PATH = "/api/menu";
 
@@ -441,15 +448,51 @@ public class MenuController {
     private static final String FIELD_PROPERTY = "field";
 
     /**
-     * The problem-detail property carrying {@code ABEND-CODE}, so that the {@code 999} of
-     * {@code 9999-ABEND-PROGRAM} remains observable to a client without disclosing the cause.
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
      */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
     /**
-     * The problem-detail property carrying the batch return code, {@code 12}.
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
      */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
+
+    /**
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
+
+    /**
+     * Stable error code meaning that the request was refused by a field-level validation rule.
+     */
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /**
      * Diagnostic log destination. Static and final: a logger is neither mutable state nor per-request
@@ -715,24 +758,27 @@ public class MenuController {
         LOG.warn("Refused a menu request with 400 for field {} and failure kind {}",
                 rejection.getFieldName(), rejection.getFailureKind());
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
-     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract in the
-     * response metadata.
+     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract on the
+     * diagnostic log.
      *
      * <p>{@code 9999-ABEND-PROGRAM} displayed an abend message, moved {@code 999} into
      * {@code ABEND-CODE} and called the language-environment abend service, and the batch stream
-     * reported return code {@code 12}. Both values are carried as problem-detail properties so that the
-     * contract stays observable, while the detail itself is fixed and reveals nothing about the cause -
-     * the same posture as {@code server.error.include-message}, which is set to {@code never}. The
-     * cause remains attached to the exception and is logged at {@code ERROR}, so diagnosis proceeds
-     * from the correlation identifier rather than from the response body.</p>
+     * reported return code {@code 12}. <strong>Both values are logged and neither is returned.</strong>
+     * They are operational internals of the terminating path: a client cannot act on {@code 999} or on
+     * {@code 12}, while a client that can read them learns which internal termination route a crafted
+     * request reached. The body carries the fixed detail, {@value #ERROR_CODE_ABEND} and the correlation
+     * identifier, which is the same posture as {@code server.error.include-message} being set to
+     * {@code never}. The cause remains attached to the exception and is logged at {@code ERROR}, so
+     * diagnosis proceeds from the correlation identifier rather than from the response body.</p>
      *
      * @param abend the fatal failure, never null when Spring MVC dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail plus the abend code and
-     * the batch return code
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and
+     * the correlation identifier
      */
     @ExceptionHandler(FatalProcessingException.class)
     public ResponseEntity<ProblemDetail> handleAbend(final FatalProcessingException abend) {
@@ -741,14 +787,16 @@ public class MenuController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // The abend code and the batch return code are logged, not returned. Both are mainframe operational
+        // internals: 999 and 12 tell a caller nothing it can act on, while telling an attacker which
+        // termination path was taken. The stable error code is what a client branches on.
+        LOG.error("Menu retrieval abended: code {} returnCode {} culprit {} reason {}",
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("Menu retrieval abended: code {} culprit {} reason {}", carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -772,7 +820,8 @@ public class MenuController {
 
         LOG.error("Menu retrieval failed with a typed CardDemo exception", failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
     }
 
     /**
@@ -907,5 +956,36 @@ public class MenuController {
             }
         }
         return false;
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
     }
 }

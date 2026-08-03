@@ -18,7 +18,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -89,9 +88,9 @@ import java.util.Optional;
  *   <li>It carries no persistence annotation. The column mapping for the stored type character belongs to
  *       {@code com.cardemo.model.entity.UserSecurity}.</li>
  *   <li>It carries no credential material. The seeded records cited above contain a plain text password
- *       field, which is to be hashed by {@code V3__seed_data.sql} (planned; absent at this commit) and is never
- * represented here.</li>
- * </ul>
+ *       field, which {@code V3__seed_data.sql} stores only as a BCrypt hash, and which is never
+ *       represented here.</li>
+ *   </ul>
  *
  * <p>Instances are immutable, stateless and inherently thread safe.
  *

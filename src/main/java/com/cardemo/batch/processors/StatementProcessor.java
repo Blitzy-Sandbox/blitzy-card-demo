@@ -43,6 +43,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.CardDemoException;
@@ -86,7 +88,7 @@ import com.cardemo.service.shared.FileService;
  *       ({@code :L873-L887}), {@code 9300-CUSTFILE-CLOSE} ({@code :L889-L903}) and
  *       {@code 9400-ACCTFILE-CLOSE} ({@code :L905-L919}) keeping its own method - and
  *       {@code 9999-GOBACK} ({@code :L341-L342}).</li>
- * </ol>
+ *   </ol>
  *
  * <p>The DFSORT step that prepares this program's input is also modelled here, because this class
  * owns the {@code COSTM01} layout knowledge that the projection needs:
@@ -128,7 +130,7 @@ import com.cardemo.service.shared.FileService;
  *       statement at all - verified by exhaustive search of the member - so there is no
  *       completed-with-rejects path here and none is invented. The reject-count-driven return code
  *       4 belongs to {@code CBTRN02C} alone.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The {@code ALTER} chain is a static initialisation pipeline, not a strategy table</h2>
  *
@@ -151,7 +153,7 @@ import com.cardemo.service.shared.FileService;
  *
  * <p>The genuinely varying dispatch in this program is one level down, in
  * {@code CBSTM03B}'s dataset-by-operation matrix, and it lives in {@link FileService}.
- * {@code DECISION_LOG.md} records this as <em>self-modifying code eliminated by static flow
+ * The planned {@code DECISION_LOG.md} will record this as <em>self-modifying code eliminated by static
  * analysis with observable order preserved</em>.
  *
  * <h2>Key configuration and defaults</h2>
@@ -165,14 +167,14 @@ import com.cardemo.service.shared.FileService;
  *       See <em>Findings</em>.</li>
  *   <li>Amounts default to scale 2 with {@link RoundingMode#HALF_EVEN}; no binary floating-point
  *       type appears anywhere in this file.</li>
- *   <li>Transaction-table capacity defaults to <strong>unbounded</strong>, bounded only by the
- *       loud safety limit {@link #MAX_TRANSACTIONS_PER_RUN}. The legacy 510-record ceiling is
- *       deliberately not reinstated; see {@link #buildTransactionTable(String)}.</li>
+ *   <li>Transaction residency defaults to <strong>one card group at a time</strong>, bounded only
+ *       by the loud safety limit {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. The legacy 510-record
+ *       ceiling is deliberately not reinstated; see {@link #readNextCardGroup()}.</li>
  *   <li>Input ordering default: ascending by card number, required by
  *       {@link #emitTransactionsForCard}. See <em>Findings</em>.</li>
  *   <li>All case folding and numeric formatting uses {@link Locale#ROOT}, so behaviour does not
  *       vary with the host locale.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build and test</h2>
  *
@@ -217,18 +219,40 @@ import com.cardemo.service.shared.FileService;
  *   <li><strong>Amounts that print identically but compare unequal.</strong> Use
  *       {@link BigDecimal#compareTo(BigDecimal)}, never {@link BigDecimal#equals(Object)}; this
  *       class does so throughout.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings carried by this file, classified per Rule 1 Clause F</h2>
  *
  * <ul>
+ *   <li><strong>High, remediated</strong> - persisted text reached the markup sink unescaped. Eleven
+ *       of this class's HTML lines interpolate stored data into markup: the account banner
+ *       ({@code app/cbl/CBSTM03A.CBL:L529}), the customer name line ({@code :L560-L568}), the three
+ *       address lines ({@code :L569-L592}), the three basic-detail lines ({@code :L613-L633}) and the
+ *       three transaction cells ({@code :L686-L716}). Every field feeding them is {@code PIC X} and
+ *       therefore accepts {@code <} as readily as a letter - {@code CUST-FIRST-NAME},
+ *       {@code CUST-MIDDLE-NAME}, {@code CUST-LAST-NAME} and {@code CUST-ADDR-LINE-1} through
+ *       {@code -3} at {@code app/cpy/CVCUS01Y.cpy:6-11}, and the 100-character
+ *       {@code TRNX-DESC} at {@code app/cpy/COSTM01.CPY:29} - so a statement carried whatever markup
+ *       an upstream path had stored and the consumer that opened it interpreted that markup
+ *       (CWE-79, CWE-116). <strong>Remediated here</strong>: every one of the eleven sites is
+ *       composed through {@link #emitHtmlValueLine(java.util.List, String, String, String)}, whose value
+ *       is escaped for a text node by {@link #escapeHtml(String)} and is then fitted to the room the line's
+ *       own prefix and suffix leave, so no entity is split and no line can exceed
+ *       {@link #HTML_LINE_WIDTH}. The same pass neutralises every
+ *       control character, because a carriage return or line feed inside a fixed-length record is exactly
+ *       the byte that makes a consumer treating the object as line-delimited disagree with one
+ *       treating it as {@code RECFM=FB}. This is a <strong>labelled deviation, not parity</strong> -
+ *       see {@link #escapeHtml(String)} for the written justification. The 80-character text sink is
+ *       deliberately <strong>not</strong> escaped and stays byte-faithful: it is not markup and
+ *       interprets nothing. Parity is intact where observable, because data containing none of the five
+ *       markup characters is emitted character-identically.</li>
  *   <li><strong>High, mitigated</strong> - the legacy transaction table is 51 cards by 10
  *       transactions ({@code app/cbl/CBSTM03A.CBL:L225-L233}), a hard ceiling of 510 records per
  *       run, and the building loop increments both subscripts with no bounds check whatsoever
  *       before the subscripted moves at {@code :L827-L829}. That is a latent storage overrun.
  *       This class uses unbounded collections, which removes it. This is a
  *       <strong>labelled deviation, not parity</strong>; the written justification required by
- *       Rule 1 Clause A5 is on {@link #buildTransactionTable(String)}. Remediation for a reviewer
+ *       Rule 1 Clause A5 is on {@link #readNextCardGroup()}. Remediation for a reviewer
  *       comparing against a mainframe baseline: any run exceeding 510 records has no valid
  *       baseline, because the legacy run would have corrupted storage rather than produced
  *       output.</li>
@@ -243,15 +267,44 @@ import com.cardemo.service.shared.FileService;
  *       line reading {@code //         SPACE=(CYL,(1,1),RLSE), 00,RECFM=FB), ATA.VSAM.KSDS},
  *       plainly the wreckage of an overlapping edit. Logged, not repaired; the frozen corpus is
  *       the record. It does not affect this class, whose widths come from the copybooks.</li>
- *   <li><strong>Medium</strong> - the source interpolates customer name, address, account
- *       identifier, balance and credit score into markup with <strong>no escaping of any
- *       kind</strong> ({@code app/cbl/CBSTM03A.CBL:L562-L632}, {@code :L687-L715}). The fixed
- *       fragments are safe because they are source literals, but the interpolated values are
- *       data. Because parity is the contract and the 100-byte record width is load bearing,
- *       escaping is <strong>not</strong> introduced: it would change byte offsets and break the
- *       Gate 1 comparison. Remediation: the emitted HTML must be treated as untrusted by any
- *       consumer that renders it, and served with a content type and disposition that prevents
- *       active content, which is a deployment concern rather than a code change here.</li>
+ *   <li><strong>Major, CLOSED in this file</strong> - the source interpolates customer name,
+ *       address, account identifier, balance, credit score, transaction identifier, description
+ *       and amount into markup with <strong>no escaping of any kind</strong>
+ *       ({@code app/cbl/CBSTM03A.CBL:L562-L632}, {@code :L687-L715}). The fixed fragments are safe
+ *       because they are source literals, but the interpolated values are data (CWE-79).
+ *       <p>An earlier revision declined to escape, on the reasoning that escaping would change
+ *       byte offsets and break the parity comparison. That reasoning does not hold, and the
+ *       correction is worth stating in full because it is the kind of argument that sounds
+ *       principled:
+ *       <ul>
+ *         <li><em>Not escaping is not parity.</em> The source wrote a dataset that nothing
+ *             rendered. {@code StatementWriter} uploads the identical stream as
+ *             {@code text/html}, so a value containing {@code <script>} is not text but code.
+ *             Preserving the absence of encoding therefore does not preserve the source's
+ *             behaviour - it newly grants the data the ability to execute, which is a behaviour
+ *             change in the one direction parity was invoked to prevent.</li>
+ *         <li><em>Byte offsets are not disturbed.</em> {@link #escapeHtml(String)} runs
+ *             <strong>after</strong> each value has been moved into its declared COBOL width, so
+ *             every source truncation still cuts the raw value at exactly the byte the source cuts
+ *             it at, and every line is still exactly 100 characters - the width declared for
+ *             {@code HTMLFILE} at {@code app/jcl/CREASTMT.JCL:STEP040} and confirmed by
+ *             {@code HTML-FIXED-LN PIC X(100)} at {@code app/cbl/CBSTM03A.CBL:L149}. The record
+ *             geometry the comparison depends on is unchanged.</li>
+ *         <li><em>The closing tag is never the casualty.</em> Escaping expands a value, so a line
+ *             that fitted before encoding can exceed the record afterwards - and the right-hand end
+ *             of the line is where the closing tag is. {@link #emitHtmlValueLine} therefore spends
+ *             the line's remaining width on the value rather than clamping the assembled line, so
+ *             the element closes even when the value had to be shortened. This is not an
+ *             adversarial-input concern only: an address reading {@code SMITH &amp; SONS} is
+ *             ordinary data that expands.</li>
+ *         <li><em>The residual difference is bounded and visible.</em> Only a value containing one
+ *             of the five syntactic characters renders differently from the baseline, and it
+ *             renders as the entity for the character the data actually held. The fixture data
+ *             contains none, so the baseline comparison is byte-identical on it.</li>
+ *   </ul>
+ * Remediation applied: encode at the processor boundary, clamp entity-safely to the declared
+ * width, and assert both against hostile values. The deployment-level advice still stands as
+ * defence in depth but is no longer the only control.</li>
  *   <li><strong>Low</strong> - the redundant {@code MOVE 1 TO CR-JMP} is at
  *       {@code app/cbl/CBSTM03A.CBL:L324}, not {@code :L325}; {@code :L325} is
  *       {@code MOVE ZERO TO WS-TOTAL-AMT}. Verified by direct inspection. The assignment is
@@ -299,19 +352,17 @@ import com.cardemo.service.shared.FileService;
  *   <li><strong>Not available</strong> - no service-level objective for statement generation
  *       exists anywhere in the corpus, so none is asserted. What is needed: a measured baseline
  *       from a running system.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The one Rule 1 conflict, and its resolution</h2>
  *
- * <p>Clause B1 forbids dead code. Behavioural parity requires reproducing reachable no-ops.
- * These collide at exactly one site in this file, the redundant {@code MOVE 1 TO CR-JMP} at
- * {@code app/cbl/CBSTM03A.CBL:L324}, which is immediately overwritten by the
- * {@code PERFORM VARYING CR-JMP FROM 1 BY 1} at {@code :L417-L418}.
- * <strong>Parity governs</strong>, because Clause B1 forbids <em>untracked</em> dead code and
- * deferred work without an owner: this no-op is cited, marked and tracked in
- * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}, so it is a documented faithful
- * reproduction rather than abandoned residue. Deleting it would break the paragraph map the
- * scope-coverage gate verifies.
+ * <p>Clause B1 forbids dead code. Behavioural parity requires reproducing reachable no-ops. These collide at exactly
+ * one site in this file, the redundant {@code MOVE 1 TO CR-JMP} at {@code app/cbl/CBSTM03A.CBL:L324}, which is
+ * immediately overwritten by the {@code PERFORM VARYING CR-JMP FROM 1 BY 1} at {@code :L417-L418}. <strong>Parity
+ * governs</strong>, because Clause B1 forbids <em>untracked</em> dead code and deferred work without an owner: this
+ * no-op is cited, marked and owed an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md},
+ * so it is a documented faithful reproduction rather than abandoned residue. Deleting it would break the paragraph
+ * map the scope-coverage gate verifies.
  *
  * <h2>Thread safety</h2>
  *
@@ -369,15 +420,60 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     private static final int HTML_LINE_WIDTH = StatementTransaction.STATEMENT_HTML_RECORD_LENGTH;
 
     /**
-     * Loud safety limit on transactions accepted into the table in one run. The source had a hard
-     * ceiling of 510 and no check; this class has no ceiling, so it needs a bound that stops a
-     * malformed or endlessly repeating dataset from exhausting the heap (Rule 1 Clause A2, which
-     * requires inputs to be treated as untrusted). Exceeding it raises
-     * {@link FatalProcessingException}: it fails loudly and never silently truncates, which is
-     * precisely what the legacy overrun did. Chosen roughly three orders of magnitude above the
-     * largest fixture so that no legitimate run can reach it.
+     * Property key through which an operator may lower the run-wide retention bound to fit a heap.
+     *
+     * <p>Declared as a key rather than only as a constant because the bound decides how much work a malformed
+     * dataset can extract, and a limit an operator cannot influence is exactly the "hidden constant" Rule 1
+     * Clause E objects to. It is also <strong>declared in {@code src/main/resources/application.yml}</strong>
+     * at exactly {@link #MAX_TRANSACTIONS_PER_RUN}, so declaring it changes no behaviour: a key that is read
+     * at runtime but appears in no profile is invisible to whoever has to operate the job, which is the same
+     * defect the four reader page sizes were corrected for. The warning that it is a safety limit and not a
+     * routine tuning knob is carried in the comment on that declaration, where an operator will actually read
+     * it, rather than by withholding the declaration.
+     */
+    public static final String KEY_MAX_TRANSACTIONS_PER_RUN =
+            "carddemo.batch.statement-processor.max-transactions-per-run";
+
+    /**
+     * Default run-wide bound: the number of transactions one statement run may admit in total.
+     *
+     * <p><strong>Why a run bound is needed even though the table is not resident for the whole run.</strong>
+     * The stream advances one control-break group at a time, so what is <em>resident</em> is one card's
+     * transactions and is bounded by {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. The group bound alone,
+     * however, admits an endless sequence of <em>distinct</em> card numbers: each group closes within the
+     * limit and the run never terminates. So the two bounds answer two different hazards and both are
+     * checked - the group bound for heap, this one for work. Exceeding either raises
+     * {@link FatalProcessingException}: it fails loudly and never silently truncates, which is precisely what
+     * the legacy overrun did.
+     *
+     * <p><strong>Measured, not estimated.</strong> The whole fixture set for this job is 300 daily
+     * transactions ({@code app/data/ASCII/dailytran.txt}), so a parity run admits 300 - four orders of
+     * magnitude below this default. A deployment whose legitimate input could approach it lowers
+     * {@value #KEY_MAX_TRANSACTIONS_PER_RUN} rather than discovering the limit as a failed job.
      */
     public static final int MAX_TRANSACTIONS_PER_RUN = 1_000_000;
+
+    /**
+     * Loud safety limit on the transactions held resident for <strong>one card group</strong>.
+     *
+     * <p>Nothing else is held. The stream advances one control-break group at a time, so the resident
+     * set is one card's transactions and not the run's, and a run-wide ceiling would therefore bound
+     * nothing that is actually resident - which is why {@link #MAX_TRANSACTIONS_PER_RUN} bounds the work
+     * and this constant bounds the heap. What needs a resident bound is the single group, because a
+     * malformed dataset that repeats one card number forever would otherwise grow that group without
+     * limit (Rule 1 Clause A2, which requires inputs to be treated as untrusted). Exceeding it raises
+     * {@link FatalProcessingException}: it fails loudly and never silently truncates, which is
+     * precisely what the legacy overrun did.
+     *
+     * <p><strong>The arithmetic, so the worst case is a calculation rather than a surprise.</strong> Each
+     * retained entry is one projected record: a 16-character card number, a 16-character identifier and the
+     * 318-character remainder, so {@value StatementTransaction#RECORD_LENGTH} characters of payload. At two
+     * bytes per {@code char} plus per-object and per-list overhead that is on the order of 800 bytes retained
+     * per transaction, so this bound caps one group at roughly 800 MB - which a default JVM heap will not
+     * accommodate. That is deliberate and is why it is a <em>safety limit</em>: it sits five orders of
+     * magnitude above the largest fixture card group, so no legitimate run can reach it.
+     */
+    public static final int MAX_TRANSACTIONS_PER_CARD_GROUP = 1_000_000;
 
     /** Minimum length of a projected record: the last position the projection writes. */
     private static final int MINIMUM_PROJECTED_LENGTH =
@@ -392,14 +488,14 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
 
     /**
      * Trailing-sign overpunch characters for a non-negative zoned-decimal field, indexed by the value
-     * of the final digit: {@code '{'} is {@code +0} and {@code 'A'} through {@code 'I'} are {@code +1}
+     * of the final digit: {@code '&#123;'} is {@code +0} and {@code 'A'} through {@code 'I'} are {@code +1}
      * through {@code +9}.
      */
     private static final String POSITIVE_OVERPUNCH = "{ABCDEFGHI";
 
     /**
      * Trailing-sign overpunch characters for a negative zoned-decimal field, indexed by the value of
-     * the final digit: {@code '}'} is {@code -0} and {@code 'J'} through {@code 'R'} are {@code -1}
+     * the final digit: {@code '&#125;'} is {@code -0} and {@code 'J'} through {@code 'R'} are {@code -1}
      * through {@code -9}.
      */
     private static final String NEGATIVE_OVERPUNCH = "}JKLMNOPQR";
@@ -594,6 +690,19 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** {@code '<p>FICO Score         : '}, {@code app/cbl/CBSTM03A.CBL:L628}, 24 bytes. */
     private static final String HTML_LABEL_FICO_SCORE = "<p>FICO Score         : ";
 
+    /**
+     * Initial spare capacity given to the escape buffer, sized so that a handful of encoded characters do not
+     * force a reallocation. Five is the number of characters {@link #escapeHtml(String)} recognises.
+     */
+    private static final int HTML_ESCAPE_HEADROOM = 16;
+
+    /**
+     * Length of the longest character reference {@link #escapeHtml(String)} emits, {@code &quot;}. It bounds
+     * the backward scan in {@link #clampToHtmlLine(String)} so that truncation can never cut an entity in half
+     * and can never walk further than six characters however hostile the input.
+     */
+    private static final int HTML_LONGEST_ENTITY = 6;
+
     // ==========================================================================================
     // 01 STATEMENT-LINES, app/cbl/CBSTM03A.CBL:L85-L146. Sixteen 80-byte group items. Every
     // FILLER width below was read from the source; each line's parts sum to exactly 80, which is
@@ -739,6 +848,58 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     private static final String SINGLE_SPACE = " ";
 
     // ==========================================================================================
+    // Markup escaping for the HTML sink. The 80-character text sink is byte-faithful to the legacy
+    // layout and is deliberately untouched by any of this: it is not markup, so it interprets
+    // nothing. These mirror the helpers in com.cardemo.batch.writers.StatementWriter rather than
+    // being shared with them, for the reason that class already documents: the two statement sinks
+    // own their emission independently and share no fixed-width codec. The mirroring is deliberate
+    // and is why the escaping contract is asserted against BOTH classes by the same test.
+    // ==========================================================================================
+
+    /**
+     * The replacement for {@code &}, applied unconditionally so an already-escaped value is escaped again
+     * rather than passed through: double encoding is a display defect, whereas recognising an entity and
+     * leaving it alone is an injection. Value {@value}.
+     */
+    private static final String HTML_ENTITY_AMP = "&amp;";
+
+    /** The replacement for {@code <}, the character that opens a tag. Value {@value}. */
+    private static final String HTML_ENTITY_LT = "&lt;";
+
+    /** The replacement for {@code >}, which closes a tag a consumer may have opened. Value {@value}. */
+    private static final String HTML_ENTITY_GT = "&gt;";
+
+    /** The replacement for the double quote, which would otherwise close an attribute. Value {@value}. */
+    private static final String HTML_ENTITY_QUOT = "&quot;";
+
+    /**
+     * The replacement for the apostrophe, which would otherwise close a single-quoted attribute. The numeric
+     * form is used because it is defined in every HTML version this markup could be parsed as. Value
+     * {@value}.
+     */
+    private static final String HTML_ENTITY_APOS = "&#39;";
+
+    /**
+     * What a control character becomes in the markup sink: a single space, chosen because the substitution
+     * is length-neutral and therefore cannot disturb the record geometry. A carriage return or line feed
+     * inside a fixed-length record is exactly the byte that makes a consumer treating the object as
+     * line-delimited disagree with one treating it as {@code RECFM=FB}.
+     */
+    private static final char CONTROL_REPLACEMENT = ' ';
+
+    /** First code point above the C0 control block; every code point below it is a C0 control. */
+    private static final char FIRST_PRINTABLE_CHARACTER = 0x20;
+
+    /** The delete character, a control that sits above the C0 block rather than inside it. */
+    private static final char DELETE_CHARACTER = 0x7F;
+
+    /** First code point of the C1 control block, which ISO 8859-1 leaves to controls. */
+    private static final char FIRST_C1_CONTROL = 0x80;
+
+    /** Last code point of the C1 control block. */
+    private static final char LAST_C1_CONTROL = 0x9F;
+
+    // ==========================================================================================
     // Geometry of the three companion records this program reads. Widths come from the copybooks
     // that app/cbl/CBSTM03A.CBL:L51-L57 COPYs, and are corroborated by the FD record descriptions
     // of app/cbl/CBSTM03B.CBL and by the catalogued average record lengths in
@@ -813,25 +974,53 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     // WS-SAVE-CARD PIC X(16) at :L69 likewise has no field counterpart. The source seeded it in
     // 8100-TRNXFILE-OPEN at :L757 and consumed it in 8500-READTRNX-READ at :L819 and :L830, i.e.
     // it was shared working storage spanning two paragraphs. Here the primed record is returned
-    // by #openAndPrimeTransactionFile() and passed to #buildTransactionTable(), so the value is a
-    // parameter and a local instead of shared mutable state. Both paragraphs survive as their own
-    // methods; only the coupling between them narrows.
+    // by #openAndPrimeTransactionFile() into the #pendingRecord lookahead, from which
+    // #readNextCardGroup() takes the group's card number. Both paragraphs survive as their own
+    // methods; the shared 16-byte save area narrows to one field with a single writer.
     // ==========================================================================================
 
     /** The file-access collaborator standing in for {@code CALL 'CBSTM03B' USING WS-M03B-AREA}. */
     private final FileService fileService;
 
     /**
-     * The transaction table, {@code 01 WS-TRNX-TABLE} at {@code app/cbl/CBSTM03A.CBL:L225-L233},
-     * together with its companion counter table {@code 01 WS-TRN-TBL-CNTR} at {@code :L231-L233}.
-     * One {@link StatementTransaction.CardGroup} per card in ascending card-number order; the
-     * group's list size is the counterpart of {@code WS-TRCT (CR-CNT)}, so the two source tables
-     * collapse into one structure without losing either.
+     * The one card group currently held: the streamed replacement for
+     * {@code 01 WS-TRNX-TABLE} at {@code app/cbl/CBSTM03A.CBL:L225-L233} together with its companion
+     * counter table {@code 01 WS-TRN-TBL-CNTR} at {@code :L231-L233}. The group's list size is the
+     * counterpart of {@code WS-TRCT (CR-CNT)}, so the two source tables collapse into one structure
+     * without losing either.
      *
-     * <p>Deliberately UNBOUNDED. See {@link #buildTransactionTable(String)} for the written
-     * justification of removing the legacy 510-transaction ceiling.
+     * <p>{@code null} before the first group is loaded, after the group has been emitted for its
+     * cross-reference row, and once the stream is exhausted. See
+     * {@link #advanceToCardGroup(String)} for why one group is sufficient.
      */
-    private final List<StatementTransaction.CardGroup> transactionTable = new ArrayList<>();
+    private StatementTransaction.CardGroup currentCardGroup;
+
+    /**
+     * The one-record lookahead: the first record of the <em>next</em> card group, already read but not
+     * yet consumed.
+     *
+     * <p>A control break is only detectable by reading one record past the end of a group, and that
+     * record must not be lost. The source had the same lookahead in shared working storage - the
+     * record sat in {@code TRNX-RECORD} while {@code :L819} compared {@code WS-SAVE-CARD} against it -
+     * so this field is that buffer, not an addition.
+     */
+    private String pendingRecord;
+
+    /** Whether {@code TRNXFILE} has reported end of file, so no further read is issued. */
+    private boolean transactionFileExhausted;
+
+    /**
+     * Card number of the group most recently loaded, which the ascending-order precondition is checked
+     * against. Seeded to the empty string, which precedes every card number under character comparison.
+     */
+    private String lastGroupCardNumber = "";
+
+    /**
+     * Running count of card groups loaded, the streamed counterpart of {@code CR-CNT} at
+     * {@code app/cbl/CBSTM03A.CBL:L758}. Kept as a scalar because the groups themselves are no longer
+     * retained.
+     */
+    private long cardGroupsRead;
 
     /**
      * {@code CR-JMP PIC S9(4) VALUE 0} at {@code app/cbl/CBSTM03A.CBL:L62}: the outer subscript of
@@ -866,8 +1055,20 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     /** Guards {@link #initialise()} so the ordered pipeline runs exactly once per step. */
     private boolean initialised;
 
-    /** Running count of records admitted to the table, checked against {@link #MAX_TRANSACTIONS_PER_RUN}. */
+    /**
+     * Running count of records admitted across the run. The per-group ceiling
+     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} is checked against the current group's size, not
+     * against this counter, which is a diagnostic total reported at {@link #close()}.
+     */
     private long transactionsAccepted;
+
+    /**
+     * The effective retention bound for this instance, from {@value #KEY_MAX_TRANSACTIONS_PER_RUN}.
+     *
+     * <p>{@code final}: the bound of a run cannot change during it, and a mutable bound would make the abend
+     * message unreproducible.
+     */
+    private final int maxTransactionsPerRun;
 
     /** Running count of statements emitted, reported once at {@link #close()} in place of the absent counters. */
     private long statementsProduced;
@@ -888,10 +1089,39 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * dependency.
      *
      * @param fileService the DD-keyed file-access service, never {@code null}
+     * @param maxTransactionsPerRun the retention bound, from {@value #KEY_MAX_TRANSACTIONS_PER_RUN} and
+     *     defaulting to {@value #MAX_TRANSACTIONS_PER_RUN}. Bounds the number of projected records this run may
+     *     hold resident, so the heap footprint is an operator decision rather than a hidden constant; see the
+     *     arithmetic on {@link #MAX_TRANSACTIONS_PER_RUN}
      * @throws NullPointerException if {@code fileService} is {@code null}.
+     * @throws IllegalArgumentException if the retention bound is not positive, because a bound of zero or less
+     *     would abend on the first record and a negative bound would never trip at all
+     */
+    // @Autowired is required, and is the only place in this tree that needs it: two public constructors with
+    // no marker leave the container with no way to choose, and it would fail looking for a default one.
+    @Autowired
+    public StatementProcessor(FileService fileService,
+            @Value("${" + KEY_MAX_TRANSACTIONS_PER_RUN + ":" + MAX_TRANSACTIONS_PER_RUN + "}")
+            int maxTransactionsPerRun) {
+        this.fileService = Objects.requireNonNull(fileService, "fileService must not be null");
+        if (maxTransactionsPerRun < 1) {
+            throw new IllegalArgumentException(KEY_MAX_TRANSACTIONS_PER_RUN
+                    + " must be at least 1 but was " + maxTransactionsPerRun
+                    + "; it bounds the resident transaction table, so a non-positive value would either abend "
+                    + "on the first record or never trip at all");
+        }
+        this.maxTransactionsPerRun = maxTransactionsPerRun;
+    }
+
+    /**
+     * Convenience constructor applying the default retention bound, for the unit tier and for any caller that
+     * has no reason to narrow it.
+     *
+     * @param fileService the DD-keyed file-access service, never {@code null}
+     * @throws NullPointerException if {@code fileService} is {@code null}
      */
     public StatementProcessor(FileService fileService) {
-        this.fileService = Objects.requireNonNull(fileService, "fileService must not be null");
+        this(fileService, MAX_TRANSACTIONS_PER_RUN);
     }
 
     /**
@@ -920,7 +1150,29 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
             List<String> htmlLines) {
 
         /**
-         * Validates and defensively copies.
+         * Validates, neutralises every control character and defensively copies.
+         *
+         * <p><b>Why the control sweep is applied here and to both streams.</b> {@link #escapeHtml(String)}
+         * neutralises controls on its way past, so the markup sink was already covered - but only the markup
+         * sink, and only for values that pass through {@link #escapeHtml(String)}. The
+         * {@value StatementTransaction#STATEMENT_TEXT_RECORD_LENGTH}-character text sink is deliberately not
+         * escaped, because it is not markup and interprets nothing, so a control byte persisted in a customer
+         * name or an address line reached a composed text line untouched. Both statement objects are
+         * <b>unblocked and undelimited</b> - {@code app/jcl/CREASTMT.JCL:STEP040} declares {@code LRECL=80}
+         * and {@code LRECL=100} - so a consumer finds record boundaries by counting bytes and by nothing
+         * else, and {@code StatementWriter} refuses any record carrying a character outside the printable
+         * single-byte set rather than emit one. Left unswept, therefore, a single control byte in one
+         * persisted field did not corrupt a statement: it abended the whole step, turning stored data into an
+         * outage. Sweeping here removes that outcome without weakening the writer's guard, which stays as the
+         * boundary check it is.
+         *
+         * <p>This record constructor is the one boundary every composed line of both streams crosses on its
+         * way to the emitter, which is why the sweep belongs here rather than at the sixteen text
+         * {@code add} sites. It runs before the width check because it is length-neutral by construction -
+         * one control becomes one space - so the geometry it validates is the geometry that is emitted.
+         *
+         * <p>Parity is untouched: no record in {@code app/data/ASCII} carries a control character, so the
+         * transform is the identity for the Gate 1 comparison and for every legitimate record.
          *
          * @throws NullPointerException if any component is {@code null}, or any line is {@code null}
          * @throws IllegalArgumentException if any line is not exactly its stream's declared width.
@@ -930,10 +1182,28 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
             Objects.requireNonNull(totalExpenditure, "totalExpenditure must not be null");
             Objects.requireNonNull(textLines, "textLines must not be null");
             Objects.requireNonNull(htmlLines, "htmlLines must not be null");
-            textLines = List.copyOf(textLines);
-            htmlLines = List.copyOf(htmlLines);
+            textLines = withoutControlCharacters(textLines, "textLines");
+            htmlLines = withoutControlCharacters(htmlLines, "htmlLines");
             requireUniformWidth(textLines, TEXT_LINE_WIDTH, "textLines");
             requireUniformWidth(htmlLines, HTML_LINE_WIDTH, "htmlLines");
+        }
+
+        /**
+         * Copies the lines, replacing every control character with a space as it goes.
+         *
+         * @param lines the composed lines, never {@code null}
+         * @param component the record component name, used verbatim in the failure message
+         * @return an unmodifiable copy in which no line carries a control character
+         * @throws NullPointerException if any line is {@code null}
+         */
+        private static List<String> withoutControlCharacters(List<String> lines, String component) {
+            List<String> swept = new ArrayList<>(lines.size());
+            for (int index = 0; index < lines.size(); index++) {
+                String line = Objects.requireNonNull(lines.get(index),
+                        () -> component + " must not carry a null line");
+                swept.add(neutraliseControlCharacters(line));
+            }
+            return List.copyOf(swept);
         }
 
         /**
@@ -1032,44 +1302,49 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      *       leaving the state machine permanently</li>
      * </ol>
      *
-     * <p>Hence five calls in that exact order followed by the mainline. Recorded in
-     * {@code DECISION_LOG.md} as: self-modifying code eliminated by static flow analysis with
-     * observable order preserved. The DD-keyed strategy map lives in {@link FileService}, where
-     * {@code app/cbl/CBSTM03B.CBL}'s four-dataset by six-operation matrix genuinely varies; putting
-     * one here would model a variability that does not exist.
+     * <p>Hence five calls in that exact order followed by the mainline. Owed an entry in the planned
+     * {@code DECISION_LOG.md} as: self-modifying code eliminated by static flow analysis with observable order
+     * preserved. The DD-keyed strategy map lives in {@link FileService}, where {@code app/cbl/CBSTM03B.CBL}'s
+     * four-dataset by six-operation matrix genuinely varies; putting one here would model a variability that does not
+     * exist.
      *
      * <p>{@code OPEN OUTPUT STMT-FILE HTML-FILE} at {@code :L293} is deliberately absent: the two
      * output streams belong to {@code com.cardemo.batch.writers.StatementWriter}, which opens them
      * from its {@code StepExecutionListener} callback. This class produces lines; it never writes.
      *
      * @throws com.cardemo.exception.FatalProcessingException if any of the four datasets cannot be
-     * opened or primed, or if the transaction table breaches
-     * {@link #MAX_TRANSACTIONS_PER_RUN} or the ascending card-number precondition.
+     * opened or primed. Breaches of {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} or of the ascending
+     * card-number precondition are raised later, as each group is read, because no group is read
+     * here.
      */
     public void initialise() {
         if (initialised) {
             return;
         }
-        initialiseTransactionTable();
-        String primedRecord = openAndPrimeTransactionFile();
-        buildTransactionTable(primedRecord);
+        initialiseTransactionStream();
+        pendingRecord = openAndPrimeTransactionFile();
         openCrossReferenceFile();
         openCustomerFile();
         openAccountFile();
         initialised = true;
-        LOG.info("Statement initialisation complete: cards={} transactions={}",
-                transactionTable.size(), transactionsAccepted);
+        LOG.info("Statement initialisation complete: the transaction stream is primed and the four "
+                + "datasets are open; card groups are consumed one control break at a time");
     }
 
     /**
      * {@code INITIALIZE WS-TRNX-TABLE WS-TRN-TBL-CNTR}, {@code app/cbl/CBSTM03A.CBL:L294}.
      *
-     * <p>The source zeroed a fixed 51-by-10 table and its 51 counters in place. Here the collection
-     * is emptied, which is the same observable start state, and the two running counters that
-     * {@code CR-CNT} and {@code TR-CNT} seeded at {@code :L758-L759} are re-derived from it.
+     * <p>The source zeroed a fixed 51-by-10 table and its 51 counters in place. Here the streamed
+     * equivalents are cleared instead - the held group, the lookahead record, the exhaustion flag, the
+     * order-checking position and the two subscript counters that {@code CR-CNT} and {@code TR-CNT}
+     * seeded at {@code :L758-L759} - which is the same observable start state.
      */
-    private void initialiseTransactionTable() {
-        transactionTable.clear();
+    private void initialiseTransactionStream() {
+        currentCardGroup = null;
+        pendingRecord = null;
+        transactionFileExhausted = false;
+        lastGroupCardNumber = "";
+        cardGroupsRead = 0L;
         transactionsAccepted = 0L;
         endOfFile = false;
         crJmp = 0;
@@ -1091,7 +1366,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * {@code MOVE TRNX-CARD-NUM TO WS-SAVE-CARD} at {@code :L757} together with
      * {@code MOVE 1 TO CR-CNT} at {@code :L758} and {@code MOVE 0 TO TR-CNT} at {@code :L759} seeded
      * shared working storage for the next paragraph; that seed travels as this method's return value
-     * instead, so {@link #buildTransactionTable(String)} needs no shared mutable state.
+     * instead, so {@link #readNextCardGroup()} takes the group's card number from the lookahead
+     * record rather than from shared mutable state.
      *
      * @return the primed 350-character transaction record, never {@code null}
      * @throws com.cardemo.exception.FatalProcessingException if the open or the priming read fails.
@@ -1160,122 +1436,181 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     }
 
     // ==========================================================================================
-    // The transaction table. app/cbl/CBSTM03A.CBL:L818-L853. Step 2 of the pipeline.
+    // The transaction stream. app/cbl/CBSTM03A.CBL:L818-L853. Step 2 of the pipeline.
+    //
+    // The source loaded every record into a fixed table before producing any statement. This class
+    // consumes the same records one control-break group at a time, because the two streams the
+    // statement run joins are both already ordered by card number - TRNXFILE by the sort of
+    // app/jcl/CREASTMT.JCL:L53, XREFFILE by its XREF-CARD-NUM record key - so a forward merge join
+    // sees exactly what the table lookup saw while holding one group instead of the whole run.
     // ==========================================================================================
 
     /**
      * {@code 8500-READTRNX-READ} ({@code app/cbl/CBSTM03A.CBL:L818-L847}) together with its exit
-     * paragraph {@code 8599-EXIT} ({@code :L849-L853}). Loads every projected transaction record
-     * into {@link #transactionTable}, grouped by card number, in the order read.
+     * paragraph {@code 8599-EXIT} ({@code :L849-L853}), positioned onto the card group a
+     * cross-reference row is asking for.
      *
-     * <h2>DEVIATION — the 510-transaction ceiling is removed. Severity of the defect it removes:
-     * High. Classification: labelled deviation, not parity.</h2>
+     * <h4>DEVIATION — the 510-transaction ceiling is removed. Severity of the defect it removes:
+     * High. Classification: labelled deviation, not parity.</h4>
      *
      * <p>The source table is declared {@code 05 WS-CARD-TBL OCCURS 51 TIMES} containing
      * {@code 10 WS-TRAN-TBL OCCURS 10 TIMES} at {@code app/cbl/CBSTM03A.CBL:L225-L233}, so its hard
      * capacity is 51 cards multiplied by 10 transactions, or
-     * {@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN}
-     * transactions per run. The building loop increments <em>both</em> subscripts with no bounds
-     * check whatsoever and then writes through them at {@code :L827-L829}
-     * ({@code MOVE TRNX-CARD-NUM TO WS-CARD-NUM (CR-CNT)},
+     * {@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN} transactions per run. The building
+     * loop increments <em>both</em> subscripts with no bounds check whatsoever and then writes through
+     * them at {@code :L827-L829} ({@code MOVE TRNX-CARD-NUM TO WS-CARD-NUM (CR-CNT)},
      * {@code MOVE TRNX-ID TO WS-TRAN-NUM (CR-CNT, TR-CNT)},
-     * {@code MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT)}). A 52nd card or an 11th transaction
-     * on any card therefore writes past the end of the table into whatever follows it in
-     * WORKING-STORAGE: a latent storage-overrun that corrupts data silently and produces a plausible
-     * but wrong statement.
+     * {@code MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT)}). A 52nd card or an 11th transaction on
+     * any card therefore writes past the end of the table into whatever follows it in WORKING-STORAGE:
+     * a latent storage overrun that corrupts data silently and produces a plausible but wrong
+     * statement.
      *
-     * <p><strong>This implementation uses unbounded collections, so the ceiling is gone.</strong>
+     * <p><strong>This implementation streams, so there is no table to overrun and no ceiling at
+     * all.</strong>
      *
-     * <p><strong>Justification, as Rule 1 Clause A5 requires for a tradeoff.</strong> This change is
-     * made to remove a memory-corruption defect, <em>not</em> to make anything faster. Three
+     * <p><strong>Justification, as Rule 1 Clause A5 requires for a tradeoff.</strong> The change
+     * removes a memory-corruption defect and, as a consequence, an unbounded heap cost. Three
      * alternatives were considered and rejected. Reinstating the ceiling and truncating at 510 would
-     * preserve the number but not the behaviour, because the source does not truncate — it overruns;
-     * a faithful reproduction of the overrun is impossible in Java and undesirable in any language.
-     * Reinstating the ceiling and failing at 510 would turn a run that the legacy system completed
-     * (incorrectly) into a run that this system refuses, which is a behaviour change affecting every
-     * dataset larger than the fixtures. Leaving the collection wholly unbounded with no limit at all
-     * would trade a silent corruption for a silent heap exhaustion. The design adopted therefore
-     * grows without a functional ceiling but fails loudly and immediately at
-     * {@link #MAX_TRANSACTIONS_PER_RUN}, and emits a WARN the first time a run crosses either legacy
-     * threshold so that the divergence from historical capacity is visible in the log rather than
-     * inferred. The cost is unbounded heap proportional to input size; that is accepted because the
-     * whole table was already resident in the source, only at a fixed 51-by-10 size.
+     * preserve the number but not the behaviour, because the source does not truncate - it overruns; a
+     * faithful reproduction of the overrun is impossible in Java and undesirable in any language.
+     * Reinstating the ceiling and failing at 510 would turn a run the legacy system completed
+     * (incorrectly) into a run this system refuses, which is a behaviour change affecting every
+     * dataset larger than the fixtures. Materialising the whole run without a ceiling - the shape this
+     * class previously had - traded a silent corruption for a silent heap exhaustion and, worse,
+     * needed a synthetic million-record cap to bound something that never had to be resident. The
+     * design adopted holds one card group, so the resident set is proportional to the largest card
+     * group rather than to the run, and that single group is bounded loudly at
+     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}. A WARN is emitted the first time a run crosses either
+     * legacy threshold, so the divergence from historical capacity is visible in the log rather than
+     * inferred.
      *
      * <p>The legacy capacity limit of {@value StatementTransaction#LEGACY_MAX_TRANSACTIONS_PER_RUN}
-     * is recorded in {@code TRACEABILITY_MATRIX.md} as this program's historical capacity, and this
-     * deviation is recorded in {@code DECISION_LOG.md}.
+     * is <strong>owed an entry in the planned {@code TRACEABILITY_MATRIX.md}</strong> as this program's
+     * historical capacity, and this deviation is <strong>owed an entry in the planned
+     * {@code DECISION_LOG.md}</strong>. Measured at this commit neither file exists, so this Javadoc is the
+     * register of record for both and neither may be described as already recorded.
      *
-     * <h2>Self-recursion converted to iteration. Severity: Low.</h2>
+     * <h4>Self-recursion converted to iteration. Severity: Low.</h4>
      *
-     * <p>{@code :L840} is {@code GO TO 8500-READTRNX-READ} — the paragraph branches to itself once
-     * per record. A Java method that called itself once per transaction would overflow the stack on
-     * any realistic volume, which is the class of obvious inefficiency Clause A5 forbids, so the
-     * recursion becomes the {@code while} loop below. The observable order is unchanged and the
-     * final-counter flush of {@code :L850} is preserved as the unconditional append after the loop.
+     * <p>{@code :L840} is {@code GO TO 8500-READTRNX-READ} - the paragraph branches to itself once per
+     * record. A Java method that called itself once per transaction would overflow the stack on any
+     * realistic volume, which is the class of obvious inefficiency Clause A5 forbids, so the recursion
+     * becomes the {@code while} loops below. The observable order is unchanged and the final-counter
+     * flush of {@code :L850} is preserved: the last group is closed by end of file rather than by a
+     * control break, exactly as {@code 8599-EXIT} closed it.
      *
-     * <h2>Ascending card-number precondition. Severity: Low. Option (1) — preserved.</h2>
+     * <h4>Ascending card-number precondition. Severity: Low. Option (1) — preserved.</h4>
      *
-     * <p>{@link #emitTransactionsForCard(String, java.util.List, java.util.List)} keeps the order-dependent early exit of
+     * <p>{@link #emitTransactionsForCard(String, java.util.List, java.util.List)} keeps the
+     * order-dependent early exit of
      * {@code :L417-L419} verbatim, which is only correct while the table ascends by card number.
      * {@code app/jcl/CREASTMT.JCL:L53} guarantees it with
      * {@code SORT FIELDS=(263,16,CH,A,1,16,CH,A)}. Rather than relax the lookup and diverge, the
-     * precondition is asserted here at load time, so an unsorted input fails at the boundary with a
-     * precise message instead of silently producing short statements.
+     * precondition is asserted as each group is closed, so an unsorted input fails at the boundary
+     * with a precise message instead of silently producing short statements. Asserting per group
+     * rather than over the whole file up front is the one observable difference streaming makes: a run
+     * that ends before reaching a misordered record no longer reports it, which is a diagnostic
+     * difference and not a behavioural one, because the source's lookup would equally never have
+     * reached it.
      *
-     * @param primedRecord the 350-character record already read by
-     * {@link #openAndPrimeTransactionFile()}, standing in for the {@code WS-SAVE-CARD},
-     * {@code CR-CNT} and {@code TR-CNT} seed of {@code :L757-L759}. Never {@code null}
-     * @throws com.cardemo.exception.FatalProcessingException on a read failure, on a record that is
-     * shorter than the projection writes, on input that is not ascending by card number, or on more
-     * than {@link #MAX_TRANSACTIONS_PER_RUN} records.
+     * @param soughtCardNumber the card number of the cross-reference row being served, already fitted
+     * to {@value StatementTransaction#CARD_NUMBER_LENGTH} characters. Never {@code null}
+     * @return the group for that card number, or empty when the stream holds no such group - either
+     * because it is exhausted or because the next group belongs to a later card
+     * @throws com.cardemo.exception.FatalProcessingException on a read failure, on a record shorter
+     * than the projection writes, on input that is not ascending by card number, or on a single card
+     * group larger than {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}
      */
-    private void buildTransactionTable(String primedRecord) {
-        Objects.requireNonNull(primedRecord, "primedRecord must not be null");
-
-        String currentRecord = primedRecord;
-        // WS-SAVE-CARD, seeded by MOVE TRNX-CARD-NUM TO WS-SAVE-CARD at :L757.
-        String saveCard = readCardNumber(currentRecord);
-        String currentCardNumber = saveCard;
-        List<StatementTransaction> currentCardTransactions = new ArrayList<>();
+    private Optional<StatementTransaction.CardGroup> advanceToCardGroup(String soughtCardNumber) {
+        Objects.requireNonNull(soughtCardNumber, "soughtCardNumber must not be null");
 
         while (true) {
-            String cardNumber = readCardNumber(currentRecord);
-
-            // :L819-L825. IF WS-SAVE-CARD = TRNX-CARD-NUM then ADD 1 TO TR-CNT, ELSE flush the
-            // completed card's counter at :L822, ADD 1 TO CR-CNT at :L823 and restart the inner
-            // count at :L824. Appending the finished group is the flush and the increment together.
-            if (!saveCard.equals(cardNumber)) {
-                requireAscendingCardNumber(saveCard, cardNumber);
-                appendCardGroup(currentCardNumber, currentCardTransactions);
-                currentCardTransactions = new ArrayList<>();
+            if (currentCardGroup == null) {
+                currentCardGroup = readNextCardGroup();
+                if (currentCardGroup == null) {
+                    // 8599-EXIT reached: the stream is exhausted, so no group can match.
+                    return Optional.empty();
+                }
             }
 
-            // :L827 MOVE TRNX-CARD-NUM TO WS-CARD-NUM (CR-CNT) — unconditional, both branches.
-            currentCardNumber = cardNumber;
-
-            // :L828-L829 MOVE TRNX-ID TO WS-TRAN-NUM (CR-CNT, TR-CNT) and
-            // MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT). The key and the 318-byte remainder
-            // are the whole record, so one parsed carrier holds both.
-            currentCardTransactions.add(parseProjectedRecord(currentRecord));
-            admitTransaction(currentCardTransactions.size());
-
-            // :L830 MOVE TRNX-CARD-NUM TO WS-SAVE-CARD.
-            saveCard = cardNumber;
-
-            // :L832-L846. Next read, then EVALUATE WS-M03B-RC accepting '00' and '10' only —
-            // no '04' leniency at this site, unlike the priming read at :L748.
-            Optional<String> nextRecord = readNextTransactionRecord();
-            if (nextRecord.isEmpty()) {
-                // :L841-L842 WHEN '10' GO TO 8599-EXIT.
-                break;
+            String heldCardNumber = truncateOrPad(currentCardGroup.cardNumber(),
+                    XREF_CARD_NUMBER_LENGTH);
+            int ordering = heldCardNumber.compareTo(soughtCardNumber);
+            if (ordering == 0) {
+                // :L420 IF XREF-CARD-NUM = WS-CARD-NUM (CR-JMP). The group is consumed here, so the
+                // next cross-reference row starts from the group after it.
+                StatementTransaction.CardGroup matched = currentCardGroup;
+                currentCardGroup = null;
+                return Optional.of(matched);
             }
-            // :L839 MOVE WS-M03B-FLDT TO TRNX-RECORD, then :L840 GO TO 8500-READTRNX-READ.
-            currentRecord = toProjectedRecord(nextRecord.get());
+            if (ordering > 0) {
+                // :L418 the early exit: WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM. The group is retained
+                // for a later cross-reference row rather than discarded.
+                return Optional.empty();
+            }
+            // :L421 the implicit continue: this card precedes the one sought, so it has no
+            // cross-reference row of its own and is skipped, exactly as the source's loop skipped it.
+            currentCardGroup = null;
+        }
+    }
+
+    /**
+     * Reads one complete card group, stopping at the control break or at end of file.
+     *
+     * <p>This is the body of {@code 8500-READTRNX-READ} for a single group. The lookahead record left
+     * by the previous call seeds it, the group grows while the card number is unchanged
+     * ({@code :L819-L821}), and the first record of the next card is left in the lookahead
+     * ({@code :L830} moving the new card into {@code WS-SAVE-CARD}) rather than discarded.
+     *
+     * @return the completed group, or {@code null} when the stream is exhausted, which is
+     * {@code 8599-EXIT}
+     * @throws com.cardemo.exception.FatalProcessingException on a read failure, on a record shorter
+     * than the projection writes, on input that is not ascending by card number, or on a group larger
+     * than {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}
+     */
+    private StatementTransaction.CardGroup readNextCardGroup() {
+        if (pendingRecord == null) {
+            return null;
         }
 
-        // 8599-EXIT :L850 MOVE TR-CNT TO WS-TRCT (CR-CNT). The final flush, without which the last
-        // card's transaction count stays zero and its statement comes out empty.
-        appendCardGroup(currentCardNumber, currentCardTransactions);
+        // WS-SAVE-CARD, seeded by MOVE TRNX-CARD-NUM TO WS-SAVE-CARD at :L757.
+        String groupCardNumber = readCardNumber(pendingRecord);
+        List<StatementTransaction> transactions = new ArrayList<>();
+
+        while (pendingRecord != null) {
+            String cardNumber = readCardNumber(pendingRecord);
+
+            // :L819 IF WS-SAVE-CARD = TRNX-CARD-NUM. A different card is the control break, and the
+            // record that broke it stays in the lookahead for the next group.
+            if (!groupCardNumber.equals(cardNumber)) {
+                break;
+            }
+
+            // :L828-L829 MOVE TRNX-ID TO WS-TRAN-NUM (CR-CNT, TR-CNT) and
+            // MOVE TRNX-REST TO WS-TRAN-REST (CR-CNT, TR-CNT). The key and the 318-byte remainder are
+            // the whole record, so one parsed carrier holds both.
+            transactions.add(parseProjectedRecord(pendingRecord));
+            admitTransaction(transactions.size());
+
+            // :L832-L846. Next read, then EVALUATE WS-M03B-RC accepting '00' and '10' only - no '04'
+            // leniency at this site, unlike the priming read at :L748.
+            Optional<String> nextRecord = readNextTransactionRecord();
+            // :L839 MOVE WS-M03B-FLDT TO TRNX-RECORD, then :L840 GO TO 8500-READTRNX-READ.
+            pendingRecord = nextRecord.isPresent() ? toProjectedRecord(nextRecord.get()) : null;
+        }
+
+        // :L822-L823 the flush and ADD 1 TO CR-CNT, or :L850 MOVE TR-CNT TO WS-TRCT (CR-CNT) when end
+        // of file closed the group instead of a control break. Both are this one append.
+        requireAscendingCardNumber(lastGroupCardNumber, groupCardNumber);
+        lastGroupCardNumber = groupCardNumber;
+        cardGroupsRead++;
+        if (cardGroupsRead == StatementTransaction.LEGACY_MAX_CARDS_PER_RUN + 1L) {
+            LOG.warn("Card count has passed the legacy capacity of {} cards"
+                            + " (WS-CARD-TBL OCCURS 51, app/cbl/CBSTM03A.CBL:L226);"
+                            + " this run exceeds what the COBOL table could hold without overrun",
+                    StatementTransaction.LEGACY_MAX_CARDS_PER_RUN);
+        }
+        return new StatementTransaction.CardGroup(groupCardNumber, transactions);
     }
 
     /**
@@ -1283,51 +1618,58 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      *
      * @return the next payload, or empty at end of file
      * @throws com.cardemo.exception.FatalProcessingException for any status other than {@code '00'}
-     * or {@code '10'}, {@code '04'} included — the guard of {@code :L837}.
+     * or {@code '10'}, {@code '04'} included - the guard of {@code :L837}.
      */
     private Optional<String> readNextTransactionRecord() {
+        if (transactionFileExhausted) {
+            return Optional.empty();
+        }
+        Optional<String> payload;
         try {
-            return fileService.readNext(FileService.Dd.TRNXFILE);
+            payload = fileService.readNext(FileService.Dd.TRNXFILE);
         } catch (CardDemoException failure) {
             LOG.error("{}", ERROR_READING + FileService.Dd.TRNXFILE.ddName(), failure);
             throw failure;
         }
-    }
-
-    /**
-     * Appends one completed card group, standing in for
-     * {@code MOVE TR-CNT TO WS-TRCT (CR-CNT)} at {@code app/cbl/CBSTM03A.CBL:L822} and
-     * {@code :L850}. Warns the first time a run exceeds the legacy card capacity.
-     *
-     * @param cardNumber the group's card number, never {@code null}
-     * @param transactions the group's transactions in read order, never {@code null}
-     */
-    private void appendCardGroup(String cardNumber, List<StatementTransaction> transactions) {
-        transactionTable.add(new StatementTransaction.CardGroup(cardNumber, transactions));
-        if (transactionTable.size() == StatementTransaction.LEGACY_MAX_CARDS_PER_RUN + 1) {
-            LOG.warn("Card count has passed the legacy capacity of {} cards"
-                            + " (WS-CARD-TBL OCCURS 51, app/cbl/CBSTM03A.CBL:L226);"
-                            + " this run exceeds what the COBOL table could hold without overrun",
-                    StatementTransaction.LEGACY_MAX_CARDS_PER_RUN);
+        if (payload.isEmpty()) {
+            // :L841-L842 WHEN '10' GO TO 8599-EXIT.
+            transactionFileExhausted = true;
         }
+        return payload;
     }
 
     /**
-     * Counts one admitted record against the loud limit and warns on the first crossing of the
-     * legacy per-card capacity.
+     * Counts one admitted record against the loud limit and warns on the first crossing of the legacy
+     * per-card capacity.
      *
-     * <p>This is one of the bounds checks the source does not have. It exists because the
-     * collections are unbounded, and it fails rather than truncates.
+     * <p>This is one of the bounds checks the source does not have. It exists because the group is an
+     * unbounded collection, and it fails rather than truncates.
+     *
+     * <p>Two bounds are checked, and they answer two different hazards. The <em>group</em> bound
+     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP} bounds what is actually resident, because the stream advances
+     * one control-break group at a time. The <em>run</em> bound {@link #MAX_TRANSACTIONS_PER_RUN}, lowerable
+     * through {@value #KEY_MAX_TRANSACTIONS_PER_RUN}, bounds the whole run, so the total work a malformed
+     * dataset can extract is an operator decision rather than a hidden constant - the group bound alone would
+     * admit an endless sequence of distinct card numbers.
      *
      * @param transactionsOnCurrentCard the size of the group the record was just added to
-     * @throws com.cardemo.exception.FatalProcessingException if the run exceeds
-     * {@link #MAX_TRANSACTIONS_PER_RUN}.
+     * @throws com.cardemo.exception.FatalProcessingException if the group exceeds
+     * {@link #MAX_TRANSACTIONS_PER_CARD_GROUP}, or the run exceeds the effective
+     * {@value #KEY_MAX_TRANSACTIONS_PER_RUN}.
      */
     private void admitTransaction(int transactionsOnCurrentCard) {
         transactionsAccepted++;
-        if (transactionsAccepted > MAX_TRANSACTIONS_PER_RUN) {
-            throw abend("The statement run exceeded the safety limit of " + MAX_TRANSACTIONS_PER_RUN
+        if (transactionsOnCurrentCard > MAX_TRANSACTIONS_PER_CARD_GROUP) {
+            throw abend("One card group exceeded the safety limit of " + MAX_TRANSACTIONS_PER_CARD_GROUP
                     + " transactions. The legacy table held at most "
+                    + StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD
+                    + " per card (app/cbl/CBSTM03A.CBL:L228), so a group this large indicates a"
+                    + " malformed or repeating TRNXFILE rather than a legitimate workload");
+        }
+        if (transactionsAccepted > this.maxTransactionsPerRun) {
+            throw abend("The statement run exceeded the safety limit of " + this.maxTransactionsPerRun
+                    + " transactions (" + KEY_MAX_TRANSACTIONS_PER_RUN
+                    + "). The legacy table held at most "
                     + StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN
                     + " (app/cbl/CBSTM03A.CBL:L225-L233), so an input this large indicates a"
                     + " malformed or repeating TRNXFILE rather than a legitimate workload");
@@ -1420,12 +1762,12 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         // PERFORM VARYING at :L417-L418, which re-initialises it to 1 before its first test, so
         // the value written here is overwritten before it is ever observed.
         //
-        // It is retained rather than deleted because deleting it would break the paragraph-level
-        // correspondence that TRACEABILITY_MATRIX.md asserts and Gate 7 verifies. Rule 1 Clause B1
-        // forbids UNTRACKED dead code; this statement is cited to its source line, marked here, and
-        // registered in DECISION_LOG.md as one of the tree's retained-for-parity artefacts, so it is
-        // tracked rather than abandoned. This is the one documented Rule 1 conflict in this file and
-        // parity governs it. It is deliberately not a deferred-work marker: nothing is deferred.
+        // It is retained rather than deleted because deleting it would break the paragraph-level correspondence that
+        // the planned TRACEABILITY_MATRIX.md will assert and Gate 7 verifies. Rule 1 Clause B1 forbids UNTRACKED dead
+        // code; this statement is cited to its source line, marked here, and owed an entry in the planned
+        // DECISION_LOG.md as one of the tree's retained-for-parity artefacts, so it is tracked rather than abandoned.
+        // This is the one documented Rule 1 conflict in this file and parity governs it. It is deliberately not a
+        // deferred-work marker: nothing is deferred.
         //
         // LOCATOR CORRECTION: the folder requirements place this statement at :L325. It is at :L324;
         // :L325 is MOVE ZERO TO WS-TOTAL-AMT, immediately below. The source wins.
@@ -1642,9 +1984,9 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         emitHtml(htmlLines, HTML_L10);
 
         // :L529 MOVE ACCT-ID TO L11-ACCT ; :L530 WRITE FD-HTMLFILE-REC FROM HTML-L11.
-        emitHtml(htmlLines, HTML_L11_PREFIX
-                + truncateOrPad(renderAccountId(account.getAccountId()), L11_ACCT_WIDTH)
-                + HTML_L11_SUFFIX);
+        emitHtmlValueLine(htmlLines, HTML_L11_PREFIX,
+                escapeHtml(truncateOrPad(renderAccountId(account.getAccountId()), L11_ACCT_WIDTH)),
+                HTML_L11_SUFFIX);
 
         emitHtml(htmlLines, HTML_LTDE);
         emitHtml(htmlLines, HTML_LTRE);
@@ -1679,12 +2021,38 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * delimiter never matches and the whole padded field is copied — trailing spaces included. That
      * is why those three lines are built from the already-padded values rather than trimmed ones.
      *
-     * <p><strong>No HTML escaping is performed, and none is introduced. Severity: Medium.</strong>
-     * The source interpolates customer name and address straight into markup with no escaping
-     * anywhere in {@code :L558-L672}. Adding escaping would change the byte offsets of every affected
-     * line and so break the Gate 1 comparison against the legacy baseline, so the omission is logged
-     * in {@code DECISION_LOG.md} rather than fixed. The 34 markup fragments are fixed literals from
-     * the source and carry no interpolation at all.
+     * <p><strong>Every dynamic value is HTML-escaped. Severity of the defect it closes: High
+     * (CWE-79).</strong> The source interpolates customer name and address straight into markup with
+     * no escaping anywhere in {@code :L558-L672}, so a customer record whose name or address line
+     * carried {@code <script>} would have produced an executable document from persisted data - stored
+     * cross-site scripting, injected wherever the statement is later rendered. Each value is therefore
+     * passed through {@link #escapeHtml(String)} before it reaches the markup.
+     *
+     * <p><strong>Parity is preserved on every input that is not an injection.</strong> Escaping is the
+     * identity transform for any value containing none of {@code & < > " '}, and no fixture in
+     * {@code app/data/ASCII} contains one, so the emitted bytes are unchanged for the Gate 1
+     * comparison and for every realistic record. The only inputs whose bytes change are exactly the
+     * inputs that would otherwise be an attack, which is the one case where byte parity would be a
+     * defect rather than a contract. The 34 markup fragments are fixed literals from the source, carry
+     * no interpolation at all, and are never escaped.
+     *
+     * <p><strong>Geometry is preserved absolutely.</strong> An escaped value can be longer than the raw
+     * one, so {@link #emitHtmlValueLine(java.util.List, String, String, String)} fits the escaped form to
+     * the space the line has, cutting it only at an entity boundary by way of
+     * {@link #entitySafeCut(String, int)}, which is why no entity is ever split and why every emitted line is
+     * still exactly {@value StatementTransaction#STATEMENT_HTML_RECORD_LENGTH} characters. That fitting is
+     * what makes escaping compatible with parity at all: the objection that escaping must change the byte
+     * offsets of every affected line, and so break the Gate 1 comparison, is answered by fitting the escaped
+     * form to the room the line already leaves rather than by letting the line grow.
+     *
+     * <p><strong>The delivery boundary is hardened as well, and deliberately in addition rather than
+     * instead.</strong> Escaping removes the markup; it does not decide how the object is served.
+     * {@code com.cardemo.batch.writers.StatementWriter} stores both objects with
+     * {@code Content-Disposition: attachment} and {@code Cache-Control: no-store}, so the markup object is
+     * never rendered in the bucket's origin and no intermediary retains it, and no controller in the tree
+     * produces {@code text/html}. Either control alone would leave a gap: the disposition header does not
+     * help a consumer that reads the object and renders it itself, and the escape does not help against an
+     * object served as active content from a shared origin.
      *
      * @param assembledName {@code ST-NAME}, already 75 characters
      * @param addressLine1 {@code ST-ADD1}, already 50 characters
@@ -1700,17 +2068,20 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
             List<String> htmlLines) {
         // :L560-L568. Note the truncation to L23-NAME's 50 characters happens BEFORE the two-space
         // delimiter is applied, so both effects compound exactly as in the source.
-        emitHtml(htmlLines, HTML_L23_PREFIX
-                + stringDelimitedByDoubleSpace(truncateOrPad(assembledName, L23_NAME_WIDTH))
-                + HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_L23_PREFIX,
+                escapeHtml(stringDelimitedByDoubleSpace(truncateOrPad(assembledName, L23_NAME_WIDTH))),
+                HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
 
         // :L569-L592, three address lines through HTML-ADDR-LN.
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + stringDelimitedByDoubleSpace(addressLine1)
-                + HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + stringDelimitedByDoubleSpace(addressLine2)
-                + HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + stringDelimitedByDoubleSpace(addressLine3)
-                + HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN,
+                escapeHtml(stringDelimitedByDoubleSpace(addressLine1)),
+                HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN,
+                escapeHtml(stringDelimitedByDoubleSpace(addressLine2)),
+                HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN,
+                escapeHtml(stringDelimitedByDoubleSpace(addressLine3)),
+                HTML_DOUBLE_SPACE + HTML_PARAGRAPH_CLOSE);
 
         // :L594-L611.
         emitHtml(htmlLines, HTML_LTDE);
@@ -1724,9 +2095,9 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         emitHtml(htmlLines, HTML_L22_35);
 
         // :L613-L633, three basic-detail lines through HTML-BSIC-LN.
-        emitHtml(htmlLines, HTML_LABEL_ACCOUNT_ID + renderedAccountId + HTML_PARAGRAPH_CLOSE);
-        emitHtml(htmlLines, HTML_LABEL_CURRENT_BALANCE + renderedBalance + HTML_PARAGRAPH_CLOSE);
-        emitHtml(htmlLines, HTML_LABEL_FICO_SCORE + renderedFicoScore + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_LABEL_ACCOUNT_ID, escapeHtml(renderedAccountId), HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_LABEL_CURRENT_BALANCE, escapeHtml(renderedBalance), HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_LABEL_FICO_SCORE, escapeHtml(renderedFicoScore), HTML_PARAGRAPH_CLOSE);
 
         // :L634-L669.
         emitHtml(htmlLines, HTML_LTDE);
@@ -1758,7 +2129,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * verbatim. Severity: Low.</strong> The outer {@code PERFORM VARYING} at {@code :L417-L419} stops
      * as soon as {@code WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM}, which is correct only while the table
      * ascends by card number. {@code app/jcl/CREASTMT.JCL:L53} sorts the input to guarantee that, and
-     * {@link #buildTransactionTable(String)} asserts it at load time. The alternative — making the
+     * {@link #readNextCardGroup()} asserts it as each group closes. The alternative — making the
      * lookup order-independent — was rejected because it changes which records are found when the
      * input is unsorted, and that is a divergence rather than a translation.
      *
@@ -1785,18 +2156,13 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
 
         // :L417-L419 PERFORM VARYING CR-JMP FROM 1 BY 1 UNTIL CR-JMP > CR-CNT
         //                OR (WS-CARD-NUM (CR-JMP) > XREF-CARD-NUM).
-        // crJmp is one-based here because the COBOL subscript is; the list index is crJmp - 1.
-        for (crJmp = 1; crJmp <= transactionTable.size(); crJmp++) {
-            StatementTransaction.CardGroup group = transactionTable.get(crJmp - 1);
-            String tableCardNumber = truncateOrPad(group.cardNumber(), XREF_CARD_NUMBER_LENGTH);
-            if (tableCardNumber.compareTo(soughtCardNumber) > 0) {
-                break;
-            }
+        // The scan is the same scan; it walks a forward cursor rather than an in-memory table, so
+        // crJmp is the one-based group ordinal it reached rather than an index into a list.
+        Optional<StatementTransaction.CardGroup> matched = advanceToCardGroup(soughtCardNumber);
+        crJmp = (int) Math.min(cardGroupsRead, Integer.MAX_VALUE);
+        if (matched.isPresent()) {
             // :L420 IF XREF-CARD-NUM = WS-CARD-NUM (CR-JMP).
-            if (!tableCardNumber.equals(soughtCardNumber)) {
-                continue;
-            }
-            List<StatementTransaction> transactions = group.transactions();
+            List<StatementTransaction> transactions = matched.get().transactions();
             // :L422-L423 PERFORM VARYING TR-JMP FROM 1 BY 1 UNTIL (TR-JMP > WS-TRCT (CR-JMP)).
             for (trJmp = 1; trJmp <= transactions.size(); trJmp++) {
                 StatementTransaction transaction = transactions.get(trJmp - 1);
@@ -1850,13 +2216,13 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
         // :L681-L721.
         emitHtml(htmlLines, HTML_LTRS);
         emitHtml(htmlLines, HTML_L58);
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + renderedId + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN, escapeHtml(renderedId), HTML_PARAGRAPH_CLOSE);
         emitHtml(htmlLines, HTML_LTDE);
         emitHtml(htmlLines, HTML_L61);
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + renderedDescription + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN, escapeHtml(renderedDescription), HTML_PARAGRAPH_CLOSE);
         emitHtml(htmlLines, HTML_LTDE);
         emitHtml(htmlLines, HTML_L64);
-        emitHtml(htmlLines, HTML_PARAGRAPH_OPEN + renderedAmount + HTML_PARAGRAPH_CLOSE);
+        emitHtmlValueLine(htmlLines, HTML_PARAGRAPH_OPEN, escapeHtml(renderedAmount), HTML_PARAGRAPH_CLOSE);
         emitHtml(htmlLines, HTML_LTDE);
         emitHtml(htmlLines, HTML_LTRE);
     }
@@ -1901,7 +2267,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
 
         initialised = false;
         LOG.info("Statement run complete: statements={} cards={} transactions={}",
-                statementsProduced, transactionTable.size(), transactionsAccepted);
+                statementsProduced, cardGroupsRead, transactionsAccepted);
         if (firstFailure != null) {
             throw firstFailure;
         }
@@ -2020,7 +2386,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * fixed-width zero-padded digits is the same ordering. Nulls sort first on either key so that a
      * malformed row cannot throw inside the sort.
      *
-     * <p>This ordering is the precondition that {@link #buildTransactionTable(String)} asserts and
+     * <p>This ordering is the precondition that {@link #readNextCardGroup()} asserts and
      * that the early exit of {@code app/cbl/CBSTM03A.CBL:L417-L419} depends on. No external sort
      * process is spawned: {@code Runtime.exec} and {@code ProcessBuilder} are not used anywhere in
      * this class.
@@ -2061,7 +2427,7 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * would register as a difference that looks like a Java defect and is not one. This is also why
      * {@code originatingTimestamp} and {@code processingTimestamp} are carried as
      * {@link String} throughout and never as a temporal type: a 24-character truncation is not a
-     * well-formed timestamp at all. Recorded in {@code DECISION_LOG.md}.
+     * well-formed timestamp at all. Owed an entry in the planned {@code DECISION_LOG.md}.
      *
      * <p>A base record shorter than {@link StatementTransaction#RECORD_LENGTH} is rejected rather
      * than padded. Padding would be silent corruption of exactly the kind Rule 1 Clause A2 forbids:
@@ -2160,15 +2526,28 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     }
 
     /**
-     * The loaded transaction table, {@code 01 WS-TRNX-TABLE} at
-     * {@code app/cbl/CBSTM03A.CBL:L225-L233}, as an unmodifiable view in ascending card-number order.
+     * The single card group currently held, the streamed replacement for {@code 01 WS-TRNX-TABLE} at
+     * {@code app/cbl/CBSTM03A.CBL:L225-L233}.
      *
-     * <p>Empty until {@link #initialise()} has run.
+     * <p>Empty before the first group is loaded, immediately after a group has been emitted for its
+     * cross-reference row, and once the stream is exhausted. Exposed so that a test can observe the
+     * bounded resident set directly - the assertion that matters is that <em>one</em> group is held,
+     * never the run - and so that a diagnostic can name the group a run is positioned on.
      *
-     * @return an unmodifiable view of the card groups, never {@code null}
+     * @return the held group, or empty when none is held, never {@code null}
      */
-    public List<StatementTransaction.CardGroup> transactionTable() {
-        return List.copyOf(transactionTable);
+    public Optional<StatementTransaction.CardGroup> currentCardGroup() {
+        return Optional.ofNullable(currentCardGroup);
+    }
+
+    /**
+     * The number of card groups the stream has closed so far, the counterpart of {@code CR-CNT} at
+     * {@code app/cbl/CBSTM03A.CBL:L758}.
+     *
+     * @return the running group count, never negative
+     */
+    public long cardGroupsRead() {
+        return cardGroupsRead;
     }
 
     // ==========================================================================================
@@ -2490,7 +2869,215 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * @param fragment the markup, never {@code null} and never longer than the record width
      */
     private static void emitHtml(List<String> sink, String fragment) {
-        sink.add(padRight(fragment, HTML_LINE_WIDTH));
+        sink.add(clampToHtmlLine(fragment));
+    }
+
+    /**
+     * Emits one markup line assembled from a leading literal, an escaped value and a trailing literal,
+     * spending the line's remaining width on the value so that the trailing literal always survives.
+     *
+     * <p><strong>Why the value is budgeted rather than the line clamped.</strong>
+     * {@link #escapeHtml(String)} expands its input: one {@code '&'} becomes five characters and one
+     * {@code '\''} becomes five. A line that fitted {@value #HTML_LINE_WIDTH} characters before escaping can
+     * therefore exceed it afterwards, and clamping the assembled line would cut from the right - which is
+     * where the closing tag is. That would drop {@code </p>} from a paragraph whose address merely contained
+     * an ampersand, so it is not an adversarial-input concern only: {@code SMITH &amp; SONS} is ordinary data.
+     * Truncating the <em>value</em> instead keeps the element closed in every case, and the characters lost
+     * are the trailing characters of a value that the record could not hold once encoded.
+     *
+     * <p>This runs after the COBOL width has already been applied by
+     * {@link #truncateOrPad(String, int)}, so it never shortens a value that fits: for every value whose
+     * encoded form is no longer than the space between the two literals - which is every value that contains
+     * none of the five characters {@code escapeHtml} recognises - the line is byte-identical to what the
+     * source produced.
+     *
+     * @param sink the line accumulator, never {@code null}
+     * @param prefix the literal that opens the line, never {@code null}
+     * @param escapedValue the already-escaped value, never {@code null}
+     * @param suffix the literal that closes the line, never {@code null}
+     */
+    private static void emitHtmlValueLine(List<String> sink, String prefix, String escapedValue,
+            String suffix) {
+        int budget = HTML_LINE_WIDTH - prefix.length() - suffix.length();
+        if (budget < 0) {
+            // The two literals alone exceed the record. No fragment in this class does, so this is a guard
+            // rather than a path; the whole-line clamp is the only defined answer if one ever did.
+            sink.add(clampToHtmlLine(prefix + escapedValue + suffix));
+            return;
+        }
+        String value = escapedValue.length() > budget
+                ? escapedValue.substring(0, entitySafeCut(escapedValue, budget))
+                : escapedValue;
+        sink.add(padRight(prefix + value + suffix, HTML_LINE_WIDTH));
+    }
+
+    /**
+     * Escapes a value for interpolation into the markup stream, so that record content cannot become markup.
+     *
+     * <p><strong>Why this exists.</strong> The source builds each markup line by moving record content into
+     * {@code HTML-FIXED-LN PIC X(100)} and writing the field, with no encoding of any kind - the customer
+     * name, the three address lines, the transaction description and the rendered amounts all reach the file
+     * verbatim ({@code app/cbl/CBSTM03A.CBL:L529-L723}). On a 3270 that was harmless: the output was a
+     * dataset, and nothing rendered it as a document. The Java target uploads the same stream as
+     * {@code text/html}, where a value containing {@code <script>} is not text but code (CWE-79). Preserving
+     * the absence of encoding would therefore not preserve the source's behaviour, it would newly grant the
+     * data the ability to execute.
+     *
+     * <p><strong>Why it is applied here and not earlier.</strong> Escaping happens <em>after</em> each value
+     * has been moved into its declared COBOL width by {@link #truncateOrPad(String, int)}, so every source
+     * truncation - the 50-character name field, the 49-character description - still cuts the raw value at
+     * exactly the byte the source cuts it at. Escaping first would let an expanded entity consume field width
+     * that the source spends on data, which would change which characters survive.
+     *
+     * <p>The five characters encoded are the five that XML and HTML give syntactic meaning to. Single and
+     * double quotes are included even though every interpolation below lands in element text rather than in an
+     * attribute value, because a value is one edit away from being placed in an attribute and an encoder that
+     * is only correct for one context is a trap.
+     *
+     * <p><strong>Substitution is unconditional</strong>, never conditional on whether a value already looks
+     * escaped. Double encoding is a display defect in data that should not have contained markup, whereas
+     * recognising an entity and passing it through is an injection. A single pass over the characters is what
+     * makes that unconditional: there is no second pass for an already-substituted entity to be seen by, which
+     * is the failure mode of applying five ordered string replacements one after another.
+     *
+     * <p><strong>Every control character is neutralised on the same pass</strong>, by
+     * {@link #neutraliseControlCharacters(String)}. A carriage return or line feed inside a fixed-length
+     * record is exactly the byte that makes a consumer treating the object as line-delimited disagree with one
+     * treating it as {@code RECFM=FB} (CWE-116), and it cannot be caught downstream because by then the
+     * record boundaries are already wrong. The sweep is length-neutral by construction - one control becomes
+     * one space - so it cannot disturb the record geometry and the budget arithmetic in
+     * {@link #emitHtmlValueLine(java.util.List, String, String, String)} is unaffected by it.
+     *
+     * <p>Pure function; no side effect; consults no locale, charset or clock. A {@code null} argument yields
+     * the empty string rather than the four characters {@code null}.
+     *
+     * @param value the field content, already at its declared COBOL width; may be {@code null}
+     * @return the encoded text, never {@code null}, and never shorter than the input
+     */
+    private static String escapeHtml(String value) {
+        if (value == null) {
+            return "";
+        }
+        StringBuilder encoded = new StringBuilder(value.length() + HTML_ESCAPE_HEADROOM);
+        for (int position = 0; position < value.length(); position++) {
+            char character = value.charAt(position);
+            switch (character) {
+                case '&' -> encoded.append(HTML_ENTITY_AMP);
+                case '<' -> encoded.append(HTML_ENTITY_LT);
+                case '>' -> encoded.append(HTML_ENTITY_GT);
+                case '"' -> encoded.append(HTML_ENTITY_QUOT);
+                case '\'' -> encoded.append(HTML_ENTITY_APOS);
+                default -> encoded.append(character);
+            }
+        }
+        return neutraliseControlCharacters(encoded.toString());
+    }
+
+    /**
+     * Brings a markup line to exactly {@link #HTML_LINE_WIDTH} characters, padding short and truncating long
+     * without ever cutting an escape entity in half.
+     *
+     * <p><strong>This is the COBOL field, not a new policy.</strong> Every markup line in the source is a
+     * {@code MOVE} into {@code HTML-FIXED-LN PIC X(100)} followed by
+     * {@code WRITE FD-HTMLFILE-REC FROM HTML-FIXED-LN}, and a COBOL alphanumeric move left-justifies, pads
+     * short and truncates long. The 100-character width is independently confirmed by the record length
+     * declared for {@code HTMLFILE} at {@code app/jcl/CREASTMT.JCL:STEP040}, so it is a parity contract rather
+     * than a formatting choice: emitting anything other than exactly 100 characters per line breaks the
+     * side-by-side comparison against the baseline.
+     *
+     * <p><strong>Why truncation is now reached rather than rejected.</strong> An earlier revision threw when a
+     * line exceeded the width, on the reasoning that a fixed fragment longer than its field is a defect. That
+     * remains true of the fixed fragments - and a test asserts each of the 34 fits - but it is no longer true
+     * of the interpolated lines: {@link #escapeHtml(String)} legitimately expands a value, so an address line
+     * dense in ampersands can push a line past 100 characters. Throwing there would turn hostile input into a
+     * failed batch run, which is a denial of service rather than a defence; truncating is what the source
+     * field does.
+     *
+     * <p><strong>Why the entity guard.</strong> Cutting at a fixed offset could leave a partial entity such as
+     * {@code &am} at the end of a line, which a browser may render as literal text or, worse, recombine with
+     * the next line's opening characters. The scan therefore walks back over a trailing incomplete
+     * {@code &...} run and pads the gap with spaces, so a line always ends on a complete character reference
+     * and always occupies exactly the declared width.
+     *
+     * @param line the assembled markup line, never {@code null}
+     * @return exactly {@link #HTML_LINE_WIDTH} characters
+     */
+    private static String clampToHtmlLine(String line) {
+        if (line.length() == HTML_LINE_WIDTH) {
+            return line;
+        }
+        if (line.length() < HTML_LINE_WIDTH) {
+            return padRight(line, HTML_LINE_WIDTH);
+        }
+
+        return padRight(line.substring(0, entitySafeCut(line, HTML_LINE_WIDTH)), HTML_LINE_WIDTH);
+    }
+
+    /**
+     * Moves a proposed cut backwards, if it lands inside a character reference, to the reference's start.
+     *
+     * <p>Cutting {@code &amp;} into {@code &am} would leave a line ending in a sequence a browser reads as
+     * the beginning of an entity and then repairs against whatever follows it in the document. Walking back
+     * to the {@code '&'} drops the reference whole instead.
+     *
+     * <p>The scan is bounded by {@value #HTML_LONGEST_ENTITY}, the longest reference
+     * {@link #escapeHtml(String)} emits, so its cost does not depend on the input and adversarial content
+     * cannot lengthen it. A {@code ';'} encountered first means the cut is past a complete reference and the
+     * proposed cut stands.
+     *
+     * @param line the assembled or escaped text, never {@code null}
+     * @param proposedCut the index the caller would cut at; must not exceed {@code line.length()}
+     * @return the cut index to use, never greater than {@code proposedCut}
+     */
+    private static int entitySafeCut(String line, int proposedCut) {
+        int floor = Math.max(0, proposedCut - HTML_LONGEST_ENTITY);
+        for (int scan = proposedCut - 1; scan >= floor; scan--) {
+            char character = line.charAt(scan);
+            if (character == ';') {
+                return proposedCut;
+            }
+            if (character == '&') {
+                return scan;
+            }
+        }
+        return proposedCut;
+    }
+
+    /**
+     * Replaces every control character with a single space, leaving the length unchanged.
+     *
+     * @param value the escaped value, never {@code null}
+     * @return the value with no C0 control, no delete character and no C1 control
+     */
+    private static String neutraliseControlCharacters(String value) {
+        StringBuilder safe = null;
+        for (int index = 0; index < value.length(); index++) {
+            if (isMarkupUnsafeControl(value.charAt(index))) {
+                if (safe == null) {
+                    safe = new StringBuilder(value);
+                }
+                safe.setCharAt(index, CONTROL_REPLACEMENT);
+            }
+        }
+        return safe == null ? value : safe.toString();
+    }
+
+    /**
+     * Answers whether a character is a control character with no place in the markup sink.
+     *
+     * <p>The C0 block, the delete character and the C1 block are all rejected. The C1 range matters
+     * specifically because the record charset assigns it to controls, so those code points would reach the
+     * object as the control bytes {@code 0x80} to {@code 0x9F} rather than as printable text.
+     *
+     * <p>Pure function of its argument.
+     *
+     * @param character the character to examine
+     * @return {@code true} when the character must be replaced by a space
+     */
+    private static boolean isMarkupUnsafeControl(char character) {
+        return character < FIRST_PRINTABLE_CHARACTER
+                || character == DELETE_CHARACTER
+                || (character >= FIRST_C1_CONTROL && character <= LAST_C1_CONTROL);
     }
 
     /**
@@ -2727,8 +3314,8 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
      * ASCII fixtures use for every {@code PIC S9(n)V99} field.
      *
      * <p>The final character carries both the last digit and the sign:
-     * {@code '{'} is {@code +0} and {@code 'A'} through {@code 'I'} are {@code +1} through
-     * {@code +9}; {@code '}'} is {@code -0} and {@code 'J'} through {@code 'R'} are {@code -1}
+     * {@code '&#123;'} is {@code +0} and {@code 'A'} through {@code 'I'} are {@code +1} through
+     * {@code +9}; {@code '&#125;'} is {@code -0} and {@code 'J'} through {@code 'R'} are {@code -1}
      * through {@code -9}. A plain digit in that position is read as unsigned positive, which is how a
      * field written without an overpunch reads back.
      *
@@ -2791,14 +3378,30 @@ public class StatementProcessor implements ItemProcessor<CardCrossReference, Sta
     }
 
     /**
-     * Encodes a signed value back into zoned decimal with a trailing overpunch sign, so that a record
-     * rendered by {@link #projectBaseRecord(Transaction)} decodes to the value it started from.
+     * Encodes a signed value into zoned decimal with a trailing overpunch sign, the exact inverse of the
+     * decode this class applies to every record it reads.
+     *
+     * <p>Published as the encode half of the {@code CBSTM03B} record-image contract. A repository-backed
+     * dataset binding has to render an entity back into the fixed-width image that
+     * {@code WS-M03B-FLDT PIC X(1000)} carried at {@code app/cbl/CBSTM03A.CBL:L82}, and the signed money
+     * fields of {@code app/cpy/CVACT01Y.cpy} are zoned decimal with the sign riding on the final digit.
+     * Exposing this method is what keeps the overpunch table in one place instead of copying it into every
+     * binding: the decoder that consumes the result lives in this same class, so encoder and decoder
+     * cannot drift apart.
+     *
+     * <p>The mapping is <code>'{'</code> for {@code +0} through {@code 'I'} for {@code +9}, and <code>'}'</code> for
+     * {@code -0} through {@code 'R'} for {@code -9}, as evidenced by {@code app/data/ASCII/acctdata.txt:L1}
+     * and {@code app/data/ASCII/discgrp.txt:L18}. A {@code null} value encodes as positive zero, which is
+     * what a {@code COMP-3} field declared {@code VALUE 0} holds. Arithmetic is {@link BigDecimal}
+     * throughout; no binary floating-point type appears on this path.
+     *
+     * <p>This method is a pure function of its arguments.
      *
      * @param value the amount, possibly {@code null}, which encodes as positive zero
-     * @param width the declared field width, digits only, the sign riding on the last of them
+     * @param width the declared field width in characters, digits only, the sign riding on the last of them
      * @return exactly {@code width} characters, never {@code null}
      */
-    private static String encodeZonedDecimal(BigDecimal value, int width) {
+    public static String encodeZonedDecimal(BigDecimal value, int width) {
         BigDecimal scaled = scaleForDisplay(value);
         String allDigits = scaled.abs().movePointRight(EDITED_AMOUNT_SCALE).toBigInteger().toString();
         String digits = allDigits.length() > width

@@ -55,6 +55,7 @@ import com.cardemo.model.entity.Customer;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.CustomerRepository;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.shared.DateValidationService;
 import com.cardemo.service.shared.FileStatusMapper;
 import com.cardemo.service.shared.ValidationLookupService;
@@ -90,7 +91,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *   <li>re-reads both records for update, re-checks the snapshot against the live rows, and rewrites
  *       them in one unit of work ({@code 9600-WRITE-PROCESSING} at {@code :3888} and
  *       {@code 9700-CHECK-CHANGE-IN-REC} at {@code :4109}).</li>
- * </ul>
+ *   </ul>
  *
  * <p>It performs no HTTP concern of its own. It returns {@link AccountUpdateResult}, and the
  * controller decides the status code; there is deliberately no {@code @ExceptionHandler} and no
@@ -123,7 +124,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *   <li>the three classpath JSON lookup resources loaded by
  *       {@code com.cardemo.service.shared.ValidationLookupService} - the North American area codes,
  *       the state codes and the state-plus-ZIP-prefix pairs of {@code app/cpy/CSLKPCDY.cpy}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Defaults inside this class are all COBOL literals rather than configuration: the transaction
  * identifier {@code CAUP}, the program name {@code COACTUPC}, the mapset {@code COACTUP} and map
@@ -248,10 +249,10 @@ import com.cardemo.service.shared.ValidationLookupService;
  *
  * <h2>6. Preserved-defect register</h2>
  *
- * <p>These are faults of the system of record. Behavioural parity is the contract of this migration,
- * so each is <strong>reproduced, not repaired</strong>. Each is tracked here, in
- * {@code DECISION_LOG.md} and in {@code TRACEABILITY_MATRIX.md}, which is what distinguishes it from
- * the untracked dead code Rule 1 Clause B forbids.
+ * <p>These are faults of the system of record. Behavioural parity is the contract of this migration, so each is
+ * <strong>reproduced, not repaired</strong>. Each is tracked here, in {@code DECISION_LOG.md} and in the planned
+ * {@code TRACEABILITY_MATRIX.md}, which is what distinguishes it from the untracked dead code Rule 1 Clause B
+ * forbids.
  *
  * <ul>
  *   <li><strong>D1 - BLOCKER, correctness. A customer-lock failure is reported as success.</strong>
@@ -300,7 +301,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       {@code COPY 'CSSTRPFY'} at {@code :4199}, is the final Area A construct of the
  *       program.</strong> Verified by reading {@code :4227-4236}: after {@code :4232} only the
  *       terminating period at {@code :4233} and a version comment remain. The widely repeated claim
- *       that {@code :4199} is last is wrong and is corrected in {@code DECISION_LOG.md}.</li>
+ *       that {@code :4199} is last is wrong and is owed a correction in the planned {@code DECISION_LOG.md}.</li>
  *   <li><strong>D7 - LOW, hygiene. Three declared condition names are never referenced.</strong>
  *       {@code DID-NOT-FIND-ACCTCARD-COMBO} ({@code :515}), {@code XREF-READ-ERROR} ({@code :525})
  *       and {@code CODING-TO-BE-DONE} ({@code :527}) each occur exactly once, at their declaration.
@@ -323,12 +324,12 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       {@code END-STRING} and its message lacks a trailing period.</strong> Every sibling edit
  *       message ends {@code '.'}; this one is {@code ' is not valid'}. Reproduced verbatim, because the
  *       parity gates compare message text byte for byte.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Mechanism substitutions</h2>
  *
  * <p>Each of these replaces a legacy construct with a framework mechanism. None changes behaviour, and
- * each is recorded in {@code DECISION_LOG.md} so that a reviewer comparing the two sources does not
+ * each is owed an entry in the planned {@code DECISION_LOG.md} so that a reviewer comparing the two sources does not
  * conclude something was lost.
  *
  * <ul>
@@ -375,7 +376,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       twenty-eight-arm {@code EVALUATE TRUE} of {@code app/cpy/CSSTRPFY.cpy} folds program function
  *       keys thirteen to twenty-four back onto one to twelve; {@link AidKey} has the resulting fifteen
  *       constants and {@link #storePfKey} performs the fold.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>8. Not available</h2>
  *
@@ -396,7 +397,7 @@ import com.cardemo.service.shared.ValidationLookupService;
  *       budget and no throughput figure anywhere in {@code app/}. The performance gate therefore
  *       records a measured baseline rather than asserting a target. What is needed is a
  *       stakeholder-supplied objective.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>9. Thread safety and state</h2>
  *
@@ -1227,6 +1228,22 @@ public class AccountUpdateService {
     /** {@code EXEC CICS ABEND ABCODE('9999')}, {@code :4221}. Four characters, filling {@code PIC X(4)}. */
     private static final String TERMINAL_ABEND_CODE = "9999";
 
+    /**
+     * Refusal text for a write whose carried customer identifier is not the one the cross-reference binds
+     * to the account. It names no identifier, neither the submitted one nor the derived one.
+     */
+    private static final String CUSTOMER_ID_NOT_BOUND_MESSAGE =
+            "The customer identifier submitted with this update is not the customer this account is bound "
+                    + "to. Re-read the account and resubmit the update.";
+
+    /**
+     * Refusal text for a write against an account that no cross-reference record binds to a customer, so
+     * there is no customer row this update may lawfully write.
+     */
+    private static final String CUSTOMER_NOT_BOUND_TO_ACCOUNT_MESSAGE =
+            "No cross-reference record binds this account to a customer, so the customer half of the "
+                    + "update has no target. Re-read the account and resubmit the update.";
+
     /** Remediation text for a write submitted without the {@code ACUP-OLD-DETAILS} snapshot. */
     private static final String OLD_DETAILS_REQUIRED_MESSAGE =
             "The ACUP-OLD-DETAILS snapshot of app/cbl/COACTUPC.cbl:669 is required: "
@@ -1435,22 +1452,61 @@ public class AccountUpdateService {
 
 
     // ------------------------------------------------------------------------------------------------
-    // Collaborators. Seven, all final, all constructor-injected, none static.
+    // Collaborators. Eight, all final, all constructor-injected, none static.
     // ------------------------------------------------------------------------------------------------
 
+    /**
+     * Access point for {@code CCXREF} through its account path {@code CXACAIX}, resolving the account
+     * filter to a customer identifier before either master record is read.
+     */
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    /**
+     * Access point for {@code ACCTDAT}. Its read-for-update finder is the first of the two locked reads of
+     * {@code 9600-WRITE-PROCESSING} at {@code app/cbl/COACTUPC.cbl:L3894-L3906}.
+     */
     private final AccountRepository accountRepository;
 
+    /**
+     * Access point for {@code CUSTDAT}. Its read-for-update finder is the second locked read, at
+     * {@code app/cbl/COACTUPC.cbl:L3920-L3932}, and the one whose rewrite failure triggers the explicit
+     * backout.
+     */
     private final CustomerRepository customerRepository;
 
+    /** The sole owner of the status-to-exception decision; never re-implemented here. */
     private final FileStatusMapper fileStatusMapper;
 
+    /**
+     * The single bean replacing {@code CALL 'CSUTLDTC'} together with both of its work-area copybooks,
+     * consulted by each of the three date edits.
+     */
     private final DateValidationService dateValidationService;
 
+    /**
+     * The lookup tables of {@code app/cpy/CSLKPCDY.cpy}, consulted for the state code, the ZIP-prefix
+     * combination and the three telephone area codes.
+     */
     private final ValidationLookupService validationLookupService;
 
+    /**
+     * Injected time source replacing {@code FUNCTION CURRENT-DATE}, including the deliberately duplicated
+     * read at {@code app/cbl/COACTUPC.cbl:2671} and {@code :2678}.
+     */
     private final Clock clock;
+
+    /**
+     * Seals and opens the {@code ACUP-OLD-DETAILS} snapshot.
+     *
+     * <p>The eighth collaborator, and the one with no COBOL counterpart, because what it replaces is a
+     * <em>storage lifetime</em>: {@code WS-THIS-PROGCOMMAREA} at {@code :652} held the snapshot between the
+     * two turns of the pseudo-conversation, and a stateless server has nowhere to put it. Returning it in
+     * the clear and accepting it back would be the obvious substitution and is wrong twice over - the group
+     * carries the date of birth, the social security number, the government-issued identifier, both
+     * telephone numbers and the electronic funds account identifier, and a snapshot the caller supplies
+     * makes the comparison at {@code :4109-4193} answerable to the caller rather than to the record.</p>
+     */
+    private final SnapshotTokenService snapshotTokenService;
 
     /**
      * Constructs the bean. Constructor injection is the only injection form used: there is no field
@@ -1505,6 +1561,15 @@ public class AccountUpdateService {
      *                                     clock is what makes the header projection deterministic and
      *                                     testable; {@code LocalDate.now()} and
      *                                     {@code LocalDateTime.now()} with no argument are never called
+     * @param snapshotTokenService         the sealer of {@code ACUP-OLD-DETAILS}. Required because the
+     *                                     group the comparison at {@code :4109-4193} needs is the group
+     *                                     {@code 9500-STORE-FETCHED-DATA} stored at {@code :3805-3813},
+     *                                     and a stateless server keeps no half-COMMAREA to hold it. Sealed
+     *                                     rather than returned in the clear because it carries the date of
+     *                                     birth, the social security number, the government-issued
+     *                                     identifier, both telephone numbers and the electronic funds
+     *                                     account identifier - and because a snapshot a caller can compose
+     *                                     is not a precondition at all; must not be {@code null}
      */
     public AccountUpdateService(final CardCrossReferenceRepository cardCrossReferenceRepository,
                                 final AccountRepository accountRepository,
@@ -1512,7 +1577,8 @@ public class AccountUpdateService {
                                 final FileStatusMapper fileStatusMapper,
                                 final DateValidationService dateValidationService,
                                 final ValidationLookupService validationLookupService,
-                                final Clock clock) {
+                                final Clock clock,
+                                final SnapshotTokenService snapshotTokenService) {
         this.cardCrossReferenceRepository = cardCrossReferenceRepository;
         this.accountRepository = accountRepository;
         this.customerRepository = customerRepository;
@@ -1520,6 +1586,7 @@ public class AccountUpdateService {
         this.dateValidationService = dateValidationService;
         this.validationLookupService = validationLookupService;
         this.clock = clock;
+        this.snapshotTokenService = snapshotTokenService;
     }
 
     /**
@@ -1531,7 +1598,7 @@ public class AccountUpdateService {
      * The legacy program treats each as a control path that sets a field-error state and renders a
      * diagnostic into {@code WS-RETURN-MSG}, and that is reproduced exactly. Every typed exception the
      * situation warrants is nonetheless constructed and retained on the request context, so nothing is
-     * swallowed; {@link #updateAccount(AccountUpdateRequest)} rethrows it.</p>
+     * swallowed; {@link #updateAccount(AccountUpdateRequest, String)} rethrows it.</p>
      * <p>The transaction boundary is declared here rather than deeper, and it is unconditional. It spans
      * the account rewrite of {@code :4065-4071} and the customer rewrite of {@code :4085-4091} as one unit
      * of work, which is what reproduces the source's asymmetric rollback without a single conditional: on
@@ -1576,7 +1643,10 @@ public class AccountUpdateService {
                     "The symbolic-map area of app/cpy-bms/COACTUP.CPY is required; a CICS RECEIVE MAP"
                             + " always delivers one.");
         }
-        return mainLine0000(new UpdateContext(request, attentionIdentifier, changeAction, entryMode));
+        // The in-process entry point takes the snapshot from the request, because its caller is this
+        // application reproducing one screen turn rather than a client asserting a precondition.
+        return mainLine0000(new UpdateContext(request, attentionIdentifier, changeAction, entryMode,
+                request == null ? null : request.getOldDetails()));
     }
 
     /**
@@ -1597,10 +1667,16 @@ public class AccountUpdateService {
      * through {@code WHEN OTHER} and is reported as {@code ACUP-CHANGES-OKAYED-AND-DONE} - a top-level
      * success. This method reproduces that, because parity is the contract. The internal outcome stays
      * distinguishable on the result and in the structured log; the reported outcome does not.</p>
-     * @param request the full update payload including both snapshot groups; must not be {@code null}, and
-     *                {@code getOldDetails()} must not be {@code null} either, because without a snapshot
-     *                the change detection of {@code 9700-CHECK-CHANGE-IN-REC} has nothing to compare
-     *                against and silently skipping it would forfeit the guarantee the source provides
+     * @param request the submitted map - the fifty-four screen fields and the {@code newDetails} group; must
+     *                not be {@code null}. Its {@code oldDetails} group is <b>not</b> read on this path and
+     *                the operation refuses a body that carries one
+     * @param snapshotToken the sealed {@code ACUP-OLD-DETAILS} snapshot a preceding
+     *                {@link #issueUpdateSnapshot(String)} issued, which the client returns in
+     *                {@code If-Match}. Without it the change detection of
+     *                {@code 9700-CHECK-CHANGE-IN-REC} has nothing to compare against, and silently skipping
+     *                the comparison would forfeit the guarantee the source provides, so an absent token is
+     *                reported as {@code CHANGES_NOT_CONFIRMED} and a token that does not verify as
+     *                {@code DATA_CHANGED_BEFORE_UPDATE}
      * @return the projected outcome, whose {@link AccountUpdateResult#changeAction()} carries the
      *         {@code ACUP} marker the next turn must echo; never {@code null}
      * @throws ValidationException        when the payload or its snapshot group is missing, or when any of
@@ -1623,21 +1699,26 @@ public class AccountUpdateService {
      *                                    {@code FileStatusMapper}
      */
     @Transactional(rollbackFor = Exception.class)
-    public AccountUpdateResult updateAccount(final AccountUpdateRequest request) {
+    public AccountUpdateResult updateAccount(final AccountUpdateRequest request,
+                                             final String snapshotToken) {
         if (request == null) {
             throw ValidationException.missingField(REQUEST_FIELD,
                     "The symbolic-map area of app/cpy-bms/COACTUP.CPY is required.");
         }
-        if (request.getOldDetails() == null) {
-            throw ValidationException.missingField(OLD_DETAILS_FIELD,
-                    "The ACUP-OLD-DETAILS snapshot of app/cbl/COACTUPC.cbl:669 is required on a write:"
-                            + " 9700-CHECK-CHANGE-IN-REC compares the live record against it field by"
-                            + " field, and a stateless server cannot reconstruct it.");
-        }
+        // The snapshot comes from the token and from nowhere else. An absent token reports
+        // CHANGES_NOT_CONFIRMED and one that fails to verify reports DATA_CHANGED_BEFORE_UPDATE, which are
+        // the two outcomes the source itself distinguishes: nothing to compare against, versus a comparison
+        // that failed. Opening also binds the snapshot to this account, so a token issued for one record
+        // cannot be presented for another.
+        final AccountUpdateRequest.OldDetails authenticOldDetails =
+                this.snapshotTokenService.open(snapshotToken, SNAPSHOT_KIND,
+                        snapshotRecordKey(request.getAccountId()),
+                        AccountUpdateRequest.OldDetails.class);
         final UpdateContext context = new UpdateContext(request,
                 ATTENTION_IDENTIFIER_PFK05,
                 ChangeAction.CHANGES_OK_NOT_CONFIRMED,
-                EntryMode.REENTER);
+                EntryMode.REENTER,
+                authenticOldDetails);
         final AccountUpdateResult result = mainLine0000(context);
         if (context.pendingFailure != null) {
             throw context.pendingFailure;
@@ -1688,7 +1769,8 @@ public class AccountUpdateService {
         final UpdateContext context = new UpdateContext(request,
                 ATTENTION_IDENTIFIER_ENTER,
                 ChangeAction.DETAILS_NOT_FETCHED,
-                EntryMode.REENTER);
+                EntryMode.REENTER,
+                null);
         final AccountUpdateResult result = mainLine0000(context);
         if (context.pendingFailure != null) {
             throw context.pendingFailure;
@@ -1697,6 +1779,77 @@ public class AccountUpdateService {
             throw validationFailure(context);
         }
         return result;
+    }
+
+    /**
+     * The operation kind every account-update snapshot token is sealed for.
+     *
+     * <p>Published so that the operation issuing the token and this service verifying it name the same kind
+     * once. A token sealed for any other kind cannot open here, which is what stops a card snapshot or a
+     * browse cursor from being presented as an account snapshot.</p>
+     */
+    public static final String SNAPSHOT_KIND = "account-update";
+
+    /**
+     * Reads one account and seals the {@code ACUP-OLD-DETAILS} snapshot its update will require.
+     *
+     * <p><b>What it does.</b> It drives exactly the conversation {@link #fetchForUpdate(String)} drives -
+     * Enter, re-entered, {@code ACUP-DETAILS-NOT-FETCHED}, so that the {@code :2568} arm of the decider
+     * performs {@code 9000-READ-ACCT} - and then seals what {@code 9500-STORE-FETCHED-DATA} stored at
+     * {@code :3805-3813}. It exists because {@code fetchForUpdate} alone left no way for a client to obtain
+     * a snapshot at all: the values are in the projected screen, but a client that composed a snapshot from
+     * them would be composing its own precondition.</p>
+     *
+     * <p><b>Nothing it seals is disclosed.</b> The return value is one opaque string. The date of birth, the
+     * social security number, the government-issued identifier, both telephone numbers and the electronic
+     * funds account identifier are inside it and cannot be read out by the caller, which is what lets the
+     * comparison at {@code :4109-4193} run over all twenty-nine values while the response carries none of
+     * them.</p>
+     *
+     * <p><b>Side effects.</b> None. This is a read.</p>
+     *
+     * @param accountFilter the account identifier as typed into screen field {@code ACCTSIDI}; relayed
+     *                      verbatim, so {@code null}, empty, all blanks and {@code *} all mean "not
+     *                      supplied" and the source's own edits decide
+     * @return the sealed snapshot, never {@code null}
+     * @throws ValidationException      when the account filter is blank or is non-numeric, short or
+     *                                  all-zeroes, exactly as {@link #fetchForUpdate(String)} reports it
+     * @throws RecordNotFoundException  when any link of the three-dataset chain has no matching record
+     * @throws FileAccessException      for a physical or logical input-output failure
+     * @throws FatalProcessingException if sealing fails, which is a broken deployment rather than a request
+     *                                  outcome
+     */
+    @Transactional(readOnly = true)
+    public String issueUpdateSnapshot(final String accountFilter) {
+        final AccountUpdateResult fetched = fetchForUpdate(accountFilter);
+        final AccountUpdateRequest screen = fetched.screen();
+        final AccountUpdateRequest.OldDetails snapshot =
+                screen == null ? null : screen.getOldDetails();
+        if (snapshot == null) {
+            // The fetch reached neither an exception nor a populated snapshot, which is the state
+            // INITIALIZE ACUP-OLD-DETAILS leaves at :981-983 when nothing was stored back. There is
+            // nothing to seal and no write could be confirmed against it, so this is reported rather than
+            // sealed as an empty group that would fail every later comparison for an unexplained reason.
+            throw ValidationException.missingField(OLD_DETAILS_FIELD, OLD_DETAILS_REQUIRED_MESSAGE);
+        }
+        return this.snapshotTokenService.seal(SNAPSHOT_KIND, snapshotRecordKey(screen.getAccountId()),
+                snapshot);
+    }
+
+    /**
+     * Renders the record key an account-update token is bound to.
+     *
+     * <p>The submitted account identifier is used exactly as received, with no padding, trimming or case
+     * folding, because the binding is an exact string comparison and normalising either side would let a
+     * token issued for one spelling open for another. A null or blank identifier yields a fixed non-empty
+     * placeholder rather than an empty string, so the authenticated additional data stays well formed and a
+     * token sealed for an unspecified account can never open for a specified one.</p>
+     *
+     * @param accountFilter the account identifier as submitted; may be {@code null} or blank
+     * @return the record key, never {@code null} and never blank
+     */
+    private static String snapshotRecordKey(final String accountFilter) {
+        return accountFilter == null || accountFilter.isBlank() ? "-" : accountFilter;
     }
 
 
@@ -1757,7 +1910,7 @@ public class AccountUpdateService {
                 context.entryMode = EntryMode.ENTER;
                 // :886 SET ACUP-DETAILS-NOT-FETCHED TO TRUE
                 context.changeAction = ChangeAction.DETAILS_NOT_FETCHED;
-            } else if (context.request.getOldDetails() != null) {
+            } else if (context.authenticOldDetails != null) {
                 // :887-893 ELSE - the two COMMAREA halves are sliced back out of DFHCOMMAREA:
                 //   MOVE DFHCOMMAREA(1:LENGTH OF CARDDEMO-COMMAREA) TO CARDDEMO-COMMAREA
                 //   MOVE DFHCOMMAREA(LENGTH OF CARDDEMO-COMMAREA + 1 : LENGTH OF
@@ -1768,7 +1921,7 @@ public class AccountUpdateService {
                 // 9600-WRITE-PROCESSING would read CDEMO-CUST-ID as LOW-VALUES at :3919 and every write
                 // would fail the customer lock guard. XREF-CARD-NUM (:3811) has no ACUP-OLD-DETAILS
                 // member, so commAreaCardNumber legitimately stays unset on this path.
-                final AccountUpdateRequest.OldDetails carried = context.request.getOldDetails();
+                final AccountUpdateRequest.OldDetails carried = context.authenticOldDetails;
                 context.commAreaAccountId = carried.getAccountId();
                 context.commAreaCustomerId = carried.getCustomerId();
                 context.commAreaAccountStatus = carried.getActiveStatus();
@@ -1851,24 +2004,21 @@ public class AccountUpdateService {
     }
 
     /**
-     * {@code app/cbl/COACTUPC.cbl}, the {@code WHEN CCARD-AID-PFK03} arm of {@code 0000-MAIN}, logical
-     * lines {@code :927-959}. Resolves the transfer target, stamps this program as the caller, and hands
-     * control away.
-     * <p>{@code :930-935} and {@code :937-942} apply {@code LOW-VALUES}-or-{@code SPACES} fallbacks: an
-     * unknown caller transaction resolves to {@code CM00} and an unknown caller program to
-     * {@code COMEN01C}. Because a stateless request carries no COMMAREA, both fallbacks always fire, which
-     * makes the transfer target constant in practice - an observable consequence of statelessness rather
-     * than a change to the rule.</p>
-     * <p>{@code :947} {@code SET CDEMO-USRTYP-USER TO TRUE} downgrades the user type to {@code 'U'} on the
-     * way out, unconditionally, even for an administrator. It is reproduced because it is the behaviour;
-     * statelessly the role travels in the token and the security layer, not here, decides authority, so
-     * the value is reported as navigation metadata only.</p>
-     * <p><strong>{@code :952-954} is {@code EXEC CICS SYNCPOINT} - a COMMIT, not a rollback.</strong> It
-     * is a second and entirely distinct syncpoint site from the {@code EXEC CICS SYNCPOINT ROLLBACK} at
-     * {@code :4099-4101}, and the two must never be conflated. On this path no unit of work is pending: no
-     * write has been issued anywhere in the dispatch arm, so committing nothing is a no-op, and the
-     * declarative transaction of the entry point commits on normal return regardless. The substitution is
-     * therefore a documented no-op and is recorded as such in {@code DECISION_LOG.md}.</p>
+     * {@code app/cbl/COACTUPC.cbl}, the {@code WHEN CCARD-AID-PFK03} arm of {@code 0000-MAIN}, logical lines
+     * {@code :927-959}. Resolves the transfer target, stamps this program as the caller, and hands control away.
+     * <p>{@code :930-935} and {@code :937-942} apply {@code LOW-VALUES}-or-{@code SPACES} fallbacks: an unknown
+     * caller transaction resolves to {@code CM00} and an unknown caller program to {@code COMEN01C}. Because a
+     * stateless request carries no COMMAREA, both fallbacks always fire, which makes the transfer target constant in
+     * practice - an observable consequence of statelessness rather than a change to the rule.</p> <p>{@code :947}
+     * {@code SET CDEMO-USRTYP-USER TO TRUE} downgrades the user type to {@code 'U'} on the way out, unconditionally,
+     * even for an administrator. It is reproduced because it is the behaviour; statelessly the role travels in the
+     * token and the security layer, not here, decides authority, so the value is reported as navigation metadata
+     * only.</p> <p><strong>{@code :952-954} is {@code EXEC CICS SYNCPOINT} - a COMMIT, not a rollback.</strong> It is
+     * a second and entirely distinct syncpoint site from the {@code EXEC CICS SYNCPOINT ROLLBACK} at
+     * {@code :4099-4101}, and the two must never be conflated. On this path no unit of work is pending: no write has
+     * been issued anywhere in the dispatch arm, so committing nothing is a no-op, and the declarative transaction of
+     * the entry point commits on normal return regardless. The substitution is therefore a documented no-op and is
+     * owed an entry in the planned {@code DECISION_LOG.md}.</p>
      * @param context the per-invocation state carrier
      * @return a {@link ResponseKind#TRANSFER} outcome carrying the navigation metadata; never {@code null}
      */
@@ -2501,7 +2651,7 @@ public class AccountUpdateService {
     private void compareOldNew1205(final UpdateContext context) {
         // :1682 SET NO-CHANGES-FOUND TO TRUE
         context.changeHasOccurred = false;
-        final AccountUpdateRequest.OldDetails old = context.request.getOldDetails();
+        final AccountUpdateRequest.OldDetails old = context.authenticOldDetails;
         if (old == null) {
             // A stateless request without the snapshot group cannot answer the question at all. The
             // source always has the group because it lives in WORKING-STORAGE; here its absence is
@@ -2765,17 +2915,15 @@ public class AccountUpdateService {
     }
 
     /**
-     * {@code app/cbl/COACTUPC.cbl}, paragraph {@code 1230-EDIT-ALPHANUM-REQD.}, logical lines
-     * {@code :1955-2008}. A required field that may contain only letters, digits and spaces.
-     * <p><strong>Defect D12, severity LOW: this paragraph is never performed.</strong> A repository-wide
-     * census of {@code PERFORM 1230} returns zero call sites, so the routine is declared and complete but
-     * unreachable. It is nonetheless mapped, because deleting it would break the paragraph
-     * correspondence that {@code TRACEABILITY_MATRIX.md} is proved against, and Rule 1 Clause B forbids
-     * <em>untracked</em> dead code rather than tracked-and-cited dead code. The tracking reference is this
-     * Javadoc plus the register entry in the class documentation.</p>
-     * <p>Its character-class test at {@code :1982-2005} uses {@code LIT-ALL-ALPHANUM-FROM}, the
-     * sixty-two-character alphabet-plus-digits set, so the accepted class is letters, digits and
-     * spaces.</p>
+     * {@code app/cbl/COACTUPC.cbl}, paragraph {@code 1230-EDIT-ALPHANUM-REQD.}, logical lines {@code :1955-2008}. A
+     * required field that may contain only letters, digits and spaces. <p><strong>Defect D12, severity LOW: this
+     * paragraph is never performed.</strong> A repository-wide census of {@code PERFORM 1230} returns zero call
+     * sites, so the routine is declared and complete but unreachable. It is nonetheless mapped, because deleting it
+     * would break the paragraph correspondence that the planned {@code TRACEABILITY_MATRIX.md} will be proved
+     * against, and Rule 1 Clause B forbids <em>untracked</em> dead code rather than tracked-and-cited dead code. The
+     * tracking reference is this Javadoc plus the register entry in the class documentation.</p> <p>Its
+     * character-class test at {@code :1982-2005} uses {@code LIT-ALL-ALPHANUM-FROM}, the sixty-two-character
+     * alphabet-plus-digits set, so the accepted class is letters, digits and spaces.</p>
      * @param context the per-invocation state carrier; reads {@code editAlphanumericText} and
      *     {@code editAlphanumericLength}, writes {@code alphanumericState}
      */
@@ -3512,7 +3660,7 @@ public class AccountUpdateService {
      * construct rather than a paragraph, so it does not consume one of the eighty-seven label methods; it
      * is factored out solely so that the defect below can carry its own documentation and its own tests.
      *
-     * <h2>BLOCKER - the customer-lock failure is reported as success</h2>
+     * <h4>BLOCKER - the customer-lock failure is reported as success</h4>
      * <p>The source reads, verbatim:</p>
      * <pre>
      * 2606  EVALUATE TRUE
@@ -3567,11 +3715,14 @@ public class AccountUpdateService {
         // success. There are deliberately only four branches, and the customer-lock flag is deliberately
         // absent from all of them. Do not add a fifth branch - see this method's documentation.
         if (context.customerLockFailed) {
+            // The two identifiers this event used to carry are withheld. The condition being reported is that
+            // the decider does not test the customer-lock flag, which is a property of the control flow rather
+            // than of any particular pair of records - and this is the one outcome where the caller is told
+            // nothing went wrong, so an operator reading it needs the discrepancy explained, not the keys. The
+            // correlation identifier in the MDC ties the event to the request that produced it.
             LOG.warn("CAUP customer record could not be locked for update; the legacy decider at"
                     + " app/cbl/COACTUPC.cbl:2606-2615 never tests this outcome, so the caller is"
-                    + " told the update succeeded although nothing was written."
-                    + " accountId={} customerId={}",
-                    context.commAreaAccountId, context.commAreaCustomerId);
+                    + " told the update succeeded although nothing was written.");
         }
         context.changeAction = ChangeAction.CHANGES_OKAYED_AND_DONE;
     }
@@ -4576,16 +4727,18 @@ public class AccountUpdateService {
         int responseCode;
         String ioStatus;
         Throwable cause = null;
-        List<CardCrossReference> matches = List.of();
+        // LIMIT 1 at the database: a keyed read through the CXACAIX path yields one record, and only the
+        // first was ever used below. See CardCrossReferenceRepository for the full reasoning.
+        Optional<CardCrossReference> found = Optional.empty();
         if (accountKey == null) {
             // A non-numeric key cannot address the path; CICS reports it as a miss.
             responseCode = CICS_RESP_NOTFND;
             ioStatus = IO_STATUS_RECORD_NOT_FOUND;
         } else {
             try {
-                matches = this.cardCrossReferenceRepository
-                        .findByAccountIdOrderByCardNumberAsc(accountKey);
-                if (matches.isEmpty()) {
+                found = this.cardCrossReferenceRepository
+                        .findFirstByAccountIdOrderByCardNumberAsc(accountKey);
+                if (found.isEmpty()) {
                     responseCode = CICS_RESP_NOTFND;
                     ioStatus = IO_STATUS_RECORD_NOT_FOUND;
                 } else {
@@ -4602,7 +4755,7 @@ public class AccountUpdateService {
         context.reasonCode = CICS_REASON_NONE;
         // :3665-3667 WHEN DFHRESP(NORMAL)
         if (responseCode == CICS_RESP_NORMAL) {
-            final CardCrossReference crossReference = matches.get(0);
+            final CardCrossReference crossReference = found.orElseThrow();
             context.readCrossReference = crossReference;
             context.commAreaCustomerId = formatNumericKey(crossReference.getCustomerId(),
                     CUSTOMER_ID_LENGTH);
@@ -5011,6 +5164,21 @@ public class AccountUpdateService {
             return;
         }
         // :3919 MOVE CDEMO-CUST-ID TO WS-CARD-RID-CUST-ID
+        //
+        // In CICS, CDEMO-CUST-ID was SERVER-owned state: 9500-STORE-FETCHED-DATA had put it in the
+        // COMMAREA at :3805-3810 from the cross-reference the region itself read, and the terminal could
+        // not touch it. Statelessly the caller echoes that value back, so the MOVE alone would let a
+        // request nominate ANY customer row and have this method's 17-field write applied to it - and
+        // 9700-CHECK-CHANGE-IN-REC cannot catch it, because CUST-ID is deliberately not one of the fields
+        // it compares (see :4152-4186). Re-deriving the identifier from the persisted relationship
+        // RESTORES the legacy guarantee rather than adding a new rule; the equality check exists so that a
+        // caller is refused rather than silently having a different row updated than the one it named.
+        //
+        // Placed here, after the account lock guard and before the customer read: every legacy outcome
+        // ordering is preserved, and nothing is read for update or written on a refused request.
+        if (!bindCustomerToAccount(context)) {
+            return;
+        }
         context.readKeyCustomerId = context.commAreaCustomerId;
         final Long customerKey = parseKey(context.readKeyCustomerId);
         // :3921-3930 EXEC CICS READ FILE(CUSTDAT) UPDATE
@@ -5082,6 +5250,126 @@ public class AccountUpdateService {
                             CICS_REASON_NONE), failure));
         }
         // :4105 9600-WRITE-PROCESSING-EXIT
+    }
+
+    /**
+     * Binds the customer row this write may touch to the account being updated, and refuses the write when
+     * the request nominates a different one.
+     *
+     * <p>Not a paragraph of {@code app/cbl/COACTUPC.cbl}: it is the guard that replaces a guarantee CICS
+     * gave structurally. {@code CDEMO-CUST-ID} at {@code :3919} was server-owned COMMAREA state, written by
+     * {@code 9500-STORE-FETCHED-DATA} at {@code :3805-3810} from the cross-reference the region had just
+     * read for the account in {@code 9200-GETCARDXREF-BYACCT} at {@code :3654-3662}. A 3270 could not alter
+     * it. A stateless caller echoes it back, so without this method the identifier used to select and lock
+     * the customer row - and therefore the row that receives the seventeen-field image of
+     * {@link #applyCustomerUpdateImage} - would be chosen by the caller.
+     *
+     * <p>The snapshot comparison does not close this. {@code 9700-CHECK-CHANGE-IN-REC} at
+     * {@code :4152-4186} deliberately does <strong>not</strong> compare {@code CUST-ID}, so a substituted
+     * identifier reaches the write with every compared field matching the substituted row's own values.
+     *
+     * <p>The derivation is the same one the read path uses - the {@code CXACAIX} path ordered ascending by
+     * card number, first record taken - so the value bound here is exactly the value the read path would
+     * have placed in the COMMAREA. Three carried spellings are then required to agree with it: the
+     * top-level screen field, the {@code ACUP-OLD-DETAILS} snapshot member and the {@code ACUP-NEW-DETAILS}
+     * member. A carried value that is absent or blank contradicts nothing and is accepted; a value that is
+     * present and different refuses the write.
+     *
+     * <p>A refusal reports {@code DATA-WAS-CHANGED-BEFORE-UPDATE}, which
+     * {@link #classifyWriteOutcome2606} maps to {@code SHOW-DETAILS}: nothing is written, and the caller is
+     * told to review the record and resubmit - which re-fetches the account and re-derives the identifier
+     * server-side, so a legitimate stale-screen caller succeeds on the second attempt. The customer-lock
+     * outcome is deliberately <em>not</em> reused for this: {@code :2613-2614} never tests that flag and
+     * reports it as success, which is exactly the wrong answer for a refused write. The retained failure
+     * carries no identifier value, only the field name, so nothing about the account's real customer is
+     * disclosed.
+     *
+     * <p>Side effects: reads the cross-reference path; on success replaces
+     * {@code context.commAreaCustomerId} with the derived value, so the read at {@code :3921-3930} uses the
+     * server's identifier and never the caller's. Nothing is written, nothing is locked.
+     *
+     * @param context the per-invocation state carrier
+     * @return {@code true} when the write may proceed, {@code false} when it has been refused and the
+     *         caller must return immediately
+     */
+    private boolean bindCustomerToAccount(final UpdateContext context) {
+        final Long accountKey = parseKey(context.readKeyAccountId);
+        if (accountKey == null) {
+            // Unreachable in practice: the account lock guard above has already returned for a key that
+            // does not parse. Retained so this method never derives from a key it cannot read, and so the
+            // legacy outcome for a malformed account identifier stays the account-lock outcome.
+            return true;
+        }
+
+        final Long boundCustomerId;
+        try {
+            // The lowest card number bound to the account, fetched as one row rather than as a list whose
+            // tail is discarded: the derivation needs the first match only, and every cross-reference row
+            // for an account carries the same customer, so a wider read could not change the answer.
+            boundCustomerId = this.cardCrossReferenceRepository
+                    .findFirstByAccountIdOrderByCardNumberAsc(accountKey)
+                    .map(CardCrossReference::getCustomerId)
+                    .orElse(null);
+        } catch (final DataAccessException failure) {
+            LOG.error("CAUP refused an update: the cross-reference path could not be read to establish "
+                    + "which customer the account is bound to.", failure);
+            context.dataWasChangedBeforeUpdate = true;
+            context.returnMessage = truncateReturnMessage(XREF_READ_ERROR_MESSAGE);
+            retainFailure(context, classify(context, IO_STATUS_IO_ERROR, XREF_ACCOUNT_PATH_NAME,
+                    OPERATION_READ, failure));
+            return false;
+        }
+
+        if (boundCustomerId == null) {
+            LOG.warn("CAUP refused an update: no cross-reference record binds the account to a customer, "
+                    + "so no customer row may be written.");
+            context.dataWasChangedBeforeUpdate = true;
+            context.returnMessage = truncateReturnMessage(DID_NOT_FIND_ACCOUNT_IN_CARDXREF);
+            retainFailure(context, ValidationException.invalidField(FIELD_CUSTOMER_ID,
+                    CUSTOMER_NOT_BOUND_TO_ACCOUNT_MESSAGE));
+            return false;
+        }
+
+        final AccountUpdateRequest.NewDetails submitted = context.request.getNewDetails();
+        if (!carriedCustomerIdAgrees(context.commAreaCustomerId, boundCustomerId)
+                || !carriedCustomerIdAgrees(context.request.getCustomerId(), boundCustomerId)
+                || (submitted != null
+                    && !carriedCustomerIdAgrees(submitted.getCustomerId(), boundCustomerId))) {
+            LOG.warn("CAUP refused an update: the customer identifier submitted with the request is not "
+                    + "the customer the account is bound to.");
+            context.dataWasChangedBeforeUpdate = true;
+            context.returnMessage = truncateReturnMessage(DATA_WAS_CHANGED_BEFORE_UPDATE);
+            retainFailure(context, ValidationException.invalidField(FIELD_CUSTOMER_ID,
+                    CUSTOMER_ID_NOT_BOUND_MESSAGE));
+            return false;
+        }
+
+        // The server's value replaces whatever was carried, so the read below cannot address another row
+        // even if a carried spelling differed only in padding.
+        context.commAreaCustomerId = formatNumericKey(boundCustomerId, CUSTOMER_ID_LENGTH);
+        return true;
+    }
+
+    /**
+     * Tests one carried customer identifier against the identifier the cross-reference binds to the
+     * account.
+     *
+     * <p>Compared as numbers rather than as text, because the three carried spellings reach this class in
+     * different forms - zero-padded to {@value #CUSTOMER_ID_LENGTH} from the snapshot, and as the operator
+     * typed it from the screen field - and a padding difference is not a mismatch. A value that is absent,
+     * blank or non-numeric carries no assertion about which customer is meant and therefore contradicts
+     * nothing; the derived value stands. A value that parses and differs is a mismatch.
+     *
+     * @param carried the identifier as carried by the request; may be {@code null} or blank
+     * @param bound   the identifier derived from the persisted cross-reference; never {@code null}
+     * @return {@code true} when the carried value does not contradict the derived one
+     */
+    private static boolean carriedCustomerIdAgrees(final String carried, final Long bound) {
+        if (carried == null || carried.isBlank()) {
+            return true;
+        }
+        final Long parsed = parseKey(carried);
+        return parsed != null && parsed.equals(bound);
     }
 
     /**
@@ -5254,7 +5542,7 @@ public class AccountUpdateService {
         final Account account = context.lockedAccount;
         final Customer customer = context.lockedCustomer;
         // Clause B: a missing snapshot is an explicit validation failure, never a skipped comparison.
-        if (context.request.getOldDetails() == null) {
+        if (context.authenticOldDetails == null) {
             context.dataWasChangedBeforeUpdate = true;
             retainFailure(context, ValidationException.missingField(OLD_DETAILS_FIELD,
                     OLD_DETAILS_REQUIRED_MESSAGE));
@@ -6747,12 +7035,11 @@ public class AccountUpdateService {
         CHANGES_OK_NOT_CONFIRMED('N'),
 
         /**
-         * {@code ACUP-CHANGES-OKAYED-AND-DONE VALUE 'C'}, {@code app/cbl/COACTUPC.cbl:665}. The write
-         * committed.
+         * {@code ACUP-CHANGES-OKAYED-AND-DONE VALUE 'C'}, {@code app/cbl/COACTUPC.cbl:665}. The write committed.
          * <p><strong>BLOCKER:</strong> a customer read-for-update failure also lands here, because
          * {@code COULD-NOT-LOCK-CUST-FOR-UPDATE} is never tested by the post-write {@code EVALUATE} at
          * {@code :2606-2615} and therefore falls through {@code WHEN OTHER}. The preserved legacy defect is
-         * documented in full on {@link AccountUpdateService} and in {@code DECISION_LOG.md}.</p>
+         * documented in full on {@link AccountUpdateService} and in the planned {@code DECISION_LOG.md}.</p>
          */
         CHANGES_OKAYED_AND_DONE('C'),
 
@@ -6772,6 +7059,11 @@ public class AccountUpdateService {
         /** The single character the source stores in {@code ACUP-CHANGE-ACTION}. */
         private final char marker;
 
+        /**
+         * Binds the constant to the single character the source stores.
+         *
+         * @param marker the byte {@code ACUP-CHANGE-ACTION} holds for this action
+         */
         ChangeAction(final char marker) {
             this.marker = marker;
         }
@@ -6905,6 +7197,16 @@ public class AccountUpdateService {
      * The outcome of one invocation, replacing what the legacy program leaves in the COMMAREA and on the
      * 3270 screen at {@code EXEC CICS RETURN} or {@code EXEC CICS XCTL}.
      *
+     * <p><strong>This type is the in-process contract and is never an HTTP response body.</strong> Three of
+     * its members must not cross a wire. {@link #screen()} is the submitted map together with the snapshot
+     * group, so it carries the social security number, the date of birth, the government-issued identifier,
+     * both telephone numbers and the electronic funds account identifier. {@link #navigation()} describes a
+     * CICS screen flow that a URL-routed target does not have. {@link #fieldAttributes()} carries
+     * {@code DFHBMPRF} attribute bytes and a cursor position, which are 3270 presentation instructions. The
+     * API-native projections are {@code com.cardemo.model.dto.AccountViewResponse} for a read and
+     * {@code com.cardemo.model.dto.AccountUpdateResponse} for a write, and the operation builds them from
+     * this record rather than serialising it.</p>
+     *
      * @param responseKind whether the caller redisplays this program's map or transfers away
      * @param changeAction the {@code ACUP-CHANGE-ACTION} marker the caller must echo on its next turn;
      *     never {@code null}, and each value maps to its own documented response
@@ -6969,14 +7271,14 @@ public class AccountUpdateService {
      * ACUP-OLD-CURR-BAL-N} at {@code app/cbl/COACTUPC.cbl:3821} leaves in storage. Because
      * {@code ACUP-OLD-CURR-BAL-N} is {@code PIC S9(10)V99} with {@code DISPLAY} usage, the twelve bytes
      * hold eleven ordinary digit characters followed by one character that encodes both the twelfth digit
-     * and the sign. The mapping is {@code '{'} for {@code +0}, {@code 'A'} through {@code 'I'} for
-     * {@code +1} through {@code +9}, {@code '}'} for {@code -0} and {@code 'J'} through {@code 'R'} for
+     * and the sign. The mapping is {@code '&#123;'} for {@code +0}, {@code 'A'} through {@code 'I'} for
+     * {@code +1} through {@code +9}, {@code '&#125;'} for {@code -0} and {@code 'J'} through {@code 'R'} for
      * {@code -1} through {@code -9}.</p>
      *
      * <p>Worked example, taken verbatim from the first seed account record
      * {@code app/data/ASCII/acctdata.txt:1}: a current balance of {@code +194.00} scales to an unscaled
      * value of {@code 19400}, left-pads to {@code 000000019400}, and its low-order digit {@code 0} with a
-     * positive sign becomes {@code '{'}, giving {@code 00000001940{}.</p>
+     * positive sign becomes {@code '&#123;'}, giving {@code 00000001940&#123;}.</p>
      *
      * <p>Over-long values are truncated on the left, keeping the low-order {@link #MONEY_ZONED_LENGTH}
      * digits, because that is what a COBOL {@code MOVE} into a shorter numeric field does. The truncation
@@ -7133,7 +7435,7 @@ public class AccountUpdateService {
      *                {@code request.getOldDetails()}
      */
     private static void restoreSnapshotFromRequest(final UpdateContext context) {
-        final AccountUpdateRequest.OldDetails old = context.request.getOldDetails();
+        final AccountUpdateRequest.OldDetails old = context.authenticOldDetails;
         // :671-673 ACUP-OLD-ACCT-ID-X PIC X(11)
         context.snapshotAccountId = old.getAccountId();
         // :674 ACUP-OLD-ACTIVE-STATUS PIC X(01)
@@ -7218,6 +7520,15 @@ public class AccountUpdateService {
      * unparsable input the source is required to redisplay.</p>
      */
     private static final class ScreenBuffer {
+        /**
+         * Creates the work area with every member at its post-{@code INITIALIZE} value, which is the state
+         * the legacy {@code WORKING-STORAGE SECTION} begins each task in. Declared explicitly rather than
+         * left implicit so the surface is documented; it takes no argument and performs no work.
+         */
+        private ScreenBuffer() {
+            // Every member carries its initial value in its own declaration above, exactly as a COBOL
+            // VALUE clause does, so there is nothing for this constructor to assign.
+        }
 
         /** {@code TRNNAME} - the four-character transaction identifier header field. */
         private String transactionName;
@@ -7502,11 +7813,11 @@ public class AccountUpdateService {
      * byte of it confined to a single request. It is never a field of the enclosing bean; the three
      * construction sites are the three public entry points.</p>
      *
-     * <p><strong>Deliberate design choices.</strong> Members are package-private and mutable, with no
-     * getters and no setters, so that each of the eighty-seven mapped methods can assign exactly the
-     * item its source paragraph assigns, at exactly the point the source assigns it. Adding accessors
-     * would obscure the correspondence that {@code TRACEABILITY_MATRIX.md} has to be provable against,
-     * and would add three hundred methods to a class that already carries eighty-seven mandated ones.</p>
+     * <p><strong>Deliberate design choices.</strong> Members are package-private and mutable, with no getters and no
+     * setters, so that each of the eighty-seven mapped methods can assign exactly the item its source paragraph
+     * assigns, at exactly the point the source assigns it. Adding accessors would obscure the correspondence that the
+     * planned {@code TRACEABILITY_MATRIX.md} will have to be provable against, and would add three hundred methods to
+     * a class that already carries eighty-seven mandated ones.</p>
      *
      * <p><strong>Privacy.</strong> This object carries the most personally identifiable information in
      * the online layer: the date of birth, the social security number in three parts and assembled, both
@@ -7523,11 +7834,29 @@ public class AccountUpdateService {
 
         /**
          * The inbound payload, replacing the {@code EXEC CICS RECEIVE MAP} buffer of
-         * {@code 1100-RECEIVE-MAP} plus the caller's snapshot echo. Read for
-         * {@code request.getOldDetails()}, which supplies {@code ACUP-OLD-DETAILS} because a stateless
-         * target cannot hold it between turns. May be {@code null} on the read-only fetch entry point.
+         * {@code 1100-RECEIVE-MAP}. It supplies the fifty-four submitted screen fields and nothing else:
+         * the snapshot half of the conversation is carried by {@link #authenticOldDetails}, never by this
+         * object. May be {@code null} on the read-only fetch entry point.
          */
         private final AccountUpdateRequest request;
+
+        /**
+         * {@code ACUP-OLD-DETAILS} at {@code app/cbl/COACTUPC.cbl:669} as the <em>server</em> established
+         * it, and the only source the comparison reads.
+         *
+         * <p>Two callers supply it and they differ in kind. {@link #processRequest} passes the request's own
+         * group, because that entry point reproduces one screen turn in process and its caller is this
+         * application rather than a client. {@link #updateAccount} passes the group recovered from a sealed
+         * token, so that on the REST path the values compared are the values a preceding read displayed and
+         * not values a caller chose - a caller-composed snapshot would make {@code 9700-CHECK-CHANGE-IN-REC}
+         * answerable to the caller and the lost-update guard would be no guard at all.</p>
+         *
+         * <p>{@code null} means "no snapshot", which is a legitimate state on the fetch turn and a refusal on
+         * a write turn. It is never logged: the group carries the date of birth, the social security number,
+         * the government-issued identifier, both telephone numbers and the electronic funds account
+         * identifier.</p>
+         */
+        private final AccountUpdateRequest.OldDetails authenticOldDetails;
 
         /**
          * {@code EIBAID} as the caller reports it, consumed by {@code YYYY-STORE-PFKEY} from
@@ -8452,15 +8781,22 @@ public class AccountUpdateService {
          *     {@code YYYY-STORE-PFKEY} treats as no recognised key
          * @param changeAction the echoed {@code ACUP-CHANGE-ACTION} marker; must not be {@code null}
          * @param entryMode the resolved {@code CDEMO-PGM-CONTEXT}; must not be {@code null}
+         * @param authenticOldDetails the as-displayed snapshot opened from the sealed token, which is what
+         *     {@code 9700-CHECK-CHANGE-IN-REC} compares the live row against; may be {@code null} on the
+         *     read-only fetch entry point, where no snapshot has been issued yet. It is deliberately NOT the
+         *     copy carried on the request: a caller could edit that one, and comparing against an edited
+         *     snapshot would accept an update the source refuses
          */
         private UpdateContext(final AccountUpdateRequest request,
                               final String attentionIdentifier,
                               final ChangeAction changeAction,
-                              final EntryMode entryMode) {
+                              final EntryMode entryMode,
+                              final AccountUpdateRequest.OldDetails authenticOldDetails) {
             this.request = request;
             this.attentionIdentifier = attentionIdentifier;
             this.changeAction = changeAction;
             this.entryMode = entryMode;
+            this.authenticOldDetails = authenticOldDetails;
         }
 
         /**

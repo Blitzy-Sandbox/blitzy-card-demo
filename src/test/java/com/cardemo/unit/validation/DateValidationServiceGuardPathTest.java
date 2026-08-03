@@ -95,7 +95,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       trimmed second, so a leading space both takes the skip loop and costs one payload character.</li>
  *   <li><b>The non-numeric year edit.</b> {@code app/cpy/CSUTLDPY.cpy:L48} is reached only after the
  *       low-values and spaces guard has passed, so the year has to be present but not wholly numeric.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>The four guards proven unreachable, and why they are kept</h3>
  *
@@ -115,12 +115,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><b>The {@code INTEGER-OF-DATE} conversion failure.</b> Same precondition, same conclusion.</li>
  *   <li><b>The insufficient-data-by-length return.</b> Its only caller hands it a value already fixed to the
  *       declared ten characters, and no recognised mask is longer than ten.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run it</h2>
  *
- * <p>{@code mvn -o -B test -Dtest=DateValidationServiceGuardPathTest -DfailIfNoSpecifiedTests=false}, or as
- * part of {@code mvn -o -B clean verify -Ddependency-check.skip=true}. No container, no Docker socket, no
+ * <p>{@code ./mvnw -B -ntp -o test -Dtest=DateValidationServiceGuardPathTest -DfailIfNoSpecifiedTests=false}, or as
+ * part of {@code ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true}. No container, no Docker socket, no
  * database and no network access are required; the service's only collaborator is a {@link Clock}, which is
  * fixed here.
  *
@@ -145,7 +145,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       been found that reaches a guard documented here as dead. That is not a test defect - it is a new fact
  *       about the translation, and the guard must then be covered by a behavioural test and this Javadoc
  *       corrected.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("DateValidationService guard paths - CSUTLDTC and CSUTLDPY defensive branches")
 final class DateValidationServiceGuardPathTest {

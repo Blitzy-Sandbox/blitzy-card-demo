@@ -29,6 +29,7 @@ package com.cardemo.controller;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -46,6 +47,8 @@ import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.model.dto.ReportSubmissionResponse;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.report.ReportSubmissionService;
 
 import jakarta.validation.Valid;
@@ -80,15 +83,15 @@ import jakarta.validation.Valid;
  * <h2>How to run, build and test</h2>
  *
  * <p>Build and unit-test the module with {@code ./mvnw -B -ntp test}; the full gate is
- * {@code ./mvnw -B -ntp clean verify}, which compiles with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so a single unused import here fails the build. Run the application with the
- * {@code local} profile against the Compose topology, which supplies PostgreSQL and the LocalStack
- * endpoint the queue client is pointed at. Unit tests for this class belong in
- * {@code src/test/java/com/cardemo/unit} and drive it through {@code MockMvc} with a stubbed
- * service; the end-to-end contract check belongs in {@code src/test/java/com/cardemo/e2e} and exercises
- * this operation as one of the seventeen against a real application context. Because this class holds no
- * static mutable state and takes its one collaborator through its constructor, both tiers can construct it
- * directly without a context.
+ * {@code ./mvnw -B -ntp clean verify}, which compiles with {@code -Xlint:all -Werror} and {@code failOnWarning}, so a
+ * single raw type, unchecked cast or dangling documentation comment here fails the build; an unused import does not,
+ * because {@code javac} 25 publishes no {@code unused} lint key, and malformed Javadoc does not either, because no
+ * Javadoc plugin is bound in {@code pom.xml}. Run the application with the {@code local} profile against the Compose
+ * topology, which supplies PostgreSQL and the LocalStack endpoint the queue client is pointed at. Unit tests for this
+ * class belong in {@code src/test/java/com/cardemo/unit} and drive it through {@code MockMvc} with a stubbed service;
+ * the end-to-end contract check belongs in {@code src/test/java/com/cardemo/e2e} and exercises this operation as one
+ * of the seventeen against a real application context. Because this class holds no static mutable state and takes its
+ * one collaborator through its constructor, both tiers can construct it directly without a context.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -158,13 +161,10 @@ import jakarta.validation.Valid;
  *   </tr>
  * </table>
  *
- * <h2>Finding, High: the monthly period is the FULL current calendar month</h2>
+ * <h2>The monthly period is the FULL current calendar month</h2>
  *
- * <p><strong>Severity: High. Recorded as BLOCKER 5.5. Locator: {@code app/cbl/CORPT00C.cbl:L212-L238}.
- * Resolution: the source governs; the specification prose is superseded.</strong>
- *
- * <p>The plan prose at section 0.7.5.2 describes the monthly period as ending on the current day. The
- * source does not support that reading. {@code :L213} opens the monthly arm, {@code :L217-L219} build the
+ * <p><strong>Not month-to-date</strong>, on the evidence of {@code app/cbl/CORPT00C.cbl:L212-L238}.
+ * {@code :L213} opens the monthly arm, {@code :L217-L219} build the
  * start date from the current year, the current month and the literal {@code '01'}, and then
  * {@code :L223-L230} compute the end date: {@code MOVE 1 TO WS-CURDATE-DAY} discards today's day outright,
  * {@code ADD 1 TO WS-CURDATE-MONTH} advances the month, {@code IF WS-CURDATE-MONTH > 12} rolls the year,
@@ -179,10 +179,9 @@ import jakarta.validation.Valid;
  * from the parity baseline. The arithmetic is implemented in the service against an injected clock, so no
  * ambient time zone participates in it and the boundary is assertable under test on any date.
  *
- * <h2>Finding, Medium: the value-quoting confirmation message belongs to CR00, not CB00</h2>
+ * <h2>The value-quoting confirmation message belongs to CR00, not CB00</h2>
  *
- * <p><strong>Severity: Medium. Locators: {@code app/cbl/CORPT00C.cbl:L483-L491} and
- * {@code app/cbl/COBIL00C.cbl:L187}.</strong>
+ * <p>Locators: {@code app/cbl/CORPT00C.cbl:L483-L491} and {@code app/cbl/COBIL00C.cbl:L187}.
  *
  * <p>The message that <em>quotes the offending value back to the caller</em> -
  * {@code "x" is not a valid value to confirm...} - is <strong>this</strong> transaction's, built by
@@ -192,45 +191,42 @@ import jakarta.validation.Valid;
  * {@code Invalid value. Valid values are (Y/N)...} at {@code app/cbl/COBIL00C.cbl:L187} with no echo at
  * all. The two must not be swapped, and the echoing form must not be introduced into bill payment.
  *
- * <h2>Finding, Low: the embedded job deck is seventeen cards, not eighteen</h2>
+ * <h2>The embedded job deck is seventeen cards</h2>
  *
- * <p><strong>Severity: Low, documentation only, no code impact. Locator:
- * {@code app/cbl/CORPT00C.cbl:L81-L127}.</strong>
+ * <p>Locator: {@code app/cbl/CORPT00C.cbl:L81-L127}.
  *
  * <p>{@code 01 JOB-DATA.} declares <strong>seventeen</strong> eighty-byte card images, counted directly as
  * the {@code 05} entries of {@code 02 JOB-DATA-1}: fourteen plain {@code 05 FILLER PIC X(80) VALUE}
  * literals plus the three named multi-part groups {@code FILLER-1}, {@code FILLER-2} and {@code FILLER-3},
- * each of which sums to eighty bytes. The plan prose says eighteen and is superseded. The count carries no
- * consequence either way, because the whole deck collapses into one typed message; it is recorded because
- * Rule 1 Clause F requires findings to be evidence-based rather than inherited.
+ * each of which sums to eighty bytes. The count carries no
+ * consequence either way, because the whole deck collapses into one typed message; it is recorded so that
+ * the figure rests on the corpus rather than on prose.
  *
  * <h2>Mechanism substitutions, each labelled</h2>
  *
  * <ul>
  *   <li><strong>The embedded job deck becomes one typed message.</strong> The seventeen eighty-byte card
  *       images at {@code app/cbl/CORPT00C.cbl:L81-L127}, redefined as an array of up to a thousand slots,
- *       collapse into a single typed queue message carrying the report name and the two dates. Recorded in
- *       {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}.</li>
+ *       collapse into a single typed queue message carrying the report name and the two dates.</li>
  *   <li><strong>The transient data queue write becomes a queue publish.</strong>
- *       {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at {@code app/cbl/CORPT00C.cbl:L515-L537} becomes one
- *       FIFO publish, performed entirely inside the service.</li>
- *   <li><strong>The JES2 internal reader becomes a queue listener.</strong> The queue's
- *       {@code DDNAME(INREADER)} handed its cards to the internal reader; on the target side a listener
- *       consumes the message and maps it onto batch job parameters.</li>
+ *       {@code EXEC CICS WRITEQ TD QUEUE('JOBS')} at {@code app/cbl/CORPT00C.cbl:L515-L537} becomes one FIFO publish,
+ *       performed entirely inside the service.</li>
+ *   <li><strong>The JES2 internal reader becomes a queue listener.</strong> The queue's {@code DDNAME(INREADER)}
+ *       handed its cards to the internal reader; on the target side a listener consumes the message and maps it onto
+ *       batch job parameters.</li>
  *   <li><strong>The eighty-byte fixed record becomes the fixed message shape.</strong>
  *       {@code DEFINE TDQUEUE(JOBS) ... RECORDSIZE(80) RECORDFORMAT(FIXED) ... DISPOSITION(MOD)} at
- *       {@code app/csd/CARDDEMO.CSD:L499-L505} fixes both the record width the deck was written in and,
- *       through {@code DISPOSITION(MOD)}, the strict append ordering that a single deterministic FIFO
- *       message group reproduces.</li>
- *   <li><strong>The misspelled paragraph name is preserved, not corrected.</strong>
- *       {@code WIRTE-JOBSUB-TDQ.} at {@code app/cbl/CORPT00C.cbl:L515} is misspelled in the source. It is
- *       cited verbatim wherever it is named, in the service's paragraph map and in the traceability
- *       matrix, and it is never silently repaired.</li>
- *   <li><strong>The pseudo-conversational screen exchange becomes one stateless call.</strong> Under
- *       Transformation Rule 7, {@code RETURN TRANSID ... COMMAREA} becomes stateless REST plus token
- *       claims with no server-side session state. The confirmation handshake therefore arrives as an
- *       explicit field on this single request rather than as a remembered conversation turn.</li>
- * </ul>
+ *       {@code app/csd/CARDDEMO.CSD:L499-L505} fixes both the record width the deck was written in and, through
+ *       {@code DISPOSITION(MOD)}, the strict append ordering that a single deterministic FIFO message group
+ *       reproduces.</li>
+ *   <li><strong>The misspelled paragraph name is preserved, not corrected.</strong> {@code WIRTE-JOBSUB-TDQ.} at
+ *       {@code app/cbl/CORPT00C.cbl:L515} is misspelled in the source. It is cited verbatim wherever it is named, in
+ *       the service's paragraph map and in the traceability matrix, and it is never silently repaired.</li>
+ *   <li><strong>The pseudo-conversational screen exchange becomes one stateless call.</strong> Under Transformation
+ *       Rule 7, {@code RETURN TRANSID ... COMMAREA} becomes stateless REST plus token claims with no server-side
+ *       session state. The confirmation handshake therefore arrives as an explicit field on this single request
+ *       rather than as a remembered conversation turn.</li>
+ *   </ul>
  *
  * <h2>What this class deliberately does not carry</h2>
  *
@@ -285,7 +281,7 @@ import jakarta.validation.Valid;
  *       results that drive a job exit status. They are never thrown and never mapped to a status code, and
  *       that matters here precisely because the job this operation submits runs in the tier that owns
  *       them.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Access control</h2>
  *
@@ -298,8 +294,8 @@ import jakarta.validation.Valid;
  * string or a session.
  *
  * <p><strong>No user class is required beyond being authenticated, and that is an evidence-based
- * decision.</strong> A per-transaction authorisation attribute for {@code CR00} is
- * {@code Not available} from {@code app/csd/CARDDEMO.CSD:L409-L415}, which declares none. The only
+ * decision.</strong> {@code app/csd/CARDDEMO.CSD:L409-L415} declares no per-transaction authorisation
+ * attribute for {@code CR00} at all. The only
  * authorisation evidence in the corpus is the main-menu option table: {@code app/cpy/COMEN02Y.cpy:L74-L78}
  * declares slot 9, {@code 'Transaction Reports'}, targeting {@code 'CORPT00C'} with the user-type gate
  * {@code 'U'}. Reporting is therefore open to a standard user, so imposing an administrator-only rule here
@@ -395,14 +391,97 @@ public class ReportController {
     private static final String FAILURE_KIND_PROPERTY = "failureKind";
 
     /**
-     * The problem-detail property carrying the legacy abend code.
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
      */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
     /**
-     * The problem-detail property carrying the legacy batch return code.
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
      */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
+
+    /**
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
+
+    /**
+     * The fixed detail returned when the report-jobs queue cannot be reached at all.
+     * <p>
+     * Fixed rather than taken from the exception. A {@code FileUnavailableException} on this path is
+     * composed by {@code FileStatusMapper}, whose message names the operation, the logical queue and the
+     * {@code COBOL FILE STATUS}; returning it disclosed the internal topology to the caller. The operator
+     * detail is logged at {@code ERROR} instead and is retrievable by correlation identifier.
+     */
+    private static final String QUEUE_UNAVAILABLE_PROBLEM_DETAIL =
+            "The report job could not be submitted because the report-jobs queue is not reachable. Retry "
+                    + "the request.";
+
+    /**
+     * The one legacy screen literal this controller is contractually required to return verbatim.
+     * <p>
+     * {@code app/cbl/CORPT00C.cbl:L531} moves {@code 'Unable to Write TDQ (JOBS)...'} into the message field
+     * and repaints the screen, so the string - three trailing periods and all - is part of the observable
+     * contract and AAP 0.8.3 forbids rewording it.
+     * <p>
+     * It is declared here as an <em>allow list of one</em> rather than simply relayed, and that distinction is
+     * the point. {@code FileAccessException} is one of the five types {@code FileStatusMapper} can compose,
+     * and a composed message names the operation, the logical file and the {@code COBOL FILE STATUS}. Today no
+     * collaborator on this path reaches that mapper, but that is a property of other files. Comparing the
+     * message against this literal makes the guarantee local and total: the legacy literal is returned when it
+     * is the legacy literal, and anything else - including a composed diagnostic that arrived by a route added
+     * later - falls back to {@value #QUEUE_FAILURE_PROBLEM_DETAIL}.
+     */
+    private static final String LEGACY_QUEUE_FAILURE_LITERAL = "Unable to Write TDQ (JOBS)...";
+
+    /**
+     * The fixed detail returned for a publish failure whose message is not
+     * {@value #LEGACY_QUEUE_FAILURE_LITERAL}.
+     */
+    private static final String QUEUE_FAILURE_PROBLEM_DETAIL =
+            "The report job could not be published to the report-jobs queue.";
+
+    /**
+     * Stable error code meaning that the request was refused by a field-level validation rule.
+     */
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
+
+    /**
+     * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
+     */
+    private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
+
+    /**
+     * Stable error code meaning that the store behind this service reported an input-output failure.
+     */
+    private static final String ERROR_CODE_IO_FAILURE = "CARDDEMO-IO-FAILURE";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /**
      * The logger. Static and final, so it is not mutable state; the correlation, trace and span identifiers
@@ -447,7 +526,7 @@ public class ReportController {
      * Operation 1 of 1 on this controller, and operation 13 of the seventeen the REST surface exposes.
      * Submits a transaction report for printing.
      *
-     * <h2>Provenance</h2>
+     * <h4>Provenance</h4>
      *
      * <p>Replaces CICS transaction {@code CR00} - {@code DEFINE TRANSACTION(CR00)} at
      * {@code app/csd/CARDDEMO.CSD:L409} naming {@code PROGRAM(CORPT00C)} at {@code :L410} - and the program
@@ -458,14 +537,14 @@ public class ReportController {
      * to the queue. The seventeen fields the request body carries are the seventeen input fields of the
      * generated symbolic map {@code app/cpy-bms/CORPT00.CPY}, one for one.
      *
-     * <h2>Purpose</h2>
+     * <h4>Purpose</h4>
      *
      * <p>To turn a report request into exactly one instruction for the batch tier. The legacy program did
      * this by writing a whole job deck to an extrapartition transient data queue whose
      * {@code DDNAME(INREADER)} handed it to the JES2 internal reader; the target does it by publishing one
      * typed message to a FIFO queue that a batch listener consumes.
      *
-     * <h2>Inputs</h2>
+     * <h4>Inputs</h4>
      *
      * <p>The authenticated principal, and a {@code ReportRequest} body carrying the seventeen map fields:
      * three independent one-character period selectors, six discrete custom-range date components declared
@@ -480,7 +559,7 @@ public class ReportController {
      * Assembling them into a single value at the boundary would destroy that distinction, and coercing a
      * blank component to a zero would submit an invalid date where the source reported a blank one.
      *
-     * <h2>Outputs and side effects</h2>
+     * <h4>Outputs and side effects</h4>
      *
      * <p>The <strong>side effect</strong> of the confirmed path is one message published to the report-jobs
      * FIFO queue, carrying the report name and the two resolved dates. <strong>The report is produced
@@ -493,7 +572,7 @@ public class ReportController {
      * declined path blanks, exactly as {@code INITIALIZE-ALL-FIELDS} at {@code app/cbl/CORPT00C.cbl:L633}
      * left it.
      *
-     * <h2>The three report periods</h2>
+     * <h4>The three report periods</h4>
      *
      * <p>The service resolves the period from the three selectors, which
      * {@code app/cbl/CORPT00C.cbl:L212} evaluates in a single first-match-wins {@code EVALUATE TRUE}, so
@@ -506,9 +585,9 @@ public class ReportController {
      *       <strong>last</strong> day. The start date is the current year and month with the literal
      *       {@code '01'}; the end date comes from {@code MOVE 1 TO WS-CURDATE-DAY},
      *       {@code ADD 1 TO WS-CURDATE-MONTH}, {@code IF WS-CURDATE-MONTH > 12} rolling the year, and then
-     *       one day subtracted from the resulting packed value, which lands on the month end. <strong>The
-     *       plan prose at section 0.7.5.2 states this incorrectly as ending on the current day; that is
-     *       recorded as BLOCKER 5.5, severity High, and the source governs.</strong></li>
+     *       one day subtracted from the resulting packed value, which lands on the month end. <strong>It is
+     *       not month-to-date; reading it that way would diverge from the source on every day but the
+     *       last.</strong></li>
      *   <li><strong>Yearly</strong> ({@code app/cbl/CORPT00C.cbl:L239-L255}), report name {@code Yearly} -
      *       the first through the last day of the current year, built from the literals {@code '01'} and
      *       {@code '01'} for the start and {@code '12'} and {@code '31'} for the end, so the period runs
@@ -525,7 +604,7 @@ public class ReportController {
      *       it and why nothing the source rejects is quietly widened.</li>
      * </ul>
      *
-     * <h2>The confirmation gate is four-way, and every arm is distinguishable</h2>
+     * <h4>The confirmation gate is four-way, and every arm is distinguishable</h4>
      *
      * <p>{@code SUBMIT-JOB-TO-INTRDR} at {@code app/cbl/CORPT00C.cbl:L462} has four arms, not two, so the
      * gate is never modelled as a two-state flag. Absent, blank and a supplied value are distinct states
@@ -560,14 +639,14 @@ public class ReportController {
      *
      * <p>The two letter cases are matched as separate literals rather than by case folding, so no locale
      * participates in the comparison. The value-quoting message is <strong>this</strong> transaction's and
-     * not bill payment's; see the class-level Medium finding.
+     * not bill payment's; see the confirmation-semantics note on this class.
      *
      * <p>The declined arm is the reason the confirmed path is {@code 202} and the declined path is
      * {@code 200}: the source distinguishes them - one reaches the queue write and the other returns from
      * the gate - and collapsing both into one status would lose the distinction a caller most needs, namely
      * whether a job was actually submitted.
      *
-     * <h2>Configuration and defaults</h2>
+     * <h4>Configuration and defaults</h4>
      *
      * <p>This method reads no property. The queue it ultimately publishes to is configured under
      * {@code carddemo.aws.sqs} in {@code src/main/resources/application.yml}:
@@ -577,7 +656,7 @@ public class ReportController {
      * {@code carddemo.aws.sqs.report-message-group-id} both fixed at {@code carddemo-report-jobs}. Every
      * queue interaction targets LocalStack and <strong>no live cloud credential exists on any path</strong>.
      *
-     * <h2>Failure modes and troubleshooting</h2>
+     * <h4>Failure modes and troubleshooting</h4>
      *
      * <ul>
      *   <li>{@code 401} - no usable authenticated identity. The stateless counterpart of
@@ -599,7 +678,7 @@ public class ReportController {
      *       correlation identifier.</li>
      * </ul>
      *
-     * <h2>Boundary conditions handled explicitly</h2>
+     * <h4>Boundary conditions handled explicitly</h4>
      *
      * <p>An absent confirmation field, a blank one and a low-values one are three distinct states and none
      * is coerced to another; a blank month component is reported differently from a month outside one to
@@ -609,7 +688,7 @@ public class ReportController {
      * Every one of those decisions is the service's, and this method neither pre-empts nor second-guesses
      * any of them - which is precisely why it can be relied on to reproduce them.
      *
-     * <h2>What has no counterpart</h2>
+     * <h4>What has no counterpart</h4>
      *
      * <p>{@code MOVE -1 TO CONFIRML} at {@code app/cbl/CORPT00C.cbl:L470} and
      * {@code MOVE -1 TO MONTHLYL} at {@code :L534} repositioned the 3270 cursor. <strong>Cursor
@@ -624,7 +703,8 @@ public class ReportController {
      *                       symbolic map declares; never null once the framework has bound a body.
      * @return {@code 202 Accepted} when the report job was published, {@code 200 OK} when the confirmation
      *         was declined and nothing was published, or {@code 401 Unauthorized} when the request carried
-     *         no usable identity
+     *         no usable identity. Both bodies are a {@link ReportSubmissionResponse}, never the
+     *         service-owned map record
      * @throws ValidationException      when a period selector is absent, a custom-range component is blank
      *                                  or out of range, an assembled date is rejected, or the confirmation
      *                                  is blank or unrecognised; mapped to {@code 400} by
@@ -639,7 +719,7 @@ public class ReportController {
      *                                  {@link #handleAbend}
      */
     @PostMapping
-    public ResponseEntity<ReportSubmissionService.ReportSubmissionScreen> submitReport(
+    public ResponseEntity<ReportSubmissionResponse> submitReport(
             final Authentication authentication, @Valid @RequestBody final ReportRequest request) {
 
         if (isUnauthenticated(authentication)) {
@@ -657,7 +737,7 @@ public class ReportController {
             // published. The request was understood and answered, so it is 200 rather than 202 or 400.
             LOG.debug("Transaction {} program {} declined at the confirmation gate; nothing was published",
                     TRANSACTION_ID, PROGRAM);
-            return ResponseEntity.ok(screen);
+            return ResponseEntity.ok(projectResponse(screen, false));
         }
 
         // app/cbl/CORPT00C.cbl:L447-L454, the confirmed arm: the deck was written, the fields were cleared
@@ -665,7 +745,36 @@ public class ReportController {
         // instruction is accepted rather than completed.
         LOG.info("Transaction {} program {} submitted a report job for asynchronous processing",
                 TRANSACTION_ID, PROGRAM);
-        return ResponseEntity.status(HttpStatus.ACCEPTED).body(screen);
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(projectResponse(screen, true));
+    }
+
+    /**
+     * Projects the service's map record onto the API-native response body.
+     *
+     * <p>{@code ReportSubmissionScreen} is a <em>3270 map</em>, and returning it directly would publish three
+     * members that mean nothing to an HTTP client and do not belong in a wire contract: {@code cursorField},
+     * which names the screen field the terminal should place the cursor in; {@code successHighlight}, which
+     * selects a colour attribute; and {@code navigationTarget}, which names the COBOL program
+     * {@code EXEC CICS XCTL} would have transferred to. URL routing replaces the last of those outright, per
+     * AAP section 0.5.2.4, which records that the communication area's {@code FROM}/{@code TO} program fields
+     * have <em>no equivalent</em> in the target. Returning it would additionally publish the whole bound
+     * {@code form} back to the caller and freeze an internal service type into the public contract.</p>
+     *
+     * <p>What a caller can actually act on is exactly two things: whether the job was published, and the
+     * message the source composed. Both are carried. The message is {@code ERRMSGO}, reached through the map
+     * area because that is where the source leaves it - either the success notice of
+     * {@code app/cbl/CORPT00C.cbl:L447-L454} or the declined notice of {@code :L480-L482}.</p>
+     *
+     * <p>Side effects: none. The method reads members of the argument and constructs a value.</p>
+     *
+     * @param screen    the map the service produced; never null.
+     * @param published whether the job reached the queue, which is the inverse of the source's error flag.
+     * @return the response body, never null
+     */
+    private static ReportSubmissionResponse projectResponse(
+            final ReportSubmissionService.ReportSubmissionScreen screen, final boolean published) {
+
+        return new ReportSubmissionResponse(published, screen.form().errorMessage());
     }
 
     /**
@@ -731,7 +840,8 @@ public class ReportController {
         LOG.warn("Refused transaction {} with 400 for field {} and failure kind {}", TRANSACTION_ID,
                 rejection.getFieldName(), failureKind);
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
@@ -742,28 +852,31 @@ public class ReportController {
      * open queue is not. On the legacy side the two corresponded to different file statuses, and the
      * migration keeps them as different exception types precisely so that they need not be collapsed here.
      *
-     * <p>The detail is the exception's message and the named resource is carried as the queue field when the
-     * throwing site identified one, so an operator learns which queue to look at without the cause reaching
-     * the response.
+     * <p><strong>The detail is fixed and the named resource is not returned.</strong> This exception type is
+     * composed in exactly one place, {@code FileStatusMapper}, and the message it composes names the
+     * operation, the logical queue and the {@code COBOL FILE STATUS}. Returning it told the caller which
+     * internal resource failed and how, which is the {@code CWE-209} disclosure this controller no longer
+     * makes: the resource name reaches the {@code ERROR} log, the caller receives
+     * {@value #QUEUE_UNAVAILABLE_PROBLEM_DETAIL} together with {@value #ERROR_CODE_UNAVAILABLE} and the
+     * correlation identifier that joins the two.
      *
      * @param unavailable the unavailable-resource failure; never null when the framework dispatches here.
-     * @return {@code 503 Service Unavailable} carrying a problem detail
+     * @return {@code 503 Service Unavailable} carrying the fixed detail, the stable error code and the
+     * correlation identifier
      */
     @ExceptionHandler(FileUnavailableException.class)
     public ResponseEntity<ProblemDetail> handleQueueUnavailable(final FileUnavailableException unavailable) {
 
-        final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.SERVICE_UNAVAILABLE);
+        final ProblemDetail problem = ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE,
+                QUEUE_UNAVAILABLE_PROBLEM_DETAIL);
         problem.setTitle(QUEUE_PROBLEM_TITLE);
 
-        final String unavailableMessage = unavailable.getMessage();
-        if (unavailableMessage != null) {
-            problem.setDetail(unavailableMessage);
-        }
-
+        // The named resource is logged, not returned: it is the queue's internal identity.
         LOG.error("Transaction {} could not reach the report-jobs queue; resource {}", TRANSACTION_ID,
                 unavailable.resourceName().orElse("unidentified"), unavailable);
 
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
     }
 
     /**
@@ -780,10 +893,21 @@ public class ReportController {
      * <p>{@code 502} rather than {@code 500} because the failure is in a downstream dependency this
      * operation is a gateway to, not in the operation itself. The cause is attached to the exception and
      * logged at {@code ERROR}; it is never returned, which is the counterpart of the source displaying the
-     * response and reason codes to the operator's log rather than to the terminal.
+     * response and reason codes to the operator's log rather than to the terminal. The expanded file status,
+     * the logical resource and the operation go the same way - to the log only.
+     *
+     * <p><strong>Why a literal may be returned here at all.</strong> Every other
+     * {@code FileAccessException} in this application is composed by {@code FileStatusMapper}, whose text
+     * names the operation, the logical file and the {@code COBOL FILE STATUS}, and returning one of those was
+     * the {@code CWE-209} defect. The message is therefore matched against
+     * {@value #LEGACY_QUEUE_FAILURE_LITERAL} rather than trusted: on equality it is returned verbatim, as
+     * AAP 0.8.3 requires, and on anything else {@value #QUEUE_FAILURE_PROBLEM_DETAIL} is returned instead. The
+     * guarantee is then a property of this method, not of which collaborators
+     * {@code ReportSubmissionService} happens to hold.
      *
      * @param failure the publish failure; never null when the framework dispatches here.
-     * @return {@code 502 Bad Gateway} carrying the legacy queue-failure literal as its detail
+     * @return {@code 502 Bad Gateway} carrying the legacy queue-failure literal as its detail, plus the
+     * stable error code and the correlation identifier
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleQueueFailure(final FileAccessException failure) {
@@ -791,32 +915,38 @@ public class ReportController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.BAD_GATEWAY);
         problem.setTitle(QUEUE_PROBLEM_TITLE);
 
-        final String failureMessage = failure.getMessage();
-        if (failureMessage != null) {
-            problem.setDetail(failureMessage);
-        }
+        // The one detail in this class taken from the exception, and it is taken by equality rather than by
+        // trust: the legacy literal of app/cbl/CORPT00C.cbl:L531 is returned verbatim as AAP 0.8.3 requires,
+        // and any other message - including a diagnostic composed by FileStatusMapper, which names the
+        // operation, the logical file and the COBOL FILE STATUS - is replaced. That keeps the guarantee inside
+        // this file instead of resting on which collaborators the service happens to hold today.
+        problem.setDetail(LEGACY_QUEUE_FAILURE_LITERAL.equals(failure.getMessage())
+                ? LEGACY_QUEUE_FAILURE_LITERAL
+                : QUEUE_FAILURE_PROBLEM_DETAIL);
 
         LOG.error("Transaction {} failed to publish the report job; status {} resource {} operation {}",
                 TRANSACTION_ID, failure.getExpandedStatus(), failure.getLogicalFileName(),
                 failure.getOperation(), failure);
 
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
     }
 
     /**
-     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract as response
-     * metadata.
+     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract on the
+     * diagnostic log.
      *
      * <p>The legacy abend routine populated a code, a culprit, a reason and a message and then called the
-     * language-environment abend service, and the batch stream reported return code twelve. Both values are
-     * carried as problem-detail properties so that the contract stays observable, while the detail itself is
-     * fixed and reveals nothing about the cause. The cause remains attached to the exception and is logged
-     * at {@code ERROR}, so diagnosis proceeds from the correlation identifier rather than from the response
+     * language-environment abend service, and the batch stream reported return code twelve.
+     * <strong>All four values are logged and none is returned.</strong> They describe an internal
+     * termination path, so a caller can do nothing with them while a caller who can read them learns which
+     * path a crafted request reached. The body carries the fixed detail, {@value #ERROR_CODE_ABEND} and the
+     * correlation identifier, and diagnosis proceeds from that identifier rather than from the response
      * body.
      *
      * @param abend the fatal failure; never null when the framework dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail plus the abend code and the
-     *         batch return code
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and
+     *         the correlation identifier
      */
     @ExceptionHandler(FatalProcessingException.class)
     public ResponseEntity<ProblemDetail> handleAbend(final FatalProcessingException abend) {
@@ -825,14 +955,15 @@ public class ReportController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // The abend code and the batch return code are logged rather than returned: 999 and 12 are internals
+        // of the terminating path that no caller can act on.
+        LOG.error("Transaction {} abended: code {} returnCode {} culprit {} reason {}", TRANSACTION_ID,
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("Transaction {} abended: code {} culprit {} reason {}", TRANSACTION_ID, carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -856,7 +987,8 @@ public class ReportController {
 
         LOG.error("Transaction {} failed with a typed CardDemo exception", TRANSACTION_ID, failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
     }
 
     /**
@@ -913,5 +1045,36 @@ public class ReportController {
         return authentication == null
                 || !authentication.isAuthenticated()
                 || authentication instanceof AnonymousAuthenticationToken;
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
     }
 }

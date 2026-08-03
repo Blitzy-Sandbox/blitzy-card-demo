@@ -30,15 +30,17 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.batch.core.configuration.annotation.StepScope;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemProcessor;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.batch.item.ItemStream;
+import org.springframework.batch.item.ItemStreamException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
@@ -105,7 +107,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * always {@link BigDecimal#compareTo} and never {@link BigDecimal#equals}, because {@code 0.00} and
  * {@code 0} are unequal under {@code equals} and equal under {@code compareTo}.
  *
- * <h2>Finding 1 - Blocker - the apparent final flush is unreachable, and AAP &sect;0.7.3.3 is wrong</h2>
+ * <h2>PARITY TRAP 1 - the apparent final flush is unreachable</h2>
  *
  * <p>The main loop at {@code app/cbl/CBACT04C.cbl:L188}-{@code :L222} appears to flush the last
  * account's interest when it reaches end of file. It does not, and the difference is load bearing
@@ -144,14 +146,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * positioned after the read and inside the same iteration, and its {@code ELSE} at {@code :L197}
  * therefore <em>does</em> execute, accumulating {@code TRAN-AMT} into the page total at {@code :L200}.
  * Two occurrences of one idiom, opposite outcomes, decided purely by which {@code IF} owns the
- * {@code ELSE}. Citing the contrast is what makes this finding auditable rather than merely asserted.
+ * {@code ELSE}. Citing the contrast is what makes the pairing checkable rather than merely asserted.
  *
- * <p><b>Numbering divergence, severity Low.</b> This finding is labelled number 3 by the folder
- * requirements and number 2 by a sibling prompt in the same project. The finding is recorded once, here,
- * against the Agent Action Plan claim it corrects; no number is asserted, because asserting either would
- * contradict the other source.
- *
- * <h2>Finding 2 - High - no stale rate may survive an iteration</h2>
+ * <h2>PARITY TRAP 2 - no stale rate may survive an iteration</h2>
  *
  * <p>{@code READ ... INTO} on an invalid key leaves the receiving record area holding whatever the
  * previous successful read put there. At {@code app/cbl/CBACT04C.cbl:L416} the disclosure-group read can
@@ -160,7 +157,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * would let a failed lookup silently reuse the last record's rate and post interest that no rate row
  * authorises.
  *
- * <p><b>Remediation applied.</b> The rate is never a field. {@link #getInterestRate} resolves it
+ * <p><b>How that hazard is closed.</b> The rate is never a field. {@link #getInterestRate} resolves it
  * afresh per item and returns it by value, absence is represented by an {@link Optional} from the
  * repository rather than by a leftover value, and the only rate variable is a local of
  * {@link #process}. The two record areas that <em>are</em> held across items -
@@ -169,13 +166,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  * {@code app/cbl/CBACT04C.cbl:L202}-{@code :L205} and read on every item at {@code :L210} and
  * {@code :L495}.
  *
- * <h2>Finding 3 - Medium - the retry guard is at :L446, not :L445</h2>
+ * <h2>The retry guard of 1200-A-GET-DEFAULT-INT-RATE is at :L446, not :L445</h2>
  *
- * <p>Other prompts in this project cite the strict retry guard of {@code 1200-A-GET-DEFAULT-INT-RATE} at
- * {@code app/cbl/CBACT04C.cbl:L445}. Re-read at the traceability anchor, {@code :L445} is blank and the
- * guard {@code IF DISCGRP-STATUS = '00'} is at {@code :L446}. This class cites {@code :L446}.
+ * <p>{@code app/cbl/CBACT04C.cbl:L445} is a blank line, so a citation of it points at nothing; the strict
+ * guard {@code IF DISCGRP-STATUS = '00'} is at {@code :L446}. This class cites {@code :L446} throughout.
  *
- * <h2>Finding 4 - Low - the MOVE order is not the key order</h2>
+ * <h2>The MOVE order is not the key order</h2>
  *
  * <p>{@code app/cbl/CBACT04C.cbl:L210}-{@code :L212} populates the disclosure-group key in the order
  * group, <em>category</em>, <em>type</em>, whereas {@code app/cpy/CVTRA02Y.cpy:L6}-{@code :L8} declares
@@ -186,17 +182,18 @@ import com.cardemo.service.shared.FileStatusMapper;
  * order - group, type, category - and the argument order must not be "corrected" to match the source's
  * {@code MOVE} sequence.
  *
- * <h2>Finding 5 - Low - three prompt-to-interface divergences, resolved in favour of the interfaces</h2>
+ * <h2>Three repository names differ from the shape this translation first assumed</h2>
  *
- * <p>The requirements for this file anticipated three repository calls that the generated interfaces
- * spell differently. In each case the interface won, because no method may be added to a repository:</p>
+ * <p>Three repository calls are spelled differently by the interfaces than a literal reading of the source
+ * would suggest. In each case the interface governs, because no method may be added to a repository:</p>
  *
  * <ol>
  *   <li>The cross-reference finder is
- *       {@link CardCrossReferenceRepository#findByAccountIdOrderByCardNumberAsc(Long)} returning a
- *       {@link List}, not a single-valued {@code findByAccountId}. The alternate key is
- *       {@code NONUNIQKEY}, so a list is correct; the source's keyed {@code READ} returns the first
- *       record in alternate-key order, which is {@link List#getFirst()} of the ascending result.</li>
+ *       {@link CardCrossReferenceRepository#findFirstByAccountIdOrderByCardNumberAsc(Long)}, returning an
+ *       {@link java.util.Optional} rather than a collection. The alternate key is {@code NONUNIQKEY}, so
+ *       duplicates are permitted and the index stays non-unique - but the source's keyed {@code READ}
+ *       returns the <em>first</em> record in alternate-key order and nothing downstream iterates the rest,
+ *       so the database applies {@code LIMIT 1} and the ascending order fixes which row that is.</li>
  *   <li>Stage two of the rate lookup is
  *       {@link DisclosureGroupRepository#findDefaultGroupRate(String, Integer)}, not a second
  *       {@code findById}. Its {@code @Query} pins {@code d.id.accountGroupId = 'DEFAULT   '}, so the
@@ -209,7 +206,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code app/cbl/COACTUPC.cbl} by that interface's own documentation and is not used here,
  *       because {@code 1100-GET-ACCT-DATA} issues a plain {@code READ} and not a
  *       {@code READ ... UPDATE}.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Paragraph disposition - all 23 labels accounted for</h2>
  *
@@ -286,9 +283,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p><b>The cycle reset is the easily missed half.</b> {@code app/cbl/CBACT04C.cbl:L353}-{@code :L354}
  * zeroes both counters before the rewrite at {@code :L356}. Omitting it breaks the over-limit
  * arithmetic of the <em>next</em> posting cycle, because {@code app/cbl/CBTRN02C.cbl:L403}-{@code :L405}
- * subtracts the debit accumulator - a divergence that surfaces only on a second batch run. Per Finding
- * 1 the reset happens only for accounts that reach a control break, never for the last account of the
- * run, and that asymmetry is not compensated for.
+ * subtracts the debit accumulator - a divergence that surfaces only on a second batch run. Per PARITY
+ * TRAP 1 the reset happens only for accounts that reach a control break, never for the last account of
+ * the run, and that asymmetry is not compensated for.
  *
  * <h2>State, and why the bean is step scoped</h2>
  *
@@ -320,10 +317,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   </tr>
  *   <tr>
  *     <td>{@link Clock}</td>
- *     <td>Constructor argument. The production constructor supplies
- *         {@link Clock#systemDefaultZone()}, matching the convention already established by
- *         {@code com.cardemo.service.menu.MainMenuService}</td>
- *     <td>{@link Clock#systemDefaultZone()}</td>
+ *     <td>Constructor argument, injected. {@code com.cardemo.config.ObservabilityConfig#clock(String)}
+ *         publishes the application's single clock as a system clock in the deployment's own zone, which
+ *         {@code carddemo.time.zone} can pin explicitly</td>
+ *     <td>None. It is mandatory and validated at construction</td>
  *   </tr>
  *   <tr>
  *     <td>Rounding and scale</td>
@@ -345,21 +342,28 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <h2>How it is built, run and exercised</h2>
  *
- * <p>Built with {@code mvn -B clean compile} and verified with {@code mvn -B clean test}, on JDK 25 and
+ * <p>Built with {@code ./mvnw -B -ntp clean compile} and verified with {@code ./mvnw -B -ntp clean test}, on JDK 25 and
  * Maven 3.9.11. The build compiles with {@code -Xlint:all -Werror}, so any warning is a failure.
  *
  * <p>It runs as the processor of the interest-calculation step. Nothing else invokes it, and it must
  * not be called from request-scoped code: it is stateful within a step execution by design.
  *
- * <p>Unit tests live at
- * {@code src/test/java/com/cardemo/unit/batch/InterestCalculationProcessorTest.java} and are authored
- * separately, in package {@code com.cardemo.unit.batch}. Every seam they need is present: the repositories
- * and {@link FileStatusMapper} are constructor arguments, the {@link Clock} is a constructor argument on the
- * six-argument constructor so timestamps are deterministic, and the counters are instance state rather than
- * {@code static}, so each test builds a fresh processor. The behaviours that must be covered are the
+ * <p>The dedicated unit test for this class lives at
+ * {@code src/test/java/com/cardemo/unit/batch/InterestCalculationProcessorTest.java}, in package
+ * {@code com.cardemo.unit.batch}. It covers the behaviours that matter for parity: the
  * divide-by-{@code 1200} result for a known balance and rate, zero-rate suppression, default-group
  * fallback success, the abend when the default group row is missing, and the absence of any stale rate
- * across consecutive items.
+ * across consecutive items. {@code InterestCalculationJobTest} and {@code ParityLoggerRoutingTest} assert
+ * against it as well. Re-derive the current set with
+ * {@code grep -rl InterestCalculationProcessor src/test/java}.
+ * <p>
+ * An earlier revision of this paragraph claimed the dedicated file did not exist and that "no assertion in
+ * this tree covers this class". Both halves were wrong by the time it was read and are withdrawn.
+ * <p>
+ * Every seam those tests need is present: the repositories and {@link FileStatusMapper} are constructor
+ * arguments, the {@link Clock} is a constructor argument on the six-argument constructor so timestamps are
+ * deterministic, and the counters are instance state rather than {@code static}, so each test builds a fresh
+ * processor.
  *
  * <p>The shipped fixtures make most of that provable without synthetic data, and the census is worth
  * recording because it is not obvious. {@code app/data/ASCII/acctdata.txt} carries ten spaces in
@@ -415,33 +419,26 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       literal characters {@code 0000}. Millisecond or nanosecond precision is wrong. The time source
  *       must be the injected {@link Clock}, never an ambient {@code now()}.</dd>
  *   <dt>The last account's balance is not updated</dt>
- *   <dd>Expected. See Finding 1. Do not add a final flush.</dd>
+ *   <dd>Expected. See PARITY TRAP 1. Do not add a final flush.</dd>
  *   <dt>Identifiers collide across two runs</dt>
  *   <dd>The same {@code PARM-DATE} was supplied twice. The source has no duplicate detection here and
  *       none is added; the collision surfaces in the combine job's load step.</dd>
- * </dl>
+ *   </dl>
  *
- * <h2>Not available</h2>
- *
- * <p>Three items are genuinely unavailable rather than omitted, and are named so a reader knows what
- * would be needed:</p>
+ * <h2>Boundaries of this class, and what the corpus does not determine</h2>
  *
  * <ul>
- *   <li>Concrete reader and writer type names, and the chunk size, are <b>Not available</b>: the
- *       {@code com.cardemo.batch.jobs}, {@code com.cardemo.batch.readers} and
- *       {@code com.cardemo.batch.writers} packages are unplanned in this branch. What is needed is the
- *       step definition. This class is coupled to neither: it depends only on the
- *       {@link ItemProcessor} contract and on the ordering precondition stated under <i>Inputs</i>.</li>
- *   <li>A service-level objective for throughput or latency is <b>Not available</b>: the source
- *       publishes none, so none is asserted and none is invented.</li>
- *   <li>The persisted form of the sequential output is <b>Not available</b> at this level: the object
- *       key layout that replaces {@code SYSTRAN(+1)} belongs to the writer. What is fixed and honoured
- *       here is the record's field content and the 350-byte geometry it must fill.</li>
- * </ul>
+ *   <li>The step definition - the reader, the writer and the chunk size - sits outside this class, which is
+ *       coupled to none of them: it depends only on the {@link ItemProcessor} contract and on the ordering
+ *       precondition stated under <i>Inputs</i>.</li>
+ *   <li>No service-level objective for throughput or latency exists: the source publishes none, so none is
+ *       asserted here and none is invented.</li>
+ *   <li>The persisted form of the sequential output is not decided at this level: the object key layout
+ *       that replaces {@code SYSTRAN(+1)} belongs to the writer. What is fixed and honoured here is the
+ *       record's field content and the 350-byte geometry it must fill.</li>
+ *   </ul>
  *
- * <p>A fourth item was expected to be unavailable and turns out not to be, so it is recorded as present
- * rather than left silently absent. The relational schema was expected to be missing at authoring time;
- * it is not. {@code src/main/resources/db/migration/V1__create_schema.sql} exists in this branch, and it
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql}
  * corroborates every width and precision this class derives from the copybooks. That agreement is worth
  * stating because the two were established independently, from the record layouts on one side and from
  * {@code app/catlg/LISTCAT.txt} and the {@code IDCAMS} definitions on the other:</p>
@@ -467,11 +464,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       documented at {@code :L484} as legitimately holding negative values. That is what makes the
  *       cycle reset in {@code 1050-UPDATE-ACCOUNT} load-bearing for the next posting cycle rather than
  *       cosmetic.</li>
- * </ul>
- *
- * <p>Asserting <b>Not available</b> for the schema would therefore have been factually wrong, and the
- * determination is recorded here so that a reader checking the expected unavailable sites against this
- * class can see the fourth was resolved rather than dropped.</p>
+ *   </ul>
  *
  * <h2>Bean registration</h2>
  *
@@ -488,17 +481,58 @@ import com.cardemo.service.shared.FileStatusMapper;
 @Component
 @StepScope
 public class InterestCalculationProcessor
-        implements ItemProcessor<TransactionCategoryBalance, Transaction> {
+        implements ItemProcessor<TransactionCategoryBalance, Transaction>, ItemStream {
 
     /**
      * Structured log sink. Replaces the {@code DISPLAY} statements of the source, which had no sink but
      * SYSOUT and no severity at all. The literals are reproduced verbatim; only the level is a target
-     * side decision, mapped as follows: the per-record record dump of
-     * {@code app/cbl/CBACT04C.cbl:L193} and the fallback notices of {@code :L418}-{@code :L419} are
+     * side decision, mapped as follows: the fallback notices of {@code :L418}-{@code :L419} are
      * {@code DEBUG}, because the fixture census shows the fallback fires on every record and INFO would
-     * bury the run; every literal that precedes an abend is {@code ERROR}.
+     * bury the run; every literal that precedes an abend is {@code ERROR}. The one site that emits a
+     * monetary value - the per-record dump of {@code app/cbl/CBACT04C.cbl:L193} - goes to
+     * {@link #PARITY_LOG} instead and never to this logger.
      */
     private static final Logger LOG = LoggerFactory.getLogger(InterestCalculationProcessor.class);
+
+    /**
+     * Name of the isolated parity-output logger. {@code OFF} in every shipped profile; see
+     * {@link #PARITY_LOG}.
+     *
+     * <p>The suffix is the originating COBOL program, so a parity run can enable exactly one program's
+     * output rather than the whole {@code com.cardemo.parity} tree.
+     */
+    private static final String PARITY_LOGGER_NAME = "com.cardemo.parity.CBACT04C";
+
+    /**
+     * Parity-output logger: the only channel through which the per-record dump of the source leaves this
+     * class at all.
+     *
+     * <p><strong>Two controls apply to that dump, not one, and they are complementary.</strong> The routing
+     * below keeps the emission out of the application's ordinary log stream, and the field-level redaction
+     * described at {@link #REDACTED_BALANCE} keeps the balance out of the emitted event even on this channel.
+     * Either alone would answer the finding; both are kept, so enabling this logger for a parity run cannot
+     * put a customer balance in a file by accident. The consequence is deliberate: this emission proves the
+     * record was seen, its sequence and its key, not its amount - the amount a baseline diff needs is in the
+     * input fixture the run was given, at a known offset, and does not have to be re-emitted to be compared.
+     *
+     * <p><strong>Why it exists.</strong> {@code DISPLAY TRAN-CAT-BAL-RECORD} at
+     * {@code app/cbl/CBACT04C.cbl:L193} reproduces the source's per-record SYSOUT dump, and that record
+     * carries {@code TRAN-CAT-BAL PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L15} together with the
+     * account identifier the balance belongs to. Emitting the pair through the class logger placed customer
+     * financial data in the application's ordinary log stream, where the masking rules in
+     * {@code src/main/resources/logback-spring.xml} could not reach it: masking matches labelled
+     * credentials, hashes and social security numbers, not a category balance. Rule 1 Clauses A and D forbid
+     * that. Severity: <strong>Medium</strong>.
+     *
+     * <p><strong>What it changes.</strong> The emission moves to the dedicated logger name
+     * {@value #PARITY_LOGGER_NAME}, which {@code src/main/resources/application.yml} sets to {@code OFF} for
+     * the whole {@code com.cardemo.parity} tree in every shipped profile. No deployment emits it, and a
+     * parity comparison enables the one logger deliberately, in an isolated run, with the output routed
+     * where a baseline diff needs it. The class logger keeps the fallback notices, statuses and abend
+     * literals - the diagnostics an operator actually needs - and never carries a balance again. Nothing
+     * about the computed interest, the generated transaction or the rewritten account changes.
+     */
+    private static final Logger PARITY_LOG = LoggerFactory.getLogger(PARITY_LOGGER_NAME);
 
     /**
      * The literal divisor of the interest formula, from
@@ -520,6 +554,38 @@ public class InterestCalculationProcessor
      * ({@code app/cpy/CVACT01Y.cpy:L7}).
      */
     private static final int MONETARY_SCALE = 2;
+
+    /**
+     * Integer digit positions of {@code TRAN-CAT-BAL PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L9}:
+     * the nine digits before the implied decimal point.
+     */
+    private static final int CATEGORY_BALANCE_INTEGER_DIGITS = 9;
+
+    /**
+     * The fixed-width placeholder that replaces {@code TRAN-CAT-BAL} in the per-record diagnostic of
+     * {@link #displayCategoryBalanceRecord(Long, String, Integer, java.math.BigDecimal)}, and only there.
+     *
+     * <p>{@value #CATEGORY_BALANCE_INTEGER_DIGITS} plus {@value #MONETARY_SCALE} characters, one per digit
+     * position of the sending field, so the emitted event keeps the width a reader would use to verify that
+     * field. See that method for the full justification.
+     *
+     * <p><b>Why withheld at the source rather than masked in transit.</b> The rules in
+     * {@code src/main/resources/logback-spring.xml} each key on a recognisable shape - a bearer token, a
+     * BCrypt hash, a labelled card number - and a balance has none. It is a run of digits, indistinguishable
+     * from the account identifier printed beside it, so a rule wide enough to mask the balance would blank the
+     * identifier too and leave the diagnostic useless. This is also why the balance is withheld whole: an
+     * amount cannot be partially masked without either disclosing its magnitude or becoming a different
+     * number.
+     *
+     * <p><b>An asterisk run rather than that file's {@code REDACTION} literal.</b> One marker meaning one
+     * thing everywhere would argue for the literal, and it is used where the emission is a labelled key-value
+     * line - see {@code TransactionDetailService}. Here the line is a positional record reproduction whose
+     * purpose is to let a reader verify field geometry, so the sending field's width is kept instead; a run of
+     * asterisks is no more mistakable for a value than the literal is. {@code TransactionReportProcessor}
+     * draws the same distinction on {@code TRAN-AMT} for the same reason.
+     */
+    private static final String REDACTED_BALANCE =
+            "*".repeat(CATEGORY_BALANCE_INTEGER_DIGITS + MONETARY_SCALE);
 
     /**
      * Two-decimal zero. Reproduces {@code MOVE 0 TO WS-TOTAL-INT} at
@@ -562,7 +628,7 @@ public class InterestCalculationProcessor
     private static final String TRANID_SUFFIX_FORMAT = "%06d";
 
     /**
-     * Width of {@code TRAN-ID X(16)} ({@code app/cpy/CVTRA05Y.cpy:L6}), which the concatenation at
+     * Width of {@code TRAN-ID X(16)} ({@code app/cpy/CVTRA05Y.cpy:L5}), which the concatenation at
      * {@code app/cbl/CBACT04C.cbl:L476}-{@code :L480} fills exactly:
      * {@value #PARM_DATE_LENGTH} characters of {@code PARM-DATE} followed by six digits of suffix.
      */
@@ -598,9 +664,38 @@ public class InterestCalculationProcessor
     private static final String LAST_ACCOUNT_NUMBER_SPACES = " ".repeat(ACCOUNT_ID_LENGTH);
 
     /**
+     * Execution-context key holding {@code WS-LAST-ACCT-NUM} across a restart. Its presence is the marker
+     * that a previous execution saved state at all, so it is written unconditionally by
+     * {@link #update(ExecutionContext)} and tested first by {@link #open(ExecutionContext)}.
+     */
+    private static final String CONTEXT_KEY_LAST_ACCOUNT_NUMBER =
+            "carddemo.intcalc.lastAccountNumber";
+
+    /** Execution-context key holding {@code WS-FIRST-TIME}, as 1 for {@code 'Y'} and 0 for {@code 'N'}. */
+    private static final String CONTEXT_KEY_FIRST_TIME = "carddemo.intcalc.firstTime";
+
+    /** Execution-context key holding {@code WS-TRANID-SUFFIX}, the run-sequential identifier counter. */
+    private static final String CONTEXT_KEY_TRANID_SUFFIX = "carddemo.intcalc.tranIdSuffix";
+
+    /** Execution-context key holding {@code WS-RECORD-COUNT}, the diagnostic row counter. */
+    private static final String CONTEXT_KEY_RECORD_COUNT = "carddemo.intcalc.recordCount";
+
+    /**
+     * Execution-context key holding {@code WS-TOTAL-INT} as its plain decimal string. Stored as text
+     * because the field is {@code PIC S9(09)V99} and no binary floating-point form can round-trip it.
+     */
+    private static final String CONTEXT_KEY_TOTAL_INTEREST = "carddemo.intcalc.totalInterest";
+
+    /**
+     * Execution-context key holding the identifier of the account whose interest is mid-accumulation.
+     * Only the identifier is stored; the entity is re-read on open through {@code 1100-GET-ACCT-DATA}.
+     */
+    private static final String CONTEXT_KEY_CURRENT_ACCOUNT_ID = "carddemo.intcalc.currentAccountId";
+
+    /**
      * Transaction type code of a generated interest transaction, from
      * {@code MOVE '01' TO TRAN-TYPE-CD} at {@code app/cbl/CBACT04C.cbl:L482} into
-     * {@code TRAN-TYPE-CD X(02)} ({@code app/cpy/CVTRA05Y.cpy:L7}).
+     * {@code TRAN-TYPE-CD X(02)} ({@code app/cpy/CVTRA05Y.cpy:L6}).
      */
     private static final String TRANSACTION_TYPE_CODE_INTEREST = "01";
 
@@ -609,7 +704,7 @@ public class InterestCalculationProcessor
      * {@code MOVE '05' TO TRAN-CAT-CD} at {@code app/cbl/CBACT04C.cbl:L483}.
      *
      * <p>The source moves an <em>alphanumeric</em> literal into {@code TRAN-CAT-CD PIC 9(04)}
-     * ({@code app/cpy/CVTRA05Y.cpy:L8}), a numeric display field, so the two characters are interpreted
+     * ({@code app/cpy/CVTRA05Y.cpy:L7}), a numeric display field, so the two characters are interpreted
      * as the number five and the field holds {@code 0005}. The mapped column is {@code INTEGER}, so the
      * faithful Java value is the integer {@code 5} and not the string {@code "05"}.
      */
@@ -624,25 +719,25 @@ public class InterestCalculationProcessor
      */
     private static final String TRANSACTION_DESCRIPTION_PREFIX = "Int. for a/c ";
 
-    /** Width of {@code TRAN-DESC X(100)} ({@code app/cpy/CVTRA05Y.cpy:L10}). */
+    /** Width of {@code TRAN-DESC X(100)} ({@code app/cpy/CVTRA05Y.cpy:L9}). */
     private static final int TRANSACTION_DESCRIPTION_WIDTH = 100;
 
     /**
      * Merchant identifier of a generated interest transaction, from {@code MOVE 0 TO TRAN-MERCHANT-ID}
      * at {@code app/cbl/CBACT04C.cbl:L491} into {@code TRAN-MERCHANT-ID PIC 9(09)}
-     * ({@code app/cpy/CVTRA05Y.cpy:L12}). Zero is a legal value here and is not a stand-in for absence:
+     * ({@code app/cpy/CVTRA05Y.cpy:L11}). Zero is a legal value here and is not a stand-in for absence:
      * interest is not a merchant transaction, and the source records that as a zero rather than as a
      * blank.
      */
     private static final Long MERCHANT_ID_NONE = 0L;
 
-    /** Width of {@code TRAN-MERCHANT-NAME X(50)} ({@code app/cpy/CVTRA05Y.cpy:L13}). */
+    /** Width of {@code TRAN-MERCHANT-NAME X(50)} ({@code app/cpy/CVTRA05Y.cpy:L12}). */
     private static final int MERCHANT_NAME_WIDTH = 50;
 
-    /** Width of {@code TRAN-MERCHANT-CITY X(50)} ({@code app/cpy/CVTRA05Y.cpy:L14}). */
+    /** Width of {@code TRAN-MERCHANT-CITY X(50)} ({@code app/cpy/CVTRA05Y.cpy:L13}). */
     private static final int MERCHANT_CITY_WIDTH = 50;
 
-    /** Width of {@code TRAN-MERCHANT-ZIP X(10)} ({@code app/cpy/CVTRA05Y.cpy:L15}). */
+    /** Width of {@code TRAN-MERCHANT-ZIP X(10)} ({@code app/cpy/CVTRA05Y.cpy:L14}). */
     private static final int MERCHANT_ZIP_WIDTH = 10;
 
     /**
@@ -669,7 +764,7 @@ public class InterestCalculationProcessor
     /**
      * Width of {@code DB2-FORMAT-TS PIC X(26)} ({@code app/cbl/CBACT04C.cbl:L150}), also the width of
      * {@code TRAN-ORIG-TS X(26)} and {@code TRAN-PROC-TS X(26)}
-     * ({@code app/cpy/CVTRA05Y.cpy:L18}-{@code :L19}).
+     * ({@code app/cpy/CVTRA05Y.cpy:L16}-{@code :L17}).
      */
     private static final int DB2_TIMESTAMP_LENGTH = 26;
 
@@ -728,6 +823,22 @@ public class InterestCalculationProcessor
      * abend can find the source program without a lookup table.
      */
     private static final String ABEND_CULPRIT = "CBACT04C";
+
+    /**
+     * Stands in for every account identifier and monetary value this class declines to write to a log.
+     *
+     * <p>The {@code DISPLAY} statements of {@code app/cbl/CBACT04C.cbl} are reproduced as emission points with
+     * their literals intact, because that structure is the traceability artefact; the values behind them are
+     * not, because a log is aggregated, retained and replicated outside the boundary that protects the rows
+     * they came from. Where an operator genuinely needs the identifier - a terminated run - it travels on the
+     * abend payload instead, which is where {@code ABEND-MSG} put it.
+     *
+     * <p>The interest rate, the type code and the category code are deliberately NOT withheld: a rate comes
+     * from {@code DISCGRP} and the two codes from {@code TRANTYPE} and {@code TRANCATG}, so all three are
+     * fixed reference vocabulary rather than data about any customer, and the control break these traces
+     * exist to diagnose is unreadable without them.
+     */
+    private static final String WITHHELD_VALUE = "[withheld]";
 
     /**
      * Diagnostic emitted before an account or cross-reference abend, from
@@ -885,7 +996,7 @@ public class InterestCalculationProcessor
      * {@code :L352}-{@code :L354}.
      *
      * <p>Held across items deliberately, because the source holds it deliberately: an account's rate
-     * lookups and its flush all read the one record the break loaded. Per Finding 2 this is the opposite
+     * lookups and its flush all read the one record the break loaded. Per PARITY TRAP 2 this is the opposite
      * of the rate, which must never be held.
      */
     private Account currentAccount;
@@ -898,12 +1009,27 @@ public class InterestCalculationProcessor
     private CardCrossReference currentCrossReference;
 
     /**
-     * Production constructor, used by the container.
+     * The one constructor: the container injects every collaborator, the step-scoped job parameter and the
+     * application clock through it, and a test passes a fixed clock through the same signature.
      *
-     * <p>Supplies {@link Clock#systemDefaultZone()} for the time source, matching the convention already
-     * established in this codebase by {@code com.cardemo.service.menu.MainMenuService}: a public
-     * constructor for the container, a package-private one carrying the {@link Clock} for tests. No
-     * {@code Clock} bean exists in this branch, so a bean-typed parameter would fail to resolve.
+     * <p><strong>It replaces a pair of constructors.</strong> The container-facing one used to take five
+     * arguments and supply {@link Clock#systemDefaultZone()} itself, delegating here. That made the time
+     * source ambient state rather than an injected dependency, which Rule 1 Clause B rules out, and it left
+     * the generated {@code TRAN-PROC-TS} of {@code Z-GET-DB2-FORMAT-TIMESTAMP} dependent on the host's zone.
+     * With a single constructor the container needs no {@code @Autowired} marker to choose between
+     * candidates, so the marker is gone too.
+     *
+     * <p><strong>The injected clock has one owner.</strong>
+     * {@code com.cardemo.config.ObservabilityConfig#clock(String)} publishes the application's single
+     * {@code java.time.Clock} as a system clock in the deployment's own zone, which is what
+     * {@code app/cbl/CBACT04C.cbl}'s reliance on the region's own date and time amounts to. The generated
+     * timestamp is compared against the parity baseline and is carried into every synthetic interest
+     * transaction, so where a comparison spans hosts the zone is pinned explicitly through
+     * {@code carddemo.time.zone} rather than left to each host's configuration.
+     *
+     * <p>Being {@code @StepScope}, this bean is created once per step execution, which is what lets
+     * {@code #{jobParameters['parmDate']}} resolve at all; the clock and the four collaborators are singletons
+     * and are shared across those executions.
      *
      * @param disclosureGroupRepository disclosure-group access, replacing {@code DISCGRP-FILE}; must not
      *     be {@code null}
@@ -914,38 +1040,8 @@ public class InterestCalculationProcessor
      *     scoped guards; must not be {@code null}
      * @param parmDate the job parameter carrying {@code PARM-DATE PIC X(10)}; must not be {@code null}
      *     and must be exactly {@value #PARM_DATE_LENGTH} characters
-     * @throws FatalProcessingException if any collaborator is {@code null}, or if {@code parmDate}
-     *     violates the width its picture clause declares
-     */
-    @Autowired
-    public InterestCalculationProcessor(
-            DisclosureGroupRepository disclosureGroupRepository,
-            AccountRepository accountRepository,
-            CardCrossReferenceRepository cardCrossReferenceRepository,
-            FileStatusMapper fileStatusMapper,
-            @Value("#{jobParameters['" + PARM_DATE_JOB_PARAMETER + "']}") String parmDate) {
-        this(disclosureGroupRepository, accountRepository, cardCrossReferenceRepository, fileStatusMapper,
-                parmDate, Clock.systemDefaultZone());
-    }
-
-    /**
-     * Explicit-dependency constructor, taking the {@link Clock} directly so that
-     * {@code Z-GET-DB2-FORMAT-TIMESTAMP} renders a fixed, asserted timestamp.
-     *
-     * <p>This is the constructor that actually assigns every field; the container-facing one above delegates
-     * to it. It is {@code public} rather than package-private because the tests that must exercise this
-     * class live in {@code com.cardemo.unit.batch}, a different package from this one, matching where every
-     * other unit test in this codebase sits - a package-private seam would be unreachable from there and
-     * the timestamp path would become untestable. Any future step configuration that wants to control the
-     * time source uses this constructor too.
-     *
-     * @param disclosureGroupRepository disclosure-group access; must not be {@code null}
-     * @param accountRepository account access; must not be {@code null}
-     * @param cardCrossReferenceRepository cross-reference access; must not be {@code null}
-     * @param fileStatusMapper the shared {@code FILE STATUS} translation; must not be {@code null}
-     * @param parmDate the job parameter carrying {@code PARM-DATE PIC X(10)}; must not be {@code null}
-     *     and must be exactly {@value #PARM_DATE_LENGTH} characters
-     * @param clock the time source for generated timestamps; must not be {@code null}
+     * @param clock the application clock supplying the current instant for generated timestamps; must not
+     *     be {@code null}
      * @throws FatalProcessingException if any argument is {@code null}, or if {@code parmDate} violates
      *     the width its picture clause declares
      */
@@ -954,7 +1050,7 @@ public class InterestCalculationProcessor
             AccountRepository accountRepository,
             CardCrossReferenceRepository cardCrossReferenceRepository,
             FileStatusMapper fileStatusMapper,
-            String parmDate,
+            @Value("#{jobParameters['" + PARM_DATE_JOB_PARAMETER + "']}") String parmDate,
             Clock clock) {
         this.disclosureGroupRepository =
                 requireCollaborator(disclosureGroupRepository, "disclosureGroupRepository");
@@ -989,7 +1085,7 @@ public class InterestCalculationProcessor
      * order posts one account's interest onto another account's balance.
      *
      * <p>The {@code ELSE} arm at {@code :L219}-{@code :L220} is <strong>not</strong> reachable and has no
-     * counterpart in this method. See Finding 1 in the class documentation and
+     * counterpart in this method. See PARITY TRAP 1 in the class documentation and
      * {@link #updateAccountAtEndOfFile()}.
      *
      * @param item one 50-byte {@code TRAN-CAT-BAL-RECORD} ({@code app/cpy/CVTRA01Y.cpy}) supplied by the
@@ -1035,7 +1131,7 @@ public class InterestCalculationProcessor
 
         // L210-L212. The source populates the key in the order group, category, type; the copybook
         // declares it group, type, category (app/cpy/CVTRA02Y.cpy:L6-L8). The constructor is positional,
-        // so COPYBOOK order is used here - see Finding 4. Do not reorder these arguments to match the
+        // so COPYBOOK order is used here - see the class documentation on MOVE order. Do not reorder to the
         // source's MOVE sequence.
         final DisclosureGroupId rateKey = new DisclosureGroupId(
                 requireAccountGroupId(currentAccount.getGroupId()),
@@ -1079,7 +1175,7 @@ public class InterestCalculationProcessor
      * {@code @Transactional} annotation is placed on this method: it is private, Spring's proxying cannot
      * intercept it, and the annotation would therefore be an unenforced claim.
      *
-     * <p>Invoked from exactly one place, the control-break arm at {@code :L196}. Per Finding 1 it is
+     * <p>Invoked from exactly one place, the control-break arm at {@code :L196}. Per PARITY TRAP 1 it is
      * <em>not</em> invoked at end of file, so the final account of a run is never updated.
      *
      * @throws FatalProcessingException if no account record is loaded, if the current balance is absent,
@@ -1104,7 +1200,13 @@ public class InterestCalculationProcessor
         account.setCurrentCycleDebit(MONEY_ZERO);
 
         try {
+            // FLUSH INSIDE THE GUARD. save() only enrols the row with the persistence context, so the
+            // UPDATE would otherwise be issued at commit - outside this try - and the failure would arrive
+            // with no paragraph attached. That would lose the DISPLAY literal of :L367, the abend and the
+            // return code that this guard supplies, and the cycle-counter reset performed just above would
+            // appear to have succeeded. Flushing here reproduces the inline RESP of the source REWRITE.
             accountRepository.save(account);
+            accountRepository.flush();
         } catch (final DataAccessException cause) {
             LOG.error(MSG_ERROR_REWRITING_ACCOUNT_FILE);
             throw fatal(MSG_ERROR_REWRITING_ACCOUNT_FILE,
@@ -1118,9 +1220,9 @@ public class InterestCalculationProcessor
      *
      * <p><strong>INTENTIONAL NO-OP - UNREACHABLE BY CONSTRUCTION - PRESERVED FOR CONTROL-FLOW PARITY.
      * This method is never invoked, and it must never be wired up.</strong> It is not abandoned residue:
-     * it is a deliberate, tracked reproduction of a branch that the source contains and cannot execute,
-     * recorded in {@code DECISION_LOG.md} and in {@code TRACEABILITY_MATRIX.md}. Its body is the literal
-     * translation of {@code :L220}, so a reviewer can read the COBOL statement and the proof that it never
+     * it is a deliberate reproduction of a branch that the source contains and cannot execute, cited and
+     * marked at this single site. Its body is the literal
+     * translation of {@code :L220}, so a reader can find the COBOL statement and the proof that it never
      * runs in one place.
      *
      * <p><b>Why it cannot execute.</b> The {@code ELSE} at {@code :L219} pairs with the <em>outer</em>
@@ -1150,13 +1252,134 @@ public class InterestCalculationProcessor
      * and its counterpart faithfully in the other is only possible if the pairing is read rather than
      * assumed.
      *
-     * <p><b>Numbering divergence, severity Low.</b> The folder requirements label this finding number 3;
-     * a sibling prompt in the same project labels the same finding number 2. The finding is recorded once,
-     * against the Agent Action Plan claim it corrects, and no number is asserted, because asserting either
-     * would contradict the other source.
      */
     private void updateAccountAtEndOfFile() {
         updateAccount();
+    }
+
+    // =============================================================================================
+    // Restart correctness. The driving reader saves its position, so this class must save the state
+    // that its position implies - otherwise a restart resumes reading in the middle of an account
+    // while this processor believes it has not started, which loses one account's accumulated
+    // interest and reissues transaction identifiers that the failed attempt already wrote.
+    // =============================================================================================
+
+    /**
+     * Restores the control-break state a previous execution left behind, so a restart resumes at exactly
+     * the point the driving reader resumes at.
+     *
+     * <p><strong>Why this is required rather than optional.</strong> The step's reader is a
+     * {@code RepositoryItemReader} with a name, so Spring Batch persists its row position and a restart
+     * resumes at the next unread row. Every field this method restores is <em>implied</em> by that
+     * position, and none of it is derivable from the resumed row alone:</p>
+     *
+     * <ul>
+     *   <li>{@code WS-FIRST-TIME} ({@code app/cbl/CBACT04C.cbl:L170}). Left at its initial value, the
+     *       first row after a restart looks like the first row of the run, so the control break at
+     *       {@code :L195} suppresses the flush - and the interest accumulated for the account that was in
+     *       progress when the run failed is <strong>silently discarded</strong>.</li>
+     *   <li>{@code WS-LAST-ACCT-NUM} ({@code :L167}). Left at {@code SPACES}, the first resumed row is
+     *       treated as a control break even when it belongs to the account already in progress, which
+     *       splits one account's interest across two flushes.</li>
+     *   <li>{@code WS-TOTAL-INT} ({@code :L169}). The partial accumulation for the in-progress account.</li>
+     *   <li>{@code WS-TRANID-SUFFIX} ({@code :L173}). The source never resets it per account, so it is
+     *       run-sequential. Left at zero, a restart reissues identifiers the failed attempt already
+     *       inserted, and every one of them collides with {@code pk_transaction}.</li>
+     *   <li>{@code WS-RECORD-COUNT} ({@code :L172}). Diagnostic only, but a counter that restarts at zero
+     *       makes the end-of-run total disagree with the rows actually processed.</li>
+     * </ul>
+     *
+     * <p>The two entity references are <strong>not</strong> serialised. Only their identifiers are, and
+     * the entities are re-read here through the same paragraphs the control break uses,
+     * {@code 1100-GET-ACCT-DATA} and {@code 1110-GET-XREF-DATA}. That is deliberate: a serialised entity
+     * would be a detached snapshot of a row that the failed attempt may have rolled back, whereas a fresh
+     * read observes the committed state, which is the only state a resumed run may build on. It also keeps
+     * the execution context to scalars, which is what Spring Batch's context is for.
+     *
+     * <p>A first execution finds no keys and leaves every field at its declared initial value, so the
+     * behaviour of a fresh run is byte-for-byte what it was before this method existed.
+     *
+     * @param executionContext the step execution context, supplied by the framework; never {@code null}
+     * @throws ItemStreamException never; declared by the interface. A failure to re-read an entity is
+     *     raised as the {@link FatalProcessingException} that {@code 1100-GET-ACCT-DATA} and
+     *     {@code 1110-GET-XREF-DATA} already raise, so the abend contract is unchanged
+     */
+    @Override
+    public void open(final ExecutionContext executionContext) throws ItemStreamException {
+        Objects.requireNonNull(executionContext, "executionContext must not be null");
+        if (!executionContext.containsKey(CONTEXT_KEY_LAST_ACCOUNT_NUMBER)) {
+            LOG.debug("No saved interest control-break state; starting the run from the beginning");
+            return;
+        }
+
+        this.lastAccountNumber = executionContext.getString(CONTEXT_KEY_LAST_ACCOUNT_NUMBER);
+        this.firstTime = executionContext.getInt(CONTEXT_KEY_FIRST_TIME) != 0;
+        this.tranIdSuffix = executionContext.getInt(CONTEXT_KEY_TRANID_SUFFIX);
+        this.recordCount = executionContext.getLong(CONTEXT_KEY_RECORD_COUNT);
+        this.totalInterest = new BigDecimal(executionContext.getString(CONTEXT_KEY_TOTAL_INTEREST))
+                .setScale(MONETARY_SCALE, RoundingMode.HALF_EVEN);
+
+        if (executionContext.containsKey(CONTEXT_KEY_CURRENT_ACCOUNT_ID)) {
+            final Long accountId = Long.valueOf(executionContext.getLong(CONTEXT_KEY_CURRENT_ACCOUNT_ID));
+            // :L372-L391 and :L393-L413, the same two reads the control break performs, so a resumed run
+            // observes the committed row rather than a detached snapshot of a rolled-back one.
+            this.currentAccount = getAccountData(accountId);
+            this.currentCrossReference = getCrossReferenceData(accountId);
+        }
+
+        LOG.info("Restored interest control-break state: {} records processed, suffix at {},"
+                        + " accumulating for an account already in progress: {}",
+                Long.valueOf(this.recordCount), Integer.valueOf(this.tranIdSuffix),
+                Boolean.valueOf(this.currentAccount != null));
+    }
+
+    /**
+     * Saves the control-break state alongside the reader's position, at every chunk boundary.
+     *
+     * <p>Spring Batch calls this immediately before each chunk commits, and persists the context in the
+     * same transaction, so the saved state and the saved reader position are always consistent with the
+     * rows that were actually committed. Writing scalars only keeps that write cheap and keeps the context
+     * free of serialised entities.
+     *
+     * <p>{@code totalInterest} is stored as its plain string form rather than as a floating-point value,
+     * because {@code WS-TOTAL-INT} is {@code PIC S9(09)V99} and a binary floating-point round trip could
+     * not return the same two-decimal value. No financial field in this class is ever a {@code double}.
+     *
+     * @param executionContext the step execution context, supplied by the framework; never {@code null}
+     * @throws ItemStreamException never; declared by the interface
+     */
+    @Override
+    public void update(final ExecutionContext executionContext) throws ItemStreamException {
+        Objects.requireNonNull(executionContext, "executionContext must not be null");
+        executionContext.putString(CONTEXT_KEY_LAST_ACCOUNT_NUMBER, this.lastAccountNumber);
+        executionContext.putInt(CONTEXT_KEY_FIRST_TIME, this.firstTime ? 1 : 0);
+        executionContext.putInt(CONTEXT_KEY_TRANID_SUFFIX, this.tranIdSuffix);
+        executionContext.putLong(CONTEXT_KEY_RECORD_COUNT, this.recordCount);
+        executionContext.putString(CONTEXT_KEY_TOTAL_INTEREST, this.totalInterest.toPlainString());
+        if (this.currentAccount == null || this.currentAccount.getAccountId() == null) {
+            executionContext.remove(CONTEXT_KEY_CURRENT_ACCOUNT_ID);
+        } else {
+            executionContext.putLong(CONTEXT_KEY_CURRENT_ACCOUNT_ID,
+                    this.currentAccount.getAccountId().longValue());
+        }
+    }
+
+    /**
+     * Releases nothing.
+     *
+     * <p>This class owns no stream, no connection and no file handle: every dataset it touches is reached
+     * through an injected repository whose lifecycle the container owns. The method is present because the
+     * interface declares it, and it is deliberately empty rather than absent so that a reader looking for
+     * a missing release can see that there is nothing to release. The end-of-data flush of {@code :L207}
+     * is <em>not</em> performed here: it belongs to the step's own end-of-data callback, because a close
+     * also runs on the failure path, where flushing would write interest for an account whose rows were
+     * never all read.
+     *
+     * @throws ItemStreamException never
+     */
+    @Override
+    public void close() throws ItemStreamException {
+        // Nothing to release; see the method documentation for why this is empty by design.
     }
 
     /**
@@ -1189,7 +1412,13 @@ public class InterestCalculationProcessor
                     "Account read failed for " + renderAccountNumber(accountId) + ".", cause);
         }
         if (keyedRead.isEmpty()) {
-            LOG.error("{}{}", MSG_ACCOUNT_NOT_FOUND, renderAccountNumber(accountId));
+            // The source literal of :L375 / :L397 is preserved; the account identifier that followed it
+            // is not. It is a customer's account key, and a log is aggregated, retained and
+            // replicated outside the boundary that protects the row - so the same reasoning that
+            // governs the record emissions in the verification readers governs here. The identifier
+            // still travels on the abend payload raised immediately below, where an operator
+            // diagnosing a terminated run needs it.
+            LOG.error("{}{}", MSG_ACCOUNT_NOT_FOUND, WITHHELD_VALUE);
             LOG.error(MSG_ERROR_READING_ACCOUNT_FILE);
             throw fatal(MSG_ERROR_READING_ACCOUNT_FILE,
                     MSG_ACCOUNT_NOT_FOUND + renderAccountNumber(accountId));
@@ -1211,9 +1440,10 @@ public class InterestCalculationProcessor
      * ({@code app/jcl/INTCALC.jcl:L31}-{@code :L32}). The Java counterpart is therefore the account-keyed
      * derived finder, never {@code findById}.
      *
-     * <p>The alternate key is non-unique, so the finder returns a {@link List} and the first element in
-     * ascending card-number order is taken: a keyed {@code READ} on a non-unique alternate index positions
-     * on the first record carrying that key, and nothing downstream iterates the rest.
+     * <p>The alternate key is non-unique, so duplicates are permitted, but a keyed {@code READ} on a
+     * non-unique alternate index positions on the first record carrying that key and nothing downstream
+     * iterates the rest. The finder therefore returns an {@link java.util.Optional} with {@code LIMIT 1}
+     * applied by the database, and the ascending card-number order fixes which row that is.
      *
      * <p><strong>A missing cross reference abends the job</strong>, on the same pattern as
      * {@link #getAccountData}: {@code :L397} displays {@code 'ACCOUNT NOT FOUND: '} and then the guard at
@@ -1226,9 +1456,12 @@ public class InterestCalculationProcessor
      *     which case the underlying {@link DataAccessException} is preserved as the cause
      */
     private CardCrossReference getCrossReferenceData(final Long accountId) {
-        final List<CardCrossReference> alternateKeyRead;
+        // LIMIT 1 at the database. The source reads the alternate-index PATH, which yields one record;
+        // only the first row was ever used here. See CardCrossReferenceRepository for the full reasoning.
+        final Optional<CardCrossReference> alternateKeyRead;
         try {
-            alternateKeyRead = cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(accountId);
+            alternateKeyRead =
+                    cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(accountId);
         } catch (final DataAccessException cause) {
             LOG.error(MSG_ERROR_READING_XREF_FILE);
             throw fatal(MSG_ERROR_READING_XREF_FILE,
@@ -1236,12 +1469,18 @@ public class InterestCalculationProcessor
                     cause);
         }
         if (alternateKeyRead == null || alternateKeyRead.isEmpty()) {
-            LOG.error("{}{}", MSG_ACCOUNT_NOT_FOUND, renderAccountNumber(accountId));
+            // The source literal of :L375 / :L397 is preserved; the account identifier that followed it
+            // is not. It is a customer's account key, and a log is aggregated, retained and
+            // replicated outside the boundary that protects the row - so the same reasoning that
+            // governs the record emissions in the verification readers governs here. The identifier
+            // still travels on the abend payload raised immediately below, where an operator
+            // diagnosing a terminated run needs it.
+            LOG.error("{}{}", MSG_ACCOUNT_NOT_FOUND, WITHHELD_VALUE);
             LOG.error(MSG_ERROR_READING_XREF_FILE);
             throw fatal(MSG_ERROR_READING_XREF_FILE,
                     MSG_ACCOUNT_NOT_FOUND + renderAccountNumber(accountId));
         }
-        return alternateKeyRead.getFirst();
+        return alternateKeyRead.get();
     }
 
     /**
@@ -1279,7 +1518,7 @@ public class InterestCalculationProcessor
      *
      * <p><b>No stale rate can survive this method.</b> The rate is returned by value and is never stored in
      * a field. That closes the source's {@code READ ... INTO} hazard, where a failed read leaves the
-     * previous row's rate in the record area until the fallback read overwrites it - see Finding 2.
+     * previous row's rate in the record area until the fallback read overwrites it - see PARITY TRAP 2.
      *
      * <p>With the shipped fixtures this method's first read always misses, because
      * {@code app/data/ASCII/acctdata.txt} carries a blank {@code ACCT-GROUP-ID} on all fifty rows, so the
@@ -1340,9 +1579,9 @@ public class InterestCalculationProcessor
      * applied through {@link FileStatusMapper#requireDefaultDisclosureGroupReadSuccess(String)}, which
      * raises the abend for {@code '23'} as well as for every unrecognised status.
      *
-     * <p><b>Locator correction, severity Medium.</b> Other prompts in this project cite this guard at
-     * {@code app/cbl/CBACT04C.cbl:L445}. Re-read at the traceability anchor, {@code :L445} is a blank line
-     * and the guard is at {@code :L446}. The divergence is recorded rather than quietly resolved.
+     * <p><b>The guard is at {@code :L446}, not {@code :L445}.</b>
+     * {@code app/cbl/CBACT04C.cbl:L445} is a blank line
+     * and the guard is at {@code :L446}, which is the line every citation in this class names.
      *
      * <p>The seventeen {@code (type, category)} pairs that {@code app/data/ASCII/discgrp.txt} covers under
      * {@code DEFAULT} are the ones for which this method can succeed; any pair outside that set reaches the
@@ -1539,9 +1778,8 @@ public class InterestCalculationProcessor
      * <p><strong>INTENTIONAL NO-OP - REACHABLE - PRESERVED FOR CONTROL-FLOW PARITY.</strong> It is not an
      * oversight and it is not unfinished work of this migration: it is a faithful reproduction of a
      * paragraph that exists, is genuinely {@code PERFORM}ed at {@code app/cbl/CBACT04C.cbl:L216}, and does
-     * nothing. The emptiness is the behaviour. It is recorded in {@code DECISION_LOG.md} and in
-     * {@code TRACEABILITY_MATRIX.md}, and the source comment above is reproduced as the evidence that the
-     * legacy authors, not this migration, left it unimplemented.
+     * nothing. The emptiness is the behaviour, and the source comment above is reproduced as the evidence
+     * that the legacy authors, not this migration, left it unimplemented.
      *
      * <p><b>This is the single documented conflict with the project's coding standard, and it is resolved
      * in favour of parity.</b> The standard's code-quality clause forbids dead code and forbids deferred
@@ -1583,7 +1821,7 @@ public class InterestCalculationProcessor
      *
      * <p>The result is carried as a {@link String} because the mapped columns are fixed-width character
      * fields: {@code TRAN-ORIG-TS X(26)} and {@code TRAN-PROC-TS X(26)}
-     * ({@code app/cpy/CVTRA05Y.cpy:L18}-{@code :L19}). It is never a date-time or instant type, because a
+     * ({@code app/cpy/CVTRA05Y.cpy:L16}-{@code :L17}). It is never a date-time or instant type, because a
      * temporal type would normalise away the trailing literal zeros that the field is defined to carry.
      *
      * @return the timestamp, exactly {@value #DB2_TIMESTAMP_LENGTH} characters
@@ -1607,10 +1845,51 @@ public class InterestCalculationProcessor
      *
      * <p>The source writes the whole 50-byte record image to SYSOUT. This renders the record's fields as a
      * structured event instead, which is both the observability standard and the safer choice: a raw
-     * fixed-width dump would put whatever the record area holds into the log verbatim. The record itself
-     * carries no card number and no personal data - it is an account identifier, a type code, a category
-     * code and a balance - so every field is rendered, and nothing is masked because nothing here needs
-     * masking.
+     * fixed-width dump would put whatever the record area holds into the log verbatim.
+     *
+     * <p><strong>Finding, Medium severity - the balance is redacted.</strong> This method previously
+     * rendered every field on the ground that the record "carries no card number and no personal data",
+     * and that reasoning was wrong in one respect: {@code TRAN-CAT-BAL} is a cardholder's outstanding
+     * balance for one type-and-category pair, and it is emitted on the <em>same line</em> as
+     * {@code TRANCAT-ACCT-ID}, so it is linkable to a person by anyone holding the log plus one lookup.
+     * Absence of a card number is not absence of financial data. The balance is now replaced by
+     * {@link #REDACTED_BALANCE}.
+     *
+     * <p><em>What is redacted and what is not.</em> The financial value is redacted; the three key fields
+     * are not. That split is deliberate and matches the project's documented position:
+     * {@code src/main/resources/logback-spring.xml:731-736} lists a bare account-identifier line among the
+     * benign look-alikes that must <em>not</em> be over-redacted, and the value layer there masks card
+     * numbers, CVVs, government identifiers, dates of birth, telephone numbers, names and addresses -
+     * never an account identifier. The identifier is also the control-break key of
+     * {@code app/cbl/CBACT04C.cbl:L194} and appears in the report deliverable regardless, so masking it
+     * would destroy this diagnostic's entire purpose while protecting nothing that is not already public
+     * within the system.
+     *
+     * <p><em>Why the debug guard alone was not sufficient.</em> Debug narrows the audience but does not
+     * remove the value, and debug is enabled during exactly the incident investigations in which logs are
+     * read most widely. The guard is kept as the per-record volume control; it is no longer the only
+     * control.
+     *
+     * <p><em>What survives.</em> The sequence number, all three key fields, the field names, their order,
+     * the one-line-per-record cadence and the digit width of the balance. A reader verifying that the
+     * category-balance browse arrived in key order - which is the precondition the account-level control
+     * break depends on - can still do so. Not a parity artefact: the plan's parity contract is the
+     * fixed-width output of the batch stream, and this diagnostic stream is not among the compared
+     * artefacts.
+     *
+     * <p><em>Remediation if the true values are ever needed:</em> emit them to a separately
+     * access-controlled artefact rather than the shared log. Deliberately not invented here, because no
+     * consumer for it exists at {@code 7756d89}. <strong>Owed an entry in the planned
+     * {@code DECISION_LOG.md}</strong>, which does not exist at this commit, so this Javadoc is the register
+     * of record.
+     *
+     * <p><em>Two controls, not one.</em> Redaction is the value-level control and it is unconditional. The
+     * <em>routing</em> control is separate and complementary: the untruncated per-record emissions that a
+     * parity diff genuinely needs travel on {@value #PARITY_LOGGER_NAME}, which
+     * {@code src/main/resources/application.yml} pins to {@code OFF} in every shipped profile and which no
+     * child profile can raise by accident, because a level set on {@code com.cardemo} does not override a
+     * level set on a child of it. A DEBUG level on this class logger is a configuration choice an operator can
+     * flip; the parity tree is not.
      *
      * <p>The event also carries {@code WS-RECORD-COUNT}, incremented immediately before at {@code :L192}.
      * The source increments that counter and then never reads it: the program displays no totals and sets
@@ -1618,20 +1897,27 @@ public class InterestCalculationProcessor
      * purpose without inventing behaviour the source does not have, which is preferable to carrying a field
      * that is only ever written.
      *
-     * <p>Logged at debug level because it fires once per record. The guard avoids formatting the account
-     * number when debug is disabled.
+     * <p>Logged at debug level on the parity logger because it fires once per record. The guard avoids
+     * formatting the account number when that logger is disabled, which is its shipped state.
      *
      * @param accountId {@code TRANCAT-ACCT-ID PIC 9(11)}
      * @param typeCode {@code TRANCAT-TYPE-CD PIC X(02)}
      * @param categoryCode {@code TRANCAT-CD PIC 9(04)}
-     * @param balance {@code TRAN-CAT-BAL PIC S9(09)V99}
+     * @param balance {@code TRAN-CAT-BAL PIC S9(09)V99}. Checked for {@code null} so that the absent-value
+     *     case keeps its own distinguishable rendering - a genuine data condition rather than a redaction -
+     *     but never rendered
      */
     private void displayCategoryBalanceRecord(final Long accountId, final String typeCode,
             final Integer categoryCode, final BigDecimal balance) {
-        if (LOG.isDebugEnabled()) {
-            LOG.debug("TRAN-CAT-BAL-RECORD sequence={} TRANCAT-ACCT-ID={} TRANCAT-TYPE-CD={} "
+        if (PARITY_LOG.isDebugEnabled()) {
+            // The emission point and its field labels are preserved; the account identifier is rendered at
+            // its picture width and the balance is withheld. The type and category codes stay, because they
+            // are a fixed vocabulary from TRANTYPE and TRANCATG rather than data about any customer, and the
+            // control break that this trace exists to diagnose is invisible without them.
+            PARITY_LOG.debug("TRAN-CAT-BAL-RECORD sequence={} TRANCAT-ACCT-ID={} TRANCAT-TYPE-CD={} "
                             + "TRANCAT-CD={} TRAN-CAT-BAL={}",
-                    recordCount, renderAccountNumber(accountId), typeCode, categoryCode, balance);
+                    recordCount, renderAccountNumber(accountId), typeCode, categoryCode,
+                    balance == null ? null : REDACTED_BALANCE);
         }
     }
 
@@ -1661,7 +1947,7 @@ public class InterestCalculationProcessor
 
     /**
      * Right-space-pads the assembled description into {@code TRAN-DESC X(100)}
-     * ({@code app/cpy/CVTRA05Y.cpy:L10}), reproducing the {@code MOVE} of a shorter value into a longer
+     * ({@code app/cpy/CVTRA05Y.cpy:L9}), reproducing the {@code MOVE} of a shorter value into a longer
      * alphanumeric field.
      *
      * <p>Padding rather than trimming, and refusing rather than truncating: COBOL would silently truncate an
@@ -1698,7 +1984,7 @@ public class InterestCalculationProcessor
      * <em>not</em> the same string as {@link FileStatusMapper#TCATBAL_READ_FAILURE_TEXT}, which carries
      * {@code app/cbl/CBTRN02C.cbl:L489}'s wording, "BALANCE" where this program says "CATEGORY". That
      * constant is correct for the posting program and wrong for this one, so the reader must supply the
-     * literal above rather than reach for it. Severity Low, and advisory only: no file outside this one is
+     * literal above rather than reach for it. That note is advisory only: no file outside this one is
      * modified.
      *
      * @param item the item supplied by the reader

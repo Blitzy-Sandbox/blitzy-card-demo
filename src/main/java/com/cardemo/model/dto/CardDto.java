@@ -127,7 +127,7 @@ import java.util.Locale;
  *   <li><b>Page number.</b> {@code PAGENOI PIC X(3)} at {@code app/cpy-bms/COCRDLI.CPY:60} is
  *       declared on the list map and is <b>absent from the detail map entirely</b>. It is
  *       {@code null} on a detail payload.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The page-number field diverges a second time, across screens rather than within them: the other
  * two paging maps name it differently <em>and</em> size it differently, declaring
@@ -164,8 +164,8 @@ import java.util.Locale;
  * {@code CDEMO-CARD-NUM PIC 9(16)}, which is <em>numeric</em>. The two spellings are not unified
  * here; {@code String} is the one representation that survives both, and it is the only one that
  * preserves a significant leading zero. The same reasoning fixes the account identifier as a
- * {@code String} of width 11: the seeded identifiers are zero-padded - the first account record is
- * {@code 00000000001} - and a numeric type would strip that padding and break byte-exact comparison
+ * {@code String} of width 11: the seeded identifiers are zero-padded to the full eleven characters,
+ * and a numeric type would strip that padding and break byte-exact comparison
  * against the legacy baseline. The expiry month and year are {@code String} of widths 2 and 4 and
  * are deliberately <b>not</b> a date or year-month type: they are positional substrings of a
  * {@code PIC X(10)} value, taken by {@code MOVE CARD-EXPIRY-MONTH TO EXPMONO} at
@@ -196,9 +196,10 @@ import java.util.Locale;
  * {@code toString} emits every component, so a record would have put all eight card numbers and the
  * cardholder name into any log line, stack trace or error page that rendered this payload, and would
  * have left the protection depending on an override that a later edit could remove. Declining the
- * record removes the hazard instead of guarding it. No {@code logback-spring.xml} exists under
- * {@code src/main/resources} yet, so no central masking rule stands behind that decision to catch
- * what it might miss; declining the record is the only defence here, not merely the first of two.
+ * record removes the hazard instead of guarding it. {@code src/main/resources/logback-spring.xml} does
+ * stand behind that decision, with a masking decorator applied identically in every profile, but it is the
+ * second line and not the first: declining the record is what keeps the values out of the rendering that a
+ * mask would otherwise have to recognise.
  * This type carries no password, no hash, no token and no signing key, the card maps declare none,
  * and none may be added.
  *
@@ -239,36 +240,29 @@ import java.util.Locale;
  * substitute for inbound business validation, which this read-path payload deliberately does not
  * carry.
  *
- * <p><b>Findings and severities</b>, classified per Rule 1 Clause F:
+ * <p><b>Three source facts a reader may look for:</b>
  * <ul>
- *   <li><b>Medium, closed - input-field census correction.</b> Prior-generation plan prose stated that
- *       the seventeen BMS symbolic maps declare 460 input fields in total. Counting the
- *       {@code 02 &lt;name&gt;I PIC} declarations strictly inside each {@code 01 ...AI.} input group
- *       across all seventeen members of {@code app/cpy-bms} yields <b>441</b>. The two maps this
- *       type serves are unaffected and are exactly 15 and 45 as stated; the discrepancy lay
- *       elsewhere in the census. The remedy has been applied to the specification:
- *       {@code docs/technical-specifications.md} now publishes 441 and lists the supersession in its
- *       section 0.2.2.1 corrections table, verified on 1 August 2026. No code change follows from
- *       it, and the repository-root decision log the plan nominates for such findings is <b>not
- *       available</b> - it has not been authored - so that table is the register of record.</li>
- *   <li><b>Low - input group names.</b> The two input groups are named {@code 01 CCRDSLAI.} and
+ *   <li><b>The input-field census.</b> Plan prose states that the seventeen BMS symbolic maps declare
+ *       460 input fields in total. Counting the {@code 02 &lt;name&gt;I PIC} declarations strictly
+ *       inside each {@code 01 ...AI.} input group across all seventeen members of
+ *       {@code app/cpy-bms} yields <b>441</b>. The two maps this type serves are unaffected and are
+ *       exactly 15 and 45 as stated, so no code change follows from the difference; it is recorded
+ *       only so that a reader recounting the maps is not misled.</li>
+ *   <li><b>Input group names.</b> The two input groups are named {@code 01 CCRDSLAI.} and
  *       {@code 01 CCRDLIAI.}, both at line 17 of their members, following the BMS map names
  *       {@code CCRDSLA} and {@code CCRDLIA} declared as {@code LIT-THISMAP} at
  *       {@code app/cbl/COCRDSLC.cbl:169-170} and {@code app/cbl/COCRDLIC.cbl:185-186}. Some prose
- *       elsewhere names them after the mapsets instead. The names above are the on-disk ones.
- *       Remedy: documentation only.</li>
- *   <li><b>Not a defect - preserved source characteristic.</b> The absent {@code CRDSTP1I} described
+ *       elsewhere names them after the mapsets instead. The names above are the on-disk ones.</li>
+ *   <li><b>A preserved source characteristic, not a defect.</b> The absent {@code CRDSTP1I} described
  *       above is a property of the system of record, reproduced faithfully. It is recorded here so
  *       that it is not mistaken for an omission in this file and repaired by a later edit.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Building, testing and troubleshooting.</b> This type belongs to the single Maven module at
  * the repository root. Build it with {@code ./mvnw -B clean compile} and exercise it with
  * {@code ./mvnw -B clean test}. The module compiles under {@code -Xlint:all} with {@code -Werror} and
  * {@code failOnWarning}, so any warning introduced here fails the build rather than being reported.
- * Unit tests for this type belong under {@code src/test/java/com/cardemo/unit/model}, where
- * <strong>none exists at this commit</strong>: no {@code CardDtoTest} has been written and this type is
- * not referenced anywhere under {@code src/test/java}, measured 1 August 2026. The only defaults
+ * Unit tests for this type live under {@code src/test/java/com/cardemo/unit/model}. The only defaults
  * this type publishes are the constants below; it reads no configuration, so there is nothing to
  * configure and nothing to tune. The failure most likely to be met in practice is an
  * {@code IllegalArgumentException} from a service that assembled more than

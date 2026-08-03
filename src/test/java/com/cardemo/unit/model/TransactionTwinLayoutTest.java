@@ -108,7 +108,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=TransactionTwinLayoutTest
+ * ./mvnw -B -ntp -o test -Dtest=TransactionTwinLayoutTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -125,7 +125,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  *       addresses positionally.</li>
  *   <li><strong>The truncation assertion fails.</strong> Somebody made the projection copy 52 bytes. Read
  *       {@code STEP010}: it copies 50, and the baseline comparison depends on it.</li>
- * </ul>
+ *   </ul>
  */
 class TransactionTwinLayoutTest {
 

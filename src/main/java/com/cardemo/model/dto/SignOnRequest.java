@@ -118,7 +118,7 @@ import jakarta.validation.constraints.Size;
  *       type is constructed, and the web layer maps that to a client error.</li>
  *   <li><em>Absent or blank component</em> - not an error here. It is carried through as-is for
  *       the service to act on, mirroring lines 117 to 130 of {@code app/cbl/COSGN00C.cbl}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The canonical constructor validates nothing, normalises nothing and rejects nothing, so
  * constructing this type throws no exception in normal operation. Enforcement is declarative and
@@ -131,9 +131,12 @@ import jakarta.validation.constraints.Size;
  * fail the build outright, and it is exercised by the unit suite under
  * {@code src/test/java/com/cardemo/unit/model} via {@code ./mvnw -B clean test}. Troubleshooting note:
  * if a response is ever observed to contain a {@code password} key, the write-only annotation on
- * that component has been removed or overridden by a custom serialiser. The annotation is the only
- * defence, not the first of two: no {@code logback-spring.xml} exists under
- * {@code src/main/resources} yet, so no log-side masking rule would catch the leak.</p>
+ * that component has been removed or overridden by a custom serialiser. The annotation is the
+ * <em>primary</em> defence and there is a second behind it:
+ * {@code src/main/resources/logback-spring.xml} installs a masking decorator whose field-name paths
+ * include {@code password} and whose value masks include the BCrypt shape, applied identically in
+ * every profile. The write-only annotation is still what must hold, because a log-side rule matches
+ * only names and shapes it was given.</p>
  *
  * @param transactionName CICS transaction identifier shown in the screen header. Source
  *                        {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COSGN00.CPY:24}.
@@ -283,10 +286,13 @@ public record SignOnRequest(
      * than as the malformed request it is.</p>
      *
      * <p>This guard is declared on the type rather than configured on the object mapper, and that is
-     * deliberate. A mapper-level setting is one line of configuration away from being switched off,
-     * and this repository publishes no {@code application*.yml} at all, so the framework default -
-     * which is to ignore unknown properties - would otherwise be in force. Declaring the guard here
-     * means it holds under a lenient mapper as well as a strict one.</p>
+     * deliberate. {@code application.yml} does set
+     * {@code spring.jackson.deserialization.fail-on-unknown-properties} to {@code true} and no profile
+     * overlay disables it, so the strict behaviour is in force today; an earlier revision of this
+     * paragraph said the repository published no {@code application*.yml} at all, which is false and is
+     * withdrawn. A mapper-level setting is nonetheless one line of configuration away from being switched
+     * off, and the framework default is to ignore unknown properties, so declaring the guard here means it
+     * holds under a lenient mapper as well as a strict one.</p>
      *
      * <p>Neither the offending name nor the offending value is echoed in the message. Both are
      * untrusted input, and echoing either would let a caller place chosen text into the logs of a

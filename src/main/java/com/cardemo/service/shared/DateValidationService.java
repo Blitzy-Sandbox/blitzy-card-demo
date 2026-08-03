@@ -55,7 +55,7 @@ import org.springframework.stereotype.Service;
  *   <li>{@code app/cpy/CSUTLDWY.cpy} - 89 lines, <em>zero</em> paragraphs. The pure working storage
  *       area the copybook above operates on. It contributes no method, only state and the condition
  *       names that give that state meaning.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Collapsing them is not a convenience. Rule 1 Clause C requires a consistent structure and forbids
  * duplication, and the three members share one work area, one 80 byte result layout and one call
@@ -105,15 +105,15 @@ import org.springframework.stereotype.Service;
  *       <td>{@code editDateOfBirthParagraph}</td></tr>
  *   <tr><td>CSUTLDPY.cpy</td><td>EDIT-DATE-OF-BIRTH-EXIT</td><td>370-372</td>
  *       <td>{@code editDateOfBirthExit}</td></tr>
- * </table>
+ *   </table>
  *
  * <h2>How to build and test</h2>
  *
  * <p>Java 25 with {@code maven.compiler.release} set to 25 and no preview feature enabled; Maven
  * 3.9.11 through the pinned wrapper. The compiler runs {@code -Xlint:all} with {@code -Werror}, so any
  * warning in a category {@code javac} 25 publishes is a build failure: no raw type, no unchecked cast and
- * no deprecated API may appear here. An unused import must not appear either, but that is a review
- * guarantee rather than a compiler one - {@code javac} 25.0.3 publishes no unused-import lint key.
+ * no deprecated API may appear here. An unused import must not appear either, but that has to be
+ * spotted by hand - {@code javac} at release 25 publishes no unused-import lint key.
  * Build with {@code ./mvnw -B clean compile} and test with
  * {@code ./mvnw -B clean test}; {@code ./mvnw -B verify} additionally enforces the JaCoCo line
  * coverage floor of 0.80 over the merged unit and integration execution data.
@@ -151,7 +151,7 @@ import org.springframework.stereotype.Service;
  *       satisfied by constructor injection so that the date of birth check is deterministic and
  *       testable. {@code LocalDate.now()} with no clock is forbidden here by Rule 1 Clause C, which
  *       requires builds free of environment specific assumptions.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -198,41 +198,37 @@ import org.springframework.stereotype.Service;
  *       here because the code looks obviously correct and the rejections look like user error. Remedy:
  *       the documented input domain is a cursor driven scan, not a character window; see
  *       {@link #callCeedays} for all four rules and the boundary table.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried by this translation</h2>
- *
- * <p>Classified as Rule 1 Clause F requires, with the remedy applied in each case.
+ * <h2>What must not be tidied, and what is preserved as written</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - mapping fewer than sixteen labels, or consolidating any two. The
- *       scope coverage gate fails outright. Applied remedy: all sixteen are present and separately
- *       documented in the table above.</li>
- *   <li><strong>High</strong> - collapsing the tri-state flags; treating the {@code EXIT} at
- *       {@code app/cpy/CSUTLDPY.cpy:L323-L325} as a return and skipping the L327 {@code SET};
- *       relaxing the strict date of birth comparison; normalising the pessimistic versus optimistic
- *       initialisation asymmetry; reversing an order quirk; substituting a library leap year test.
- *       Applied remedy: each is reproduced as written and cited at its method.</li>
- *   <li><strong>Medium</strong> - the group move at {@code app/cbl/CSUTLDTC.cbl:L122} corrupts the
- *       {@code TstDate:} field of the result; and the {@code CEEDAYS} buffer overread on the copybook
- *       call path cannot be reproduced in a memory safe language. Applied remedy: the first is
- *       reproduced exactly, the second is recorded as a labelled deviation. Both are tracked in
- *       {@code DECISION_LOG.md}.</li>
- *   <li><strong>Low</strong> - the header list at {@code app/cpy/CSUTLDPY.cpy:L14-L15} names
+ *   <li><strong>All sixteen paragraph labels are mapped</strong> one-to-one and separately documented
+ *       in the table above; mapping fewer, or consolidating any two, breaks the correspondence the
+ *       scope coverage gate reads.</li>
+ *   <li><strong>Reproduced exactly as written, each cited at its method:</strong> the tri-state flags,
+ *       which are not collapsed; the {@code EXIT} at
+ *       {@code app/cpy/CSUTLDPY.cpy:L323-L325}, which is not a return, so the L327 {@code SET} still
+ *       runs; the strict date of birth comparison; the pessimistic versus optimistic
+ *       initialisation asymmetry; both order quirks; and the longhand leap year test, which is not
+ *       substituted for a library call.</li>
+ *   <li><strong>Two legacy defects, one reproduced and one impossible to reproduce:</strong> the group
+ *       move at {@code app/cbl/CSUTLDTC.cbl:L122} corrupts the
+ *       {@code TstDate:} field of the result, and that corruption is reproduced exactly; the
+ *       {@code CEEDAYS} buffer overread on the copybook
+ *       call path cannot occur in a memory safe language and is recorded as a labelled deviation.</li>
+ *   <li><strong>Six hygiene curiosities in the system of record, none corrected:</strong> the header
+ *       list at {@code app/cpy/CSUTLDPY.cpy:L14-L15} names
  *       {@code EDIT-DATE-OF-BIRTH} twice, as both {@code d)} and {@code e)}; the comment at
  *       {@code :L286-L288} contains the typos "passsed" with three letter s and "some one" as two
  *       words; {@code :L293} is the only line in the 375 line copybook carrying a sequence number,
  *       {@code 005100}; {@code FC-INVALID-DATE} is named for invalidity but its all zero token is the
  *       success case; {@code WS-VALID-FEB-DAY} at {@code app/cpy/CSUTLDWY.cpy:L33-L34} is declared and
  *       never referenced anywhere in the corpus; and {@code app/cpy/CSUTLDPY.cpy:L203} re-sets a flag
- *       already set at {@code :L152}. Applied remedy: none is corrected, each is preserved and
- *       tracked in {@code DECISION_LOG.md}.</li>
- * </ul>
+ *       already set at {@code :L152}. Each is preserved rather than corrected.</li>
+ *   </ul>
  *
- * <h2>Not available</h2>
- *
- * <p>Rule 1 Clause F requires that missing information be stated plainly rather than invented. Two
- * items are genuinely unavailable:
+ * <h2>Two things nothing in this repository determines</h2>
  *
  * <ul>
  *   <li><strong>The internal check order of {@code CEEDAYS}</strong>, and its behaviour for an input
@@ -249,7 +245,7 @@ import org.springframework.stereotype.Service;
  *   <li><strong>Any latency or throughput objective for date validation.</strong> None exists
  *       anywhere in the source, which publishes no service level of any kind. The performance gate
  *       records a measured baseline, never an invented target.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Thread safety and state</h2>
  *
@@ -284,7 +280,7 @@ import org.springframework.stereotype.Service;
  *       never from the field's value - and {@link FeedbackCode} holds two integers. This class performs
  *       no logging of its own, so it cannot leak; the obligation passes to the caller and is stated
  *       again at {@link DateValidationResult}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>This class spawns no process, performs no deserialisation, builds no query, reads no environment
  * variable and reaches no network endpoint. It adds no dependency beyond the JDK and Spring's
@@ -617,6 +613,10 @@ public class DateValidationService {
          */
         private static final FeedbackCondition[] CACHED_VALUES = values();
 
+        /**
+         * The severity halfword decoded from this condition's feedback token, which is what the caller
+         * tests rather than the token as a whole.
+         */
         private final int severity;
 
         /**
@@ -644,6 +644,8 @@ public class DateValidationService {
         }
 
         /**
+         * Returns the severity halfword this condition decodes to.
+         *
          * @return {@code 0} for the success condition and {@code 3} for the other eight
          */
         public int severity() {
@@ -805,6 +807,8 @@ public class DateValidationService {
         }
 
         /**
+         * Returns the severity code as the caller sees it, positioned as the source positions it.
+         *
          * @return the first four characters of the composed area
          */
         public String severityCode() {
@@ -839,6 +843,8 @@ public class DateValidationService {
         }
 
         /**
+         * Returns the value the caller tests as a return code, which is the feedback token's severity.
+         *
          * @return the severity halfword
          */
         public int returnCode() {
@@ -1017,8 +1023,8 @@ public class DateValidationService {
 
         // :L114 MOVE 0 TO OUTPUT-LILLIAN, declared PIC S9(9) BINARY at :L41. CEEDAYS replaces it with
         // the Lillian day number on success. No program in the corpus ever reads OUTPUT-LILLIAN, so the
-        // day number is deliberately not surfaced on the result; that omission is a labelled deviation
-        // tracked in DECISION_LOG.md. The Lillian range itself is still honoured, because it is what
+        // day number is deliberately not surfaced on the result; that omission is a labelled
+        // deviation. The Lillian range itself is still honoured, because it is what
         // the unsupported range outcome reports.
 
         // :L116-L120 CALL "CEEDAYS" USING WS-DATE-TO-TEST, WS-DATE-FORMAT, OUTPUT-LILLIAN,
@@ -1058,7 +1064,7 @@ public class DateValidationService {
      * {@code CALL 'CSUTLDTC'} and {@code CEEDAYS} requires, and it does so using {@code java.time} for
      * calendar arithmetic.
      *
-     * <p><strong>Scope note, so that no reviewer mistakes this for the forbidden substitution.</strong>
+     * <p><strong>Scope note, so that this is not mistaken for the forbidden substitution.</strong>
      * Using {@link LocalDate} here is correct and intended: this is the Language Environment side of
      * the translation, and the source delegates entirely to an opaque external service. It is
      * <em>not</em> the leap year test of {@link #editDayMonthYear}, which is written out longhand in the
@@ -1114,16 +1120,17 @@ public class DateValidationService {
      * is demonstrated on two character month and day components only, and a year shortened by omission
      * can only denote a value of 999 or less, which the representable range rejects regardless. Widening
      * the year would therefore add no accepted date while asserting behaviour no source documents, so
-     * {@code 22-6-1} remains rejected exactly as it is today. Recorded in {@code DECISION_LOG.md}.
+     * {@code 22-6-1} remains rejected exactly as it is today.
      *
-     * <p><strong>Not available: the internal check order of {@code CEEDAYS}, and its behaviour for an
-     * input that maps to none of the nine declared tokens.</strong> The documented input domain above
+     * <p><strong>The internal check order of {@code CEEDAYS}, and its behaviour for an
+     * input that maps to none of the nine declared tokens, are not determinable.</strong> The documented
+     * input domain above
      * closes the parsing half of this gap; the order in which the real service applies its own
      * <em>value</em> checks, and what it returns for a token outside the nine, remain underivable from
      * anything in this repository and from the published interface. The only behaviour the source
      * defines for an unrecognised token is the {@code WHEN OTHER} arm at
-     * {@code app/cbl/CSUTLDTC.cbl:L147-L148}. The order applied below is therefore a labelled deviation
-     * recorded in {@code DECISION_LOG.md}. <strong>No outcome outside the nine declared tokens is
+     * {@code app/cbl/CSUTLDTC.cbl:L147-L148}. The order applied below is therefore a labelled
+     * deviation. <strong>No outcome outside the nine declared tokens is
      * invented</strong>, and every classification below selects one of them.
      *
      * <p>The evaluation order applied here, chosen to be deterministic and to report the most specific
@@ -1888,8 +1895,8 @@ public class DateValidationService {
      *
      * <p>The last line of defence, and the fifth call site of the date utility. The source explains
      * itself at {@code :L286-L288}: "In case some one managed to enter a bad date that passsed all the
-     * edits above ...... Use LE Services to verify the supplied date". <em>Finding, severity Low:</em>
-     * that comment contains two defects of its own, "passsed" with three letter s and "some one" as two
+     * edits above ...... Use LE Services to verify the supplied date". That comment contains two
+     * defects of its own, "passsed" with three letter s and "some one" as two
      * words. Quoted rather than silently corrected, because the comment is part of the record.
      *
      * <p><strong>This path uses the eight character mask.</strong> {@code :L291} moves
@@ -1897,11 +1904,11 @@ public class DateValidationService {
      * {@code 'YYYY-MM-DD'}. Both masks are mandatory and neither may be dropped; this is the copybook
      * path, so it passes {@link #MASK_YYYYMMDD}.
      *
-     * <p><em>Finding, severity Low:</em> {@code :L293} carries the sequence number {@code 005100} in
+     * <p>{@code :L293} carries the sequence number {@code 005100} in
      * columns one to six and is the only line in all 375 that does. A hygiene curiosity in the system of
-     * record, noted because Clause F asks for evidence rather than tidy summaries.
+     * record, noted rather than tidied away.
      *
-     * <p><strong>Finding, severity Medium - a legacy buffer overread that cannot be reproduced.</strong>
+     * <p><strong>A legacy buffer overread that cannot be reproduced.</strong>
      * The source passes {@code WS-EDIT-DATE-CCYYMMDD}, an {@code X(8)} field, and
      * {@code WS-DATE-FORMAT}, an {@code X(08)} field, by reference into the callee's
      * {@code LS-DATE PIC X(10)} and {@code LS-DATE-FORMAT PIC X(10)}. The callee then unconditionally
@@ -1909,12 +1916,12 @@ public class DateValidationService {
      * therefore handed a length of ten for two eight byte fields and reads two bytes of whatever storage
      * follows each. Java is memory safe, so there is no adjacent storage to read and the behaviour is
      * unreproducible. It is <strong>not</strong> simulated with padding or sentinel bytes, which would
-     * invent an outcome the source never defined; it is recorded as a labelled deviation in
-     * {@code DECISION_LOG.md}. Only this copybook path overreads - the two program paths pass genuine
+     * invent an outcome the source never defined; it is a labelled deviation. Only this copybook path
+     * overreads - the two program paths pass genuine
      * ten character fields.
      *
-     * <p><strong>Why the overread is nonetheless benign in the source, which changes how this finding
-     * should be read.</strong> The documented input domain of the date service ignores every character
+     * <p><strong>Why the overread is nonetheless benign in the source.</strong> The documented input
+     * domain of the date service ignores every character
      * after a valid date has been parsed. The eight digits of {@code WS-EDIT-DATE-CCYYMMDD} complete the
      * date under the {@code YYYYMMDD} picture, so the two overread bytes are never examined whatever they
      * contain. That is why this path works in production rather than failing intermittently, and it is

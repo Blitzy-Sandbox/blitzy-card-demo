@@ -111,7 +111,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code app/cbl/CORPT00C.cbl:L129-L136} and {@code app/cbl/COTRN02C.cbl:L62-L69}, which view
  *       the same 80 bytes through a different and coarser field structure. Reconciling the producer's
  *       thirteen fields against the caller's four is what proves the geometry from both ends.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Scope boundary: the sibling {@code DateValidationServiceTest},
  * {@code DateValidationServiceGuardPathTest} and {@code DateValidationServiceSweepTest} in this same
@@ -168,15 +168,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * B is satisfied on its own wording - it prohibits artefacts <em>without owners or tracking
  * reference</em>. For the two preserved defects this file pins, the misnamed success token and the
  * {@code :L122} group move, <strong>these assertions are that tracking reference</strong>, alongside
- * their {@code DECISION_LOG.md} entries and {@code TRACEABILITY_MATRIX.md} rows.
+ * the entries and rows they are owed in the planned {@code DECISION_LOG.md} and
+ * {@code TRACEABILITY_MATRIX.md}.
  * <strong>No downstream agent may change the production code to make a test here read more
  * sensibly.</strong> The reading is supposed to be uncomfortable; the source is.
  *
  * <h2>2. How to run, build and test</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=LanguageEnvironmentDateContractTest
- * mvn -B -o test
+ * ./mvnw -B -ntp -o test -Dtest=LanguageEnvironmentDateContractTest
+ * ./mvnw -B -ntp -o test
  * }</pre>
  *
  * <p>Surefire 3.5.4 collects this tier through {@code **}{@code /*Test.java} while excluding
@@ -196,7 +197,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       the default time zone or a random source, so no test can pass today and fail tomorrow. The
  *       sibling helpers {@code FixedClockProvider} and {@code FixtureLoader} in
  *       {@code com.cardemo.unit.model} are deliberately not imported: this class needs neither, and an
- *       unused import is fatal under {@code -Werror}.</li>
+ *       unused import is forbidden by Rule 1 Clause B. Note that it is <em>not</em> the compiler that
+ *       enforces that - {@code javac} 25 publishes no {@code unused} lint key at all, as
+ *       {@code javac --help-lint} shows - so it is a review matter.</li>
  *   <li><strong>No mocks.</strong> Real objects throughout. There is no collaborator to stub - the
  *       subject is a pure function of two strings - so introducing a test double would assert the
  *       double rather than the contract.</li>
@@ -218,16 +221,17 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       secret, no key, no credential and no personal data: every date in it is synthetic, and
  *       {@code app/data/ASCII/custdata.txt} is deliberately never read because its date-of-birth column
  *       is personally identifying.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
  *   <li><strong>The build fails with a warning, not a test failure.</strong>
- *       {@code -Xlint:all -Werror} with {@code failOnWarning} reaches test compilation, so one unused
- *       import, one raw type or one documentation comment placed where no declaration follows it ends
- *       the build. The banner above is intentionally a plain block comment and not a documentation
- *       comment for exactly that reason.</li>
+ *       {@code -Xlint:all -Werror} with {@code failOnWarning} reaches test compilation, so one raw type, one
+ *       unchecked cast or one documentation comment placed where no declaration follows it - the
+ *       {@code dangling-doc-comments} key - ends the build. An unused import does <em>not</em>: {@code javac} 25 has
+ *       no {@code unused} lint key, so that prohibition is review-enforced. The banner above is intentionally a plain
+ *       block comment and not a documentation comment for exactly that reason.</li>
  *   <li><strong>A severity or message number fails.</strong> Re-decode the hexadecimal token at
  *       {@code app/cbl/CSUTLDTC.cbl:L62-L70}: bytes one and two are the severity, bytes three and four
  *       the message number, both big-endian halfwords. Adjust neither expectation to match the code.</li>
@@ -250,7 +254,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code dailytran.txt}, spelled in full - never {@code dalytran.txt}, which is the mainframe
  *       dataset name and matches no file on disk. This class reads no fixture, so it cannot hit that
  *       trap, but the trap is adjacent.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Not available</h2>
  *
@@ -270,7 +274,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       a defect on the evidence of the code alone.</li>
  *   <li><strong>Any latency or throughput objective for this tier.</strong> None exists anywhere in the
  *       source; the performance gate records a measured baseline and never an invented target.</li>
- * </ul>
+ *   </ul>
  *
  * <p>One planning-time gap has been <em>closed</em> rather than carried: the
  * {@code app/cbl/COTRN02C.cbl} locators were unverified when this file was specified, and they have
@@ -298,7 +302,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Eight of the ten result literals are written with explicit trailing spaces to exactly fifteen
  *       characters while two are shorter and rely on implicit right-padding. All ten render as fifteen
  *       bytes, so the inconsistency is cosmetic - but it is real, and it is asserted.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Medium-severity findings recorded here</h2>
  *
@@ -315,7 +319,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       because {@code app/cpy/CSUTLDPY.cpy:L290} issues
  *       {@code INITIALIZE WS-DATE-VALIDATION-RESULT} before the call. The three views remain
  *       byte-compatible, which is what this class asserts.</li>
- * </ul>
+ *   </ul>
  */
 class LanguageEnvironmentDateContractTest {
 

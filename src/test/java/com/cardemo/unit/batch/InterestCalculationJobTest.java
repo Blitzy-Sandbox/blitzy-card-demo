@@ -51,6 +51,7 @@ import com.cardemo.batch.writers.TransactionWriter;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.Transaction;
 import com.cardemo.model.enums.TransactionSource;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.observability.MetricsConfig;
 import com.cardemo.repository.AccountRepository;
 import com.cardemo.repository.CardCrossReferenceRepository;
@@ -64,6 +65,7 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -82,6 +84,7 @@ import org.springframework.batch.core.JobParametersInvalidException;
 import org.springframework.batch.core.JobParametersValidator;
 import org.springframework.batch.core.StepExecution;
 import org.springframework.batch.core.scope.context.StepSynchronizationManager;
+import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.core.job.flow.FlowExecutionStatus;
 import org.springframework.batch.core.job.flow.JobExecutionDecider;
 import org.springframework.batch.core.repository.JobRepository;
@@ -97,7 +100,8 @@ import org.slf4j.MDC;
  *
  * <p>The private members are driven by reflection deliberately: the class correctly exposes only its
  * three beans, and widening its API purely to make it testable would weaken the encapsulation that
- * keeps {@code com.cardemo.config.BatchConfig} collision-free.
+ * keeps the planned {@code com.cardemo.config.BatchConfig} - named by the migration plan and not authored
+ * at this commit - collision-free when it arrives.
  *
  * <p>The most important assertion in this class is {@link NoFinalFlush}, which pins <b>Blocker 5.3</b>:
  * the {@code ELSE PERFORM 1050-UPDATE-ACCOUNT} at {@code app/cbl/CBACT04C.cbl:L219}-{@code :L220} hangs
@@ -138,8 +142,8 @@ class InterestCalculationJobTest {
         when(categoryBalanceRepository
                 .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
                 .thenReturn(empty);
-        when(crossReferenceRepository.findByAccountIdOrderByCardNumberAsc(any()))
-                .thenReturn(List.of());
+        when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
+                .thenReturn(Optional.empty());
         when(disclosureGroupRepository.findDefaultGroupRate(anyString(), any()))
                 .thenReturn(Optional.empty());
         when(accountRepository.findById(any())).thenReturn(Optional.empty());
@@ -435,7 +439,7 @@ class InterestCalculationJobTest {
     // ------------------------------------------------------ 5. MDC lifecycle
 
     @Nested
-    @DisplayName("Batch events carry the job instance id in MDC, and it is cleared afterwards")
+    @DisplayName("Batch events carry the job instance id in MDC, and prior values are restored (M-03)")
     class Mdc {
 
         @Test
@@ -449,14 +453,51 @@ class InterestCalculationJobTest {
 
             final JobExecution je = execution(4242L);
             before.invoke(listener, je);
-            assertThat(MDC.get("jobInstanceId")).isEqualTo("4242");
-            assertThat(MDC.get("correlationId")).isNotBlank();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID)).isEqualTo("4242");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNotBlank();
 
             je.setStatus(BatchStatus.COMPLETED);
             je.setExitStatus(ExitStatus.COMPLETED);
             after.invoke(listener, je);
-            assertThat(MDC.get("jobInstanceId")).isNull();
-            assertThat(MDC.get("correlationId")).isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the thread had no entry on entry, so the restore removes it and nothing leaks "
+                            + "onto the next job to borrow this pooled thread")
+                    .isNull();
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isNull();
+        }
+
+        @Test
+        @DisplayName("a run launched inside an existing context restores it instead of destroying it (M-03)")
+        void inheritedContextIsRestoredNotRemoved() throws Exception {
+            final Object listener = nested("InterestCalculationJobListener", job);
+            final Method before = listener.getClass().getDeclaredMethod("beforeJob", JobExecution.class);
+            final Method after = listener.getClass().getDeclaredMethod("afterJob", JobExecution.class);
+            before.setAccessible(true);
+            after.setAccessible(true);
+
+            // What an outer scope owns: a job launched from inside a traced request, or a partitioned step
+            // whose parent already labelled this thread.
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, "7");
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "outer-scope-id");
+
+            final JobExecution je = execution(4243L);
+            before.invoke(listener, je);
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("this run labels the thread with its own instance while it is running")
+                    .isEqualTo("4243");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .as("an inherited correlation id is left alone, so the whole causal chain shares one")
+                    .isEqualTo("outer-scope-id");
+
+            je.setStatus(BatchStatus.COMPLETED);
+            je.setExitStatus(ExitStatus.COMPLETED);
+            after.invoke(listener, je);
+
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("the value the outer scope owned is put back, not deleted")
+                    .isEqualTo("7");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID))
+                    .isEqualTo("outer-scope-id");
         }
 
         @Test
@@ -469,7 +510,7 @@ class InterestCalculationJobTest {
 
             verify(categoryBalanceRepository)
                     .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class));
-            verify(crossReferenceRepository).findByAccountIdOrderByCardNumberAsc(any());
+            verify(crossReferenceRepository).findFirstByAccountIdOrderByCardNumberAsc(any());
             verify(disclosureGroupRepository).findDefaultGroupRate(anyString(), any());
             verify(accountRepository).findById(any());
             verify(s3Operations).bucketExists("carddemo-batch-output");
@@ -563,7 +604,9 @@ class InterestCalculationJobTest {
                         .isEqualTo(1L);
                 assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
                         .isEqualTo("gdg/systran/0000000000000000077");
-                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys"))
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                        .isEqualTo(1L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
                         .isEqualTo("gdg/systran/0000000000000000077/systran-0000000000000000001.dat");
 
                 // A second chunk advances the ordinal and appends, never overwrites.
@@ -571,8 +614,12 @@ class InterestCalculationJobTest {
                         List.of(systemSourced('C'))));
                 assertThat(se.getExecutionContext().getLong("carddemo.systran.object.ordinal"))
                         .isEqualTo(2L);
-                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys"))
-                        .contains(",")
+                // No delimiter to assert on any more: each key has its own entry (finding M-07).
+                assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                        .isEqualTo(2L);
+                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.0"))
+                        .endsWith("systran-0000000000000000001.dat");
+                assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys.1"))
                         .endsWith("systran-0000000000000000002.dat");
             } finally {
                 StepSynchronizationManager.close();
@@ -840,7 +887,7 @@ class InterestCalculationJobTest {
                         .isInstanceOf(FatalProcessingException.class)
                         .hasMessageContaining("carddemo.aws.s3.batch-output-bucket");
             }
-            // src/main/resources/application.yml:L899 deliberately supplies no literal default for the
+            // carddemo.aws.s3.batch-output-bucket deliberately supplies no literal default for the
             // bucket, so an unset CARDDEMO_S3_BATCH_OUTPUT_BUCKET must fail here rather than write a
             // generation into whatever bucket happens to exist.
             assertThatThrownBy(() -> withConfig("INTCALC", 100, null, "p"))
@@ -885,6 +932,113 @@ class InterestCalculationJobTest {
         }
     }
 
+    // ------------------ 12b. created keys survive any configured prefix (M-07)
+
+    /**
+     * Finding M-07. The created object keys were held in one job-execution entry joined by a comma, justified
+     * by the claim that a key can never contain the separator. It can: the key is built from
+     * {@code carddemo.aws.s3.gdg-prefixes.systran}, an externally configured value that
+     * {@code normalisePrefix} only trims of trailing separators. These tests pin the structural remedy - one
+     * entry per key, indexed by creation order, no delimiter anywhere - rather than a rule forbidding a comma,
+     * so there is no character configuration has to avoid.
+     */
+    @Nested
+    @DisplayName("Created object keys survive any configured prefix, having no delimiter (M-07)")
+    class GenerationKeyList {
+
+        private static final String COUNT_ENTRY = "carddemo.systran.generation.keys.count";
+        private static final String INDEX_PREFIX = "carddemo.systran.generation.keys.";
+
+        private InterestCalculationJob withPrefix(final String prefix) {
+            return new InterestCalculationJob(jobRepository, transactionManager,
+                    categoryBalanceRepository, accountRepository, crossReferenceRepository,
+                    disclosureGroupRepository, transactionWriter, s3Operations,
+                    new FileStatusMapper(), metricsConfig, "INTCALC", 100, "b", prefix);
+        }
+
+        private List<String> publishTwo(final InterestCalculationJob variant, final JobExecution je)
+                throws Exception {
+
+            final Method compose = InterestCalculationJob.class
+                    .getDeclaredMethod("composeObjectKey", long.class, long.class);
+            final Method publish = InterestCalculationJob.class.getDeclaredMethod(
+                    "publishGeneration", JobExecution.class, long.class, String.class);
+            compose.setAccessible(true);
+            publish.setAccessible(true);
+
+            final List<String> expected = new ArrayList<>();
+            for (long ordinal = 1L; ordinal <= 2L; ordinal++) {
+                final String key = (String) compose.invoke(variant,
+                        Long.valueOf(je.getJobInstance().getInstanceId()), Long.valueOf(ordinal));
+                expected.add(key);
+                publish.invoke(variant, je, Long.valueOf(je.getJobInstance().getInstanceId()), key);
+            }
+            return expected;
+        }
+
+        @Test
+        @DisplayName("a prefix containing the old delimiter no longer corrupts the list")
+        void commaInThePrefixIsHarmless() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg,systran");
+            final JobExecution je = execution(31L);
+
+            final List<String> expected = publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            assertThat(expected).allSatisfy(key -> assertThat(key)
+                    .as("the hazard only exists because the key really does carry the comma")
+                    .contains(","));
+            assertThat(context.getLong(COUNT_ENTRY)).isEqualTo(2L);
+            assertThat(context.getString(INDEX_PREFIX + "0")).isEqualTo(expected.get(0));
+            assertThat(context.getString(INDEX_PREFIX + "1")).isEqualTo(expected.get(1));
+        }
+
+        @Test
+        @DisplayName("reading the count then that many indexed entries yields creation order exactly")
+        void indexedEntriesReadBackInCreationOrder() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(32L);
+
+            final List<String> expected = publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            final List<String> readBack = new ArrayList<>();
+            for (int index = 0; index < Math.toIntExact(context.getLong(COUNT_ENTRY)); index++) {
+                readBack.add(context.getString(INDEX_PREFIX + index));
+            }
+            assertThat(readBack).containsExactlyElementsOf(expected);
+        }
+
+        @Test
+        @DisplayName("no entry holds more than one key, so no consumer can be tempted to split one")
+        void noEntryHoldsAJoinedList() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(33L);
+
+            publishTwo(variant, je);
+            final ExecutionContext context = je.getExecutionContext();
+
+            assertThat(context.entrySet())
+                    .filteredOn(entry -> entry.getValue() instanceof String)
+                    .allSatisfy(entry -> assertThat((String) entry.getValue())
+                            .as("entry %s must hold at most one object key", entry.getKey())
+                            .doesNotContain(".dat,")
+                            .satisfies(value -> assertThat(value.split("\\.dat", -1).length)
+                                    .isLessThanOrEqualTo(2)));
+        }
+
+        @Test
+        @DisplayName("the count is a Long, so a consumer never parses it out of text")
+        void countIsStoredAsANumber() throws Exception {
+            final InterestCalculationJob variant = withPrefix("gdg/systran");
+            final JobExecution je = execution(34L);
+
+            publishTwo(variant, je);
+
+            assertThat(je.getExecutionContext().get(COUNT_ENTRY)).isInstanceOf(Long.class);
+        }
+    }
+
     // ------------------- 13. a typed failure is rethrown, never wrapped twice
 
     @Nested
@@ -913,7 +1067,7 @@ class InterestCalculationJobTest {
         @Test
         @DisplayName("the XREFFILE probes rethrow unchanged")
         void crossReferenceProbes() {
-            when(crossReferenceRepository.findByAccountIdOrderByCardNumberAsc(any()))
+            when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
                     .thenThrow(typed);
             assertRethrown("openCrossReferenceFile");
             assertRethrown("closeCrossReferenceFile");
@@ -996,8 +1150,8 @@ class InterestCalculationJobTest {
             assertThat(je.getExecutionContext().getString("carddemo.systran.generation.prefix"))
                     .as("app/cbl/CBACT04C.cbl:L214 suppressed every write, but (+1) still exists")
                     .isEqualTo("gdg/systran/0000000000000000009");
-            assertThat(je.getExecutionContext().getString("carddemo.systran.generation.keys"))
-                    .isEmpty();
+            assertThat(je.getExecutionContext().getLong("carddemo.systran.generation.keys.count"))
+                    .isZero();
         }
 
         @Test
@@ -1014,7 +1168,7 @@ class InterestCalculationJobTest {
             final JobExecution je = execution(11L);
             je.getExecutionContext().putString("carddemo.systran.generation.prefix",
                     "gdg/systran/0000000000000000011");
-            je.getExecutionContext().putString("carddemo.systran.generation.keys", "");
+            je.getExecutionContext().putLong("carddemo.systran.generation.keys.count", 0L);
             assertThatThrownBy(() -> close(je)).isInstanceOf(FatalProcessingException.class);
         }
 
@@ -1024,7 +1178,8 @@ class InterestCalculationJobTest {
             final JobExecution je = execution(12L);
             je.getExecutionContext().putString("carddemo.systran.generation.prefix",
                     "gdg/systran/0000000000000000012");
-            je.getExecutionContext().putString("carddemo.systran.generation.keys",
+            je.getExecutionContext().putLong("carddemo.systran.generation.keys.count", 1L);
+            je.getExecutionContext().putString("carddemo.systran.generation.keys.0",
                     "gdg/systran/0000000000000000012/systran-0000000000000000001.dat");
             assertThatCode(() -> close(je)).doesNotThrowAnyException();
         }
@@ -1050,8 +1205,8 @@ class InterestCalculationJobTest {
         void afterJobRecordsAbendRatherThanThrowing() throws Exception {
             when(s3Operations.bucketExists(anyString())).thenReturn(Boolean.FALSE);
             final JobExecution je = execution(41L);
-            MDC.put("jobInstanceId", "41");
-            MDC.put("correlationId", "c-41");
+            MDC.put(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID, "41");
+            MDC.put(CorrelationIdFilter.MDC_KEY_CORRELATION_ID, "c-41");
 
             assertThatCode(() -> listener().afterJob(je))
                     .as("Spring Batch does not fail a job on an afterJob exception")
@@ -1062,8 +1217,13 @@ class InterestCalculationJobTest {
                     .anySatisfy(failure ->
                             assertThat(failure).isInstanceOf(FatalProcessingException.class));
             assertThat(je.getExitStatus().getExitCode()).isEqualTo("ABEND");
-            assertThat(MDC.get("jobInstanceId")).as("cleared in the finally block").isNull();
-            assertThat(MDC.get("correlationId")).isNull();
+            // afterJob is invoked here without a matching beforeJob, so the listener established nothing on
+            // this thread and therefore has nothing to undo. Leaving these alone is the fix for M-03: the old
+            // code removed them unconditionally, which destroyed context this test's caller owned.
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_JOB_INSTANCE_ID))
+                    .as("restored, not removed: nothing was established, so nothing is taken away")
+                    .isEqualTo("41");
+            assertThat(MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID)).isEqualTo("c-41");
         }
 
         @Test
@@ -1151,7 +1311,7 @@ class InterestCalculationJobTest {
             when(categoryBalanceRepository
                     .findAllByOrderByIdAccountIdAscIdTypeCdAscIdCatCdAsc(any(Pageable.class)))
                     .thenThrow(untyped);
-            when(crossReferenceRepository.findByAccountIdOrderByCardNumberAsc(any()))
+            when(crossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(any()))
                     .thenThrow(untyped);
             when(disclosureGroupRepository.findDefaultGroupRate(anyString(), any()))
                     .thenThrow(untyped);

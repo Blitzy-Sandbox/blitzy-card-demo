@@ -40,9 +40,7 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
@@ -60,8 +58,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * test it, its key configuration and defaults, and its common failure modes. Neither of the other two forms
  * is admissible here: a README and a {@code package-info.java} are both forbidden inside
  * {@code com.cardemo.batch.readers}, whose contents are fixed at the seven reader classes. Clause E is
- * therefore met through the <b>docstring branch</b>, with package-scope documentation living one level up in
- * {@code src/main/java/com/cardemo/batch/package-info.java}.
+ * therefore met through the <b>docstring branch</b> alone: no {@code package-info.java} exists under
+ * {@code com.cardemo.batch} in this branch and none may be added, so there is no package-scope document one
+ * level up to defer to.
  *
  * <h2>What it does</h2>
  * Streams every row of the {@code card} relation in ascending primary-key order and hands each one to the
@@ -77,7 +76,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * this class adds no write path: no {@code save}, no {@code saveAll}, no {@code delete}, no
  * {@code @Modifying} query, no {@code EntityManager} mutation and no {@code flush}. The only repository
  * operations it ever performs are {@link CardRepository#count()} and
- * {@link CardRepository#findAll(org.springframework.data.domain.Pageable)}.
+ * {@link CardRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+ * org.springframework.data.domain.Pageable)}.
  * <p>
  * <b>Finding, severity Low.</b> Other project documents quote &quot;3 / 1 / 3 / 14&quot; for
  * {@code OPEN} / {@code READ} / {@code CLOSE} / {@code DISPLAY} in this program. Those are lexical token
@@ -166,13 +166,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>{@code CARD-ACCT-ID PIC 9(11)} ({@code :L6}) maps to {@link Card#getAccountId()}, a <b>plain scalar
  *       {@code Long}</b>. It is deliberately <em>not</em> a {@code @ManyToOne} association: nothing here
  *       navigates to an {@code Account}, this class imports no account type, and it issues no join.</li>
- *   <li>{@code CARD-CVV-CD PIC 9(03)} ({@code :L7}) maps to a <b>{@code String}</b> over {@code CHAR(3)} and
- *       never to a numeric type, because its leading zeros are significant and a numeric type would discard
- *       them. It is additionally never read here at any level, per the clause D discussion above.</li>
+ *   <li>{@code CARD-CVV-CD PIC 9(03)} ({@code :L7}) maps to <b>nothing at all</b>: the entity declares no
+ *       such property and the schema no such column, because card verification data is not retained. There
+ *       is consequently nothing for this reader to read, project or log - a stronger guarantee than the
+ *       never-read one this entry used to make. See the deviation on {@link com.cardemo.model.entity.Card}.</li>
  *   <li>{@code CARD-EXPIRAION-DATE PIC X(10)} ({@code :L9}) maps to a <b>{@code String}</b> over
  *       {@code CHAR(10)} and never to a {@code LocalDate}: the picture clause is alphanumeric, so the stored
  *       value is carried byte-for-byte rather than reinterpreted through a date parser.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>The one deliberate, labelled deviation: the legacy whole-record emission is not reproduced</h3>
  * {@code app/cbl/CBACT02C.cbl:L78} performs {@code DISPLAY CARD-RECORD}, which writes all 150 bytes of the
@@ -204,14 +205,21 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>
  * The masking rules in {@code src/main/resources/logback-spring.xml} govern whatever does reach a log
  * aggregator and are a backstop, not the primary defence: never emitting the value is the primary defence.
- * The deviation is recorded in {@code DECISION_LOG.md}. <b>It changes what is emitted and is labelled as such
- * rather than presented as parity</b>, which is the distinction Rule 1 clause F requires.
+ * The deviation is owed an entry in the planned {@code DECISION_LOG.md}. <b>It changes what is emitted and is
+ * labelled as such rather than presented as parity</b>, which is the distinction Rule 1 clause F requires.
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Because
- * {@code spring.batch.job.enabled} is {@code false} ({@code src/main/resources/application.yml}), jobs are
- * launched by {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and never at application startup, so
- * instantiating this bean never triggers a scan. The legacy standalone job is
+ * The owning {@code Job} and {@code Step} are <strong>planned and not authored at this commit</strong>.
+ * The migration plan names {@code com.cardemo.config.BatchConfig} as their home and the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} as their launcher. The home now exists and the
+ * launcher does not: {@code com.cardemo.config} holds six classes and {@code com.cardemo.batch.jobs} holds
+ * one,
+ * {@code InterestCalculationJob}. What is already true is the property both will rely on -
+ * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
+ * job runs at application startup and every job must be launched deliberately. This class carries
+ * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
+ * instance is constructed until a step is executing; with no {@code Step} yet referencing it, none is
+ * constructed at runtime today. The legacy standalone job is
  * {@code app/jcl/READCARD.jcl}, whose {@code STEP05} is {@code EXEC PGM=CBACT02C} at {@code :L22} with
  * {@code //CARDFILE DD} pointing at {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS} at {@code :L25-L26}.
  * <p>
@@ -226,10 +234,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  * </ul>
  * The compiler runs with {@code -Xlint:all -Werror} and {@code failOnWarning}, so the build fails on any
  * warning category {@code javac} 25 publishes. Coverage is gated by JaCoCo at an eighty percent line floor
- * with no package excluded. Tests live in {@code src/test/java/com/cardemo/unit/batch} for the status
- * renderer, the guard logic and the identifier-only projection, and in
- * {@code src/test/java/com/cardemo/integration/batch} for the Testcontainers PostgreSQL 16 scan; this class
- * creates neither, because test sources are outside the scope of the package it belongs to.
+ * with no package excluded. The tests that would cover this class belong in
+ * {@code src/test/java/com/cardemo/unit/batch} for the status renderer, the guard logic and the
+ * identifier-only projection, and in {@code src/test/java/com/cardemo/integration/batch} for the
+ * Testcontainers PostgreSQL 16 scan. Neither is authored at this commit: {@code unit/batch} holds three
+ * classes, none of which references this reader, and {@code integration/batch} holds one abstract
+ * Testcontainers base with no concrete {@code *IT} beneath it. This class creates neither, because test
+ * sources are outside the scope of the package it belongs to.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -300,17 +311,21 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     {@code AWS.M2.CARDDEMO.TRANSACT.VSAM.AIX} with {@code KEYS(26 304)}, which is the <em>transaction</em>
  *     alternate index. <i>Remediation, applied:</i> the card alternate index is cited from
  *     {@code app/jcl/CARDFILE.jcl:L83-L88} and {@code app/catlg/LISTCAT.txt:L281-L285}, and
- *     {@code TRANIDX.jcl} is cited nowhere in this file. Recorded in {@code DECISION_LOG.md}.</li>
- * <li><b>Medium</b> &mdash; {@link #update(ExecutionContext)} checkpoints the card number of the last row
- *     read, which is the only place in this class where that value leaves its row. It is written to the
- *     Spring Batch step execution context, which is transactional state persisted to
- *     {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose {@code card.card_num}
- *     column already holds the identical value as its primary key, under the same access control; it is not a
- *     log, not configuration, not code and not a test fixture, so no new trust boundary is crossed and no
- *     additional privilege is requested. It is never logged, never returned by any accessor and never placed
- *     in an exception message. <i>Remediation, if an operator's cardholder-data boundary excludes the batch
- *     metadata tables:</i> drop the key from the checkpoint and rely on the row count alone, which is
- *     functionally sufficient because the ordering is fixed. See that method for the full rationale.</li>
+ *     {@code TRANIDX.jcl} is cited nowhere in this file. Owed an entry in the
+ *     planned {@code DECISION_LOG.md}.</li>
+ * <li><b>Medium, RESOLVED</b> &mdash; {@link #update(ExecutionContext)} used to checkpoint the card number of
+ *     the last row read, which was the only place in this class where that value left its row. The defence for
+ *     it was that the Spring Batch step execution context is transactional state persisted to
+ *     {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose {@code card.card_num} column
+ *     already holds the identical value as its primary key, under the same access control, and that it is
+ *     none of the four surfaces Rule 1 clause D names - so no new trust boundary was crossed. That defence is
+ *     true and insufficient: data minimisation asks a different question, and a full sixteen digit primary
+ *     account number written into <em>generic framework metadata</em> leaves the one relation a cardholder-data
+ *     boundary is drawn around and lands in a table governed by the framework's retention and access needs
+ *     rather than by any cardholder-data policy. The anchor also verified nothing - it was written, restored
+ *     and never compared. <i>Remediation, applied:</i> the checkpoint, the field and the restore are removed,
+ *     and the row count alone is the cursor, which is provably sufficient because the ordering is fixed. The
+ *     card number now never leaves its row anywhere in this class. See that method for the full rationale.</li>
  * <li><b>Low</b> &mdash; the lexical-versus-statement verb count divergence described above. No action beyond
  *     citing the statement counts.</li>
  * <li><b>Low</b> &mdash; the {@code '9x'} status family maps to
@@ -425,11 +440,18 @@ public class CardReader implements ItemStreamReader<Card> {
     private static final String CONTEXT_KEY_RECORDS_READ = "CardReader.recordsRead";
 
     /**
-     * Key under which the primary key of the most recently emitted row is checkpointed. See
-     * {@link #update(ExecutionContext)} for why this value is written here and nowhere else, and for the
-     * severity-Medium finding that records it.
+     * Exclusive lower bound seeding the first keyset window, chosen to sit provably below the entire key
+     * space so that {@code CARD-NUM > } this value selects the true first row.
+     * <p>
+     * The proof, not an assumption: {@code CARD-NUM} is declared {@code PIC X(16)} at
+     * {@code app/cpy/CVACT02Y.cpy:L5} and materialised as {@code CHAR(16) NOT NULL}, so under character
+     * collation the empty string precedes every value the column can hold. It is a bound, never a key: the
+     * comparison is strict, and no card number is empty, so no row can be skipped by it. The same seed and
+     * the same reasoning are already used by {@code CardCrossReferenceRepository}, whose keyset finder
+     * documents the empty string as preceding every non-empty card number; the two are kept identical
+     * deliberately.
      */
-    private static final String CONTEXT_KEY_LAST_CARD_NUMBER = "CardReader.lastCardNumber";
+    private static final String SEED_CARD_NUMBER = "";
 
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBACT02C.cbl:L65}). */
     private static final String END_OF_FILE_NO = "N";
@@ -477,15 +499,18 @@ public class CardReader implements ItemStreamReader<Card> {
      * The persistence access point for the card master, replacing the {@code CARDFILE} VSAM cluster
      * {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.KSDS}.
      * <p>
-     * Only two of its operations are ever called, both inherited and both read-only:
-     * {@link CardRepository#count()} and
-     * {@link CardRepository#findAll(org.springframework.data.domain.Pageable)}. The two derived finders the
-     * interface declares, {@code findByAccountIdOrderByCardNumberAsc} and
+     * Only two of its operations are ever called, and both are read-only: the inherited
+     * {@link CardRepository#count()} and the declared
+     * {@link CardRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)}, which exists for this class and has no other consumer.
+     * <p>
+     * The interface's other two derived finders, {@code findByAccountIdOrderByCardNumberAsc} and
      * {@code findAllByOrderByCardNumberAsc}, model the <em>online</em> card-list browse of
-     * {@code app/cbl/COCRDLIC.cbl} and belong to {@code com.cardemo.service.card.CardListService}; calling
-     * one of them from a batch reader would misattribute this class's source, so the inherited paged form is
-     * used with an explicit sort instead. The two are identical in effect and in generated SQL, and the sort
-     * this class supplies is never omitted.
+     * {@code app/cbl/COCRDLIC.cbl} and belong to {@code com.cardemo.service.card.CardListService}; calling one
+     * of them from a batch reader would misattribute this class's source, and neither expresses a seek bound
+     * in any case. An earlier revision of this class instead narrowed the inherited {@code findAll(Pageable)}
+     * with an explicit sort; that form could express an order and a limit but not a keyset bound, which is why
+     * a finder is now declared for this scan rather than an inherited overload reused.
      */
     private final CardRepository cardRepository;
 
@@ -525,21 +550,25 @@ public class CardReader implements ItemStreamReader<Card> {
     /** Cursor into {@link #pageBuffer}; the next row to hand out. */
     private int pageBufferIndex;
 
-    /** Zero-based number of the next page to fetch. */
-    private int nextPageNumber;
-
-    /** Rows to discard from the first fetched page when resuming a restarted step. */
-    private int restartSkipWithinPage;
-
-    /** Rows emitted so far, the counter the end-of-run summary reports and a restart resumes from. */
-    private long recordsRead;
-
     /**
-     * Primary key of the most recently emitted row, checkpointed so a restart can be verified. It is
-     * <b>never logged, never returned by any accessor and never placed in an exception message</b>; see
-     * {@link #update(ExecutionContext)}.
+     * Keyset cursor: the highest {@code CARD-NUM} already <em>fetched</em> into {@link #pageBuffer}, and
+     * therefore the exclusive lower bound of the next window. Seeded to {@link #SEED_CARD_NUMBER}, which is
+     * provably below the whole key space, so the first window starts at the true first row.
+     * <p>
+     * It runs ahead of the most recently emitted row by up to {@link #pageSize} rows, because a window is
+     * fetched whole before any of its rows is handed out. Conflating the two would skip rows on restart, which
+     * is why the fetch position and the emission tally are tracked separately: this field positions the
+     * <em>next query</em>, while {@link #recordsRead} records how many rows have actually been emitted and is
+     * the only one of the two that is checkpointed.
+     * <p>
+     * Being a card number it is <b>never logged, never checkpointed, never returned by any accessor and never
+     * placed in an exception message</b>. On a restart it is re-derived from the emission tally by
+     * {@link #restoreRestartCursor(ExecutionContext)} rather than read back from framework metadata.
      */
-    private String lastCardNumber;
+    private String fetchCursorCardNumber = SEED_CARD_NUMBER;
+
+    /** Rows emitted so far, the counter the end-of-run summary reports. */
+    private long recordsRead;
 
     /** Whether {@code openCardFile()} has completed successfully, mirroring an open VSAM ACB. */
     private boolean fileOpen;
@@ -598,10 +627,8 @@ public class CardReader implements ItemStreamReader<Card> {
         cardRecord = null;
         pageBuffer = List.of();
         pageBufferIndex = 0;
-        nextPageNumber = 0;
-        restartSkipWithinPage = 0;
+        fetchCursorCardNumber = SEED_CARD_NUMBER;
         recordsRead = 0L;
-        lastCardNumber = null;
         fileOpen = false;
         recordCountAtOpen = 0L;
 
@@ -631,7 +658,7 @@ public class CardReader implements ItemStreamReader<Card> {
      * 1-16 and the verification value at 1-based bytes 28-30. It is replaced by an identifier-only projection
      * at {@code DEBUG} carrying the row sequence number and {@code CARD-ACCT-ID} only. This is the single
      * deliberate, labelled deviation in this class; the full rationale, its High severity classification and
-     * the {@code DECISION_LOG.md} reference are in the class documentation.
+     * the planned {@code DECISION_LOG.md} reference are in the class documentation.
      * <p>
      * <b>Why there is no {@code @Transactional} annotation.</b> A chunk-oriented step already runs this method
      * inside its own transaction, and Spring silently ignores the {@code readOnly} attribute of a method that
@@ -639,7 +666,8 @@ public class CardReader implements ItemStreamReader<Card> {
      * {@code readOnly = true} here would therefore read as an enforced guarantee while enforcing nothing,
      * which Rule 1 clause A rules out. Read-only is guaranteed structurally instead: the only repository
      * operations this class can reach are {@link CardRepository#count()} and
-     * {@link CardRepository#findAll(org.springframework.data.domain.Pageable)}, and there is no mutating call,
+     * {@link CardRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)}, and there is no mutating call,
      * no {@code @Modifying} query and no {@code EntityManager} reference anywhere in the file.
      *
      * @return the next card in ascending {@code cardNumber} order, or {@code null} at end of data, which is
@@ -681,17 +709,18 @@ public class CardReader implements ItemStreamReader<Card> {
         }
 
         recordsRead++;
-        lastCardNumber = card.getCardNumber();
 
         // DISPLAY CARD-RECORD  (:L78) - the ONE emission this program makes per row, because the second
-        // DISPLAY CARD-RECORD at :L96 is commented out. Reproduced as an identifier-only projection rather
-        // than as the 150-byte record image: bytes 1-16 are the card number and bytes 28-30 are the card
-        // verification value (app/cpy/CVACT02Y.cpy:L5, :L7), and Rule 1 clause D forbids putting either into
-        // a log. CARD-ACCT-ID is read explicitly rather than through Card.toString() so that this call site
-        // cannot widen even if that contract ever does. The CVV is not read here at any level.
+        // DISPLAY CARD-RECORD at :L96 is commented out. Reproduced as the FACT of the read and its ordinal,
+        // and nothing more: bytes 1-16 are the card number and bytes 28-30 the card verification value
+        // (app/cpy/CVACT02Y.cpy:L5, :L7), so the record image was never a candidate - but CARD-ACCT-ID is not
+        // one either. It is a customer's account identifier, and a log is aggregated, retained and replicated
+        // outside the boundary that protects the row, so no level is low enough to make it safe. No field of
+        // the record is read here at all, which is why this call site cannot widen when any entity contract
+        // does.
         if (LOG.isDebugEnabled()) {
-            LOG.debug("{} record read; sequence={} CARD-ACCT-ID={}",
-                    LOGICAL_FILE, Long.valueOf(recordsRead), card.getAccountId());
+            LOG.debug("{} record read (app/cbl/CBACT02C.cbl:L78); sequence={}",
+                    LOGICAL_FILE, Long.valueOf(recordsRead));
         }
 
         return card;
@@ -700,23 +729,33 @@ public class CardReader implements ItemStreamReader<Card> {
     /**
      * Checkpoints the restart cursor so an interrupted step can resume without re-emitting rows.
      * <p>
-     * Two values are stored, and they are the whole of the cursor: the number of rows already emitted and the
-     * primary key of the most recent one. Because the scan is ordered by an explicit ascending sort on
-     * {@code cardNumber}, a row count is a complete and deterministic position; the key is stored so a resumed
-     * run has a verifiable anchor for where it claimed to be. No entity, page or buffer is serialised.
+     * <b>Exactly one value is checkpointed, and it is the whole of the durable cursor:</b> the number of rows
+     * already emitted. A sixteen-character {@code CARD-NUM} is cardholder data, so it is deliberately never
+     * written to framework metadata - see {@link #update(ExecutionContext)}. The keyset position the scan runs
+     * on is therefore <b>re-derived</b> from that count by a single bounded seek at restart, after which every
+     * subsequent window is selected by {@code CARD-NUM > } the previous window's highest key rather than by an
+     * offset. No entity, page, buffer or business value is serialised.
      * <p>
-     * <b>Finding, severity Medium: this is the only place in this class where a card number leaves its
-     * row.</b> The step execution context is transactional state, persisted by Spring Batch to
+     * <b>The card number is deliberately NOT checkpointed. Severity of doing so: Medium.</b> An earlier
+     * revision also wrote the primary key of the most recently emitted row as a verification anchor, and the
+     * argument for it was that the step execution context is transactional state persisted to
      * {@code BATCH_STEP_EXECUTION_CONTEXT} in the same database and schema whose {@code card.card_num} column
-     * already holds the identical value as its primary key, under the same access control. It is not a log,
-     * not configuration, not code and not a test fixture &mdash; the four surfaces Rule 1 clause D names
-     * &mdash; so no new trust boundary is crossed and no additional privilege is requested. The value is
-     * never logged by this class, is exposed by no accessor, and never appears in an exception message: even
-     * {@link #restoreRestartCursor(ExecutionContext)} reports only the row count.
-     * <i>Remediation, should an operator's cardholder-data boundary exclude the batch metadata tables:</i>
-     * stop writing {@link #CONTEXT_KEY_LAST_CARD_NUMBER} and rely on the row count alone. That is
-     * functionally sufficient precisely because the ordering is fixed, so the change costs the verification
-     * anchor and nothing else. It is one statement in this method.
+     * already held the identical value under the same access control - so no new trust boundary was crossed
+     * and Rule 1 clause D's four named surfaces (code, logs, tests, configuration) were untouched.
+     * <p>
+     * That argument is true and it is not sufficient, which is why the write is gone. Data minimisation is not
+     * the same test as trust-boundary equivalence: a full sixteen digit primary account number written into
+     * <em>generic framework metadata</em> escapes the one place a cardholder-data boundary is drawn - the
+     * relation itself - and lands in a table whose retention, export and administrative access are governed by
+     * Spring Batch's needs rather than by any cardholder-data policy.
+     * <p>
+     * <b>Removing it costs no restartability, because the position is recoverable without it.</b> The scan is
+     * ordered by an explicit ascending sort on {@code cardNumber}, so the row count identifies the
+     * last-emitted row exactly, and {@link #restoreRestartCursor(ExecutionContext)} re-derives the key with one
+     * bounded seek before the scan resumes. That seek is the only offset query this class performs and it runs
+     * once per restart, never once per window, so the keyset scan it re-seeds keeps its cost profile intact.
+     * The key is held in memory for the duration of the step, is never logged, is exposed by no accessor and
+     * never appears in an exception message.
      * <p>
      * <b>Side effects.</b> Mutates {@code executionContext} only. Performs no I/O and logs nothing.
      *
@@ -730,9 +769,6 @@ public class CardReader implements ItemStreamReader<Card> {
             return;
         }
         executionContext.putLong(CONTEXT_KEY_RECORDS_READ, recordsRead);
-        if (lastCardNumber != null) {
-            executionContext.putString(CONTEXT_KEY_LAST_CARD_NUMBER, lastCardNumber);
-        }
     }
 
     /**
@@ -870,9 +906,10 @@ public class CardReader implements ItemStreamReader<Card> {
      * {@code app/cbl/CBACT02C.cbl:L93} and reports its outcome as a COBOL file status.
      * <p>
      * A VSAM {@code READ} with {@code ACCESS MODE IS SEQUENTIAL} hands back one record and advances the
-     * cursor. Here the cursor is a page buffer refilled by
-     * {@link CardRepository#findAll(org.springframework.data.domain.Pageable)} with an <b>explicit ascending
-     * sort</b> on {@code cardNumber}. The sort is never omitted and the store's natural order is never relied
+     * cursor. Here the cursor is a buffered window refilled by
+     * {@link CardRepository#findByCardNumberGreaterThanOrderByCardNumberAsc(String,
+     * org.springframework.data.domain.Pageable)}, whose ascending key order is fixed <b>in the method name
+     * itself</b> and so cannot be omitted or overridden by a caller. The store's natural order is never relied
      * upon: {@code app/cbl/CBACT02C.cbl:L29-L33} declares {@code ORGANIZATION IS INDEXED} with
      * {@code ACCESS MODE IS SEQUENTIAL} and {@code RECORD KEY IS FD-CARD-NUM}, so key order <em>is</em> the
      * contract, and reproducing it deterministically is what makes the emitted sequence comparable against the
@@ -884,9 +921,20 @@ public class CardReader implements ItemStreamReader<Card> {
      * the {@code CHAR(16)} column, which is what preserves the leading zeros the 50-row fixture actually
      * contains.
      * <p>
-     * The paging tradeoff, per Rule 1 clause A: rows are fetched {@link #pageSize} at a time rather than
-     * materialised as one list, so the resident set is bounded by the page size instead of by the table size.
-     * The page size cannot affect the emitted output because the ordering is fixed independently of it.
+     * <b>Why the window is keyset-bounded and not offset-paged</b> (Rule 1 clause A, tradeoff justified rather
+     * than assumed). An offset page asks the store to produce and discard every row before the window, so
+     * walking the relation costs work quadratic in its size, and the discarded prefix grows with every step. A
+     * keyset window instead asks for {@code CARD-NUM > cursor ... LIMIT pageSize}, which the primary-key index
+     * satisfies by seeking straight to the cursor and reading forward: constant work per window, independent of
+     * how far the scan has already travelled. This is also the closer analogue of the source, because a VSAM
+     * sequential read positions by key and reads forward rather than counting from the start of the cluster.
+     * The window size cannot affect the emitted output, because the ordering is fixed independently of it, and
+     * the seek bound is exclusive so no row is visited twice or skipped.
+     * <p>
+     * A second, unrelated saving: this finder returns a {@code List}, so no {@code COUNT(*)} is issued. The
+     * page-shaped predecessor computed a total on every refill that nothing on this path ever read. The one
+     * count this class does perform is the deliberate, once-per-open one in {@code openCardFile()}, which
+     * exists to make the empty-relation case an explicit logged outcome.
      * <p>
      * The alternate index is deliberately not used. {@code AWS.M2.CARDDEMO.CARDDATA.VSAM.AIX} has
      * {@code KEYLEN 11} and {@code AXRKP 16} ({@code app/catlg/LISTCAT.txt:L281}, {@code :L283}), where
@@ -904,22 +952,28 @@ public class CardReader implements ItemStreamReader<Card> {
      */
     private String readNextRecord() {
         while (pageBufferIndex >= pageBuffer.size()) {
-            Page<Card> page = cardRepository.findAll(
-                    PageRequest.of(nextPageNumber, pageSize, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY)));
-            nextPageNumber++;
-            pageBuffer = page.getContent();
-
-            // A restarted step resumes mid-page. The offset is consumed once and then cleared, so a short
-            // final page cannot make the loop spin: an empty page ends it outright.
-            pageBufferIndex = restartSkipWithinPage > 0
-                    ? Math.min(restartSkipWithinPage, pageBuffer.size())
-                    : 0;
-            restartSkipWithinPage = 0;
+            // The window is bounded by the cursor, never by an offset: CARD-NUM > cursor ORDER BY CARD-NUM
+            // ASC LIMIT pageSize. PageRequest.ofSize() is page zero, so the offset is always literally 0.
+            pageBuffer = cardRepository.findByCardNumberGreaterThanOrderByCardNumberAsc(
+                    fetchCursorCardNumber, PageRequest.ofSize(pageSize));
+            pageBufferIndex = 0;
 
             if (pageBuffer.isEmpty()) {
                 cardRecord = null;
                 return STATUS_END_OF_FILE;
             }
+
+            // Advance the cursor to the highest key in the window just fetched, so the next window starts
+            // strictly after it. Explicit null branch (Rule 1 clause B): CARD-NUM is NOT NULL and is the
+            // primary key, so a null here means the result set is not what the schema promises. It is
+            // reported through the status vocabulary rather than allowed to become a NullPointerException,
+            // and the cursor is deliberately left unadvanced on that path.
+            Card highestOfWindow = pageBuffer.get(pageBuffer.size() - 1);
+            if (highestOfWindow == null || highestOfWindow.getCardNumber() == null) {
+                cardRecord = null;
+                return STATUS_PHYSICAL_IO_ERROR;
+            }
+            fetchCursorCardNumber = highestOfWindow.getCardNumber();
         }
 
         Card next = pageBuffer.get(pageBufferIndex);
@@ -1183,22 +1237,28 @@ public class CardReader implements ItemStreamReader<Card> {
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead
      * of re-emitting rows.
      * <p>
-     * A row count is a complete position because the scan is ordered by an explicit ascending sort on
-     * {@code cardNumber}: the count divides into a page number and an offset within that page, both exactly.
+     * <b>The checkpointed key is the position; the row count is only a tally.</b> The scan resumes by seeking
+     * to {@code CARD-NUM > } the last key actually emitted, so the first window of the resumed run begins at
+     * the row after it regardless of how many rows precede it. The predecessor of this method instead divided
+     * the row count into a page number and a within-page offset, which positions correctly only while the
+     * relation is unchanged between the two runs: any row inserted or deleted below the cursor shifts every
+     * offset after it, so a restart could silently re-emit or silently skip rows. Seeking by key is immune to
+     * that, because the key of a row does not move when its neighbours change.
      * <p>
-     * <b>The checkpointed card number is restored but never logged.</b> {@code AccountReader}'s counterpart
-     * reports its checkpointed {@code ACCT-ID} in the resume line, because an account identifier is not
-     * cardholder data. The value checkpointed here is a 16-character {@code CARD-NUM}, so the resume line
-     * carries the row count alone and the identifier is held only in memory for the diagnostics of a subsequent
-     * abend, which likewise never renders it (Rule 1 clause D1).
+     * <b>No card number is checkpointed, so none is restored and none is reported.</b>
+     * {@code AccountReader}'s counterpart reports its checkpointed {@code ACCT-ID} in the resume line, because
+     * an account identifier is not cardholder data; a 16-character {@code CARD-NUM} is, so it is not written to
+     * the context in the first place and the resume line carries the row count alone. See
+     * {@link #update(ExecutionContext)} for why holding it in memory for a hypothetical diagnostic was not
+     * worth the exposure.
      * <p>
      * A non-positive checkpoint is ignored and the scan starts from the beginning, which is the correct reading
      * of a checkpoint written before any row was emitted.
      *
      * @param executionContext the step execution context, already known to contain the row-count key
-     * @throws ArithmeticException if the checkpointed count divided by the page size exceeds an {@code int},
-     *     which a sixteen-character key space cannot reach within one step and which is therefore asserted
-     *     rather than assumed
+     * @throws IllegalStateException if the context records that rows were emitted but carries no key to resume
+     *     from, which leaves no position to seek to and which is reported rather than silently downgraded to a
+     *     restart from the beginning. The message names the context key, never the card number
      */
     private void restoreRestartCursor(ExecutionContext executionContext) {
         long checkpointed = executionContext.getLong(CONTEXT_KEY_RECORDS_READ, 0L);
@@ -1206,15 +1266,32 @@ public class CardReader implements ItemStreamReader<Card> {
             return;
         }
 
-        recordsRead = checkpointed;
-        nextPageNumber = Math.toIntExact(checkpointed / pageSize);
-        restartSkipWithinPage = Math.toIntExact(checkpointed % pageSize);
+        // The keyset position is re-derived rather than restored, because no CARD-NUM is checkpointed
+        // (see update(ExecutionContext)). One bounded seek locates the last-emitted row by its ordinal in the
+        // fixed ascending key order: page index checkpointed-1 at size 1 is offset checkpointed-1, so the
+        // single row returned IS that row. This is the only offset query in the class and it runs once per
+        // restart, never once per window, so the keyset scan it re-seeds is unaffected.
+        int lastEmittedOrdinal = Math.toIntExact(checkpointed - 1L);
+        List<Card> lastEmitted = cardRepository.findByCardNumberGreaterThanOrderByCardNumberAsc(
+                SEED_CARD_NUMBER, PageRequest.of(lastEmittedOrdinal, 1));
 
-        if (executionContext.containsKey(CONTEXT_KEY_LAST_CARD_NUMBER)) {
-            lastCardNumber = executionContext.getString(CONTEXT_KEY_LAST_CARD_NUMBER);
+        // Explicit handled case (Rule 1 clause B). The relation is expected to still hold at least the rows
+        // this step already emitted. If it does not, there is no position to resume from, and restarting from
+        // the first row would re-emit every row already emitted while reporting success - so the failure is
+        // deliberately loud. The message names the row count only: no CARD-NUM reaches it (Rule 1 clause D1).
+        if (lastEmitted.isEmpty() || lastEmitted.get(0) == null
+                || lastEmitted.get(0).getCardNumber() == null) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "%s restart context records %d rows already emitted, but the relation no longer yields a "
+                            + "row at that position, so there is no key to resume the keyset scan from; "
+                            + "restarting from the first row would re-emit those %d rows",
+                    LOGICAL_FILE, Long.valueOf(checkpointed), Long.valueOf(checkpointed)));
         }
 
-        // The row count is reported; the checkpointed CARD-NUM deliberately is not.
+        recordsRead = checkpointed;
+        fetchCursorCardNumber = lastEmitted.get(0).getCardNumber();
+
+        // The row count is reported; the re-derived CARD-NUM deliberately is not.
         LOG.info("Resuming {} scan after {} rows", LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 

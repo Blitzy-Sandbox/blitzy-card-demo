@@ -99,9 +99,14 @@ import org.springframework.dao.DuplicateKeyException;
  *
  * <p>The log assertions read the {@link ILoggingEvent} through a logback {@link ListAppender} rather
  * than scraping stdout, because the property under test is what reaches an appender. This matters more
- * than usual here: {@code logback-spring.xml} is planned but absent at this commit, so there is no JSON
- * encoder downstream that would escape a newline on the way out. Nothing but this class's own rendering
- * stands between the identifier and the log file.
+ * than usual here. An earlier revision of this paragraph said {@code logback-spring.xml} is absent, so
+ * that no JSON encoder stands downstream; that is no longer true and the claim is withdrawn. That file is
+ * authored, its single {@code CONSOLE} appender is the only one {@code <root>} references, and its encoder
+ * is {@code net.logstash.logback.encoder.LoggingEventCompositeJsonEncoder}, which escapes {@code CR} and
+ * {@code LF} because JSON requires it below {@code U+0020}. The class's own rendering is still the
+ * property under test: that encoder is configured with neither {@code ESCAPE_NON_ASCII} nor a
+ * {@code characterEscapes} decorator, so {@code U+2028} reaches the output unescaped, and the rendering
+ * has to hold for any appender rather than for one encoder.
  */
 @DisplayName("TransactionCombineProcessor: a hostile TRAN-ID cannot forge a log record")
 class TransactionCombineProcessorTest {

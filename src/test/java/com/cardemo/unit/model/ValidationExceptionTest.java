@@ -74,7 +74,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Only {@code BLANK} takes the second, nested branch</strong> that moves {@code '*'} into the
  *       output field. A blank field is therefore <em>not</em> merely a species of invalid field - it renders
  *       differently on the screen. Merging the two constants would lose the asterisk.</li>
- * </ul>
+ *   </ul>
  *
  * <p>This class also pins the type's own normalisation policy, which is a fourth distinct policy within the
  * same exception package and must not be inferred from its siblings: {@code fieldName} is stored
@@ -84,7 +84,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=ValidationExceptionTest
+ * ./mvnw -B -ntp -o test -Dtest=ValidationExceptionTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -105,7 +105,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A {@code hasFieldName} assertion fails.</strong> The read-time blank check moved into the
  *       constructor. That is a legitimate design but it is a change: {@code getFieldName()} would then stop
  *       returning what the caller passed.</li>
- * </ul>
+ *   </ul>
  *
  * @see ValidationException
  */

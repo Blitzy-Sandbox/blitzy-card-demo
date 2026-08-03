@@ -132,7 +132,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       keep every member static and the sole constructor private. Severity: <strong>High</strong> -
  *       shared mutable state in the time source would make every dependent assertion order sensitive.
  *       </li>
- * </ul>
+ *   </ul>
  */
 final class FixedClockProviderTest {
 

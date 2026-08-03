@@ -60,27 +60,21 @@
 # series through observability/grafana/provisioning/datasources/datasource.yml,
 # which declares the same 15s as its datasource timeInterval.
 #
-# Ownership boundary - four artefacts, four responsibilities, no overlap:
+# Ownership boundary - four responsibilities, no overlap:
 #   * MetricsConfig.java DEFINES the measurements; their names are its own
-#     constants.
-#   * src/main/resources/application.yml and ObservabilityConfig.java REGISTER
-#     and EXPOSE them on the actuator surface.
+#     constants. HealthIndicators.java DEFINES the readiness components.
+#   * src/main/resources/application.yml REGISTERS and EXPOSES them on the
+#     actuator surface, through management.endpoints.web.exposure.include.
 #   * THIS FILE SCRAPES that surface. It therefore names no measurement at all.
 #     A scrape configuration that enumerated names would duplicate
 #     MetricsConfig.java and go stale the moment one of its constants changed,
 #     so there is no allow-list, no deny-list and no metric_relabel_configs.
 #   * observability/grafana/dashboards/carddemo-dashboard.json DISPLAYS the
 #     result.
-# That boundary records ownership, not on-disk status. Two of the Java
-# artefacts named above and in the banner - ObservabilityConfig.java and
-# HealthIndicators.java - had not yet been created by their owners when
-# this file was written, so their content is Not available here and they
-# are cited for responsibility only. Nothing in this file depends on
-# either being present: a scrape configuration is inert until the endpoint
-# answers, and the target simply reports DOWN until it does.
-# For the same reason no `management.*` property is restated here. Those keys
-# belong exclusively to src/main/resources/application.yml, which records the
-# reciprocal statement at its own :102-104 and :793-796.
+# For the same reason no `management.*` property is restated here: those keys
+# belong exclusively to src/main/resources/application.yml. A scrape
+# configuration is in any case inert until the endpoint answers - the target
+# simply reports DOWN until it does.
 #
 # ============================================================================
 # HOW TO RUN AND VALIDATE
@@ -117,16 +111,14 @@
 #   * One target, host.docker.internal:8080 - see the note on the target for
 #     why that host and not a Compose service name.
 #   * metrics_path /actuator/prometheus. The base path comes from
-#     management.endpoints.web.base-path (src/main/resources/application.yml:737)
-#     and the endpoint is one of the three that
-#     management.endpoints.web.exposure.include permits, alongside health and
-#     info (application.yml:744). Exposure is never `*`, so there is no
-#     /actuator/metrics and no /metrics to scrape, and the
-#     configuration-bearing endpoints are absent by construction and are
-#     deliberately not requested here.
-#   * Port 8080 from server.port (application.yml:714), corroborated by
-#     Dockerfile:92 EXPOSE 8080. There is no separate management port in any
-#     profile, so the application and its actuator share one port.
+#     management.endpoints.web.base-path and the endpoint is one of the three
+#     that management.endpoints.web.exposure.include permits, alongside health
+#     and info. Exposure is never `*`, so there is no /actuator/metrics and no
+#     /metrics to scrape, and the configuration-bearing endpoints are absent by
+#     construction and are deliberately not requested here.
+#   * Port 8080 from server.port, corroborated by the Dockerfile's EXPOSE. There
+#     is no separate management port in any profile, so the application and its
+#     actuator share one port.
 #   * scheme http. The scrape stays on the Compose bridge network; transport
 #     security is out of scope for the local topology, and this file carries no
 #     transport override and no authentication material of any kind.
@@ -214,10 +206,10 @@ scrape_configs:
       # and observability substrate in containers but declares NO application
       # service - its services are postgres, localstack, jaeger, prometheus and
       # grafana, and it contains no build stanza. The application runs on the
-      # host: src/main/resources/application-local.yml:384 defaults its
-      # datasource host to localhost, and its own notes at :326-328 say to run
-      # the application on the host or else add an application service to
-      # docker-compose.yml. To cross the container boundary the prometheus
+      # host: src/main/resources/application-local.yml defaults its datasource
+      # host to localhost and directs the reader either to run the application
+      # on the host or to add an application service to docker-compose.yml. To
+      # cross the container boundary the prometheus
       # service declares extra_hosts host.docker.internal:host-gateway, which
       # Docker resolves to the host gateway address at container start. That
       # mapping exists for precisely this scrape and is the only name by which
@@ -229,11 +221,11 @@ scrape_configs:
           - host.docker.internal:8080
         labels:
           # The one target label, and a cross-file contract rather than a
-          # decoration: src/main/resources/application.yml:482-486 and :817
-          # both state that spring.application.name must match the `service`
-          # label attached here. Deliberately no `application` and no
-          # `component` label - the exposition already carries both as common
-          # tags (application.yml:815-819), and a target label of the same name
+          # decoration: src/main/resources/application.yml states that
+          # spring.application.name must match the `service` label attached
+          # here. Deliberately no `application` and no `component` label - the
+          # exposition already carries both as common tags, and a target label
+          # of the same name
           # would push the exposition's own value aside under an exported_
           # prefix. Every label here is a fixed literal: nothing that varies
           # per request or per record, and nothing identifying an account,

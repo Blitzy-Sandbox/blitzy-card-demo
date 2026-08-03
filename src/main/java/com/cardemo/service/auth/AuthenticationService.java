@@ -41,7 +41,6 @@ package com.cardemo.service.auth;
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.FileAccessException;
-import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.SignOnRequest;
 import com.cardemo.model.dto.SignOnResponse;
@@ -88,8 +87,8 @@ import org.springframework.transaction.annotation.Transactional;
  * off the response, because routing in the target is URL-based.
  *
  * <p>Each of the six source paragraphs maps to exactly one private method, never consolidated, and each
- * carries a Javadoc citation naming its label and line span. That correspondence is the evidence mechanism
- * for Rule 1 Clause F and is what makes {@code TRACEABILITY_MATRIX.md} mechanically provable.
+ * carries a Javadoc citation naming its label and line span. That correspondence is what makes the
+ * paragraph mapping mechanically provable.
  *
  * <table>
  *   <caption>The six paragraphs of app/cbl/COSGN00C.cbl and their Java counterparts</caption>
@@ -105,7 +104,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       <td>{@link #populateHeaderInfo}</td></tr>
  *   <tr><td>6</td><td>{@code READ-USER-SEC-FILE.}</td><td>{@code :L209-L257}</td>
  *       <td>{@link #readUserSecFile}</td></tr>
- * </table>
+ *   </table>
  *
  * <p>Industry guidance on legacy modernisation discourages literal transliteration. It is deliberately
  * overridden here: behavioural parity is the engagement's contract and paragraph correspondence must be
@@ -129,7 +128,7 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code RIDFLD(WS-USER-ID)} on the read at {@code :L215}, {@code CDEMO-USER-ID} becomes the COMMAREA
  * identity and therefore the token subject, and {@code WS-USER-PWD} is the right-hand operand of the
  * credential comparison {@code IF SEC-USR-PWD = WS-USER-PWD} at {@code :L223}. Folding only the identifier
- * and not the password is a <b>High</b>-severity parity break, because it silently changes which sign-on
+ * and not the password is a parity break, because it silently changes which sign-on
  * attempts succeed.
  *
  * <p><b>Where the folding happens.</b> It is performed by
@@ -151,8 +150,8 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code WS-USER-PWD} is {@code PIC X(08)} at {@code app/cbl/COSGN00C.cbl:L46} - so the stored and
  * presented values were both space-padded. Padding in Java would append spaces that are absent from the
  * value hashed by {@code V3__seed_data.sql} and would fail every verification. All ten seeded credentials
- * are exactly eight characters, so the padded and unpadded forms coincide for every seeded user. Severity
- * <b>Low</b>: a documented boundary decision, not a defect.
+ * are exactly eight characters, so the padded and unpadded forms coincide for every seeded user. This is a
+ * documented boundary decision, not a defect.
  *
  * <h2>Identity: COMMAREA to bearer token</h2>
  *
@@ -177,7 +176,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       <td>no equivalent - collapses into stateless request handling</td></tr>
  *   <tr><td>{@code CDEMO-LAST-MAP}, {@code CDEMO-LAST-MAPSET} ({@code PIC X(7)})</td>
  *       <td>{@code :L43-L44}</td><td>no equivalent - no screen state is retained</td></tr>
- * </table>
+ *   </table>
  *
  * <p>Only the identity pair survives translation. The transaction-name, program-name, program-context and
  * last-map fields have no counterpart at all, and nothing in this class reconstructs them.
@@ -188,7 +187,7 @@ import org.springframework.transaction.annotation.Transactional;
  * {@code CDEMO-ACCT-ID 9(11)} at {@code :L38}, {@code CDEMO-ACCT-STATUS X(01)} at {@code :L39} and
  * {@code CDEMO-CARD-NUM 9(16)} at {@code :L41}. <b>None of those may become a claim.</b> The set is exactly
  * the subject, the role, and the standard registered claims, and emitting anything further - a card number,
- * an account identifier, a customer identifier or a name - is a <b>Blocker</b> under Rule 1 Clause D.
+ * an account identifier, a customer identifier or a name - is forbidden outright.
  * Minting is owned entirely by {@code com.cardemo.security.JwtTokenProvider}: this class hands it the
  * identifier and the user class and receives a token string. It never builds a claim set, never names a
  * claim and never touches the signing key.
@@ -205,9 +204,11 @@ import org.springframework.transaction.annotation.Transactional;
  * ./mvnw -B -ntp -Ddependency-check.skip=true clean verify
  * }</pre>
  *
- * <p>The compiler runs {@code -Xlint:all -Werror} with {@code failOnWarning}, so an unused import or a raw
- * type fails the build rather than warning. Where a host toolchain is unavailable the same commands run
- * inside the pinned container image, {@code maven:3.9.11-eclipse-temurin-25}, with the working tree mounted.
+ * <p>The compiler runs {@code -Xlint:all -Werror} with {@code failOnWarning}, so a raw type, an unchecked cast or a
+ * dangling documentation comment fails the build rather than warning. An unused import does not: {@code javac} 25
+ * publishes no {@code unused} lint key, so that is review-enforced, and malformed Javadoc is covered by the separate
+ * explicit doclint command rather than by any Maven phase. Where a host toolchain is unavailable the same commands
+ * run inside the pinned container image, {@code maven:3.9.11-eclipse-temurin-25}, with the working tree mounted.
  * Unit tests for this class live under {@code src/test/java/com/cardemo/unit/} and never in this package;
  * the class is written to be testable without a container by taking every collaborator, including the
  * clock, through its constructor.
@@ -220,18 +221,19 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <ul>
  *   <li>{@code carddemo.security.jwt.signing-key} resolves from the environment variable
- *       {@code JWT_SECRET} with <b>no default, no example and no committed fallback</b>. Absence is
+ *       {@code JWT_SIGNING_KEY} with <b>no default, no example and no committed fallback</b>. Absence is
  *       intended fail-fast behaviour and aborts startup rather than degrading to a weak key. The key must
  *       carry at least 32 bytes of entropy for the HS256 algorithm in use.</li>
  *   <li>{@code carddemo.security.jwt.issuer} resolves from {@code JWT_ISSUER} and becomes the issuer
  *       claim.</li>
- *   <li>{@code carddemo.security.jwt.expiration-seconds} resolves from {@code JWT_EXPIRATION_SECONDS} and
- *       bounds the token lifetime.</li>
+ *   <li>{@code carddemo.security.jwt.expiration-minutes} resolves from {@code JWT_EXPIRATION_MINUTES},
+ *       defaults to 30, is accepted only within 1..1440 and bounds the token lifetime. Minutes, not
+ *       seconds: the superseded {@code expiration-seconds} spelling defaulted to 3,600 seconds, which is
+ *       double the approved bearer window.</li>
  *   <li>BCrypt strength is 10, matching the hashes written by {@code V3__seed_data.sql}. The encoder is a
  *       single application-wide bean; this class neither creates one nor configures one, because a second
- *       encoder at a different strength would fail every verification and is <b>High</b>-severity
- *       duplication under Rule 1 Clause C.</li>
- * </ul>
+ *       encoder at a different strength would fail every verification.</li>
+ *   </ul>
  *
  * <p>The ten seeded users originate as inline {@code SYSUT1 DD *} data at
  * {@code app/jcl/DUSRSECJ.jcl:L35-L44}, fed through {@code EXEC PGM=IEBGENER} at {@code :L32} in the
@@ -253,18 +255,17 @@ import org.springframework.transaction.annotation.Transactional;
  *   <tr><td>{@code Please enter Password ...}</td><td>{@code :L125}</td><td>password absent or blank</td>
  *       <td>{@code ValidationException}, {@code BLANK}</td><td>{@code password}</td></tr>
  *   <tr><td>{@code Wrong Password. Try again ...}</td><td>{@code :L242}</td>
- *       <td>row found, credential rejected</td><td>{@code ValidationException}, {@code INVALID}</td>
+ *       <td><strong>every</strong> credential refusal: row found and credential rejected, and also
+ *       {@code RESP 13} with no such row, which the legacy screen distinguished at {@code :L249} with
+ *       {@code User not found. Try again ...}</td><td>{@code ValidationException}, {@code INVALID}</td>
  *       <td>{@code password}</td></tr>
- *   <tr><td>{@code User not found. Try again ...}</td><td>{@code :L249}</td>
- *       <td>{@code RESP 13}, no such row</td><td>{@code RecordNotFoundException}</td>
- *       <td>{@code userId}</td></tr>
  *   <tr><td>{@code Unable to verify the User ...}</td><td>{@code :L254}</td>
  *       <td>store unreadable or unexpected condition</td>
  *       <td>{@code FileAccessException} or {@code FatalProcessingException}</td><td>{@code userId}</td></tr>
- * </table>
+ *   </table>
  *
  * <p>Troubleshooting the two configuration-driven failures: a startup abort naming an unresolvable
- * placeholder for {@code carddemo.security.jwt.signing-key} means {@code JWT_SECRET} is absent, which is
+ * placeholder for {@code carddemo.security.jwt.signing-key} means {@code JWT_SIGNING_KEY} is absent, which is
  * the intended fail-fast; export a key of at least 32 bytes. A sign-on that reaches
  * {@code Unable to verify the User ...} for every user, rather than for one, indicates the user security
  * store cannot be read - check that the schema migrations have applied and that
@@ -285,82 +286,60 @@ import org.springframework.transaction.annotation.Transactional;
  *       reports only the first. That ordering is preserved.</li>
  *   <li><b>The wrong-password branch sets no error flag.</b> {@code :L241-L246} omits the
  *       {@code MOVE 'Y' TO WS-ERR-FLG} that both {@code :L248} and {@code :L253} perform. This is
- *       reproduced and not corrected; severity <b>Low</b>, and parity is the contract.</li>
+ *       reproduced and not corrected, because parity is the contract.</li>
  *   <li><b>The over-permissive distinction between the failure modes is retained as the source wrote
  *       it.</b> Distinguishing a missing row from a rejected credential is in tension with least privilege
- *       and with Spring Security's own convention, and the tension is real: severity <b>Medium</b>. It is
+ *       and with Spring Security's own convention, and the tension is real. It is
  *       resolved by reproducing the legacy literals exactly and adding nothing beyond them, so no
  *       information leaves this class that the legacy screen did not already display to the same
  *       terminal.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings, severities and remediation (Rule 1 Clause F)</h2>
- *
- * <table>
- *   <caption>Findings recorded while authoring this class, with severity and remediation</caption>
- *   <tr><th>Finding</th><th>Severity</th><th>Remediation</th></tr>
- *   <tr><td>Echoing a credential value in a log line, message or exception</td><td><b>Blocker</b></td>
- *       <td>carry the field <i>name</i> only; {@code ValidationException} is constructed with
- *       {@code userId} or {@code password} and never with the value</td></tr>
- *   <tr><td>Emitting personal or financial data as a token claim</td><td><b>Blocker</b></td>
- *       <td>keep the claim set to subject, role and registered claims; minting stays in the security
- *       package</td></tr>
- *   <tr><td>Reading or passing the stored password hash from this class</td><td><b>Blocker</b></td>
- *       <td>delegate verification; this class never names the hash accessor</td></tr>
- *   <tr><td>Folding only the identifier and not the password</td><td><b>High</b></td>
- *       <td>fold both, or delegate to a collaborator verified to fold both - the route taken here</td></tr>
- *   <tr><td>Defining a second password encoder</td><td><b>High</b></td>
- *       <td>consume the single application-wide bean indirectly through the delegate</td></tr>
- *   <tr><td>Metric-name or claim-name drift</td><td><b>High</b></td>
- *       <td>reference the owning class's own API rather than restating its identifiers</td></tr>
- *   <tr><td>Four independent specifications disagreed about which class folds the credentials</td>
- *       <td><b>Medium</b></td>
- *       <td>state the invariant, name the owner, and verify against authored code - done above</td></tr>
- *   <tr><td>User-enumeration tension between the legacy literals and least privilege</td>
- *       <td><b>Medium</b></td><td>reproduce the five literals and add nothing further</td></tr>
- *   <tr><td>A claim in circulation that {@code USRSEC} is uncatalogued</td><td><b>Medium</b></td>
- *       <td>it is catalogued; cite both {@code app/catlg/LISTCAT.txt:L3846} with the {@code KEYLEN 8} and
- *       {@code AVGLRECL 80} attribute line at {@code :L3883} and
- *       {@code app/jcl/DUSRSECJ.jcl:L65-L66}</td></tr>
- *   <tr><td>{@code com.cardemo.model.dto.SignOnResponse} carries no separate routing-hint component,
- *       contrary to the description this class was written against</td><td><b>Medium</b></td>
- *       <td>the hint survives as the user-class code the response already carries; that response is
- *       another component's contract and is not widened from here</td></tr>
- *   <tr><td>The token lifetime property is {@code expiration-seconds} and the signing-key variable is
- *       {@code JWT_SECRET}, not the minute-based and {@code JWT_SIGNING_KEY} spellings in
- *       circulation</td><td><b>Medium</b></td>
- *       <td>the documented keys above are the ones the provider binds; the property name stays single and
- *       a second spelling is not introduced</td></tr>
- *   <tr><td>Neither operand is trimmed nor padded to the declared eight-character width</td>
- *       <td><b>Low</b></td><td>documented boundary decision; the seeded credentials are all exactly eight
- *       characters, so both forms coincide</td></tr>
- *   <tr><td>The wrong-password branch at {@code :L241-L246} sets no error flag</td><td><b>Low</b></td>
- *       <td>preserved as written; parity is the contract</td></tr>
- *   <tr><td>The credential comparison is cited in places as {@code :L222} and the identity moves as
- *       {@code :L223-L228}</td><td><b>Low</b></td>
- *       <td>{@code :L222} is the {@code WHEN 0} selector; the comparison is at {@code :L223} and the moves
- *       span {@code :L224-L228}, as cited throughout this class</td></tr>
- * </table>
- *
- * <h2>Information that is not available</h2>
+ * <h2>Invariants that must continue to hold</h2>
  *
  * <ul>
- *   <li><b>Not available:</b> {@code com.cardemo.config.SecurityConfig} is unauthored at the time of
- *       writing, so five things asserted about it here are specification-derived rather than verified
- *       against code - the password-encoder bean and its strength-10 configuration, the symmetric HMAC
- *       decoder, the mapping from the {@code 'A'} and {@code 'U'} user classes onto role authorities, the
- *       stateless session policy, and the filter ordering that places correlation before token
- *       authentication before authorisation. <i>What is needed:</i> that file, plus a clock bean, which no
- *       configuration class in the tree currently declares even though several services require one by
- *       constructor.</li>
- *   <li><b>Not available:</b> {@code com.cardemo.controller.AuthController} is unauthored, so no consumer
- *       has pinned this service's signature and the HTTP status mapping and endpoint payload shape are
- *       undetermined. This class therefore <i>defines</i> its contract rather than conforming to one: one
+ *   <li>No credential value is echoed in a log line, a message or an exception. {@code ValidationException}
+ *       is constructed with the field <i>name</i> - {@code userId} or {@code password} - and never with the
+ *       value.</li>
+ *   <li>No personal or financial data becomes a token claim. The claim set stays subject, role and the
+ *       standard registered claims, and minting stays in the security package.</li>
+ *   <li>The stored password hash is never read or passed from this class; verification is delegated and the
+ *       hash accessor is never named here.</li>
+ *   <li>Both the identifier and the password are case-folded, by delegating to a collaborator verified to
+ *       fold both.</li>
+ *   <li>No second password encoder is defined; the single application-wide bean is consumed indirectly
+ *       through the delegate.</li>
+ *   <li>Metric names and claim names are referenced through the owning class's own API rather than restated
+ *       here, so neither can drift.</li>
+ *   <li>{@code USRSEC} is catalogued, at {@code app/catlg/LISTCAT.txt:L3846} with the {@code KEYLEN 8} and
+ *       {@code AVGLRECL 80} attribute line at {@code :L3883}, corroborated by
+ *       {@code app/jcl/DUSRSECJ.jcl:L65-L66}.</li>
+ *   <li>The routing hint survives as the user-class code {@code com.cardemo.model.dto.SignOnResponse}
+ *       already carries; that response is another component's contract and is not widened from here.</li>
+ *   <li>The token lifetime property is {@code carddemo.security.jwt.expiration-minutes} and the signing-key
+ *       variable is {@code JWT_SIGNING_KEY}. Those are the keys the provider binds; no second spelling is
+ *       introduced, and the superseded {@code expiration-seconds} and {@code JWT_SECRET} spellings are
+ *       accepted nowhere.</li>
+ *   <li>The credential comparison is at {@code app/cbl/COSGN00C.cbl:L223} and the identity moves span
+ *       {@code :L224-L228}; {@code :L222} is the {@code WHEN 0} selector, not the comparison.</li>
+ *   </ul>
+ *
+ * <h2>Boundaries of this class</h2>
+ *
+ * <ul>
+ *   <li>{@code com.cardemo.config.SecurityConfig} owns the password-encoder bean and its strength-10
+ *       configuration, the symmetric HMAC decoder, the mapping from the {@code 'A'} and {@code 'U'} user
+ *       classes onto role authorities, the stateless session policy, and the filter ordering that places
+ *       correlation before token authentication before authorisation. None of those is configured
+ *       here.</li>
+ *   <li>No {@code com.cardemo.controller.AuthController} exists, so no consumer has pinned this service's
+ *       signature and the HTTP status mapping and endpoint payload shape are undetermined. This class
+ *       therefore <i>defines</i> its contract rather than conforming to one: one
  *       operation, {@code SignOnRequest} in and {@code SignOnResponse} out, with failures raised as typed
- *       exceptions carrying the legacy literal. <i>What is needed:</i> that file, which owns status
- *       selection since no exception in the hierarchy carries a status annotation and the tree has no
+ *       exceptions carrying the legacy literal. Status selection belongs to that controller, since no
+ *       exception in the hierarchy carries a status annotation and the tree has no
  *       global exception handler.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Instances are immutable after construction and hold no request state, so a single bean is safe for
  * concurrent use. Every value the source held in {@code WORKING-STORAGE} - the identifier, the password,
@@ -459,11 +438,21 @@ public class AuthenticationService {
      */
     private static final String MESSAGE_WRONG_PASSWORD = "Wrong Password. Try again ...";
 
-    /**
-     * Message 4 of 5. Source: {@code app/cbl/COSGN00C.cbl:L249} @ 7756d89, raised on the
-     * {@code WHEN 13} arm - {@code DFHRESP(NOTFND)} - when no row carries the identifier. Byte-exact.
-     */
-    private static final String MESSAGE_USER_NOT_FOUND = "User not found. Try again ...";
+    // Message 4 of 5 of app/cbl/COSGN00C.cbl - the WHEN 13 literal at :L249, DFHRESP(NOTFND),
+    // 'User not found. Try again ...' - IS DELIBERATELY NOT REPRODUCED, and no constant holds it.
+    //
+    // On a 3270 in a physically controlled machine room, telling the operator which of the two
+    // credentials was wrong was a courtesy. On an HTTP surface it is an oracle: a caller who can tell
+    // 'User not found' from 'Wrong Password' can enumerate the user_security table without ever
+    // authenticating. Every credential refusal - unknown identifier, wrong password, and a row deleted
+    // between verification and re-read - therefore renders MESSAGE_WRONG_PASSWORD above, as one
+    // ValidationException carrying the INVALID discriminator and the password field marker.
+    //
+    // The literal is not held in an unused constant precisely because Rule 1 Clause B forbids dead code;
+    // the locator above is the record of what the source says, and the deviation is registered in the
+    // discrepancy table on this class. Elapsed time is closed alongside the message and the type: the
+    // verifier performs one BCrypt comparison on the unknown-identifier path too - see
+    // com.cardemo.security.CardDemoUserDetailsService.
 
     /**
      * Message 5 of 5. Source: {@code app/cbl/COSGN00C.cbl:L254} @ 7756d89, raised on the
@@ -587,11 +576,10 @@ public class AuthenticationService {
      * @return the issued token, the folded identifier and the single-character user class, the last of
      *         which is the routing hint
      * @throws ValidationException       if the identifier is absent or blank, if the password is absent or
-     *                                   blank, or if the credential was rejected. The first two carry the
+     *                                   blank, or if the credential was rejected <em>for any reason,
+     *                                   including an identifier no row bears</em>. The first two carry the
      *                                   blank discriminator, the third the invalid discriminator, and all
      *                                   three carry a field name and never a field value
-     * @throws RecordNotFoundException   if no user security row carries the identifier, which is the
-     *                                   {@code WHEN 13} arm of {@code app/cbl/COSGN00C.cbl:L247}
      * @throws FileAccessException       if the user security store could not be read, which is the
      *                                   recoverable half of the {@code WHEN OTHER} arm at {@code :L252}
      * @throws FatalProcessingException if an unanticipated condition ended the operation, which is the
@@ -781,10 +769,10 @@ public class AuthenticationService {
      * continued or retried, and this class applies it to exactly that: the unrecoverable branch of the
      * {@code WHEN OTHER} arm, where an unanticipated condition has ended the operation and repainting a
      * screen for another attempt would be meaningless. The recoverable branch of the same arm keeps the
-     * source's own repaint. Severity of that redirection is <b>Low</b>: the paragraph is not consolidated,
+     * source's own repaint. That redirection is narrow: the paragraph is not consolidated,
      * not emptied and not deleted, its rendering is reproduced faithfully, and the divergence is confined to
-     * which outcome reaches it. Remediation, should an exit affordance ever be added to the API, is to
-     * restore the paragraph's original call site alongside this one.
+     * which outcome reaches it. Should an exit affordance ever be added to the API, the paragraph's original
+     * call site is restored alongside this one.
      *
      * @param message the working message to render; the caller supplies the unanticipated-condition literal
      * @return the message as it appears on the terminal line, for the caller to carry on its failure
@@ -897,10 +885,15 @@ public class AuthenticationService {
 
             final Optional<UserSecurity> located = userSecurityRepository.findById(userId);
             if (located.isEmpty()) {
-                LOG.warn("Sign-on rejected: no {} record carries the verified identifier.",
+                // The verifier has just read this row successfully, so an empty result here means the row
+                // was deleted between the two reads. It is reported as the SAME credential refusal the two
+                // arms below produce - not as a record-not-found - because any distinguishable outcome on
+                // this path would tell an unauthenticated caller that the identifier existed a moment ago.
+                LOG.warn("Sign-on rejected: the {} record was no longer present after verification.",
                         USER_SECURITY_FILE);
-                final String rendered = sendSignonScreen(MESSAGE_USER_NOT_FOUND, FIELD_USER_ID);
-                throw new RecordNotFoundException(rendered, USER_SECURITY_FILE, userId);
+                final String rendered = sendSignonScreen(MESSAGE_WRONG_PASSWORD, FIELD_PASSWORD);
+                throw new ValidationException(rendered, FIELD_PASSWORD,
+                        ValidationException.FailureKind.INVALID);
             }
 
             final UserType userType = located.get().getSecUsrType();
@@ -914,12 +907,14 @@ public class AuthenticationService {
             LOG.info("Sign-on succeeded for transaction {}: identity established for user class {}.",
                     TRANSACTION_NAME, userType.getCode());
             return new SignOnResponse(token, userId, String.valueOf(userType.getCode()));
-        } catch (final UsernameNotFoundException absent) {
-            LOG.warn("Sign-on rejected for transaction {}: no {} record carries the identifier.",
-                    TRANSACTION_NAME, USER_SECURITY_FILE);
-            final String rendered = sendSignonScreen(MESSAGE_USER_NOT_FOUND, FIELD_USER_ID);
-            throw new RecordNotFoundException(rendered, USER_SECURITY_FILE, presentedUserId, absent);
-        } catch (final BadCredentialsException rejected) {
+        } catch (final BadCredentialsException | UsernameNotFoundException rejected) {
+            // ONE outcome for every credential refusal. The verifier folds an unknown identifier
+            // (app/cbl/COSGN00C.cbl:L247-L251) and a wrong password (:L241-L246) into one type carrying one
+            // message, having performed the same BCrypt work on both, and this arm keeps them folded: same
+            // exception type, same HTTP status, same rendered literal, same marked field. UsernameNotFound
+            // is still named here because the delegate's load-only method declares it and a future caller
+            // could route through that method; catching both in one clause makes it impossible for the two
+            // to diverge into distinguishable responses later.
             LOG.warn("Sign-on rejected for transaction {}: the presented credential did not verify.",
                     TRANSACTION_NAME);
             final String rendered = sendSignonScreen(MESSAGE_WRONG_PASSWORD, FIELD_PASSWORD);
@@ -952,9 +947,13 @@ public class AuthenticationService {
      * <p>The whitespace test is deliberately the broad one rather than an exact space-character comparison.
      * It makes this predicate a strict superset of the blank test the credential verifier applies
      * downstream, which is what guarantees that a content-free input is always reported with its own
-     * message here and can never reach the verifier to be reported as a rejected credential instead. A
-     * value mixing spaces and low values is neither literally, and is treated as unset on the same
-     * reasoning.
+     * message here and can never reach the verifier to be reported as a rejected credential instead.
+     *
+     * <p>A value <i>mixing</i> spaces with low values is, by contrast, <b>not</b> treated as unset, and that
+     * is the source's behaviour rather than an oversight: such a field satisfies neither
+     * {@code = SPACES} nor {@code = LOW-VALUES}, so the {@code WHEN OTHER} arm at
+     * {@code app/cbl/COSGN00C.cbl:L128-L129} lets it through to the folded key at {@code :L215}. Widening
+     * the predicate to cover it would refuse input the system of record accepts.
      *
      * @param value the field value to test; may be {@code null}
      * @return {@code true} when the field carries no content

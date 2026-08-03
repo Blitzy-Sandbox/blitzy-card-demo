@@ -93,13 +93,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       when all three components match, and the type behaves correctly as a hash key, because JPA resolves
  *       an {@code @EmbeddedId} through {@code equals} and {@code hashCode} and a partial identity would
  *       collapse distinct disclosure groups onto one another.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test                                       # whole unit tier
- * mvn -B -o test -Dtest=DisclosureGroupIdTest          # this class alone
+ * ./mvnw -B -ntp -o test                                       # whole unit tier
+ * ./mvnw -B -ntp -o test -Dtest=DisclosureGroupIdTest          # this class alone
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -119,7 +119,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       the copybook order; a reordered composite key silently changes browse order.</li>
  *   <li><strong>An identity assertion fails.</strong> {@code equals} or {@code hashCode} stopped covering
  *       all three components, which would make two different disclosure groups indistinguishable to JPA.</li>
- * </ul>
+ *   </ul>
  *
  * @see DisclosureGroupId
  */

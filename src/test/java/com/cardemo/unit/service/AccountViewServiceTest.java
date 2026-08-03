@@ -135,7 +135,7 @@ import org.springframework.dao.QueryTimeoutException;
  *       {@code EXEC CICS ABEND ABCODE('9999')} - the ONLINE four-character contract.</li>
  *   <li>{@code app/cpy-bms/COACTVW.CPY:60} - {@code 02 ACCTSIDI PIC 99999999999.}, the expanded
  *       non-parenthesised eleven-digit PICTURE that makes the input-field count 37 rather than 36.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -166,16 +166,19 @@ import org.springframework.dao.QueryTimeoutException;
  *   <li>Money is {@link BigDecimal} at the {@code PIC S9(10)V99} scale of two, rounded
  *       {@link RoundingMode#HALF_EVEN}, and equality is decided by {@code compareTo} - never by
  *       {@code equals}, which is scale-sensitive. No {@code float} and no {@code double} appears anywhere.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>The build fails with "warnings found and -Werror specified".</strong> One unused import is
- *       enough: {@code maven-compiler-plugin} runs {@code -Xlint:all -Werror} with
- *       {@code failOnWarning} at TEST compilation too. Remove the import rather than suppressing the lint.
- *       The same gate rejects an unbalanced {@code <ul>}, an unescaped angle bracket or a stray leading
- *       {@code @} in Javadoc, because JDK 25 doclint runs under it.</li>
+ *   <li><strong>The build fails with "warnings found and -Werror specified".</strong> One raw type,
+ *       unchecked cast or dangling documentation comment is enough: {@code maven-compiler-plugin} runs
+ *       {@code -Xlint:all -Werror} with {@code failOnWarning} at TEST compilation too. An unused import is
+ *       <em>not</em> caught, because {@code javac} 25 publishes no {@code unused} lint key; remove it
+ *       because Rule 1 Clause B requires it. Nor does this gate reject an unbalanced {@code <ul>}, an
+ *       unescaped angle bracket or a stray leading {@code @} in Javadoc: <strong>doclint is not part of the
+ *       Maven build at all</strong> and is the separate explicit command published in
+ *       {@code docs/technical-specifications.md}.</li>
  *   <li><strong>Someone "fixes" the two dead guards.</strong> Adding an early exit after the account-master
  *       or customer-master read makes {@link #accountMasterMissStillAttemptsTheCustomerLookup()} fail. That
  *       failure is correct: the source keeps reading. Read section 5 before changing production code.</li>
@@ -189,18 +192,19 @@ import org.springframework.dao.QueryTimeoutException;
  *   <li><strong>Someone normalises the account-filter message.</strong> {@code :673} carries two consecutive
  *       spaces between {@code must} and {@code be}. An editor that collapses whitespace breaks
  *       {@link #invalidFilterCarriesTheDoubleSpacedAccountFilterMessage()}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. The documented conflict - parity governs</h2>
  *
  * <p>Rule 1 Clause B forbids dead code; the parity mandate requires the source's control flow to be
  * reproduced one-to-one. They collide in exactly two places in this program, and parity governs - satisfied
  * by Clause B's own wording, which prohibits artefacts <em>without an owner or tracking reference</em>. Both
- * are tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}, both carry a source locator, and
- * both are marked here as intentional retained no-ops:</p>
+ * carry a source locator and both are marked here as intentional retained no-ops, pinned by the assertions
+ * below:</p>
  *
  * <ul>
- *   <li><strong>Intentional retained no-op, severity High.</strong> The guards at {@code :704-706} and
+ *   <li><strong>Intentional retained no-op - the dead early-exit guards.</strong> The guards at
+ *       {@code :704-706} and
  *       {@code :713-715} test {@code DID-NOT-FIND-ACCT-IN-ACCTDAT} ({@code :131-132}) and
  *       {@code DID-NOT-FIND-CUST-IN-CUSTDAT} ({@code :133-134}). Those are message literals, and their only
  *       {@code SET} statements are commented out - verbatim
@@ -210,37 +214,40 @@ import org.springframework.dao.QueryTimeoutException;
  *       read at {@code :708-711}. The third literal, {@code DID-NOT-FIND-ACCT-IN-CARDXREF} at
  *       {@code :129-130}, is neither set nor tested; its {@code IF} is commented out at {@code :696} and the
  *       author substituted {@code IF FLG-ACCTFILTER-NOT-OK} at {@code :697}, which is the one live guard.</li>
- *   <li><strong>Intentional retained no-op, severity Medium.</strong> {@code 0000-MAIN-EXIT.} is declared
+ *   <li><strong>Intentional retained no-op - the duplicated label.</strong> {@code 0000-MAIN-EXIT.} is
+ *       declared
  *       twice, at {@code :408} and again at {@code :411}. Both map to their own method; emitting one for the
  *       two labels would break the paragraph map.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>6. Findings this class pins, by severity</h2>
+ * <h2>6. What this class pins, and why each one is easy to get wrong</h2>
  *
  * <ul>
- *   <li><strong>High</strong> - the two dead early-exit guards, because a naive port short-circuits where the
- *       source does not; conflating the online {@code '9999'} abend with the batch abend contract; letting
- *       any of the five-hundred-byte customer record's protected fields reach a log, an assertion message or
- *       an exception message.</li>
- *   <li><strong>Medium</strong> - the {@code COACTVW} input-field count is <strong>37</strong>, not the 36
- *       recorded in the plan, because of the expanded {@code PIC 99999999999} at
- *       {@code app/cpy-bms/COACTVW.CPY:60}; consolidating the duplicated {@code 0000-MAIN-EXIT}.</li>
- *   <li><strong>Low</strong> - {@code SEARCHED-ACCT-ZEROES} ({@code :125-126}) and
+ *   <li><strong>The two dead early-exit guards</strong>, because a naive port short-circuits where the
+ *       source does not; <strong>the online {@code '9999'} abend</strong>, which is not the batch abend
+ *       contract; and <strong>every protected field of the five-hundred-byte customer record</strong>, none
+ *       of which may reach a log, an assertion message or an exception message.</li>
+ *   <li><strong>The {@code COACTVW} input-field count is 37</strong>, not the 36 that older prose records,
+ *       because of the expanded {@code PIC 99999999999} at
+ *       {@code app/cpy-bms/COACTVW.CPY:60}; and the duplicated {@code 0000-MAIN-EXIT} must not be
+ *       consolidated.</li>
+ *   <li><strong>Two indistinguishable condition names and one case divergence.</strong>
+ *       {@code SEARCHED-ACCT-ZEROES} ({@code :125-126}) and
  *       {@code SEARCHED-ACCT-NOT-NUMERIC} ({@code :127-128}) carry an identical {@code VALUE}, so the two
- *       condition names are indistinguishable; and the reason-code label diverges in case between
+ *       are indistinguishable; and the reason-code label diverges in case between
  *       {@code ' Reas:'} in {@code 9200}/{@code 9300} and {@code ' REAS:'} in {@code 9400}.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>7. Not available at this tier</h2>
+ * <h2>7. Boundaries of this tier</h2>
  *
- * <p>Two assertions cannot be made from a pure-JVM unit test of this bean, and are stated as unavailable
- * rather than faked. Both need {@code com.cardemo.config.SecurityConfig}, which is not a dependency of this
+ * <p>Two assertions cannot be made from a pure-JVM unit test of this bean, and are named rather than faked.
+ * Both need {@code com.cardemo.config.SecurityConfig}, which is not a dependency of this
  * file. First, that {@code /api/admin/*} is restricted to the administrator role - {@code COACTVWC} exposes
  * no administrative endpoint at all, since {@code app/csd/CARDDEMO.CSD} maps {@code CU00} through
  * {@code CU03} to the four {@code COUSR*} programs and not to this one. Second, that the HTTP session policy
  * is {@code STATELESS}. What <em>is</em> observable here, and is asserted, is the property those two rules
  * exist to protect: this bean keeps no server-side state, holds no mutable field, and leaks nothing from one
- * call into the next. Prerequisite for the other two: a security-tier test that may import
+ * call into the next. The other two belong to a security-tier test that may import
  * {@code SecurityConfig}.</p>
  */
 @ExtendWith(MockitoExtension.class)
@@ -307,27 +314,47 @@ final class AccountViewServiceTest {
     private static final String SSN = "999999999";
 
     /**
-     * The rendered SSN the screen carries, {@code 999-99-9999}, produced from {@link #SSN} by the
-     * {@code CUST-SSN} formatter of {@code :506}. A derived form of a protected field is still protected, so it
-     * is checked for alongside the raw digits.
+     * The rendered form of {@link #SSN} that the screen carries, produced by the {@code CUST-SSN} formatter
+     * of {@code :506}: the same reserved nine-digit value with the conventional two group separators
+     * inserted. A derived form of a protected field is still protected, so it
+     * is checked for alongside the undelimited digits.
      */
     private static final String SSN_DISPLAY = "999-99-9999";
 
-    /** A synthetic {@code CUST-PHONE-NUM-1 PIC X(15)} at record offset 250-264. Protected. */
-    private static final String PHONE_1 = "(555) 555-0100";
-
-    /** A synthetic {@code CUST-PHONE-NUM-2 PIC X(15)} at record offset 265-279. Protected. */
-    private static final String PHONE_2 = "(555) 555-0199";
+    /**
+     * A synthetic {@code CUST-PHONE-NUM-1} at record offset 250-264, declared {@code PIC X(15)} at
+     * {@code app/cpy/CVCUS01Y.cpy}:15. EXACTLY FIFTEEN CHARACTERS, deliberately: the narrowing this suite
+     * asserts drops exactly two bytes, and a fourteen-character fixture would drop one and prove the wrong
+     * arithmetic. Protected.
+     */
+    private static final String PHONE_1 = "(555) 555-01001";
 
     /**
-     * {@link #PHONE_1} as the screen actually carries it. The record field is {@code PIC X(15)} but
-     * {@code ACSPHN1I} of {@code app/cpy-bms/COACTVW.CPY} is {@code PIC X(13)}, so the {@code MOVE} at
-     * {@code :516} narrows the field and discards its final two bytes. A truncated protected value is still a
-     * protected value, so it is checked for in its own right.
+     * A synthetic {@code CUST-PHONE-NUM-2} at record offset 265-279, declared {@code PIC X(15)} at
+     * {@code app/cpy/CVCUS01Y.cpy}:16. Fifteen characters, for the same reason as {@link #PHONE_1}.
+     * Protected.
+     */
+    private static final String PHONE_2 = "(555) 555-01992";
+
+    /**
+     * {@link #PHONE_1} as the screen actually carries it: its LEFT thirteen characters.
+     *
+     * <p>The record field is {@code PIC X(15)} at {@code app/cpy/CVCUS01Y.cpy}:15 while the screen field is
+     * {@code ACSPHN1O PIC X(13)} at {@code app/cpy-bms/COACTVW.CPY}:428, so
+     * {@code MOVE CUST-PHONE-NUM-1 TO ACSPHN1O} at {@code app/cbl/COACTVWC.cbl}:517 narrows the field and
+     * discards its final two bytes. The output field is the one the {@code MOVE} names; the input twin
+     * {@code ACSPHN1I} at {@code :204} carries the same {@code PIC X(13)} and is not the target.
+     *
+     * <p>COBOL alphanumeric moves left-justify and truncate on the RIGHT, so the retained bytes are the
+     * leading thirteen and never the trailing thirteen. A truncated protected value is still a protected
+     * value, so it is checked for in its own right.
      */
     private static final String PHONE_1_DISPLAY = "(555) 555-010";
 
-    /** {@link #PHONE_2} narrowed by the same {@code PIC X(13)} screen field at {@code :518}. Protected. */
+    /**
+     * {@link #PHONE_2} narrowed by {@code ACSPHN2O PIC X(13)} at {@code app/cpy-bms/COACTVW.CPY}:440, by the
+     * {@code MOVE} at {@code app/cbl/COACTVWC.cbl}:518. Protected.
+     */
     private static final String PHONE_2_DISPLAY = "(555) 555-019";
 
     /** A synthetic {@code CUST-DOB-YYYY-MM-DD PIC X(10)} at record offset 309-318. Protected. */
@@ -356,7 +383,7 @@ final class AccountViewServiceTest {
     /**
      * {@code 88 SEARCHED-ACCT-ZEROES} at {@code :125-126} and {@code 88 SEARCHED-ACCT-NOT-NUMERIC} at
      * {@code :127-128} - two condition names over one identical literal, and a different string from
-     * {@link #ACCOUNT_FILTER_MESSAGE}. Severity Low.
+     * {@link #ACCOUNT_FILTER_MESSAGE}.
      */
     private static final String SEARCHED_ACCT_MESSAGE = "Account number must be a non zero 11 digit number";
 
@@ -513,7 +540,7 @@ final class AccountViewServiceTest {
      */
     private static final String MESSAGE_CUSTOMER_MASTER = " in customer master." + "Resp:" + " ";
 
-    /** {@code STRING ' REAS:'} from {@code 9400} - upper case, unlike {@link #MESSAGE_REASON}. Severity Low. */
+    /** {@code STRING ' REAS:'} from {@code 9400} - upper case, unlike {@link #MESSAGE_REASON}. */
     private static final String MESSAGE_REASON_UPPER = " REAS:";
 
     /** {@code ERROR-RESP PIC X(10)} holding {@code DFHRESP(NOTFND)}, numeric 13, zero-filled to nine digits. */
@@ -754,15 +781,15 @@ final class AccountViewServiceTest {
 
     /** Stubs a successful cross-reference read: one row, {@code DFHRESP(NORMAL)}. */
     private void stubCrossReferenceFound() {
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
-                .thenReturn(List.of(crossReference()));
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+                .thenReturn(Optional.of(crossReference()));
         stubSuccessfulRead(XREF_ACCOUNT_PATH_NAME);
     }
 
     /** Stubs an empty cross-reference result, which the adapter renders as file status {@code '23'}. */
     private void stubCrossReferenceMissing() {
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
-                .thenReturn(List.of());
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+                .thenReturn(Optional.empty());
         stubRecordNotFound(XREF_ACCOUNT_PATH_NAME, "CARD-XREF-RECORD");
     }
 
@@ -840,7 +867,7 @@ final class AccountViewServiceTest {
         final InOrder order =
                 inOrder(this.cardCrossReferenceRepository, this.accountRepository, this.customerRepository);
         order.verify(this.cardCrossReferenceRepository)
-                .findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID);
+                .findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID);
         order.verify(this.accountRepository).findById(VALID_ACCOUNT_ID);
         order.verify(this.customerRepository).findById(XREF_CUSTOMER_ID);
         order.verifyNoMoreInteractions();
@@ -908,7 +935,7 @@ final class AccountViewServiceTest {
     }
 
     // -----------------------------------------------------------------------------------------------------
-    // Defect V1, severity High: the two dead early-exit guards at :704-706 and :713-715
+    // The two dead early-exit guards at :704-706 and :713-715
     // -----------------------------------------------------------------------------------------------------
 
     @Test
@@ -1105,7 +1132,7 @@ final class AccountViewServiceTest {
     @DisplayName(":759-768 WHEN OTHER on the cross-reference read emits the :86 composite, not a diagnostic")
     void crossReferenceIoErrorProducesTheCompositeFileErrorMessage() {
         final QueryTimeoutException cause = new QueryTimeoutException("read timed out");
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
                 .thenThrow(cause);
         stubIoError(XREF_ACCOUNT_PATH_NAME, cause);
 
@@ -1156,7 +1183,7 @@ final class AccountViewServiceTest {
     @DisplayName(":135-136 defect V2 - XREF-READ-ERROR is declared but its assignment is commented out")
     void theXrefReadErrorLiteralIsNeverEmitted() {
         final QueryTimeoutException cause = new QueryTimeoutException("read timed out");
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
                 .thenThrow(cause);
         stubIoError(XREF_ACCOUNT_PATH_NAME, cause);
 
@@ -1284,7 +1311,7 @@ final class AccountViewServiceTest {
     }
 
     // -----------------------------------------------------------------------------------------------------
-    // Defect V4, severity Medium: 0000-MAIN-EXIT. is declared twice, at :408 and :411
+    // 0000-MAIN-EXIT. is declared twice, at :408 and :411
     // -----------------------------------------------------------------------------------------------------
 
     @Test
@@ -1334,7 +1361,7 @@ final class AccountViewServiceTest {
     @DisplayName(":935 an unexpected runtime failure abends with the FOUR-character online code '9999'")
     void unexpectedRuntimeFailureAbendsWithTheOnlineFourCharacterCode() {
         final IllegalStateException fault = new IllegalStateException("simulated non-persistence fault");
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
                 .thenThrow(fault);
 
         assertThatExceptionOfType(FatalProcessingException.class)
@@ -1477,23 +1504,54 @@ final class AccountViewServiceTest {
                 .containsExactly(String.class);
     }
 
+    /**
+     * The declared width of {@code CUST-PHONE-NUM-1} and {@code CUST-PHONE-NUM-2}, read from
+     * {@code app/cpy/CVCUS01Y.cpy}:15 and {@code :16}. Held as a constant so the two-byte loss below is
+     * arithmetic over two source-declared widths rather than a hand-counted literal.
+     */
+    private static final int CUST_PHONE_NUM_WIDTH = 15;
+
     @Test
-    @DisplayName(":516-518 the screen NARROWS the X(15) telephone fields into X(13), dropping two bytes")
+    @DisplayName(":517-518 the screen NARROWS X(15) telephone fields into X(13), dropping exactly two bytes")
     void theScreenNarrowsTheFifteenByteTelephoneFieldsIntoThirteenByteScreenFields() {
+        // THE EXACT SOURCE DECISION, in four locators rather than a remembered width.
+        //   CUST-PHONE-NUM-1 PIC X(15)  app/cpy/CVCUS01Y.cpy:15
+        //   CUST-PHONE-NUM-2 PIC X(15)  app/cpy/CVCUS01Y.cpy:16
+        //   ACSPHN1O         PIC X(13)  app/cpy-bms/COACTVW.CPY:428
+        //   ACSPHN2O         PIC X(13)  app/cpy-bms/COACTVW.CPY:440
+        // and the two MOVEs that join them, app/cbl/COACTVWC.cbl:517 and :518. An earlier revision of this
+        // test cited ACSPHN1I - the INPUT twin at :204 - and put both MOVEs at :516, which is
+        // CUST-ADDR-COUNTRY-CD TO ACSCTRYO. Both widths happened to be right, so the numbers passed while the
+        // evidence pointed at the wrong field and the wrong line.
         stubCompleteChain();
 
         final AccountDto screen = reenter(VALID_FILTER).screen();
 
         assertThat(PHONE_1)
-                .as("CUST-PHONE-NUM-1 PIC X(15) of app/cpy/CVCUS01Y.cpy, record offset 250-264")
-                .hasSizeGreaterThan(AccountDto.PHONE_NUMBER_LENGTH);
+                .as("the fixture must BE the declared width, or the loss below is not 15-to-13")
+                .hasSize(CUST_PHONE_NUM_WIDTH);
+        assertThat(PHONE_2).hasSize(CUST_PHONE_NUM_WIDTH);
+        assertThat(CUST_PHONE_NUM_WIDTH - AccountDto.PHONE_NUMBER_LENGTH)
+                .as("X(15) into X(13) discards exactly two bytes")
+                .isEqualTo(2);
+
         assertThat(screen.phoneNumber1())
-                .as("ACSPHN1I PIC X(13) of app/cpy-bms/COACTVW.CPY - the MOVE truncates, it does not widen")
+                .as("ACSPHN1O PIC X(13) at app/cpy-bms/COACTVW.CPY:428 - the MOVE truncates, never widens")
                 .isEqualTo(PHONE_1_DISPLAY)
-                .hasSize(AccountDto.PHONE_NUMBER_LENGTH);
+                .hasSize(AccountDto.PHONE_NUMBER_LENGTH)
+                .isEqualTo(PHONE_1.substring(0, AccountDto.PHONE_NUMBER_LENGTH));
         assertThat(screen.phoneNumber2())
+                .as("ACSPHN2O PIC X(13) at app/cpy-bms/COACTVW.CPY:440")
                 .isEqualTo(PHONE_2_DISPLAY)
-                .hasSize(AccountDto.PHONE_NUMBER_LENGTH);
+                .hasSize(AccountDto.PHONE_NUMBER_LENGTH)
+                .isEqualTo(PHONE_2.substring(0, AccountDto.PHONE_NUMBER_LENGTH));
+
+        // COBOL alphanumeric MOVE left-justifies and truncates on the RIGHT. Asserting which bytes SURVIVE is
+        // what distinguishes a correct truncation from a right-anchored one that would also be 13 long.
+        assertThat(screen.phoneNumber1())
+                .as("the LEADING thirteen bytes survive; the trailing two are the ones discarded")
+                .isEqualTo(PHONE_1.substring(0, AccountDto.PHONE_NUMBER_LENGTH))
+                .isNotEqualTo(PHONE_1.substring(CUST_PHONE_NUM_WIDTH - AccountDto.PHONE_NUMBER_LENGTH));
     }
 
     @Test
@@ -1637,13 +1695,13 @@ final class AccountViewServiceTest {
     @Test
     @DisplayName(":632 an over-long filter is TRUNCATED to X(11) by the MOVE and then accepted")
     void anOverLongFilterIsTruncatedToElevenCharactersAndAccepted() {
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(12345678901L))
-                .thenReturn(List.of());
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(12345678901L))
+                .thenReturn(Optional.empty());
         stubRecordNotFound(XREF_ACCOUNT_PATH_NAME, "CARD-XREF-RECORD");
 
         final AccountViewResult result = reenter("123456789012");
 
-        verify(this.cardCrossReferenceRepository).findByAccountIdOrderByCardNumberAsc(12345678901L);
+        verify(this.cardCrossReferenceRepository).findFirstByAccountIdOrderByCardNumberAsc(12345678901L);
         assertThat(result.screen().accountId())
                 .as("the twelfth character is discarded by the X(11) MOVE, not reported as an error")
                 .isEqualTo("12345678901");
@@ -1712,7 +1770,7 @@ final class AccountViewServiceTest {
     @DisplayName("a 9x status is mapped through the FOUR-argument overload so the root cause survives")
     void theStatusMapperReceivesTheInfrastructureCauseOnTheFourArgumentOverload() {
         final QueryTimeoutException cause = new QueryTimeoutException("read timed out");
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID))
                 .thenThrow(cause);
         final CardDemoException verdict = stubIoError(XREF_ACCOUNT_PATH_NAME, cause);
 
@@ -1862,11 +1920,11 @@ final class AccountViewServiceTest {
 
         reenter(VALID_FILTER);
 
-        verify(this.cardCrossReferenceRepository).findByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID);
+        verify(this.cardCrossReferenceRepository).findFirstByAccountIdOrderByCardNumberAsc(VALID_ACCOUNT_ID);
         verify(this.accountRepository).findById(VALID_ACCOUNT_ID);
         verify(this.customerRepository).findById(XREF_CUSTOMER_ID);
         final Method alternateIndexFinder = CardCrossReferenceRepository.class
-                .getMethod("findByAccountIdOrderByCardNumberAsc", Long.class);
+                .getMethod("findFirstByAccountIdOrderByCardNumberAsc", Long.class);
         assertThat(alternateIndexFinder.getParameterTypes())
                 .as("a typed Long parameter cannot smuggle a fragment of a query")
                 .containsExactly(Long.class);

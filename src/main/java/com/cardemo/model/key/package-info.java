@@ -1,6 +1,7 @@
 /*
  * ******************************************************************
  * Program     : package-info.java
+ * Package     : com.cardemo.model.key
  * Application : CardDemo
  * Type        : Java package documentation (JPA composite identifiers)
  * Function    : Documents the com.cardemo.model.key package, which holds the
@@ -47,7 +48,7 @@
  *       length 16 ({@code :L896}).</li>
  *   <li>{@link TransactionCategoryId} - {@code app/cpy/CVTRA04Y.cpy} group {@code TRAN-CAT-KEY}, components
  *       {@code TRAN-TYPE-CD X(02)}, {@code TRAN-CAT-CD 9(04)}; key length 6 ({@code :L1475}).</li>
- * </ul>
+ *   </ul>
  *
  * <p>Each key length was corroborated two ways, by summing the copybook field widths and by reading
  * {@code KEYLEN} from the catalogue, and the two agree at {@code 11 + 2 + 4 = 17}, {@code 10 + 2 + 4 = 16}
@@ -90,7 +91,7 @@
  *       {@code hashCode} was narrowed to a subset of components. All components participate in both.</li>
  *   <li>A width check rejects a legitimate value - the check was tightened beyond the picture width. It
  *       bounds length only, and deliberately imposes no digit pattern or character class.</li>
- * </ul>
+ *   </ul>
  *
  * <p>These are entirely different keys that merely share a COBOL group name, over different clusters with
  * different record lengths. That collision is <strong>documented here, not abstracted away</strong>. There
@@ -116,9 +117,13 @@
  * {@code END-OF-FILE} is already {@code 'Y'}, which is precisely the state in which the enclosing
  * test-before {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited. The branch is
  * dead code, so the last account in key order silently loses its accrued interest and keeps its stale
- * cycle accumulators. The Java implementation performs the flush on the end of data condition, which is
- * a <strong>labelled deviation</strong> from source behaviour and not parity; it is recorded as such
- * rather than presented as equivalence.
+ * cycle accumulators. A further earlier revision of this paragraph said the Java implementation performs
+ * the flush on the end of data condition as a labelled deviation; that is withdrawn too.
+ * <strong>There is no final flush in the Java implementation and none may be added</strong> - the loss is
+ * a deterministic arithmetic outcome rather than a corruption hazard, so parity governs.
+ * {@code com.cardemo.batch.processors.InterestCalculationProcessor} implements none and retains
+ * {@code updateAccountAtEndOfFile()} as an explicitly marked, never-invoked no-op so the paragraph map
+ * stays provable.
  *
  * <p>That control break is correct <em>only</em> because {@code TRANCAT-ACCT-ID} is the leading component
  * of the key. Reordering the components, for instance alphabetising them, would change the iteration
@@ -142,31 +147,19 @@
  *       be triaged later. An <em>unused import</em> is not in that set: {@code javac} 25.0.3 publishes no
  *       lint key for one, as {@code javac --help-lint} shows, and no Checkstyle or Error Prone analyser is
  *       in the pinned dependency set, so Rule 1 Clause B's prohibition on unused imports and dead code is
- *       enforced by review rather than by the compiler.</li>
+ *       a convention rather than a compiler check.</li>
  *   <li><strong>Coverage.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor at
  *       the {@code verify} phase, with <strong>no exclusions</strong> for this package. Coverage must come
  *       from meaningful assertions on {@code equals}, {@code hashCode} and component validation; padding
  *       the figure by calling getters is not acceptable. This file is documentation only and contributes
- *       no executable lines, so it neither helps nor harms the figure and must not be "covered".
- *       <strong>Not available, measured 1 August 2026:</strong> none of the three identifier types has a
- *       test class, and none is referenced anywhere under {@code src/test/java}. This package therefore
- *       contributes <strong>zero</strong> covered lines today, and no coverage figure quoted anywhere may
- *       be read as evidence about it.</li>
- *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on
- *       that date after {@code source /etc/profile.d/10-carddemo-toolchain.sh}: {@code java} and
- *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache
- *       Maven <strong>3.9.11</strong> from the pinned wrapper distribution, and Docker Engine
- *       <strong>29.7.0</strong> with {@code docker compose} <strong>v5.3.1</strong> is available and is
- *       what provisions PostgreSQL 16 and LocalStack for the integration tiers. Every figure here is a
- *       reading taken on 1 August 2026 rather than a requirement, so re-measure instead of quoting it
- *       after a host change. Any claim that the Java toolchain or the container runtime is absent is
- *       stale and must not be repeated.</li>
- *   <li><strong>Tests.</strong> Tests for these three types belong in the sibling test tree at
- *       {@code src/test/java/com/cardemo/unit/model}, never in this package. They must assert the three
- *       key lengths of 17, 16 and 6, the COBOL component order of each key, and the full
- *       {@code equals}/{@code hashCode} contract including reflexivity, symmetry, transitivity,
- *       null tolerance and behaviour against a foreign type.</li>
- * </ul>
+ *       no executable lines, so it neither helps nor harms the figure and must not be "covered".</li>
+ *   <li><strong>Toolchain.</strong> OpenJDK 25 and Apache Maven 3.9.11 from the pinned wrapper
+ *       distribution, with a container runtime providing PostgreSQL 16 and LocalStack for the integration
+ *       tiers.</li>
+ *   <li><strong>What the tests assert.</strong> The catalogued key lengths of 17, 16 and 6, the COBOL
+ *       component order of each key, and the full {@code equals}/{@code hashCode} contract including
+ *       reflexivity, symmetry, transitivity, null tolerance and behaviour against a foreign type.</li>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -186,7 +179,7 @@
  *   <li>Schema ownership is <strong>Flyway</strong>, through {@code V1__create_schema.sql},
  *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}. This package never generates DDL and
  *       {@code ddl-auto} must never be set to {@code create}, {@code create-drop} or {@code update}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Within the classes themselves, every key component carries an explicit {@code @Column(name = ...)}.
  * That is deliberate: it means no Hibernate implicit or physical naming strategy can silently rename a
@@ -198,56 +191,47 @@
  *   <li><strong>Missing {@code serialVersionUID}.</strong> Symptom: the build fails at compile time under
  *       {@code -Xlint:all -Werror}, because a {@link java.io.Serializable} type without an explicit
  *       identifier raises the {@code serial} lint warning, which is escalated to an error.
- *       <em>Remediation:</em> declare {@code private static final long serialVersionUID} on the class. All
+ *       <em>Fix:</em> declare {@code private static final long serialVersionUID} on the class. All
  *       three classes in this package already do, each with the value {@code 1L}.</li>
  *   <li><strong>Missing or asymmetric {@code equals}/{@code hashCode}.</strong> Symptom: this does
  *       <em>not</em> fail cleanly. It corrupts the JPA identity map, so entities are duplicated in the
  *       persistence context, {@code merge} reattaches the wrong instance and map or set lookups miss. The
  *       result is <strong>intermittent data errors rather than a clean failure</strong>, which is far
- *       harder to diagnose than a crash. <em>Remediation:</em> implement both methods, value based, over
+ *       harder to diagnose than a crash. <em>Fix:</em> implement both methods, value based, over
  *       <strong>all</strong> key components and mutually consistent, so that equal keys always produce
  *       equal hash codes.</li>
  *   <li><strong>Reordered components.</strong> Symptom: no compile error and no obvious test failure, but
  *       browse order changes and the {@code CBACT04C} account level control break described above stops
- *       breaking where it should, losing interest for whole accounts. <em>Remediation:</em> keep field
+ *       breaking where it should, losing interest for whole accounts. <em>Fix:</em> keep field
  *       declaration order byte for byte identical to the copybook, and keep the composite primary key
  *       column order in the migration identical to it as well.</li>
  *   <li><strong>Column mismatch against the migration.</strong> Symptom: application context startup fails
  *       with a Hibernate schema validation error naming the offending table and column, because
- *       {@code ddl-auto} is {@code validate}. <em>Remediation:</em> align the
+ *       {@code ddl-auto} is {@code validate}. <em>Fix:</em> align the
  *       {@code @Column(name = ...)}, the Java type and the nullability with
  *       {@code V1__create_schema.sql}. Treat the migration as authoritative and change the mapping to
  *       match it, not the reverse, unless the migration itself is provably wrong against the copybook.</li>
  *   <li><strong>Confusing the two {@code TRAN-CAT-KEY} groups.</strong> Symptom: a key of the wrong
  *       width, which manifests as a wrong number of primary key columns or a wrong lookup that finds
- *       nothing. <em>Remediation:</em> check the copybook named in the class Javadoc rather than trusting
+ *       nothing. <em>Fix:</em> check the copybook named in the class Javadoc rather than trusting
  *       the COBOL group name. It is 17 bytes over three fields for {@code app/cpy/CVTRA01Y.cpy}, and
  *       6 bytes over two fields for {@code app/cpy/CVTRA04Y.cpy}.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>The authoritative column contract now exists</h2>
+ * <h2>The authoritative column contract</h2>
  *
- * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} <strong>exists</strong> and declares
- * the composite primary keys these three value types stand for. An earlier revision of this paragraph
- * said the migration directory did not exist yet; that is no longer true and the claim is withdrawn. The
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * the composite primary keys these three value types stand for. The
  * three catalogued key lengths are corroborated column by column by {@code SchemaStructureTest} against
  * the copybooks: {@code transaction_category_balance} at 17 bytes from {@code CVTRA01Y},
  * {@code disclosure_group} at 16 from {@code CVTRA02Y} and {@code transaction_category} at 6 from
  * {@code CVTRA04Y}, each with its primary-key column order matching COBOL field order exactly. No SQL
  * type is invented here.
  *
- * <p><strong>What remains absent is {@code V2__create_indexes.sql}</strong>, which has never existed;
- * {@code V1} declares no {@code CREATE INDEX}, so any reference to a secondary index on these tables
- * describes <strong>planned</strong> work. Because {@code ddl-auto: validate} is set in every profile, a
- * disagreement between these mappings and {@code V1} would fail the first real application boot outright,
- * which is why the agreement is asserted by a test rather than by inspection.
- *
- * <p><strong>What is still not available.</strong> {@code V2__create_indexes.sql},
- * {@code V3__seed_data.sql} and all four {@code application*.yml} profile files. Severity remains
- * <strong>Medium</strong> for that residue: not a Blocker, because the module compiles and these three
- * value types are complete and self consistent, and the schema they must validate against now exists and
- * agrees with them; not Low, because {@code ddl-auto: validate} cannot be exercised until a profile
- * exists to boot with.
+ * <p>{@code V2__create_indexes.sql} declares no index on any of these three tables, so any reference to a
+ * secondary index on them describes work outside this package. Because {@code ddl-auto: validate} is set
+ * in every profile, a disagreement between these mappings and {@code V1} fails the first application boot
+ * outright, which is why the agreement is asserted by a test rather than by inspection.
  *
  * <p><strong>The contract itself</strong>, derived from the copybooks and corroborated against
  * {@code app/catlg/LISTCAT.txt} and now against {@code V1}:
@@ -312,7 +296,7 @@
  *       particular no {@code README} or other Markdown file, since this docstring is the module
  *       documentation, and no shared base class, abstract key or identifier generator, for the collision
  *       reason given above.</li>
- * </ul>
+ *   </ul>
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */

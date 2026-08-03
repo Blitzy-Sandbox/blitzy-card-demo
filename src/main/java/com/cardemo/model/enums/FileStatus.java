@@ -105,7 +105,7 @@ import java.util.Optional;
  * <p><strong>This is one idiom, not hundreds of independent checks, and the corpus proves it.</strong>
  * Recognising that is the whole justification for a single typed status vocabulary here and a single
  * central translation in {@code com.cardemo.service.shared.FileStatusMapper} rather than a bespoke check
- * per call site. The evidence, measured at commit {@code 7756d89}:
+ * per call site. The evidence:
  * <ul>
  *   <li>The renderer body is byte identical in eight batch programs, and it appears under two different
  *       paragraph labels. It is called {@code 9910-DISPLAY-IO-STATUS} at
@@ -120,7 +120,7 @@ import java.util.Optional;
  *       {@code app/cbl/CBTRN01C.cbl:L138-L140}, {@code app/cbl/CBCUS01C.cbl:L57-L59},
  *       {@code app/cbl/CBACT01C.cbl:L57-L59} and {@code app/cbl/CBTRN03C.cbl:L146-L148}, each of them
  *       the group header followed by its {@code PIC 9} and {@code PIC 999} items.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Exact values against the one family</h2>
  *
@@ -158,7 +158,7 @@ import java.util.Optional;
  *       this same program carries a second and stricter idiom: four {@code EVALUATE WS-M03B-RC} sites at
  *       L353, L379, L403 and L837 accept {@code '00'} alone, treat {@code '10'} as end of file and send
  *       everything else to the error path.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Unmapped statuses</h2>
  *
@@ -185,7 +185,7 @@ import java.util.Optional;
  * <p>This type is compiled by the root {@code pom.xml} for Java 25 with {@code -Xlint:all -Werror} and
  * {@code failOnWarning}, so a raw type, a switch fall through or a missing {@code serialVersionUID} is a
  * build failure rather than a warning. An unused import is not - {@code javac} 25.0.3 publishes no lint
- * key for one, so Rule 1 Clause B's prohibition on it is enforced by review. Build with
+ * key for one, so Rule 1 Clause B's prohibition on it is a convention rather than a compiler check. Build with
  * {@code ./mvnw -B clean compile}, run the unit suite with {@code ./mvnw -B clean test} and gate coverage with
  * {@code ./mvnw -B verify}, which enforces an eighty percent line floor. The type adds no dependency, needs
  * no annotation processor and does not use Lombok. Its unit tests belong in
@@ -212,7 +212,7 @@ import java.util.Optional;
  * <ul>
  *   <li>An {@link IllegalArgumentException} from {@link #classify(String)} means the value was not one of
  *       the six exact codes and did not begin with the family byte. The message quotes the offending
- *       value. Remediation: either the status is genuinely unmapped, in which case the caller should abend
+ *       value. Either the status is genuinely unmapped, in which case the caller should abend
  *       exactly as the corpus does, or the value was never a two character file status at all, which
  *       usually means it was trimmed, upper cased, parsed or wrapped somewhere upstream.</li>
  *   <li>A rendering that is not four characters long is impossible by construction and would be a defect
@@ -227,12 +227,11 @@ import java.util.Optional;
  *       and not a bug: the corpus's branch predicate is an inclusive or, so a first byte of {@code '9'}
  *       wins even when the pair is entirely numeric.</li>
  *   <li>A diagnostic record that appears to have been split in two, or that ends earlier than the message
- *       that produced it, means a raw status byte reached it. Remediation: the caller used
- *       {@link #renderIoStatus04(String)} where it needed
+ *       that produced it, means a raw status byte reached it: the caller used
  *       {@link #renderIoStatus04ForDiagnostics(String)}. See the choice below.</li>
  *   <li>A diagnostic reading {@code \\u0009010} is not a defect. That is the encoded form of a tab, and it
  *       is what {@link #renderIoStatus04ForDiagnostics(String)} is for.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Choosing between the two renderings</h2>
  *
@@ -246,7 +245,7 @@ import java.util.Optional;
  *       stored diagnostic field. It encodes anything that is not printable ASCII, and for every status the
  *       corpus actually produces its output is character for character identical to the parity
  *       rendering.</li>
- * </ul>
+ *   </ul>
  *
  * <p>If both are needed at one site, emit the parity line and carry the encoded form in the message; they
  * are not alternatives to each other and neither is a replacement for the other.
@@ -267,7 +266,7 @@ public enum FileStatus {
      * File status {@code '04'}, a successful operation reported with a secondary condition, accepted as success
      * at the statement generation file service call sites and nowhere else in the corpus. Every occurrence is
      * the form {@code IF WS-M03B-RC = '00' OR '04'} in {@code app/cbl/CBSTM03A.CBL}, at L736, L748, L771, L789,
-     * L807, L862, L879, L895 and L911. The tolerance is defensive: the callee {@code app/cbl/CBSTM03B.cbl}
+     * L807, L862, L879, L895 and L911. The tolerance is defensive: the callee {@code app/cbl/CBSTM03B.CBL}
      * never produces this value, so the caller accepts a status it cannot in practice receive.
      */
     SUCCESS_SECONDARY("04"),
@@ -505,7 +504,21 @@ public enum FileStatus {
      */
     public static FileStatus classify(String ioStatus) {
         return tryClassify(ioStatus).orElseThrow(() -> new IllegalArgumentException(
-                "Unrecognised COBOL FILE STATUS (IO-STATUS PIC X(02)): [" + ioStatus + "]. Recognised "
+                // The raw value is control-encoded before it enters the message. It is untrusted by
+                // definition here - this arm fires precisely because the value is not one of the codes this
+                // enum knows - and it reaches a log through the exception message, so a value carrying a
+                // carriage return, a line feed or an ANSI escape could forge a second log record or rewrite
+                // the terminal of whoever tails the log (CWE-117). This class already owns the encoder;
+                // omitting it here while owning it was the defect.
+                //
+                // A Java null is handled before the encoder rather than through it. escapeForDiagnostics
+                // deliberately answers the empty string for null, so that an absent value cannot be confused
+                // with a status that literally read "nu" - but at THIS site an empty bracket pair would be
+                // the ambiguous rendering, because a null argument and a two-space status would look alike.
+                // The literal "null" is not attacker-supplied and carries no control character, so naming it
+                // costs nothing and distinguishes the two.
+                "Unrecognised COBOL FILE STATUS (IO-STATUS PIC X(02)): ["
+                        + (ioStatus == null ? "null" : escapeForDiagnostics(ioStatus)) + "]. Recognised "
                         + "values are the exact codes '00', '04', '10', '22', '23' and '35', and the '9x' "
                         + "family identified by a first byte of '" + IO_ERROR_FIRST_BYTE + "'. The frozen "
                         + "corpus answers an unrecognised status by abending with code 999 and process "

@@ -50,6 +50,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import com.cardemo.config.WebConfig;
 import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.DuplicateRecordException;
 import com.cardemo.exception.RecordNotFoundException;
@@ -139,7 +140,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       {@code WS-TRAN-AMT-N PIC S9(9)V99} at {@code :58} holds nine integer digits and
  *       {@code WS-TRAN-AMT-E PIC +99999999.99} at {@code :59} renders eight, so the high-order digit is
  *       discarded. The mask is asserted as truncating and is never widened.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -153,7 +154,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li>{@code ./mvnw -B -ntp test -Dtest=TransactionAddServiceTest} for this class alone;</li>
  *   <li>{@code ./mvnw -B -ntp verify} for the gated build, which additionally enforces the JaCoCo line
  *       coverage floor.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Compilation runs under {@code -Xlint:all -Werror} with {@code failOnWarning}, so a single warning
  * anywhere in this file fails the build.</p>
@@ -179,14 +180,16 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>Full BMS field widths.</strong> Every request value is supplied at its declared symbolic map
  *       width, because {@code app/bms/COTRN02.bms} declares no {@code ATTRB=NUM} and a 3270 therefore
  *       transmits a short field space-padded, which the COBOL numeric class test rejects.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>"warnings found and -Werror specified".</strong> One unused import, one raw type or one
- *       malformed Javadoc tag is enough. Fix the warning; never add {@code @SuppressWarnings} and never
- *       relax the compiler configuration.</li>
+ *   <li><strong>"warnings found and -Werror specified".</strong> One raw type, one unchecked cast or one
+ *       documentation comment attached to no declaration is enough. Fix the warning; never add
+ *       {@code @SuppressWarnings} and never relax the compiler configuration. Neither an unused import nor a
+ *       malformed Javadoc tag is caught here - {@code javac} 25 has no {@code unused} lint key and does not
+ *       validate Javadoc - so those are enforced by review and by the separate doclint command.</li>
  *   <li><strong>Using one numeric parser for identifiers and amounts.</strong> The accepted input sets are
  *       disjoint, so a shared parser changes the outcome of every request. Proved disjoint by
  *       {@link NumericParserContract}.</li>
@@ -200,7 +203,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>The fixture-name trap.</strong> The mainframe dataset is {@code DALYTRAN} but the ASCII
  *       fixture is spelled {@code dailytran.txt} in full, never {@code dalytran.txt}. No fixture is read by
  *       this class, so the trap is recorded rather than encountered here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Findings, by severity, with remediation</h2>
  *
@@ -260,7 +263,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       paragraph body correspondence the coverage gate verifies, and reaching them from a test would need
  *       reflection into private state, which would assert the test's own setup rather than the bean's
  *       behaviour.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>6. Not available</h2>
  *
@@ -612,14 +615,20 @@ final class TransactionAddServiceTest {
      * Builds the bean under test.
      *
      * <p>{@link FileStatusMapper} is a real instance rather than a mock because it is a pure function object
-     * over the two-character file status and mocking it would assert nothing. The three collaborators that
-     * perform I/O are mocks under strict stubs.</p>
+     * over the two-character file status and mocking it would assert nothing. The same reasoning applies to
+     * the two numeric converters and the edited-amount printer: they are the real published beans, taken
+     * from {@link WebConfig} exactly as Spring would supply them, because substituting a double for a pure
+     * parser would assert nothing and would let the test pass against parsing rules the application does
+     * not use. The three collaborators that perform I/O are mocks under strict stubs.</p>
      *
      * @return the service, never {@code null}
      */
     private TransactionAddService service() {
+        final WebConfig webConfig = new WebConfig();
         return new TransactionAddService(this.transactionRepository, this.cardCrossReferenceRepository,
-                this.dateValidationService, new FileStatusMapper());
+                this.dateValidationService, new FileStatusMapper(),
+                webConfig.strictIdentifierConverter(), webConfig.currencyAwareAmountConverter(),
+                webConfig.editedAmountPrinter());
     }
 
     // ------------------------------------------------------------------------------------------------
@@ -824,8 +833,8 @@ final class TransactionAddServiceTest {
      * Stubs the {@code CXACAIX} browse of {@code READ-CXACAIX-FILE} to return one row.
      */
     private void resolveAccountBranch() {
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                .thenReturn(List.of(crossReference()));
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(crossReference()));
     }
 
     /**
@@ -2078,8 +2087,8 @@ final class TransactionAddServiceTest {
         @Test
         @DisplayName("'Account ID NOT found...' when the CXACAIX browse returns nothing, :593-595")
         void anAccountMissReportsItsLiteral() {
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of());
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
             final TransactionAddService service = service();
             final TransactionAddRequest submitted = request().build();
 
@@ -2118,8 +2127,8 @@ final class TransactionAddServiceTest {
         @Test
         @DisplayName("the two misses are distinguishable by their record type, CXACAIX versus CCXREF")
         void theTwoMissesAreDistinguishable() {
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of());
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
             final TransactionAddService accountBranch = service();
             final TransactionAddRequest byAccount = request().build();
 
@@ -2135,7 +2144,7 @@ final class TransactionAddServiceTest {
         @Test
         @DisplayName("'Unable to lookup Acct in XREF AIX file...' on a CXACAIX I/O failure, :600-601")
         void aCxacaixIoFailureReportsItsLiteral() {
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
                     .thenThrow(new QueryTimeoutException("CXACAIX timed out"));
             final TransactionAddService service = service();
             final TransactionAddRequest submitted = request().build();
@@ -2497,15 +2506,38 @@ final class TransactionAddServiceTest {
         }
 
         @Test
-        @DisplayName("the constructor takes exactly the four collaborators the program actually uses")
-        void theConstructorTakesExactlyFourCollaborators() {
+        @DisplayName("the constructor takes exactly the seven collaborators the program actually uses")
+        void theConstructorTakesExactlySevenCollaborators() {
             final Constructor<?>[] constructors = TransactionAddService.class.getDeclaredConstructors();
 
             assertThat(constructors).hasSize(1);
             assertThat(constructors[0].getParameterTypes())
-                    .as("constructor injection only, so there is no setter and no field injection")
+                    .as("constructor injection only, so there is no setter and no field injection. The last"
+                            + " three are the WebConfig singletons: this class must not construct its own"
+                            + " copy of a parsing rule, or the object request binding registers is not the"
+                            + " object that parses an amount")
                     .containsExactly(TransactionRepository.class, CardCrossReferenceRepository.class,
-                            DateValidationService.class, FileStatusMapper.class);
+                            DateValidationService.class, FileStatusMapper.class,
+                            WebConfig.StrictIdentifierConverter.class,
+                            WebConfig.CurrencyAwareAmountConverter.class,
+                            WebConfig.EditedAmountPrinter.class);
+        }
+
+        @Test
+        @DisplayName("no converter is constructed locally: the three parsers are injected, never new-ed")
+        void theThreeParsersAreInjectedRatherThanConstructed() {
+            assertThat(Arrays.stream(TransactionAddService.class.getDeclaredFields())
+                    .filter(field -> field.getType().getName().startsWith(WebConfig.class.getName()))
+                    .toList())
+                    .as("one field per parsing rule, and each an instance field so it can only arrive"
+                            + " through the constructor")
+                    .hasSize(3)
+                    .allSatisfy(field -> {
+                        assertThat(java.lang.reflect.Modifier.isStatic(field.getModifiers()))
+                                .as("a static holder would be a privately constructed second copy")
+                                .isFalse();
+                        assertThat(java.lang.reflect.Modifier.isFinal(field.getModifiers())).isTrue();
+                    });
         }
 
         @Test
@@ -2675,7 +2707,7 @@ final class TransactionAddServiceTest {
                     ORIGIN_PROGRAM);
 
             verify(cardCrossReferenceRepository)
-                    .findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID);
+                    .findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID);
         }
 
         @Test

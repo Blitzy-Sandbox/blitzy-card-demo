@@ -173,7 +173,7 @@ import jakarta.persistence.Version;
  *       compare monetary values it uses {@code compareTo}, never {@code equals}, because
  *       {@link BigDecimal#equals(Object)} is scale-sensitive and reports {@code 2.0} and {@code 2.00} as
  *       different values.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build, run and test</h2>
  * <ul>
@@ -184,23 +184,23 @@ import jakarta.persistence.Version;
  *   <li>Run: this type is not independently runnable. It is a managed persistent type that the application
  *       context loads at boot, so it participates in a run only as part of the Spring Boot application,
  *       started with {@code ./mvnw -B spring-boot:run} or from the packaged executable JAR with
- *       {@code java -jar target/carddemo-1.0.0.jar}. <strong>Neither is possible at this commit, measured
- *       1 August 2026:</strong> no {@code @SpringBootApplication} entry point and no
- *       {@code application*.yml} profile exists, so no context can refresh and no executable JAR can be
- *       produced. Two preconditions apply at boot once it can, and both fail fast: a
+ *       {@code java -jar target/carddemo-1.0.0.jar}. Both are now possible: {@code CardDemoApplication}
+ *       carries {@code @SpringBootApplication} and all four {@code application*.yml} profiles are present, so
+ *       the context refreshes. An earlier revision recorded both as absent; that ceased to be true when those
+ *       files were authored. Two preconditions apply at boot, and both fail fast: a
  *       reachable PostgreSQL instance carrying the table enumerated below, and the environment-indirected
  *       JWT signing key, which has no committed default. Because {@code ddl-auto} is {@code validate}, any
  *       disagreement between this mapping and the deployed schema aborts context startup outright rather
  *       than degrading later at runtime.</li>
- *   <li>Test: {@code ./mvnw -B clean test}. Unit tests for this type belong in
- *       {@code src/test/java/com/cardemo/unit/model} and are to assert the record geometry, the key length, the
- *       five {@code NUMERIC(12,2)} precisions, that the three date fields are {@code String}, that a negative
- *       {@code currentCycleDebit} round-trips unchanged and that a blank {@code groupId} is accepted.
- *       <strong>Not available, measured 1 August 2026:</strong> no {@code AccountTest} exists, so that list is
- *       the coverage owed, not coverage that runs.</li>
+ *   <li>Test: {@code ./mvnw -B -ntp clean test}. {@code src/test/java/com/cardemo/unit/model/AccountTest.java}
+ *       covers this type and asserts the record geometry, the key length, the five {@code NUMERIC(12,2)}
+ *       precisions, that the three date fields are {@code String}, that a negative
+ *       {@code currentCycleDebit} round-trips unchanged and that a blank {@code groupId} is accepted. It also
+ *       asserts reflectively over the whole class that no declared field is {@code float} or {@code double},
+ *       which is the check that keeps the financial-precision invariant honest as the class changes.</li>
  *   <li>Verify: {@code ./mvnw -B clean verify} additionally enforces the line-coverage floor and the dependency
  *       vulnerability gate.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  * <ul>
@@ -226,7 +226,7 @@ import jakarta.persistence.Version;
  *       the validator's second branch succeeds without an explicit type code. Without
  *       {@code columnDefinition} the default mapping for {@code Long} is {@code BIGINT}, which matches
  *       neither the type code nor the type name of the eleven-digit numeric key the catalogue specifies.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
@@ -255,7 +255,7 @@ import jakarta.persistence.Version;
  *       {@code version} field documentation.</li>
  *   <li><b>Money values that look like they lost a digit.</b> The money columns hold twelve digits with two
  *       decimals. A value wider than that is out of contract at the boundary, not here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Missing information disclosure</h2>
  *
@@ -265,15 +265,19 @@ import jakarta.persistence.Version;
  * It declares {@code CREATE TABLE account} with 13 columns whose names are identical, as a
  * set, to the 13 {@code @Column(name = ...)} declarations below, verified by direct comparison.
  * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
- * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, any
- * disagreement between the two would fail application-context startup outright rather than producing a
- * warning.
- * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
- * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
- * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
- * rather than an observed one.</p>
+ * Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in all four profiles, any
+ * disagreement between the two fails application-context startup outright rather than producing a
+ * warning - an observed behaviour, since all four of {@code application.yml},
+ * {@code application-local.yml}, {@code application-test.yml} and {@code application-prod.yml} are present
+ * and the containerised integration tier boots against a real PostgreSQL 16 with Flyway applying
+ * {@code V1} through {@code V3} first. {@code V2__create_indexes.sql} deliberately creates nothing for this
+ * table beyond its primary key, because {@code ACCTDATA} has no alternate index in
+ * {@code app/catlg/LISTCAT.txt}; {@code V3__seed_data.sql} seeds it from
+ * {@code app/data/ASCII/acctdata.txt} with position-aware overpunch decoding. An earlier revision of this
+ * paragraph called those two migrations and the four profiles unavailable; that is no longer true and the
+ * claim is withdrawn.</p>
  * <p>
- * What is needed is table {@code account} with these columns and no others:
+ * {@code V1__create_schema.sql} declares table {@code account} with these columns and no others:
  * <pre>
  *   acct_id                 NUMERIC(11)   PRIMARY KEY
  *   acct_active_status      CHAR(1)       NOT NULL

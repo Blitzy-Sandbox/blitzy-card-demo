@@ -133,7 +133,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       callers read only the four byte severity of the eighty byte area, declared as
  *       {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)} at {@code app/cbl/CORPT00C.cbl:L133}, and compare
  *       it against {@code '0000'}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Complementary sibling suites - what this class deliberately does NOT assert</h2>
  *
@@ -153,7 +153,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       census.</li>
  *   <li>{@code com.cardemo.unit.validation.ValidationLookupServiceTest} owns the externalised lookup
  *       table resources, which are a different collapse rule entirely.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Where an assertion here necessarily touches an outcome the sibling also observes - the all
  * zeros token, for instance - it is asserted through the bean's behaviour rather than through the
@@ -164,14 +164,19 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <p>This class is bound to Surefire 3.5.4 by path: the plugin includes {@code **}{@code /*Test.java}
  * and excludes only the integration and end to end trees, so a class under
  * {@code src/test/java/com/cardemo/unit/} is collected by Surefire and never by Failsafe. Run it
- * with {@code mvn -B test}, the whole tier with {@code mvn -B clean test}, or this class alone with
- * {@code mvn -B test -Dtest=DateValidationServiceTest}. Coverage is measured by JaCoCo 0.8.12 at
+ * with {@code ./mvnw -B -ntp test}, the whole tier with {@code ./mvnw -B -ntp clean test}, or this class alone with
+ * {@code ./mvnw -B -ntp test -Dtest=DateValidationServiceTest}. Coverage is measured by JaCoCo 0.8.12 at
  * {@code verify} with no exclusions. Compilation is Java 25 with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so a single unused import fails the build.
+ * {@code failOnWarning}, so a single raw type, unchecked cast or dangling documentation comment fails the
+ * build; an unused import does not, because {@code javac} 25 publishes no {@code unused} lint key.
  *
- * <p>Verified on OpenJDK 25.0.3 with Apache Maven 3.9.11: {@code mvn -B -o clean test} exits zero
- * with 6021 tests and no warning of any kind, and {@code mvn -B -o verify} clears the JaCoCo line
- * gate. The one goal that cannot run in an offline environment is the OWASP dependency check, which
+ * <p>Verified on OpenJDK 25.0.3 with Apache Maven 3.9.11: {@code ./mvnw -B -ntp -o clean test} exits zero
+ * with no warning of any kind. An earlier revision of this sentence also stated an absolute count of 6021
+ * tests and that {@code ./mvnw -B -ntp -o verify} clears the JaCoCo line gate; both figures were true when
+ * written and are stale now, so they are withdrawn rather than restated. The module-wide test count and the
+ * measured coverage against the 0.80 floor are published once, dated, in section 0.4.5.1 of
+ * {@code docs/technical-specifications.md}; this class contributes 105 of them and asserts nothing about
+ * the total. The one goal that cannot run in an offline environment is the OWASP dependency check, which
  * requires network access to refresh its advisory database; its state is a property of
  * {@code pom.xml} rather than of this class, and no assertion here depends on it.
  *
@@ -203,15 +208,17 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       by reading {@code src/main/java/com/cardemo/service/shared/DateValidationService.java} from
  *       the module base directory. That is the established convention of this test tree, which
  *       already reads {@code app/} and {@code src/main/resources/} from disk in the same way.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>The build fails on a single unused import.</strong> {@code -Xlint:all -Werror} plus
- *       {@code failOnWarning} reaches test compilation. Remove the import; do not relax the flag.
- *       A documentation comment in a position where it would be ignored fails the same way, because
- *       {@code dangling-doc-comments} is part of {@code -Xlint:all} on this compiler.</li>
+ *   <li><strong>The build fails on a dangling documentation comment.</strong> {@code -Xlint:all -Werror}
+ *       plus {@code failOnWarning} reaches test compilation, and a documentation comment in a position
+ *       where it would be ignored fails it, because {@code dangling-doc-comments} is part of
+ *       {@code -Xlint:all} on this compiler. An unused import does <em>not</em> fail it: {@code javac} 25
+ *       publishes no {@code unused} lint key, so remove such an import because Rule 1 Clause B requires
+ *       it, not because the build demands it. Never relax the flag.</li>
  *   <li><strong>The inverted success token.</strong> A port that trusts the identifier
  *       {@code FC-INVALID-DATE} maps the all zeros token to an invalid outcome and produces exactly
  *       inverted behaviour that still compiles and still passes a naively written test. Severity
@@ -235,7 +242,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       production source name the identifiers they look for in their failure descriptions. They are
  *       parity gates, not style checks: if the citation or the predicate order genuinely changed,
  *       the traceability matrix changed with it and must be updated in the same commit.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("DateValidationService: sixteen labels, one injected clock, and outcomes returned as values")
 class DateValidationServiceTest {
@@ -1668,7 +1675,3 @@ class DateValidationServiceTest {
         }
     }
 }
-
-
-
-

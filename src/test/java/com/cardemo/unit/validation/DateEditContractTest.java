@@ -104,7 +104,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       equal to the current date.</li>
  *   <li><strong>The twelve message literals</strong> at lines 37, 54, 79, 101, 119 with 136, 161, 180 with
  *       195, 221, 236, 266, 308 with 310, and 363 - asserted byte for byte, never paraphrased.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Scope boundary: this class asserts <em>data contracts and control-flow outcomes</em>. The sibling
  * {@code DateValidationServiceTest} in this package owns the CEEDAYS feedback table and the eighty byte
@@ -140,7 +140,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       default locale, time zone, charset or hash iteration order can influence an outcome.</li>
  *   <li><strong>Message geometry.</strong> A return message is the trimmed variable name followed by the
  *       literal, held at the declared seventy-five character width.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -160,14 +160,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       day tests numeric then range. Remedy: leave both orders exactly as written.</li>
  *   <li><strong>High - unifying the flag initialisation.</strong> Year and month seed pessimistically, day
  *       seeds optimistically. Remedy: leave the asymmetry in place.</li>
- *   <li><strong>Compilation - one unused import.</strong> The compiler runs with {@code -Xlint:all -Werror}
- *       reaching test compilation, so a single unused import, raw type or dangling doc comment fails the
- *       build. Symptom: {@code warnings found and -Werror specified}. Remedy: delete the offending import;
- *       never widen the compiler configuration.</li>
+ *   <li><strong>Compilation - a raw type or a dangling doc comment.</strong> The compiler runs with
+ *       {@code -Xlint:all -Werror} reaching test compilation, so a single raw type, unchecked cast or
+ *       documentation comment attached to no declaration fails the build. Symptom:
+ *       {@code warnings found and -Werror specified}. Remedy: fix the warning; never widen the compiler
+ *       configuration. An <em>unused import</em> is a separate matter: {@code javac} 25 publishes no
+ *       {@code unused} lint key, so it is enforced by review rather than by the build.</li>
  *   <li><strong>Fixture naming elsewhere in the suite.</strong> The daily transaction fixture is
  *       {@code app/data/ASCII/dailytran.txt}, spelled in full, never {@code dalytran.txt} - the mainframe
  *       dataset name. This class loads no fixture at all, deliberately, for the reason in section 6.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Findings classified by severity</h2>
  *
@@ -221,7 +223,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       wipe the language-environment failure flags.</li>
  *   <li>Any latency or throughput objective for this tier. None exists anywhere in the source, so the
  *       migration's performance gate records a measured baseline and never an invented target.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("CSUTLDPY.cpy - the layer-1 component edit contract, paragraph by paragraph")
 class DateEditContractTest {

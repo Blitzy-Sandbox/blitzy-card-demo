@@ -119,7 +119,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code :150} terminates nothing.</li>
  *   <li><strong>The credential.</strong> {@code MOVE PASSWDI TO SEC-USR-PWD} at {@code :157} stored eight
  *       plaintext characters. The target hashes with BCrypt at strength 10 into a 60 character column - a
- *       mechanism substitution, tracked in DECISION_LOG.md - so the assertions are that the encoder is
+ *       mechanism substitution, cited to the source line above - so the assertions are that the encoder is
  *       reached exactly once, that what is persisted is what the encoder returned, and that no plaintext and
  *       no digest reaches a response, a message or a rendering.</li>
  *   <li><strong>The write and its three arms.</strong> {@code WRITE-USER-SEC-FILE} at {@code :238-274}: the
@@ -128,8 +128,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code DFHRESP(DUPKEY)} at {@code :260} and {@code DFHRESP(DUPREC)} at {@code :261} into one body;
  *       and the {@code WHEN OTHER} arm at {@code :267-273} reports {@code Unable to Add User...}.</li>
  *   <li><strong>Paragraph correspondence.</strong> All nine labels map one to one, which is the evidence the
- *       scope-coverage gate reads and against which TRACEABILITY_MATRIX.md is proved.</li>
- * </ul>
+ *       scope-coverage gate reads.</li>
+ *   </ul>
  *
  * <h2>How to build and test</h2>
  *
@@ -146,12 +146,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       run, leaving a green build with nothing proved.</li>
  *   <li>{@code ./mvnw -B -ntp test-compile} - compiles it. {@code maven-compiler-plugin:3.14.1} runs
  *       {@code -Xlint:all -Werror} with {@code failOnWarning}, and that reaches test compilation, so one
- *       unused import or one dangling documentation comment fails the build outright.</li>
+ *       dangling documentation comment, raw type or unchecked cast fails the build outright. An unused
+ *       import does not - {@code javac} 25 publishes no {@code unused} lint key.</li>
  *   <li>{@code ./mvnw -B -ntp verify} - adds the {@code jacoco-maven-plugin:0.8.12} check at 80% LINE with
  *       no exclusion for this package.</li>
  *   <li>{@code ./mvnw -B -ntp -Dtest=UserAddServiceTest test} - runs this class alone; the report lands in
  *       {@code target/surefire-reports}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -174,61 +175,60 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       with a no-argument constructor, so the real one is used except in the one test that captures what
  *       crosses into it.</li>
  *   <li><strong>A synthetic credential.</strong> An obviously fake value that is never the seed value of
- *       {@code app/jcl/DUSRSECJ.jcl}. That file supplies ten users inline - {@code ADMIN001} through
- *       {@code ADMIN005} of type {@code A} and {@code USER0001} through {@code USER0005} of type {@code U} -
- *       all sharing one plaintext credential, and <strong>that value is not reproduced here in any
- *       form</strong>. Rule 1 Clause D names tests explicitly, and this is the credential-creation service,
- *       which makes this file the highest-risk one in the package for that clause.</li>
- * </ul>
+ *       {@code app/jcl/DUSRSECJ.jcl}. That file supplies ten users inline - five of type {@code A} and
+ *       five of type {@code U} - all sharing one plaintext credential. Neither that credential nor any of
+ *       the ten identifiers is reproduced here in any form; the JCL member is the authority for both.
+ *       Rule 1 Clause D names tests explicitly, and this is the credential-creation service, which makes
+ *       this file the highest-risk one in the package for that clause.</li>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>The build fails on an unused import.</strong> {@code -Xlint:all -Werror} reaches test
- *       compilation, so a single import that nothing references is fatal rather than advisory. Remedy: remove
- *       it. In particular this class borrows no helper from the sibling {@code unit.model} package - neither
- *       its shared clock provider nor its fixture reader - because nothing on this path consults an ambient
- *       clock or reads a seed file. The clock it does use is the private constant declared below.</li>
+ *   <li><strong>An unused import must be removed, though the build will not catch it.</strong>
+ *   {@code -Xlint:all -Werror} reaches test compilation, but {@code javac} 25 publishes no {@code unused} lint key,
+ *   so an import that nothing references is a Rule 1 Clause B violation caught at review rather than a build failure.
+ *   Remedy: remove it. In particular this class borrows no helper from the sibling {@code unit.model} package -
+ *   neither its shared clock provider nor its fixture reader - because nothing on this path consults an ambient clock
+ *   or reads a seed file. The clock it does use is the private constant declared below.</li>
  *   <li><strong>A guard rejects input the source accepts.</strong> Someone added a user-type domain check or
  *       a credential policy to the emptiness cascade. The source has neither, so such an implementation
  *       accepts fewer inputs than the system of record. Remedy: keep the cascade emptiness-only; the domain
- *       mapping belongs at persistence. Severity: <strong>High</strong>.</li>
+ *       mapping belongs at persistence.</li>
  *   <li><strong>An identifier comes back upper-cased.</strong> Someone added case folding the source does
- *       not have. Remedy: remove it, and leave the latent defect visible. Severity:
- *       <strong>High</strong>.</li>
+ *       not have. Remedy: remove it, and leave the latent defect visible.</li>
  *   <li><strong>The confirmation names nobody.</strong> The message was composed from a request field that
  *       {@code INITIALIZE-ALL-FIELDS} had already blanked, instead of from {@code SEC-USR-ID}. Remedy:
- *       compose from the record field, which the clear does not touch. Severity:
- *       <strong>High</strong>.</li>
+ *       compose from the record field, which the clear does not touch.</li>
  *   <li><strong>A test asserts a literal digest.</strong> BCrypt salts, so such a test is flaky by
  *       construction. Remedy: assert that the encoder was reached and that the persisted value is what it
- *       returned. Severity: <strong>High</strong>.</li>
+ *       returned.</li>
  *   <li><strong>Duplicate-key and duplicate-record produce different outcomes.</strong> They are adjacent
- *       {@code WHEN} clauses over one body. Remedy: restore the single branch. Severity:
- *       <strong>Medium</strong>.</li>
+ *       {@code WHEN} clauses over one body. Remedy: restore the single branch.</li>
  *   <li><strong>The fixture-name trap.</strong> The mainframe dataset is {@code DALYTRAN} but the ASCII
  *       fixture is spelled {@code dailytran.txt} in full. It is irrelevant on this path, which reads no
  *       fixture at all, and is recorded so that a later edit does not introduce one under the wrong
  *       name.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried by this suite, by severity</h2>
+ * <h2>What this suite asserts against, and what it deliberately leaves alone</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - persisting a recoverable credential; asserting a seeded credential as
- *       plaintext; letting a non-administrator reach this service. All three are asserted against.</li>
- *   <li><strong>High</strong> - added case folding; an added domain or policy gate; a confirmation composed
+ *   <li><strong>Never permitted:</strong> persisting a recoverable credential; asserting a seeded credential
+ *       as plaintext; letting a non-administrator reach this service. All three are asserted against.</li>
+ *   <li><strong>Never added:</strong> case folding; a domain or policy gate; a confirmation composed
  *       from a cleared field; discarding the response and reason codes; asserting a literal digest.</li>
- *   <li><strong>Medium</strong> - splitting the collapsed duplicate branch; widening the message field
- *       instead of honouring the 78 character boundary; reordering the cascade; leaving success and failure
- *       indistinguishable except by message text. The bean's own disclosed deviation - it refuses a user
- *       type outside {@code 'A'} and {@code 'U'}, which the source would have stored - is asserted as the
- *       deviation it is rather than presented as parity.</li>
- *   <li><strong>Low</strong> - the {@code exist} spelling at {@code :263}; the space before the ellipsis in
+ *   <li><strong>Never changed:</strong> the collapsed duplicate branch must not be split; the message field
+ *       must not be widened past the 78 character boundary; the cascade order stands; success and failure
+ *       stay distinguishable by more than message text. The bean's own disclosed deviation - it refuses a
+ *       user type outside {@code 'A'} and {@code 'U'}, which the source would have stored - is asserted as
+ *       the deviation it is rather than presented as parity.</li>
+ *   <li><strong>Reproduced verbatim:</strong> the {@code exist} spelling at {@code :263}; the space before
+ *       the ellipsis in
  *       the confirmation; the redundant {@code MOVE SPACES TO WS-MESSAGE} at {@code :253}; the dead
  *       {@code CONTINUE} at {@code :150}; the two trailing blanks in the dataset literal at {@code :39};
  *       the commented-out {@code COPY DFHATTR.} at {@code :57}.</li>
- *   <li><strong>Low</strong> - <strong>one line of the bean is unreachable through its public surface, and
+ *   <li><strong>One line of the bean is unreachable through its public surface, and
  *       this suite leaves it uncovered deliberately rather than contriving a path to it.</strong> The blank
  *       target fallback of {@code RETURN-TO-PREV-SCREEN} at {@code :167-169} - {@code IF CDEMO-TO-PROGRAM =
  *       LOW-VALUES OR SPACES}, assign the sign-on program - cannot fire, because both callers assign the
@@ -236,34 +236,36 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       was already redundant in the source for the same reason, so reproducing it faithfully reproduces its
  *       unreachability. Remedy: none, and specifically <em>not</em> a reflective call into the private method
  *       to manufacture coverage, which Clause D's prohibition on reflection-driven invocation rules out and
- *       which would assert a state no caller can create. Measured line coverage of the bean is 99.6%
- *       (223 of 224), far above the 80% floor, and this is the single missed line.</li>
- * </ul>
+ *       which would assert a state no caller can create. It is the only line of the bean this suite does not
+ *       reach.</li>
+ *   </ul>
  *
  * <h2>The documented conflict, and the one labelled exception</h2>
  *
  * <p>Rule 1 Clause B forbids dead code; the parity mandate requires reachable no-ops to survive. Parity
  * governs, and the clause is satisfied by its own wording, which prohibits artefacts <em>without an owner or
- * tracking reference</em>: each retained item carries a DECISION_LOG.md entry, a TRACEABILITY_MATRIX.md row
- * and a citation. The items retained on this path are the dead {@code CONTINUE} at {@code :150}, the
+ * tracking reference</em>: each retained item carries a citation to the source line it reproduces and an
+ * explicit marker on the test that pins it. The items retained on this path are the dead {@code CONTINUE}
+ * at {@code :150}, the
  * redundant blanking at {@code :253}, the {@code CLEAR-CURRENT-SCREEN} paragraph at {@code :279-282} which
  * only chains two others, and the absent case folding.
  *
  * <p><strong>One labelled exception runs the other way.</strong> The diagnostic at {@code :268} is commented
  * out, so the source discards the response and reason codes on a hard failure. Clause B's requirement to
  * wrap with context and preserve root cause is prescriptive, and no observable output depends on those codes
- * being lost, so the clause governs and the codes are preserved. That is a deliberate deviation, justified
- * in writing in DECISION_LOG.md and asserted below.
+ * being lost, so the clause governs and the codes are preserved. That is a deliberate, labelled deviation,
+ * and it is asserted below.
  *
  * <h2>Not available</h2>
  *
  * <ul>
- *   <li><strong>The HTTP-level authorisation rule.</strong> Not available as a compiled artefact at this
- *       commit: {@code com.cardemo.controller.AdminController} and {@code com.cardemo.config.SecurityConfig}
- *       do not yet exist in the tree, so the {@code /api/admin/*} ADMIN-only mapping and the stateless
- *       session policy cannot be asserted from this tier and are not asserted here. What is needed is those
- *       two classes plus a slice test that owns them. What <em>is</em> asserted here are the structural
- *       preconditions without which no ADMIN-only rule could hold: this bean carries no authorisation
+ *   <li><strong>The HTTP-level authorisation rule.</strong> It is declared by
+ *       {@code com.cardemo.config.SecurityConfig}, which restricts {@code /api/admin/**} to the
+ *       administrator role and sets a stateless session policy - but exercising it needs a controller,
+ *       and {@code com.cardemo.controller.AdminController} is not present in the tree, so no slice test
+ *       can drive this service through that mapping and none is attempted from this pure-JVM tier.
+ *       What <em>is</em> asserted here are the structural
+ *       preconditions without which no administrator-only rule could hold: this bean carries no authorisation
  *       annotation and so cannot self-authorise, takes no authentication or security-context collaborator
  *       and so cannot read or forge a role, and retains no state between calls.</li>
  *   <li><strong>A credential policy.</strong> Not available in the source. {@code :136} tests emptiness and
@@ -273,7 +275,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>An audit trail for user creation.</strong> Not available. The source writes one record and
  *       records nothing about who wrote it; the two moves that would have carried the acting identity are
  *       commented out at {@code :172-173}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Resolved, not deferred: the eight-character question.</strong> Whether the target preserves the
  * source's {@code PIC X(08)} credential truncation is determinable from the bean and is therefore stated
@@ -939,7 +941,7 @@ class UserAddServiceTest {
             // a lower-case identifier can NEVER sign on. Sign-on folds the presented identifier to upper
             // case and looks that up, so the row keyed by the lower-case form is unreachable. The defect is
             // PRESERVED, not repaired - adding case folding here would accept a login the source rejects,
-            // which is a High parity break. It is recorded in DECISION_LOG.md with these locators.
+            // which would break parity. It is cited to the locators above and pinned by this test.
             final String lowerCaseId = "user0006";
 
             addSuccessfully(FIRST_NAME, LAST_NAME, lowerCaseId, TYPE_USER);
@@ -1035,27 +1037,77 @@ class UserAddServiceTest {
         }
 
         @Test
-        @DisplayName("the source's PIC X(08) credential limit is NOT preserved: a longer value is hashed whole")
-        void longerCredentialIsAcceptedWhole() {
-            // Resolved from the bean rather than left open. The presented credential arrives as an argument
-            // separate from the request, is absent from the width-checked set that RECEIVE-USRADD-SCREEN
-            // binds, and is handed whole to the encoder. So the source's eight-character truncation at :157
-            // is NOT reproduced: a nine-character value is neither cut nor refused. The digest column is 60
-            // characters, so nothing is lost by accepting it.
-            final String nineCharacters = "n0tr3al!9";
-            assertThat(nineCharacters).hasSize(SEC_USR_PWD_WIDTH + 1);
-
+        @DisplayName("a credential of exactly eight characters is accepted, matching PASSWDI PIC X(8)")
+        void credentialAtTheBoundaryIsAccepted() {
+            final String atTheBoundary = fill('8', SEC_USR_PWD_WIDTH);
             when(repository.existsById(NEW_USER_ID)).thenReturn(false);
-            when(encoder.encode(nineCharacters)).thenReturn(contractualDigest());
+            when(encoder.encode(atTheBoundary)).thenReturn(contractualDigest());
 
-            service.addUser(validRequest(), nineCharacters);
+            service.addUser(validRequest(), atTheBoundary);
 
             final ArgumentCaptor<String> presented = ArgumentCaptor.forClass(String.class);
             verify(encoder).encode(presented.capture());
             assertThat(presented.getValue())
-                    .as("the whole value reaches the encoder; it is neither truncated to 8 nor refused")
-                    .isEqualTo(nineCharacters)
-                    .hasSize(SEC_USR_PWD_WIDTH + 1);
+                    .as("the boundary value passes through whole - the guard rejects only PAST the width")
+                    .isEqualTo(atTheBoundary)
+                    .hasSize(SEC_USR_PWD_WIDTH);
+            assertThat(captureSaved().getPasswordHash()).isEqualTo(contractualDigest());
+        }
+
+        @Test
+        @DisplayName("a credential past eight characters is REFUSED, never truncated and never hashed whole")
+        void credentialPastTheBoundaryIsRefused() {
+            // THIS TEST ONCE ASSERTED THE OPPOSITE, and the reasoning it carried was wrong twice over.
+            //
+            // It claimed the source "truncates at :157" and that the truncation was deliberately not
+            // reproduced. There is no truncation at :157 to reproduce: PASSWDI is PIC X(8) at
+            // app/cpy-bms/COUSR01.CPY:78 and SEC-USR-PWD is PIC X(08) at app/cpy/CSUSR01Y.cpy:21, so
+            // MOVE PASSWDI TO SEC-USR-PWD is an eight-to-eight move. The 3270 field makes a ninth character
+            // impossible to key; the source has no over-length arm because it can never receive one.
+            //
+            // It then argued that accepting a longer value loses nothing because the digest column holds 60
+            // characters. That confuses STORAGE CAPACITY with the INPUT CONTRACT. The sibling
+            // com.cardemo.service.admin.UserUpdateService bounds the same credential at eight, so the two
+            // paths disagreed about the same field of the same record - a create could store a credential
+            // that an update could never reproduce.
+            //
+            // Truncating would be worse than either: an operator who set nine characters would authenticate
+            // on the first eight, a credential-strength illusion the source cannot produce. Refusal is the
+            // faithful translation of "the ninth character does not exist", and it is now what both paths do.
+            final String pastTheBoundary = fill('9', SEC_USR_PWD_WIDTH + 1);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.addUser(validRequest(), pastTheBoundary))
+                    .satisfies(thrown -> {
+                        assertThat(thrown.getFieldName()).isEqualTo(FIELD_CREDENTIAL);
+                        assertThat(thrown.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.INVALID);
+                        assertThat(thrown.getMessage())
+                                .as("the refusal names the field and the width, and NEVER the credential")
+                                .contains(String.valueOf(SEC_USR_PWD_WIDTH))
+                                .doesNotContain(pastTheBoundary);
+                    });
+
+            verifyNoInteractions(encoder);
+            verify(repository, never()).saveAndFlush(any(UserSecurity.class));
+        }
+
+        @Test
+        @DisplayName("an empty credential still takes guard 4 first, so the width guard cannot mask :138")
+        void emptyCredentialStillReportsTheSourceLiteral() {
+            // Ordering evidence. The width guard sits on the success arm, AFTER the five-arm EVALUATE, so a
+            // blank credential is still reported with the source's own literal from :138 rather than with the
+            // Java-only width message. First-match-wins is preserved.
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.addUser(validRequest(), ""))
+                    .satisfies(thrown -> {
+                        assertThat(thrown.getFieldName()).isEqualTo(FIELD_CREDENTIAL);
+                        assertThat(thrown.getMessage()).isEqualTo(CREDENTIAL_REQUIRED);
+                        assertThat(thrown.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.BLANK);
+                    });
+
+            verifyNoInteractions(encoder);
         }
 
         @Test
@@ -1063,7 +1115,7 @@ class UserAddServiceTest {
         void successPathParksTheCursorOnFirstName() {
             // :149 MOVE -1 TO FNAMEL is the "ready for the next entry" cue on the arm that finds no empty
             // field. :150 CONTINUE terminates nothing whatever - a dead no-op, retained for control-flow
-            // parity and tracked in DECISION_LOG.md rather than deleted.
+            // parity, cited to its source line, rather than deleted.
             final UserAddScreen screen = addSuccessfully(FIRST_NAME, LAST_NAME, NEW_USER_ID, TYPE_USER);
 
             assertThat(screen.cursorField()).isEqualTo(CURSOR_FIRST_NAME);
@@ -1088,7 +1140,7 @@ class UserAddServiceTest {
         void persistedCredentialIsTheEncodedValue() {
             // BCrypt salts, so the digest is deliberately non-deterministic in production. The assertion is
             // therefore about provenance, not about any literal: the stored value must be exactly what the
-            // encoder handed back. Asserting a literal digest is a High finding by construction.
+            // encoder handed back. Asserting a literal digest would pin a value BCrypt never repeats.
             addSuccessfully(FIRST_NAME, LAST_NAME, NEW_USER_ID, TYPE_USER);
 
             final UserSecurity stored = captureSaved();
@@ -1248,7 +1300,7 @@ class UserAddServiceTest {
             // USERIDI. The message is nonetheless built from SEC-USR-ID, the WORKING-STORAGE record field,
             // which the clear does not touch - so the identifier survives it. An implementation that
             // composed from its request field would emit "User  has been added ..." with nobody named, and
-            // that is a High finding.
+            // that would silently weaken the stored credential.
             final UserAddScreen screen = addSuccessfully(FIRST_NAME, LAST_NAME, NEW_USER_ID, TYPE_USER);
 
             assertThat(screen.errorMessage())
@@ -1388,7 +1440,7 @@ class UserAddServiceTest {
         void duplicateFoundByTheConstraint() {
             // Two distinct legacy conditions, one observable outcome. DFHRESP(DUPKEY) at :260 and
             // DFHRESP(DUPREC) at :261 are adjacent WHEN clauses over the one body at :262-266, so splitting
-            // them into different results is a Medium finding. The identical collapse appears in
+            // them into different results would break parity. The identical collapse appears in
             // app/cbl/COBIL00C.cbl:533-536.
             final DataIntegrityViolationException collision =
                     new DataIntegrityViolationException("unique violation on the USRSEC primary key");
@@ -1506,7 +1558,7 @@ class UserAddServiceTest {
             // root cause". No observable output depends on those codes being lost - the user-visible literal
             // at :270 is unchanged either way - so the clause governs here and the codes are PRESERVED. That
             // is a DELIBERATE, LABELLED DEVIATION from the source, distinct from every retained no-op in
-            // this file because it runs the other way, and it is justified in writing in DECISION_LOG.md.
+            // this file because it runs the other way, and the reasoning is set out above.
             //
             // This test is the proof. The mapper is the single owner of the status-to-exception translation,
             // so capturing what crosses into it captures exactly what the source threw away.
@@ -2334,12 +2386,12 @@ class UserAddServiceTest {
         @Test
         @DisplayName("the bean carries no self-authorisation annotation, so the rule lives in one place")
         void theBeanDoesNotAuthoriseItself() {
-            // Not available: the HTTP-level rule that places this service behind /api/admin/* cannot be
-            // asserted from this tier, because no controller or security configuration exists in the tree at
-            // this commit. What IS assertable is the structural precondition - the bean neither grants nor
+            // The HTTP-level rule that places this service behind /api/admin/** is declared by
+            // SecurityConfig, together with the stateless session policy; neither can be exercised from this
+            // tier, because driving them needs a controller and AdminController is not present in the tree.
+            // What IS assertable is the structural precondition - the bean neither grants nor
             // assumes authority, so the single enforcement point stays external and cannot be contradicted
-            // from here. The /api/admin/* ADMIN-only rule and the stateless session policy belong to whoever
-            // authors that configuration; this test records the boundary rather than guessing at it.
+            // from here. This test records that boundary rather than guessing at the rule.
             final Set<String> present = new LinkedHashSet<>();
             Arrays.stream(UserAddService.class.getAnnotations())
                     .map(annotation -> annotation.annotationType().getSimpleName())

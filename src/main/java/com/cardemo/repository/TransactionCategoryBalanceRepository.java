@@ -64,7 +64,7 @@ import org.springframework.stereotype.Repository;
  *       {@code ACCESS MODE IS SEQUENTIAL} and {@code :L188-L222} walks it in key order, detecting an
  *       account-level control break at {@code :L194}. This is served by the one method this interface
  *       declares, and its ordering is not negotiable.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The arithmetic that both patterns exist to perform - adding a transaction amount to a balance -
  * deliberately does <em>not</em> live here. It belongs to {@code com.cardemo.batch.processors}, so that
@@ -75,8 +75,8 @@ import org.springframework.stereotype.Repository;
  *
  * <p>{@code ./mvnw -B clean compile} compiles this interface under {@code -Xlint:all -Werror} with
  * {@code failOnWarning} enabled, so any lint finding in a category {@code javac} 25 publishes is a hard
- * build failure rather than a warning. An unused import is not such a category - {@code javac} 25.0.3
- * publishes no key for one - so it is forbidden by review instead.
+ * build failure rather than a warning. An unused import is not such a category - {@code javac} at
+ * release 25 publishes no key for one - so it must be spotted by hand.
  * {@code ./mvnw -B clean test} runs the unit tier; {@code ./mvnw -B clean verify} additionally
  * enforces the JaCoCo line-coverage floor. There is nothing to run: a Spring Data repository is an
  * interface with no implementation in the source tree, and the proxy is created by the container at
@@ -119,12 +119,11 @@ import org.springframework.stereotype.Repository;
  *   <li>{@code spring.batch.jdbc.initialize-schema}, which creates the framework's own
  *       {@code BATCH_*} metadata tables from its packaged script. Those tables are never a fourth Flyway
  *       migration and never appear in {@code V1__create_schema.sql}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>No connection-pool tuning is applied. HikariCP defaults are in force deliberately: the source
  * system publishes no throughput or latency objective anywhere, so there is no target to tune towards
- * and inventing one would be fabrication. This is recorded as residual risk in the planned {@code DECISION_LOG.md}
- * and the planned {@code docs/validation-gates.md} rather than silently omitted.
+ * and inventing one would be fabrication. That is stated plainly rather than silently omitted.
  *
  * <h2>Batch only: proved by absence from the CICS CSD</h2>
  *
@@ -152,7 +151,7 @@ import org.springframework.stereotype.Repository;
  *       sourced CICS transactions, and not one of them touches these four tables. Adding an endpoint
  *       here would not be an enhancement; it would be new attack surface over financial accumulators
  *       that the system of record never exposed, in breach of least privilege.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Source contract: a 17 byte composite key inside a 50 byte record</h2>
  *
@@ -197,15 +196,15 @@ import org.springframework.stereotype.Repository;
  *       bytes, and 17 + 33 = 50. The repeated {@code FD-FD-} prefix is a source quirk, recorded and not
  *       corrected.</li>
  *   <li><b>The seed fixture, measured rather than assumed.</b> {@code app/data/ASCII/tcatbal.txt} is
- *       2,550 bytes holding 50 rows of exactly 50 data characters each plus a line feed. Row 1 splits
- *       as account {@code 00000000001}, type {@code 01}, category {@code 0001}, balance
- *       {@code 0000000000} with a trailing overpunch, then 22 filler zeros. The overpunch character
+ *       2,550 bytes holding 50 rows of exactly 50 data characters each plus a line feed. Each row splits
+ *       into an eleven-character account identifier, a two-character type code, a four-character category
+ *       code, an eleven-character balance field, then 22 filler characters. The overpunch character
  *       terminating the eleven-character balance field is &#123;, a zoned-decimal trailing sign meaning
  *       positive zero, so the field decodes to {@code +0.00}. A census of all 50 rows found that same
  *       overpunch in every one and no other, so every seeded balance is {@code +0.00} and the
  *       accumulation genuinely begins at zero. Note the precision of that statement: the overpunch ends
  *       the <em>balance field</em> at byte 28, not the physical row, whose last 22 bytes are filler.</li>
- * </ol>
+ *   </ol>
  *
  * <p>{@code FILLER} is deliberately not modelled. It carries no data and exists only to pad the record
  * to the catalogued 50 bytes, which a relational row has no need of. Its width is recorded above so the
@@ -217,7 +216,7 @@ import org.springframework.stereotype.Repository;
  * is why the composite primary key in {@code V1__create_schema.sql} must be declared over
  * {@code (acct_id, tran_type_cd, tran_cat_cd)} in exactly that sequence.
  *
- * <h2>Blocker: the balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
+ * <h2>The balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
  *
  * <p>{@code TRAN-CAT-BAL} is {@code PIC S9(09)V99} at {@code app/cpy/CVTRA01Y.cpy:L9}: nine integer
  * digits and two decimal digits, so precision 11 and scale 2. Widening it to precision 12 is the single
@@ -233,11 +232,11 @@ import org.springframework.stereotype.Repository;
  * S9(04)V99     NUMERIC(6,2)    DIS-INT-RATE
  * </pre>
  *
- * <p><b>Severity: Blocker.</b> Under {@code ddl-auto: validate} a precision or scale mismatch aborts
+ * <p><b>Why this is load-bearing.</b> Under {@code ddl-auto: validate} a precision or scale mismatch aborts
  * context startup, so the fault presents as a total outage on first boot. Where validation is not in
  * force it is worse, because it degrades into silent scale divergence: values round at a different digit
  * than the source system did and no test that fails to assert the scale will notice.
- * <b>Remediation:</b> keep {@code tran_cat_bal NUMERIC(11,2)} in the migration and derive it from the
+ * <b>The rule:</b> keep {@code tran_cat_bal NUMERIC(11,2)} in the migration and derive it from the
  * picture clause at {@code app/cpy/CVTRA01Y.cpy:L9}, never from a neighbouring entity.
  *
  * <h2>Decimal and sign discipline</h2>
@@ -258,19 +257,19 @@ import org.springframework.stereotype.Repository;
  *   <li><b>Round with {@code RoundingMode.HALF_EVEN}.</b> No arithmetic happens in this interface, so no
  *       rounding happens here either. The rule is recorded because the accumulation the batch layer
  *       performs on this value must apply it.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>The balance is signed and may legitimately be negative, and no absolute-value normalisation is
  * permitted anywhere on this path.</b> The posting job adds the transaction amount at
  * {@code app/cbl/CBTRN02C.cbl:L508} on the create branch and {@code :L527} on the update branch, and
- * {@code DALYTRAN-AMT} is itself {@code PIC S9(09)V99}. The Gate 1 fixture
+ * {@code DALYTRAN-AMT} is itself {@code PIC S9(09)V99}. The daily transaction fixture
  * {@code app/data/ASCII/dailytran.txt} carries genuinely negative zoned-decimal overpunch signs across
  * its 300 rows, so the balance really does move in both directions and the negative branch is exercised
  * rather than theoretical. The same source truth appears one paragraph later at
  * {@code app/cbl/CBTRN02C.cbl:L548-L552}, where a negative amount is added to the current-cycle
  * <em>debit</em> accumulator, which is exactly why the over-limit test elsewhere subtracts that
  * accumulator. Consequently there is no {@code abs}, no {@code negate} and no positivity constraint in
- * this file. <b>Severity: Blocker.</b> Normalising the sign would silently discard credits and put the
+ * this file. Normalising the sign would silently discard credits and put the
  * table permanently out of agreement with the system of record, and because the row would still look
  * plausible, no schema check and no smoke test would catch it.
  *
@@ -326,7 +325,7 @@ import org.springframework.stereotype.Repository;
  * program accepts {@code '00'} alone. A caller must therefore <b>never</b> translate the empty
  * {@code Optional} on this path into {@code com.cardemo.exception.RecordNotFoundException}, and
  * {@code com.cardemo.service.shared.FileStatusMapper} must exempt this call site from its normal
- * not-found translation. <b>Severity: Blocker</b> if it throws: the very first transaction for a new
+ * not-found translation. If it throws, the very first transaction for a new
  * account, type and category combination would abend the posting job, which is the ordinary case on a
  * freshly seeded system rather than an edge case. A genuine failure on this path is an infrastructure
  * fault - the provider raising a data-access exception - which is the counterpart of the
@@ -361,8 +360,8 @@ import org.springframework.stereotype.Repository;
  * {@code 'ERROR REWRITING TRANSACTION BALANCE FILE'} and abends through
  * {@code 9999-ABEND-PROGRAM}. A persistence failure here is consequently <b>fatal</b> and must surface
  * as {@code com.cardemo.exception.FatalProcessingException} carrying abend code 999 and process return
- * code 12, exactly as {@code app/cbl/CBTRN02C.cbl:L707-L710} specifies. <b>Severity: Blocker</b> if the
- * read guard's leniency is generalised to the writes: a tolerated failed write loses money silently,
+ * code 12, exactly as {@code app/cbl/CBTRN02C.cbl:L707-L710} specifies. If the
+ * read guard's leniency is generalised to the writes, a tolerated failed write loses money silently,
  * which is the worst possible failure mode for an accumulator and the one hardest to detect after the
  * fact.
  *
@@ -381,7 +380,7 @@ import org.springframework.stereotype.Repository;
  *       identifier.</li>
  *   <li><b>The statement file-service call sites</b> - {@code app/cbl/CBSTM03A.CBL:L736} and
  *       {@code :L748} accept {@code '00'} or {@code '04'}.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Note what is <em>not</em> on that list, because it is a trap. The key-ordered browse in the interest
  * job is a different read against this same file, and its guard is <b>not</b> lenient: paragraph
@@ -393,9 +392,7 @@ import org.springframework.stereotype.Repository;
  * like a defect and must not be tidied. {@code app/cbl/CBTRN02C.cbl:L138-L140} renders a status through
  * {@code IO-STATUS-04}, a group of {@code PIC 9} followed by {@code PIC 999}, so the rendering is always
  * exactly four characters. Status {@code '23'} therefore renders as {@code 0023} and the emitted
- * diagnostic reads {@code FILE STATUS IS: NNNN0023}. That is reproduced rather than corrected, and it is
- * owed an entry in {@code DECISION_LOG.md}; measured 1 August 2026 that file is <strong>not
- * available</strong>, so this Javadoc is the record until it is authored.
+ * diagnostic reads {@code FILE STATUS IS: NNNN0023}. That is reproduced rather than corrected.
  *
  * <h2>Atomicity belongs to the caller, not to this interface</h2>
  *
@@ -415,8 +412,8 @@ import org.springframework.stereotype.Repository;
  * account rewrite fails, reject code 109 is assigned, and execution continues - leaving an orphaned
  * category-balance row and an orphaned transaction row committed against an account that was never
  * updated. A single transaction closes that hole as a side effect. This is a genuine <b>improvement</b>
- * over the source rather than parity with it, so it is labelled as a deviation in
- * the planned {@code DECISION_LOG.md} and must not be presented as equivalence.
+ * over the source rather than parity with it, so it is labelled here as a deviation and must not be
+ * presented as equivalence.
  *
  * <h2>Reject codes are business outcomes, never exceptions</h2>
  *
@@ -427,7 +424,7 @@ import org.springframework.stereotype.Repository;
  * is written and the value is cleared on the next iteration: it is retained as a constant because the
  * assignment is real code on a reachable path, and it is never consumed as a reject outcome.
  *
- * <h2>Blocker: the key ordered browse the interest job depends on</h2>
+ * <h2>The key ordered browse the interest job depends on</h2>
  *
  * <p>{@code app/cbl/CBACT04C.cbl:L188-L222} browses this file sequentially and performs an account-level
  * control break. The load-bearing line is {@code :L194}:
@@ -454,7 +451,7 @@ import org.springframework.stereotype.Repository;
  *
  * <p><b>Therefore every sequential or multi-row method on this interface orders by
  * {@code id.accountId}, then {@code id.typeCd}, then {@code id.catCd}</b> - the exact composite-key
- * component order. <b>Severity: Blocker</b> if omitted. Relying on natural, heap or hash order is not
+ * component order. Omitting it breaks the job silently. Relying on natural, heap or hash order is not
  * merely untidy: rows for one account would arrive interleaved with rows for another, the break would fire
  * repeatedly for the same account, the running total would be reset mid-account, and interest would be
  * lost for whole accounts. Nothing would throw, no constraint would be violated, and the job would report
@@ -470,11 +467,7 @@ import org.springframework.stereotype.Repository;
  *       ({@code ELSE PERFORM 1050-UPDATE-ACCOUNT}), but that branch is <b>unreachable as written</b>: the
  *       {@code ELSE} belongs to {@code IF END-OF-FILE = 'N'} at {@code :L189}, while the enclosing
  *       {@code PERFORM UNTIL END-OF-FILE = 'Y'} at {@code :L188} has already exited by the time the
- *       condition could be false. This is <b>severity Medium</b>, and it is owed an entry in
- *       {@code DECISION_LOG.md}; measured 1 August 2026 that file is <strong>not available</strong>, so
- *       until it is authored the register of record is this Javadoc together with the corresponding
- *       analysis in {@code docs/technical-specifications.md}. The Java flush must still happen; it is
- *       triggered by the end-of-data
+ *       condition could be false. The Java flush must still happen; it is triggered by the end-of-data
  *       condition, not by translating that dead {@code ELSE}.</li>
  *   <li><b>Paging over this table inside the interest job is stable.</b> The job never mutates the table
  *       it browses: its only write verbs are {@code REWRITE FD-ACCTFILE-REC} at
@@ -482,7 +475,7 @@ import org.springframework.stereotype.Repository;
  *       against other datasets. A chunked read therefore cannot skip or repeat a row through concurrent
  *       modification by its own job, which is what makes the paged shape below a faithful substitute for
  *       the one-record-at-a-time {@code 1000-TCATBALF-GET-NEXT} browse.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>No index is created for this table, and none is needed.</b>
  * {@code V2__create_indexes.sql} declares exactly three non-unique indexes -
@@ -504,7 +497,7 @@ import org.springframework.stereotype.Repository;
  * app/cpy/CVTRA04Y.cpy:L5   TRAN-CAT-KEY   6 bytes  TRAN-TYPE-CD + TRAN-CAT-CD
  * </pre>
  *
- * <p><b>Severity: High</b> if merged. {@link TransactionCategoryBalanceId} and
+ * <p>Merging them would be a mistake. {@link TransactionCategoryBalanceId} and
  * {@code com.cardemo.model.key.TransactionCategoryId} therefore remain separate classes with <b>no shared
  * abstraction, no common base type and no shared interface</b>, and their deliberately inconsistent
  * component names are <b>not harmonised</b>: {@code accountId} / {@code typeCd} / {@code catCd} here,
@@ -546,21 +539,16 @@ import org.springframework.stereotype.Repository;
  *       query text, no string concatenation, no native-SQL escape hatch and nothing to bind. That is the
  *       strongest available form of "parameter binding only": there is no statement here for a value to be
  *       interpolated into.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Not available: what this contract depends on and does not yet have</h2>
- *
- * <p>Two things this file reasons about are <b>"Not available"</b> at the time it was authored. Both are
- * stated plainly rather than assumed, together with what is needed to close them:
+ * <h2>The schema contract, and one construct the corpus does not ground</h2>
  *
  * <ol>
- *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
- *       {@code V1__create_schema.sql} <b>is present</b> and declares
+ *   <li><b>The three Flyway migrations fix this table's shape.</b>
+ *       {@code V1__create_schema.sql} declares
  *       {@code CREATE TABLE transaction_category_balance} with {@code fk07_tcatbal_account}
- *       and {@code fk08_tcatbal_category}; {@code V2__create_indexes.sql} and
- *       {@code V3__seed_data.sql} do not yet exist.
- *       <b>What is needed:</b> those two remaining files under {@code src/main/resources/db/migration}.
- *       Because {@code ddl-auto: validate} is mandated in every planned profile, the mapping this
+ *       and {@code fk08_tcatbal_category}.
+ *       Because {@code ddl-auto: validate} is mandated in every profile, the mapping this
  *       interface is typed over must match the DDL exactly, and it is restated here because it is what
  *       {@code V1} declares: table {@code transaction_category_balance}; a
  *       composite primary key over {@code (acct_id NUMERIC(11), tran_type_cd CHAR(2),
@@ -573,15 +561,15 @@ import org.springframework.stereotype.Repository;
  *       never be a global text replacement, because those same letters occur legitimately inside text
  *       fields elsewhere in the fixture set. A mismatch against any of the above aborts context startup
  *       rather than degrading gracefully, which is the intended and safest outcome.</li>
- *   <li><b>FILE STATUS {@code '35'} (file unavailable) is "Not available"</b> as a grounded source
+ *   <li><b>FILE STATUS {@code '35'} (file unavailable) has no grounding</b> as a source
  *       construct. No literal {@code '35'} occurs anywhere in {@code app/cbl}, and the {@code DFHRESP}
  *       census across the corpus is {@code NORMAL} 43, {@code NOTFND} 23, {@code ENDFILE} 8,
  *       {@code DUPREC} 7, {@code DUPKEY} 3 and <b>{@code NOTOPEN} 0</b>. The status is therefore
  *       specification-derived only, and {@code com.cardemo.exception.FileUnavailableException} has no
  *       originating call site in the corpus - including on this path.
- *       <b>What is needed</b> to promote it from specification to evidence: a source construct that
- *       actually raises it. There is none, so it is not asserted here.</li>
- * </ol>
+ *       What would ground it is a source construct that actually raises it. There is none, so it is not
+ *       asserted here.</li>
+ *   </ol>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -616,9 +604,11 @@ import org.springframework.stereotype.Repository;
  *   </tr>
  *   <tr>
  *     <td>Interest is missing or wrong for some accounts, yet the job reports success</td>
- *     <td>The sequential read lost its ordering, so the control break fired mid-account; or the
- *         end-of-data flush is missing, losing the last account only</td>
- *     <td>Restore the three-component ordering; verify the final flush runs on end of data</td>
+ *     <td>The sequential read lost its ordering, so the control break fired mid-account. If the loss is
+ *         confined to the <em>last</em> account of the run it is not a defect at all - see the
+ *         no-final-flush note above</td>
+ *     <td>Restore the three-component ordering. Do <b>not</b> add an end-of-data flush: the last account's
+ *         interest is discarded by the frozen source too, and adding one breaks parity</td>
  *   </tr>
  *   <tr>
  *     <td>An equality assertion on a balance fails although the amounts look identical</td>

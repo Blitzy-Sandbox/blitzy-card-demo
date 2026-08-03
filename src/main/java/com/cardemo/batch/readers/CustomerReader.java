@@ -41,9 +41,7 @@ import org.springframework.batch.item.ExecutionContext;
 import org.springframework.batch.item.ItemStreamReader;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
-import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
@@ -60,9 +58,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * to carry &quot;a short README or docstring&quot; covering what it does, how to run, build and test it, its key
  * configuration and defaults, and its common failure modes. Neither of the other two forms is admissible in this
  * package: a {@code README} would be a new file the plan does not list, and a {@code package-info.java} here
- * would break the file-count gates that fix {@code com.cardemo.batch.readers} at exactly seven classes. Package
- * documentation is owned by {@code src/main/java/com/cardemo/batch/package-info.java}; the docstring branch of
- * the clause is discharged here.
+ * would break the file-count gates that fix {@code com.cardemo.batch.readers} at exactly seven classes. For the
+ * same reason no {@code package-info.java} exists under {@code com.cardemo.batch} either, and none may be added,
+ * so there is no package-scope document to defer to: the <b>docstring branch</b> of the clause is the whole
+ * discharge and is given below in full.
  *
  * <h2>What it does</h2>
  * Streams every row of the {@code customer} relation in ascending primary-key order, reports each one twice as
@@ -76,17 +75,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  * source contains no write verb at all, this class adds no write path: no {@code save}, no {@code saveAll}, no
  * {@code delete}, no {@code @Modifying} query, no {@code EntityManager} mutation and no {@code flush}. The only
  * repository operations it ever performs are {@link CustomerRepository#count()} and
- * {@link CustomerRepository#findAll(org.springframework.data.domain.Pageable)}.
+ * {@link CustomerRepository#findByCustomerIdGreaterThanOrderByCustomerIdAsc(Long,
+ * org.springframework.data.domain.Pageable)}.
  * <p>
- * <b>Finding, severity Low: the quoted lexical figures are reconciled, not contradicted.</b> Other project
- * documents quote &quot;3 / 1 / 3 / 14&quot; for {@code OPEN} / {@code READ} / {@code CLOSE} / {@code DISPLAY}
- * in this program. Measured directly at {@code 7756d89} with a word-boundary match, the raw token occurrences
- * are {@code OPEN}=3, {@code READ}=1, {@code CLOSE}=3, {@code DISPLAY}=14 &mdash; the quoted set exactly. Those
- * are lexical token counts and not statement counts: the token {@code OPEN} also occurs in the paragraph label
+ * <b>Lexical token counts are larger than statement counts, and only the statement counts govern.</b>
+ * Measured at {@code 7756d89} with a word-boundary match, the raw token occurrences in this program are
+ * {@code OPEN}=3, {@code READ}=1, {@code CLOSE}=3 and {@code DISPLAY}=14, which is why those four figures
+ * circulate. They exceed the statement counts because the token {@code OPEN} also occurs in the paragraph label
  * {@code 0000-CUSTFILE-OPEN} at {@code :L118} and in the {@code PERFORM} of it at {@code :L72}, the token
  * {@code CLOSE} likewise at {@code :L136} and {@code :L83}, and the token {@code DISPLAY} also occurs in the
- * label {@code Z-DISPLAY-IO-STATUS} and in each {@code PERFORM} of it. <i>Remediation:</i> cite the statement
- * counts above, which supersede the lexical figures. The load-bearing fact is identical either way, so nothing
+ * label {@code Z-DISPLAY-IO-STATUS} and in each {@code PERFORM} of it. Cite the statement counts above, which
+ * are the ones this class reproduces. The load-bearing fact is identical either way, so nothing
  * downstream changes: {@code WRITE}, {@code REWRITE} and {@code DELETE} are zero.
  *
  * <h3>Paragraph map, one Java member per COBOL paragraph, never consolidated</h3>
@@ -104,11 +103,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <tr><td>{@code Z-DISPLAY-IO-STATUS}</td><td>{@code :L161-L174}</td>
  *     <td>{@code displayIoStatus(String)}</td></tr>
  * </table>
- * <b>Finding, severity Low: this program alone in the package prefixes its two utility paragraphs
+ * <b>This program alone in the package prefixes its two utility paragraphs
  * {@code Z-}.</b> {@code CBACT01C}, {@code CBACT02C} and {@code CBACT03C} all spell the same two paragraphs
  * {@code 9999-ABEND-PROGRAM} and {@code 9910-DISPLAY-IO-STATUS}; {@code CBCUS01C} spells them
  * {@code Z-ABEND-PROGRAM} ({@code :L154}) and {@code Z-DISPLAY-IO-STATUS} ({@code :L161}). The bodies are
- * equivalent, so the difference is cosmetic and has no Java consequence. <i>Remediation:</i> none. The labels
+ * equivalent, so the difference is cosmetic and has no Java consequence. The labels
  * are cited exactly as the source spells them and are deliberately <b>not</b> normalised to the {@code 99xx-}
  * form, because a citation that does not match the file it points at is not evidence.
  * <p>
@@ -116,11 +115,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  * sequential readers with a {@code 1100-} field-by-field display paragraph, so no analogue of it exists in this
  * class; inventing one would be a paragraph the source does not have.
  * <p>
- * <b>Finding, severity Low: this source file is not column-padded to 80 the way its three siblings are.</b>
+ * <b>This source file is not column-padded to 80 the way its three siblings are.</b>
  * Measured at {@code 7756d89}, the longest line of {@code app/cbl/CBCUS01C.cbl} is 73 characters, while
  * {@code app/cbl/CBACT01C.cbl} and {@code app/cbl/CBACT03C.cbl} both reach exactly 80. It is recorded only so
  * that nobody &quot;corrects&quot; a line-number citation on the assumption that the files are formatted
- * alike. <i>Remediation:</i> none; {@code app/} is frozen and the padding is not load bearing here.
+ * alike. {@code app/} is frozen and the padding is not load bearing here.
  *
  * <h3>The governing concern: this is the heaviest personal-data record in the corpus</h3>
  * {@code app/cpy/CVCUS01Y.cpy} packs into one 500-byte block a social security number (bytes 280-288,
@@ -141,13 +140,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     citing {@code :L96} and one citing {@code :L78}, at the same two points in the control flow the source
  *     emits from. Collapsing them to one would be a parity break.</li>
  * </ul>
- * <b>Finding, severity High &mdash; the rejected alternative.</b> Reproducing {@code DISPLAY CUSTOMER-RECORD}
+ * <b>The rejected alternative.</b> Reproducing {@code DISPLAY CUSTOMER-RECORD}
  * literally would publish a social security number, a government identifier, a date of birth and a bank
- * account identifier into log volume, twice for every customer, at INFO. <i>Remediation, applied:</i> emit the
+ * account identifier into log volume, twice for every customer, at INFO. This class therefore emits the
  * identifier-only projections described on {@link #read()} and {@code getNextCustomerRecord()}. The masking
  * rules configured in {@code src/main/resources/logback-spring.xml} for credentials, password hashes and social
  * security numbers are a second line of defence and not the first: this class does not rely on them, because
- * the values never reach the logger. The deviation is recorded in {@code DECISION_LOG.md}.
+ * the values never reach the logger.
  * <p>
  * <b>Two copybooks, one entity.</b> {@code app/cpy/CUSTREC.cpy} declares the same 500-byte
  * {@code CUSTOMER-RECORD} and differs from {@code app/cpy/CVCUS01Y.cpy} in exactly one respect: the
@@ -183,9 +182,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     are reproduced as explicit guards in {@link #read()} and neither is collapsed.</li>
  * <li><b>Every record is reported twice.</b> {@code app/cbl/CBCUS01C.cbl:L96} is
  *     {@code DISPLAY CUSTOMER-RECORD} with a <b>space</b> in column 7, so it is a statement and not a comment;
- *     the mainline at {@code :L78} displays the record again. <b>Finding, severity Medium:</b> the duplication
- *     is a legacy defect &mdash; the same bytes reach SYSOUT twice per row for no purpose. <i>Remediation:
- *     none, parity.</i> It is preserved as two distinct log events, each carrying its own citation, and it is
+ *     the mainline at {@code :L78} displays the record again. The duplication is a legacy defect &mdash; the
+ *     same bytes reach SYSOUT twice per row for no purpose &mdash; and it is reproduced rather than removed,
+ *     as two distinct log events, each carrying its own citation. It is
  *     the single measured fact that makes this program's {@code DISPLAY} statement count 10 rather than 9.
  *     <b>Contrast {@code app/cbl/CBACT02C.cbl:L96}</b>, which is the same statement with an asterisk in column
  *     7: {@code com.cardemo.batch.readers.CardReader} therefore reproduces it as a Java comment only and emits
@@ -202,18 +201,25 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     read path says {@code 'ERROR READING CUSTOMER FILE'} ({@code :L110}), the close path says
  *     {@code 'ERROR CLOSING CUSTOMER FILE'} ({@code :L147}), and the open path says
  *     {@code 'ERROR OPENING CUSTFILE'} ({@code :L129}) &mdash; the DD name rather than the prose name.
- *     <b>Finding, severity Medium:</b> the source is internally inconsistent. <i>Remediation: none,
- *     parity.</i> All three are observable output that a parity comparison reads byte for byte, so they are
+ *     The source is internally inconsistent, and the inconsistency is kept. All three are observable output
+ *     that a parity comparison reads byte for byte, so they are
  *     reproduced exactly as spelled and are <b>not</b> harmonised. This program is the one most likely to be
  *     tidied by mistake, because each of its three siblings is internally consistent about its own file name.
  *     </li>
  * </ol>
  *
  * <h2>How to run, build and test</h2>
- * The owning {@code Job} and {@code Step} are wired in {@code com.cardemo.config.BatchConfig}. Because
- * {@code spring.batch.job.enabled} is {@code false} ({@code src/main/resources/application.yml:647}), jobs are
- * launched by {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} and never at application startup, so
- * instantiating this bean never triggers a scan.
+ * The owning {@code Job} and {@code Step} are <strong>planned and not authored at this commit</strong>.
+ * The migration plan names {@code com.cardemo.config.BatchConfig} as their home and the planned
+ * {@code com.cardemo.batch.jobs.BatchPipelineOrchestrator} as their launcher. The home now exists and the
+ * launcher does not: {@code com.cardemo.config} holds six classes and {@code com.cardemo.batch.jobs} holds
+ * one,
+ * {@code InterestCalculationJob}. What is already true is the property both will rely on -
+ * {@code spring.batch.job.enabled} is {@code false} in {@code src/main/resources/application.yml}, so no
+ * job runs at application startup and every job must be launched deliberately. This class carries
+ * {@code @Component} and {@code @StepScope}, so the component scan registers a definition for it while no
+ * instance is constructed until a step is executing; with no {@code Step} yet referencing it, none is
+ * constructed at runtime today.
  * <p>
  * Two build paths were verified in this environment; both are pinned and either may be used.
  * <ul>
@@ -226,12 +232,14 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     </li>
  * </ul>
  * The compiler runs with {@code -Xlint:all} and {@code failOnWarning}, so the build fails on any warning.
- * Tests live in {@code src/test/java/com/cardemo/unit/batch} for the status renderer, the twin guards and the
- * emission count, and in {@code src/test/java/com/cardemo/integration/batch} for the Testcontainers
- * PostgreSQL 16 scan. Two assertions are specific to this class and are the ones worth writing first:
- * <b>exactly two record events per row</b>, and <b>no personal-data field value present anywhere in captured
- * log output</b>. This class creates neither test, because test sources are outside the scope of the package it
- * belongs to.
+ * The tests that would cover this class belong in {@code src/test/java/com/cardemo/unit/batch} for the status
+ * renderer, the twin guards and the emission count, and in {@code src/test/java/com/cardemo/integration/batch}
+ * for the Testcontainers PostgreSQL 16 scan. Neither is authored at this commit: {@code unit/batch} holds
+ * three classes, none of which references this reader, and {@code integration/batch} holds one abstract
+ * Testcontainers base with no concrete {@code *IT} beneath it. Two assertions are specific to this class and
+ * are the ones worth writing first: <b>exactly two record events per row</b>, and <b>no personal-data field
+ * value present anywhere in captured log output</b>. This class creates neither test, because test sources are
+ * outside the scope of the package it belongs to.
  *
  * <h2>Key configs and defaults</h2>
  * <ul>
@@ -245,8 +253,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  *     ({@code app/cbl/CBCUS01C.cbl:L29-L33}, key length 9 per {@code app/catlg/LISTCAT.txt:L632} and
  *     {@code KEYS(9 0)} per {@code app/jcl/CUSTFILE.jcl:L50}) and makes the emitted sequence reproducible.</li>
  * <li>{@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile
- *     ({@code src/main/resources/application.yml:576}) and {@code spring.jpa.open-in-view} is {@code false}
- *     ({@code :580}); the schema is owned by the Flyway migrations.</li>
+ *     (property {@code spring.jpa.hibernate.ddl-auto} in {@code src/main/resources/application.yml}) and
+ *     {@code spring.jpa.open-in-view} is {@code false}; the schema is owned by the Flyway migrations.</li>
  * <li>Log-masking rules are configured in {@code src/main/resources/logback-spring.xml} and govern whatever
  *     reaches an aggregator. They are a safety net here rather than the mechanism; see the personal-data
  *     section above.</li>
@@ -337,7 +345,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
 
     // ----------------------------------------------------------------------------------------------------
     // Legacy DISPLAY literals, reproduced byte for byte. Each is followed by its measured inner length so a
-    // reviewer can confirm fidelity without opening the source. Rule 1 clause F: every assertion is cited.
+    // reader can confirm fidelity without opening the source, and each carries its own source locator.
     // ----------------------------------------------------------------------------------------------------
 
     /** {@code app/cbl/CBCUS01C.cbl:L71}, 38 characters. */
@@ -385,17 +393,25 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /** Key under which the identifier of the most recently emitted row is checkpointed. */
     private static final String CONTEXT_KEY_LAST_CUSTOMER_ID = "CustomerReader.lastCustomerId";
 
+    /**
+     * Exclusive lower bound seeding the first keyset window, chosen to sit provably below the entire key
+     * space so that {@code CUST-ID > } this value selects the true first row.
+     * <p>
+     * The proof, not an assumption: {@code CUST-ID} is declared {@code PIC 9(09)} at
+     * {@code app/cpy/CVCUS01Y.cpy:L5}, corroborated by {@code KEYS(9 0)} at
+     * {@code app/jcl/CUSTFILE.jcl:L50}, is materialised as {@code NUMERIC(9) NOT NULL} by
+     * {@code src/main/resources/db/migration/V1__create_schema.sql}, and {@code Customer} rejects any value
+     * below its own {@code MIN_CUSTOMER_ID} of zero. An unsigned display field admits no negative member at
+     * all, so {@code -1} is below every value the column can hold and below every value the entity will
+     * accept. It is a bound, never a key: no row can equal it, so no row can be skipped by it.
+     */
+    private static final long SEED_CUSTOMER_ID = -1L;
+
     /** {@code END-OF-FILE PIC X(01) VALUE 'N'} in its initial state ({@code app/cbl/CBCUS01C.cbl:L65}). */
     private static final String END_OF_FILE_NO = "N";
 
     /** {@code END-OF-FILE} after {@code MOVE 'Y' TO END-OF-FILE} ({@code app/cbl/CBCUS01C.cbl:L108}). */
     private static final String END_OF_FILE_YES = "Y";
-
-    /** {@code CUST-ID PIC 9(09)}, bytes 1-9 of the record ({@code app/cpy/CVCUS01Y.cpy:L5}). */
-    private static final int CUSTOMER_ID_DIGITS = 9;
-
-    /** The character a COBOL {@code MOVE} into an alphanumeric item pads with on the right. */
-    private static final char ALPHANUMERIC_PAD = ' ';
 
     /** The character a COBOL {@code MOVE} into a numeric display item pads with on the left. */
     private static final char NUMERIC_PAD = '0';
@@ -427,12 +443,11 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * subcode available from this layer&quot;. The driver's own detail is never discarded: it travels on the
      * cause of the thrown exception.
      * <p>
-     * <b>Finding, severity Low.</b> The specific z/OS VSAM subcode that a given JDBC failure would have
-     * produced on the mainframe is <b>Not available</b>. <i>Prerequisite:</i> a z/OS VSAM trace of the failing
-     * condition, which cannot be obtained here because EBCDIC and mainframe-runtime reproduction are out of
-     * scope for this migration. <i>Remediation:</i> if a byte-exact subcode is ever required, add a
-     * SQLSTATE-to-subcode table at the {@link FileStatusMapper} layer, where the single definition of the
-     * status vocabulary already lives, rather than in this reader.
+     * The specific z/OS VSAM subcode that a given JDBC failure would have produced on the mainframe cannot be
+     * derived from this codebase: establishing it would take a z/OS VSAM trace of the failing condition, and
+     * EBCDIC and mainframe-runtime reproduction are out of scope for this migration. If a byte-exact subcode is
+     * ever required, add a SQLSTATE-to-subcode table at the {@link FileStatusMapper} layer, where the single
+     * definition of the status vocabulary already lives, rather than in this reader.
      */
     private static final String STATUS_PHYSICAL_IO_ERROR =
             String.valueOf(FileStatus.IO_ERROR_FIRST_BYTE) + NUMERIC_PAD;
@@ -480,16 +495,24 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /** Cursor into {@link #pageBuffer}; the next row to hand out. */
     private int pageBufferIndex;
 
-    /** Zero-based number of the next page to fetch. */
-    private int nextPageNumber;
+    /**
+     * Keyset cursor: the highest {@code CUST-ID} already <em>fetched</em> into {@link #pageBuffer}, and
+     * therefore the exclusive lower bound of the next window. Seeded to {@value #SEED_CUSTOMER_ID}, which is
+     * provably below the whole key space, so the first window starts at the true first row.
+     * <p>
+     * This runs ahead of {@link #lastCustomerId} by up to {@link #pageSize} rows, because a window is fetched
+     * before its rows are handed out. The two are distinct on purpose: this one positions the <em>next
+     * query</em>, that one records the <em>last emission</em> and is what a restart resumes from.
+     */
+    private long fetchCursorCustomerId = SEED_CUSTOMER_ID;
 
-    /** Rows to discard from the first fetched page when resuming a restarted step. */
-    private int restartSkipWithinPage;
-
-    /** Rows emitted so far, the counter the end-of-run summary reports and a restart resumes from. */
+    /** Rows emitted so far, the counter the end-of-run summary reports. */
     private long recordsRead;
 
-    /** Identifier of the most recently emitted row, checkpointed so a restart can be verified. */
+    /**
+     * Identifier of the most recently emitted row. Checkpointed by {@link #update(ExecutionContext)} and, on
+     * a restart, the authoritative position that {@link #fetchCursorCustomerId} is re-seeded from.
+     */
     private Long lastCustomerId;
 
     /** Whether {@code openCustomerFile()} has completed successfully, mirroring an open VSAM ACB. */
@@ -551,8 +574,7 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         customerRecord = null;
         pageBuffer = List.of();
         pageBufferIndex = 0;
-        nextPageNumber = 0;
-        restartSkipWithinPage = 0;
+        fetchCursorCustomerId = SEED_CUSTOMER_ID;
         recordsRead = 0L;
         lastCustomerId = null;
         fileOpen = false;
@@ -584,18 +606,16 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * structure 2.
      * <p>
      * <b>What the event carries, and why.</b> The source displays the whole 500-byte
-     * {@code CUSTOMER-RECORD}. This event instead renders the entity through {@link Customer#toString()},
-     * which that class deliberately restricts to the identifier and the optimistic-lock version
-     * &mdash; {@code Customer[customerId=..., version=...]} &mdash; and to nothing else. Delegating to the
-     * entity contract here is the whole point: it means this call site cannot leak a field even by accident,
-     * because it never names one. The companion event at {@code :L96} takes the opposite approach and renders
-     * an explicitly extracted identifier, so the two emissions differ in mechanism exactly as the source's two
-     * differ in origin, and each is proof against a different failure. Neither can carry a social security
-     * number, a government identifier, a date of birth, an electronic-funds account identifier, a telephone
-     * number, an address line, a name or a credit score.
+     * {@code CUSTOMER-RECORD}. This event reads <em>no field of the record at all</em> &mdash; the fact of the
+     * read and its ordinal, and nothing else &mdash; exactly as the companion event at {@code :L96} does. It
+     * cannot carry a social security number, a government identifier, a date of birth, an electronic-funds
+     * account identifier, a telephone number, an address line, a name or a credit score, because it never reads
+     * one. The primary key is withheld on the same ground rather than treated as safe because it is a
+     * surrogate: it names one person's record, and naming the record is the disclosure that matters once the
+     * line has been aggregated, retained and replicated outside this system.
      * <p>
-     * <b>Finding, severity Low: the coupling to {@link Customer#toString()} is deliberate and bounded.</b>
-     * Should that contract ever widen, this event would widen with it. <i>Remediation:</i> the assertion named
+     * <b>The coupling to {@link Customer#toString()} is deliberate and bounded.</b>
+     * Should that contract ever widen, this event would widen with it. The assertion named
      * in the &quot;How to run, build and test&quot; section &mdash; that no personal-data value appears in
      * captured log output &mdash; fails immediately if it does, which is why that test is specified rather than
      * suggested. Switching this event to {@code renderCustomerId(customer.getCustomerId())}, exactly as the
@@ -611,7 +631,8 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * {@code readOnly = true} here would therefore read as an enforced guarantee while enforcing nothing, which
      * Rule 1 clause A rules out. Read-only is guaranteed structurally instead: the only repository operations
      * this class can reach are {@link CustomerRepository#count()} and
-     * {@link CustomerRepository#findAll(org.springframework.data.domain.Pageable)}, and there is no mutating
+     * {@link CustomerRepository#findByCustomerIdGreaterThanOrderByCustomerIdAsc(Long,
+     * org.springframework.data.domain.Pageable)}, and there is no mutating
      * call, no {@code @Modifying} query and no {@code EntityManager} reference anywhere in the file.
      *
      * @return the next customer in ascending {@code customerId} order, or {@code null} at end of data, which is
@@ -661,13 +682,13 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         // image: bytes 280-288 are the social security number, 289-308 the government-issued identifier,
         // 309-318 the date of birth and 319-328 the electronic-funds account identifier
         // (app/cpy/CVCUS01Y.cpy:L17-L20), and Rule 1 clause D forbids putting any of that into a log. The
-        // entity's own toString() is used here precisely because it is contractually limited to the identifier
-        // and the version, so this call site names no field at all.
+        // event therefore carries the fact of the read and its ordinal, and reads NO field of the record at
+        // all - not even the key, which identifies a person's record as surely as any attribute of it does and
+        // which a log aggregator retains and replicates outside the boundary that protects it.
         if (LOG.isDebugEnabled()) {
-            LOG.debug("{} record read (app/cbl/CBCUS01C.cbl:L78); sequence={} record={}",
+            LOG.debug("{} record read (app/cbl/CBCUS01C.cbl:L78); sequence={}",
                     LOGICAL_FILE,
-                    Long.valueOf(recordsRead),
-                    customer);
+                    Long.valueOf(recordsRead));
         }
 
         return customer;
@@ -676,10 +697,12 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     /**
      * Checkpoints the restart cursor so an interrupted step can resume without re-emitting rows.
      * <p>
-     * Only two values are stored, and they are the whole of the cursor: the number of rows already emitted and
-     * the identifier of the most recent one. Because the scan is ordered by an explicit ascending sort on
-     * {@code customerId}, a row count is a complete and deterministic position; the identifier is stored so a
-     * resumed run can be verified against where it claimed to be. No entity, page or buffer is serialised.
+     * Only two scalars are stored, and together they are the whole of the cursor: the identifier of the most
+     * recently emitted row, which is the <b>position</b> a restart seeks to, and the number of rows emitted so
+     * far, which is the <b>tally</b> the end-of-run summary continues from. The identifier is what makes the
+     * position durable: because the scan is ordered by {@code customerId} and the next window is selected by
+     * {@code CUST-ID > } that identifier, the resume point survives rows being inserted or deleted elsewhere in
+     * the relation between the two runs. No entity, window or buffer is serialised.
      * <p>
      * <b>Both values are numeric and neither is personal data.</b> {@code CUST-ID} is the nine-digit surrogate
      * key of the relation ({@code app/cpy/CVCUS01Y.cpy:L5}), not an attribute of the person it identifies, and
@@ -770,10 +793,10 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * than hoisted; see parity structure 2. <b>This method emits the FIRST of the two events, from
      * {@code :L96}</b>; {@link #read()} emits the second, from {@code :L78}.
      * <p>
-     * <b>What the event carries, and why.</b> {@code renderCustomerId(Long)} is called on the identifier
-     * explicitly rather than the entity being handed to the logger, so this call site cannot widen even if
-     * {@link Customer#toString()} ever does. It is the belt to the {@code :L78} event's braces. No accessor for
-     * any personal-data field is called, here or anywhere else in this class.
+     * <b>What the event carries, and why.</b> No accessor of the record is called at all, so this call site
+     * cannot widen even if {@link Customer#toString()} ever does, and it discloses neither an attribute of the
+     * person nor the key that names their record. The {@code :L78} event is built the same way, for the same
+     * reason; neither reader event's exposure is defined outside this file.
      *
      * @return the record just read when the status was {@code '00'}, or {@code null} at end of file
      * @throws FatalProcessingException when the status is neither {@code '00'} nor {@code '10'}, carrying the
@@ -812,14 +835,13 @@ public class CustomerReader implements ItemStreamReader<Customer> {
         //   3. app/cbl/CBACT02C.cbl:L96 is the same statement with an asterisk in column 7, so
         //      com.cardemo.batch.readers.CardReader deliberately reproduces it as a comment only. The two
         //      files are NOT interchangeable. app/cbl/CBACT03C.cbl:L96 is active, like this one.
-        // The CONTENT is masked while the COUNT is preserved: that split is the documented resolution of
-        // Rule 1 clause D against the parity mandate, and it is recorded in DECISION_LOG.md.
+        // The CONTENT is masked while the COUNT is preserved: that split resolves the tension between
+        // keeping personal data out of log volume and reproducing the source's event count exactly.
         // ------------------------------------------------------------------------------------------------
         if (applResult == FileStatusMapper.APPL_AOK && LOG.isDebugEnabled()) {
-            LOG.debug("{} record read (app/cbl/CBCUS01C.cbl:L96); sequence={} CUST-ID={}",
+            LOG.debug("{} record read (app/cbl/CBCUS01C.cbl:L96); sequence={}",
                     LOGICAL_FILE,
-                    Long.valueOf(recordsRead + 1L),
-                    renderCustomerId(customerRecord == null ? null : customerRecord.getCustomerId()));
+                    Long.valueOf(recordsRead + 1L));
         }
 
         // IF APPL-AOK CONTINUE  (:L104-L105)
@@ -854,9 +876,10 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * {@code app/cbl/CBCUS01C.cbl:L93} and reports its outcome as a COBOL file status.
      * <p>
      * A VSAM {@code READ} with {@code ACCESS MODE IS SEQUENTIAL} hands back one record and advances the cursor.
-     * Here the cursor is a page buffer refilled by
-     * {@link CustomerRepository#findAll(org.springframework.data.domain.Pageable)} with an <b>explicit
-     * ascending sort</b> on {@code customerId}. The sort is never omitted and the store's natural order is
+     * Here the cursor is a buffered window refilled by
+     * {@link CustomerRepository#findByCustomerIdGreaterThanOrderByCustomerIdAsc(Long,
+     * org.springframework.data.domain.Pageable)}, whose ascending key order is fixed <b>in the method name
+     * itself</b> and so cannot be omitted or overridden by a caller. The store's natural order is
      * never relied upon: {@code app/cbl/CBCUS01C.cbl:L29-L33} declares {@code ORGANIZATION IS INDEXED} with
      * {@code ACCESS MODE IS SEQUENTIAL} and {@code RECORD KEY IS FD-CUST-ID}, so key order <em>is</em> the
      * contract, and reproducing it deterministically is what makes the emitted sequence comparable against the
@@ -867,12 +890,12 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * {@code FD-CUST-DATA PIC X(491)} = 500 bytes), by {@code app/catlg/LISTCAT.txt:L632}
      * ({@code KEYLEN 9} / {@code AVGLRECL 500} / {@code MAXLRECL 500} / {@code RKP 0}), by
      * {@code app/jcl/CUSTFILE.jcl:L50-L51} ({@code KEYS(9 0)} / {@code RECORDSIZE(500 500)}) and by the
-     * measured 500-byte row width of {@code app/data/ASCII/custdata.txt}. <b>Finding, severity Low: nine, not
+     * measured 500-byte row width of {@code app/data/ASCII/custdata.txt}. <b>The key length is nine, not
      * ten.</b> A second customer-shaped cluster exists in the corpus &mdash;
      * {@code app/jcl/DEFCUST.jcl:L35-L38} defines {@code AWS.CUSTDATA.CLUSTER} with {@code KEYS(10 0)} and
      * {@code RECORDSIZE(500 500)} &mdash; and <b>no program in the corpus opens it</b>. It is an orphan, it is
-     * not this reader's file, and its key length must never be mistaken for the real one.
-     * <i>Remediation:</i> none; recorded so the two are never conflated.
+     * not this reader's file, and its key length must never be mistaken for the real one. Both clusters are
+     * described here so that the two are never conflated.
      * <p>
      * <b>No alternate index is consulted, because none exists over this cluster.</b> The catalogue records
      * exactly three alternate indexes corpus-wide &mdash; {@code app/catlg/LISTCAT.txt:L254} over
@@ -880,14 +903,27 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * and none over {@code CUSTDATA}. Inventing a secondary finder here would model an index the source does
      * not have.
      * <p>
-     * The paging tradeoff, per Rule 1 clause A: rows are fetched {@link #pageSize} at a time rather than
-     * materialised as one list, so the resident set is bounded by the page size instead of by the table size.
-     * The page size cannot affect the emitted output because the ordering is fixed independently of it. This is
-     * a deliberate narrowing of the argument-less {@code findAll()} that the repository's documentation
-     * attributes to this program: the query is the same, the order is explicit, and the fetch is bounded. <b>No
-     * bespoke repository method was requested or added</b>, because the inherited {@code Pageable} overload
-     * already expresses everything this contract needs, and the repository's own documentation records that
-     * adding one would be speculative dead code.
+     * <b>Why the window is keyset-bounded and not offset-paged</b> (Rule 1 clause A, tradeoff justified rather
+     * than assumed). An offset page asks the store to produce and discard every row before the window, so
+     * walking the relation costs work quadratic in its size, and the discarded prefix grows with every step. A
+     * keyset window instead asks for {@code CUST-ID > cursor ... LIMIT pageSize}, which the primary-key index
+     * satisfies by seeking straight to the cursor and reading forward: constant work per window, independent of
+     * how far the scan has already travelled. This is also the closer analogue of the source, because a VSAM
+     * sequential read positions by key and reads forward rather than counting from the start of the cluster.
+     * The window size cannot affect the emitted output, because the ordering is fixed independently of it, and
+     * the seek bound is exclusive so no row is visited twice or skipped.
+     * <p>
+     * <b>A bespoke repository method is declared for this, and it is not speculative.</b> An earlier revision
+     * of this class narrowed the inherited {@code findAll(Pageable)} overload instead and recorded that a
+     * declared finder would be dead code. That reasoning held only while the window was offset-paged: the
+     * inherited overload can express an order and a limit, but it cannot express a seek bound, so it cannot
+     * express this contract at all. The declared finder therefore has exactly one consumer, this method, and
+     * the repository's own documentation was corrected in step.
+     * <p>
+     * A second, unrelated saving: this finder returns a {@code List}, so no {@code COUNT(*)} is issued. The
+     * page-shaped predecessor computed a total on every refill that nothing on this path ever read. The one
+     * count this class does perform is the deliberate, once-per-open one in {@code openCustomerFile()}, which
+     * exists to make the empty-relation case an explicit logged outcome.
      *
      * @return {@link #STATUS_SUCCESS} when a record was placed in the record area, {@link #STATUS_END_OF_FILE}
      *     when the scan is exhausted, or {@link #STATUS_PHYSICAL_IO_ERROR} when the buffer yielded a
@@ -896,22 +932,29 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      */
     private String readNextRecord() {
         while (pageBufferIndex >= pageBuffer.size()) {
-            Page<Customer> page = customerRepository.findAll(
-                    PageRequest.of(nextPageNumber, pageSize, Sort.by(Sort.Direction.ASC, ORDER_PROPERTY)));
-            nextPageNumber++;
-            pageBuffer = page.getContent();
+            // The window is bounded by the cursor, never by an offset: CUST-ID > cursor ORDER BY CUST-ID
+            // ASC LIMIT pageSize. PageRequest.ofSize() is page zero, so the offset is always literally 0.
+            pageBuffer = customerRepository.findByCustomerIdGreaterThanOrderByCustomerIdAsc(
+                    Long.valueOf(fetchCursorCustomerId), PageRequest.ofSize(pageSize));
 
-            // A restarted step resumes mid-page. The offset is consumed once and then cleared, so a short
-            // final page cannot make the loop spin: an empty page ends it outright.
-            pageBufferIndex = restartSkipWithinPage > 0
-                    ? Math.min(restartSkipWithinPage, pageBuffer.size())
-                    : 0;
-            restartSkipWithinPage = 0;
+            pageBufferIndex = 0;
 
             if (pageBuffer.isEmpty()) {
                 customerRecord = null;
                 return STATUS_END_OF_FILE;
             }
+
+            // Advance the cursor to the highest key in the window just fetched, so the next window starts
+            // strictly after it. Explicit null branch (Rule 1 clause B): CUST-ID is NOT NULL and is the
+            // primary key, so a null here means the result set is not what the schema promises. It is
+            // reported through the status vocabulary rather than allowed to become a NullPointerException,
+            // and the cursor is deliberately left unadvanced on that path.
+            Customer highestOfWindow = pageBuffer.get(pageBuffer.size() - 1);
+            if (highestOfWindow == null || highestOfWindow.getCustomerId() == null) {
+                customerRecord = null;
+                return STATUS_PHYSICAL_IO_ERROR;
+            }
+            fetchCursorCustomerId = highestOfWindow.getCustomerId().longValue();
         }
 
         Customer next = pageBuffer.get(pageBufferIndex);
@@ -1175,44 +1218,6 @@ public class CustomerReader implements ItemStreamReader<Customer> {
     // declares no S9 picture clause anywhere and one would therefore be unreachable.
     // ====================================================================================================
 
-    /**
-     * Renders {@code CUST-ID PIC 9(09)} as {@value #CUSTOMER_ID_DIGITS} zero-padded digits, the form the
-     * fixture {@code app/data/ASCII/custdata.txt} stores in bytes 1-9 of every row.
-     * <p>
-     * The picture clause is unsigned, so a negative value contributes its digits without a sign, exactly as a
-     * COBOL {@code MOVE} into an unsigned numeric item would. Removal of the sign is done textually rather than
-     * by {@code Math.abs}, which would overflow on {@link Long#MIN_VALUE}. High-order truncation is what a
-     * COBOL {@code MOVE} into a shorter numeric item does; truncating the low-order end instead would silently
-     * change the magnitude by a power of ten, so the direction matters. Neither case can arise from a valid row
-     * &mdash; a nine-digit key cannot be negative or over-long &mdash; and both are handled anyway, because a
-     * row arriving from the store is treated as untrusted input regardless of what the schema declares (Rule 1
-     * clause A).
-     * <p>
-     * The identifier is a surrogate key, not an attribute of the person, which is why it is the one value this
-     * class is willing to emit.
-     *
-     * @param customerId the identifier, tolerated when {@code null}
-     * @return exactly {@value #CUSTOMER_ID_DIGITS} characters: digits, or spaces when {@code customerId} is
-     *     {@code null}, which is the COBOL rendering of an uninitialised field
-     */
-    private static String renderCustomerId(Long customerId) {
-        if (customerId == null) {
-            return String.valueOf(ALPHANUMERIC_PAD).repeat(CUSTOMER_ID_DIGITS);
-        }
-        String digits = Long.toString(customerId.longValue());
-        if (digits.startsWith("-")) {
-            digits = digits.substring(1);
-        }
-        int length = digits.length();
-        if (length == CUSTOMER_ID_DIGITS) {
-            return digits;
-        }
-        if (length > CUSTOMER_ID_DIGITS) {
-            return digits.substring(length - CUSTOMER_ID_DIGITS);
-        }
-        return String.valueOf(NUMERIC_PAD).repeat(CUSTOMER_ID_DIGITS - length) + digits;
-    }
-
     // ====================================================================================================
     // Restart support and construction-time validation. No legacy counterpart: the mainline at
     // app/cbl/CBCUS01C.cbl:L70-L87 always scans from the first record, because a JES2 job restart re-ran the
@@ -1223,18 +1228,23 @@ public class CustomerReader implements ItemStreamReader<Customer> {
      * Restores the checkpoint written by {@link #update(ExecutionContext)} so a restarted step resumes instead
      * of re-emitting rows.
      * <p>
-     * A row count is a complete position because the scan is ordered by an explicit ascending sort on
-     * {@code customerId}: the count divides into a page number and an offset within that page, both exactly.
-     * The checkpointed identifier is restored for diagnostics and reported in the resume log line so an
-     * operator can see where the run claims to be picking up; it is a surrogate key and carries no personal
-     * attribute.
+     * <b>The checkpointed key is the position; the row count is only a tally.</b> The scan resumes by seeking
+     * to {@code CUST-ID > } the last identifier actually emitted, so the first window of the resumed run begins
+     * at the row after it regardless of how many rows precede it. The predecessor of this method instead
+     * divided the row count into a page number and a within-page offset, which positions correctly only while
+     * the relation is unchanged between the two runs: any row inserted or deleted below the cursor shifts every
+     * offset after it, so a restart could silently re-emit or silently skip rows. Seeking by key is immune to
+     * that, because the key of a row does not move when its neighbours change. The identifier is reported in
+     * the resume log line so an operator can see where the run is picking up; it is a surrogate key and carries
+     * no personal attribute.
      * <p>
      * A non-positive checkpoint is ignored and the scan starts from the beginning, which is the correct reading
      * of a checkpoint written before any row was emitted.
      *
      * @param executionContext the step execution context, already known to contain the row-count key
-     * @throws ArithmeticException if the checkpointed count divided by the page size exceeds an {@code int},
-     *     which a nine-digit key space cannot reach and which is therefore asserted rather than assumed
+     * @throws IllegalStateException if the context records that rows were emitted but carries no identifier to
+     *     resume from, which leaves no position to seek to and which is reported rather than silently
+     *     downgraded to a restart from the beginning
      */
     private void restoreRestartCursor(ExecutionContext executionContext) {
         long checkpointed = executionContext.getLong(CONTEXT_KEY_RECORDS_READ, 0L);
@@ -1242,16 +1252,24 @@ public class CustomerReader implements ItemStreamReader<Customer> {
             return;
         }
 
-        recordsRead = checkpointed;
-        nextPageNumber = Math.toIntExact(checkpointed / pageSize);
-        restartSkipWithinPage = Math.toIntExact(checkpointed % pageSize);
-
-        if (executionContext.containsKey(CONTEXT_KEY_LAST_CUSTOMER_ID)) {
-            lastCustomerId = Long.valueOf(executionContext.getLong(CONTEXT_KEY_LAST_CUSTOMER_ID));
+        // Explicit handled case (Rule 1 clause B). update() writes both keys together whenever a row has been
+        // emitted, so this state cannot arise from this class; a hand-built context can still present it. The
+        // alternative to failing here would be to restart from the beginning, which would re-emit every row
+        // already emitted while reporting success, so the failure is deliberately loud.
+        if (!executionContext.containsKey(CONTEXT_KEY_LAST_CUSTOMER_ID)) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "%s restart context records %d rows already emitted but carries no '%s' entry, so there "
+                            + "is no key to resume the keyset scan from; restarting from the first row would "
+                            + "re-emit those %d rows", LOGICAL_FILE, Long.valueOf(checkpointed),
+                    CONTEXT_KEY_LAST_CUSTOMER_ID, Long.valueOf(checkpointed)));
         }
 
-        LOG.info("Resuming {} scan after {} rows; last emitted CUST-ID={}",
-                LOGICAL_FILE, Long.valueOf(recordsRead), renderCustomerId(lastCustomerId));
+        recordsRead = checkpointed;
+        lastCustomerId = Long.valueOf(executionContext.getLong(CONTEXT_KEY_LAST_CUSTOMER_ID));
+        fetchCursorCustomerId = lastCustomerId.longValue();
+
+        LOG.info("Resuming {} scan after {} rows; seeking past the last emitted key, which is deliberately "
+                        + "not named here", LOGICAL_FILE, Long.valueOf(recordsRead));
     }
 
     /**

@@ -32,8 +32,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessException;
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Slice;
 import org.springframework.stereotype.Service;
 
 import com.cardemo.exception.FileAccessException;
@@ -47,25 +47,23 @@ import com.cardemo.repository.CardRepository;
  * Paged credit-card listing, migrated one-to-one from the frozen COBOL program
  * {@code app/cbl/COCRDLIC.cbl} (1,459 lines, 42 paragraphs) at traceability anchor {@code 7756d89}.
  *
- * <h2>1. What this service does</h2>
- * <p>Reproduces CICS transaction {@code CCLI}, defined at {@code app/csd/CARDDEMO.CSD:357-358} as
- * {@code DEFINE TRANSACTION(CCLI) ... PROGRAM(COCRDLIC)}. It browses the card base cluster
- * ({@code DEFINE FILE(CARDDAT)}, {@code app/csd/CARDDEMO.CSD:25-31}, which carries
- * {@code BROWSE(YES)} at {@code :31}) in card-number order and returns one screen of rows, together
- * with the paging metadata, the information or error message, and the navigation intent produced by
- * a per-row {@code S} (view) or {@code U} (update) selection.</p>
+ * <h2>1. What this service does</h2> <p>Reproduces CICS transaction {@code CCLI}, defined at
+ * {@code app/csd/CARDDEMO.CSD:357-358} as {@code DEFINE TRANSACTION(CCLI) ... PROGRAM(COCRDLIC)}. It browses the card
+ * base cluster ({@code DEFINE FILE(CARDDAT)}, {@code app/csd/CARDDEMO.CSD:25-31}, which carries {@code BROWSE(YES)}
+ * at {@code :31}) in card-number order and returns one screen of rows, together with the paging metadata, the
+ * information or error message, and the navigation intent produced by a per-row {@code S} (view) or {@code U}
+ * (update) selection.</p>
  * <ul>
  *   <li>Page size is a parity contract, not a tunable - see section 3.</li>
- *   <li>Optional account and card-number filters, evaluated account-gate-first
- *       ({@code 9500-FILTER-RECORDS.} at {@code app/cbl/COCRDLIC.cbl:1382-1407}).</li>
+ *   <li>Optional account and card-number filters, evaluated account-gate-first ({@code 9500-FILTER-RECORDS.} at
+ *       {@code app/cbl/COCRDLIC.cbl:1382-1407}).</li>
  *   <li>Key-based cursor paging forward ({@code 9000-READ-FORWARD.} at {@code :1123}) and backward
  *       ({@code 9100-READ-BACKWARDS.} at {@code :1264}).</li>
- *   <li>Per-row selection with a strict one-selection rule
- *       ({@code 2250-EDIT-ARRAY.} at {@code :1073-1117}).</li>
+ *   <li>Per-row selection with a strict one-selection rule ({@code 2250-EDIT-ARRAY.} at {@code :1073-1117}).</li>
  * </ul>
  * <p>Every private method below corresponds to exactly one COBOL Area-A paragraph label and cites
  * it. Nothing is consolidated: duplicate, empty, unreachable and defective paths are all retained,
- * because {@code TRACEABILITY_MATRIX.md} must be mechanically provable against the paragraph map.
+ * because the paragraph map must stay mechanically provable.
  * Industry guidance against literal transliteration is deliberately overridden here - behavioural
  * parity is the contract - and the readability concern it raises is answered by these
  * source-citing comments rather than by restructuring control flow.</p>
@@ -85,9 +83,9 @@ import com.cardemo.repository.CardRepository;
  *   <li>{@code ./mvnw -B -ntp test} - runs the unit tier.</li>
  *   <li>{@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} - the full gate. Note the
  *       skip property is hyphenated.</li>
- * </ul>
+ *   </ul>
  * <p>Where a host toolchain is absent, the pinned container
- * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 mvn -q -e verify}
+ * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -B -ntp -q -e verify}
  * produces an identical build. Unit tests for this service belong in
  * {@code src/test/java/com/cardemo/unit/service/} and are owned by a different agent; this file
  * therefore performs no hidden I/O, holds no static initialiser and captures no clock or random
@@ -107,10 +105,10 @@ import com.cardemo.repository.CardRepository;
  *   <li>the backward counter seed at {@code :1284-1286}, which computes the value plus one;</li>
  *   <li>the separately hardcoded literal in {@code 2250-EDIT-ARRAY.} at {@code :1099}
  *       ({@code PERFORM VARYING I FROM 1 BY 1 UNTIL I > 7}).</li>
- * </ol>
+ *   </ol>
  * <p>Site 4 is a legacy inconsistency: the source duplicated the constant instead of referencing
  * {@code WS-MAX-SCREEN-LINES}. This migration unifies the two without changing behaviour, so they
- * can never drift. Severity Low. The row and selection arrays are likewise sized from the injected
+ * can never drift. The row and selection arrays are likewise sized from the injected
  * value, so the literal seven appears nowhere in this file.</p>
  * <p>No other configuration is consumed. {@code WebConfig} owns numeric and message converters,
  * {@code SecurityConfig} owns the filter chain and role mapping, and {@code JpaConfig} owns entity
@@ -159,7 +157,7 @@ import com.cardemo.repository.CardRepository;
  *       <td>exit intent in the result</td></tr>
  *   <tr><td>Rows returned normally</td><td>{@code :917-919}</td>
  *       <td>{@code TYPE S FOR DETAIL, U TO UPDATE ANY RECORD}</td><td>populated page</td></tr>
- * </table>
+ *   </table>
  * <p>Troubleshooting. A startup failure naming
  * {@code carddemo.pagination.card-list-page-size} means the property is absent - it is intentionally
  * defaultless. An {@code IllegalArgumentException} from {@code CardDto.CardListRow} means the
@@ -169,113 +167,111 @@ import com.cardemo.repository.CardRepository;
  * failure is always preserved as the exception cause. An empty first page is a message and never an
  * exception, because the source has no {@code DFHRESP(NOTFND)} path at all.</p>
  *
- * <h2>5. Findings register (Rule 1 Clause F)</h2>
- * <p>Classified Blocker, High, Medium or Low, each with its remediation. These are surfaced for
- * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}, which are owned by other agents and
- * are deliberately not edited from here.</p>
+ * <h2>5. Source facts and preserved quirks</h2>
+ * <p>Each entry names what the source does and what this class therefore does.</p>
  * <ol>
- *   <li><strong>Blocker.</strong> {@code DFHRESP(DUPREC)} is a success path, not an error. It occurs
+ *   <li>{@code DFHRESP(DUPREC)} is a success path, not an error. It occurs
  *       four times - {@code :1158}, {@code :1209}, {@code :1306}, {@code :1334} - and every
  *       occurrence shares its branch with {@code DFHRESP(NORMAL)}. {@code DFHRESP(DUPKEY)} occurs
- *       zero times. Remediation applied: browse reads treat the duplicate condition as success. A
+ *       zero times. Applied here: browse reads treat the duplicate condition as success. A
  *       naive mapping of it to a duplicate-record exception would break every browse.</li>
- *   <li><strong>Medium.</strong> Naming correction, not a code change: the {@code exception} package
+ *   <li>Naming correction, not a code change: the {@code exception} package
  *       documents those same four line numbers under the name {@code DUPKEY}. The line numbers are
  *       right and the condition name is wrong. That file is owned by another agent and is not
  *       edited here.</li>
- *   <li><strong>Medium.</strong> Attribution correction, not a code change: the {@code CardRepository}
+ *   <li>Attribution correction, not a code change: the {@code CardRepository}
  *       Javadoc names {@code COCRDLIC} as the caller of the {@code CARDDATA.VSAM.AIX} account
  *       finder. {@code COCRDLIC} never opens that path - {@code LIT-CARD-FILE-ACCT-PATH}
  *       ({@code CARDAIX}) is referenced exactly once repository-wide, at its own declaration
  *       {@code :215-217} - and every browse verb targets the base cluster {@code LIT-CARD-FILE}.
  *       No caller is invented for that finder and that file is not edited.</li>
- *   <li><strong>Medium.</strong> The forward lookahead at {@code :1197-1205} does not apply
+ *   <li>The forward lookahead at {@code :1197-1205} does not apply
  *       {@code 9500-FILTER-RECORDS}, so the next-page indicator is a false positive whenever every
- *       following record would have been filtered out. Preserved deliberately. Remediation
- *       rejected: pushing the predicate into the database would silently repair the defect and
+ *       following record would have been filtered out. Preserved deliberately: pushing the predicate
+ *       into the database would silently repair the defect and
  *       change which pages report more data, which is a behaviour change and therefore forbidden.
  *       This is the decisive reason filtering is performed in memory.</li>
- *   <li><strong>Medium.</strong> Neither {@code READPREV} has a {@code DFHRESP(ENDFILE)} branch
+ *   <li>Neither {@code READPREV} has a {@code DFHRESP(ENDFILE)} branch
  *       ({@code :1294-1318}, {@code :1322-1370}), so exhausting records while paging up falls into
  *       {@code WHEN OTHER} and is reported as a file error, leaving the row table partly cleared.
- *       Preserved. Remediation deferred to the legacy owner; repairing it here would change
+ *       Preserved. Not repaired here; repairing it would change
  *       observable behaviour.</li>
  *   <li><strong>Medium - labelled deviation.</strong> {@code I-SELECTED} is set to zero at
  *       {@code :1097} and is subscripted without any bounds check at {@code :518}, {@code :531},
  *       {@code :533}, {@code :546}, {@code :559} and {@code :561}. Subscript zero against
  *       {@code OCCURS 7 TIMES} is out of range and, under the production {@code NOSSRANGE} compile,
  *       silently reads storage preceding the table. Java cannot reproduce an out-of-bounds read.
- *       Remediation applied: zero is treated as "no row selected", so ENTER without a selection
+ *       Applied here: zero is treated as "no row selected", so ENTER without a selection
  *       falls through to the {@code WHEN OTHER} branch at {@code :572} and re-reads forward from the
  *       first card - the observable legacy outcome whenever the garbage byte is neither
  *       {@code S} nor {@code U}. This is the one place where "absent guards are preserved" yields,
  *       because the absent guard is not representable. An unused {@code 88 DETAIL-WAS-REQUESTED
  *       VALUES 1 THRU 7} at {@code :94} shows the bound was known and never consulted.</li>
- *   <li><strong>Medium.</strong> The paragraph label names in the migration brief do not all exist
+ *   <li>The paragraph label names in the migration brief do not all exist
  *       in the source. The authoritative Area-A roster was rescanned from
  *       {@code PROCEDURE DIVISION.} at {@code :297} and yields 39 in-file labels; the real names are
  *       {@code 1200-SCREEN-ARRAY-INIT}, {@code 1500-SEND-SCREEN}, {@code 2000-RECEIVE-MAP} and
  *       {@code 2100-RECEIVE-SCREEN}, and {@code 1250-SETUP-ARRAY-ATTRIBS},
  *       {@code 1400-SETUP-MESSAGE} and {@code 2220-EDIT-CARD} were absent from the brief entirely.
- *       Remediation applied: the source governs and all 39 labels plus the two from
+ *       Applied here: the source governs and all 39 labels plus the two from
  *       {@code app/cpy/CSSTRPFY.cpy} are implemented.</li>
- *   <li><strong>Medium.</strong> Two message literals were absent from the brief's inventory:
+ *   <li>Two message literals were absent from the brief's inventory:
  *       {@code NO PREVIOUS PAGES TO DISPLAY} at {@code :903} and {@code NO MORE PAGES TO DISPLAY}
  *       at {@code :908}, the latter reachable only through the two-press latch at {@code :910-916}.
- *       Remediation applied: both are implemented verbatim.</li>
+ *       Applied here: both are implemented verbatim.</li>
  *   <li><strong>Medium - performance tradeoff, justified.</strong> {@code STARTBR ... GTEQ} has no
  *       Spring Data equivalent, and the only permitted finders are offset-paged. Positioning is
  *       therefore performed by an exponential probe followed by a binary search over single-row
  *       reads, which is logarithmic in table size and issues no {@code COUNT} query - consistent
- *       with {@code PageResponse} deliberately omitting totals. Remediation deferred: a keyset
+ *       with {@code PageResponse} deliberately omitting totals. Not addressed here: a keyset
  *       finder on {@code CardRepository} would make this a single query, but no method may be added
  *       to that interface in this change.</li>
- *   <li><strong>Low.</strong> Duplicate {@code WHEN} condition: {@code CCARD-AID-PFK07 AND
+ *   <li>Duplicate {@code WHEN} condition: {@code CCARD-AID-PFK07 AND
  *       CA-FIRST-PAGE} is declared twice, at {@code :439-440} and {@code :444-445}, with nothing but
  *       comments between them, so the first occurrence is empty and redundant and COBOL reduces the
- *       pair to a single condition. Remediation applied: one guarded branch is emitted.</li>
- *   <li><strong>Low.</strong> Self-{@code THRU} inconsistency:
+ *       pair to a single condition. Applied here: one guarded branch is emitted.</li>
+ *   <li>Self-{@code THRU} inconsistency:
  *       {@code PERFORM 1000-SEND-MAP THRU 1000-SEND-MAP} at {@code :436-437}, {@code :452-453},
  *       {@code :480-481} and {@code :580-581} names the same paragraph as both range ends and so
  *       executes only that paragraph, whereas {@code :495-496} and {@code :511-512} use the correct
  *       {@code THRU 1000-SEND-MAP-EXIT}. Both forms are rendered faithfully: the self-range sites
  *       call only the paragraph method, the correct sites also call the exit method. No range is
  *       lost in either case, because the exit paragraph is an {@code EXIT} statement.</li>
- *   <li><strong>Low.</strong> Page size duplicated in the source - {@code WS-MAX-SCREEN-LINES} at
+ *   <li>Page size duplicated in the source - {@code WS-MAX-SCREEN-LINES} at
  *       {@code :177-178} versus the hardcoded literal at {@code :1099}. Unified here through one
  *       property.</li>
- *   <li><strong>Low.</strong> {@code MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY} at
+ *   <li>{@code MOVE WS-CA-FIRST-CARDKEY TO WS-CA-LAST-CARDKEY} at
  *       {@code :1268} makes the last key of a backward page the first key of the page being left,
  *       so a following page-down starts at that key and, under {@code GTEQ}, redisplays the page
  *       just left including its first row. Off-by-one preserved.</li>
- *   <li><strong>Low.</strong> On the outer end-of-file path the last keys are saved from the stale
+ *   <li>On the outer end-of-file path the last keys are saved from the stale
  *       record buffer, which still holds the previously read record ({@code :1236-1237}). Preserved;
  *       where no record was ever read the keys are left untouched, because the source would copy an
  *       uninitialised buffer that a fresh CICS task presents as low values.</li>
- *   <li><strong>Low.</strong> {@code CRDSTP1I} is absent from {@code app/cpy-bms/COCRDLI.CPY}: row
+ *   <li>{@code CRDSTP1I} is absent from {@code app/cpy-bms/COCRDLI.CPY}: row
  *       one has four fields ({@code :78}, {@code :84}, {@code :90}, {@code :96}) while rows two to
  *       seven have five each, giving 45 input fields and not 46. No seventh selector-type field is
  *       invented, and {@code CardDto.CardListRow} independently rejects a non-null selector type on
  *       row one.</li>
- *   <li><strong>Low.</strong> {@code PageResponse} omits total-element and total-page counts because
- *       the legacy never computes them. Those values are <em>Not available</em>; obtaining them
+ *   <li>{@code PageResponse} omits total-element and total-page counts because
+ *       the legacy never computes them. Those values are not computed anywhere; obtaining them
  *       would need a {@code COUNT} query the source never issues.</li>
- *   <li><strong>Low.</strong> {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} is issued twice
+ *   <li>{@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} is issued twice
  *       in {@code 1100-SCREEN-INIT}, at {@code :645} and again at {@code :652}. The second is
  *       redundant. Preserved as two calls to the same step.</li>
- *   <li><strong>Low.</strong> A stray bare {@code I} sits alone on {@code :790}, between
+ *   <li>A stray bare {@code I} sits alone on {@code :790}, between
  *       {@code MOVE DFHBMPRO TO CRDSEL4A OF CCRDLIAI} at {@code :789} and {@code ELSE} at
  *       {@code :791}. Read as a second receiving operand of that {@code MOVE}, it would overwrite
  *       the subscript with an attribute byte. It is harmless because {@code I} is no longer live
  *       once {@code 1000-SEND-MAP} runs and is re-initialised per request at {@code :300-302}. The
- *       actual compiler parse is <em>Not available</em> - confirming it needs an Enterprise COBOL
+ *       actual compiler parse is not possible here - confirming it needs an Enterprise COBOL
  *       compiler, which this environment does not provide. Not reproduced as a clobber.</li>
- *   <li><strong>Low.</strong> Row one of {@code 1250-SETUP-ARRAY-ATTRIBS} is asymmetric with rows
+ *   <li>Row one of {@code 1250-SETUP-ARRAY-ATTRIBS} is asymmetric with rows
  *       two to seven: it moves {@code DFHBMPRF} at {@code :753} where the others move
  *       {@code DFHBMPRO}, and its error arm stamps an asterisk into the output field at
  *       {@code :757-759} where the others reposition the cursor instead. This is the origin of the
  *       two-state validation contract in which only a blank selection is stamped. Preserved.</li>
- *   <li><strong>Low.</strong> In the PF03 branch {@code CCARD-NEXT-MAPSET} receives
+ *   <li>In the PF03 branch {@code CCARD-NEXT-MAPSET} receives
  *       {@code LIT-MENUMAPSET} at {@code :394} but {@code CCARD-NEXT-MAP} receives
  *       {@code LIT-THISMAP} at {@code :395}, pairing the menu mapset with this program's own map;
  *       {@code LIT-MENUMAP} is consequently never used. {@code CCARD-NEXT-PROG} is not set on that
@@ -286,13 +282,13 @@ import com.cardemo.repository.CardRepository;
  *       response cannot present a half-populated 3270 screen carrying a diagnostic, so the
  *       screen-rendered text becomes a typed {@code FileAccessException} whose message is the
  *       identical composed text. No abend exists anywhere in {@code COCRDLIC}.</li>
- *   <li><strong>Low.</strong> {@code WS-FILE-ERROR-MESSAGE} at {@code :153-171} occupies exactly 80
+ *   <li>{@code WS-FILE-ERROR-MESSAGE} at {@code :153-171} occupies exactly 80
  *       bytes and is moved into the 75-byte {@code WS-ERROR-MSG}, so the trailing
  *       {@code FILLER PIC X(5)} that carries no {@code VALUE} clause begins at byte 76 and is
  *       structurally unobservable. The leading filler is {@code 'File Error:'} with no trailing
  *       space, which differs from the sibling card programs; no message formatter is shared with
  *       them.</li>
- *   <li><strong>Low.</strong> Declared but never referenced in the source, and therefore not given
+ *   <li>Declared but never referenced in the source, and therefore not given
  *       Java counterparts: {@code WS-EDIT-SELECT-COUNTER} at {@code :69-71},
  *       {@code 88 DETAIL-WAS-REQUESTED} at {@code :94}, {@code WS-CONTEXT-FLAG} at {@code :130-132},
  *       and {@code WS-LONG-MSG PIC X(500)} at {@code :111}, which is referenced only inside the
@@ -300,13 +296,13 @@ import com.cardemo.repository.CardRepository;
  *       captures ({@code :1129-1136}, {@code :1273-1280}) - an absent guard, preserved. The
  *       one-to-one mandate covers paragraph labels, not data-division items, so unused storage is
  *       not carried over.</li>
- *   <li><strong>Low.</strong> Navigation literals declared at {@code :179-210} but never referenced
+ *   <li>Navigation literals declared at {@code :179-210} but never referenced
  *       by any executed path, and therefore documented here rather than declared as dead constants:
  *       {@code LIT-MENUTRANID 'CM00'}, {@code LIT-MENUMAP 'COMEN1A'},
  *       {@code LIT-CARDDTLTRANID 'CCDL'} and {@code LIT-CARDUPDTRANID 'CCUP'}. The source never
  *       moves any of them, because it sets {@code CDEMO-TO-PROGRAM} without
  *       {@code CDEMO-TO-TRANID}.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>6. Retained unreachable paragraphs, and the tracked Clause B conflict</h2>
  * <p>An authoritative census over every Area-A label, checking for any {@code PERFORM},
@@ -608,8 +604,7 @@ public class CardListService {
     // Filter-flag states - app/cbl/COCRDLIC.cbl:61-68. The source declares WS-EDIT-ACCT-FLAG at :61
     // and WS-EDIT-CARD-FLAG at :65, each a PIC X(1) carrying the same three 88-level condition names.
     // The three byte values below are the source's own, not invented ones. They are transcribed as
-    // characters rather than as an enum because PHASE 0 of the agent prompt permits no additional
-    // type in this package.
+    // characters rather than as an enum because this package admits no additional type.
     //
     // The blank state being a space matters: INITIALIZE at :300-302 leaves both flags as spaces, so
     // the initialised state IS the blank state. That is what makes the optimistic default at :1004
@@ -628,7 +623,7 @@ public class CardListService {
 
     // ----------------------------------------------------------------------------------------
     // Field identities. These name the offending input on a validation failure and the field the
-    // cursor is placed on; per PHASE 7 they never carry a field value.
+    // cursor is placed on; they never carry a field value.
     // ----------------------------------------------------------------------------------------
 
     /** The account filter's field name, reported on a validation failure raised at :1017-1025. */
@@ -701,7 +696,7 @@ public class CardListService {
         // declares CRDSEL1L through CRDSEL7L at app/cpy-bms/COCRDLI.CPY:73, :97, :127, :157, :187, :217
         // and :247 and declares no eighth row. A page size that disagreed with that count would leave
         // rows unread or index past the row table, so it is rejected at startup where the operator can
-        // see it rather than at the first request. Severity Medium had it been left unguarded.
+        // see it rather than at the first request. Left unguarded it would have surfaced later.
         if (pageSize != SCREEN_ROW_COUNT) {
             throw new IllegalArgumentException(
                     "carddemo.pagination.card-list-page-size must equal the "
@@ -906,7 +901,7 @@ public class CardListService {
             // WHEN CCARD-AID-PFK07 AND CA-FIRST-PAGE - declared TWICE, at :439-440 and again at
             // :444-445, with only comment lines between them. COBOL treats consecutive WHEN phrases
             // as an OR-list, so the pair reduces to one condition and the first occurrence is empty
-            // and redundant. One guarded branch is emitted. Severity Low.
+            // and redundant. One guarded branch is emitted.
             // Page up while already on the first page re-reads FORWARD from the first card, which
             // redisplays the current page rather than raising an error.
             state.ridCardNumber = state.caFirstCardNumber;
@@ -971,7 +966,7 @@ public class CardListService {
         // WHEN CCARD-AID-ENTER AND VIEW-REQUESTED-ON(I-SELECTED) AND CDEMO-FROM-PROGRAM EQUAL
         // LIT-THISPGM - :517-541, and its update twin at :545-569.
         //
-        // LABELLED DEVIATION, severity Medium. I-SELECTED is zeroed at :1097 and subscripted with
+        // LABELLED DEVIATION. I-SELECTED is zeroed at :1097 and subscripted with
         // no bounds check at :518, :531, :533, :546, :559 and :561. Subscript zero against
         // OCCURS 7 TIMES is out of range and, under the production NOSSRANGE compile, silently
         // reads storage preceding the table. Java cannot reproduce an out-of-bounds read, so zero
@@ -1130,6 +1125,15 @@ public class CardListService {
         // whereas PageResponse requires a page number of at least one. The value is normalised at
         // this boundary only, and nowhere in the browse logic.
         final int reportedPageNumber = Math.max(state.caScreenNumber, CA_FIRST_PAGE);
+        // CA-FIRST-CARD-NUM and CA-LAST-CARD-NUM (:1197-1205) ARE card numbers: the browse repositions from
+        // them exactly as the source did, so they are carried here in the clear as INTERNAL keys.
+        //
+        // They must never be emitted. A primary account number may not appear in an HTTP response, and a
+        // page cursor is the worst place for one - it is precisely the value a client logs, caches and
+        // bookmarks. The REST boundary therefore does not return this PageResponse: the operation seals both
+        // keys with com.cardemo.security.SnapshotTokenService, and only the sealed forms reach a client,
+        // which reopens them on the next request so the browse behaves identically. This object stays
+        // in-process, which is why the keys may stay in the clear on it.
         final PageResponse<CardDto.CardListRow> page = new PageResponse<>(
                 rows,
                 reportedPageNumber,
@@ -1190,7 +1194,7 @@ public class CardListService {
      * 1000-SEND-MAP} (:436-437, :452-453, :480-481, :580-581), naming this paragraph as both range
      * ends so that only it executes; two write the correct {@code THRU 1000-SEND-MAP-EXIT}
      * (:495-496, :511-512). Both forms are rendered faithfully and neither loses a range, because
-     * the exit paragraph contains only {@code EXIT}. Severity Low.</p>
+     * the exit paragraph contains only {@code EXIT}.</p>
      *
      * @param state the per-request working storage
      */
@@ -1227,7 +1231,7 @@ public class CardListService {
      *
      * <p>{@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} is issued twice, at :645 and again at
      * :652; the second is redundant. Both are preserved as two assignments of the same value.
-     * Severity Low. The clock is not read here: the pre-formatted date and time arrive on the
+     * The clock is not read here: the pre-formatted date and time arrive on the
      * request, which keeps the service deterministic and free of a statically captured clock, and
      * avoids depending on a collaborator that is not declared.</p>
      *
@@ -1376,7 +1380,7 @@ public class CardListService {
      * And the error arm stamps an asterisk into the output field at :757-759 when the received
      * selection was a space or low values, where every other row instead repositions the cursor.
      * That stamp is the origin of the two-state validation contract in which only a blank failure is
-     * marked. Severity Low.</p>
+     * marked.</p>
      *
      * @param state the per-request working storage
      */
@@ -1412,9 +1416,9 @@ public class CardListService {
      * {@code MOVE DFHBMPRO TO CRDSEL4A OF CCRDLIAI} at :789 and before {@code ELSE} at :791. Read as
      * a second receiving operand of that move it would overwrite the subscript with an attribute
      * byte, which is harmless because the subscript is no longer live once this paragraph runs and is
-     * re-initialised each request at :300-302. The actual compiler parse is <em>Not available</em>:
+     * re-initialised each request at :300-302. The actual compiler parse cannot be performed here:
      * confirming it needs an Enterprise COBOL compiler, which this environment does not provide. The
-     * clobber is therefore documented rather than reproduced. Severity Low.</p>
+     * clobber is therefore documented rather than reproduced.</p>
      *
      * @param state the per-request working storage
      * @param rowNumber the one-based row, matching the COBOL subscript
@@ -1879,7 +1883,7 @@ public class CardListService {
      * replacement at :1090-1093 is order-sensitive: {@code 'S'} and {@code 'U'} become {@code '1'}
      * first and only the characters still remaining become {@code '0'}. And the loop bound at :1099 is
      * a second, hardcoded copy of the page size; both copies resolve from the single injected property
-     * here so they can never drift. Severity Low.</p>
+     * here so they can never drift.</p>
      *
      * <p>On a multiple selection the subscript is overwritten on every hit at :1102, so it ends up
      * holding the <em>last</em> selected row. That is harmless in the source because the error flag is
@@ -2002,7 +2006,7 @@ public class CardListService {
      *       exists" is therefore a <b>false positive</b> whenever every following record would have
      *       been excluded. A database-side predicate would silently repair that defect and change
      *       which pages report more data, which is a behaviour change and therefore forbidden.
-     *       Severity Medium, preserved deliberately.</li>
+     *       Preserved deliberately.</li>
      * </ul>
      *
      * <p><b>Why the saved last key is the next page's first row.</b> The key pair saved at :1194-1195
@@ -2012,7 +2016,7 @@ public class CardListService {
      *
      * <p><b>The stale-buffer save.</b> On the outer end-of-file arm at :1233-1237 the last key is
      * saved from the record buffer, which end-of-file leaves holding the <em>previously</em> read
-     * record. Severity Low, preserved.</p>
+     * record. Preserved.</p>
      *
      * <p>The {@code STARTBR} response at :1134 is never examined - an absent guard, preserved - and
      * the {@code ENDBR} at :1258-1259 is issued unconditionally, including on the error arms.</p>
@@ -2044,7 +2048,7 @@ public class CardListService {
             if (record != null) {
                 // WHEN DFHRESP(NORMAL) / WHEN DFHRESP(DUPREC) - :1157-1158. The two conditions share
                 // one arm, so a duplicate is a SUCCESS on every browse read. Mapping it to a duplicate
-                // exception would break every browse. Severity Blocker; see the class findings.
+                // exception would break every browse. See the class documentation.
                 readForwardOnRecord(state, record);
             } else if (state.fileErrorRespCondition == null) {
                 // WHEN DFHRESP(ENDFILE) - :1233-1245.
@@ -2167,7 +2171,7 @@ public class CardListService {
         // MOVE CARD-ACCT-ID / CARD-NUM TO the LAST key - :1236-1237. Read from the record buffer,
         // which end of file leaves holding the previously read record. When nothing was ever read the
         // buffer is empty and the keys stay unset, which is the faithful rendering of an untouched
-        // buffer without inventing byte content for it. Severity Low, preserved.
+        // buffer without inventing byte content for it. Preserved.
         state.caLastCardAccountId = accountIdOf(state.cardRecord);
         state.caLastCardNumber = cardNumberOf(state.cardRecord);
 
@@ -2194,7 +2198,7 @@ public class CardListService {
      * <p>The substituted exception is raised here rather than at the point of failure so that the
      * unconditional {@code ENDBR} of :1258-1259 has already been issued. The source instead returns to
      * the dispatcher carrying the composed diagnostic in {@code WS-ERROR-MSG}; raising a typed
-     * exception is a labelled mechanism substitution, severity Low, recorded in the class findings.</p>
+     * exception is a labelled mechanism substitution, recorded in the class documentation.</p>
      *
      * @param state the per-request working storage
      * @throws FileAccessException when the browse latched an unexpected condition
@@ -2213,7 +2217,7 @@ public class CardListService {
      * <ul>
      *   <li><b>The last key is overwritten with the first key</b> at :1268, before the browse even
      *       opens. The page being left therefore becomes the page-down target, so a page-up followed
-     *       by a page-down redisplays the page just left, including its first row. Severity Low.</li>
+     *       by a page-down redisplays the page just left, including its first row.</li>
      *   <li><b>The next-page indicator is set unconditionally</b> at :1287, so paging up always
      *       asserts that a next page exists - which, having just come from it, is true.</li>
      *   <li><b>The priming read at :1294-1302 is discarded and unfiltered.</b> Its only effect on
@@ -2221,7 +2225,7 @@ public class CardListService {
      *       which must not be shown again.</li>
      *   <li><b>Neither read has an end-of-file arm.</b> Running out of records while paging up falls
      *       into {@code WHEN OTHER} at :1308 and :1361 and is reported as a file error, leaving the low
-     *       row indices cleared. Severity Medium, preserved: a graceful "you are on the first page"
+     *       row indices cleared. Preserved: a graceful "you are on the first page"
      *       outcome would be a behaviour change.</li>
      * </ul>
      *
@@ -2486,8 +2490,7 @@ public class CardListService {
      * paragraph is declared and never entered.</p>
      *
      * <p>It is preserved so that the paragraph map remains mechanically provable for the scope-coverage
-     * gate, and it is tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md} under this
-     * program's entry. Remediation, should parity ever be relaxed: delete this method together with its
+     * gate. Should parity ever be relaxed, delete this method together with its
      * three companions and amend both evidence artefacts in the same change.</p>
      */
     private void sendPlainText() {
@@ -2501,8 +2504,7 @@ public class CardListService {
      * is never referenced, and it is not merged with its partner at :1422 because the one-to-one
      * paragraph mandate maps labels individually.</p>
      *
-     * <p>Tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; see
-     * {@code sendPlainText()} for the shared rationale and remediation.</p>
+     * <p>See {@code sendPlainText()} for the shared rationale.</p>
      */
     private void sendPlainTextExit() {
     }
@@ -2518,8 +2520,7 @@ public class CardListService {
      * :1443-1444, so no Java field is declared for it. The one-to-one mandate covers <em>labels</em>,
      * not data-division items, which get the opposite ruling.</p>
      *
-     * <p>Tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; see
-     * {@code sendPlainText()} for the shared rationale and remediation.</p>
+     * <p>See {@code sendPlainText()} for the shared rationale.</p>
      */
     private void sendLongText() {
     }
@@ -2531,8 +2532,7 @@ public class CardListService {
      * <p>Source: {@code app/cbl/COCRDLIC.cbl} paragraph {@code SEND-LONG-TEXT-EXIT.} at line 1452,
      * never referenced and not merged with its partner at :1441.</p>
      *
-     * <p>Tracked in {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; see
-     * {@code sendPlainText()} for the shared rationale and remediation.</p>
+     * <p>See {@code sendPlainText()} for the shared rationale.</p>
      */
     private void sendLongTextExit() {
     }
@@ -2568,7 +2568,7 @@ public class CardListService {
      * {@code findByCardNumberGreaterThanEqualOrderByCardNumberAsc} would locate the position in one
      * read, but adding a method to {@code CardRepository} is outside this file's scope. Correctness and
      * parity outrank the marginal efficiency of the probe, and the probe is bounded logarithmically
-     * rather than scanning. Severity Medium; remediation is that one finder, to be added by whoever
+     * rather than scanning. The cleaner form is that one finder, to be added by whoever
      * owns the repository.</p>
      *
      * @param state the per-request working storage
@@ -2630,7 +2630,7 @@ public class CardListService {
      * <p>Running off the front of the file latches the {@code ENDFILE} condition, because that is what
      * the terminal monitor would have raised - and <b>neither {@code READPREV} has an {@code ENDFILE}
      * arm</b>, so the caller's {@code WHEN OTHER} at :1308 or :1361 takes it and the browse is reported
-     * as a file error. That is the preserved legacy defect, severity Medium, not an oversight
+     * as a file error. That is the preserved legacy defect, not an oversight
      * here.</p>
      *
      * @param state the per-request working storage
@@ -2672,12 +2672,15 @@ public class CardListService {
         final int blockStart = block * blockSize;
         if (state.browseWindowStart != blockStart) {
             try {
-                final Page<Card> page =
+                // A Slice, not a Page. The binary search in startBrowse fetches on the order of log2(n)
+                // windows per request, and a Page would have issued a count query on every one of them to
+                // supply a total this method needed only once. browseTotal now obtains it with a single
+                // explicit count(); see there.
+                final Slice<Card> window =
                         this.cardRepository.findAllByOrderByCardNumberAsc(
                                 PageRequest.of(block, blockSize));
-                state.browseWindow = new ArrayList<>(page.getContent());
+                state.browseWindow = new ArrayList<>(window.getContent());
                 state.browseWindowStart = blockStart;
-                state.browseTotal = page.getTotalElements();
             } catch (final DataAccessException cause) {
                 // The unexpected-condition arms at :1222-1230, :1246-1254, :1308-1316 and :1361-1369.
                 // The root cause is preserved and rethrown by throwLatchedFileError once the browse has
@@ -2695,14 +2698,50 @@ public class CardListService {
     }
 
     /**
-     * Returns the number of rows the browse can see, loading the first block if that has not happened.
+     * Returns the number of rows the browse can see, counting them once per request.
+     *
+     * <p>The count is the upper bound of the binary search in {@link #startBrowse(ProgramState, String)} and
+     * is needed exactly once. It used to arrive as a side effect of the window fetch, because that fetch
+     * returned a {@code Page}; every window therefore carried a {@code count(*)} the search discarded. One
+     * explicit count, memoised in the request state, replaces all of them.
+     *
+     * <p>The failure path is the reason this does not simply call {@code count()} inline. An unreadable
+     * table must latch the same {@code RESP} condition and the same cause that a failed window fetch
+     * latches, <b>and must compose the diagnostic</b>, so that {@code throwLatchedFileError} rethrows it
+     * after {@code ENDBR} has run - exactly as the four unexpected-condition arms of
+     * {@code app/cbl/COCRDLIC.cbl:1226-1230}, {@code :1250-1254}, {@code :1312-1316} and
+     * {@code :1365-1369} require. Nothing is swallowed; a zero is returned so the search collapses
+     * immediately and the latched error surfaces at the normal point.
+     *
+     * <p><b>Why the diagnostic is composed here and not left to the caller.</b> A count failure is the
+     * one file error in this program that no subsequent read repeats: a {@code count(*)} examines the
+     * whole table while a windowed fetch examines at most {@link #pageSize} rows, so a timeout can strike
+     * the former while the latter still succeeds. Because {@code readNextRecord} and
+     * {@code readPrevRecord} each clear {@code fileErrorRespCondition} at their first statement, a
+     * condition left merely transient here would be wiped by the very next read and the browse would
+     * position at offset zero instead of at the requested key - a wrong position reported as success.
      *
      * @param state the per-request working storage
      * @return the row count, or zero when the table is empty or unreadable
      */
     private long browseTotal(final ProgramState state) {
         if (state.browseTotal < 0L) {
-            recordAt(state, 0);
+            try {
+                state.browseTotal = this.cardRepository.count();
+            } catch (final DataAccessException cause) {
+                // Latching the transient condition is not enough on its own: readNextRecord and
+                // readPrevRecord both clear fileErrorRespCondition at their first statement, because it
+                // describes the outcome of one operation. latchFileError is what makes the condition
+                // durable, by composing WS-ERROR-MSG into fileErrorMessage, which is the field
+                // throwLatchedFileError tests once ENDBR has run. Without this call a count failure would
+                // be wiped by the first read that followed, and the browse would silently position at the
+                // start of the file rather than at the requested key - a wrong position reported as
+                // success. The operation name is READ because that is the only one this program uses.
+                state.fileErrorRespCondition = cause.getClass().getSimpleName();
+                state.fileErrorCause = cause;
+                state.errorMessage = latchFileError(state, OPERATION_READ);
+                return 0L;
+            }
         }
         return state.browseTotal < 0L ? 0L : state.browseTotal;
     }
@@ -2759,10 +2798,10 @@ public class CardListService {
      * with the sibling card programs, which is why no formatter is shared with them.</p>
      *
      * <p>The two response fields carry the <em>condition name</em> rather than the numeric value the
-     * source moves in. The numeric {@code DFHRESP} values are <b>Not available</b>: they come from the
+     * source moves in. The numeric {@code DFHRESP} values are not in the repository: they come from the
      * CICS-supplied {@code DFHAID} and {@code DFHBMSCA} copybooks named at
      * {@code app/cbl/COCRDLIC.cbl:265-267}, neither of which exists in this repository. Supplying the
-     * name preserves the field geometry without inventing a number. Severity Low.</p>
+     * name preserves the field geometry without inventing a number.</p>
      *
      * @param operation the operation name, {@code ERROR-OPNAME} at :156
      * @param logicalFile the file name, {@code ERROR-FILE} at :160
@@ -2790,13 +2829,13 @@ public class CardListService {
      * <p>The source has no abend path: the four unexpected-condition arms compose the diagnostic, end
      * the loop, issue {@code ENDBR} and return to the dispatcher, which then re-sends the screen
      * carrying the text. Raising {@code FileAccessException} instead is a <b>labelled mechanism
-     * substitution</b>, severity Low, mandated so that an I/O failure cannot be mistaken for an empty
+     * substitution</b>, mandated so that an I/O failure cannot be mistaken for an empty
      * page. The composed seventy-five character text is carried through unchanged as the detail
      * message, and the originating store failure is preserved as the cause, so nothing is swallowed.</p>
      *
      * <p>No {@code ioStatus} is supplied. This program raises CICS response conditions, never COBOL
      * {@code FILE STATUS} values - its status census is empty - so any two-character status would be an
-     * invention. That field is therefore <b>Not available</b> here and the condition name travels in the
+     * invention. That field therefore has no counterpart here and the condition name travels in the
      * message instead.</p>
      *
      * @param state the per-request working storage
@@ -3006,9 +3045,11 @@ public class CardListService {
      *
      * <p>Required by Rule 1 Clause D. Nothing in this class writes a card number, an account
      * identifier or any other sensitive value to a log without passing it through here, and no page of
-     * rows is ever logged. The card verification value is never read, projected or logged at all: this
-     * program does not reference it, its output edit fields {@code CARD-CVV-CD-X} and
-     * {@code CARD-CVV-CD-N} at {@code app/cbl/COCRDLIC.cbl:102-104} being declared and never used.</p>
+     * rows is ever logged. The card verification value cannot be read, projected or logged at all: the
+     * entity declares no such property and the schema no such column - see the deviation on
+     * {@link com.cardemo.model.entity.Card} - and this program would not have referenced one anyway, its
+     * output edit fields {@code CARD-CVV-CD-X} and {@code CARD-CVV-CD-N} at
+     * {@code app/cbl/COCRDLIC.cbl:102-104} being declared and never used.</p>
      *
      * @param value the sensitive value
      * @return the value with everything but its last {@value #MASK_VISIBLE_DIGITS} characters replaced,
@@ -3037,7 +3078,7 @@ public class CardListService {
      * <p>The selector type is always absent. {@code app/cpy-bms/COCRDLI.CPY} declares
      * {@code CRDSTP2I} through {@code CRDSTP7I} and <b>no {@code CRDSTP1I}</b>, giving row one four
      * fields where the others have five and the map 45 input fields rather than 46; and this program
-     * never writes any of the six that do exist. Severity Low, and no seventh field is invented to
+     * never writes any of the six that do exist. No seventh field is invented to
      * regularise row one.</p>
      *
      * @param state the per-request working storage
@@ -3103,8 +3144,8 @@ public class CardListService {
     // ============================================================================================
     // REQUEST, RESULT AND PER-REQUEST WORKING STORAGE
     //
-    // Three nested types, and deliberately no more: PHASE 0 of the agent prompt fixes this package at
-    // exactly three .java files, so no separate carrier, helper or mapper type may be created. All
+    // Three nested types, and deliberately no more: this package is exactly three .java files, so no
+    // separate carrier, helper or mapper type may be created. All
     // three are static, so none captures the service instance.
     //
     // The two public carriers expose public final fields rather than accessor pairs. They are
@@ -3138,7 +3179,7 @@ public class CardListService {
      * {@code programReenter}; and the two account-key halves of the saved page keys are omitted
      * because {@code WS-CA-FIRST-CARD-ACCT-ID} and {@code WS-CA-LAST-CARD-ACCT-ID} are written at
      * :1175, :1194, :1213, :1236 and :1351 and <b>never read</b> - their only readers, the moves at
-     * :448, :475, :490, :506 and :576, are commented out. Severity Low; the stores are still performed
+     * :448, :475, :490, :506 and :576, are commented out. The stores are still performed
      * internally so the paragraph transcription stays complete.</p>
      */
     public static final class CardListRequest {
@@ -3457,7 +3498,7 @@ public class CardListService {
         /**
          * The paging metadata, or {@code null} on a transfer of control.
          *
-         * <p>Total element and total page counts are <b>Not available</b>: the source never computes
+         * <p>Total element and total page counts are not produced: the source never computes
          * them - it knows only whether one further record exists, from the lookahead at :1197-1205 - so
          * no count query is issued to synthesise them. Obtaining them would need a counting query the
          * legacy system never performed.</p>
@@ -3636,7 +3677,7 @@ public class CardListService {
      * own declarations, and {@code WS-LONG-MSG} (:111) only inside the unreachable body at :1443-1444.
      * The four output edit fields at :99-104, including the two card-verification-value fields, are
      * likewise declared and never referenced - which is the positive evidence that this program never
-     * touches that value. Severity Low for each.</p>
+     * touches that value.</p>
      */
     private static final class ProgramState {
 
@@ -3711,7 +3752,7 @@ public class CardListService {
         /**
          * {@code WS-CA-FIRST-CARD-ACCT-ID} (:235). Written at :1175 and :1351 and never read - its only
          * readers at :448, :475, :506 and :576 are commented out - so the store is preserved and the
-         * value is not surfaced. Severity Low.
+         * value is not surfaced.
          */
         private String caFirstCardAccountId;
 
@@ -3720,7 +3761,7 @@ public class CardListService {
 
         /**
          * {@code WS-CA-LAST-CARD-ACCT-ID} (:232). Written at :1194, :1213 and :1236 and never read, its
-         * only reader at :490 being commented out. Severity Low.
+         * only reader at :490 being commented out.
          */
         private String caLastCardAccountId;
 
@@ -3862,7 +3903,7 @@ public class CardListService {
         /**
          * {@code CARD-RECORD} of app/cpy/CVACT02Y.cpy, the browse {@code INTO} area. It deliberately
          * retains the last record read, because the end-of-file arm at :1236-1237 saves the page keys
-         * from whatever the buffer still holds. Severity Low, preserved.
+         * from whatever the buffer still holds. Preserved.
          */
         private Card cardRecord;
 

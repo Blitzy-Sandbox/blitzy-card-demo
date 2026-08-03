@@ -93,7 +93,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=FileStatusExceptionPayloadTest
+ * ./mvnw -B -ntp -o test -Dtest=FileStatusExceptionPayloadTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -113,7 +113,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       edit, and the baseline comparison depends on it.</li>
  *   <li><strong>The {@code " 032"} assertion fails.</strong> The delegation for an absent status changed.
  *       Check whether the constructor now short-circuits on {@code null} instead of rendering.</li>
- * </ul>
+ *   </ul>
  */
 class FileStatusExceptionPayloadTest {
 

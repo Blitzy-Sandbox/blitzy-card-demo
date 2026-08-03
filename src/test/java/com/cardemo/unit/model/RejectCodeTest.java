@@ -198,7 +198,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><em>The constant pool scan cannot find the class file.</em> It reads
  *       {@code RejectCode.class} as a classpath resource, so {@code target/classes} must be populated.
  *       Run {@code ./mvnw test-compile} first; the failure message states this.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings and severities</h2>
  *
@@ -229,13 +229,13 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       The source reuses one literal for two different conditions: a record that was not found, and a
  *       record that was found but could not be rewritten. The duplication is reproduced, not resolved.
  *       Remediation: <strong>none - preserve and log.</strong></li>
- * </ul>
+ *   </ul>
  *
  * <p>The retention of {@code 109} is the one place where the project standard forbidding dead code and
  * the mandate to preserve control flow one to one genuinely collide. Parity governs, and the standard is
  * satisfied by its own wording: what it bars is dead code and deferred work carrying <em>no owner or
  * tracking reference</em>. This constant carries both. It is cited to its exact source lines here and on
- * the constant itself, recorded as a named decision in {@code DECISION_LOG.md}, and mapped in
+ * the constant itself, owed a named-decision entry in the planned {@code DECISION_LOG.md}, and owed a row in
  * {@code TRACEABILITY_MATRIX.md} among the {@code CBTRN02C} fidelity hot spots. It is tracked, justified
  * and reviewable - a documented faithful reproduction of a reachable but unconsumed assignment in the
  * system of record, not abandoned residue.

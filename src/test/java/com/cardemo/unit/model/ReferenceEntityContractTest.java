@@ -105,7 +105,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=ReferenceEntityContractTest
+ * ./mvnw -B -ntp -o test -Dtest=ReferenceEntityContractTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -123,7 +123,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  *       copybook before changing the test - the copybook is the authority.</li>
  *   <li><strong>A geometry test fails.</strong> A width changed. The trailing FILLER absorbs the difference
  *       between the populated bytes and the catalogued slot, so recompute both.</li>
- * </ul>
+ *   </ul>
  */
 class ReferenceEntityContractTest {
 

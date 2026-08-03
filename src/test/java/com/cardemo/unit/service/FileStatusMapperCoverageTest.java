@@ -112,7 +112,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>{@code 1200-A-GET-DEFAULT-INT-RATE} at {@code app/cbl/CBACT04C.cbl:L446} accepts {@code '00'}
  *       <strong>only</strong>. The same {@code '23'} that was a control path one paragraph earlier is fatal
  *       here, because the default group is the fallback and a fallback has no fallback.</li>
- * </ul>
+ *   </ul>
  *
  * <p>That third bullet is the single most easily lost behaviour in this class, so
  * {@link AcceptedNotFoundControlPaths#theSameNotFoundStatusIsAcceptedTwiceAndFatalOnceOnTheThirdCallSite()}
@@ -148,17 +148,22 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>2. How to run it</h2>
  *
- * <p>Whole class, offline, from the repository root:
+ * <p>Whole class, offline, from the repository root. The only prerequisite is JDK 25 on {@code PATH} with
+ * {@code JAVA_HOME} set; Maven comes from the pinned wrapper, which is why the wrapper and never a host
+ * {@code mvn} is invoked:
  *
  * <pre>
- *     source /etc/profile.d/10-carddemo-toolchain.sh
- *     mvn -o -B test -Dtest=FileStatusMapperCoverageTest -DfailIfNoSpecifiedTests=false -Djacoco.skip=true
+ *     ./mvnw -B -ntp -o test -Dtest=FileStatusMapperCoverageTest -DfailIfNoSpecifiedTests=false -Djacoco.skip=true
  * </pre>
  *
- * <p>As part of the gated build, which additionally enforces the coverage floor:
+ * <p>As part of the gated build, which additionally enforces the coverage floor. Note what the two flags
+ * mean: {@code -o} makes Maven offline, which causes it to skip {@code dependency-check:check} because that
+ * goal declares {@code requiresOnline}, and {@code -Ddependency-check.skip=true} skips it explicitly.
+ * Either way <strong>a skipped scan is never evidence that the scan passes</strong>, so the vulnerability
+ * gate must be run separately and online:
  *
  * <pre>
- *     mvn -o -B clean verify -Ddependency-check.skip=true
+ *     ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true
  * </pre>
  *
  * <p>No container, no database, no LocalStack endpoint and no Spring context are required. The subject is a
@@ -195,7 +200,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>A translated exception loses its culprit or reason</strong> - the mapper is being called with
  *       the generic {@code requireSuccess} where a specialised method is required. The specialised methods
  *       exist precisely so that the abend payload names the originating COBOL program.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("FileStatusMapper: the universal COBOL FILE STATUS guard idiom translated once, centrally")
 class FileStatusMapperCoverageTest {
@@ -783,8 +788,8 @@ class FileStatusMapperCoverageTest {
                     () -> mapper.requireSuccess("10", "ACCTDAT", "READ"));
             assertThat(failure)
                     .as("requireSuccess uses applResultForGuard, so '10' is a failure; a caller that wants "
-                            + "the loop-terminating behaviour must call requireSuccessOrEndOfFile instead. "
-                            + "Observed rather than assumed: the two methods deliberately disagree here")
+                            + "the loop-terminating behaviour must classify with applResultForSequentialRead "
+                            + "instead. Observed rather than assumed: the two deliberately disagree here")
                     .isNotNull();
             assertThat(failure.getAbendReason())
                     .as("end of file is not classifiable as a business error, so it reaches the fatal arm "
@@ -853,61 +858,63 @@ class FileStatusMapperCoverageTest {
     }
 
     @Nested
-    @DisplayName("requireSuccessOrEndOfFile is the read-loop form and reports end of file as a value")
-    class RequireSuccessOrEndOfFileForm {
+    @DisplayName("The sequential-read classification is the read-loop form and reports end of file as a value")
+    class SequentialReadClassificationForm {
 
         @Test
-        @DisplayName("Success reports false and end of file reports true, so a while loop can be driven "
-                + "directly by the return value with no exception in the normal path")
-        void successReportsFalseAndEndOfFileReportsTrue() {
-            assertThat(mapper.requireSuccessOrEndOfFile("00", "ACCTDAT", "READ"))
-                    .as("false means keep going, mirroring the CONTINUE arm")
-                    .isFalse();
-            assertThat(mapper.requireSuccessOrEndOfFile("10", "ACCTDAT", "READ"))
-                    .as("true means the file is exhausted, mirroring MOVE 'Y' TO END-OF-FILE at "
+        @DisplayName("Success classifies as APPL_AOK and end of file as APPL_EOF, so a read loop can be "
+                + "driven by the returned code with no exception in the normal path")
+        void successClassifiesAokAndEndOfFileClassifiesEof() {
+            assertThat(mapper.applResultForSequentialRead("00"))
+                    .as("APPL_AOK means keep going, mirroring the CONTINUE arm")
+                    .isEqualTo(FileStatusMapper.APPL_AOK);
+            assertThat(mapper.applResultForSequentialRead("10"))
+                    .as("APPL_EOF means the file is exhausted, mirroring MOVE 'Y' TO END-OF-FILE at "
                             + "app/cbl/CBSTM03A.CBL:L356")
-                    .isTrue();
+                    .isEqualTo(FileStatusMapper.APPL_EOF);
         }
 
-        @ParameterizedTest(name = "requireSuccessOrEndOfFile([{0}]) throws")
+        @ParameterizedTest(name = "applResultForSequentialRead([{0}]) is APPL_FAILURE")
         @ValueSource(strings = {"04", "22", "23", "35", "90", "9A", "ZZ", "", "  "})
-        @DisplayName("Anything that is neither success nor end of file throws, so the loop cannot spin on an "
-                + "unhandled status")
-        void anythingElseThrows(String ioStatus) {
-            assertThat(catchThrowableOfType(RuntimeException.class,
-                    () -> mapper.requireSuccessOrEndOfFile(ioStatus, "ACCTDAT", "READ")))
-                    .as("the WHEN OTHER arm at app/cbl/CBSTM03A.CBL:L357-L360 abends, so the Java form must "
-                            + "throw rather than report a third outcome the caller would have to inspect")
-                    .isNotNull();
+        @DisplayName("Anything that is neither success nor end of file classifies as a failure, so the loop "
+                + "cannot spin on an unhandled status")
+        void anythingElseClassifiesAsFailure(String ioStatus) {
+            assertThat(mapper.applResultForSequentialRead(ioStatus))
+                    .as("the WHEN OTHER arm at app/cbl/CBSTM03A.CBL:L357-L360 abends, so the classification "
+                            + "must be a failure rather than a third tolerated outcome")
+                    .isEqualTo(FileStatusMapper.APPL_FAILURE);
         }
 
         @Test
-        @DisplayName("The thrown type still matches the classification, so switching from the guard form to "
-                + "the loop form does not degrade the error taxonomy")
-        void theThrownTypeStillMatchesTheClassification() {
-            assertThat(catchThrowableOfType(RecordNotFoundException.class,
-                    () -> mapper.requireSuccessOrEndOfFile("23", "ACCTDAT", "READ")))
-                    .as("the loop form and the guard form translate identically; only their accepted set "
-                            + "differs")
-                    .isNotNull();
-            assertThat(catchThrowableOfType(FileUnavailableException.class,
-                    () -> mapper.requireSuccessOrEndOfFile("35", "ACCTDAT", "READ")))
+        @DisplayName("The classification decides only the branch; the thrown type still comes from the map, "
+                + "so a reader that abends produces the same taxonomy as a keyed verb")
+        void theThrownTypeStillComesFromTheMap() {
+            // The four sequential readers classify with this method and then abend with their own DISPLAY
+            // literal and culprit. The exception subtype is still the map's, reached through toException.
+            assertThat(mapper.toException("23", "ACCTDAT", "READ"))
+                    .as("the map answers for '23' regardless of which classifier the caller used")
+                    .containsInstanceOf(RecordNotFoundException.class);
+            assertThat(mapper.toException("35", "ACCTDAT", "READ"))
                     .as("the same for an unavailable file")
-                    .isNotNull();
+                    .containsInstanceOf(FileUnavailableException.class);
         }
 
         @Test
-        @DisplayName("The loop form and the guard form disagree on '10' and agree everywhere else, which is "
-                + "the same single difference the APPL-RESULT helpers exhibit")
-        void theLoopFormAndTheGuardFormDifferOnlyOnEndOfFile() {
-            assertThatCode(() -> mapper.requireSuccessOrEndOfFile("10", "ACCTDAT", "READ"))
-                    .as("the loop form accepts end of file")
-                    .doesNotThrowAnyException();
-            assertThat(catchThrowableOfType(RuntimeException.class,
-                    () -> mapper.requireSuccess("10", "ACCTDAT", "READ")))
-                    .as("while the guard form rejects it; a caller must choose the form that matches its "
-                            + "COBOL original rather than treating the two as interchangeable")
-                    .isNotNull();
+        @DisplayName("The two classifications disagree on '10' and agree everywhere else, which is the whole "
+                + "reason the corpus needs both")
+        void theTwoClassificationsDifferOnlyOnEndOfFile() {
+            assertThat(mapper.applResultForSequentialRead("10"))
+                    .as("the sequential-read form accepts end of file")
+                    .isEqualTo(FileStatusMapper.APPL_EOF);
+            assertThat(mapper.applResultForGuard("10"))
+                    .as("while the OPEN and WRITE form rejects it; a caller must choose the form that "
+                            + "matches its COBOL original rather than treating the two as interchangeable")
+                    .isEqualTo(FileStatusMapper.APPL_FAILURE);
+            for (String agreed : new String[] {"00", "04", "22", "23", "35", "90", "ZZ"}) {
+                assertThat(mapper.applResultForSequentialRead(agreed))
+                        .as("the two agree on [%s]", agreed)
+                        .isEqualTo(mapper.applResultForGuard(agreed));
+            }
         }
     }
 

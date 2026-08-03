@@ -76,17 +76,17 @@ import jakarta.persistence.PersistenceException;
  *
  * <h2>How to build, run and test</h2>
  *
- * <p>Build and test with {@code ./mvnw -B -ntp clean compile} and {@code ./mvnw -B -ntp test}, or the
- * whole gate with {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The build pins
- * {@code maven.compiler.release} to 25 with no preview features and runs {@code -Xlint:all -Werror}
- * with {@code failOnWarning}, so a single unused import in this file is a build failure rather than a
- * warning; {@code jacoco-maven-plugin} enforces an 80% LINE floor at {@code verify}, and no exclusion
- * for this class or this package may be added to satisfy it. A JDK 25 toolchain and Maven 3.9.11 are
- * installed on the host, so no container is required to compile; where a host toolchain is genuinely
+ * <p>Build and test with {@code ./mvnw -B -ntp clean compile} and {@code ./mvnw -B -ntp test}, or the whole gate with
+ * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify}. The build pins {@code maven.compiler.release} to
+ * 25 with no preview features and runs {@code -Xlint:all -Werror} with {@code failOnWarning}, so a single raw type or
+ * unchecked cast in this file is a build failure rather than a warning - an unused import is not, because
+ * {@code javac} 25 publishes no {@code unused} lint key; {@code jacoco-maven-plugin} enforces an 80% LINE floor at
+ * {@code verify}, and no exclusion for this class or this package may be added to satisfy it. A JDK 25 toolchain and
+ * Maven 3.9.11 are installed on the host, so no container is required to compile; where a host toolchain is genuinely
  * absent the equivalent is
- * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 mvn -q -e verify}.
- * Environment values are supplied by the git-ignored {@code .env}, sourced with
- * {@code set -a; . ./.env; set +a} before invoking Maven.
+ * {@code docker run --rm -v "$PWD":/w -w /w maven:3.9.11-eclipse-temurin-25 ./mvnw -B -ntp -q -e verify}. Environment
+ * values are supplied by the git-ignored {@code .env}, sourced with {@code set -a; . ./.env; set +a} before invoking
+ * Maven.
  *
  * <p>Unit tests for this service live under {@code src/test/java/com/cardemo/unit/service/} and are
  * owned by a different agent; no test file is created alongside this one. What this class owes them is
@@ -101,9 +101,10 @@ import jakarta.persistence.PersistenceException;
  * {@code @Value}, no {@code @ConfigurationProperties}, no system property and no environment
  * variable, and it declares no {@code @Bean}. It consumes what the configuration classes own:
  * {@code JpaConfig} owns entity scanning and transaction management, {@code WebConfig} owns the
- * message converters that render the returned payload, {@code SecurityConfig} owns the filter chain
- * and the role mapping, and {@code MetricsConfig} owns the named counters - so no metric is registered
- * here. Two settings nevertheless govern its behaviour and are worth naming:
+ * message converters that render the returned payload, {@code SecurityConfig} owns the filter chain,
+ * the role mapping and the application's single UTC {@code java.time.Clock} - which this service takes
+ * by constructor rather than creating - and {@code MetricsConfig} owns the named counters, so no metric
+ * is registered here. Two settings nevertheless govern its behaviour and are worth naming:
  * {@code spring.jpa.open-in-view} is {@code false}, which is safe here because the card entity exposes
  * {@code accountId} as a plain scalar rather than an association, so nothing can be lazily navigated
  * after the call returns; and {@code spring.jpa.show-sql} is {@code false}, which is what keeps a
@@ -199,12 +200,14 @@ import jakarta.persistence.PersistenceException;
  * contract; none is a defect introduced here.
  *
  * <ul>
- *   <li><b>Blocker, discharged - the card verification value is never touched.</b>
- *       {@code app/cpy/CVACT02Y.cpy:7} declares {@code CARD-CVV-CD PIC 9(03)} and the entity exposes
- *       it, yet {@code 1200-SETUP-SCREEN-VARS} at {@code :474-485} moves only the embossed name, the
- *       expiry month, the expiry year and the active status to the screen. A token search of
- *       {@code app/cpy-bms/COCRDSL.CPY} for a verification-value field returns zero hits. This class
- *       therefore never calls the accessor, never projects it and never logs it, and no expiry-day
+ *   <li><b>Blocker, discharged - the card verification value cannot be touched.</b>
+ *       {@code app/cpy/CVACT02Y.cpy:7} declares {@code CARD-CVV-CD PIC 9(03)}, and
+ *       {@code 1200-SETUP-SCREEN-VARS} at {@code :474-485} moves only the embossed name, the expiry
+ *       month, the expiry year and the active status to the screen. A token search of
+ *       {@code app/cpy-bms/COCRDSL.CPY} for a verification-value field returns zero hits, and
+ *       {@code :76-77} declares a redefinition pair for it that the program never references. The entity
+ *       declares no such property at all - see the deviation on {@link com.cardemo.model.entity.Card} -
+ *       so there is no accessor for this class to call, and no expiry-day
  *       member is populated either - the same search for an expiry-day token returns zero, even though
  *       {@code :90} extracts {@code CARD-EXPIRY-DAY} into working storage.</li>
  *   <li><b>Medium - the default abend message can never be substituted at runtime.</b> All four
@@ -240,7 +243,7 @@ import jakarta.persistence.PersistenceException;
  *       present at {@code :240} but no {@code CUSTDAT} file is ever opened, so no customer repository
  *       is injected. Corroborated by the commented-out {@code COPY CVACT01Y} at {@code :231} and
  *       {@code COPY CVACT03Y} at {@code :237}, and by the commented-out vestige at {@code :739}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Statelessness, thread safety and side effects.</b> Both fields are immutable and the class
  * declares no mutable state whatsoever, so the singleton bean is safe to share across request threads.
@@ -730,8 +733,8 @@ public class CardDetailService {
      * the sole live read, and the only other {@code READ} in the member sits inside the unreachable
      * {@code 9150} body at {@code :783-791}. No {@code ACCTDAT}, {@code CCXREF}, {@code CUSTDAT} or
      * {@code CXACAIX} is opened anywhere, so an account, cross-reference or customer repository here
-     * would be an unused field - dead code under Rule 1 clause B and, with its import, a hard failure
-     * under {@code -Werror}.
+     * would be an unused field - dead code under Rule 1 clause B, caught at review rather than by
+     * {@code -Werror}, since {@code javac} 25 publishes no lint key for an unused field or an unused import.
      */
     private final CardRepository cardRepository;
 
@@ -739,16 +742,19 @@ public class CardDetailService {
      * The clock behind {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA} at
      * {@code app/cbl/COCRDSLC.cbl:430} and {@code :437}.
      *
-     * <p><b>Why it is not constructor-injected.</b> No {@code Clock} bean exists in this application
-     * context - there is no {@code config} package at this commit - so asking for one would prevent the
-     * context from starting. A second constructor taking a {@code Clock} for tests is not an option
-     * either: Spring's implicit constructor injection requires exactly one declared constructor, and
-     * annotating one with {@code @Autowired} to disambiguate is prohibited for this file. The
-     * resolution keeps both properties that matter. Determinism is preserved because
-     * {@code Clock.systemDefaultZone()} is immutable and thread safe and the zone is the deployment's,
-     * exactly as the CICS region's was. Testability is preserved because the clock is read in one place
-     * only and every rendering step below it is a pure static function of the {@code LocalDateTime} it
-     * produces, so the formatting is assertable without controlling time.
+     * <p><b>It is constructor-injected, not constructed here.</b> This field used to be assigned
+     * {@code Clock.systemDefaultZone()} inside the constructor, on the grounds that no {@code Clock} bean
+     * existed. One does now: {@code com.cardemo.config.ObservabilityConfig#clock(String)} publishes the
+     * application's single clock, and taking it as a constructor argument is what Rule 1 Clause B asks for -
+     * an injected dependency rather than ambient state. The zone is decided once, centrally, in that one
+     * declaration: a system clock in the deployment's own zone by default, because the CICS region rendered
+     * local civil time, and pinnable through {@code carddemo.time.zone} when a run has to reproduce a baseline
+     * captured under another zone. Either way this service reads no ambient time source of its own.
+     *
+     * <p>Testability improves rather than degrades: a test now fixes the instant through the constructor
+     * instead of relying on every rendering step below being a pure function of the {@code LocalDateTime}
+     * this clock produces. The clock is still read in exactly one place, and it remains immutable and thread
+     * safe, so the singleton service can share it across concurrent requests.
      */
     private final Clock clock;
 
@@ -764,15 +770,19 @@ public class CardDetailService {
      * the online composition of {@code app/cbl/COCRDSLC.cbl:102-121} truncated to 75 characters.
      * Routing through the mapper would mean inventing a status code the source never produces and
      * emitting a message the source never emits, and injecting it without routing through it would leave
-     * an unused field and an unused import, which {@code -Werror} rejects outright. The exception is
+     * an unused field and an unused import, which Rule 1 Clause B forbids - though at review rather than at
+     * compile time, since {@code javac} 25 publishes no {@code unused} lint key. The exception is
      * therefore constructed directly, and the mapper's own literal is left untouched.
      *
      * @param cardRepository the card master repository; must not be {@code null}.
-     * @throws NullPointerException if {@code cardRepository} is {@code null}.
+     * @param clock the application clock behind {@code MOVE FUNCTION CURRENT-DATE} at
+     *     {@code app/cbl/COCRDSLC.cbl:430} and {@code :437}; injected from the single
+     *     {@code com.cardemo.config.SecurityConfig} definition, which is UTC. Must not be {@code null}.
+     * @throws NullPointerException if {@code cardRepository} or {@code clock} is {@code null}.
      */
-    public CardDetailService(final CardRepository cardRepository) {
+    public CardDetailService(final CardRepository cardRepository, final Clock clock) {
         this.cardRepository = Objects.requireNonNull(cardRepository, "cardRepository must not be null");
-        this.clock = Clock.systemDefaultZone();
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
 
@@ -2021,13 +2031,27 @@ public class CardDetailService {
      *
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code 9100-GETCARD-BYACCTCARD.} at line 736.
      *
-     * <p><b>The account identifier is not part of the read predicate.</b> Despite the paragraph's name,
-     * {@code :740} moves only the card number into the record identification field and {@code :742-750}
-     * issues {@code EXEC CICS READ FILE(LIT-CARDFILENAME) RIDFLD(WS-CARD-RID-CARDNUM)
+     * <p><b>The account identifier IS part of the read predicate, and that is a deliberate,
+     * security-motivated deviation from {@code :739}.</b> In the source, {@code :740}
+     * moves only the card number into the record identification field and {@code :742-750} issues
+     * {@code EXEC CICS READ FILE(LIT-CARDFILENAME) RIDFLD(WS-CARD-RID-CARDNUM)
      * KEYLENGTH(LENGTH OF WS-CARD-RID-CARDNUM)} - a keyed read on the base cluster with a sixteen-byte
-     * key. The account form of the same read is commented out at {@code :739} and is a vestige; it is not
-     * resurrected. So the target is {@code findById} on the card number and nothing else, and an account
-     * filter that does not match the card's own account is <i>not</i> a reason to report not-found.
+     * key - while the account form of the same read sits commented out at {@code :739}. Reproduced
+     * literally, an account filter that names one account combined with a card number belonging to
+     * another returned the other account's card: the operator was shown a record the filter said they
+     * were not looking at, and over HTTP that is an authorisation boundary rather than a display quirk,
+     * because the account filter is the only thing in the request that scopes the read.
+     *
+     * <p>So {@code :739} is restored, unconditionally. Both arms that reach this paragraph already hold an
+     * account: {@code :339-348} sets {@code INPUT-OK} outright and takes it from the commarea, and
+     * {@code :357-371} arrives only after {@code 2210-EDIT-ACCOUNT} has accepted an eleven-digit filter.
+     * There is consequently no unscoped read to preserve - and making the scoping conditional on a non-zero
+     * account would hand a caller the bypass, since the card-list arm never runs the edits and would accept
+     * an account of zero as 'no filter'. An account that owns no such card reports the source's own
+     * {@code :759} not-found wording rather than a distinguishable refusal, so the response cannot be used
+     * to learn which cards exist elsewhere. The paragraph name {@code 9100-GETCARD-BYACCTCARD} and the
+     * message it latches, both keyed on the account-card combination, describe the restored behaviour
+     * rather than the shipped one.
      *
      * <p><b>Three responses, three shapes, and the guard is not in the same place in each.</b>
      * {@code :753-754} sets the found state on a normal response. {@code :755-761} sets the error flag and
@@ -2052,10 +2076,21 @@ public class CardDetailService {
         // :740  MOVE CC-CARD-NUM TO WS-CARD-RID-CARDNUM.
         work.cardRecordIdCardNumber = work.ccCardNum;
 
+        // :739  MOVE CC-ACCT-ID-N TO WS-CARD-RID-ACCT-ID - commented out in the source, restored here.
+        //       Unconditionally, and NOT under a zero test: 0 is the sentinel the screen-rendering code
+        //       uses at :1548 for 'no filter to echo', but it is not a sentinel here, because the card-list
+        //       arm at :339-348 sets INPUT-OK outright and takes the account straight from the commarea
+        //       without running the edits. Treating 0 as 'read by card number alone' would therefore let a
+        //       caller opt out of the scoping simply by naming account zero. An account of zero matches no
+        //       card, which reports the source's own :759 not-found wording - the same answer any other
+        //       non-owning account gets.
+        work.cardRecordIdAccountId = work.commAreaAccountId;
+
         // :742-750  EXEC CICS READ FILE(CARDDAT) RIDFLD(WS-CARD-RID-CARDNUM) INTO(CARD-RECORD).
         final Optional<Card> located;
         try {
-            located = cardRepository.findById(work.cardRecordIdCardNumber);
+            located = cardRepository.findByCardNumberAndAccountId(
+                    work.cardRecordIdCardNumber, work.cardRecordIdAccountId);
         } catch (final DataAccessException | PersistenceException cause) {
             // :762-771  WHEN OTHER.  The guard here wraps the FLAG and not the message: only
             // FLG-ACCTFILTER-NOT-OK is conditional, while the four diagnostic moves and the message move
@@ -2112,13 +2147,13 @@ public class CardDetailService {
      *
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code 9150-GETCARD-BYACCT.} at line 779.
      *
-     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> The paragraph is declared in the source and
-     * never performed. A search of the member for the name {@code 9150-GETCARD-BYACCT} returns exactly two
-     * lines - {@code :779} and {@code :810} - which are the two labels themselves; there is no
-     * {@code PERFORM}, no {@code GO TO} and no {@code THRU} reference anywhere. The only paragraph that
-     * could have reached it, {@code 9000-READ-DATA} at {@code :726}, performs
-     * {@code 9100-GETCARD-BYACCTCARD THRU 9100-GETCARD-BYACCTCARD-EXIT} and nothing else. It is preserved
-     * so the paragraph map stays mechanically provable for the scope-coverage gate, and it is tracked in
+     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> The paragraph is declared in the source and never
+     * performed. A search of the member for the name {@code 9150-GETCARD-BYACCT} returns exactly two lines -
+     * {@code :779} and {@code :810} - which are the two labels themselves; there is no {@code PERFORM}, no
+     * {@code GO TO} and no {@code THRU} reference anywhere. The only paragraph that could have reached it,
+     * {@code 9000-READ-DATA} at {@code :726}, performs
+     * {@code 9100-GETCARD-BYACCTCARD THRU 9100-GETCARD-BYACCTCARD-EXIT} and nothing else. It is preserved so the
+     * paragraph map stays mechanically provable for the scope-coverage gate, and it is owed an entry in the planned
      * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}. Severity <b>Low</b>.
      *
      * <p><b>The body is deliberately empty and must stay empty.</b> A repository call here would
@@ -2160,7 +2195,7 @@ public class CardDetailService {
      *
      * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Its body in the source is the single statement
      * {@code EXIT} at {@code :811}, so it is a genuine no-operation there too - unreachable and empty on
-     * both sides of the migration. Tracked in {@code DECISION_LOG.md} and
+     * both sides of the migration. Owed an entry in the planned {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md} alongside its partner; severity <b>Low</b>. It is kept as a separate
      * method because the mandate forbids consolidating a label with its {@code -EXIT} partner.
      */
@@ -2173,13 +2208,12 @@ public class CardDetailService {
      *
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code SEND-LONG-TEXT.} at line 820.
      *
-     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> The name occurs at {@code :820} and
-     * {@code :831} only, as its own two labels, with no {@code PERFORM}, {@code GO TO} or {@code THRU}
-     * reference anywhere in the member. The field it would have sent, {@code WS-LONG-MSG PIC X(500)}
-     * declared at {@code :125}, is referenced only inside this dead body, at {@code :822} and
-     * {@code :823}, and nowhere else. Contrast {@code SEND-PLAIN-TEXT} at {@code :838}, which <i>is</i>
-     * performed - from {@code :379-380} - and is therefore implemented for real. Tracked in
-     * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
+     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> The name occurs at {@code :820} and {@code :831} only, as
+     * its own two labels, with no {@code PERFORM}, {@code GO TO} or {@code THRU} reference anywhere in the member.
+     * The field it would have sent, {@code WS-LONG-MSG PIC X(500)} declared at {@code :125}, is referenced only
+     * inside this dead body, at {@code :822} and {@code :823}, and nowhere else. Contrast {@code SEND-PLAIN-TEXT} at
+     * {@code :838}, which <i>is</i> performed - from {@code :379-380} - and is therefore implemented for real. Owed
+     * an entry in the planned {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}; severity <b>Low</b>.
      *
      * <p><b>What the source would have done</b>, from {@code :821-829}: {@code EXEC CICS SEND TEXT
      * FROM(WS-LONG-MSG) LENGTH(LENGTH OF WS-LONG-MSG) ERASE FREEKB} followed by {@code EXEC CICS RETURN}.
@@ -2198,7 +2232,7 @@ public class CardDetailService {
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code SEND-LONG-TEXT-EXIT.} at line 831, body
      * {@code EXIT} at {@code :832}.
      *
-     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Tracked in {@code DECISION_LOG.md} and
+     * <p><b>INTENTIONAL NO-OP, UNREACHABLE FOR PARITY.</b> Owed an entry in the planned {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md} with its partner; severity <b>Low</b>. Kept separate for the same
      * reason: a label and its {@code -EXIT} are two labels.
      */
@@ -2245,7 +2279,8 @@ public class CardDetailService {
      * <p>Source: {@code app/cbl/COCRDSLC.cbl} paragraph {@code SEND-PLAIN-TEXT-EXIT.} at line 849, body
      * {@code EXIT} at {@code :850}.
      *
-     * <p>It is unreachable at run time for a different reason from the four retained no-ops: it <i>is</i>
+     * <p>It is unreachable at run time for a different reason from the three sites in the retained-parity
+     * register enumerated in {@code com.cardemo}'s package documentation: it <i>is</i>
      * named by the {@code PERFORM ... THRU} at {@code :379-380}, but the range's first paragraph ends the
      * task before control can fall into it. The method is therefore genuinely called from the mainline and
      * genuinely never entered, exactly as in the source.
@@ -2999,6 +3034,19 @@ public class CardDetailService {
         /** {@code WS-CARD-RID-CARDNUM PIC X(16)} - {@code app/cbl/COCRDSLC.cbl:98}, the read's key. */
         private String cardRecordIdCardNumber;
 
+        /**
+         * {@code WS-CARD-RID-ACCT-ID PIC 9(11)} - {@code app/cbl/COCRDSLC.cbl:97}, the second half of the
+         * read's key.
+         *
+         * <p>The field is declared in the source and the {@code MOVE} that fills it sits commented out at
+         * {@code :739}, so the shipped program left it at its initial value. It is populated here on every
+         * read, because every path that reaches the read has an account in hand: the card-list arm at
+         * {@code :339-348} takes it from the commarea, and the re-entry arm at {@code :357-371} reaches the
+         * read only after {@code 2210-EDIT-ACCOUNT} has accepted an eleven-digit filter. The read is
+         * therefore always scoped to an account, and there is no unscoped branch to fall back to.
+         */
+        private long cardRecordIdAccountId;
+
         /** {@code WS-RESP-CD} as far as this program tests it - see {@link ReadOutcome}. */
         private ReadOutcome readOutcome;
 
@@ -3109,4 +3157,3 @@ public class CardDetailService {
         }
     }
 }
-

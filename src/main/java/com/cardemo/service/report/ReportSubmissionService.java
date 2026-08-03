@@ -30,23 +30,36 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.shared.DateValidationService;
 
+import io.awspring.cloud.sns.core.SnsTemplate;
 import io.awspring.cloud.sqs.operations.MessagingOperationFailedException;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 
 /**
  * The CardDemo report submission bean: CICS transaction {@code CR00} and its program
@@ -83,8 +96,8 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *
  * <h2>Finding, Blocker: the monthly period is the FULL current calendar month</h2>
  *
- * <p><strong>Severity: Blocker. Locator: {@code app/cbl/CORPT00C.cbl:L213-L238}. Status: implemented
- * correctly here; recorded so the root agent can enter it in {@code DECISION_LOG.md}.</strong>
+ * <p><strong>Severity: Blocker. Locator: {@code app/cbl/CORPT00C.cbl:L213-L238}. Status: implemented correctly here;
+ * recorded so the root agent can enter it in the planned {@code DECISION_LOG.md}.</strong>
  *
  * <p>The monthly period runs from the first day of the current month to the <strong>last</strong> day of
  * the current month. It is <strong>not</strong> month to date. The source proves it in six steps:
@@ -101,7 +114,7 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *       <em>next</em> month, minus one day, which is the last day of the <em>current</em> month.</li>
  *   <li>{@code :L232-L234} read the end year, month and day back out of {@code WS-CURDATE-YEAR},
  *       {@code -MONTH} and {@code -DAY} <strong>after step 5 has already mutated all three</strong>.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Step 6 is the whole difficulty, and the mechanism behind it is
  * {@code app/cpy/CSDAT01Y.cpy:L19-L23}: {@code WS-CURDATE} is a group of {@code WS-CURDATE-YEAR PIC 9(04)},
@@ -194,12 +207,14 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *   <tr><td>17</td><td>124-125</td><td>the terminator card</td></tr>
  * </table>
  *
- * <p>The plan prose at section 0.7.5.1 says eighteen and is superseded. The delivered
- * {@code com.cardemo.model.dto.ReportRequest} already records the same correction, so the two agree. One
- * residual instance of the stale figure survives as a YAML comment beside the queue properties in
- * {@code src/main/resources/application.yml}; it is documentation only, it is not this file, and it is not
- * edited here. The finding carries no code impact either way, because the deck collapses to one typed
- * message whatever its card count.
+ * <p>An earlier revision of this paragraph said that section 0.7.5.1 of
+ * {@code docs/technical-specifications.md} states eighteen and that a residual instance survived as a YAML
+ * comment beside the queue properties in {@code src/main/resources/application.yml}. Neither is true any
+ * longer and both claims are withdrawn: that section no longer asserts a card count, and the YAML comment
+ * now reads seventeen with the same 14 + 3 arithmetic as the table above.
+ * {@code com.cardemo.model.dto.ReportRequest} and {@code src/main/resources/application-prod.yml} carry the
+ * same figure, so every surface agrees. The finding carried no code impact either way, because the deck
+ * collapses to one typed message whatever its card count.
  *
  * <p>Cards 11, 12 and 15 are why the source moves each date to a <strong>pair</strong> of targets at
  * {@code :L220-L221}, {@code :L235-L236}, {@code :L247-L248}, {@code :L252-L253}, {@code :L429-L430} and
@@ -271,7 +286,7 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *       dates into eighty byte card images by positional substitution. The target emits a typed message, so
  *       no injection surface exists, and none may be reintroduced downstream by assembling control text
  *       from strings.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Deliberate omissions, so a reviewer diffing the source is not puzzled</h2>
  *
@@ -311,7 +326,7 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *       {@code app/cbl/CORPT00C.cbl:L560} truncates two bytes. No literal in the program reaches 78
  *       characters, so nothing is ever actually truncated; the mismatch is recorded here so that a reviewer
  *       comparing the two widths is not left wondering.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build, run and test</h2>
  *
@@ -353,15 +368,42 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *       group identifier would scatter messages across groups and forfeit the ordering guarantee
  *       non-reproducibly, whereas one fixed group reproduces the strict sequential append semantics of
  *       {@code DISPOSITION(MOD)}.</td></tr>
- * </table>
+ *   </table>
+ *
+ * <p>All three property values are asserted rather than assumed. The two queue names are validated at
+ * startup by {@code com.cardemo.config.AwsConfig}, which requires the physical name to equal the logical
+ * name plus the {@code .fifo} suffix exactly and then verifies the provisioned queue's FIFO attributes; the
+ * message group identifier is validated by this bean's own constructor against the SQS grammar of 1 to 128
+ * alphanumeric and punctuation characters. A blank, whitespace-bearing or overlong group identifier is
+ * therefore a refusal to start, not a failure once per submission.
  *
  * <p>The remaining collaborators are beans rather than properties: {@code SqsTemplate}, which
  * {@code com.cardemo.config.AwsConfig} owns together with the LocalStack endpoint override, so no client is
  * ever constructed here and no code path can reach a live endpoint;
- * {@link com.cardemo.service.shared.DateValidationService}, which is mandatory; and {@link Clock}, which
- * supplies both the instant and the zone the monthly and yearly periods resolve against. This bean needs
+ * {@link com.cardemo.service.shared.DateValidationService}, which is mandatory; {@link Clock}, which
+ * supplies both the instant and the zone the monthly and yearly periods resolve against; and an
+ * {@link org.springframework.beans.factory.ObjectProvider} of {@link io.micrometer.tracing.Tracer}, which is
+ * optional by design so this bean is correct with or without a tracing stack. This bean needs
  * send capability on one queue and asks for nothing more, which is Rule 1 Clause D least privilege
  * satisfied structurally.
+ *
+ * <h2>What crosses the queue boundary</h2>
+ *
+ * <p>The payload is exactly the three fields {@code JobSubmissionMessage} declares - report name, start date
+ * and end date - and that contract is fixed by the queue's own {@code RECORDSIZE(80) RECORDFORMAT(FIXED)}
+ * declaration. Identity travels beside it, in at most four bounded message headers: the correlation
+ * identifier under {@link CorrelationIdFilter#CORRELATION_ID_HEADER}, the trace and span identifiers, and
+ * the originating transaction as a four-character literal. Headers rather than payload fields deliberately -
+ * the batch tier consumes the typed body, so adding identity to it would change a contract that parity
+ * depends on, while a header is metadata the consumer may use or ignore.
+ *
+ * <p>Every propagated value is bounded before it is attached: non-blank, no longer than the correlation
+ * identifier's own 64-character limit, and restricted to alphanumerics, hyphen and underscore. That last
+ * restriction is not decoration. The correlation identifier originates in an inbound HTTP header, so it is
+ * attacker-influenced input on a path ending in a message an operator reads, and excluding carriage return,
+ * line feed, colon and NUL makes header injection structurally impossible. A value failing the check is
+ * dropped, never truncated: a partially rewritten identifier correlates to nothing while looking as though
+ * it should.
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -369,7 +411,23 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *   <li><strong>{@code FileAccessException} carrying {@code Unable to Write TDQ (JOBS)...}</strong> - the
  *       publish failed. A warning is logged first, carrying the {@code RESP:} and {@code REAS:} prefixes of
  *       the diagnostic at {@code app/cbl/CORPT00C.cbl:L529} so that the legacy operator's log line is still
- *       recognisable, followed by the endpoint and the underlying cause. Check that the queue exists.</li>
+ *       recognisable. The {@code RESP:} slot carries a symbolic reason - {@code unavailable} for a publisher
+ *       or transport failure, {@code timeout} when the caller's deadline elapsed, {@code interrupted} when
+ *       the submitting thread was interrupted, {@code error} for anything else - and the {@code REAS:} slot
+ *       carries the failing exception's class name. Neither slot carries the resolved endpoint or the
+ *       throwable, because both would publish the account-bearing queue URL on a channel an operator reads;
+ *       the cause travels on the exception instead, where a handler still has all of it. {@code unavailable}
+ *       normally means the queue does not exist; {@code timeout} means it exists but did not answer within
+ *       {@value #SEND_DEADLINE_SECONDS} seconds, so check emulator load rather than provisioning.</li>
+ *   <li><strong>Startup fails saying the message group identifier is invalid.</strong>
+ *       {@code carddemo.aws.sqs.report-message-group-id} resolved to a blank, whitespace-bearing or overlong
+ *       value. SQS permits 1 to 128 alphanumeric and punctuation characters and nothing else, and the value
+ *       is asserted at construction so the failure is a refusal to start rather than one rejected submission
+ *       per user. That key is a <em>literal</em> in {@code application.yml} rather than an environment
+ *       indirection, and no profile overrides it, so reaching this failure means either the base profile was
+ *       edited or an external property source overrode the key. Remedy: restore it to the logical queue
+ *       name, {@code carddemo-report-jobs}, which is what the {@code DISPOSITION(MOD)} append semantics
+ *       require.</li>
  *   <li><strong>Queue does not exist.</strong> {@code localstack-init/init-aws.sh} provisions it and runs
  *       automatically from the LocalStack ready hook; if the stack was started without it, the queue is
  *       absent and every publish fails. Remedy: {@code docker compose up -d} with the initialisation script
@@ -384,11 +442,11 @@ import io.awspring.cloud.sqs.operations.SqsTemplate;
  *   <li><strong>Two or more validation messages for one request.</strong> Impossible in the source and a
  *       defect here: every send is terminal, so exactly one outcome may be produced. Remedy: raise on the
  *       first failure and never accumulate.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Thread safety</h2>
  *
- * <p>Immutable after construction and safe to share. All six fields are {@code private final} and none is
+ * <p>Immutable after construction and safe to share. All seven fields are {@code private final} and none is
  * reassigned. Every value the source held in working storage - the error flag, the report name, the current
  * date area, the assembled dates, the loop index, the card buffer, the erase flag and the loop control flag
  * - is <strong>method local</strong> here and never a field. The source itself corroborates that this is
@@ -790,6 +848,40 @@ public class ReportSubmissionService {
     private static final String JOB_TERMINATOR_CARD = "/*EOF";
 
     /**
+     * The job name on the first card, {@code //TRNRPT00 JOB 'TRAN REPORT'} at
+     * {@code app/cbl/CORPT00C.cbl:L83-L84}.
+     *
+     * <p>Published as the notification subject, because the job name and its description are the only
+     * identification the notified party had in the source: JES2 named this job when it reported completion.
+     */
+    private static final String JOB_NAME = "TRNRPT00";
+
+    /**
+     * The job description on the same card, the quoted {@code 'TRAN REPORT'} of
+     * {@code app/cbl/CORPT00C.cbl:L84}, byte for byte including the single space.
+     */
+    private static final String JOB_DESCRIPTION = "TRAN REPORT";
+
+    /**
+     * The notification card, {@code // NOTIFY=&SYSUID} at {@code app/cbl/CORPT00C.cbl:L85-L86}, recorded
+     * verbatim.
+     *
+     * <p>This literal is the entire provenance of the notification publish. It is card two of the seventeen
+     * and asks JES2 to report the job's completion; the SQS message that replaces the deck carries the
+     * job's <em>parameters</em> and has nowhere to put its <em>notification</em> instruction, which is the
+     * gap the notification topic fills.
+     *
+     * <p><strong>No user identity is published, and that is the faithful outcome rather than a compromise.</strong>
+     * The card is a {@code FILLER ... VALUE} literal: the program never substitutes a value into it and holds
+     * no field for one, so the identity behind {@code &SYSUID} is resolved by whatever environment reads the
+     * job in - for a deck handed to the internal reader through {@code DDNAME(INREADER)}
+     * ({@code app/csd/CARDDEMO.CSD:L499-L505}) that is the submitting region, not the terminal operator this
+     * program served. Publishing a signed-on user identifier here would therefore invent a binding the source
+     * does not have, and would put an identity into a notification channel for no parity gain.
+     */
+    private static final String JOB_NOTIFY_CARD = "// NOTIFY=&SYSUID";
+
+    /**
      * The affirmative confirmation in upper case, {@code WHEN CONFIRMI OF CORPT0AI = 'Y' OR 'y'} at
      * {@code app/cbl/CORPT00C.cbl:L478}.
      */
@@ -847,14 +939,113 @@ public class ReportSubmissionService {
     private static final long DECIMAL_RADIX = 10L;
 
     /**
-     * The stand-in for a reason code the publisher did not supply, used in the diagnostic that reproduces
-     * {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} at {@code app/cbl/CORPT00C.cbl:L529}.
+     * The closed reason vocabulary for a failed publish, occupying the {@code RESP} slot of the diagnostic
+     * that reproduces {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} at
+     * {@code app/cbl/CORPT00C.cbl:L529}.
      *
-     * <p>The source always had a {@code RESP2} value because CICS always set one. A publisher failure may
-     * carry no endpoint, and Rule 1 Clause F asks that missing information be stated rather than guessed at,
-     * so the absence is named rather than rendered as an empty field or a fabricated zero.
+     * <p>{@code unavailable} is the publisher or transport failing to deliver. The source always had a
+     * {@code RESP2} value because CICS always set one; a publisher failure may carry no comparable code, and
+     * Rule 1 Clause F asks that missing information be named rather than guessed at.
      */
     private static final String REASON_UNAVAILABLE = "unavailable";
+
+    /** The caller's deadline elapsed before the publish completed. */
+    private static final String REASON_TIMEOUT = "timeout";
+
+    /** The submitting thread was interrupted while awaiting the publish. */
+    private static final String REASON_INTERRUPTED = "interrupted";
+
+    /** Any other runtime failure, so the vocabulary is total rather than only covering what was foreseen. */
+    private static final String REASON_ERROR = "error";
+
+    /**
+     * Upper bound on how long a report submission waits for its publish to complete, in seconds.
+     *
+     * <p>This is a <em>caller</em> deadline layered on top of the SDK deadlines that
+     * {@code com.cardemo.config.AwsConfig} sets on the shared client, and it is deliberately the tighter of
+     * the two. Those client deadlines are sized for the batch writers, which upload multi-hundred-kilobyte
+     * fixed-width objects on the same client; an online submission is a single small message with a user
+     * waiting on a screen, and the legacy path it replaces could not have waited that long either - a CICS
+     * task that stops responding is terminated by the region's own transaction timeout long before thirty
+     * seconds. Ten seconds is therefore generous for the work and still bounded well inside any plausible
+     * front-end timeout.
+     *
+     * <p>Its purpose is not to hide a slow queue but to make the failure <em>deterministic</em>: without a
+     * caller deadline this method's worst case is whatever the client, the retry policy and the transport
+     * agree on, which is neither stated anywhere nor testable.
+     */
+    private static final long SEND_DEADLINE_SECONDS = 10L;
+
+    /**
+     * Message header carrying the request's correlation identifier onto the queue, using the same name the
+     * HTTP boundary uses so one identifier spans the whole path.
+     *
+     * <p>{@link CorrelationIdFilter#CORRELATION_ID_HEADER} is the single source of that name. This is what
+     * makes an online submission and the batch run it triggers reconcilable: the correlation identifier
+     * replaces {@code EIBTRNID}, which was the legacy system's only per-request thread of identity.
+     */
+    private static final String HEADER_CORRELATION_ID = CorrelationIdFilter.CORRELATION_ID_HEADER;
+
+    /** Message header carrying the publishing trace identifier, so a consumer can join the same trace. */
+    private static final String HEADER_TRACE_ID = "X-Trace-Id";
+
+    /** Message header carrying the publishing span identifier, so a consumer can parent onto this hop. */
+    private static final String HEADER_SPAN_ID = "X-Span-Id";
+
+    /**
+     * Message header naming the originating legacy transaction, always the compile-time literal
+     * {@link #TRANSACTION_ID}.
+     *
+     * <p>Bounded metadata in the strictest sense: the value is a four-character constant, so this header
+     * cannot grow, cannot vary by request and cannot carry anything derived from input. It exists so a
+     * consumer, or an operator reading a queue, can attribute a message to {@code CR00} without parsing the
+     * payload.
+     */
+    private static final String HEADER_SOURCE_TRANSACTION = "X-Carddemo-Transaction";
+
+    /** Span name for the publish hop, fixed so it is a low-cardinality key in the tracing backend. */
+    private static final String SPAN_NAME_PUBLISH = "carddemo.report.submit";
+
+    /** Span tag naming the logical queue the publish targeted. Never the physical or account-qualified name. */
+    private static final String SPAN_TAG_QUEUE = "messaging.destination";
+
+    /** Span tag carrying the symbolic outcome reason when a publish fails. Never a throwable. */
+    private static final String SPAN_TAG_ERROR = "error";
+
+    /**
+     * Longest header value this bean will propagate, in characters.
+     *
+     * <p>Matches {@link CorrelationIdFilter#MAX_CORRELATION_ID_LENGTH} so the correlation identifier is
+     * bounded identically on both sides of the hop, and it comfortably admits a 32-character trace
+     * identifier and a 16-character span identifier. A value longer than this is dropped rather than
+     * truncated: a truncated identifier correlates to nothing and is worse than an absent one, because it
+     * looks like a real identifier that simply does not match.
+     */
+    private static final int MAX_HEADER_VALUE_LENGTH = CorrelationIdFilter.MAX_CORRELATION_ID_LENGTH;
+
+    /**
+     * Lower bound on the length of a FIFO message group identifier, from the SQS contract.
+     *
+     * <p>SQS requires 1 to 128 characters. The lower bound is what rejects a blank value, which is the case
+     * a null check cannot see: {@code ""} and {@code "   "} are both non-null and both fail at send time,
+     * one request at a time, instead of at startup.
+     */
+    private static final int MIN_MESSAGE_GROUP_ID_LENGTH = 1;
+
+    /** Upper bound on the length of a FIFO message group identifier, from the SQS contract. */
+    private static final int MAX_MESSAGE_GROUP_ID_LENGTH = 128;
+
+    /**
+     * The characters a propagated header value may contain: unreserved URL characters only.
+     *
+     * <p>Deliberately narrower than the group-identifier class. A header value is derived from the diagnostic
+     * context, which is populated from an inbound HTTP header, so it is attacker-influenced input on a path
+     * that ends in a message an operator will read. Restricting it to alphanumerics, hyphen and underscore
+     * makes header injection structurally impossible - a carriage return, a line feed, a colon and a NUL are
+     * all outside the class - and every identifier this bean actually propagates is hexadecimal or the
+     * bounded token {@link CorrelationIdFilter} already validated.
+     */
+    private static final Pattern HEADER_VALUE_PATTERN = Pattern.compile("[A-Za-z0-9_-]+");
 
     /**
      * The header date rendering, {@code MM/DD/YY}.
@@ -993,6 +1184,41 @@ public class ReportSubmissionService {
     }
 
     /**
+     * The operator notification standing in for {@code // NOTIFY=&SYSUID}, {@code app/cbl/CORPT00C.cbl:L85-L86}.
+     *
+     * <p>It carries what the notified party needs to recognise the job and nothing else: the job name JES2
+     * would have reported, the job description from the same card, and the period the submission covers. It
+     * deliberately carries <strong>no identity of any kind</strong> - no user identifier, no terminal, no
+     * network address - for the reason set out on {@link #JOB_NOTIFY_CARD}.
+     *
+     * <p>A record rather than a formatted string, so the subscriber parses fields instead of scraping text,
+     * and so this class cannot accidentally interpolate something it should not.
+     *
+     * @param jobName     the job name from {@code app/cbl/CORPT00C.cbl:L84}, never {@code null}
+     * @param jobDescription the quoted description from the same card, never {@code null}
+     * @param reportName  the resolved period name, one of the three the screen offers, never {@code null}
+     * @param startDate   the inclusive period start in {@code yyyy-MM-dd}, never {@code null}
+     * @param endDate     the inclusive period end in {@code yyyy-MM-dd}, never {@code null}
+     */
+    public record JobNotification(String jobName, String jobDescription, String reportName,
+            String startDate, String endDate) {
+
+        /**
+         * Validates every component, because a notification with a null field would publish the word
+         * {@code null} to a subscriber.
+         *
+         * @throws NullPointerException if any component is {@code null}
+         */
+        public JobNotification {
+            Objects.requireNonNull(jobName, "jobName must not be null");
+            Objects.requireNonNull(jobDescription, "jobDescription must not be null");
+            Objects.requireNonNull(reportName, "reportName must not be null");
+            Objects.requireNonNull(startDate, "startDate must not be null");
+            Objects.requireNonNull(endDate, "endDate must not be null");
+        }
+    }
+
+    /**
      * One screen outcome: the map area as it would have been sent, plus the three pieces of presentation
      * state the map carried alongside it.
      *
@@ -1102,44 +1328,198 @@ public class ReportSubmissionService {
      * single stream - so one fixed group reproduces its ordering exactly. A generated identifier would place
      * each submission in its own group, which forfeits ordering between submissions and does so
      * unreproducibly, and is therefore a High-severity divergence rather than a stylistic choice.
+     *
+     * <p><strong>Validated at construction against the service's own limits, not merely null-checked.</strong>
+     * Amazon SQS accepts a message group identifier of 1 to {@value #MAX_MESSAGE_GROUP_ID_LENGTH} characters
+     * drawn from the visible ASCII range - alphanumerics and punctuation, no space and nothing outside
+     * {@code U+0021} to {@code U+007E}. A value that breaks any of those rules is rejected by the service, and
+     * the rejection arrives at the <em>first report submission</em>: an operator sees a report that will not
+     * submit, in a code path whose own validation has already passed, and the actual cause is a configuration
+     * value set once at deployment. Worse, a blank value is not a null and would previously have passed
+     * construction unchallenged. Validating here converts that latent per-request failure into a startup
+     * failure with a remedy in the message, which is the same trade the queue-name check in
+     * {@code com.cardemo.config.AwsConfig} makes for the same reason.
      */
     private final String reportMessageGroupId;
+
+    /**
+     * Lowest code point Amazon SQS accepts in a message group identifier, {@code '!'}. The space at
+     * {@code U+0020} is deliberately below it: a leading, trailing or embedded space is rejected by the
+     * service, which is precisely why a blank value cannot be allowed through as "present but empty".
+     */
+    private static final char MIN_MESSAGE_GROUP_ID_CHAR = '\u0021';
+
+    /** Highest code point Amazon SQS accepts in a message group identifier, {@code '~'}. */
+    private static final char MAX_MESSAGE_GROUP_ID_CHAR = '\u007E';
+
+    /** Property key behind {@link #reportMessageGroupId}, named once so messages and binding cannot drift. */
+    private static final String KEY_MESSAGE_GROUP_ID = "carddemo.aws.sqs.report-message-group-id";
+
+    /**
+     * Property key behind {@link #notificationTopic}, named once for the same reason: the binding and any
+     * message that reports a problem with it read from one literal.
+     */
+    private static final String KEY_NOTIFICATION_TOPIC = "carddemo.aws.sns.notification-topic";
+
+    /**
+     * The optional tracer used to open a child span around the publish.
+     *
+     * <p>A provider rather than the tracer itself because tracing must be optional here. The tracing bridge
+     * and its exporter are wired by {@code com.cardemo.config.ObservabilityConfig}, and this bean has to be
+     * constructible and correct without them - in a unit test, and in any context assembled without a
+     * tracing stack. When no tracer is present the publish proceeds untraced and the message still carries
+     * the correlation and trace identifiers from the diagnostic context, so the hop remains correlatable
+     * even when it is not spanned.
+     */
+    private final ObjectProvider<Tracer> tracerProvider;
+
+    /**
+     * The notification publisher owned by {@code com.cardemo.config.AwsConfig}.
+     *
+     * <p>Injected, never constructed, for the same reason the queue publisher is: the region, the credential
+     * resolution and the emulator endpoint override are applied to the client beneath it by profile
+     * configuration, and constructing one here would place that decision outside the profile layering.
+     */
+    private final SnsTemplate snsTemplate;
+
+    /**
+     * The notification topic, bound from {@code carddemo.aws.sns.notification-topic}.
+     *
+     * <p>Named explicitly on every publish rather than set as a template default, because
+     * {@code com.cardemo.config.AwsConfig} deliberately leaves the template with no default destination - a
+     * default would resolve the topic ARN eagerly during context refresh and so make startup depend on the
+     * emulator being up.
+     */
+    private final String notificationTopic;
 
     /**
      * Assembles the bean.
      *
      * <p>Constructor injection throughout, with no field annotation, no setter and no lookup, so the type is
-     * constructible in a unit test with three test doubles and three strings and needs no application
+     * constructible in a unit test with four test doubles and three strings and needs no application
      * context. Every argument is required; a missing collaborator fails fast at construction with a message
      * naming it, rather than at the first request with a null dereference.
      *
+     * <p><strong>The FIFO message group is validated here, not at send time.</strong> A null check alone let
+     * a blank, whitespace-only or overlong value survive construction and fail once per submission, which is
+     * the wrong failure at the wrong time: it turns a single misconfigured property into an intermittent,
+     * per-user error whose cause is invisible from the message the user sees. SQS constrains the identifier
+     * to {@value #MIN_MESSAGE_GROUP_ID_LENGTH} to {@value #MAX_MESSAGE_GROUP_ID_LENGTH} alphanumeric and
+     * punctuation characters, and that grammar is asserted at startup so a violation is a refusal to start.
+     * The rejected value is named in the failure message deliberately - a message group identifier is a
+     * configured routing token, not a secret, and an operator cannot fix what they cannot see.
+     *
+     * <p>The two queue names are null-checked only, and that is not an oversight. Their grammar is already
+     * enforced at startup by {@code com.cardemo.config.AwsConfig}, which requires the physical name to equal
+     * the logical name plus the {@code .fifo} suffix exactly and then verifies the provisioned queue's
+     * attributes. Restating that here would be the duplication Rule 1 Clause C forbids, and a blank value
+     * cannot get past it: blank never equals a logical name plus a suffix.
+     *
+     * <p>The tracer is supplied as a provider rather than as a hard dependency because tracing is
+     * infrastructure this bean must work without. Its presence adds a child span around the publish; its
+     * absence changes nothing else, because the identifiers propagated onto the message come from the
+     * diagnostic context {@link CorrelationIdFilter} maintains, which does not require a tracer either.
+     *
      * @param sqsTemplate             the publisher owned by {@code com.cardemo.config.AwsConfig}
+     * @param snsTemplate             the notification publisher, also owned by
+     *                                {@code com.cardemo.config.AwsConfig}, standing in for the
+     *                                {@code // NOTIFY=&SYSUID} half of card two of the job deck
      * @param dateValidationService   the validator standing in for {@code CALL 'CSUTLDTC'}
      * @param clock                   the time source standing in for {@code FUNCTION CURRENT-DATE}
+     * @param tracerProvider          the optional tracer used to open a child span around the publish
      * @param reportQueueName         the physical queue name, from
      *                                {@code carddemo.aws.sqs.report-queue}
      * @param reportQueueLogicalName  the logical queue name, from
      *                                {@code carddemo.aws.sqs.report-queue-logical-name}
      * @param reportMessageGroupId    the deterministic FIFO group, from
-     *                                {@code carddemo.aws.sqs.report-message-group-id}
-     * @throws NullPointerException if any argument is {@code null}
+     *                                {@value #KEY_MESSAGE_GROUP_ID}
+     * @param notificationTopic       the operator notification topic, from
+     *                                {@value #KEY_NOTIFICATION_TOPIC}
+     * @throws NullPointerException  if any argument is {@code null}
+     * @throws IllegalStateException if the message group identifier is blank, longer than
+     *                               {@value #MAX_MESSAGE_GROUP_ID_LENGTH} characters, or contains a character
+     *                               Amazon SQS does not accept - each of which the service would otherwise
+     *                               reject at the first report submission rather than here
      */
     public ReportSubmissionService(
             final SqsTemplate sqsTemplate,
+            final SnsTemplate snsTemplate,
             final DateValidationService dateValidationService,
             final Clock clock,
+            final ObjectProvider<Tracer> tracerProvider,
             @Value("${carddemo.aws.sqs.report-queue}") final String reportQueueName,
             @Value("${carddemo.aws.sqs.report-queue-logical-name}") final String reportQueueLogicalName,
-            @Value("${carddemo.aws.sqs.report-message-group-id}") final String reportMessageGroupId) {
+            @Value("${" + KEY_MESSAGE_GROUP_ID + "}") final String reportMessageGroupId,
+            @Value("${" + KEY_NOTIFICATION_TOPIC + "}") final String notificationTopic) {
         this.sqsTemplate = Objects.requireNonNull(sqsTemplate, "sqsTemplate must not be null");
+        this.snsTemplate = Objects.requireNonNull(snsTemplate, "snsTemplate must not be null");
         this.dateValidationService =
                 Objects.requireNonNull(dateValidationService, "dateValidationService must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.tracerProvider = Objects.requireNonNull(tracerProvider, "tracerProvider must not be null");
         this.reportQueueName = Objects.requireNonNull(reportQueueName, "reportQueueName must not be null");
         this.reportQueueLogicalName =
                 Objects.requireNonNull(reportQueueLogicalName, "reportQueueLogicalName must not be null");
-        this.reportMessageGroupId =
-                Objects.requireNonNull(reportMessageGroupId, "reportMessageGroupId must not be null");
+        this.reportMessageGroupId = validatedMessageGroupId(
+                Objects.requireNonNull(reportMessageGroupId, "reportMessageGroupId must not be null"));
+        this.notificationTopic =
+                Objects.requireNonNull(notificationTopic, "notificationTopic must not be null");
+    }
+
+    /**
+     * Proves the configured message group identifier is one Amazon SQS will accept.
+     *
+     * <p>Three conditions, each with its own message because each has its own remedy: the value must be
+     * non-blank, because a set-but-empty property satisfies placeholder resolution and even beats a profile
+     * default; it must be no longer than {@value #MAX_MESSAGE_GROUP_ID_LENGTH} characters; and every character
+     * must lie in the visible ASCII range {@value #MIN_MESSAGE_GROUP_ID_CHAR} to
+     * {@value #MAX_MESSAGE_GROUP_ID_CHAR}, which excludes the space, every control character and everything
+     * outside ASCII.
+     *
+     * <p>An offending character is reported by <em>position and code point</em> rather than by echoing the
+     * configured value, matching the convention this class and {@code com.cardemo.config.AwsConfig} follow for
+     * every configuration failure: the message must be actionable without becoming a disclosure channel. The
+     * length failure reports the length for the same reason.
+     *
+     * @param messageGroupId the non-{@code null} configured identifier
+     * @return the same value, once proved acceptable
+     * @throws IllegalStateException if the value is blank, over-long or contains an unaccepted character,
+     *                               aborting the context refresh
+     */
+    private static String validatedMessageGroupId(final String messageGroupId) {
+        if (messageGroupId.isBlank()) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Property '%s' is set but blank. Amazon SQS requires a message group identifier of at "
+                            + "least one visible character on a FIFO queue, and every report submission "
+                            + "carries this one value so that submissions are delivered in the order the "
+                            + "extrapartition queue DEFINE TDQUEUE(JOBS) appended them. Set the property to a "
+                            + "stable literal; the migration uses 'carddemo-report-jobs'.",
+                    KEY_MESSAGE_GROUP_ID));
+        }
+        if (messageGroupId.length() < MIN_MESSAGE_GROUP_ID_LENGTH
+                || messageGroupId.length() > MAX_MESSAGE_GROUP_ID_LENGTH) {
+            throw new IllegalStateException(String.format(Locale.ROOT,
+                    "Property '%s' is %d characters long, which is outside the %d to %d characters Amazon "
+                            + "SQS accepts for a message group identifier. The value is not reported. Resize "
+                            + "it; the migration uses 'carddemo-report-jobs'.",
+                    KEY_MESSAGE_GROUP_ID, messageGroupId.length(),
+                    MIN_MESSAGE_GROUP_ID_LENGTH, MAX_MESSAGE_GROUP_ID_LENGTH));
+        }
+        for (int index = 0; index < messageGroupId.length(); index++) {
+            final char candidate = messageGroupId.charAt(index);
+            if (candidate < MIN_MESSAGE_GROUP_ID_CHAR || candidate > MAX_MESSAGE_GROUP_ID_CHAR) {
+                throw new IllegalStateException(String.format(Locale.ROOT,
+                        "Property '%s' holds a character Amazon SQS does not accept in a message group "
+                                + "identifier at position %d: code point U+%04X. Only alphanumerics and "
+                                + "punctuation are accepted - every character must lie between U+%04X and "
+                                + "U+%04X - so the space, tabs, newlines and all non-ASCII characters are "
+                                + "rejected. The offending value is not reported, only where the character "
+                                + "sits and what it is. Remove it; the migration uses 'carddemo-report-jobs'.",
+                        KEY_MESSAGE_GROUP_ID, index, (int) candidate,
+                        (int) MIN_MESSAGE_GROUP_ID_CHAR, (int) MAX_MESSAGE_GROUP_ID_CHAR));
+            }
+        }
+        return messageGroupId;
     }
 
     /**
@@ -1867,6 +2247,10 @@ public class ReportSubmissionService {
         // :L507 PERFORM WIRTE-JOBSUB-TDQ, once.
         wirteJobsubTdq(period);
 
+        // Card two of the seventeen, :L85-L86 // NOTIFY=&SYSUID. The queue message carries the job's
+        // parameters; this carries its notification instruction, which the message has nowhere to put.
+        notifyJobSubmitted(period);
+
         // Control returns to :L443 and then to the success tail at :L445.
         return Optional.empty();
     }
@@ -1908,15 +2292,32 @@ public class ReportSubmissionService {
      *   <li>{@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} at {@code :L529} is the only
      *       instrumentation the source has on this path, and COBOL {@code DISPLAY} concatenates its operands
      *       with no separator, so the emitted text reads {@code RESP:}<em>resp</em>{@code REAS:}<em>reas</em>.
-     *       The warning below carries both prefixes in that form so an operator who knew the legacy line
-     *       still recognises this one, with the failure condition standing in for the response code and the
-     *       endpoint for the reason code.</li>
+     *       The warning in {@link #publishFailure(Span, String, Throwable)} carries both prefixes in that
+     *       form so an operator who knew the legacy line still recognises this one, with a symbolic reason
+     *       standing in for the response code and the failing exception's class name for the reason code.
+     *       Neither slot may carry the resolved endpoint or the throwable - see that method for why.</li>
      * </ul>
      *
      * <p>The failure is rethrown as a typed exception carrying the original as its cause, so nothing is
-     * swallowed and the root cause survives, which is what Rule 1 Clause B requires. It is not retried: the
-     * source does not retry, and adding a retry would change how many messages a failing queue eventually
-     * receives.
+     * swallowed and the root cause survives, which is what Rule 1 Clause B requires. It is not retried
+     * <em>by this method</em>: the source does not retry, and adding an application-level retry would change
+     * how many messages a failing queue eventually receives. The SDK's own bounded standard retry policy,
+     * configured once on the shared client by {@code com.cardemo.config.AwsConfig}, still applies beneath -
+     * that is transport-level redelivery of a request that never arrived, not a second submission, so it
+     * changes no observable count.
+     *
+     * <p><strong>Boundedness.</strong> The publish is issued asynchronously and awaited for at most
+     * {@value #SEND_DEADLINE_SECONDS} seconds, and an expired or interrupted publish is cancelled with
+     * interruption rather than left running. Without a caller deadline this method's worst case is whatever
+     * the client, the retry policy and the transport agree on, which is documented nowhere and cannot be
+     * asserted in a test; with it, a slow queue produces the source's own literal at a known bound. The
+     * deadline is deliberately tighter than the client's, which is sized for the batch writers that share it.
+     *
+     * <p><strong>Propagation.</strong> The message carries at most four bounded headers - the correlation
+     * identifier, the trace and span identifiers, and the originating transaction literal - and a child span
+     * wraps the publish when a tracer is configured. The payload itself remains exactly the three fields
+     * {@link JobSubmissionMessage} declares: identity travels in headers, never inside the typed body, so the
+     * payload contract the batch tier consumes is unchanged.
      *
      * <p>No deduplication identifier is set, because the source has no idempotency key and adding one would
      * be inventing a guard it lacks. Whether two identical submissions collapse is therefore a queue
@@ -1926,49 +2327,306 @@ public class ReportSubmissionService {
      * @throws FileAccessException when the publish fails, carrying the source's literal and the cause
      */
     private void wirteJobsubTdq(final JobSubmissionMessage card) {
+        final Span span = openPublishSpan();
+        // Held outside the try so an abandoned publish can be cancelled: without that, a deadline that
+        // expires leaves the request running on an SDK thread holding a connection, so a slow queue would
+        // accumulate one orphaned publish per submission instead of failing cleanly.
+        CompletableFuture<SendResult<JobSubmissionMessage>> pending = null;
         try {
+            final Map<String, Object> headers = propagationHeaders(span);
+
             // :L517-L523. The queue name and the message group are both configuration; the template and the
             // client beneath it belong to com.cardemo.config.AwsConfig, so no endpoint is named here.
-            final SendResult<JobSubmissionMessage> sendResult = this.sqsTemplate.send(options -> options
+            //
+            // sendAsync rather than send: the synchronous form's worst case is whatever the client, the
+            // retry policy and the transport agree on, which is stated nowhere and cannot be tested. The
+            // asynchronous form plus an explicit await makes the deadline this method's own, and gives it a
+            // future it can cancel. The observable behaviour on success is identical.
+            pending = this.sqsTemplate.sendAsync(options -> options
                     .queue(this.reportQueueName)
                     .payload(card)
-                    .messageGroupId(this.reportMessageGroupId));
+                    .messageGroupId(this.reportMessageGroupId)
+                    .headers(headers));
+            final SendResult<JobSubmissionMessage> sendResult =
+                    pending.get(SEND_DEADLINE_SECONDS, TimeUnit.SECONDS);
 
             // :L526-L527 WHEN DFHRESP(NORMAL) -> CONTINUE. The source is silent here; one informational line
             // is added because a submission that leaves the online tier with no trace at all cannot be
-            // reconciled against the batch run it triggers.
-            LOG.info("report job submission published to the {} queue as message {} in group {}, "
-                            + "replacing {} fixed {}-byte job cards",
+            // reconciled against the batch run it triggers. The message identifier is a service-generated
+            // UUID: it names the message without naming the queue URL or the account that owns it.
+            LOG.info("report job submission published to the {} queue as message {} in group {} carrying {} "
+                            + "propagation headers, replacing {} fixed {}-byte job cards",
                     this.reportQueueLogicalName, sendResult.messageId(), this.reportMessageGroupId,
-                    JOB_CARD_COUNT, JOB_CARD_LENGTH);
+                    headers.size(), JOB_CARD_COUNT, JOB_CARD_LENGTH);
+        } catch (final TimeoutException deadlineExceeded) {
+            cancelQuietly(pending);
+            throw publishFailure(span, REASON_TIMEOUT, deadlineExceeded);
+        } catch (final InterruptedException interrupted) {
+            cancelQuietly(pending);
+            // Restore the flag before leaving so the interruption is reported rather than absorbed; the
+            // caller decides what to do about it, and the user still sees the source's literal.
+            Thread.currentThread().interrupt();
+            throw publishFailure(span, REASON_INTERRUPTED, interrupted);
+        } catch (final ExecutionException completedExceptionally) {
+            // An asynchronous publish reports failure through the future, so the meaningful type is the
+            // cause. It is unwrapped for classification and preserved as the exception's cause, which keeps
+            // the failure indistinguishable from the synchronous form's for any caller.
+            final Throwable cause = completedExceptionally.getCause() == null
+                    ? completedExceptionally
+                    : completedExceptionally.getCause();
+            throw publishFailure(span, classify(cause), cause);
         } catch (final RuntimeException failure) {
-            // :L528-L534 WHEN OTHER. The reason code is the endpoint the send was attempted against when the
-            // failure reports one, which is the closest analogue of RESP2 the publisher offers.
-            final String reasonCode =
-                    failure instanceof final MessagingOperationFailedException messagingFailure
-                            && messagingFailure.getEndpoint() != null
-                            ? messagingFailure.getEndpoint()
-                            : REASON_UNAVAILABLE;
-
-            // :L529 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD, concatenated with no separator.
-            LOG.warn("RESP:{}REAS:{} unable to write the report job submission to the {} queue",
-                    failure.getClass().getSimpleName(), reasonCode, this.reportQueueLogicalName, failure);
-
-            // :L530-L534 MOVE 'Y' TO WS-ERR-FLG, MOVE the literal TO WS-MESSAGE, MOVE -1 TO MONTHLYL,
-            // PERFORM SEND-TRNRPT-SCREEN.
-            //
-            // The two-argument form is used deliberately. The four-argument form of this exception renders a
-            // COBOL FILE STATUS as the fixed literal 'FILE STATUS IS: NNNN' followed by the status digits,
-            // and this program has no FILE STATUS to render - it declares no FILE-CONTROL paragraph, no
-            // SELECT and no FD anywhere - so emitting that literal here would fabricate an I/O status that
-            // does not exist. The message and the preserved cause are what this failure actually carries.
-            //
-            // The cursor field, MONTHLYL, is documented above but is not carried on the exception: a failed
-            // publish is a server-side failure rather than a field-level rejection, so unlike the eighteen
-            // validation outcomes there is no field for a caller to place a cursor on and no field-marked
-            // exception type to carry one.
-            throw new FileAccessException(MSG_UNABLE_TO_WRITE_TDQ, failure);
+            // :L528-L534 WHEN OTHER, for a failure raised before the future existed - a template that
+            // rejects the request outright, for instance.
+            cancelQuietly(pending);
+            throw publishFailure(span, classify(failure), failure);
+        } finally {
+            endSpan(span);
         }
+    }
+
+    /**
+     * Opens a child span around the publish, or returns {@code null} when no tracer is configured.
+     *
+     * <p>The span is what makes the outbound hop measurable: it is the only place the publish latency this
+     * method now bounds can be observed, and without it the {@value #SEND_DEADLINE_SECONDS} second deadline
+     * would be a number nobody could justify from evidence. The name is a fixed literal so it stays a
+     * low-cardinality key, and the only tag added up front is the <em>logical</em> queue name, which is a
+     * literal in {@code application.yml} and therefore provably free of an account identifier - the physical
+     * name and the resolved URL are never tagged.
+     *
+     * @return the started span, or {@code null} when tracing is not configured
+     */
+    private Span openPublishSpan() {
+        final Tracer tracer = this.tracerProvider.getIfAvailable();
+        if (tracer == null) {
+            return null;
+        }
+        return tracer.nextSpan()
+                .name(SPAN_NAME_PUBLISH)
+                .tag(SPAN_TAG_QUEUE, this.reportQueueLogicalName)
+                .start();
+    }
+
+    /**
+     * Ends a span if one was opened.
+     *
+     * <p>Called from a {@code finally} block so the span is closed on every path, including the deadline and
+     * interrupt paths. An unended span is worse than an absent one: it is reported by the backend as an
+     * incomplete trace and skews every latency percentile computed over that operation.
+     *
+     * @param span the span to end, or {@code null} when tracing is not configured
+     */
+    private static void endSpan(final Span span) {
+        if (span != null) {
+            span.end();
+        }
+    }
+
+    /**
+     * Publishes the operator notification that {@code // NOTIFY=&SYSUID} asked JES2 for,
+     * {@code app/cbl/CORPT00C.cbl:L85-L86}.
+     *
+     * <p>Card two of the seventeen is a notification instruction rather than a job parameter. The typed queue
+     * message that replaces the deck carries the three parameter values and has nowhere to put an instruction
+     * to tell anyone the job exists, so that half of the card lands here. This is the only notification
+     * publish in the application, and this is why {@code com.cardemo.config.AwsConfig} declares a notification
+     * template at all.
+     *
+     * <p><strong>A failed notification does not fail the submission, and that is parity rather than
+     * leniency.</strong> {@code NOTIFY=} is a courtesy JES2 performs after read-in: the job runs whether or
+     * not the notification reaches anyone, and the source has no error path for it - unlike the queue write at
+     * {@code :L515-L537}, which has an explicit {@code WHEN OTHER} arm, a message literal and a cursor
+     * position. Raising here would invent a failure mode the source lacks and would reject a submission the
+     * legacy system accepted.
+     *
+     * <p>Nothing is swallowed. The failure is logged at warning level <em>with the throwable</em>, so the
+     * class name, the message and the whole cause chain survive in the log; what is deliberately not done is
+     * converting it into a response. That is the distinction Rule 1 Clause B draws - an empty {@code catch} is
+     * forbidden, a documented non-fatal outcome that preserves the cause is not.
+     *
+     * <p>It is not retried, for the reason the queue publish is not: the source retries nothing, and a retry
+     * would change how many notifications a failing topic eventually receives.
+     *
+     * <p>Side effects: one notification on {@link #notificationTopic}, or one warning line. Configuration:
+     * the topic name only. Error modes: none propagate.
+     *
+     * @param period the resolved period, already validated and already published to the queue; never
+     *        {@code null}
+     */
+    private void notifyJobSubmitted(final JobSubmissionMessage period) {
+        final JobNotification notification = new JobNotification(JOB_NAME, JOB_DESCRIPTION,
+                period.reportName(), period.startDate(), period.endDate());
+
+        try {
+            // The subject is what JES2 would have named: the job, then its quoted description from :L84. The
+            // topic is named on the call because the template deliberately carries no default destination.
+            this.snsTemplate.sendNotification(this.notificationTopic, notification,
+                    JOB_NAME + " " + JOB_DESCRIPTION);
+
+            LOG.info("operator notification for the {} period published to the {} topic, "
+                            + "replacing the {} card",
+                    period.reportName(), this.notificationTopic, JOB_NOTIFY_CARD);
+        } catch (final RuntimeException failure) {
+            // Non-fatal by design; see the method documentation. The period name is safe to log - it is one
+            // of three fixed literals - and the two dates are not logged here because they add nothing to a
+            // diagnostic about reachability.
+            LOG.warn("operator notification for the {} period could not be published to the {} topic; "
+                            + "the submission itself stands, because the {} card is a courtesy the source "
+                            + "has no error path for",
+                    period.reportName(), this.notificationTopic, JOB_NOTIFY_CARD, failure);
+        }
+    }
+
+    /**
+     * Cancels a publish that is still in flight, interrupting it if it has already started.
+     *
+     * <p>Cancelling an already-completed future is a documented no-op, so this needs no completion test.
+     *
+     * @param pending the future to abandon, or {@code null} if the publish was never issued
+     */
+    private static void cancelQuietly(final CompletableFuture<?> pending) {
+        if (pending != null) {
+            pending.cancel(true);
+        }
+    }
+
+    /**
+     * Builds the bounded propagation headers the message carries.
+     *
+     * <p>Four headers at most, every one of them an identifier and none of them derived from the report
+     * parameters, so the header set cannot grow with input. The correlation identifier comes from
+     * {@link CorrelationIdFilter#currentCorrelationId()}, which returns {@code null} rather than a malformed
+     * value; the trace and span identifiers come from the span when one was opened and otherwise from the
+     * diagnostic context the tracing bridge maintains, so the hop is correlatable whether or not tracing is
+     * configured. The source transaction header is a compile-time constant.
+     *
+     * <p>Every value passes {@link #propagatable(String)} before it is attached. That is not defensive
+     * padding: the correlation identifier originates in an inbound HTTP header, so it is attacker-influenced
+     * input on a path that ends in a message an operator will read, and a value carrying a carriage return
+     * would be a header-injection vector. A value that fails the check is <em>dropped</em>, never truncated
+     * and never sanitised, because a partially rewritten identifier correlates to nothing while looking as
+     * though it should.
+     *
+     * @param span the span opened for this publish, or {@code null} when tracing is not configured
+     * @return an insertion-ordered map of headers, possibly empty and never {@code null}
+     */
+    private Map<String, Object> propagationHeaders(final Span span) {
+        final Map<String, Object> headers = new LinkedHashMap<>();
+
+        putIfPropagatable(headers, HEADER_CORRELATION_ID, CorrelationIdFilter.currentCorrelationId());
+
+        if (span == null) {
+            putIfPropagatable(headers, HEADER_TRACE_ID, MDC.get(CorrelationIdFilter.MDC_KEY_TRACE_ID));
+            putIfPropagatable(headers, HEADER_SPAN_ID, MDC.get(CorrelationIdFilter.MDC_KEY_SPAN_ID));
+        } else {
+            // The span's own identifiers rather than the diagnostic context's, so a consumer parents onto
+            // this publish hop and not onto the request span that contains it.
+            putIfPropagatable(headers, HEADER_TRACE_ID, span.context().traceId());
+            putIfPropagatable(headers, HEADER_SPAN_ID, span.context().spanId());
+        }
+
+        headers.put(HEADER_SOURCE_TRANSACTION, TRANSACTION_ID);
+        return headers;
+    }
+
+    /**
+     * Adds a header when its value is present and safe to propagate.
+     *
+     * @param headers the map under construction
+     * @param name    the header name, always a compile-time constant
+     * @param value   the candidate value, possibly {@code null}
+     */
+    private static void putIfPropagatable(final Map<String, Object> headers, final String name,
+            final String value) {
+        if (propagatable(value)) {
+            headers.put(name, value);
+        }
+    }
+
+    /**
+     * Reports whether a value may be attached to an outbound message.
+     *
+     * @param value the candidate, possibly {@code null}
+     * @return {@code true} when the value is non-blank, no longer than
+     *         {@value #MAX_HEADER_VALUE_LENGTH} characters, and contains only alphanumerics, hyphen and
+     *         underscore
+     */
+    private static boolean propagatable(final String value) {
+        return value != null
+                && !value.isEmpty()
+                && value.length() <= MAX_HEADER_VALUE_LENGTH
+                && HEADER_VALUE_PATTERN.matcher(value).matches();
+    }
+
+    /**
+     * Maps a publish failure onto the closed reason vocabulary.
+     *
+     * @param failure the cause, already unwrapped from any future wrapper
+     * @return {@link #REASON_UNAVAILABLE} when the publisher reported a messaging failure, otherwise
+     *         {@link #REASON_ERROR}
+     */
+    private static String classify(final Throwable failure) {
+        return failure instanceof MessagingOperationFailedException ? REASON_UNAVAILABLE : REASON_ERROR;
+    }
+
+    /**
+     * Reports a failed publish on every channel and builds the exception to throw.
+     *
+     * <p>:L528-L534 {@code WHEN OTHER}. Three things happen here and each is deliberate.
+     *
+     * <p><strong>The log line keeps the legacy shape and drops the legacy leak.</strong>
+     * {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD} at {@code :L529} concatenates its operands with
+     * no separator, and that shape is retained so an operator who knew the legacy line recognises this one.
+     * What occupies the two slots has changed: the {@code RESP} slot carries a symbolic reason from the
+     * closed vocabulary, and the {@code REAS} slot carries the failing exception's class name. It previously
+     * carried {@code MessagingOperationFailedException.getEndpoint()}, which is the resolved queue endpoint
+     * and therefore an account-bearing diagnostic - a High-severity disclosure on a channel an operator
+     * reads - and the throwable itself was passed as the trailing SLF4J argument, which renders its message
+     * and full stack and leaks the same values positionally, where no field-path masking rule in
+     * {@code logback-spring.xml} can reach them. Neither is emitted now. A class name is a compile-time
+     * symbol and cannot carry an endpoint, an account identifier or a credential.
+     *
+     * <p><strong>The cause is preserved, not swallowed.</strong> Rule 1 Clause B is satisfied by
+     * classification plus propagation rather than by rendering: the reason vocabulary separates every remedy
+     * an operator can act on, the class name names the exact type, and the throwable itself travels on the
+     * returned exception where a caller - including an exception handler that decides an HTTP status - still
+     * has all of it.
+     *
+     * <p><strong>The user-facing outcome is byte-identical to the source.</strong> The two-argument
+     * {@link FileAccessException} form is used deliberately: the four-argument form renders a COBOL
+     * {@code FILE STATUS} as the fixed literal {@code FILE STATUS IS: NNNN} followed by the status digits,
+     * and this program has no {@code FILE STATUS} to render - it declares no {@code FILE-CONTROL} paragraph,
+     * no {@code SELECT} and no {@code FD} anywhere - so emitting that literal would fabricate an I/O status
+     * that does not exist. The message is {@link #MSG_UNABLE_TO_WRITE_TDQ}, byte for byte, three trailing
+     * periods included, on every failure path without exception; a deadline and a transport error are the
+     * same event to the user, exactly as every non-{@code NORMAL} response was one event at {@code :L528}.
+     *
+     * <p>The cursor field {@code MONTHLYL} at {@code :L533} is documented on the caller but is not carried
+     * on the exception: a failed publish is a server-side failure rather than a field-level rejection, so
+     * unlike the eighteen validation outcomes there is no field for a caller to place a cursor on and no
+     * field-marked exception type to carry one.
+     *
+     * @param span    the span opened for this publish, tagged with the outcome; may be {@code null}
+     * @param reason  the symbolic reason from the closed vocabulary
+     * @param failure the cause, preserved on the returned exception
+     * @return the exception the caller must throw
+     */
+    private FileAccessException publishFailure(final Span span, final String reason,
+            final Throwable failure) {
+        if (span != null) {
+            // The symbolic reason, never span.error(failure): that records the throwable's message on the
+            // trace, which is the same account-bearing text this method refuses to log.
+            span.tag(SPAN_TAG_ERROR, reason);
+        }
+
+        // :L529 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD, concatenated with no separator.
+        LOG.warn("RESP:{}REAS:{} unable to write the report job submission to the {} queue",
+                reason, failure.getClass().getSimpleName(), this.reportQueueLogicalName);
+
+        // :L530-L534 MOVE 'Y' TO WS-ERR-FLG, MOVE the literal TO WS-MESSAGE, MOVE -1 TO MONTHLYL,
+        // PERFORM SEND-TRNRPT-SCREEN.
+        return new FileAccessException(MSG_UNABLE_TO_WRITE_TDQ, failure);
     }
 
     /**

@@ -73,7 +73,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       second status byte into three decimal digits and the preserved {@code NNNN} placeholder quirk.
  *       The end to end parity gate compares emitted log lines against the legacy baseline, so a rendering
  *       that differs by one character is a gate failure.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>What this test class deliberately does not do</h2>
  *
@@ -110,30 +110,30 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       <td>Exactly 3 literal occurrences: {@code app/cbl/CBTRN02C.cbl:L481},
  *           {@code app/cbl/CBACT04C.cbl:L422} and {@code app/cbl/CBACT04C.cbl:L436}</td></tr>
  *   <tr><td>{@code '35'}</td><td>File unavailable</td>
- *       <td><strong>Not available.</strong> Zero literal occurrences and
+ *       <td><strong>No source grounding.</strong> Zero literal occurrences, and
  *           {@code DFHRESP(NOTOPEN)} confirmed absent from the whole of {@code app/}</td></tr>
  *   <tr><td>{@code '9x'}</td><td>Physical or logical input or output error</td>
  *       <td>Family, not a value: the guard {@code IO-STAT1 = '9'} at
  *           {@code app/cbl/CBTRN02C.cbl:L716}, replicated at 8 sites</td></tr>
  * </table>
  *
- * <p><strong>Finding, severity Medium: {@code '35'} has no source grounding.</strong> Verified twice
+ * <p><strong>{@code '35'} has no source grounding, and none is invented.</strong> Verified twice
  * over the frozen tree: zero literal {@code '35'} comparisons anywhere under {@code app/}, and zero
  * occurrences of {@code NOTOPEN} in any file under {@code app/}. The full response code census over
  * {@code app/cbl} is {@code DFHRESP(NORMAL)} 43, {@code DFHRESP(NOTFND)} 23, {@code DFHRESP(ENDFILE)} 8,
- * {@code DFHRESP(DUPREC)} 7, {@code DFHRESP(DUPKEY)} 3 and {@code DFHRESP(NOTOPEN)} 0. What is needed to
- * close the gap is one of exactly two artefacts, neither of which exists at {@code 7756d89}: a literal
+ * {@code DFHRESP(DUPREC)} 7, {@code DFHRESP(DUPKEY)} 3 and {@code DFHRESP(NOTOPEN)} 0. Closing that gap
+ * would take one of exactly two artefacts, neither of which the corpus contains: a literal
  * {@code '35'} comparison in a COBOL program, or a {@code DFHRESP(NOTOPEN)} handler in an online program.
- * Remediation until then: the constant is asserted as a specification derived member of the taxonomy and
+ * Until one exists the constant is asserted as a specification derived member of the taxonomy and
  * no {@code app/} line citation is offered for it, because inventing one would be a false citation.
  *
- * <p><strong>Finding, severity Medium: {@code '22'} has no literal occurrence.</strong> It is grounded
+ * <p><strong>{@code '22'} has no literal occurrence either.</strong> It is grounded
  * only through the transaction monitor response codes listed in the table. The tests therefore assert its
  * membership in the taxonomy and its rendering, and cite {@code DFHRESP} rather than a literal.
  *
- * <p><strong>Schema detail: out of scope for this test.</strong> Measured 1 August 2026,
- * {@code src/main/resources/db/migration/V1__create_schema.sql} is present, but no column
- * type, width or constraint in it is a counterpart of {@link FileStatus} - a file status is a runtime I/O
+ * <p><strong>No schema detail is asserted here.</strong> No column
+ * type, width or constraint in {@code src/main/resources/db/migration/V1__create_schema.sql} is a
+ * counterpart of {@link FileStatus} - a file status is a runtime I/O
  * outcome, not a stored value - so nothing here asserts one, and that is by design rather than by
  * omission.
  *
@@ -162,7 +162,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       the same program at L353, L379, L403 and L837 accept {@code '00'} alone. The literal
  *       {@code '04'} does not occur even once in the callee {@code app/cbl/CBSTM03B.CBL}, so the
  *       tolerance is defensive.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Because the tolerance is site conditional, {@code SeparationOfConcerns} asserts that no acceptance
  * or tolerance predicate exists on the type at all. A single {@code isSuccess} would have to be wrong at
@@ -217,7 +217,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       instead the tests assert that the three digit expansion is composed of ASCII digits, which is
  *       what the production {@code Locale.ROOT} formatting guarantees. Non ASCII inputs are written as
  *       Unicode escapes so this source file itself stays pure ASCII.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and how to troubleshoot them</h2>
  *
@@ -254,7 +254,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code DALYTRAN}, so {@code dalytran.txt} is the trap; that path does not exist and never did.
  *       No test in this file reads a fixture, and the note is recorded because the mistake is otherwise
  *       made once per tier.</li>
- * </ul>
+ *   </ul>
  *
  * @see FileStatus
  */

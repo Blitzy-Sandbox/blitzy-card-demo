@@ -64,7 +64,7 @@ import com.cardemo.model.enums.UserType;
  *       {@code PIC X(40)} caption slots, a {@code PIC X(2)} selection field and a {@code PIC X(78)} error
  *       line. The slot is wider than the caption because {@code app/cbl/COMEN01C.cbl:243-246} prefixes the
  *       option number and a {@code '. '} separator before moving the caption in.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Representing only the tables therefore left all twenty map fields unrepresented, which is why
  * {@link MenuScreen} exists. It is additive: nothing about the option records changed, and a caller that
@@ -110,12 +110,13 @@ import com.cardemo.model.enums.UserType;
  *       four-field groups across {@code app/cpy/COMEN02Y.cpy:25-84}.</li>
  *   <li>{@code CDEMO-MENU-OPT OCCURS 12 TIMES} at {@code app/cpy/COMEN02Y.cpy:88} is the extent of the
  *       {@code REDEFINES} overlay laid over that data. Subscripts 11 and 12 address storage the populated
- *       literals never reach, so their contents are <strong>unpopulated - not available</strong>. They are
+ *       literals never reach, so their contents are <strong>unpopulated - they hold no value at all</strong>. They
+ *       are
  *       not options, they are not blank options, and nothing here fabricates content for them.</li>
  *   <li>The admin table repeats the pattern with five spare rows rather than two:
  *       {@code VALUE 4} at {@code app/cpy/COADM02Y.cpy:20} against
  *       {@code OCCURS 9 TIMES} at {@code app/cpy/COADM02Y.cpy:45}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The legacy programs themselves prove the count is the bound. Both render their menus with a
  * {@code PERFORM VARYING} loop over {@code WS-IDX} that stops as soon as the index passes
@@ -387,9 +388,9 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
     /**
      * One main-menu entry: the four sub-fields of {@code CDEMO-MENU-OPT} at {@code app/cpy/COMEN02Y.cpy:88-92}.
      *
-     * @param optionName the caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90}.
      * @param optionNumber the display number, {@code CDEMO-MENU-OPT-NUM PIC 9(02)} at
      * {@code app/cpy/COMEN02Y.cpy:89}.
+     * @param optionName the caption, {@code CDEMO-MENU-OPT-NAME PIC X(35)} at {@code app/cpy/COMEN02Y.cpy:90}.
      * @param programName the target program, {@code CDEMO-MENU-OPT-PGMNAME PIC X(08)} at
      * {@code app/cpy/COMEN02Y.cpy:91}.
      * @param userTypeCode the eligibility gate, {@code CDEMO-MENU-OPT-USRTYPE PIC X(01)} at
@@ -428,9 +429,9 @@ public final class MenuResponse<T extends MenuResponse.MenuOption> {
      * One admin-menu entry: the three sub-fields of {@code CDEMO-ADMIN-OPT} at
      * {@code app/cpy/COADM02Y.cpy:45-48}.
      *
-     * @param optionName the caption, {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}.
      * @param optionNumber the display number, {@code CDEMO-ADMIN-OPT-NUM PIC 9(02)} at
      * {@code app/cpy/COADM02Y.cpy:46}.
+     * @param optionName the caption, {@code CDEMO-ADMIN-OPT-NAME PIC X(35)} at {@code app/cpy/COADM02Y.cpy:47}.
      * @param programName the target program, {@code CDEMO-ADMIN-OPT-PGMNAME PIC X(08)} at
      * {@code app/cpy/COADM02Y.cpy:48}.
      */

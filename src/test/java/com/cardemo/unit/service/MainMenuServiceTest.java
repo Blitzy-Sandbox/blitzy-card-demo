@@ -109,7 +109,7 @@ import org.slf4j.LoggerFactory;
  *       {@code DELIMITED BY SPACE} and therefore truncates the caption at its first space while
  *       emitting no separator, producing {@code This option Accountis coming soon ...}. It is
  *       reproduced, not repaired.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Also pinned: the normalisation chain of {@code :117-125} through
  * {@code WS-OPTION-X PIC X(02) JUST RIGHT} at {@code :45} and {@code WS-OPTION PIC 9(02)} at
@@ -201,8 +201,9 @@ import org.slf4j.LoggerFactory;
  *   <tr>
  *     <td>Compilation fails with no test having run</td>
  *     <td>{@code -Xlint:all -Werror} with {@code failOnWarning} is fatal for the test tree too. A
- *         single unused import, or a {@code /**} comment not attached to a declaration, ends the
- *         build.</td>
+ *         {@code /*}{@code *} comment not attached to a declaration ends the build, because
+ *         {@code dangling-doc-comments} is part of {@code -Xlint:all}. A single unused import does not:
+ *         {@code javac} 25 publishes no {@code unused} lint key, so it is caught at review.</td>
  *   </tr>
  *   <tr>
  *     <td>The report says {@code Tests run: 0} for this class</td>
@@ -739,7 +740,7 @@ final class MainMenuServiceTest {
      * cannot be reproduced. The implementation therefore refuses {@code option &gt; count} <em>before</em>
      * any table access. The observable outcome is unchanged, because in the source both paths perform
      * {@code SEND-MENU-SCREEN} - both redisplay the menu carrying a message - and the operator sees a
-     * refusal either way. This deviation is recorded in {@code DECISION_LOG.md} under
+     * refusal either way. This deviation is owed an entry in the planned {@code DECISION_LOG.md} under
      * <em>bounds short-circuit</em>, and the tests below make it <strong>observable rather than
      * silent</strong>: they prove the refusal is the bounds refusal and not the gate's, that no
      * {@code IndexOutOfBoundsException} escapes, and - by the control case - that the gate is still
@@ -1014,8 +1015,9 @@ final class MainMenuServiceTest {
      * <p><strong>Intentional no-op marker, and the one conflict this file carries.</strong> Rule 1
      * Clause B forbids dead code; the parity mandate forbids deleting a reachable branch. Parity governs,
      * and Clause B is satisfied on its own terms because its prohibition is on artefacts <em>without an
-     * owner or tracking reference</em>. Both retained branches have one: a {@code DECISION_LOG.md} entry,
-     * a {@code TRACEABILITY_MATRIX.md} row, Javadoc citing the source locator, and this marker.</p>
+     * owner or tracking reference</em>. Both retained branches have one: an entry in the planned
+     * {@code DECISION_LOG.md}, a {@code TRACEABILITY_MATRIX.md} row, Javadoc citing the source locator, and this
+     * marker.</p>
      *
      * <ul>
      *   <li><strong>The eligibility gate of {@code app/cbl/COMEN01C.cbl:136-142} is never true with the

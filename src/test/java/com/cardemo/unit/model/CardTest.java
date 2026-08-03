@@ -38,6 +38,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatIllegalArgumentException;
 
 import com.cardemo.model.entity.Card;
+import jakarta.persistence.Column;
+import java.lang.reflect.Field;
+import java.util.Locale;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
@@ -75,12 +78,12 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       base record - immediately after the 16-byte card number. That is exactly where {@code accountId}
  *       sits, which is what makes the derived finder {@code findByAccountId} the correct replacement for the
  *       alternate index.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=CardTest
+ * ./mvnw -B -ntp -o test -Dtest=CardTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -100,7 +103,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       the Java layer.</li>
  *   <li><strong>The range boundary assertions fail.</strong> The account-id bound changed. It must remain
  *       {@code 99,999,999,999}, the widest {@code PIC 9(11)} value.</li>
- * </ul>
+ *   </ul>
  */
 class CardTest {
 
@@ -131,7 +134,7 @@ class CardTest {
     private static final String VALID_CARD_NUMBER = "4111111111111111";
 
     private static Card validCard() {
-        return new Card(VALID_CARD_NUMBER, 1L, "123", "FNAMEAA6 LNAME6", "2025-01-01", "Y");
+        return new Card(VALID_CARD_NUMBER, 1L, "FNAMEAA6 LNAME6", "2025-01-01", "Y");
     }
 
     @Nested
@@ -139,15 +142,19 @@ class CardTest {
     class RecordGeometry {
 
         @Test
-        @DisplayName("the six modelled widths plus the filler sum to the catalogued 150 bytes")
+        @DisplayName("the six copybook widths plus the filler sum to the catalogued 150 bytes")
         void theModelledWidthsPlusFillerSumTo150() {
-            final int modelled = CARD_NUMBER_WIDTH + 11 + CVV_WIDTH + EMBOSSED_NAME_WIDTH
+            // The verification value's 3 bytes stay in this arithmetic even though they are not
+            // persisted. The COPYBOOK is the record, and it is frozen: CARD-RECORD is still 150 bytes
+            // wide and every fixture row still carries all 150. What F13 removed is the column, not the
+            // record - so an arithmetic that dropped the field would be asserting the wrong thing.
+            final int declared = CARD_NUMBER_WIDTH + 11 + CVV_WIDTH + EMBOSSED_NAME_WIDTH
                     + EXPIRY_WIDTH + STATUS_WIDTH;
 
-            assertThat(modelled)
+            assertThat(declared)
                     .as("16 + 11 + 3 + 50 + 10 + 1 = 91 populated bytes from CVACT02Y:L5-L10")
                     .isEqualTo(91);
-            assertThat(modelled + FILLER_WIDTH)
+            assertThat(declared + FILLER_WIDTH)
                     .as("91 populated plus the 59-byte FILLER at CVACT02Y:L11 is exactly the 150-byte "
                             + "record length catalogued for CARDDATA at app/catlg/LISTCAT.txt:L202")
                     .isEqualTo(RECORD_LENGTH);
@@ -187,25 +194,26 @@ class CardTest {
         }
 
         @Test
-        @DisplayName("the CVV is a three-character String, not a numeric type")
-        void theCvvIsAThreeCharacterString() throws ReflectiveOperationException {
-            assertThat(Card.class.getDeclaredField("cvvCode").getType())
-                    .as("CARD-CVV-CD is PIC 9(03) but is carried as a String because leading zeros are "
-                            + "significant - a CVV of '007' must not become the integer 7")
-                    .isEqualTo(String.class);
-            assertThat(validCard().getCvvCode()).hasSize(CVV_WIDTH);
-        }
-
-        @Test
-        @DisplayName("a CVV with leading zeros round-trips without losing them")
-        void aCvvWithLeadingZerosRoundTrips() {
-            final Card card = new Card(VALID_CARD_NUMBER, 1L, "007", "NAME", "2025-01-01", "Y");
-
-            assertThat(card.getCvvCode())
-                    .as("this is the concrete reason CARD-CVV-CD is a String: an Integer would render as "
-                            + "'7' and the fixed-width record would be two bytes short")
-                    .isEqualTo("007")
-                    .hasSize(CVV_WIDTH);
+        @DisplayName("the card verification value is absent from the type entirely, by every route")
+        void theCardVerificationValueIsAbsentEntirely() {
+            // The F13 regression guard. Card verification data must not be retained after
+            // authorisation, so the remedy is that there is nowhere to put it: no field, no accessor,
+            // no mutator and no column mapping. Each route is checked separately, because closing one
+            // and leaving another open would be indistinguishable from closing none.
+            assertThat(Card.class.getDeclaredFields())
+                    .as("a persistent field would be retention, whatever it were called")
+                    .noneMatch(field -> field.getName().toLowerCase(Locale.ROOT).contains("cvv"));
+            assertThat(Card.class.getDeclaredMethods())
+                    .as("an accessor or mutator would be an exposure route even with no field behind it")
+                    .noneMatch(method -> method.getName().toLowerCase(Locale.ROOT).contains("cvv"));
+            for (final Field field : Card.class.getDeclaredFields()) {
+                final Column column = field.getAnnotation(Column.class);
+                if (column != null) {
+                    assertThat(column.name())
+                            .as("no column mapping may name the verification column either")
+                            .doesNotContain("cvv");
+                }
+            }
         }
 
         @Test
@@ -228,27 +236,23 @@ class CardTest {
         @DisplayName("a null card number is rejected, naming the COBOL field and the column width")
         void aNullCardNumberIsRejected() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(null, 1L, "123", "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(null, 1L, "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("cardNumber")
                     .withMessageContaining("CARD-NUM")
                     .withMessageContaining("16");
         }
 
         @Test
-        @DisplayName("a null CVV, embossed name, expiry or status is rejected")
+        @DisplayName("a null embossed name, expiry or status is rejected")
         void aNullValueIsRejectedOnEveryCharacterField() {
             assertThatIllegalArgumentException()
-                    .as("CARD-CVV-CD maps to a NOT NULL CHAR(3) column")
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, null, "NAME", "2025-01-01", "Y"))
-                    .withMessageContaining("cvvCode");
-            assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, "123", null, "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, null, "2025-01-01", "Y"))
                     .withMessageContaining("embossedName");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, "123", "NAME", null, "Y"))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, "NAME", null, "Y"))
                     .withMessageContaining("expiraionDate");
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, "123", "NAME", "2025-01-01", null))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, "NAME", "2025-01-01", null))
                     .withMessageContaining("activeStatus");
         }
 
@@ -258,14 +262,13 @@ class CardTest {
             assertThatIllegalArgumentException()
                     .as("a seventeenth character could not be written to a CHAR(16) column and would be "
                             + "silently truncated at the byte boundary, corrupting the key")
-                    .isThrownBy(() -> new Card("4".repeat(17), 1L, "123", "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card("4".repeat(17), 1L, "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("16")
                     .withMessageContaining("17");
         }
 
         @ParameterizedTest
         @CsvSource({
-            "4, CARD-CVV-CD",
             "51, CARD-EMBOSSED-NAME",
             "11, CARD-EXPIRAION-DATE",
             "2, CARD-ACTIVE-STATUS",
@@ -273,7 +276,6 @@ class CardTest {
         @DisplayName("an over-width value is rejected on every character field, naming its COBOL field")
         void anOverWidthValueIsRejectedOnEveryField(final int length, final String cobolField) {
             final String tooLong = "X".repeat(length);
-            final String cvv = "CARD-CVV-CD".equals(cobolField) ? tooLong : "123";
             final String name = "CARD-EMBOSSED-NAME".equals(cobolField) ? tooLong : "NAME";
             final String expiry = "CARD-EXPIRAION-DATE".equals(cobolField) ? tooLong : "2025-01-01";
             final String status = "CARD-ACTIVE-STATUS".equals(cobolField) ? tooLong : "Y";
@@ -282,7 +284,7 @@ class CardTest {
                     .as("%s must reject a value of length %d, because the column is CHAR of a narrower "
                             + "width and the excess would be truncated at the byte boundary", cobolField,
                             length)
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, cvv, name, expiry, status))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, 1L, name, expiry, status))
                     .withMessageContaining(cobolField);
         }
 
@@ -292,7 +294,7 @@ class CardTest {
             final Card card = new Card(
                     "4".repeat(CARD_NUMBER_WIDTH),
                     MAX_ACCOUNT_ID,
-                    "9".repeat(CVV_WIDTH),
+                    
                     "N".repeat(EMBOSSED_NAME_WIDTH),
                     "2".repeat(EXPIRY_WIDTH),
                     "Y".repeat(STATUS_WIDTH));
@@ -309,7 +311,7 @@ class CardTest {
         @ValueSource(strings = {"", " ", "SHORT", "FNAMEAA6 LNAME6"})
         @DisplayName("a value SHORTER than the declared width is accepted verbatim, without padding")
         void aShorterValueIsAcceptedVerbatim(final String shortName) {
-            final Card card = new Card(VALID_CARD_NUMBER, 1L, "123", shortName, "2025-01-01", "Y");
+            final Card card = new Card(VALID_CARD_NUMBER, 1L, shortName, "2025-01-01", "Y");
 
             assertThat(card.getEmbossedName())
                     .as("observed behaviour, pinned deliberately: the guard checks a MAXIMUM, so a short "
@@ -322,7 +324,7 @@ class CardTest {
         @Test
         @DisplayName("an empty card number is accepted by the width guard, since zero is under the maximum")
         void anEmptyCardNumberIsAcceptedByTheWidthGuard() {
-            final Card card = new Card("", 1L, "123", "NAME", "2025-01-01", "Y");
+            final Card card = new Card("", 1L, "NAME", "2025-01-01", "Y");
 
             assertThat(card.getCardNumber())
                     .as("observed behaviour: the guard rejects null and over-width but not emptiness. The "
@@ -341,7 +343,7 @@ class CardTest {
         @DisplayName("a null account id is rejected, naming the NUMERIC(11) column")
         void aNullAccountIdIsRejected() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, null, "123", "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, null, "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("accountId")
                     .withMessageContaining("CARD-ACCT-ID");
         }
@@ -352,7 +354,7 @@ class CardTest {
             assertThatIllegalArgumentException()
                     .as("CARD-ACCT-ID is PIC 9(11) with no S, so it carries no sign and a negative value "
                             + "has no representation in the fixed-width record")
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, -1L, "123", "NAME", "2025-01-01", "Y"))
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, -1L, "NAME", "2025-01-01", "Y"))
                     .withMessageContaining("accountId")
                     .withMessageContaining("0");
         }
@@ -362,7 +364,7 @@ class CardTest {
         void anAccountIdAboveTheMaximumIsRejected() {
             assertThatIllegalArgumentException()
                     .as("a twelfth digit could not be written into an eleven-character field")
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, MAX_ACCOUNT_ID + 1L, "123", "NAME",
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, MAX_ACCOUNT_ID + 1L, "NAME",
                             "2025-01-01", "Y"))
                     .withMessageContaining("99999999999");
         }
@@ -370,7 +372,7 @@ class CardTest {
         @Test
         @DisplayName("zero is accepted, because the bound is inclusive at the lower end")
         void zeroIsAccepted() {
-            assertThat(new Card(VALID_CARD_NUMBER, 0L, "123", "NAME", "2025-01-01", "Y").getAccountId())
+            assertThat(new Card(VALID_CARD_NUMBER, 0L, "NAME", "2025-01-01", "Y").getAccountId())
                     .as("the guard tests value < 0, so zero passes; an all-zeros account id is a "
                             + "representable PIC 9(11) value even if the seed data does not use it")
                     .isZero();
@@ -379,7 +381,7 @@ class CardTest {
         @Test
         @DisplayName("exactly 99,999,999,999 is accepted, because the bound is inclusive at the upper end")
         void theMaximumIsAccepted() {
-            assertThat(new Card(VALID_CARD_NUMBER, MAX_ACCOUNT_ID, "123", "NAME", "2025-01-01", "Y")
+            assertThat(new Card(VALID_CARD_NUMBER, MAX_ACCOUNT_ID, "NAME", "2025-01-01", "Y")
                             .getAccountId())
                     .as("the guard tests value > MAX, so the maximum itself passes - an exclusive bound "
                             + "would reject the widest legitimate value")
@@ -391,12 +393,12 @@ class CardTest {
         @DisplayName("Long.MIN_VALUE and Long.MAX_VALUE are both rejected")
         void theExtremeLongValuesAreRejected() {
             assertThatIllegalArgumentException()
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, Long.MIN_VALUE, "123", "NAME",
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, Long.MIN_VALUE, "NAME",
                             "2025-01-01", "Y"));
             assertThatIllegalArgumentException()
                     .as("a guard that only tested the lower bound would let Long.MAX_VALUE through and "
                             + "produce a nineteen-digit value in an eleven-character field")
-                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, Long.MAX_VALUE, "123", "NAME",
+                    .isThrownBy(() -> new Card(VALID_CARD_NUMBER, Long.MAX_VALUE, "NAME",
                             "2025-01-01", "Y"));
         }
     }
@@ -406,13 +408,12 @@ class CardTest {
     class ConstructionAndAccessors {
 
         @Test
-        @DisplayName("the public constructor populates every one of the six supplied fields")
+        @DisplayName("the public constructor populates every one of the five supplied fields")
         void thePublicConstructorPopulatesEveryField() {
             final Card card = validCard();
 
             assertThat(card.getCardNumber()).isEqualTo(VALID_CARD_NUMBER);
             assertThat(card.getAccountId()).isEqualTo(1L);
-            assertThat(card.getCvvCode()).isEqualTo("123");
             assertThat(card.getEmbossedName()).isEqualTo("FNAMEAA6 LNAME6");
             assertThat(card.getExpiraionDate()).isEqualTo("2025-01-01");
             assertThat(card.getActiveStatus()).isEqualTo("Y");
@@ -422,13 +423,12 @@ class CardTest {
         }
 
         @Test
-        @DisplayName("every one of the seven accessor pairs round-trips a value")
+        @DisplayName("every one of the six accessor pairs round-trips a value")
         void everyAccessorPairRoundTrips() {
             final Card card = validCard();
 
             card.setCardNumber("5500000000000004");
             card.setAccountId(2L);
-            card.setCvvCode("456");
             card.setEmbossedName("FNAM7 LNAM7");
             card.setExpiraionDate("2026-12-31");
             card.setActiveStatus("N");
@@ -436,7 +436,6 @@ class CardTest {
 
             assertThat(card.getCardNumber()).isEqualTo("5500000000000004");
             assertThat(card.getAccountId()).isEqualTo(2L);
-            assertThat(card.getCvvCode()).isEqualTo("456");
             assertThat(card.getEmbossedName()).isEqualTo("FNAM7 LNAM7");
             assertThat(card.getExpiraionDate()).isEqualTo("2026-12-31");
             assertThat(card.getActiveStatus()).isEqualTo("N");
@@ -469,13 +468,13 @@ class CardTest {
         void aRejectedSetterLeavesThePreviousValueIntact() {
             final Card card = validCard();
 
-            assertThatIllegalArgumentException().isThrownBy(() -> card.setCvvCode("12345"));
+            assertThatIllegalArgumentException().isThrownBy(() -> card.setEmbossedName("X".repeat(51)));
 
-            assertThat(card.getCvvCode())
+            assertThat(card.getEmbossedName())
                     .as("the guard runs before the assignment, so a rejected mutation is a no-op rather "
                             + "than a half-applied change - the instance is never left in a state the "
                             + "database would refuse")
-                    .isEqualTo("123");
+                    .isEqualTo("FNAMEAA6 LNAME6");
             assertThat(card.getCardNumber()).isEqualTo(VALID_CARD_NUMBER);
         }
 
@@ -513,8 +512,8 @@ class CardTest {
         @Test
         @DisplayName("the active status carries the legacy Y and N values in a single character")
         void theActiveStatusCarriesTheLegacyValues() {
-            final Card active = new Card(VALID_CARD_NUMBER, 1L, "123", "NAME", "2025-01-01", "Y");
-            final Card inactive = new Card(VALID_CARD_NUMBER, 1L, "123", "NAME", "2025-01-01", "N");
+            final Card active = new Card(VALID_CARD_NUMBER, 1L, "NAME", "2025-01-01", "Y");
+            final Card inactive = new Card(VALID_CARD_NUMBER, 1L, "NAME", "2025-01-01", "N");
 
             assertThat(active.getActiveStatus()).isEqualTo("Y").hasSize(STATUS_WIDTH);
             assertThat(inactive.getActiveStatus()).isEqualTo("N").hasSize(STATUS_WIDTH);

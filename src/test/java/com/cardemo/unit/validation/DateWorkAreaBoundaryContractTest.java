@@ -102,7 +102,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>The masks and the eighty-byte result area</strong> at {@code :L58-L59} and
  *       {@code :L60-L85}, together with the byte-identical twin declared as {@code WS-MESSAGE} at
  *       {@code app/cbl/CSUTLDTC.cbl:L42-L57} and the four divergences between the two.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The subject under assertion is {@link DateValidationService}, the Java replacement for the statically
  * called {@code CSUTLDTC} and for the two work-area copybooks {@code CSUTLDPY} and {@code CSUTLDWY}. The
@@ -158,8 +158,9 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <ul>
  *   <li><strong>The build fails on a warning rather than an error.</strong> The compiler runs with
  *       {@code -Xlint:all -Werror} and {@code failOnWarning}, and that configuration reaches test
- *       compilation. A single unused import, raw type or deprecated call fails the whole build.
- *       <em>Remedy: import only what is used and prune on every edit.</em></li>
+ *       compilation. A single raw type, unchecked cast or deprecated call fails the whole build. An unused
+ *       import does not - {@code javac} 25 publishes no {@code unused} lint key - so it is caught at review
+ *       instead. <em>Remedy: import only what is used and prune on every edit.</em></li>
  *   <li><strong>The tri-state flags collapsed into a boolean.</strong> Three states cannot survive in one
  *       bit, and the state that disappears is the reachable one: see
  *       {@code EditFlagGroupTriStateAlphabet} below. <em>Remedy: keep the three-valued enum.</em></li>
@@ -179,7 +180,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       fixture is {@code dailytran.txt} and never {@code dalytran.txt}, even though the mainframe dataset
  *       and DD name are {@code DALYTRAN}. This class reads no fixture, so it cannot be bitten - but the
  *       trap is recorded because the sibling tiers can.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings carried into this class, by severity</h2>
  *
@@ -209,7 +210,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       to {@code app/cpy/CSUTLDPY.cpy:L374} and different from {@code app/cbl/CSUTLDTC.cbl:L156}
  *       ({@code 23:12:35}), which corroborates that the two copybooks were committed as a pair while the
  *       program was committed separately.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>These assertions are the tracking reference for the preserved oddities.</strong> The missing
  * {@code VALUE SPACES}, the mixed-case {@code Pic}, the stray pre-period spaces and the asymmetric
@@ -243,7 +244,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li>Any latency or throughput objective for this tier. None exists anywhere in the source; the
  *       migration records a measured baseline and never invents a target. <em>Needed: a published service
  *       level, of which the corpus has none.</em></li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("CSUTLDWY.cpy - the 88-level boundary alphabet and the buffer geometry it declares")
 final class DateWorkAreaBoundaryContractTest {

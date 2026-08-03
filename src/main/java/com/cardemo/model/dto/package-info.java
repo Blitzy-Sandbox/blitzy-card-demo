@@ -1,11 +1,13 @@
 /*
  * ******************************************************************
  * Program     : package-info.java
+ * Package     : com.cardemo.model.dto
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
- * Function    : Package contract for the 17 data transfer objects
+ * Function    : Package contract for the 26 data transfer objects
  *               replacing the BMS symbolic maps and the COMMAREA.
- * Source      : app/cpy-bms/** (17 symbolic maps, 460 input fields);
+ * Source      : app/cpy-bms/** (17 symbolic maps, 441 input fields,
+ *               of which COACTVW contributes 37);
  *               app/cpy/COCOM01Y.cpy (COMMAREA);
  *               app/cpy/COSTM01.CPY + app/cpy/CVTRA07Y.cpy (statement
  *               record, 32 byte key; 133 byte report lines);
@@ -33,7 +35,9 @@
  * Request and response payloads for the CardDemo REST surface, derived field for field from the 17 BMS symbolic
  * maps and the COMMAREA of the frozen COBOL corpus.
  *
- * <p><strong>What it does.</strong> Seventeen data transfer objects, and nothing else besides this file. They
+ * <p><strong>What it does.</strong> 26 data transfer objects, and nothing else besides this file: the
+ * seventeen request-and-projection types, the eight response envelopes added when the REST surface stopped
+ * returning entities directly, and the masking helper those envelopes share. They
  * replace exactly two legacy mechanisms: the symbolic maps under {@code app/cpy-bms}, which carried screen
  * field values between a 3270 terminal and a CICS program, and the COMMAREA of
  * {@code app/cpy/COCOM01Y.cpy}, which carried identity and selection state across {@code EXEC CICS XCTL}.
@@ -65,7 +69,7 @@
  *       stateless HTTP.</li>
  *   <li>{@link StatementTransaction} - {@code app/cpy/COSTM01.CPY} with its 32-byte {@code TRNX-KEY}, and the
  *       133-byte report lines of {@code app/cpy/CVTRA07Y.cpy}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Filename casing in those citations is load-bearing and reproduced exactly as it appears on disk: all 17
  * members of {@code app/cpy-bms} use an uppercase {@code .CPY}; in {@code app/cpy} only {@code COSTM01.CPY} is
@@ -81,8 +85,11 @@
  * rather than collapsed.
  *
  * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root compiles
- * this package under {@code -Xlint:all -Werror}, so an unused import, a raw type or a {@code Serializable} type
- * without {@code serialVersionUID} fails the build outright. Unit tests live in
+ * this package under {@code -Xlint:all -Werror}, so a raw type or a {@code Serializable} type without
+ * {@code serialVersionUID} fails the build outright. An unused import is not among them: {@code javac} 25 publishes no
+ * {@code unused} lint key, so Rule 1 Clause B's prohibition on one is review-enforced. Malformed Javadoc
+ * is likewise outside the build - no Javadoc plugin is bound in {@code pom.xml} - and is covered by the
+ * explicit doclint command published in {@code docs/technical-specifications.md}. Unit tests live in
  * {@code src/test/java/com/cardemo/unit/model} and assert the per-map field sets and declared widths, the
  * validation constraints, the three-state handling and that no payload exposes credential material.
  *
@@ -146,7 +153,7 @@
  *   <li>{@link StatementTransaction} from {@code app/cpy/COSTM01.CPY}, whose {@code TRNX-KEY} is
  *       {@code TRNX-CARD-NUM PIC X(16)} followed by {@code TRNX-ID PIC X(16)} for a 32 byte key, plus the
  *       report line layouts of {@code app/cpy/CVTRA07Y.cpy}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Exactly one of the 17 does not come from a symbolic map at all, and that is deliberate rather than an
  * omission: {@link CommArea} comes from the communication area. A second, {@link SignOnResponse}, has no
@@ -154,7 +161,7 @@
  * symbolic maps for its screen surface and the two option tables for its option surface, which is why it
  * appears under each heading rather than only one.
  *
- * <h3>All 17 symbolic maps traced to the payload that represents them</h3>
+ * <h2>All 17 symbolic maps traced to the payload that represents them</h2>
  *
  * <p>The list above is organised by payload. This one is organised by <strong>map</strong>, and both are
  * kept because a payload-oriented list structurally cannot reveal a map that no payload represents, which
@@ -227,7 +234,7 @@
  * three state validation model described in failure mode 5 and maps onto validation annotations and per
  * field error markers rather than onto a type.
  *
- * <h3>Package wide invariants that all 17 payloads must honour</h3>
+ * <h2>Package wide invariants that all 17 payloads must honour</h2>
  *
  * <ul>
  *   <li><strong>Pure data holders.</strong> No payload may import from {@code com.cardemo.exception},
@@ -305,10 +312,10 @@
  *         <li>Even the pagination field is not shared: it is {@code PAGENUMI} in
  *             {@code app/cpy-bms/COTRN00.CPY} and {@code app/cpy-bms/COUSR00.CPY} but {@code PAGENOI} in
  *             {@code app/cpy-bms/COCRDLI.CPY}.</li>
- *       </ul>
- *       Each payload therefore declares its own fields at its own map's widths. Duplication that mirrors a
- *       divergent source is correctness, not redundancy.</li>
- * </ul>
+ *   </ul>
+ * Each payload therefore declares its own fields at its own map's widths. Duplication that mirrors a
+ * divergent source is correctness, not redundancy.</li>
+ *   </ul>
  *
  * <h2>How to run, build and test</h2>
  *
@@ -360,39 +367,41 @@
  *       credential and so keep the record-generated form. Nothing is hidden behind a processor: every
  *       generated member follows mechanically from a {@code record} header that is visible in the
  *       source.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>Test</h3>
  *
  * <ul>
  *   <li><strong>Location, and what exists today.</strong> Unit tests for these types live in the sibling
  *       test tree at {@code src/test/java/com/cardemo/unit/model}, <strong>never</strong> in this package,
- *       which contains no test class and no fixture. Measured 1 August 2026, <strong>8 of the 17</strong>
- *       payloads have a test class: {@link MenuResponse}, {@link PageResponse}, {@link ReportRequest},
- *       {@link SignOnRequest}, {@link SignOnResponse}, {@link UserCreateRequest}, {@link UserSecurityDto}
- *       and {@link UserUpdateRequest}. The remaining nine - {@link AccountDto},
- *       {@link AccountUpdateRequest}, {@link BillPaymentRequest}, {@link CardDto},
- *       {@link CardUpdateRequest}, {@link CommArea}, {@link StatementTransaction},
- *       {@link TransactionAddRequest} and {@link TransactionDto} - have <strong>no test at all</strong> and
- *       are not referenced from the test tree. Any assertion listed below against one of those nine is an
- *       obligation, not existing coverage.</li>
+ *       which contains no test class and no fixture. <strong>All seventeen</strong> payloads now have a
+ *       dedicated test class under that path, one per type, and each is additionally referenced from the
+ *       controller, service and batch test classes that bind or emit it. An earlier revision of this bullet
+ *       said only eight had a test and that the other nine were unreferenced; both halves are false and the
+ *       claim is withdrawn. Every assertion listed below is therefore a statement about existing coverage
+ *       rather than an outstanding obligation - but coverage is per assertion, not per file, so a listed
+ *       assertion that a test class does not actually make is still owed. Counts move as the tree grows, so
+ *       re-measure rather than quoting them.</li>
  *   <li><strong>Coverage gate.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor
  *       on the merged bundle at the {@code verify} phase with {@code haltOnFailure}, and there are
  *       <strong>no exclusions</strong> for this package. The figure must come from meaningful assertions
  *       and must not be padded by calling getters in a loop. This file is documentation only, contributes
  *       no executable lines, and therefore neither helps nor harms the figure.</li>
- *   <li><strong>Coverage plugin version.</strong> Pinned to <strong>0.8.13</strong>. The requirements named
- *       0.8.12, but that release cannot physically run on this target: Java 25 emits class file major
- *       version 69, which the ASM build inside 0.8.12 rejects outright, failing the report goal before any
- *       coverage figure is computed. 0.8.13 is the smallest release that reads it, so the stated preference
- *       for the lower version is kept while the gate is made able to run at all, and 0.8.14 is not adopted.
- *       Recorded in {@code DECISION_LOG.md}.</li>
+ *   <li><strong>Coverage plugin version - the pin is 0.8.12 and it is not raised.</strong> An earlier
+ *       revision of this entry said the plugin was pinned to 0.8.13; that is withdrawn.
+ *       {@code pom.xml} pins {@code jacoco-maven-plugin.version} at <strong>0.8.12</strong>, exactly as the
+ *       requirement names it. Java 25 emits class file major version 69 and the rejection comes from
+ *       <strong>ASM</strong> rather than from JaCoCo, so only the plugin's transitive reader is advanced -
+ *       {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to <strong>9.9</strong>, with the
+ *       runtime agent at the matching <strong>0.8.14</strong> build. Both halves are required. The
+ *       measurement is recorded in {@code pom.xml}; the divergence is <strong>owed an entry in the planned
+ *       {@code DECISION_LOG.md}</strong>, which does not exist at this commit.</li>
  *   <li><strong>Assertions that actually matter</strong> for this package, as distinct from mechanical
- *       accessor coverage. Read the list that follows as the <strong>required</strong> set, not as an
- *       inventory of what runs today: measured 1 August 2026 only the eight payloads named above have a test
- *       class at all, so every entry below that names one of the other nine - including the
- *       {@link AccountUpdateRequest} and {@link CardDto} entries - is <strong>not available</strong> and is
- *       owed:
+ *       accessor coverage. Read the list that follows as the <strong>required</strong> set. Every one of the
+ *       seventeen payloads has a test class, so no entry below is blocked on a missing class; what an entry
+ *       still records is the specific assertion, and an assertion a class does not yet make is owed even
+ *       though the class exists. An earlier revision of this bullet said only eight payloads had a test
+ *       class at all and marked nine entries unavailable on that basis; that is false and is withdrawn:
  *       <ul>
  *         <li>Each payload's field count asserted against its map's verified census figure, so a field
  *             added or dropped fails the test rather than drifting silently.</li>
@@ -410,7 +419,7 @@
  *             confirming the payload is unchanged.</li>
  *         <li>Every {@code toString} asserted <em>not</em> to contain any password, hash prefix, token or
  *             other value named in the no secret invariant above.</li>
- *       </ul>
+ *   </ul>
  *   </li>
  *   <li><strong>Determinism.</strong> No static mutable state, no dependence on a clock and no reliance on
  *       the platform default locale, charset or time zone, so a test that passes locally passes in
@@ -419,22 +428,23 @@
  *       "3. Ensure local tests pass." before a change is proposed, and {@code CONTRIBUTING.md:L33} asks
  *       that a change stay focused rather than reformatting surrounding code. Both apply to every edit in
  *       this package.</li>
- * </ul>
+ *   </ul>
  *
- * <h3>Toolchain actually present in this environment, measured 1 August 2026</h3>
+ * <h3>Toolchain prerequisite</h3>
  *
- * <p>Measured rather than assumed, on <strong>1 August 2026</strong> in this container after
- * {@code source /etc/profile.d/10-carddemo-toolchain.sh}, so the statement can be relied on as a reading
- * of that date rather than as a requirement: {@code java} and {@code javac} report
- * OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache Maven
- * <strong>3.9.11</strong> from the pinned wrapper distribution, and
- * <strong>Docker Engine 29.7.0 with {@code docker compose} v5.3.1 is available</strong> and is what
- * provisions PostgreSQL 16, LocalStack, Jaeger, Prometheus and Grafana for the integration tiers. The host
- * toolchain is activated by sourcing {@code /etc/profile.d/10-carddemo-toolchain.sh}. Where a host JDK is
- * not provisioned, the identical build runs inside the pinned Java 25 and Maven 3.9.11 container image with
- * the repository mounted, and produces the same result because every plugin and every non managed
- * dependency version is pinned. <strong>Any claim that the Java toolchain or the container runtime is
- * absent is stale and must not be repeated.</strong>
+ * <p>The prerequisite is stated as a capability, never as a host path or a measured version: JDK 25 on
+ * {@code PATH} with {@code JAVA_HOME} set, however the host provides it, and Maven from the pinned wrapper.
+ * No file under {@code /etc/profile.d} is part of this repository's contract - that is a property of one
+ * machine image - and the repository's own contract is {@code .env} plus {@code ./mvnw}, with
+ * {@code .env.example} documenting every variable. Where a host JDK is not provisioned, the identical build
+ * runs inside the pinned Java 25 and Maven 3.9.11 container image with the repository mounted and produces
+ * the same result, because every plugin and every non-managed dependency version is pinned.
+ *
+ * <p>The measured readings that used to be restated here - toolchain versions, container-runtime
+ * availability and the backing services it provisions - are deliberately not duplicated in this Javadoc
+ * comment. The authoritative dated inventory is section 0.4.5.1 of
+ * {@code docs/technical-specifications.md}; copying a reading into a hundred comments is exactly how it goes
+ * stale. Re-measure against that section rather than quoting this file.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -461,9 +471,9 @@
  *             'N'}.</li>
  *         <li><strong>10</strong> for the user list, from {@code app/cbl/COUSR00C.cbl:L57},
  *             {@code 02 USER-REC OCCURS 10 TIMES}.</li>
- *       </ul>
- *       Collapsing these into one shared page size would change the card list from 7 rows to 10 and break
- *       parity on the very first page.</li>
+ *   </ul>
+ * Collapsing these into one shared page size would change the card list from 7 rows to 10 and break
+ * parity on the very first page.</li>
  *   <li><strong>Menu option counts are bounded by the count field, never by the table capacity.</strong>
  *       There are exactly <strong>10</strong> populated main menu options,
  *       {@code app/cpy/COMEN02Y.cpy:21}, {@code 05 CDEMO-MENU-OPT-COUNT PIC 9(02) VALUE 10}, and exactly
@@ -495,7 +505,7 @@
  *       <strong>133</strong>; the statement text output is <strong>80</strong>; and the statement HTML
  *       output is <strong>100</strong>. Emitting any other width is a parity failure even when every field
  *       value is correct.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -666,7 +676,7 @@
  *       interpolated it; and its width checks reject an over long component rather than truncating it,
  *       because a nine character identifier can never match the eight byte {@code USRSEC} key declared by
  *       {@code KEYS(8,0)} at {@code app/jcl/DUSRSECJ.jcl}:65.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Not available</h2>
  *
@@ -685,9 +695,11 @@
  *       {@code 7756d89} - which is why the census method is written out above in enough detail to be
  *       reproduced rather than merely asserted.</li>
  *   <li><strong>A generated OpenAPI document: Not available and out of scope.</strong> Specification
- *       generation is explicitly excluded from this migration. The manual substitute is
- *       {@code docs/api-contracts.md}, which documents each endpoint's payloads and error modes.</li>
- * </ul>
+ *       generation is explicitly excluded from this migration. The planned manual substitute is
+ *       {@code docs/api-contracts.md}, documenting each endpoint's payloads and error modes; that file has
+ *       not been authored yet, so until it exists the per-type documentation in this package is the only
+ *       payload contract, which is why each type's field table is stated in full rather than deferred.</li>
+ *   </ul>
  *
  * <h2>Package level constraints</h2>
  *
@@ -696,7 +708,7 @@
  *       files: the 17 payloads named above and this file. No nineteenth file may be added, and in
  *       particular <strong>no {@code README} and no Markdown file of any kind</strong>, here or anywhere
  *       under {@code src/main/java}, because this docstring is the module documentation. Cross cutting
- *       findings belong in the root {@code DECISION_LOG.md} and
+ *       findings belongs in the planned {@code DECISION_LOG.md} and
  *       {@code TRACEABILITY_MATRIX.md}.</li>
  *   <li><strong>No shared helper, mapper, base class or validator.</strong> For the field divergence
  *       reasons evidenced above. A reviewer seeing repeated header fields across payloads is seeing a
@@ -715,7 +727,7 @@
  *       {@code app/} or {@code samples/} is edited, moved, renamed, reformatted or deleted by this
  *       migration, because that tree is simultaneously the parity oracle, the field contract source and the
  *       traceability anchor, and it loses all three roles the moment it is touched.</li>
- * </ul>
+ *   </ul>
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */

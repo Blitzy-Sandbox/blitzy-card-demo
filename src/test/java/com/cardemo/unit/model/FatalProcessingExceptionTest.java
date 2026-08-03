@@ -70,7 +70,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code int} while {@code getAbendCode()} is a {@code String}. This test asserts both
  *       representations side by side precisely so that the two are never merged - they are not the same
  *       field and they do not have the same width.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The subtle assertion in this class concerns the default-message substitution. The source reads
  * {@code IF ABEND-MSG EQUAL LOW-VALUES / MOVE 'UNEXPECTED ABEND OCCURRED.' TO ABEND-MSG}
@@ -84,7 +84,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=FatalProcessingExceptionTest
+ * ./mvnw -B -ntp -o test -Dtest=FatalProcessingExceptionTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -102,7 +102,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       numeric {@code ABCODE} parameter were merged. They are different fields in different mechanisms.</li>
  *   <li><strong>A width assertion fails.</strong> The payload no longer fits the CABENDD field it
  *       represents, so rendering it into the legacy 4/8/50/72 layout would truncate.</li>
- * </ul>
+ *   </ul>
  *
  * @see FatalProcessingException
  */

@@ -29,6 +29,7 @@ package com.cardemo.controller;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -48,6 +49,8 @@ import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.BillPaymentRequest;
+import com.cardemo.model.dto.BillPaymentResponse;
+import com.cardemo.observability.CorrelationIdFilter;
 import com.cardemo.service.billing.BillPaymentService;
 
 import jakarta.validation.Valid;
@@ -135,7 +138,7 @@ import jakarta.validation.Valid;
  *       {@code correlationId}, {@code traceId} and {@code spanId}; this class neither adds, renames,
  *       overwrites nor clears them. {@code MetricsConfig} owns the four counters; this class registers no
  *       instrument of its own.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -165,7 +168,7 @@ import jakarta.validation.Valid;
  *   <tr><td>{@code FileUnavailableException}</td><td>503</td><td>file status {@code '35'}</td></tr>
  *   <tr><td>{@code FileAccessException}</td><td>502</td><td>file status {@code '9x'}</td></tr>
  *   <tr><td>{@code FatalProcessingException}</td><td>500</td>
- *       <td>abend code {@code 999}, return code {@code 12}</td></tr>
+ *       <td>abend code {@code 999} and return code {@code 12}, both logged rather than returned</td></tr>
  *   <tr><td>Any other typed CardDemo failure</td><td>500</td><td>-</td></tr>
  * </table>
  *
@@ -186,7 +189,12 @@ import jakarta.validation.Valid;
  *       Answered with {@code 201 Created}.</li>
  *   <li>{@code WHEN 'N'} and {@code WHEN 'n'} at {@code :178}-{@code :181}:
  *       {@code PERFORM CLEAR-CURRENT-SCREEN} then {@code MOVE 'Y' TO WS-ERR-FLG} - the payment is
- *       cancelled. Answered with {@code 400 Bad Request}.</li>
+ *       cancelled. Answered with {@code 200 OK} carrying {@code CANCELLED}, because the operator declining
+ *       is a <strong>successful no-write termination</strong> rather than a rejected input. The arm moves no
+ *       message and positions no cursor - contrast {@code WHEN OTHER} below, which does both - so
+ *       {@code WS-ERR-FLG} here only suppresses the downstream {@code IF NOT ERR-FLG-ON} guards. There is no
+ *       caption to relay and nothing for the caller to correct, which is precisely what disqualifies a
+ *       {@code 4xx}.</li>
  *   <li>{@code WHEN SPACES} and {@code WHEN LOW-VALUES} at {@code :182}-{@code :184}:
  *       {@code PERFORM READ-ACCTDAT-FILE} <em>only</em> - the balance is read and echoed and nothing is
  *       paid. This <strong>display-only</strong> outcome is distinct from both the confirm and the cancel
@@ -196,7 +204,7 @@ import jakarta.validation.Valid;
  *   <li>{@code WHEN OTHER} at {@code :185}-{@code :190}: {@code MOVE 'Y' TO WS-ERR-FLG}, the literal
  *       {@code Invalid value. Valid values are (Y/N)...} and {@code MOVE -1 TO CONFIRML}. Answered with
  *       {@code 400 Bad Request}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>{@code SPACES} and {@code LOW-VALUES} are distinct source states</strong> even though they
  * share an arm, so absent, blank and low-values remain three distinct states end to end: this class passes
@@ -206,12 +214,11 @@ import jakarta.validation.Valid;
  * it applies comes from the {@code COPY ... REPLACING} procedure-division template
  * {@code app/cpy/CSSETATY.cpy}.
  *
- * <p><strong>Attribution correction, severity Medium.</strong> The invalid-confirmation message that quotes
- * the offending value back to the operator belongs to transaction {@code CR00} and
+ * <p><strong>The invalid-confirmation message here does not quote the submitted value.</strong> The
+ * value-quoting variant belongs to transaction {@code CR00} and
  * {@code app/cbl/CORPT00C.cbl:483}-{@code :491}, <strong>not</strong> to {@code CB00}. The literal here is
  * the fixed {@code Invalid value. Valid values are (Y/N)...} of {@code app/cbl/COBIL00C.cbl:187}, with no
- * echo of the submitted character, and the value-quoting variant appears nowhere in this class. The
- * correction is recorded in {@code DECISION_LOG.md}.
+ * echo of the submitted character, and the value-quoting variant appears nowhere in this class.
  *
  * <h2>6. Retained legacy behaviour</h2>
  *
@@ -224,8 +231,7 @@ import jakarta.validation.Valid;
  * database sequence, because a sequence would change the generated values and break the parity comparison
  * against the legacy baseline; a collision therefore surfaces as
  * {@code com.cardemo.exception.DuplicateRecordException} and is answered with {@code 409 Conflict}, which is
- * the observable counterpart of the {@code Tran ID already exist...} literal at {@code :536}. The retention
- * is recorded in {@code DECISION_LOG.md}.
+ * the observable counterpart of the {@code Tran ID already exist...} literal at {@code :536}.
  *
  * <p><strong>Cursor repositioning has no counterpart.</strong> {@code MOVE -1 TO CONFIRML} at {@code :189}
  * and {@code :239} and {@code MOVE -1 TO ACTIDINL} at {@code :163} and {@code :203} park the 3270 cursor.
@@ -293,12 +299,11 @@ import jakarta.validation.Valid;
  * endpoints declared in {@code src/main/resources/application.yml} own those. Nor is there any developer or
  * diagnostic operation: {@code app/csd/CARDDEMO.CSD:L388}-{@code :391} defines transaction {@code CDV1},
  * described there as a developer transaction, over program {@code COCRDSEC}, and the source of
- * {@code COCRDSEC} is <strong>Not available</strong> anywhere in the repository - the name occurs only at
+ * {@code COCRDSEC} exists nowhere in the repository - the name occurs only at
  * {@code app/csd/CARDDEMO.CSD:L211} and {@code :L390} - so nothing is invented for it.
  *
- * <p>No service-level objective for this operation is available in the legacy corpus:
- * <strong>Not available</strong>. None is therefore asserted here, and the performance gate records a
- * measured baseline rather than a target.
+ * <p>No service-level objective for this operation exists anywhere in the legacy corpus, so none is
+ * asserted here and the performance gate records a measured baseline rather than a target.
  */
 @RestController
 @RequestMapping(BillingController.BASE_PATH)
@@ -352,7 +357,7 @@ public class BillingController {
     private static final String ENTER_ATTENTION_KEY = BillPaymentService.AidKey.ENTER.name();
 
     /**
-     * {@code ABEND-CODE} as rendered for a response property: the {@code 999} that
+     * {@code ABEND-CODE} as rendered for the abend log line: the {@code 999} that
      * {@code app/cbl/CBTRN02C.cbl:707}-{@code :710} moves into the abend work area before calling the
      * language-environment abend service. Sourced from the exception type rather than restated as a literal.
      */
@@ -478,43 +483,86 @@ public class BillingController {
     private static final String FAILURE_KIND_PROPERTY = "failureKind";
 
     /**
-     * The problem-detail property naming which kind of record was absent. The record <em>type</em> is carried
-     * and the record <em>key</em> is not: the key is the submitted account identifier, and an identifier
-     * echoed back on a 404 is exactly what an account-enumeration attempt needs.
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
      */
-    private static final String RECORD_TYPE_PROPERTY = "recordType";
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
     /**
-     * The problem-detail property naming the dataset a failure attaches to - a logical file name such as
-     * {@code ACCTDAT}, drawn from the eight {@code DEFINE FILE} entries of {@code app/csd/CARDDEMO.CSD}, and
-     * therefore a closed domain that discloses nothing.
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
      */
-    private static final String LOGICAL_FILE_PROPERTY = "logicalFile";
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
     /**
-     * The problem-detail property carrying the four-character rendering of the file status, produced by
-     * {@code 9910-DISPLAY-IO-STATUS} at {@code app/cbl/CBTRN02C.cbl:714}-{@code :731} and preserved by the
-     * shared status mapper. Four characters drawn from a closed domain, so it is safe to publish and is the
-     * single most useful field when correlating a failure with the legacy baseline.
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
      */
-    private static final String IO_STATUS_PROPERTY = "ioStatus";
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
     /**
-     * The problem-detail property naming the input-output operation that failed - a read for update, a
-     * rewrite, a browse or a write - so that a 502 can be attributed without consulting the logs.
+     * Stable error code meaning that the request was refused by a field-level validation rule.
      */
-    private static final String OPERATION_PROPERTY = "operation";
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
 
     /**
-     * The problem-detail property carrying {@code ABEND-CODE}, so that the {@code 999} of the legacy abend
-     * routine stays observable to a client without disclosing the cause.
+     * The fixed detail returned when a record the operation needed does not exist.
+     *
+     * <p><strong>Fixed rather than relayed, on a type rule rather than a path argument.</strong> This
+     * exception type is one of the five {@code FileStatusMapper} composes, and the message it composes names
+     * the operation, the logical file and the {@code COBOL FILE STATUS}. It happens to be true today that no
+     * collaborator on this resource group reaches that mapper - but that is a whole-program property, not one
+     * a reader of this file can check, and one line added to a service three files away would reinstate the
+     * disclosure with no test failing. The rule is therefore applied by type: a detail is never taken from an
+     * exception the mapper can construct. Only {@code ValidationException} and
+     * {@code ConcurrentUpdateException}, which appear nowhere in that mapper, keep their relayed literal.
      */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    private static final String NOT_FOUND_PROBLEM_DETAIL =
+            "No record was found for the identifier supplied.";
 
     /**
-     * The problem-detail property carrying the batch return code, {@code 12}.
+     * Stable error code meaning that a record the operation needed does not exist.
      */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    private static final String ERROR_CODE_NOT_FOUND = "CARDDEMO-RECORD-NOT-FOUND";
+
+    /**
+     * Stable error code meaning that the key the operation generated was already taken.
+     */
+    private static final String ERROR_CODE_DUPLICATE = "CARDDEMO-DUPLICATE-RECORD";
+
+    /**
+     * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
+     */
+    private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
+
+    /**
+     * Stable error code meaning that the store behind this service reported an input-output failure.
+     */
+    private static final String ERROR_CODE_IO_FAILURE = "CARDDEMO-IO-FAILURE";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /**
      * Diagnostic log destination. Static and final: a logger is neither mutable state nor per-request state,
@@ -616,15 +664,17 @@ public class BillingController {
      * <p><strong>The five-way confirmation gate is preserved.</strong>
      * {@code EVALUATE CONFIRMI OF COBIL0AI} at {@code app/cbl/COBIL00C.cbl:173}-{@code :191} has five
      * {@code WHEN} arms over four behaviours, and all four stay distinguishable here: confirm answers
-     * {@code 201}, the display-only arm answers {@code 200}, and cancel and invalid each answer {@code 400}
-     * with their own byte-exact detail - {@code Invalid value. Valid values are (Y/N)...} from {@code :187}
-     * for an unrecognised character. The confirmation is never reduced to a two-valued flag, and absent,
+     * {@code 201} with {@code SETTLED}; the display-only arm answers {@code 200} with
+     * {@code CONFIRMATION_REQUIRED}; cancel answers {@code 200} with {@code CANCELLED}, a successful
+     * no-write termination; and only invalid answers {@code 400}, carrying the byte-exact detail
+     * {@code Invalid value. Valid values are (Y/N)...} from {@code :187}. The confirmation is never reduced to a
+     * two-valued flag, and absent,
      * blank and low-values stay three distinct states because the submitted value is passed through
      * untouched. Section 5 of the class documentation enumerates the arms with their locators.
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} for the empty-identifier rejection
-     * of {@code :161}, the invalid confirmation of {@code :187}, the cancelled confirmation of {@code :180}
-     * and the {@code You have nothing to pay...} rejection of {@code :201}, which covers a zero balance as
+     * of {@code :161}, the invalid confirmation of {@code :187} and the
+     * {@code You have nothing to pay...} rejection of {@code :201}, which covers a zero balance as
      * well as a negative one because the guard at {@code :198} reads
      * {@code IF ACCT-CURR-BAL &lt;= ZEROS}. An identifier that is blank, not all digits or wider than eleven
      * characters cannot address a row, so it yields {@code 404} rather than {@code 400}, exactly as the
@@ -639,21 +689,22 @@ public class BillingController {
      * ({@code :211}-{@code :218}, with the first identifier being 1 against an empty file per
      * {@code :472}-{@code :496}), so a collision surfaces as
      * {@code com.cardemo.exception.DuplicateRecordException} and {@code 409 Conflict} instead of being
-     * masked by a database sequence; see section 6 of the class documentation and
-     * {@code DECISION_LOG.md}. Cursor repositioning has no counterpart and no field is invented for it.
+     * masked by a database sequence; see section 6 of the class documentation. Cursor repositioning has no
+     * counterpart and no field is invented for it.
      *
      * @param authentication the principal Spring Security resolved, which is null when the request reached
      * the operation unauthenticated.
      * @param request the bound {@code COBIL00} symbolic map; never null, because the body is required.
-     * @return {@code 201 Created} with the map projection when the balance was settled in full,
-     * {@code 200 OK} with the echoed balance when the confirmation was blank or low values, or
-     * {@code 401 Unauthorized} when no usable identity reached the operation
+     * @return {@code 201 Created} when the balance was settled in full, {@code 200 OK} with the echoed
+     * balance when the confirmation was blank or low values, {@code 200 OK} when the operator declined at
+     * the prompt, or {@code 401 Unauthorized} when no usable identity reached the operation. Every body is a
+     * {@link BillPaymentResponse}, never a service-owned record
      * @throws FatalProcessingException when the service reports neither a payment nor a failure, when it
      * reports a payment or a prompt without a screen, or when it fails in a way its own typed hierarchy does
      * not describe
      */
     @PostMapping(PAYMENT_PATH)
-    public ResponseEntity<BillPaymentService.BillPaymentScreen> payBill(
+    public ResponseEntity<BillPaymentResponse> payBill(
             final Authentication authentication,
             @Valid @RequestBody final BillPaymentRequest request) {
 
@@ -671,13 +722,25 @@ public class BillingController {
             LOG.info("Settled transaction {} program {} mapset {} in full: confirmation branch {}, {} send(s)",
                     TRANSACTION_ID, PROGRAM_NAME, MAPSET_NAME, result.confirmationBranch(),
                     result.sendCount());
-            return ResponseEntity.status(HttpStatus.CREATED).body(screenOf(result));
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(projectResponse(result, BillPaymentResponse.Outcome.SETTLED));
         }
 
         if (outcome == BillPaymentService.PaymentOutcome.CONFIRMATION_REQUIRED) {
             LOG.debug("Prompted transaction {} program {} for confirmation: branch {}, nothing was paid",
                     TRANSACTION_ID, PROGRAM_NAME, result.confirmationBranch());
-            return ResponseEntity.ok(screenOf(result));
+            return ResponseEntity.ok(
+                    projectResponse(result, BillPaymentResponse.Outcome.CONFIRMATION_REQUIRED));
+        }
+
+        // The 'N' and 'n' arm of :178-:181. The operator answered no, so CLEAR-CURRENT-SCREEN at :552-555
+        // blanked the fields and sent the empty map, and nothing was written. A documented choice being
+        // honoured is not an input being rejected, so this answers 200 rather than 400.
+        if (outcome == BillPaymentService.PaymentOutcome.CONFIRMATION_DECLINED) {
+            LOG.debug("Cancelled transaction {} program {} at the confirmation prompt: branch {}, nothing "
+                    + "was paid and the map was cleared", TRANSACTION_ID, PROGRAM_NAME,
+                    result.confirmationBranch());
+            return ResponseEntity.ok(projectResponse(result, BillPaymentResponse.Outcome.CANCELLED));
         }
 
         throw retainedFailureOf(result);
@@ -786,6 +849,46 @@ public class BillingController {
     }
 
     /**
+     * Projects the retained outcome onto the API-native response body.
+     *
+     * <p>The service's own {@code BillPaymentScreen} is a <em>3270 map</em>, and returning it directly would
+     * publish presentation state that has no meaning to an HTTP client and no place in a wire contract: the
+     * six terminal header fields {@code transactionName}, {@code title01}, {@code currentDate},
+     * {@code programName}, {@code title02} and {@code currentTime}, plus the {@code messageKind} highlight
+     * and the {@code cursor} field position. Those exist to drive a terminal, not a caller, and publishing
+     * them would also freeze an internal service type into the public contract, so that a refactor of the
+     * service could not happen without breaking clients. This method therefore copies across only the four
+     * members a caller can act on and names the ending explicitly.</p>
+     *
+     * <p>The {@code transactionId} is read from the receipt rather than from the map, because the map has no
+     * field for it - the source never displays the generated identifier - and it is present only when a
+     * payment actually completed. For the two no-write endings the receipt is absent and the member is
+     * {@code null}, which is the honest answer: nothing was written, so nothing was assigned an identifier.</p>
+     *
+     * <p>For the cancelled ending the account and balance members come back blank rather than echoed. That is
+     * faithful, not lossy: {@code INITIALIZE-ALL-FIELDS} at {@code app/cbl/COBIL00C.cbl:560}-{@code :566}
+     * moves {@code SPACES} into {@code ACTIDINI}, {@code CURBALI} and {@code CONFIRMI} before
+     * {@code CLEAR-CURRENT-SCREEN} sends the map at {@code :555}, so the operator was shown an empty screen.
+     * Echoing the submitted identifier back would invent data the source deliberately erased.</p>
+     *
+     * <p>Side effects: none. The method reads members of the argument and constructs a value.</p>
+     *
+     * @param result  the retained outcome of the operation; never null.
+     * @param outcome the API-native ending to publish; never null.
+     * @return the response body, never null
+     * @throws FatalProcessingException when the outcome sent no map, which is unreachable through the
+     * authored service and is treated as an abend rather than as an empty body
+     */
+    private static BillPaymentResponse projectResponse(final BillPaymentService.BillPaymentResult result,
+                                                      final BillPaymentResponse.Outcome outcome) {
+
+        final BillPaymentService.BillPaymentScreen screen = screenOf(result);
+        final BillPaymentService.PaymentReceipt receipt = result.receipt();
+        return new BillPaymentResponse(outcome, screen.accountId(), screen.currentBalance(),
+                receipt == null ? null : receipt.transactionId(), screen.errorMessage());
+    }
+
+    /**
      * Extracts the typed failure that the operation retained, so the handler can rethrow it for mapping.
      *
      * <p>Every outcome other than a settled payment and a confirmation prompt is a failure, and the service
@@ -853,7 +956,8 @@ public class BillingController {
         LOG.warn("Refused transaction {} with 400 for field {} and failure kind {}", TRANSACTION_ID,
                 rejection.getFieldName(), rejection.getFailureKind());
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
@@ -867,16 +971,21 @@ public class BillingController {
      * lax: the legacy move of a non numeric or over long value left the key unusable and fell through to the
      * not found arm, so the target reproduces the same destination.
      *
-     * <p>The record type is published because it is a closed domain label. The record key is deliberately
-     * withheld: it is the submitted account identifier, and echoing whether a given identifier exists would
-     * turn a failure response into an enumeration oracle.
+     * <p><strong>Neither the record type nor the record key is published, and the detail is fixed.</strong>
+     * The key is the submitted account identifier, and echoing whether a given identifier exists would turn a
+     * failure response into an enumeration oracle. The type is a closed domain label, but the domain it is
+     * closed over is the set of logical file names, so publishing it named the dataset behind the lookup. The
+     * detail is {@value #NOT_FOUND_PROBLEM_DETAIL} rather than the exception's message because this type is
+     * one of the five {@code FileStatusMapper} can compose, and a rule that depended on which service raised
+     * it would be a whole-program property no reader of this file could check. All of it reaches the
+     * {@code WARN} log, and the correlation identifier in the body reaches that line.
      *
      * <p>End of file, status {@code '10'}, is not a failure and never reaches here. It is the empty
      * transaction file path at {@code app/cbl/COBIL00C.cbl:487-488}, which moves zeros into the identifier so
      * the first generated identifier becomes one, and it completes as a settled payment.
      *
      * @param absence the absent record, carrying the legacy caption and the closed domain record type.
-     * @return {@code 404 Not Found} with a problem body naming the record type but never the key
+     * @return {@code 404 Not Found} with a problem body naming neither the record type nor the key
      */
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(final RecordNotFoundException absence) {
@@ -884,16 +993,15 @@ public class BillingController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle(NOT_FOUND_PROBLEM_TITLE);
 
-        final String absenceMessage = absence.getMessage();
-        if (absenceMessage != null) {
-            problem.setDetail(absenceMessage);
-        }
-        absence.recordType().ifPresent(recordType -> problem.setProperty(RECORD_TYPE_PROPERTY, recordType));
+        problem.setDetail(NOT_FOUND_PROBLEM_DETAIL);
 
+        // The record type is logged, not returned. It is populated with a logical file name - ACCTDAT,
+        // CCXREF - so returning it published the dataset behind the operation.
         LOG.warn("Refused transaction {} with 404 for record type {}", TRANSACTION_ID,
                 absence.recordType().orElse(null));
 
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(withPublicEnvelope(problem, ERROR_CODE_NOT_FOUND));
     }
 
     /**
@@ -905,18 +1013,20 @@ public class BillingController {
      * two concurrent operators. The migration keeps the algorithm rather than substituting a database
      * sequence, because a sequence would generate different identifiers and break the parity comparison, so a
      * collision must be reported rather than masked. The legacy caption for the condition is
-     * {@code 'Tran ID already exist...'} at {@code app/cbl/COBIL00C.cbl:536}; it is relayed when present, and
-     * a retry instruction stands in when it is not.
+     * {@code 'Tran ID already exist...'} at {@code app/cbl/COBIL00C.cbl:536}; the service surfaces it on the
+     * screen result of the exchange, and this failure body carries the fixed retry instruction instead, for
+     * the same type-based reason as the not-found mapper above.
      *
-     * <p>The logical file is published because it is a closed domain dataset label. The colliding key is
-     * withheld, on the same reasoning that withholds the record key on the previous mapper.
+     * <p><strong>Neither the logical file nor the colliding key is published.</strong> The key is withheld on
+     * the same reasoning as the record key on the previous mapper, and the dataset label is withheld because a
+     * closed domain of logical file names is still a map of the store. Both reach the {@code WARN} log.
      *
      * <p>Troubleshooting: a repeat of this status under load is the race, not a defect, and the remedy is to
      * retry the operation. Nothing was written, because the insert and the balance update share one unit of
      * work and the constraint violation rolled both back.
      *
      * @param collision the colliding insert, carrying the dataset whose primary key rejected the write.
-     * @return {@code 409 Conflict} with a problem body naming the dataset but never the colliding key
+     * @return {@code 409 Conflict} with a problem body naming neither the dataset nor the colliding key
      */
     @ExceptionHandler(DuplicateRecordException.class)
     public ResponseEntity<ProblemDetail> handleDuplicateRecord(final DuplicateRecordException collision) {
@@ -924,15 +1034,15 @@ public class BillingController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.CONFLICT);
         problem.setTitle(DUPLICATE_PROBLEM_TITLE);
 
-        final String collisionMessage = collision.getMessage();
-        problem.setDetail(collisionMessage == null ? DUPLICATE_PROBLEM_DETAIL : collisionMessage);
-        problem.setProperty(LOGICAL_FILE_PROPERTY, collision.getLogicalFile());
+        problem.setDetail(DUPLICATE_PROBLEM_DETAIL);
 
+        // The logical file is logged, not returned.
         LOG.warn("Refused transaction {} with 409 on dataset {}: the retained max plus one identifier "
                 + "generation of app/cbl/COBIL00C.cbl:211-218 collided and the unit of work rolled back",
                 TRANSACTION_ID, collision.getLogicalFile());
 
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(withPublicEnvelope(problem, ERROR_CODE_DUPLICATE));
     }
 
     /**
@@ -943,8 +1053,9 @@ public class BillingController {
      * succeed while the caller changes nothing.
      *
      * <p>The detail is fixed rather than relayed, because a server side failure must not narrate infrastructure
-     * back to a caller. The logical resource name is published when the raising site identified one, since a
-     * dataset label is a closed domain value and is exactly what an operator needs in order to act.
+     * back to a caller - and for the same reason the logical resource name is no longer published either. It is
+     * exactly what an operator needs in order to act, so it is written to the {@code ERROR} log where an
+     * operator can read it, and the caller receives the correlation identifier that joins the two.
      *
      * <p>Troubleshooting: confirm the datastore that replaced the account, cross reference and transaction
      * clusters is reachable and that the schema the migrations own has been applied. The composite health
@@ -958,7 +1069,7 @@ public class BillingController {
      * cited rather than untracked, which is what Rule 1 Clause B requires of anything retained.
      *
      * @param unavailable the unavailable dataset, optionally carrying the logical resource name.
-     * @return {@code 503 Service Unavailable} with a fixed problem body naming only the dataset
+     * @return {@code 503 Service Unavailable} with a fixed problem body that names no dataset
      */
     @ExceptionHandler(FileUnavailableException.class)
     public ResponseEntity<ProblemDetail> handleFileUnavailable(final FileUnavailableException unavailable) {
@@ -966,12 +1077,13 @@ public class BillingController {
         final ProblemDetail problem =
                 ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, UNAVAILABLE_PROBLEM_DETAIL);
         problem.setTitle(UNAVAILABLE_PROBLEM_TITLE);
-        unavailable.resourceName().ifPresent(resource -> problem.setProperty(LOGICAL_FILE_PROPERTY, resource));
 
+        // The dataset name is logged, not returned.
         LOG.error("Transaction {} could not open dataset {}: file status 35", TRANSACTION_ID,
                 unavailable.resourceName().orElse(null), unavailable);
 
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
     }
 
     /**
@@ -989,18 +1101,22 @@ public class BillingController {
      * both the unavailable dependency above and the abend below. Rule 1 Clause B requires the failure modes to
      * be distinguishable, and three different statuses for three different causes is how that is honoured.
      *
-     * <p>The four character expanded status is published verbatim as it was rendered at construction. That
-     * rendering is the contract of {@code 9910-DISPLAY-IO-STATUS}, reproduced so a diagnosis made against the
-     * legacy log can be made against this response unchanged. The dataset and the attempted operation are
-     * published for the same reason, and all three are closed domain values that carry no row content.
+     * <p>The four character expanded status is emitted verbatim as it was rendered at construction, together
+     * with the dataset and the attempted operation - <strong>on the {@code ERROR} log, not in the
+     * response</strong>. That rendering is the contract of {@code 9910-DISPLAY-IO-STATUS}, reproduced so a
+     * diagnosis made against the legacy log can be made against this application's log unchanged. None of the
+     * three carries row content, but the three together say which internal dataset failed which verb with
+     * which status, so the response carries {@value #ERROR_CODE_IO_FAILURE} and the correlation identifier
+     * instead.
      *
-     * <p>Troubleshooting: read the expanded status first, then the operation and the dataset. Nothing was
+     * <p>Troubleshooting: from the correlation identifier find the log line, then read the expanded status
+     * first, then the operation and the dataset. Nothing was
      * committed, because the insert and the balance update share one unit of work.
      *
      * @param failure the failed access, carrying the expanded status and, when the raising site identified
      * them, the dataset and the attempted operation.
-     * @return {@code 502 Bad Gateway} with a fixed problem body naming the expanded status, the dataset and
-     * the operation
+     * @return {@code 502 Bad Gateway} with a fixed problem body that names none of the expanded status, the
+     * dataset or the operation
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccessFailure(final FileAccessException failure) {
@@ -1008,35 +1124,30 @@ public class BillingController {
         final ProblemDetail problem =
                 ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, ACCESS_PROBLEM_DETAIL);
         problem.setTitle(ACCESS_PROBLEM_TITLE);
-        problem.setProperty(IO_STATUS_PROPERTY, failure.getExpandedStatus());
 
-        final String logicalFileName = failure.getLogicalFileName();
-        if (logicalFileName != null) {
-            problem.setProperty(LOGICAL_FILE_PROPERTY, logicalFileName);
-        }
-        final String operation = failure.getOperation();
-        if (operation != null) {
-            problem.setProperty(OPERATION_PROPERTY, operation);
-        }
-
+        // The expanded status, the dataset and the operation are logged, not returned: together they say
+        // which internal dataset failed which verb and how.
         LOG.error("Transaction {} failed I/O on dataset {} during {}: expanded status {}", TRANSACTION_ID,
-                logicalFileName, operation, failure.getExpandedStatus(), failure);
+                failure.getLogicalFileName(), failure.getOperation(), failure.getExpandedStatus(), failure);
 
-        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
     }
 
     /**
      * Maps an abend onto {@code 500 Internal Server Error}.
      *
      * <p>This reproduces the terminal path of the corpus, where an unexpected file status rendered a
-     * diagnostic and called the language environment abend service. The abend code is published as
-     * {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE} and the return code as
-     * {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}, which are the values the batch
-     * corpus set, so an online abend and a batch abend are recognisable as the same class of event.
+     * diagnostic and called the language environment abend service. The abend code
+     * {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE} and the return code
+     * {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE} are the values the batch corpus
+     * set, so an online abend and a batch abend are recognisable as the same class of event <em>on the
+     * log</em>, which is now the only place either appears.
      *
-     * <p>The detail is fixed. The culprit program and the abend reason are logged rather than published,
-     * because a caller has no use for an internal program name and Rule 1 Clause D keeps internals out of
-     * responses. The root cause travels with the log record, never with the body, which is consistent with the
+     * <p>The detail is fixed. The abend code, the return code, the culprit program and the abend reason are all
+     * logged rather than published, because a caller has no use for an internal program name or an internal
+     * termination code and Rule 1 Clause D keeps internals out of responses. The root cause travels with the log
+     * record, never with the body, which is consistent with the
      * central error configuration that suppresses messages, stack traces and exception names on error
      * responses.
      *
@@ -1054,14 +1165,14 @@ public class BillingController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // Logged, not returned: 999 and 12 are internals of the terminating path.
+        LOG.error("Transaction {} abended: code {} returnCode {} culprit {} reason {}", TRANSACTION_ID,
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("Transaction {} abended: code {} culprit {} reason {}", TRANSACTION_ID, carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -1091,6 +1202,38 @@ public class BillingController {
 
         LOG.error("Transaction {} failed with a typed CardDemo exception", TRANSACTION_ID, failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
     }
 }

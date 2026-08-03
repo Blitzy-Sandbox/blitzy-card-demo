@@ -34,12 +34,14 @@ import com.cardemo.model.entity.Customer;
 
 import jakarta.persistence.LockModeType;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -91,7 +93,7 @@ import java.util.Optional;
  *   <li>Traceability anchor: commit {@code 7756d89}. The corpus under {@code app/} is
  *       frozen and byte-for-byte read-only; it is simultaneously the parity oracle, the
  *       field-contract source and the traceability anchor.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>One entity, two copybooks</h2>
  * <p>
@@ -159,7 +161,7 @@ import java.util.Optional;
  *       inventory is {@code OPEN}, {@code READ} and {@code CLOSE} only — zero {@code WRITE},
  *       zero {@code REWRITE}, zero {@code DELETE} — so it becomes a read-only verification
  *       step consumed by {@code com.cardemo.batch.readers.CustomerReader}.</li>
- * </ul>
+ *   </ul>
  * <p>
  * <strong>Determinism of that scan matters, and no bespoke method is needed to get it.</strong>
  * {@code app/cbl/CBCUS01C.cbl:L30-L31} declares {@code ORGANIZATION IS INDEXED} with
@@ -222,7 +224,7 @@ import java.util.Optional;
  *       {@code com.cardemo.exception.ConcurrentUpdateException}.</li>
  *   <li>{@code LOCKED-BUT-UPDATE-FAILED} ({@code :L523-L524}) — the row was locked but the
  *       rewrite itself failed.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Asymmetric rollback — preserved, not corrected</h2>
  * <p>
@@ -268,7 +270,7 @@ import java.util.Optional;
  *       whereas the snapshot holds the same date without separators, so its components sit at
  *       offsets 1, 5 and 7. A naive whole-string comparison of the two would report a change on
  *       <em>every single request</em>, making the endpoint permanently unusable.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Personally identifiable information — the strictest constraint on this file</h2>
  * <p>
@@ -308,8 +310,7 @@ import java.util.Optional;
  *       outright rather than degrading, which is the intended behaviour.</li>
  *   <li><strong>{@code spring.jpa.open-in-view: false}.</strong> Results are returned fully
  *       initialised; nothing is lazily dereferenced outside a transaction.</li>
- *   <li><strong>No index on {@code customer}.</strong> {@code V2__create_indexes.sql} (planned; absent at this
- *       commit) is to create
+ *   <li><strong>No index on {@code customer}.</strong> {@code V2__create_indexes.sql} creates
  *       exactly three non-unique indexes — on the card account identifier, the cross-reference
  *       account identifier and the transaction processing timestamp — reproducing the three VSAM
  *       alternate indexes. The customer cluster has no alternate index in
@@ -337,7 +338,7 @@ import java.util.Optional;
  *       in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. Stating it plainly is the
  *       honest discharge of Rule 1 Clause A's requirement to justify performance tradeoffs rather
  *       than to make undocumented ones.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Recorded finding: the orphan customer cluster is not a target</h2>
  * <p>
@@ -358,13 +359,14 @@ import java.util.Optional;
  * disclosed rather than guessed at.
  * </p>
  * <ol>
- *   <li><strong>Not available:</strong> two of the three Flyway migrations,
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}. Measured 1 August 2026,
- *       {@code V1__create_schema.sql} <strong>is present</strong> and declares
- *       {@code CREATE TABLE customer} with {@code ck_customer_ssn_numeric}.
- *       What is needed: those two remaining files under
- *       {@code src/main/resources/db/migration}. Because {@code ddl-auto: validate} is mandated in
- *       every planned profile, the mapping asserted by {@code com.cardemo.model.entity.Customer},
+ *   <li><strong>All three Flyway migrations are present.</strong> An earlier revision of this bullet
+ *       recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available; that is no
+ *       longer true and the claim is withdrawn. {@code V1__create_schema.sql} declares
+ *       {@code CREATE TABLE customer} with {@code ck_customer_ssn_numeric}, {@code V2} correctly declares
+ *       no index for this table because {@code CUSTDATA} has no alternate index in
+ *       {@code app/catlg/LISTCAT.txt}, and {@code V3} seeds it from
+ *       {@code app/data/ASCII/custdata.txt}. Because {@code ddl-auto: validate} is set in all four
+ *       profiles, which are present too, the mapping asserted by {@code com.cardemo.model.entity.Customer},
  *       which is also what {@code V1} declares — table
  *       {@code customer}; {@code cust_id NUMERIC(9)} as primary key; the fixed-width character
  *       columns for names, address lines, state, country, postal code, telephone numbers,
@@ -389,7 +391,7 @@ import java.util.Optional;
  *       ground it: a legacy artefact that actually raises the condition — none exists at
  *       {@code 7756d89}, so it is documented as specification-derived rather than presented as
  *       migrated behaviour.</li>
- * </ol>
+ *   </ol>
  *
  * @see com.cardemo.model.entity.Customer
  */
@@ -406,4 +408,39 @@ public interface CustomerRepository extends JpaRepository<Customer, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select c from Customer c where c.customerId = :customerId")
     Optional<Customer> findByIdForUpdate(@Param("customerId") Long customerId);
+
+    /**
+     * Reads the next window of the key sequence, positioned by the last key already consumed.
+     *
+     * <p><strong>Finding, Medium severity - the sequential scan positioned by page number.</strong> The
+     * verification readers used {@code findAll(Pageable)}, which positions a window with SQL
+     * {@code OFFSET}. An {@code OFFSET} is not a seek: the engine produces and discards every preceding
+     * row, so the cost of window <em>n</em> grows with <em>n</em> and a full scan is quadratic in the row
+     * count. A keyset predicate is a single index descent whose cost is constant per window, which is also
+     * what the legacy {@code READ NEXT} actually is - VSAM resumes from the key it last returned and never
+     * re-reads the front of the cluster. The page-number form modelled something the source does not do.
+     *
+     * <p>Two further costs went with it. {@code findAll(Pageable)} returns a {@code Page}, so every window
+     * carried a {@code select count(*)} whose result the readers discarded; and the {@code OFFSET} form
+     * re-reads rows a concurrent insert may have shifted, which can skip or duplicate a row across window
+     * boundaries. A {@code List} keyed on the last consumed key has neither problem.
+     *
+     * <p><strong>The seed value.</strong> The first window is requested with any value strictly below every
+     * legal key. {@code CUST-ID} is {@code PIC 9(09)} at {@code app/cpy/CVCUS01Y.cpy:L5} - unsigned display,
+     * so its least legal value is zero, which {@code com.cardemo.model.entity.Customer} enforces as its
+     * minimum - and the column is {@code NUMERIC(9) NOT NULL} at
+     * {@code src/main/resources/db/migration/V1__create_schema.sql:609}. Any negative seed is therefore
+     * provably below the whole key space; the reader passes {@code -1}.
+     *
+     * <p>The {@code Pageable} supplies the window size only. Its page number must be zero, because the
+     * predicate - not an offset - is what positions the window, and the ordering is fixed by the method
+     * name so it cannot be varied by a caller-supplied {@code Sort}.
+     *
+     * @param customerId the customer identifier of the last row already consumed, or a negative value to
+     *     start at the beginning of the key sequence.
+     * @param pageable the window size; page number zero.
+     * @return the next window in ascending key order, never {@code null} and empty once the scan is
+     *     exhausted, which is the readers' end-of-file condition.
+     */
+    List<Customer> findByCustomerIdGreaterThanOrderByCustomerIdAsc(Long customerId, Pageable pageable);
 }

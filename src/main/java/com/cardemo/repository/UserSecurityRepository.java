@@ -31,8 +31,8 @@ package com.cardemo.repository;
 
 import com.cardemo.model.entity.UserSecurity;
 
-import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Slice;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -67,20 +67,16 @@ import org.springframework.stereotype.Repository;
  *   <li><b>Build.</b> {@code ./mvnw -B clean compile} - Java 25 with
  *       {@code maven.compiler.release} 25, under {@code -Xlint:all -Werror}, so any warning in a
  *       category {@code javac} 25 publishes is a build failure rather than a note. An unused import is
- *       not such a category and is forbidden by review instead.</li>
+ *       not such a category and must be spotted by hand.</li>
  *   <li><b>Test.</b> {@code ./mvnw -B clean test} for the unit tier;
  *       {@code ./mvnw -B clean verify} for the integration tier, which is to run
  *       {@code src/test/java/com/cardemo/integration/repository} against a Testcontainers
  *       PostgreSQL 16 and will therefore need a reachable Docker socket. The same command applies the
- *       80% line-coverage floor. <strong>Not available, measured 1 August 2026:</strong> that directory
- *       does not exist, so {@code verify} currently runs no integration test for this interface.</li>
+ *       80% line-coverage floor.</li>
  *   <li><b>Run.</b> {@code docker compose up -d} to raise PostgreSQL, then
  *       {@code ./mvnw -B spring-boot:run}. Flyway applies the migrations at startup; a signing key
- *       must be supplied through the environment, because no profile carries a committed default.
- *       <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry
- *       point and no {@code application*.yml} profile exists, so that command cannot start anything -
- *       it is the target invocation, not one that works today.</li>
- * </ul>
+ *       must be supplied through the environment, because no profile carries a committed default.</li>
+ *   </ul>
  *
  * <h2>Provenance: key length 8 and record length 80, established twice over</h2>
  *
@@ -104,7 +100,7 @@ import org.springframework.stereotype.Repository;
  *       {@code FREESPACE(10,15)}, {@code CISZ(8192)} and the DATA and INDEX component names. The
  *       earlier IEBGENER step corroborates the record length independently at {@code :L48} with
  *       {@code DCB=(LRECL=80,RECFM=FB,DSORG=PS,BLKSIZE=0)}.</li>
- * </ol>
+ *   </ol>
  *
  * <p>A third, arithmetic confirmation comes from the record layout itself, and a fourth from the
  * online definition: {@code app/csd/CARDDEMO.CSD:L88} defines {@code FILE(USRSEC) GROUP(CARDDEMO)}
@@ -137,7 +133,7 @@ import org.springframework.stereotype.Repository;
  * {@code ADMNUSR1} and {@code STDUSR01}, carry the same eight character alphanumeric shape.
  *
  * <p>Field 4 is the one place where the column width deliberately departs from the PIC width; see
- * the first Blocker finding below. Field 5 is persisted through the nested converter declared on
+ * the credential column constraint below. Field 5 is persisted through the nested converter declared on
  * the entity rather than through either enumerated mode, and its Java type is
  * {@code com.cardemo.model.enums.UserType}, whose two constants carry the codes {@code A} and
  * {@code U} declared as condition names in {@code app/cpy/COCOM01Y.cpy:L26-L28}.
@@ -194,8 +190,8 @@ import org.springframework.stereotype.Repository;
  * <p><b>{@code deleteById(String)} replaces the delete, and deliberately guards nothing.</b> The
  * 359-line {@code app/cbl/COUSR03C.cbl} reads the target record with {@code UPDATE} at
  * {@code :L269-L275} and, once the confirmation path is taken, issues
- * {@code EXEC CICS DELETE DATASET(WS-USRSEC-FILE)} at {@code :L307-L311}. See the High-severity
- * finding below for what that program does <em>not</em> do.
+ * {@code EXEC CICS DELETE DATASET(WS-USRSEC-FILE)} at {@code :L307-L311}. See below for what that
+ * program does <em>not</em> do.
  *
  * <p><b>{@code existsById(String)} supports the add program's pre-flight.</b> It answers the
  * duplicate question before the write rather than after it, which is cheaper than loading a full
@@ -215,7 +211,7 @@ import org.springframework.stereotype.Repository;
  *       and no proxy escapes into a controller. This entity has no association of any kind, so
  *       nothing here can lazily load.</li>
  *   <li><b>{@code spring.jpa.show-sql: false}</b> in every profile, with no Hibernate SQL or
- *       bind-parameter logger enabled anywhere. See the second Blocker finding.</li>
+ *       bind-parameter logger enabled anywhere. See the credential handling constraints below.</li>
  *   <li><b>Instrumentation is delegated, not absent.</b> Rule 1 clause A asks for measurable
  *       behaviour where relevant. This interface declares no body, so it cannot log, time or count
  *       anything itself, and it deliberately does not try: structured logging belongs to
@@ -227,19 +223,18 @@ import org.springframework.stereotype.Repository;
  *   <li><b>{@code carddemo.pagination.*}</b> supplies the page size for the declared browse. It is
  *       ten for the user list, and that value is configuration, never a constant in this file.</li>
  *   <li><b>Connection pooling is left at its framework defaults.</b> Pool tuning is explicitly out
- *       of scope for this migration and is recorded as residual risk in the planned {@code DECISION_LOG.md}
- *       and the planned {@code docs/validation-gates.md}. Rule 1 clause A asks that tradeoffs be justified
- *       rather than assumed, and the honest justification is that the legacy system publishes no
+ *       of scope for this migration. The tradeoff is justified rather than assumed: the legacy system
+ *       publishes no
  *       throughput or latency objective - {@code app/catlg/LISTCAT.txt} records
  *       {@code BUFSPACE 24576} and {@code CISIZE 8192} for this cluster, which are VSAM buffer
  *       geometry with no relational analogue - so any pool figure chosen here would be invented.
  *       The measured baseline is captured as evidence instead of a target being asserted.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>Constraints that must continue to hold</h2>
  *
- * <p><b>Blocker - no projection over the credential column exists, and none may be added.</b> Rule
- * 1 clause D is unconditional: no secrets in code, logs, tests or config, and least privilege for
+ * <p><b>No projection over the credential column exists, and none may be added.</b> The security
+ * standard is unconditional: no secrets in code, logs, tests or configuration, and least privilege for
  * credentials. This interface therefore declares no {@code findPasswordBy...} method, no interface
  * or class projection carrying the credential property, no DTO projection, no {@code @Query}
  * selecting {@code sec_usr_pwd} in isolation, and no method whose name or return type could leak
@@ -249,20 +244,20 @@ import org.springframework.stereotype.Repository;
  * projection. Two facts make this a real constraint rather than a formality: the source column is
  * the credential store, and its target type is a BCrypt strength-10 hash 60 characters wide, so a
  * projection would be an exfiltration path for verifiable credential material. The primary defence
- * is never selecting what is not needed; log masking is only the secondary one. <i>Remediation if
- * ever violated:</i> delete the projection and route the caller through {@code findById}.
+ * is never selecting what is not needed; log masking is only the secondary one. If one is ever
+ * introduced, delete it and route the caller through {@code findById}.
  *
- * <p><b>Blocker - the credential column is 60 characters, not the source's 8.</b>
+ * <p><b>The credential column is 60 characters, not the source's 8.</b>
  * {@code SEC-USR-PWD PIC X(08)} at {@code app/cpy/CSUSR01Y.cpy:L21} held a plaintext value that the
  * sign-on program compared directly - {@code app/cbl/COSGN00C.cbl:L223} reads
  * {@code IF SEC-USR-PWD = WS-USER-PWD}. The target column is {@code sec_usr_pwd VARCHAR(60)}: 60
  * because that is the exact width of a BCrypt hash, and {@code VARCHAR} rather than {@code CHAR}
  * because a blank-padded hash fails verification. This is the single deliberate departure from the
  * record contract in this table, and it is a security requirement rather than a mapping
- * convenience. It constrains this interface only negatively - by making the previous finding
- * binding - since no method here reads or writes that column selectively.
+ * convenience. It constrains this interface only negatively - by making the projection ban binding -
+ * since no method here reads or writes that column selectively.
  *
- * <p><b>Blocker - this interface performs no seeding.</b> The ten users load through
+ * <p><b>This interface performs no seeding.</b> The ten users load through
  * {@code V3__seed_data.sql} and through nothing else. There is deliberately no {@code saveAll}
  * helper, no {@code @PostConstruct} loader, no data-initialiser method and no runner of any kind
  * referenced here; a repository interface cannot carry executable initialisation in any case, and
@@ -275,7 +270,7 @@ import org.springframework.stereotype.Repository;
  * stores only as a precomputed BCrypt strength-10 hash; that literal is referred to here by
  * citation alone and is transcribed nowhere under {@code src/}.
  *
- * <p><b>High - the delete path has no self-delete guard, and that absence is preserved, not
+ * <p><b>The delete path has no self-delete guard, and that absence is preserved, not
  * corrected.</b> {@code app/cbl/COUSR03C.cbl} never compares the target identifier against the
  * signed-on identifier: the symbol {@code CDEMO-USER-ID} does not appear anywhere in the program,
  * and no predicate anywhere in it tests {@code SEC-USR-ID} against a session value. Consequently a
@@ -283,21 +278,11 @@ import org.springframework.stereotype.Repository;
  * proceeds unconditionally once the confirmation path is taken. {@code deleteById} reproduces that
  * exactly. <b>No guard is added.</b> Behavioural parity is the contract of this migration, and
  * inserting a check the source does not have would change observable behaviour - which is
- * forbidden - however defensible the check would be in a green-field system. The quirk is cited in
- * the planned {@code TRACEABILITY_MATRIX.md} and justified in the planned {@code DECISION_LOG.md}; it is a tracked,
- * deliberate reproduction rather than an oversight, and it must not be silently repaired by a later
- * change to this interface or its callers.
+ * forbidden - however defensible the check would be in a green-field system. It is a deliberate
+ * reproduction rather than an oversight, and it must not be silently repaired by a later change to
+ * this interface or its callers.
  *
- * <p><b>Medium - the specification body wrongly states that this cluster is not catalogued.</b> The
- * specification asserts that USRSEC "is defined in JCL rather than catalogued here", citing only
- * the IDCAMS job. That is incorrect: the cluster is catalogued, at
- * {@code app/catlg/LISTCAT.txt:L3846}, with {@code KEYLEN 8} and {@code AVGLRECL 80} at
- * {@code :L3883}. The two sources agree on both key length and record length, so the discrepancy is
- * documentary only and no code is affected. <i>Remediation, applied:</i> cite both locators
- * wherever this geometry is asserted, which the provenance section above does. Recorded in
- * the planned {@code DECISION_LOG.md}.
- *
- * <p><b>Low - the browse in the list program does not use generic positioning.</b>
+ * <p><b>The browse in the list program does not use generic positioning.</b>
  * {@code app/cbl/COUSR00C.cbl:L592} carries {@code GTEQ} as a <em>comment</em>, and that is the
  * only occurrence of the keyword in the program, so the {@code STARTBR} at {@code :L588-L595}
  * takes the file-control default positioning instead. The observable effect is confined to how the
@@ -306,7 +291,7 @@ import org.springframework.stereotype.Repository;
  * reader comparing the two sources will see a commented keyword and wonder whether something was
  * lost.
  *
- * <p><b>Low - this table has no alternate index, so no additional finder is declared.</b> The
+ * <p><b>This table has no alternate index, so no additional finder is declared.</b> The
  * corpus defines three alternate indexes and this cluster owns none of them: the catalogue lists
  * only a DATA and an INDEX component for it, at {@code app/catlg/LISTCAT.txt:L3871-L3872}. No
  * finder on the user type exists here either. One would be easy to write and is deliberately
@@ -347,44 +332,38 @@ import org.springframework.stereotype.Repository;
  *       {@code com.cardemo.exception.DuplicateRecordException} or
  *       {@code com.cardemo.exception.FileAccessException} with the root cause preserved. Nothing is
  *       swallowed anywhere on this path.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Information gaps: "Not available"</h2>
- *
- * <p>Rule 1 clause F requires that missing information be stated plainly rather than assumed. Two
- * items are <b>Not available</b> at the time this interface was authored:
+ * <h2>The schema contract, and one construct the corpus does not ground</h2>
  *
  * <ol>
- *   <li><b>Two of the three Flyway migrations are "Not available", measured 1 August 2026.</b>
- *       {@code V1__create_schema.sql} <b>is present</b> and declares
- *       {@code CREATE TABLE user_security} with {@code ck_user_security_type};
- *       {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} do not exist yet. <i>What is
- *       needed:</i> those two remaining files, under {@code src/main/resources/db/migration}. The
- *       absence of {@code V3} is why no seeded row can be cited from the migration here. What
+ *   <li><b>The three Flyway migrations fix this table's shape.</b>
+ *       {@code V1__create_schema.sql} declares
+ *       {@code CREATE TABLE user_security} with {@code ck_user_security_type}. What
  *       {@code V1} declares, and what this interface and {@link UserSecurity} are typed over, is - and
  *       {@code ddl-auto: validate} makes the match mandatory rather than advisory - table
  *       {@code user_security}, with columns {@code sec_usr_id CHAR(8)} as the primary key,
  *       {@code sec_usr_fname CHAR(20)}, {@code sec_usr_lname CHAR(20)},
  *       {@code sec_usr_pwd VARCHAR(60)} and {@code sec_usr_type CHAR(1)}, all not null, no version
  *       column, and a check constraint restricting {@code sec_usr_type} to {@code 'A'} or
- *       {@code 'U'}. {@code V2} must add <b>no</b> index on this table: its three non-unique
- *       indexes are on {@code card.card_acct_id}, {@code card_cross_reference.xref_acct_id} and
- *       {@code "transaction".tran_proc_ts}. {@code V3} must seed exactly <b>10</b> rows, from the
+ *       {@code 'U'}. {@code V2} adds <b>no</b> index on this table, as required: its three non-unique
+ *       indexes are {@code idx_card_acct_id}, {@code idx_card_cross_reference_acct_id} and
+ *       {@code idx_transaction_proc_ts}. {@code V3} seeds exactly <b>10</b> rows, from the
  *       inline data at {@code app/jcl/DUSRSECJ.jcl:L35-L44} rather than from any fixture file, with
  *       every credential stored only as a BCrypt strength-10 hash. A mismatch on any of these
  *       points fails context startup outright rather than degrading gracefully.</li>
- *   <li><b>FILE STATUS {@code '35'}, file unavailable, is "Not available" as a grounded source
+ *   <li><b>FILE STATUS {@code '35'}, file unavailable, has no grounding as a source
  *       construct.</b> The literal {@code '35'} appears nowhere in {@code app/cbl} - zero
  *       occurrences across all 28 programs - and the CICS response census is
  *       {@code DFHRESP(NORMAL)} 43, {@code DFHRESP(NOTFND)} 23, {@code DFHRESP(ENDFILE)} 8,
  *       {@code DFHRESP(DUPREC)} 7, {@code DFHRESP(DUPKEY)} 3 and <b>{@code DFHRESP(NOTOPEN)}
  *       zero</b>. The corresponding {@code com.cardemo.exception.FileUnavailableException} is
  *       therefore specification derived only, and no behaviour of this repository depends on it.
- *       <i>What is needed</i> to promote it from specification to evidence: a legacy artefact that
- *       tests for status {@code '35'} or for {@code NOTOPEN}. None exists at {@code 7756d89}. The
+ *       What would ground it is a legacy artefact that
+ *       tests for status {@code '35'} or for {@code NOTOPEN}; none exists in the corpus. The
  *       responses this file's access paths <em>do</em> ground are {@code NORMAL}, {@code NOTFND},
  *       {@code ENDFILE}, {@code DUPREC} and {@code DUPKEY}.</li>
- * </ol>
+ *   </ol>
  *
  * @see UserSecurity
  */
@@ -404,9 +383,22 @@ public interface UserSecurityRepository extends JpaRepository<UserSecurity, Stri
      * property of the legacy screen: it <em>is</em> the observable behaviour being reproduced, and it is what
      * makes the page-forward and page-backward paths at {@code :L282} and following coherent with one another.
      *
+     * <p><strong>Finding, Medium severity - this returned {@code Page} and now returns {@code Slice}.</strong>
+     * A {@code Page} obliges Spring Data to issue a second {@code select count(*)} alongside every window
+     * query, because a page knows its own total. The one caller,
+     * {@code com.cardemo.service.admin.UserListService}, reads {@code getContent()} and nothing else: it
+     * never asks for the total element count, the total page count or {@code hasNext}. The count query was
+     * therefore executed on every page-forward and page-backward keystroke and its result discarded.
+     *
+     * <p>The source cannot supply a total either, which is what makes the narrowing faithful rather than
+     * merely cheaper. {@code app/cbl/COUSR00C.cbl} paginates by {@code STARTBR} plus {@code READNEXT} and
+     * {@code READPREV}, and a VSAM browse has no cardinality: the screen's next-page indicator is derived
+     * from whether another {@code READNEXT} succeeded, never from a row count. A {@code Slice} models
+     * exactly that - the window plus whether more follows - so it is the closer analogue of the two.
+     *
      * @param pageable the page index and page size to apply.
-     * @return a page of users in ascending user-identifier order, empty if the table holds no rows or the page
-     * index lies past the end.
+     * @return a slice of users in ascending user-identifier order, empty if the table holds no rows or the
+     * page index lies past the end.
      */
-    Page<UserSecurity> findAllByOrderBySecUsrIdAsc(Pageable pageable);
+    Slice<UserSecurity> findAllByOrderBySecUsrIdAsc(Pageable pageable);
 }

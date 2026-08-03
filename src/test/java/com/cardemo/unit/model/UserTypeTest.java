@@ -93,7 +93,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       {@code app/jcl/DUSRSECJ.jcl:L48} declares - the type byte follows 8 + 20 + 20 + 8 = 56 preceding
  *       bytes and therefore sits at record position 57. Across the ten records that byte takes two distinct
  *       values in a five and five split: {@code 'A'} on L35 to L39 and {@code 'U'} on L40 to L44.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -143,7 +143,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Privilege.</strong> This is a pure JVM test. It opens no socket, starts no container, reads
  *       no environment variable, holds no credential and can reach no endpoint, so it needs no privilege to
  *       run and no cleanup after it.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
@@ -174,7 +174,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       exist. A test resource path using it fails at run time with a null stream, not at compile time.
  *       This class loads no fixture and is immune, but the trap is recorded here because this tier is where
  *       it bites.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Evidence, severity and what is not available</h2>
  *
@@ -217,7 +217,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       nullability, constraint name - is <strong>Not available</strong> from the sources this test is
  *       entitled to read, and is deliberately not guessed. To assert it, the schema migration would have to
  *       be supplied and read directly.</li>
- * </ul>
+ *   </ul>
  *
  * @see UserType
  */

@@ -136,8 +136,9 @@ import org.springframework.data.domain.SliceImpl;
  * is collected by neither, so it never runs while the build stays green, both plugins report success
  * and JaCoCo records the code it would have covered as uncovered. Severity <strong>Blocker</strong>;
  * remediation is to keep the {@code ...Test} suffix and stay inside {@code unit/}. The compiler is
- * configured with {@code -Xlint:all} and {@code failOnWarning}, so one unused import fails the build,
- * and JaCoCo 0.8.12 enforces an 80% line floor at {@code verify} with no exclusions.
+ * configured with {@code -Xlint:all} and {@code failOnWarning}, so one raw type or one deprecated call fails
+ * the build - an unused import does not, because {@code javac} 25 publishes no {@code unused} lint key - and
+ * JaCoCo 0.8.12 enforces an 80% line floor at {@code verify} with no exclusions.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -157,8 +158,9 @@ import org.springframework.data.domain.SliceImpl;
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li>A single unused import fails the build outright under {@code -Xlint:all} with
- *       {@code failOnWarning}; the same applies to a raw type or a redundant cast.</li>
+ *   <li>A raw type or a redundant cast fails the build outright under {@code -Xlint:all} with
+ *       {@code failOnWarning}. A single unused import does not, because {@code javac} 25 publishes no
+ *       {@code unused} lint key, so it is caught at review instead.</li>
  *   <li>Replacing the eleventh look-ahead read with a {@code count(*)} query changes the number of
  *       round trips and the observable end-of-file behaviour. Severity <strong>High</strong>.</li>
  *   <li>Unifying this sentinel family with the card list's. {@code COTRN00C} uses an {@code 'N'}
@@ -177,7 +179,7 @@ import org.springframework.data.domain.SliceImpl;
  *       cursor. Severity <strong>High</strong>.</li>
  *   <li>Logging or echoing a full card number, which the transaction record carries at offsets
  *       263-278. Severity <strong>High</strong>.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Low-severity findings preserved rather than refactored away</h2>
  *
@@ -196,19 +198,18 @@ import org.springframework.data.domain.SliceImpl;
  *       The byte-exact assertion here would fail if the space were tidied away.</li>
  *   <li>{@code :L248} says "already at the top" while {@code :L608} says "at the top". Two distinct
  *       literals from two distinct paths, deliberately not consolidated.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The documented conflict, and why parity governs</h2>
  *
- * <p>The prohibition on dead code collides with the mandate to preserve control flow one-for-one.
- * Parity governs, and the prohibition is satisfied on its own terms: what it forbids is an artefact
- * <em>without an owner or tracking reference</em>, and each retained item carries a
- * {@code DECISION_LOG.md} entry, a {@code TRACEABILITY_MATRIX.md} row, the source locator cited above
- * and an explicit intentional-no-op marker on the test that pins it. This file's instances are the
- * eleventh look-ahead read whose record is discarded, the second and unused page counter at
- * {@code :L54}, and the identical {@code Unable to lookup transaction...} literal at three separate
- * sites, none of them consolidated. Deleting any of them would break the paragraph map the
- * scope-coverage gate is proved against.
+ * <p>The prohibition on dead code collides with the mandate to preserve control flow one-for-one. Parity governs, and
+ * the prohibition is satisfied on its own terms: what it forbids is an artefact <em>without an owner or tracking
+ * reference</em>, and each retained item carries an entry in the planned {@code DECISION_LOG.md}, a
+ * {@code TRACEABILITY_MATRIX.md} row, the source locator cited above and an explicit intentional-no-op marker on the
+ * test that pins it. This file's instances are the eleventh look-ahead read whose record is discarded, the second and
+ * unused page counter at {@code :L54}, and the identical {@code Unable to lookup transaction...} literal at three
+ * separate sites, none of them consolidated. Deleting any of them would break the paragraph map the scope-coverage
+ * gate is proved against.
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)

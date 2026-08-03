@@ -119,7 +119,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *           seven, not eight</td>
  *       <td>{@code app/cpy/COCOM01Y.cpy:L43-L44}</td>
  *       <td><strong>No equivalent</strong> - no screen state is retained</td></tr>
- * </table>
+ *   </table>
  *
  * <h2>The claim contract</h2>
  *
@@ -137,7 +137,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       {@link JwtTokenProvider#authorityFor(UserType)}: {@code 'A'} becomes
  *       {@value JwtTokenProvider#ADMIN_AUTHORITY} and {@code 'U'} becomes
  *       {@value JwtTokenProvider#USER_AUTHORITY}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The claim <em>name</em> is never spelled here. It is
  * {@link JwtTokenProvider#ROLE_CLAIM_NAME}, and it is reached only through that constant, shared in intent
@@ -171,7 +171,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <li><strong>Efficiency.</strong> Rule 1 Clause A requires that obvious inefficiencies be avoided. A
  *       database round trip on every authenticated request, to recover data the signed token already
  *       carries verifiably, is the textbook example of one.</li>
- * </ol>
+ *   </ol>
  *
  * <p>The accepted consequence, stated honestly: a role change takes effect only when the caller's current
  * token expires, bounded by the configured token lifetime that {@link JwtTokenProvider} owns. Severity
@@ -255,7 +255,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       than by inspecting message text.</li>
  *   <li><strong>Valid</strong> - decoded, verified, and carrying both required claims. A request-local
  *       {@link SecurityContext} is populated with the subject as principal and exactly one authority.</li>
- * </ol>
+ *   </ol>
  *
  * <p>A fifth condition is folded into the second and third rather than left implicit: a token that decodes
  * and verifies but whose subject or role claim is absent or unrecognised. {@link JwtTokenProvider} reports
@@ -366,7 +366,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       earlier in the chain.</li>
  *   <li><strong>An expired-token outcome immediately after issue.</strong> Clock skew between issuer and
  *       verifier, not a defect in this filter, which performs no time arithmetic of its own.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Information not available</h2>
  *
@@ -382,18 +382,18 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *       per-request identity evidence used instead is
  *       {@code app/cbl/COSGN00C.cbl:L37} ({@code WS-TRANID PIC X(04) VALUE 'CC00'}) together with the
  *       transaction definitions in {@code app/csd/CARDDEMO.CSD}.</li>
- *   <li>{@code com.cardemo.config.SecurityConfig} is <strong>Not available</strong> at the time of
- *       writing: {@code src/main/java/com/cardemo/config} contains no such file, and no
- *       {@link JwtDecoder} bean is declared anywhere in the tree. The decoder construction, the filter
- *       insertion point, the stateless policy and the authorisation rules described above are therefore
- *       contracts asserted from the specification, <strong>not</strong> facts verified against code. What
- *       is needed is {@code src/main/java/com/cardemo/config/SecurityConfig.java} exposing exactly one
- *       symmetric-HMAC decoder bean, inserting this filter into the Spring Security chain after the
- *       context-holder filter, and declaring the stateless policy, the sign-on exemption and the
- *       administrator-only rule for the administration paths. Until it exists this filter compiles and
- *       behaves correctly in isolation but has no decoder to inject at runtime. Severity
- *       <strong>High</strong> as a dependency gap, owned outside this file.</li>
- * </ul>
+ *   <li><strong>Withdrawn: {@code com.cardemo.config.SecurityConfig} is present.</strong> An earlier
+ *       revision of this bullet recorded it as unavailable, said {@code src/main/java/com/cardemo/config}
+ *       contained no such file, and said no {@link JwtDecoder} bean was declared anywhere in the tree.
+ *       All three are false and are withdrawn. That class publishes exactly one symmetric-HMAC
+ *       {@code JwtDecoder} bean built on {@code NimbusJwtDecoder}, composes the
+ *       {@code SecurityFilterChain} that inserts this filter, and declares the stateless session policy,
+ *       the sign-on exemption and the administrator-only rule for the administration paths, binding every
+ *       authorisation rule to {@code JwtTokenProvider.ADMIN_AUTHORITY} and
+ *       {@code JwtTokenProvider.USER_AUTHORITY} rather than to its own literals. The decoder construction,
+ *       the filter insertion point, the stateless policy and the authorisation rules described above are
+ *       therefore facts verified against code rather than contracts asserted from the specification.</li>
+ *   </ul>
  *
  * <p>Nothing is invented for the eighteenth transaction definition. {@code CDV1} at
  * {@code app/csd/CARDDEMO.CSD:L388-L391} names {@code COCRDSEC}, which has no source anywhere in the

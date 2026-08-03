@@ -73,12 +73,15 @@ import org.junit.jupiter.params.provider.ValueSource;
  * seventeen-byte {@code TCATBALF} key at all.
  *
  * <p><strong>What this class deliberately does not assert.</strong> At the commit under test the
- * migration directory holds {@code V1__create_schema.sql} and nothing else -
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} have not been authored yet. This
- * class therefore makes <em>no</em> claim about either file, neither that they exist nor that they
- * do not, because both forms of claim would turn a later, legitimate boundary into a spurious
- * failure here. It does assert that {@code V1} itself creates no index, which is true now and
- * remains true once index creation lands in its own migration where the AAP places it.
+ * migration directory holds all three planned migrations. An earlier revision of this paragraph said
+ * it holds {@code V1__create_schema.sql} and nothing else, and that {@code V2__create_indexes.sql} and
+ * {@code V3__seed_data.sql} have not been authored yet; that is no longer true and the claim is
+ * withdrawn. This class nonetheless makes <em>no</em> assertion about either of those two files, because
+ * its subject is the baseline schema and because a structural claim about a sibling migration belongs
+ * with that migration. It does assert that {@code V1} itself creates no index, which is true and is not
+ * a gap: index creation lands in {@code V2__create_indexes.sql}, where the AAP places it, and that file
+ * creates exactly three - {@code idx_card_acct_id}, {@code idx_card_cross_reference_acct_id} and
+ * {@code idx_transaction_proc_ts}, one per catalogued VSAM alternate index.
  *
  * <p><strong>The one sanctioned width divergence.</strong> {@code sec_usr_pwd} is
  * {@code VARCHAR(60)} while {@code app/cpy/CSUSR01Y.cpy:21} declares {@code SEC-USR-PWD PIC X(08)}.
@@ -99,7 +102,7 @@ final class SchemaStructureTest {
      * through {@code cust_addr_line_3} and {@code cust_phone_num_1} and
      * {@code cust_phone_num_2}. A narrower {@code [a-z_]+} class cannot span those names and
      * dropped all five silently, which is what {@code theCensusIsNotVacuous} detected by
-     * reporting 82 columns where the migration declares 88.
+     * reporting 81 columns where the migration declares 87.
      */
     private static final String IDENTIFIER = "\"?[a-z_][a-z0-9_]*\"?";
 
@@ -576,13 +579,16 @@ final class SchemaStructureTest {
         }
 
         @Test
-        @DisplayName("the census covers all eighty-eight columns, so the claim above is not vacuous")
+        @DisplayName("the census covers all eighty-seven columns, so the claim above is not vacuous")
         void theCensusIsNotVacuous() {
             int total = 0;
             for (final Table table : tables().values()) {
                 total += table.columns().size();
             }
-            assertThat(total).isEqualTo(88);
+            // Eighty-seven, not eighty-eight: finding F13 removed the operational card_cvv_cd column
+            // from the card table. The count is asserted exactly so that a column appearing or
+            // disappearing anywhere in the baseline breaks this test rather than passing unnoticed.
+            assertThat(total).isEqualTo(87);
         }
 
         @Test

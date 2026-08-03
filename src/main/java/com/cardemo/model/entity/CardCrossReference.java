@@ -15,7 +15,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -93,29 +92,28 @@ import org.hibernate.type.SqlTypes;
  *       any program in the corpus; it carries no business meaning that could be mapped.</li>
  *   <li>{@code app/data/ASCII/cardxref.txt} is 1,850 bytes over 50 lines - 37 bytes per line, that is
  *       records of exactly 36 bytes plus one line terminator. Every one of the 50 rows measures 36
- *       characters. Row 1 is {@code 050002445376574000000005000000000050}, which decomposes as
- *       {@code 0500024453765740} (16) plus {@code 000000050} (9) plus {@code 00000000050} (11). The 14
- *       byte {@code FILLER} is not even present in the fixture.</li>
+ *       characters, decomposing as a 16-character card number, a 9-digit customer identifier and an
+ *       11-digit account identifier. The 14 byte {@code FILLER} is not even present in the fixture.</li>
  *   <li>{@code app/catlg/LISTCAT.txt:L486} reports {@code AXRKP 25} for the alternate index, placing
  *       the alternate key at byte offset 25 of the base record. Since {@code 16 + 9 = 25}, the
  *       catalogue independently confirms both the field order and the two leading widths.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The discrepancy between the 36 byte logical record and the 50 byte catalogued slot is therefore a
  * legacy allocation artefact: it is documented here and never modelled. Fixed width emission at the
  * object store boundary, where the trailing 14 bytes must reappear as blanks, is the responsibility of
  * the batch writers, not of this entity.
  *
- * <h2>Design findings, by severity</h2>
+ * <h2>Mapping decisions that must not be undone</h2>
  *
- * <p><strong>Blocker - the account property must be named exactly {@code accountId}.</strong> The
+ * <p><strong>The account property must be named exactly {@code accountId}.</strong> The
  * repository layer, {@code com.cardemo.repository.CardCrossReferenceRepository}, declares a derived
  * finder {@code findByAccountId}. Spring Data resolves derived finders against JavaBean property
  * names, so the field is {@code accountId} with {@code getAccountId()} and {@code setAccountId(Long)}
  * and nothing else. Naming it after the COBOL item, or modelling it as an association, would make the
  * finder unresolvable and would fail application context startup rather than fail a test.
  *
- * <p><strong>Blocker - no association is declared, in either direction.</strong> Both foreign keys are
+ * <p><strong>No association is declared, in either direction.</strong> Both foreign keys are
  * held as plain scalar {@code Long} values. This entity is the most tempting place in the package to
  * introduce mappings, because in shape it is a join table, and doing so would be wrong for three
  * reasons. First, the legacy corpus performs explicit keyed reads in a fixed order - cross reference,
@@ -127,9 +125,9 @@ import org.hibernate.type.SqlTypes;
  * is no lazy proxy and therefore no possibility of an N+1 select - the strongest available reading of
  * Rule 1 clause A5. Referential integrity to {@code account} and {@code customer} is enforced instead
  * by two of the ten foreign keys created in {@code V1__create_schema.sql}, and read performance by the
- * two B-tree indexes to be created in {@code V2__create_indexes.sql} (planned; absent at this commit).
+ * B-tree index created in {@code V2__create_indexes.sql}.
  *
- * <p><strong>High - the card number is never emitted.</strong> A primary account number is sensitive
+ * <p><strong>The card number is never emitted.</strong> A primary account number is sensitive
  * data, so {@code toString()} reports only {@code customerId} and {@code accountId} and deliberately
  * omits {@code cardNumber}. No debug rendering, no full rendering and no masking helper is provided:
  * masking in {@code logback-spring.xml} is a backstop, and never emitting the value in the first place
@@ -137,18 +135,18 @@ import org.hibernate.type.SqlTypes;
  * insecure deserialization is a risky pattern this project refuses by policy and because a serialisable
  * class without an explicit serial version identifier is a fatal warning under {@code -Werror}.
  *
- * <p><strong>Medium - the two identifiers stay numeric although the fixture zero-pads them.</strong>
- * In {@code app/data/ASCII/cardxref.txt} row 1 the customer identifier reads {@code 000000050} and the
- * account identifier reads {@code 00000000050}. They are nonetheless mapped as {@code Long} over
+ * <p><strong>The two identifiers stay numeric although the fixture zero-pads them.</strong>
+ * In {@code app/data/ASCII/cardxref.txt} the customer and account identifiers are written as
+ * zero-padded 9-digit and 11-digit fields respectively. They are nonetheless mapped as {@code Long} over
  * {@code NUMERIC(9)} and {@code NUMERIC(11)}, because zero padding of a key is a fixed width emission
  * concern owned by the batch writers and because the composite key classes in
  * {@code com.cardemo.model.key} already fix account identifiers as {@code Long}. This is a deliberate
- * asymmetry with fields such as {@code CARD-CVV-CD}, {@code CUST-SSN} and
+ * asymmetry with fields such as {@code CUST-SSN} and
  * {@code CUST-FICO-CREDIT-SCORE} elsewhere in this package, which are {@code PIC 9(n)} in COBOL yet map
  * to {@code CHAR(n)} text because for those the leading zeros are significant data rather than key
  * padding. The two treatments must not be unified in either direction.
  *
- * <p><strong>Blocker - the card number needs an explicit JDBC type code, and this was proved rather
+ * <p><strong>The card number needs an explicit JDBC type code, and this was proved rather
  * than assumed.</strong> A text valued attribute resolves by default to {@code VARCHAR}, but
  * PostgreSQL reports a {@code CHAR} column as {@code bpchar} with JDBC type {@code CHAR}. Because
  * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every profile, that mismatch is not a
@@ -161,7 +159,7 @@ import org.hibernate.type.SqlTypes;
  * column would quietly stop preserving that. Verified afterwards on the same live schema: validation
  * passes and a persist, reload and account keyed query round trip succeeds. Do not remove the code.
  *
- * <p><strong>Low - no constraint annotation is declared.</strong> The width and precision contract is
+ * <p><strong>No constraint annotation is declared.</strong> The width and precision contract is
  * carried by the column mapping, which is authoritative because the schema is validated at startup.
  * Duplicating it as bean-validation constraint annotations would create two sources of truth that can
  * drift, so none is present. Structural validation of an inbound payload belongs to the request DTOs.
@@ -182,9 +180,7 @@ import org.hibernate.type.SqlTypes;
  * eleven digit account identifier, that is {@code XREF-ACCT-ID}. The alternate index is not an entity
  * and has no counterpart in this class. It becomes two things elsewhere: a derived finder in
  * {@code com.cardemo.repository.CardCrossReferenceRepository}, and a non-unique B-tree index on
- * {@code xref_acct_id} to be created by {@code V2__create_indexes.sql} (planned; absent at this commit). Non-unique
- * is not a judgement call -
- * {@code app/catlg/LISTCAT.txt:L488} declares the index {@code NONUNIQKEY}, because one account
+ * {@code xref_acct_id} created by {@code V2__create_indexes.sql}. Non-unique is not a judgement call -
  * legitimately maps to several cards. This is the second of the three alternate indexes in the
  * catalogue, which reports {@code AIX 3} at {@code :L3938}; the other two belong to {@code Card} and
  * {@code Transaction}.
@@ -199,24 +195,15 @@ import org.hibernate.type.SqlTypes;
  * Spring Boot default, which is why every {@code name} attribute is stated explicitly rather than
  * derived from the Java identifier.
  *
- * <h2>Not available: the schema migration</h2>
+ * <h2>The schema this mapping requires</h2>
  *
- * <p><strong>Schema reconciliation, measured 1 August 2026.</strong>
- * {@code src/main/resources/db/migration/V1__create_schema.sql} is <strong>present</strong>,
- * declaring 11 tables, 10 named foreign keys, 5 CHECK constraints and 4 {@code version} columns.
- * It declares {@code CREATE TABLE card_cross_reference} with 3 columns whose names are identical, as a
- * set, to the 3 {@code @Column(name = ...)} declarations below, verified by direct comparison.
- * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
- * {@code V2__create_indexes.sql} remains <strong>not available</strong>, so the alternate-index
- * equivalent for this cluster is not yet created. Because {@code spring.jpa.hibernate.ddl-auto} is
- * {@code validate} in every planned profile, any divergence in column name, SQL type, precision or
- * nullability would fail application context startup outright rather than surfacing later as bad data.
- * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
- * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
- * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
- * rather than an observed one.</p>
- *
- * <p>What is needed, precisely:
+ * <p>The mapping is reconciled against real DDL rather than asserted.
+ * {@code src/main/resources/db/migration/V1__create_schema.sql} declares 11 tables, 10 named foreign
+ * keys, 5 CHECK constraints and 4 {@code version} columns, and among them
+ * {@code CREATE TABLE card_cross_reference} with 3 columns whose names are identical, as a set, to the 3
+ * {@code @Column(name = ...)} declarations below. Because {@code spring.jpa.hibernate.ddl-auto} is
+ * {@code validate} in every profile, any divergence in column name, SQL type, precision or nullability
+ * fails application context startup outright rather than surfacing later as bad data. The contract is:
  *
  * <ul>
  *   <li>table {@code card_cross_reference} in {@code V1__create_schema.sql} with
@@ -228,7 +215,7 @@ import org.hibernate.type.SqlTypes;
  *       the 14 byte {@code FILLER};</li>
  *   <li>a <strong>non-unique</strong> B-tree index on {@code xref_acct_id} in
  *       {@code V2__create_indexes.sql}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>For the avoidance of doubt about the surrounding migration set: {@code V1__create_schema.sql}
  * creates exactly 11 tables with 10 foreign keys and 5 check constraints, of which this table is one
@@ -243,17 +230,10 @@ import org.hibernate.type.SqlTypes;
  * enforces a JaCoCo floor of 80 percent line coverage and runs the dependency vulnerability scan. The
  * compiler runs with {@code -Xlint:all} and {@code -Werror} and with {@code failOnWarning}, so any
  * warning this file produces is a build failure.
- *
- * <p>To run, once the application exists: bring the backing services up with
- * {@code docker compose up -d}, which starts PostgreSQL 16 among the rest, then start the application with
+ * <p>To run: bring the backing services up with {@code docker compose up -d}, which starts PostgreSQL 16
+ * among the rest, then start the application with
  * {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local}.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point
- * and no {@code application*.yml} profile exists in this tree, so that command cannot start anything and
- * the {@code local} profile it names has nothing to select. Treat it as the target invocation.
  * Flyway applies the migrations on
- * startup and the entity is then validated against the resulting schema, so a first run against an
- * empty database is the quickest way to confirm that the column contract below and
- * {@code V1__create_schema.sql} agree. {@code JWT_SECRET} must be present in the environment; it is
  * deliberately environment indirected with no committed default, and the application refuses to start
  * without it.
  *
@@ -261,9 +241,7 @@ import org.hibernate.type.SqlTypes;
  * the behaviour that the annotations alone cannot: 36 populated bytes inside the 50 byte slot, a key length
  * of 16, that the 14 byte {@code FILLER} is unmapped, that no version column exists, that the account
  * property is reachable under the JavaBean name {@code accountId}, and that {@code toString()} does not
- * contain the card number. <strong>Not available, measured 1 August 2026:</strong> no
- * {@code CardCrossReferenceTest} exists, so the preceding sentence states the coverage owed rather than
- * coverage that runs. Per {@code CONTRIBUTING.md:L34} they must pass locally before a change to
+ * contain the card number. Per {@code CONTRIBUTING.md:L34} they must pass locally before a change to
  * this file is proposed, and per {@code CONTRIBUTING.md:L33} a change here should stay confined to the
  * field contract rather than reformatting surrounding code.
  *
@@ -279,7 +257,7 @@ import org.hibernate.type.SqlTypes;
  *       spaces and rejecting it here would diverge from the source.</dd>
  *   <dt>{@code PropertyReferenceException: No property 'accountId' found}</dt>
  *   <dd>The account property has been renamed or converted into an association. Restore the plain
- *       scalar {@code accountId}; see the Blocker findings above.</dd>
+ *       scalar {@code accountId}; see the mapping decisions above.</dd>
  *   <dt>{@code SchemaManagementException: missing table [card_cross_reference]}</dt>
  *   <dd>The Flyway migrations have not run against the target schema, or they ran against a different
  *       one. Confirm the datasource, then confirm that {@code V1__create_schema.sql} creates the table
@@ -290,12 +268,12 @@ import org.hibernate.type.SqlTypes;
  *       attribute resolves by default to {@code VARCHAR}, and with {@code ddl-auto} at
  *       {@code validate} that mismatch stops startup. Restore the declared code rather than widening
  *       the column to a variable length type: the blank padding of a fixed width key is the behaviour
- *       being reproduced. See the Blocker note on the card number field.</dd>
+ *       being reproduced. See the note on the card number field above.</dd>
  *   <dt>Two distinct unsaved instances compare equal</dt>
  *   <dd>Expected. Identity is the primary key alone, so instances whose key is still null are
  *       indistinguishable. Assign the card number before placing an instance in a hash based
  *       collection.</dd>
- * </dl>
+ *   </dl>
  *
  * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
  * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing
@@ -400,7 +378,6 @@ public class CardCrossReference {
      * Replaces the card number.
      *
      * @param cardNumber the 16 character card number.
-     * @throws IllegalArgumentException if {@code cardNumber} is null
      * @throws IllegalArgumentException if {@code cardNumber} is null or longer than 16 characters
      */
     public void setCardNumber(String cardNumber) {
@@ -422,7 +399,6 @@ public class CardCrossReference {
      * Replaces the customer identifier this card belongs to.
      *
      * @param customerId the 9 digit customer identifier.
-     * @throws IllegalArgumentException if {@code customerId} is null
      * @throws IllegalArgumentException if {@code customerId} is null, negative, or greater than
      *                                  999999999
      */
@@ -445,7 +421,6 @@ public class CardCrossReference {
      * Replaces the account identifier this card is attached to.
      *
      * @param accountId the 11 digit account identifier.
-     * @throws IllegalArgumentException if {@code accountId} is null
      * @throws IllegalArgumentException if {@code accountId} is null, negative, or greater than
      *                                  99999999999
      */

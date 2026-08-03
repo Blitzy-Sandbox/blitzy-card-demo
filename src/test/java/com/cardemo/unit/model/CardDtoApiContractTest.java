@@ -99,7 +99,8 @@ import org.junit.jupiter.params.provider.ValueSource;
  *
  * <h2>How to run it</h2>
  *
- * <p>{@code mvn -B test -Dtest=CardDtoApiContractTest} for this class alone, or {@code mvn -B test} for the
+ * <p>{@code ./mvnw -B -ntp test -Dtest=CardDtoApiContractTest} for this class alone, or
+ * {@code ./mvnw -B -ntp test} for the
  * tier. It needs no container, no Spring context, no database and no network, so it runs in the
  * default profile with no configuration at all.</p>
  *
@@ -124,7 +125,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       or the selector type has begun to be emitted as an explicit null. Both are contract
  *       breaches: the first invents a field the map never sent, the second sends a field row one
  *       does not declare.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("CardDto - app/cpy-bms/COCRDSL.CPY (15 fields) and app/cpy-bms/COCRDLI.CPY (45 fields)")
 final class CardDtoApiContractTest {

@@ -76,8 +76,10 @@ import com.cardemo.service.shared.FileStatusMapper;
  * source's own no-change message when none does. And it reports the three outcomes of each file operation -
  * found, not found, or the operation failed - with the source's exact message text in every case.
  *
- * <p>It is surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath {@code /api/admin/*},
- * which {@code com.cardemo.config.SecurityConfig} restricts to the ADMIN role - the {@code 'A'} against
+ * <p>It is to be surfaced over HTTP by {@code com.cardemo.controller.AdminController} beneath
+ * {@code /api/admin/*} - <strong>planned</strong>, that controller has not been authored yet, so this
+ * service currently has no HTTP entry point. {@code com.cardemo.config.SecurityConfig} already restricts
+ * {@code /api/admin/*} to the ADMIN role, so the rule is in place ahead of the route - the {@code 'A'} against
  * {@code 'U'} distinction of {@code CDEMO-USER-TYPE} at {@code app/cpy/COCOM01Y.cpy}:27-28, surfaced as
  * {@code com.cardemo.model.enums.UserType}.
  *
@@ -94,8 +96,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp clean compile} - compiles this file. {@code maven-compiler-plugin:3.14.1} runs
- *       {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning at all fails the build, an unused
- *       import fails the build, and malformed Javadoc fails JDK 25 doclint.</li>
+ *       {@code -Xlint:all -Werror} with {@code failOnWarning}, so any warning {@code javac} emits fails the
+ *       build. Two things it does <em>not</em> emit: an unused import, for which {@code javac} 25 publishes no
+ *       lint key, and malformed Javadoc, which no Maven phase checks because no Javadoc plugin is bound in
+ *       {@code pom.xml} - both are covered by review and by the explicit doclint command in
+ *       {@code docs/technical-specifications.md}.</li>
  *   <li>{@code ./mvnw -B -ntp test} - runs the unit tier through {@code maven-surefire-plugin:3.5.4}. This
  *       bean's tests belong in {@code src/test/java/com/cardemo/unit/**} and never in this package, which holds
  *       exactly four source files and no {@code package-info.java}.</li>
@@ -107,7 +112,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>The single most important test of this file asserts that <strong>resubmitting the same password does not
  *       register as a change</strong>. It is the regression guarding the substitution described under the
  *       password predicate below, and it fails loudly the moment anyone reaches for {@code equals}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -147,7 +152,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       eight characters, from {@code app/cpy/CSDAT01Y.cpy}, and both applied with {@code Locale.ROOT}.</li>
  *   <li><strong>Route</strong> - ADMIN only. Least privilege is enforced by the security configuration, not
  *       here; this bean neither reads a token nor inspects a role.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -156,38 +161,35 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       written with {@code equals}, {@code ==} or a re-encode-and-compare. An eight-character plaintext can
  *       never equal a sixty-character digest, and BCrypt is salted so re-encoding the same plaintext yields a
  *       different string every time; either mistake makes the predicate unconditionally true. Remedy: the
- *       predicate is {@code !passwordEncoder.matches(presented, storedDigest)} and nothing else. Severity:
- *       <strong>High</strong>.</li>
+ *       predicate is {@code !passwordEncoder.matches(presented, storedDigest)} and nothing else.</li>
  *   <li><strong>A request with several empty fields reports the wrong field.</strong> Either the five checks were
  *       reordered, or the sibling's order was copied in, or the ordering was delegated to
  *       {@code jakarta.validation}, whose constraint evaluation order is unspecified. This program checks the
  *       <strong>identifier first and the first name second</strong>; {@code app/cbl/COUSR01C.cbl} checks the
  *       first name first and the identifier third, at {@code :120}, {@code :126} and {@code :132}. The two orders
  *       are genuinely different and must not be harmonised in either direction. Remedy: keep the explicit ordered
- *       chain exactly as written. Severity: <strong>High</strong>.</li>
+ *       chain exactly as written.</li>
  *   <li><strong>A stale write silently wins.</strong> The snapshot comparison was dropped in favour of a version
  *       counter alone, or the other way round. The two detect different things and both are required; see the
- *       mechanism note below. Remedy: restore whichever layer was removed. Severity:
- *       <strong>High</strong>.</li>
+ *       mechanism note below. Remedy: restore whichever layer was removed.</li>
  *   <li><strong>A conflict is reported as an undifferentiated 409.</strong> The five outcomes of
  *       {@code com.cardemo.exception.ConcurrentUpdateException} were collapsed. This service raises exactly one
  *       of them, {@code DATA_CHANGED_BEFORE_UPDATE}, and keeps its two routes apart by cause. Remedy: keep the
- *       outcome and the cause; the controller owns the status. Severity: <strong>Medium</strong>.</li>
+ *       outcome and the cause; the controller owns the status.</li>
  *   <li><strong>A conflict eventually succeeds.</strong> Something retried, merged, re-read or applied
  *       last-writer-wins. There is no retry, no backoff, no {@code @Retryable}, no merge and no re-read: the
- *       source abandons the write and so does this. Remedy: remove it. Severity:
- *       <strong>High</strong>.</li>
+ *       source abandons the write and so does this. Remedy: remove it.</li>
  *   <li><strong>The exit key stopped saving.</strong> Someone "fixed" the quirk. It is the contract; see the
- *       preserved-quirk note below. Remedy: revert. Severity: <strong>Medium</strong>.</li>
+ *       preserved-quirk note below. Remedy: revert.</li>
  *   <li><strong>A password or digest appears in a log line, a response or an exception message.</strong> It
  *       cannot come from here. The plaintext is a parameter only, the digest is written and never read back onto
  *       a response, the screen record declares no password component at all, and the
  *       {@code ValidationException} raised for an empty password carries the field <em>name</em> only. Remedy:
  *       keep all four properties true, and treat the masking rules of {@code logback-spring.xml} as a backstop
- *       rather than a licence. Severity: <strong>High</strong>.</li>
+ *       rather than a licence.</li>
  *   <li><strong>The stored password came back on the response.</strong> Someone reproduced
  *       {@code app/cbl/COUSR02C.cbl}:169; see the labelled deviation below. Remedy: revert, and do not substitute
- *       a masked or placeholder field either. Severity: <strong>High</strong>.</li>
+ *       a masked or placeholder field either.</li>
  *   <li><strong>A message no longer matches the baseline.</strong> A literal was normalised. All five empty-field
  *       messages read {@code can NOT} with a capital N, O and T; every ellipsis in this program is exactly three
  *       periods; and {@code "Please modify to update ..."}, {@code "Press PF5 key to save your updates ..."} and
@@ -196,7 +198,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       do not. Remedy: never re-case, re-space or re-punctuate them; the parity gates compare them byte for
  *       byte.</li>
  *   <li><strong>{@code "Unable to Update User..."} was corrected on a delete path.</strong> Not this file's
- *       concern, but the reason a reviewer might touch it: the verb is <em>correct here</em>, on the rewrite
+ *       concern, but the reason a reader might touch it: the verb is <em>correct here</em>, on the rewrite
  *       failure at {@code app/cbl/COUSR02C.cbl}:386. The sibling delete program carries the identical literal on
  *       a delete failure at {@code app/cbl/COUSR03C.cbl}:332, where the verb is wrong. Remedy: leave both
  *       alone.</li>
@@ -206,7 +208,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       fallback at {@code app/cbl/CBACT04C.cbl}:422 and {@code :436}, and {@code CBSTM03B}'s acceptance of
  *       {@code '04'}. Here a missing user is an <strong>error</strong>, reported with the message of
  *       {@code :342}. Remedy: none of {@code FileStatusMapper}'s carve-out methods may be called from this file,
- *       and none is. Severity: <strong>High</strong>.</li>
+ *       and none is.</li>
  *   <li><strong>Startup fails naming {@code PasswordEncoder} or {@code Clock}.</strong> Both are constructor
  *       arguments and neither is published here. Remedy: publish the encoder from
  *       {@code com.cardemo.config.SecurityConfig} at strength 10 and a {@code Clock} bean for the tree.</li>
@@ -215,36 +217,19 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>A half-applied update survives a failure.</strong> The read, the comparison and the rewrite are
  *       not inside one boundary. Remedy: keep {@code @Transactional(rollbackFor = Exception.class)} on the entry
  *       points.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>Findings carried from the translation, by severity</h2>
+ * <h2>Paragraph correspondence, and one disclosed limitation</h2>
  *
- * <h3>Blocker</h3>
- *
- * <p>Mapping fewer than eleven private methods. All eleven paragraph labels of {@code app/cbl/COUSR02C.cbl} are
+ * <p>All eleven paragraph labels of {@code app/cbl/COUSR02C.cbl} are
  * present one-to-one and none is consolidated: {@code MAIN-PARA}:82, {@code PROCESS-ENTER-KEY}:143,
  * {@code UPDATE-USER-INFO}:177, {@code RETURN-TO-PREV-SCREEN}:250, {@code SEND-USRUPD-SCREEN}:266,
  * {@code RECEIVE-USRUPD-SCREEN}:283, {@code POPULATE-HEADER-INFO}:296, {@code READ-USER-SEC-FILE}:320,
  * {@code UPDATE-USER-SEC-FILE}:358, {@code CLEAR-CURRENT-SCREEN}:395 and {@code INITIALIZE-ALL-FIELDS}:403. The
- * source-citing Javadoc on each is the evidence the scope-coverage gate reads, and
- * {@code TRACEABILITY_MATRIX.md} is proved against exactly this correspondence.
+ * source-citing Javadoc on each is the evidence the scope-coverage gate reads. Mapping fewer than eleven
+ * private methods breaks that correspondence.
  *
- * <h3>High</h3>
- *
- * <p>Five ways to break parity or secret hygiene, every one avoided above and listed under troubleshooting:
- * comparing the password with {@code equals} rather than {@code matches}; reordering the five validations or
- * copying the sibling's order; relying on one concurrency layer alone; returning, logging or storing the
- * presented password or its digest; and reproducing the plaintext echo of {@code :169}. A sixth belongs here
- * too - importing one of the three batch-side "record not found is success" carve-outs, which would turn a
- * missing user into a silent success.
- *
- * <h3>Medium</h3>
- *
- * <p>Collapsing the five concurrency outcomes into one; relying on {@code jakarta.validation} ordering for the
- * five checks; retrying or merging on a conflict. All avoided.
- *
- * <p>Two Medium findings are <strong>not</strong> avoided and are disclosed instead. The first is the preserved
- * quirk described immediately below, which is deliberate. The second is that
+ * <p>One limitation is disclosed rather than closed:
  * {@code com.cardemo.model.entity.UserSecurity} carries <strong>no version column</strong> - its own
  * documentation records that it has no optimistic-locking counter, unlike the account, card, customer and
  * transaction entities, and the first migration creates none for this table. The store-level layer is therefore
@@ -274,7 +259,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       is rejected rather than interpreted. The source governs. Leaving the digest untouched is instead what
  *       happens when a password is supplied and <em>matches</em> the stored one, which is the ordinary
  *       no-change outcome.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Preserved legacy quirk: the exit-shaped key saves</h2>
  *
@@ -299,13 +284,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       paragraph.</li>
  *   <li>{@code app/cbl/COUSR00C.cbl}:125-127 and {@code app/cbl/COUSR01C.cbl}:93-95 - the list and add programs
  *       likewise use PF3 conventionally, each moving {@code 'COADM01C'} and transferring.</li>
- * </ol>
+ *   </ol>
  *
  * <p><strong>It is preserved exactly.</strong> The Java surface exposes the same behaviour: the exit-shaped
  * action commits. It is not relocated, not flag-gated, not turned into a discard-on-exit and not
  * "corrected", because behavioural parity is the contract and this is behaviour a caller can observe. Both call
- * sites are mapped and the dispatch is not collapsed. Severity: Medium - surprising, but deterministic and
- * behaviour-bearing. Tracked in DECISION_LOG.md as a preserved legacy quirk.
+ * sites are mapped and the dispatch is not collapsed. It is surprising, but deterministic and
+ * behaviour-bearing, and it is a preserved legacy quirk rather than an oversight.
  *
  * <h2>Labelled deviation: the stored password is not echoed back</h2>
  *
@@ -327,8 +312,8 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p><strong>What changes for the caller.</strong> The current password is not readable, so a caller cannot
  * pre-fill it. The update request must therefore supply the password whenever the record is to be rewritten, and
  * supplying the same password again is the way to leave the stored digest untouched - which the change predicate
- * recognises correctly, as the password-predicate note explains. Severity: <strong>High</strong>. Tracked in
- * DECISION_LOG.md as a labelled deviation, <strong>not</strong> as parity.
+ * recognises correctly, as the password-predicate note explains. This is a labelled deviation,
+ * <strong>not</strong> parity.
  *
  * <h2>Labelled mechanism substitution: the password predicate is {@code matches}, never {@code equals}</h2>
  *
@@ -346,7 +331,6 @@ import com.cardemo.service.shared.FileStatusMapper;
  * date-offset trap in the account-update program, where a naive whole-string comparison would likewise have
  * reported a change on every single request. It is a <strong>mechanism substitution, not a behaviour
  * change</strong>: the predicate answers identically to the source's for every input the source could hold.
- * Tracked in DECISION_LOG.md.
  *
  * <h2>Labelled mechanism note: two-layer optimistic concurrency</h2>
  *
@@ -367,12 +351,12 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       longer applies to the row it read is reported rather than reapplied. This detects <em>that</em> the row
  *       moved, including cases the snapshot cannot see, such as the row being deleted between the read and the
  *       flush.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Neither layer substitutes for the other.</strong> A concurrent write that set a field back to its
  * original value passes the business comparison and would fail a counter comparison; a concurrent delete passes
  * the business comparison and is caught only by the store layer. They are different guarantees, and relying on
- * either alone is a High-severity break.
+ * either alone breaks the guarantee.
  *
  * <p>Both routes raise {@code com.cardemo.exception.ConcurrentUpdateException} with the same outcome,
  * {@code DATA_CHANGED_BEFORE_UPDATE}, because that is the one of the type's five outcomes this program's
@@ -380,7 +364,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * provider's own failure as the cause, and the business-layer route carries none. The exception names the
  * dataset and, where a field is at fault, the field <em>name</em>; it never carries a field value, and never a
  * password or digest. There is <strong>no retry, no backoff, no merge, no re-read and no last-writer-wins</strong>
- * - the source abandons the write, and so does this. Tracked in DECISION_LOG.md.
+ * - the source abandons the write, and so does this.
  *
  * <p>The no-change outcome of {@code :239}, {@code "Please modify to update ..."}, is
  * <strong>not</strong> a concurrency conflict and is not reported as one: it is the source's own answer to a
@@ -395,30 +379,29 @@ import com.cardemo.service.shared.FileStatusMapper;
  * outcome <strong>by scoping rather than by conditional logic</strong>: every failure path returns or throws
  * before the commit point, so nothing needs to be made conditional. This is a <strong>mechanism substitution, not
  * a behaviour change</strong>, and transaction management itself is owned by
- * {@code com.cardemo.config.JpaConfig}. Tracked in DECISION_LOG.md.
+ * {@code com.cardemo.config.JpaConfig}.
  *
- * <h2>Not available</h2>
+ * <h2>Behaviour the source does not define, and which is therefore not invented</h2>
  *
  * <ul>
- *   <li><strong>Latency and throughput objectives.</strong> Not available. No service level is published anywhere
- *       in the source, and none is invented; the performance gate records a measured baseline, never a target.
- *       What would be needed is a stated objective that does not exist.</li>
+ *   <li><strong>Latency and throughput objectives.</strong> No service level is published anywhere
+ *       in the source, and none is invented; the performance gate records a measured baseline, never a
+ *       target.</li>
  *   <li><strong>Password strength, complexity, minimum length, character classes, expiry, reuse, history and
- *       lockout policy.</strong> Not available. {@code app/cbl/COUSR02C.cbl}:198 tests emptiness and nothing
- *       else, and {@code SEC-USR-PWD} is a bare {@code PIC X(08)}. No rule is invented here. What would be
- *       needed is a source rule that does not exist.</li>
- *   <li><strong>A retry or conflict-resolution policy.</strong> Not available. The source simply abandons the
+ *       lockout policy.</strong> {@code app/cbl/COUSR02C.cbl}:198 tests emptiness and nothing
+ *       else, and {@code SEC-USR-PWD} is a bare {@code PIC X(08)}. No rule is invented here.</li>
+ *   <li><strong>A retry or conflict-resolution policy.</strong> The source simply abandons the
  *       write and redisplays; there is no retry interval, no attempt count and no merge strategy anywhere in the
- *       corpus to reproduce. What would be needed is a stated policy that does not exist.</li>
- *   <li><strong>An audit trail for a user change.</strong> Not available. The source rewrites one record and
+ *       corpus to reproduce.</li>
+ *   <li><strong>An audit trail for a user change.</strong> The source rewrites one record and
  *       records nothing about who rewrote it - the two moves that would have carried the acting user's identity
  *       are commented out in the sibling add program and absent here. None is invented.</li>
- *   <li><strong>A membership test on the user type.</strong> Not available as a source rule:
+ *   <li><strong>A membership test on the user type.</strong> Not a source rule:
  *       {@code app/cbl/COUSR02C.cbl}:204 checks only that the field is non-empty and {@code :232} is a plain
  *       one-character move, so the source would store any character at all. The target's type is a closed
- *       enumeration, so an unmappable code is rejected instead of stored; that narrowing is stated as a
- *       deviation in DECISION_LOG.md rather than presented as parity.</li>
- * </ul>
+ *       enumeration, so an unmappable code is rejected instead of stored; that narrowing is a labelled
+ *       deviation rather than parity.</li>
+ *   </ul>
  *
  * <h2>Thread safety</h2>
  *
@@ -827,7 +810,7 @@ public class UserUpdateService {
      * is why no full screen need be supplied.
      *
      * <p><strong>The stored password is not returned.</strong> {@code :169} moved it onto the screen field; that
-     * is the labelled High-severity deviation documented on this class, and the returned record declares no
+     * is the labelled deviation documented on this class, and the returned record declares no
      * password component at all.
      *
      * <p><strong>Side effects.</strong> One keyed read. Nothing is written; the method is transactional because
@@ -985,7 +968,7 @@ public class UserUpdateService {
      * {@code UPDATE-USER-INFO} - the same paragraph the conventional save key reaches at {@code :122-123} - and
      * only afterwards, at {@code :113-119}, resolves a target program and transfers away. Both call sites are
      * mapped; the dispatch is not collapsed. Four independent facts establish that this is anomalous rather
-     * than conventional, and all four are cited on the class so that a reviewer cannot mistake it for a defect
+     * than conventional, and all four are cited on the class so that a reader cannot mistake it for a defect
      * introduced in translation:
      *
      * <ol>
@@ -1000,14 +983,14 @@ public class UserUpdateService {
      * </ol>
      *
      * <p>It is not removed, not relocated, not gated behind a flag and not turned into a discard-on-exit.
-     * Parity is the contract, and this behaviour is deterministic even though it is surprising. Classified
-     * Medium and recorded in {@code DECISION_LOG.md} as a preserved legacy quirk.
+     * Parity is the contract, and this behaviour is deterministic even though it is surprising. It is a
+     * preserved legacy quirk.
      *
      * <p><strong>One retained artefact on the PF3 arm.</strong> The guard at {@code :113-118} tests
      * {@code CDEMO-FROM-PROGRAM}, a communication-area field with no counterpart under the stateless mandate,
      * so its {@code ELSE} arm at {@code :116-117} is unreachable in Java and the target is always
      * {@code 'COADM01C'}; that is why only the {@code :114} outcome is expressed. It is commented at its line
-     * and tracked in {@code DECISION_LOG.md} rather than deleted.
+     * rather than deleted.
      *
      * <p><strong>A validation failure does not short-circuit the arm.</strong> The source performs
      * {@code :113-119} unconditionally, so a failed {@code UPDATE-USER-INFO} still resolved a target and
@@ -1100,7 +1083,7 @@ public class UserUpdateService {
      * outcome at {@code :150} becomes the field name carried on the raised failure. The
      * {@code WHEN OTHER} arm at {@code :152-154} parks the cursor and then does nothing else, which is why the
      * only thing it contributes here is the cursor field - a retained no-op, commented at its line and tracked
-     * in {@code DECISION_LOG.md} rather than deleted to please a linter.
+     * at its line rather than deleted to please a linter.
      *
      * <p>{@code :158-161} blanks the first name, last name, password and user type <em>before</em> the read,
      * which is what makes the lookup entry point able to accept nothing but an identifier: whatever those four
@@ -1140,7 +1123,7 @@ public class UserUpdateService {
             // :169 MOVE SEC-USR-PWD TO PASSWDI OF COUSR2AI - DELIBERATELY NOT REPRODUCED. The stored
             // credential is a one-way BCrypt digest and Rule 1 Clause D forbids returning a secret, so no
             // password is written here and the response record declares no password component at all.
-            // Labelled deviation, severity High, recorded in DECISION_LOG.md.
+            // Labelled deviation, not parity.
             work.userType = work.secUsrType == null ? SPACES
                     : String.valueOf(work.secUsrType.getCode());
                                                             // :170 MOVE SEC-USR-TYPE TO USRTYPEI
@@ -1167,7 +1150,7 @@ public class UserUpdateService {
      * statements rather than delegated to bean validation, whose constraint evaluation order is not specified.
      *
      * <p>The {@code WHEN OTHER} arm at {@code :210-212} parks the cursor on the first-name field and then
-     * continues; it is retained, commented at its line and tracked, not deleted. Classified Low.
+     * continues; it is retained and commented at its line rather than deleted, because the source reaches it.
      *
      * <p><strong>The four change predicates.</strong> First name at {@code :219}, last name at {@code :223},
      * password at {@code :227}, user type at {@code :231}. Each compares the submitted field against the record
@@ -1184,14 +1167,14 @@ public class UserUpdateService {
      * on every single request, reporting a password change even when the operator retyped the same credential -
      * and rewriting the digest each time. The predicate therefore asks the encoder instead. Re-encoding the
      * presented value and comparing the two digests is equally wrong, because BCrypt salts every encoding.
-     * Labelled mechanism substitution, classified High, recorded in {@code DECISION_LOG.md}.
+     * Labelled mechanism substitution, not a behaviour change.
      *
      * <p><strong>Two Java-only guards, both labelled.</strong> A field wider than the screen field it
      * transcribes is rejected rather than truncated, because the 3270 map made over-length input physically
      * impossible and silent truncation would corrupt the record. And a user type outside {@code 'A'} and
      * {@code 'U'} is rejected, which the source does not do - it checks only that the field is non-empty. That
-     * second guard is forced by the typed enumeration the entity's setter accepts and is recorded in
-     * {@code DECISION_LOG.md} as a labelled deviation, classified Medium, rather than passed off as parity.
+     * second guard is forced by the typed enumeration the entity's setter accepts and is a labelled
+     * deviation rather than parity.
      *
      * <p><strong>The business-level concurrency layer sits between the read and the predicates.</strong> When
      * the caller supplies what it was last shown and that disagrees with the record as freshly read, the write
@@ -1311,8 +1294,7 @@ public class UserUpdateService {
      *
      * <p>The body is byte-identical across all four {@code COUSR0*C} programs. It is retained rather than
      * deleted because deleting it would break the paragraph correspondence the scope-coverage gate reads;
-     * the assignments that have no counterpart are commented at their line and tracked in
-     * {@code DECISION_LOG.md}. Classified Low.
+     * the assignments that have no counterpart are commented at their line.
      *
      * @param work the method-local work area
      */
@@ -1412,8 +1394,7 @@ public class UserUpdateService {
      * {@code app/cpy/CSDAT01Y.cpy}. The time is {@code HH:MM:SS} in eight characters from the same copybook.
      * Note that the specification's field inventory records the time field as nine characters wide; the symbolic
      * map at {@code app/cpy-bms/COUSR02.CPY}:66 declares {@code CURTIMEI PIC X(8)} and {@code CSDAT01Y}
-     * assembles eight characters, so the source governs and the wider figure is a citation error. Classified
-     * Low.
+     * assembles eight characters, so the source governs and the wider figure is a citation error.
      *
      * <p>The instant comes from the injected clock rather than from a direct call to the system clock, so that
      * the header is deterministic under test. Both formatters are built with {@code Locale.ROOT}, so a host
@@ -1468,7 +1449,7 @@ public class UserUpdateService {
      *
      * <p><strong>{@code :335} is a literal {@code CONTINUE}</strong> standing at the head of the normal branch,
      * ahead of the three statements that follow it. It is a retained no-op, commented at its line and tracked in
-     * {@code DECISION_LOG.md} rather than deleted. Classified Low.
+     * at its line rather than deleted.
      *
      * <p><strong>The record lock has no counterpart.</strong> The source's read carries {@code UPDATE} at
      * {@code :328} and {@code app/csd/CARDDEMO.CSD} defines the file with {@code UPDATEMODEL(LOCKING)}, so the
@@ -1557,14 +1538,13 @@ public class UserUpdateService {
      * status, so control lands in the {@code WHEN OTHER} arm instead. The branch is mapped anyway because
      * deleting it would break the branch-for-branch correspondence the scope-coverage gate reads, and because
      * the response-code switch is the shape of the source. It is therefore an intentionally retained parity
-     * artefact rather than abandoned code - cited here, tracked in {@code DECISION_LOG.md} and classified Low -
-     * and it is expected to show as uncovered in the coverage report.
+     * artefact rather than abandoned code, and it is expected to show as uncovered in the coverage report.
      *
      * <p><strong>The verb in the failure literal at {@code :386} is correct here.</strong> This is an update
      * program and the message reports an update failure. The sibling delete program carries the very same
      * literal on a delete-failure path at {@code app/cbl/COUSR03C.cbl}:332, where the verb is wrong. Neither is
      * altered: the one here because it is right, the one there because parity is the contract. The contrast is
-     * recorded so that a reviewer comparing the two files does not harmonise them.
+     * recorded so that a reader comparing the two files does not harmonise them.
      *
      * <p>The success message is assembled exactly as the {@code STRING} at {@code :372-375} assembles it, with
      * the identifier delimited by its first space, so a shorter identifier does not carry the field's trailing
@@ -1651,7 +1631,7 @@ public class UserUpdateService {
      * pair of statements produces a fresh, empty response and nothing more. <strong>No cleared state is retained
      * anywhere</strong>: the work area is created per call and discarded when the call returns, so a subsequent
      * caller can never observe what this one cleared. Retained rather than deleted because the paragraph
-     * correspondence is the evidence the scope-coverage gate reads, and tracked in {@code DECISION_LOG.md}.
+     * correspondence is the evidence the scope-coverage gate reads.
      *
      * @param work the method-local work area
      */
@@ -1778,7 +1758,7 @@ public class UserUpdateService {
      * Maps the single character of {@code USRTYPEI} onto the typed user type, standing in for
      * {@code MOVE USRTYPEI TO SEC-USR-TYPE} at {@code app/cbl/COUSR02C.cbl}:232.
      *
-     * <p><strong>Labelled deviation, severity Medium, tracked in DECISION_LOG.md.</strong> The source checks
+     * <p><strong>Labelled deviation, not parity.</strong> The source checks
      * only that the field is non-empty, at {@code :204}. It never checks membership of {@code 'A'} or
      * {@code 'U'}, so the {@code MOVE} would write any character at all into the one-byte
      * {@code SEC-USR-TYPE}, and the resulting user would match neither {@code 88 CDEMO-USRTYP-ADMIN VALUE 'A'}
@@ -2092,7 +2072,7 @@ public class UserUpdateService {
      * has to report what a 3270 attribute byte and an {@code XCTL} conveyed in-band.
      *
      * <p><strong>There is no password component, by construction.</strong> {@code :169} moved the stored
-     * credential onto the screen field; that is the labelled High-severity deviation this class documents, and it
+     * credential onto the screen field; that is the labelled deviation this class documents, and it
      * is honoured by the record's shape rather than by remembering to blank a field. Nothing here can carry a
      * credential, a digest, a placeholder that resembles one, or a masked-but-present value.
      *
@@ -2137,6 +2117,15 @@ public class UserUpdateService {
      * only its digest is - and {@code toString} is deliberately not overridden to render it.
      */
     private static final class ScreenWorkArea {
+        /**
+         * Creates the work area with every member at its post-{@code INITIALIZE} value, which is the state
+         * the legacy {@code WORKING-STORAGE SECTION} begins each task in. Declared explicitly rather than
+         * left implicit so the surface is documented; it takes no argument and performs no work.
+         */
+        private ScreenWorkArea() {
+            // Every member carries its initial value in its own declaration above, exactly as a COBOL
+            // VALUE clause does, so there is nothing for this constructor to assign.
+        }
 
         /** {@code WS-ERR-FLG PIC X(01)} at {@code :40}, with its two condition names at {@code :41-42}. */
         private boolean errFlgOn;

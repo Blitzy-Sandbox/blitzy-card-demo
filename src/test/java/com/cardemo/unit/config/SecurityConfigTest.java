@@ -35,20 +35,29 @@ package com.cardemo.unit.config;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.cardemo.config.ObservabilityConfig;
 import com.cardemo.config.SecurityConfig;
 import com.cardemo.model.enums.UserType;
 import com.cardemo.security.JwtAuthenticationFilter;
 import com.cardemo.security.JwtTokenProvider;
 import jakarta.servlet.Filter;
+import jakarta.servlet.http.HttpServletResponse;
+import java.lang.reflect.Method;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 import org.springframework.context.support.PropertySourcesPlaceholderConfigurer;
 import org.springframework.core.env.Environment;
 import org.springframework.mock.env.MockEnvironment;
@@ -85,7 +94,7 @@ import org.springframework.web.context.support.AnnotationConfigWebApplicationCon
  *       assert that sign-on is the only anonymous business path, that a standard user reaches the eleven
  *       ordinary transactions and is refused the administrative surface, that an administrator reaches
  *       both, and that an unmatched path is refused outright. No session is created on any path.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The chain is exercised through a real {@code FilterChainProxy} in a web application context rather
  * than through a mocked matcher, because the defect this guards against - a rule that matches nothing, or
@@ -97,17 +106,44 @@ class SecurityConfigTest {
     private static final String OTHER_KEY = "a-completely-different-key-of-sufficient-length-0987654321";
     private static final String ISSUER = "carddemo";
     /**
-     * Issuing clock. It must track real time, because the decoder validates the timestamp claims against
-     * the system clock - which is correct production behaviour. A clock fixed at any literal instant makes
-     * every minted token expired by the time the decoder sees it.
+     * A fixed instant used only by the {@code @Primary} override test. It is deliberately in the past, so
+     * that a token minted against it is unmistakably distinguishable from one minted against the production
+     * bean, and it is never installed in the contexts the other tests build - those use the real production
+     * clock, because the decoder validates the timestamp claims against real time and a clock fixed at any
+     * literal instant would make every minted token already expired.
+     */
+    private static final Instant FIXED_INSTANT = Instant.parse("2026-01-15T10:30:00Z");
+
+    /**
+     * Real-time clock for the token providers these tests construct <em>directly</em> - the foreign-key,
+     * foreign-issuer and expiry cases. It is deliberately not registered as a bean: the context under test
+     * now publishes its own production clock, and shadowing it here would hide the very declaration the
+     * blocker regression guards assert.
      */
     private static final Clock NOW = Clock.systemUTC();
+
+    /**
+     * Token lifetime handed to every {@link JwtTokenProvider} this test constructs, expressed in
+     * <strong>minutes</strong> because that is the unit the provider's fourth-from-last constructor
+     * parameter takes and the unit {@code carddemo.security.jwt.expiration-minutes} publishes. Thirty is
+     * the mandated default. The value is named rather than inlined for one specific reason: the contract
+     * was previously expressed in seconds, so a bare literal here would read as either unit and 3,600 -
+     * the old default - now falls outside the provider's accepted 1..1440 range and would abort
+     * construction rather than mint a token.
+     */
+    private static final long LIFETIME_MINUTES = 30L;
 
     // ---------------------------------------------------------------------------------------------
     // Context assembly helpers
     // ---------------------------------------------------------------------------------------------
 
-    @Configuration
+    // @TestConfiguration, not @Configuration. This class is registered EXPLICITLY into a hand-built
+    // context, so the annotation's only other effect matters: @SpringBootApplication component-scans
+    // com.cardemo.**, the test classes are on the classpath during the integration tier, and a nested
+    // @Configuration is a scan candidate while a @TestConfiguration is excluded by Boot's TypeExcludeFilter.
+    // Scanned in, its @Bean methods entered the application context and collided by NAME with the real
+    // definitions - which fails the context outright, because bean-definition overriding is off.
+    @TestConfiguration
     static class Support {
 
         @Bean
@@ -115,9 +151,23 @@ class SecurityConfigTest {
             return new PropertySourcesPlaceholderConfigurer();
         }
 
+        /**
+         * The slice's time source.
+         *
+         * <p>{@link SecurityConfig} deliberately declares no {@code Clock} bean - the application's single
+         * declaration belongs to {@code com.cardemo.config.ObservabilityConfig}, and
+         * {@link #theClockIsNotDeclaredHere()} asserts that it is not duplicated here, because
+         * {@code spring.main.allow-bean-definition-overriding} is {@code false} and a second declaration
+         * would abort startup rather than be ignored. This slice registers only the configuration class
+         * under test, so the collaborator that needs a clock gets one from here rather than from the
+         * observability configuration, which would drag its logging and metric wiring into a security test.
+         *
+         * @return a live clock in the deployment's zone, matching what the production declaration returns
+         *     when {@code carddemo.time.zone} is unset
+         */
         @Bean
         Clock clock() {
-            return NOW;
+            return Clock.systemDefaultZone();
         }
 
         @Bean
@@ -125,7 +175,7 @@ class SecurityConfigTest {
             return new JwtTokenProvider(
                     environment.getProperty("carddemo.security.jwt.signing-key"),
                     environment.getProperty("carddemo.security.jwt.issuer"),
-                    3600L,
+                    LIFETIME_MINUTES,
                     clock);
         }
 
@@ -163,14 +213,136 @@ class SecurityConfigTest {
     // ---------------------------------------------------------------------------------------------
 
     @Test
-    @DisplayName("publishes exactly one decoder, one encoder and one filter chain")
+    @DisplayName("publishes exactly one decoder, one encoder and one filter chain, and no second clock")
     void beanSurface() {
         withContext(ctx -> {
             assertThat(ctx.getBeanNamesForType(JwtDecoder.class)).hasSize(1);
             assertThat(ctx.getBeanNamesForType(PasswordEncoder.class)).hasSize(1);
             assertThat(ctx.getBeanNamesForType(SecurityFilterChain.class)).hasSize(1);
+            // Exactly one, and it is the slice's own: see Support#clock(). What matters here is that
+            // registering SecurityConfig does not add a second one.
+            assertThat(ctx.getBeanNamesForType(Clock.class)).containsExactly("clock");
             assertThat(ctx.getBean(SecurityConfig.class).getClass().getName()).contains("SecurityConfig");
         });
+    }
+
+    /**
+     * BLOCKER regression guard, in both directions. Nineteen singleton beans take a {@code Clock} by
+     * constructor, so a context with no declaration at all cannot refresh - and a context with <em>two</em>
+     * cannot either, because the base profile sets {@code spring.main.allow-bean-definition-overriding} to
+     * {@code false}, which turns a duplicate into a startup failure rather than a silent replacement. The
+     * single production declaration is {@code ObservabilityConfig#clock(String)}; a declaration was twice
+     * added to this class as well, and this test is what makes a third addition fail immediately instead of
+     * at the next full context refresh.
+     *
+     * <p>It asserts three things: this class declares no bean of that type, the observability configuration
+     * declares exactly the one that it does, and a collaborator that needs a clock is still satisfied - here
+     * the token provider, which the {@code Support} configuration builds from an injected clock rather than
+     * from a literal.
+     */
+    @Test
+    @DisplayName("the Clock is declared by the observability configuration and never a second time here")
+    void theClockIsNotDeclaredHere() throws NoSuchMethodException {
+        assertThat(Arrays.stream(SecurityConfig.class.getDeclaredMethods())
+                        .filter(method -> method.getAnnotation(Bean.class) != null)
+                        .filter(method -> Clock.class.equals(method.getReturnType()))
+                        .toList())
+                .as("a second Clock declaration aborts startup, because bean-definition overriding is off")
+                .isEmpty();
+
+        final Method owner = ObservabilityConfig.class.getDeclaredMethod("clock", String.class);
+        assertThat(owner.getAnnotation(Bean.class)).isNotNull();
+        assertThat(owner.getReturnType()).isEqualTo(Clock.class);
+
+        withContext(ctx -> {
+            final Clock clock = ctx.getBean(Clock.class);
+            assertThat(clock).isNotNull();
+            assertThat(ctx.getBean(JwtTokenProvider.class)).isNotNull();
+            // Two reads of a real clock never go backwards; a fixed clock would return the same instant.
+            assertThat(clock.instant()).isAfterOrEqualTo(clock.instant().minusSeconds(1));
+        });
+    }
+
+    /**
+     * The zone is a parity contract, not a preference. The legacy CICS region rendered local civil time
+     * ({@code EXEC CICS ASKTIME}/{@code FORMATTIME} at {@code app/cbl/COSGN00C.cbl:L177}) and the batch
+     * timestamp is built from {@code FUNCTION CURRENT-DATE} at {@code app/cbl/CBTRN02C.cbl:L689-L705}, which
+     * is likewise local. A UTC clock would shift every rendered {@code CURDATE}, {@code CURTIME} and
+     * generated 26-character timestamp by the deployment's offset.
+     */
+    @Test
+    @DisplayName("the production clock is region-local, not UTC, because the legacy region was")
+    void clockIsRegionLocal() {
+        // Asserted against the production declaration rather than against the bean in this slice, because
+        // the slice supplies its own stand-in and would otherwise only be restating Support#clock().
+        assertThat(new ObservabilityConfig().clock("").getZone()).isEqualTo(ZoneId.systemDefault());
+    }
+
+    /**
+     * The documented test-override contract. A deterministic test supplies its own instance as
+     * {@code @Primary}, which must win without deleting the declaration it overrides - here the slice's
+     * {@code Support#clock()}, standing in for the production one - and without enabling bean
+     * overriding - the base profile sets {@code spring.main.allow-bean-definition-overriding} to
+     * {@code false}, so an override that relied on replacement rather than on primacy would fail at startup.
+     */
+    @Test
+    @DisplayName("a @Primary fixed clock overrides the production clock without replacing it")
+    void primaryFixedClockOverridesProductionClock() {
+        final AnnotationConfigWebApplicationContext ctx = new AnnotationConfigWebApplicationContext();
+        ctx.setServletContext(new MockServletContext());
+        ctx.setEnvironment(environment());
+        ctx.setAllowBeanDefinitionOverriding(false);
+        ctx.register(SecurityConfig.class, Support.class, FixedClockOverride.class);
+        ctx.refresh();
+        try (ctx) {
+            assertThat(ctx.getBeanNamesForType(Clock.class)).hasSize(2);
+            assertThat(ctx.getBean(Clock.class).instant()).isEqualTo(FIXED_INSTANT);
+        }
+    }
+
+    /** The override shape this class documents, exercised by {@link #primaryFixedClockOverridesProductionClock()}. */
+    // @TestConfiguration, not @Configuration. This class is registered EXPLICITLY into a hand-built
+    // context, so the annotation's only other effect matters: @SpringBootApplication component-scans
+    // com.cardemo.**, the test classes are on the classpath during the integration tier, and a nested
+    // @Configuration is a scan candidate while a @TestConfiguration is excluded by Boot's TypeExcludeFilter.
+    // Scanned in, its @Bean methods entered the application context and collided by NAME with the real
+    // definitions - which fails the context outright, because bean-definition overriding is off.
+    @TestConfiguration
+    static class FixedClockOverride {
+
+        @Bean
+        @Primary
+        Clock carddemoFixedTestClock() {
+            return Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
+        }
+    }
+
+    /**
+     * CVE-2026-22732 mitigation guard. The advisory's condition is that Spring Security's default
+     * <em>lazy</em> header writing can leave the response security headers unwritten when the application
+     * sets headers of its own. The configured mitigation is eager writing, and eagerness is observable
+     * exactly once: the headers must already be on the response at the moment the chain hands control to the
+     * application. Under the lazy default the response is wrapped and nothing is written until commit, so
+     * this assertion fails - which is what makes it a regression guard rather than a restatement.
+     */
+    @Test
+    @DisplayName("security response headers are written eagerly, before the application is reached")
+    void securityHeadersAreWrittenEagerly() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final Filter chain = ctx.getBean("springSecurityFilterChain", Filter.class);
+            final MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/auth/signon");
+            request.setServletPath("/api/auth/signon");
+            request.setRequestURI("/api/auth/signon");
+            final MockHttpServletResponse response = new MockHttpServletResponse();
+
+            final List<String> headersVisibleToApplication = new ArrayList<>();
+            chain.doFilter(request, response, (req, res) ->
+                    headersVisibleToApplication.addAll(((HttpServletResponse) res).getHeaderNames()));
+
+            assertThat(headersVisibleToApplication)
+                    .as("headers present when the application is entered proves eager writing")
+                    .contains("X-Content-Type-Options", "X-Frame-Options", "Cache-Control");
+        }
     }
 
     @Test
@@ -213,7 +385,7 @@ class SecurityConfigTest {
     void absentSigningKey() {
         assertStartupRejects(
                 environment -> environment.setProperty("carddemo.security.jwt.signing-key", ""),
-                "carddemo.security.jwt.signing-key", "JWT_SECRET");
+                "carddemo.security.jwt.signing-key", "JWT_SIGNING_KEY");
     }
 
     @Test
@@ -240,32 +412,32 @@ class SecurityConfigTest {
         // is ever constructed (asserted separately below). The guard exists for a LENIENT context, which
         // injects the placeholder text itself - 32+ bytes, and therefore long enough to pass every other
         // check. Constructing directly is the only way to reach that branch.
-        assertThatThrownBy(() -> new SecurityConfig("${JWT_SECRET}", ISSUER, 10))
+        assertThatThrownBy(() -> new SecurityConfig("${JWT_SIGNING_KEY}", ISSUER, 10))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("carddemo.security.jwt.signing-key")
                 .hasMessageContaining("unresolved")
-                .hasMessageContaining("JWT_SECRET");
+                .hasMessageContaining("JWT_SIGNING_KEY");
     }
 
     @Test
     @DisplayName("a strict context refuses to resolve an unset variable before this class is constructed")
     void strictPlaceholderResolutionHappensFirst() {
         final MockEnvironment environment = environment();
-        environment.setProperty("carddemo.security.jwt.signing-key", "${JWT_SECRET_NEVER_SET}");
+        environment.setProperty("carddemo.security.jwt.signing-key", "${JWT_SIGNING_KEY_NEVER_SET}");
         assertThatThrownBy(() -> context(environment))
                 .hasStackTraceContaining("Could not resolve placeholder")
-                .hasStackTraceContaining("JWT_SECRET_NEVER_SET");
+                .hasStackTraceContaining("JWT_SIGNING_KEY_NEVER_SET");
     }
 
     @Test
     @DisplayName("the constructor rejects every bad signing key without naming any value")
     void constructorLevelFailFast() {
-        for (final String bad : new String[] {null, "", "   ", "short", "${JWT_SECRET}"}) {
+        for (final String bad : new String[] {null, "", "   ", "short", "${JWT_SIGNING_KEY}"}) {
             assertThatThrownBy(() -> new SecurityConfig(bad, ISSUER, 10))
                     .as("signing key %s", bad == null ? "null" : "'" + bad + "'")
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("carddemo.security.jwt.signing-key")
-                    .hasMessageContaining("JWT_SECRET");
+                    .hasMessageContaining("JWT_SIGNING_KEY");
         }
         assertThatThrownBy(() -> new SecurityConfig(GOOD_KEY, null, 10))
                 .isInstanceOf(IllegalStateException.class)
@@ -313,7 +485,7 @@ class SecurityConfigTest {
     @DisplayName("decoder rejects a token signed with a different key")
     void decoderRejectsForeignSignature() {
         withContext(ctx -> {
-            final String foreign = new JwtTokenProvider(OTHER_KEY, ISSUER, 3600L, NOW)
+            final String foreign = new JwtTokenProvider(OTHER_KEY, ISSUER, LIFETIME_MINUTES, NOW)
                     .issueToken("USER0001", UserType.USER);
             assertThatThrownBy(() -> ctx.getBean(JwtDecoder.class).decode(foreign))
                     .isInstanceOf(JwtException.class);
@@ -324,7 +496,7 @@ class SecurityConfigTest {
     @DisplayName("decoder rejects a token from a different issuer")
     void decoderRejectsForeignIssuer() {
         withContext(ctx -> {
-            final String foreign = new JwtTokenProvider(GOOD_KEY, "someone-else", 3600L, NOW)
+            final String foreign = new JwtTokenProvider(GOOD_KEY, "someone-else", LIFETIME_MINUTES, NOW)
                     .issueToken("USER0001", UserType.USER);
             assertThatThrownBy(() -> ctx.getBean(JwtDecoder.class).decode(foreign))
                     .isInstanceOf(JwtException.class);
@@ -336,7 +508,7 @@ class SecurityConfigTest {
     void decoderRejectsExpiredToken() {
         withContext(ctx -> {
             final Clock past = Clock.fixed(NOW.instant().minus(Duration.ofDays(2)), ZoneOffset.UTC);
-            final String stale = new JwtTokenProvider(GOOD_KEY, ISSUER, 60L, past)
+            final String stale = new JwtTokenProvider(GOOD_KEY, ISSUER, LIFETIME_MINUTES, past)
                     .issueToken("USER0001", UserType.USER);
             assertThatThrownBy(() -> ctx.getBean(JwtDecoder.class).decode(stale))
                     .isInstanceOf(JwtException.class);
@@ -398,6 +570,25 @@ class SecurityConfigTest {
 
             final Outcome wrongMethod = call(ctx, "GET", "/api/auth/signon", null);
             assertThat(wrongMethod.status()).isEqualTo(401);
+
+            // The anonymous rule matches the EXACT sign-on route, not the /api/auth namespace. Every other
+            // path under that namespace - including plausible additions such as a refresh, a sign-off or a
+            // password reset, none of which any CSD transaction sanctions - must fall through to
+            // anyRequest().denyAll(). A prefix matcher would let all four of these through unauthenticated.
+            for (final String[] namespaceProbe : new String[][] {
+                    { "POST", "/api/auth" },
+                    { "POST", "/api/auth/refresh" },
+                    { "POST", "/api/auth/signon/extra" },
+                    { "GET", "/api/auth/users" } }) {
+                final Outcome overreach = call(ctx, namespaceProbe[0], namespaceProbe[1], null);
+                assertThat(overreach.status())
+                        .as("%s %s must not be anonymous", namespaceProbe[0], namespaceProbe[1])
+                        .isEqualTo(401);
+                assertThat(overreach.reachedApplication())
+                        .as("%s %s must not reach a handler", namespaceProbe[0], namespaceProbe[1])
+                        .isFalse();
+                assertThat(overreach.sessionCreated()).isFalse();
+            }
         }
     }
 
@@ -464,11 +655,116 @@ class SecurityConfigTest {
         }
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Default security headers, driven through the real chain with an application header already set
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * The default security headers the chain must emit on every response.
+     *
+     * <p>{@link SecurityConfig} configures no {@code headers(...)} block, so every one of these comes from
+     * Spring Security's defaults. That is precisely why the advisory behind review finding F3 matters here:
+     * it is the DEFAULT writer that was skipped, so an application relying on defaults loses all six at
+     * once while an application that had spelled them out loses nothing.
+     */
+    private static final String[][] EXPECTED_DEFAULT_HEADERS = {
+        { "X-Content-Type-Options", "nosniff" },
+        { "X-XSS-Protection", "0" },
+        { "Cache-Control", "no-cache, no-store, max-age=0, must-revalidate" },
+        { "Pragma", "no-cache" },
+        { "Expires", "0" },
+        { "X-Frame-Options", "DENY" },
+    };
+
+    /**
+     * Drives the real chain and returns the response, optionally with a response header already set.
+     *
+     * @param ctx the refreshed context supplying the chain
+     * @param method the HTTP method
+     * @param uri the request URI
+     * @param token a bearer token, or {@code null} for an anonymous call
+     * @param presetHeader an application header to set before the chain runs, or {@code null} for none
+     * @return the response the chain produced
+     * @throws Exception if the chain does
+     */
+    private static MockHttpServletResponse responseOf(final AnnotationConfigWebApplicationContext ctx,
+                                                      final String method,
+                                                      final String uri,
+                                                      final String token,
+                                                      final String presetHeader) throws Exception {
+        final Filter chain = ctx.getBean("springSecurityFilterChain", Filter.class);
+        final MockHttpServletRequest request = new MockHttpServletRequest(method, uri);
+        request.setServletPath(uri);
+        request.setRequestURI(uri);
+        if (token != null) {
+            request.addHeader("Authorization", "Bearer " + token);
+        }
+        final MockHttpServletResponse response = new MockHttpServletResponse();
+        if (presetHeader != null) {
+            response.setHeader(presetHeader, "probe-correlation-id");
+        }
+        chain.doFilter(request, response, new MockFilterChain());
+        return response;
+    }
+
+    /**
+     * The default security headers are written on every response, including when the application has
+     * already set one of its own.
+     *
+     * <p>{@link SecurityConfig} declares no {@code headers(...)} block, so all six values below come from
+     * Spring Security's defaults and nothing else in this class asserts that they arrive at all. That is
+     * what this test owns: the header contract itself, on the permitted path, on a rejected path, and with
+     * an application header such as {@code X-Correlation-Id} already present.
+     *
+     * <p><strong>Scope limit, stated because it is easy to assume otherwise.</strong> This is NOT the guard
+     * on review finding F3, and it does not detect the advisory behind it (CVE-2026-22732 /
+     * GHSA-mf92-479x-3373, fixed in 6.5.9). That defect only manifests when a response is genuinely
+     * committed before the header writer runs, and a post-commit header write is silently discarded - which
+     * a real container does and {@code MockHttpServletResponse} does not. Driven through mocks, as here, the
+     * writer's trailing write always records and the assertions below pass on the vulnerable 6.5.8 exactly
+     * as they do on the pinned 6.5.11; that was verified by negative check rather than assumed. The
+     * behavioural guard on F3 therefore lives in
+     * {@link SecurityHeaderCommitContractTest}, which reproduces the commit condition in a real embedded
+     * container and does discriminate between the two releases.
+     *
+     * @throws Exception if the chain does
+     */
+    @Test
+    @DisplayName("the default security headers survive an application-set response header (finding F3)")
+    void defaultSecurityHeadersSurviveAnApplicationSetHeader() throws Exception {
+        try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
+            final String token = ctx.getBean(JwtTokenProvider.class).issueToken("USER0001", UserType.USER);
+
+            for (final String[] probe : new String[][] {
+                    { "POST", "/api/auth/signon", null },
+                    { "GET", "/api/cards", token },
+                    { "GET", "/api/accounts/00000000001", null } }) {
+                for (final String preset : new String[] { null, "X-Correlation-Id" }) {
+                    final MockHttpServletResponse response =
+                            responseOf(ctx, probe[0], probe[1], probe[2], preset);
+                    final String label = probe[0] + " " + probe[1]
+                            + (preset == null ? " [no application header]" : " [application header set]");
+
+                    for (final String[] header : EXPECTED_DEFAULT_HEADERS) {
+                        assertThat(response.getHeader(header[0]))
+                                .as("%s must carry %s", label, header[0])
+                                .isEqualTo(header[1]);
+                    }
+                    if (preset != null) {
+                        assertThat(response.getHeader(preset))
+                                .as("%s must retain the application header too", label)
+                                .isEqualTo("probe-correlation-id");
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     @DisplayName("a tampered or foreign token authenticates nothing")
     void tamperedToken() throws Exception {
         try (AnnotationConfigWebApplicationContext ctx = context(environment())) {
-            final String foreign = new JwtTokenProvider(OTHER_KEY, ISSUER, 3600L, NOW)
+            final String foreign = new JwtTokenProvider(OTHER_KEY, ISSUER, LIFETIME_MINUTES, NOW)
                     .issueToken("ADMIN001", UserType.ADMIN);
             final Outcome outcome = call(ctx, "GET", "/api/admin/users", foreign);
             assertThat(outcome.status()).isEqualTo(401);

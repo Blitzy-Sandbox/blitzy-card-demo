@@ -64,7 +64,7 @@ import org.springframework.transaction.annotation.Transactional;
  * defined at {@code app/csd/CARDDEMO.CSD:145} and the program entry at {@code :257}.
  *
  * <p>Every applicable source paragraph maps to <strong>exactly one</strong> private method here,
- * one-for-one, with no consolidation and no splitting, so that {@code TRACEABILITY_MATRIX.md} is
+ * one-for-one, with no consolidation and no splitting, so that the paragraph map is
  * mechanically provable against paragraph correspondence. Industry guidance against literal
  * transliteration is deliberately overridden: behavioural parity is the contract. The readability
  * cost is answered by the source-citing Javadoc on every method and by the traceability matrix,
@@ -126,14 +126,14 @@ import org.springframework.transaction.annotation.Transactional;
  * <h2>Preserved legacy quirks — reproduced deliberately, never repaired</h2>
  *
  * <ul>
- *   <li><strong>High — the last-key anchor is written only at slot ten</strong>
+ *   <li><strong>The last-key anchor is written only at slot ten</strong>
  *       ({@code app/cbl/COTRN00C.cbl:L437-L439}). On a partial final page {@code WS-IDX} never
  *       reaches ten, so {@code CDEMO-CT00-TRNID-LAST} keeps the previous page's value, or spaces
  *       on the very first page, and a later forward page would anchor on a stale key. This class
  *       reproduces that exactly and does <em>not</em> derive the anchor from the actual final row.
- *       Remediation, deliberately not applied: update the last-key anchor only when the page is
- *       full, matching the source. Logged in {@code DECISION_LOG.md}.</li>
- *   <li><strong>Medium — the invalid-selection path falls through</strong>
+ *       The tempting change - updating the anchor only when the page is full - is deliberately not
+ *       applied, because the source does not do it.</li>
+ *   <li><strong>The invalid-selection path falls through</strong>
  *       ({@code app/cbl/COTRN00C.cbl:L196-L203}). Both {@code SET TRANSACT-EOF TO TRUE} at
  *       {@code :L197} and {@code PERFORM SEND-TRNLST-SCREEN} at {@code :L202} are commented out in
  *       the source, so the path raises neither the error flag nor a send. It falls through into
@@ -167,7 +167,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       {@code :L373} move {@code CDEMO-CT00-PAGE-NUM} into {@code PAGENUMI}, narrowing
  *       {@code 9(08)} to {@code X(8)}. The eight-character rendering is preserved verbatim,
  *       including the all-zero value described below.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Constructs with no Java counterpart</h2>
  *
@@ -186,13 +186,13 @@ import org.springframework.transaction.annotation.Transactional;
  * <p>Two working-storage items are declared in the source but never referenced in its procedure
  * division — {@code WS-REC-COUNT} at {@code :L52} and {@code WS-PAGE-NUM} at {@code :L54}, the
  * live page counter being {@code CDEMO-CT00-PAGE-NUM} at {@code :L65}. No Java field is created
- * for either; they are recorded here instead. Severity Low.
+ * for either; they are recorded here instead.
  *
  * <h2>Deliberately unreachable arms</h2>
  *
  * <p>Nine statements in this class cannot execute under any request the public API accepts. Each is
  * retained on purpose and none is abandoned residue, so each is listed here with its justification.
- * Severity Low throughout. Line coverage for this class is consequently bounded a little below one
+ * Line coverage for this class is consequently bounded a little below one
  * hundred percent by design rather than by missing tests.
  *
  * <ul>
@@ -216,40 +216,30 @@ import org.springframework.transaction.annotation.Transactional;
  *       unreachable because both columns they read are {@code NOT NULL} and the entity enforces it
  *       in its constructor. They are retained because the requirement to handle empty and absent
  *       values explicitly applies to every helper, not only to those with a reachable null.</li>
- * </ul>
+ *   </ul>
  *
- * <h2>"Not available"</h2>
+ * <h2>Boundaries and configuration this class relies on</h2>
  *
  * <ul>
- *   <li>{@code src/main/resources/db/migration/V3__seed_data.sql} is <strong>Not available</strong>
- *       at authoring time; {@code V1__create_schema.sql} and {@code V2__create_indexes.sql} do
- *       exist. Because {@code src/main/resources/application.yml:576} sets
- *       {@code ddl-auto: validate}, a column mismatch fails context startup rather than silently
+ *   <li>Because {@code spring.jpa.hibernate.ddl-auto} is {@code validate}, a column mismatch fails
+ *       context startup rather than silently
  *       migrating, so this class emits no DDL and assumes no schema beyond the entity mapping it
  *       consumes.</li>
- *   <li>The profile overlays {@code application-local.yml}, {@code application-test.yml} and
- *       {@code application-prod.yml} are <strong>Not available</strong> at authoring time; only the
- *       base {@code application.yml} exists. Severity Low, and no behaviour here depends on an
- *       overlay: the page size is bound by key, so any overlay that redefines it is picked up
- *       without change. What would be needed to close this: the overlays themselves, after which
- *       each should be confirmed to leave {@code ddl-auto} at {@code validate} and to keep
- *       {@code carddemo.pagination.transaction-list-page-size} at ten.</li>
- *   <li>A literal attestation of file status {@code '35'} anywhere in the COBOL corpus is
- *       <strong>Not available</strong>; the status is handled by the shared mapper on the strength
- *       of the documented status taxonomy alone. What would be needed: a corpus occurrence, or a
- *       written statement that the status is unreachable in this application.</li>
- *   <li>Evidence for the specification's page-size citation of {@code :L65-L68} is
- *       <strong>Not available</strong>: {@code :L65} is {@code CDEMO-CT00-PAGE-NUM PIC 9(08)}, the
+ *   <li>The page size is bound by key,
+ *       {@code carddemo.pagination.transaction-list-page-size}, so any profile overlay that
+ *       redefines it is picked up without change. Every overlay must leave {@code ddl-auto} at
+ *       {@code validate} and keep that key at ten.</li>
+ *   <li>File status {@code '35'} has no literal attestation anywhere in the COBOL corpus; the status
+ *       is handled by the shared mapper on the strength
+ *       of the documented status taxonomy alone.</li>
+ *   <li>The page size comes from the loop bounds, not from {@code :L65-L68}: {@code :L65} is
+ *       {@code CDEMO-CT00-PAGE-NUM PIC 9(08)}, the
  *       page <em>number</em>, and {@code :L66-L68} are the next-page flag and its condition names.
- *       Severity Low, documentation only; the load-bearing locators are listed above. Remediation:
- *       correct the citation to the loop bounds.</li>
- *   <li>Evidence for the specification's claim that the header time field is universally
- *       {@code X(9)} is <strong>Not available</strong> for this mapset:
+ *       The load-bearing locators are listed above.</li>
+ *   <li>The header time field is eight characters on this mapset, not nine:
  *       {@code app/cpy-bms/COTRN00.CPY:54} declares {@code CURTIMEI PIC X(8)}, matching the
- *       eight-character {@code HH:MM:SS} group at {@code app/cpy/CSDAT01Y.cpy:36-41}. Severity
- *       Low, documentation only. Remediation: scope the {@code X(9)} claim to the one outlier
- *       mapset that actually declares it.</li>
- * </ul>
+ *       eight-character {@code HH:MM:SS} group at {@code app/cpy/CSDAT01Y.cpy:36-41}.</li>
+ *   </ul>
  *
  * @see TransactionListService#submitScreen
  */
@@ -1180,7 +1170,7 @@ public class TransactionListService {
      * retained rather than cleared, so that the path where slot blanking is skipped keeps showing
      * them exactly as the shared input and output map storage does. The cosmetic row fields — date,
      * description and amount — are not carried on the request and so are blank on that path; a
-     * bounded divergence, severity Low, reachable only when the priming read hits end of data, which
+     * bounded divergence, reachable only when the priming read hits end of data, which
      * the next-page guard makes unreachable in normal use.
      *
      * <p><strong>Every received field is bounded to its declared map width.</strong>
@@ -1197,8 +1187,7 @@ public class TransactionListService {
      * digits, and the response still carries the {@code :L214} literal. Without this bound an
      * over-width field would instead escape as an {@code IllegalArgumentException} raised by the
      * map-width validation inside {@code TransactionDto}, which has no legacy counterpart and would
-     * breach the standing requirement that inputs be treated as untrusted. Severity of the defect
-     * this closes: Medium.
+     * breach the standing requirement that inputs be treated as untrusted.
      *
      * @param work the per-invocation work area
      * @param searchTransactionId the submitted search key, or {@code null}
@@ -1271,8 +1260,8 @@ public class TransactionListService {
      * low values ({@code :L207}) and high values ({@code :L260}), neither of which is a real key, so
      * an equal-key browse would find nothing on every first display. Greater-or-equal positioning is
      * what the idiom requires and what the repository contract provides; the commented operand is
-     * behaviourally inert. Remediation, deliberately not applied: restore the operand to state the
-     * intent explicitly.
+     * behaviourally inert, and the commented operand is deliberately left commented rather than
+     * restored.
      *
      * <p>Outcomes. {@code DFHRESP(NORMAL)} continues ({@code :L603-L604}). {@code DFHRESP(NOTFND)}
      * at {@code :L605-L611} sets end of data, reports the top-of-page message and sends — and
@@ -1288,7 +1277,7 @@ public class TransactionListService {
      * data-access failure is an infrastructure fault, not a displayable response code, so the flag,
      * message and cursor transitions are reproduced and the failure is then rethrown as a typed
      * unchecked exception preserving the root cause. Swallowing it to return a screen would breach
-     * the no-swallowing standard and hide the fault. Recorded in {@code DECISION_LOG.md}.
+     * the no-swallowing standard and hide the fault.
      *
      * @param work the per-invocation work area
      * @param descending whether the subsequent reads run backward. CICS derives direction from the
@@ -1497,10 +1486,10 @@ public class TransactionListService {
      * browse finds nothing, and is carried raw on the returned state so it can re-enter the source's
      * arithmetic unaltered.
      *
-     * <p><strong>Labelled deviation, Low.</strong> {@code PageResponse} forbids a page number below
+     * <p><strong>Labelled deviation.</strong> {@code PageResponse} forbids a page number below
      * one, so its copy is clamped. This is provably inert: a zero page number only arises together
      * with the next-page indicator off, in which case forward paging takes the refusal arm and the
-     * backward guard tests identically for zero and one. Recorded in {@code DECISION_LOG.md}.
+     * backward guard tests identically for zero and one.
      *
      * @param work the per-invocation work area
      * @return the completed screen; never {@code null}
@@ -1740,6 +1729,15 @@ public class TransactionListService {
      * them would be dead code; they are recorded in the class documentation instead.
      */
     private static final class ScreenWorkArea {
+        /**
+         * Creates the work area with every member at its post-{@code INITIALIZE} value, which is the state
+         * the legacy {@code WORKING-STORAGE SECTION} begins each task in. Declared explicitly rather than
+         * left implicit so the surface is documented; it takes no argument and performs no work.
+         */
+        private ScreenWorkArea() {
+            // Every member carries its initial value in its own declaration above, exactly as a COBOL
+            // VALUE clause does, so there is nothing for this constructor to assign.
+        }
 
         /** {@code WS-MESSAGE} — {@code app/cbl/COTRN00C.cbl:L38}. */
         private String message = SPACES;

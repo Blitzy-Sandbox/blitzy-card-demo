@@ -98,13 +98,13 @@ import org.junit.jupiter.params.provider.CsvSource;
  *       is asserted here as observed behaviour rather than presumed to match its sibling key classes, which
  *       do guard. The upsert path in {@code app/cbl/CBTRN02C.cbl:L467-L500} treats a not-found status as an
  *       accepted create path, so a key instance is legitimately built for a row that does not yet exist.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test                                             # whole unit tier
- * mvn -B -o test -Dtest=TransactionCategoryBalanceIdTest      # this class alone
+ * ./mvnw -B -ntp -o test                                             # whole unit tier
+ * ./mvnw -B -ntp -o test -Dtest=TransactionCategoryBalanceIdTest      # this class alone
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -122,7 +122,7 @@ import org.junit.jupiter.params.provider.CsvSource;
  *   <li><strong>A null-tolerance assertion fails.</strong> A guard was added. That may well be an
  *       improvement, but it is a behaviour change: reconcile it against the upsert path before changing
  *       this expectation.</li>
- * </ul>
+ *   </ul>
  *
  * @see TransactionCategoryBalanceId
  */

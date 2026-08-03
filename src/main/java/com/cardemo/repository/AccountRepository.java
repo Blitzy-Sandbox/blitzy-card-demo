@@ -18,7 +18,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -30,8 +29,10 @@
  */
 package com.cardemo.repository;
 
+import java.util.List;
 import java.util.Optional;
 
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
@@ -74,7 +75,7 @@ import jakarta.persistence.LockModeType;
  *       identifiers are business keys rather than secrets, but no card number, government identifier,
  *       date of birth, electronic-funds account identifier, credential or signing key is ever exposed or
  *       logged by this type.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Provenance</h2>
  * <ul>
@@ -97,7 +98,7 @@ import jakarta.persistence.LockModeType;
  *       the six datasets of the daily transaction posting job.</li>
  *   <li><b>Traceability anchor.</b> Commit {@code 7756d89}. The legacy corpus under {@code app/} is frozen and
  *       byte-for-byte read-only; every citation above is a read of the system of record, never an edit.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Field contract carried by the mapped aggregate</h2>
  * <p>
@@ -139,7 +140,7 @@ import jakarta.persistence.LockModeType;
  *       {@code app/data/ASCII/acctdata.txt} carries exactly that. It is therefore never treated as
  *       blank-rejecting input and is never trimmed inside a query predicate, because trimming would make a
  *       ten-space value and an empty value indistinguishable and would change which rows match.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Method surface and its named call sites</h2>
  * <p>
@@ -167,7 +168,7 @@ import jakarta.persistence.LockModeType;
  *   <li><b>{@link #findByIdForUpdate(Long)} &mdash; pessimistic read for update.</b> Declared below. Replaces
  *       {@code EXEC CICS READ ... UPDATE} at {@code app/cbl/COACTUPC.cbl:L3894}-{@code :L3906}. Consumed by
  *       {@code com.cardemo.service.account.AccountUpdateService}.</li>
- * </ol>
+ *   </ol>
  * <p>
  * <b>Nothing else is declared.</b> There is no finder on {@code groupId}, {@code activeStatus}, any balance or
  * any date, no projection, no aggregate and no bulk update statement. Each omission is a decision with a
@@ -187,7 +188,7 @@ import jakarta.persistence.LockModeType;
  *       reject record. <b>Reject codes are business outcomes that drive {@code ExitStatus}; they are never
  *       raised as exceptions.</b> Throwing there would abort a batch run that the legacy job completes with
  *       return code 4.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The account-update write sequence this repository serves</h2>
  * <p>
@@ -274,7 +275,7 @@ import jakarta.persistence.LockModeType;
  *       and {@code (7:2)}, and the source compares across those differing offsets. A naive whole-string
  *       comparison would report a change on <em>every</em> request and render the endpoint permanently
  *       unusable.</li>
- * </ul>
+ *   </ul>
  * <p>
  * Counted against the source rather than restated from prose: the account block at
  * {@code :L4114}-{@code :L4140} compares <b>ten</b> account fields through <b>sixteen</b> {@code AND}-clauses,
@@ -334,9 +335,9 @@ import jakarta.persistence.LockModeType;
  *             {@code :L224} moves the <b>entire</b> current balance into the transaction amount, so the payment
  *             is always the full balance and never partial; {@code :L234} subtracts it, driving the balance to
  *             exactly zero; and {@code :L235} performs the account update.</li>
- *       </ul>
- *       Remediation: none required; the omissions are the fix, and they are enumerated here so that a future
- *       contributor does not "optimise" a service loop into a bulk update.</dd>
+ *   </ul>
+ * Remediation: none required; the omissions are the fix, and they are enumerated here so that a future
+ * contributor does not "optimise" a service loop into a bulk update.</dd>
  *   <dt><b>High &mdash; an optimistic version column alone is insufficient, so an explicit read for update is
  *       required.</b></dt>
  *   <dd>A JPA {@code @Version} column detects <em>that</em> a row changed. The legacy program detects
@@ -354,7 +355,7 @@ import jakarta.persistence.LockModeType;
  *       that the decision is forced onto the caller instead of being hard-coded here. Remediation: callers must
  *       handle the empty case explicitly; there is no default.</dd>
  *   <dt><b>Medium &mdash; no secondary index exists on the account table, so no finder may imply one.</b></dt>
- *   <dd>{@code V2__create_indexes.sql} (planned; absent at this commit) is to create exactly three non-unique
+ *   <dd>{@code V2__create_indexes.sql} is to create exactly three non-unique
  *       indexes, on {@code card.card_acct_id},
  *       {@code card_cross_reference.xref_acct_id} and the transaction table's {@code tran_proc_ts}, mirroring
  *       the three VSAM alternate indexes. <b>None is on {@code account}</b>, which is consistent with the
@@ -368,7 +369,7 @@ import jakarta.persistence.LockModeType;
  *       risk in the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md} rather than silently absorbed.
  *       Remediation: revisit once the performance-baseline gate has produced measured throughput and latency
  *       figures.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Design decisions</h2>
  * <ul>
@@ -377,14 +378,17 @@ import jakarta.persistence.LockModeType;
  *       criteria-API or predicate-builder helper, no mapper and no DAO wrapper. Spring Data
  *       generates the implementation from the signatures, so a hand-written one would be duplicate code with a
  *       second behaviour to keep in step.</li>
- *   <li><b>Every declared method has a named consumer, though not yet a call site.</b> The rule that forbids
- *       dead code applies here at full strength with no exemption, because none of the migration's deliberately
- *       preserved no-op artefacts lives in this package. Accordingly the interface declares one method and not
- *       one more: an ordered-scan finder, a group or status finder and any projection were all considered and
- *       rejected for want of a consumer. <strong>Measured 1 August 2026</strong>, no file outside
- *       {@code com.cardemo.repository} references this interface: the service and batch packages that are to
- *       call it are <strong>not available</strong>, so the one declared method is justified by a named future
- *       consumer rather than by an existing call site.</li>
+ *   <li><b>Every declared method has a real call site.</b> The rule that forbids dead code applies here at
+ *       full strength with no exemption, because none of the migration's deliberately preserved no-op
+ *       artefacts lives in this package. Accordingly the interface declares one method and not one more: an
+ *       ordered-scan finder, a group or status finder and any projection were all considered and rejected for
+ *       want of a consumer. <strong>Re-measured at this commit</strong>, eight files outside
+ *       {@code com.cardemo.repository} reference this interface, across the service and batch packages, and
+ *       six test files exercise it. An earlier revision said "no file outside {@code com.cardemo.repository}
+ *       references this interface" and that the calling packages were <strong>not available</strong>, so the
+ *       method was justified by a named future consumer rather than an existing call site; that is withdrawn -
+ *       the call sites exist. Re-derive with
+ *       {@code grep -rl AccountRepository src/main/java | grep -v /repository/}.</li>
  *   <li><b>Parameter binding only.</b> The one query is a constant string with a named parameter. No JPQL or SQL
  *       is assembled by concatenation anywhere in this file, and no native-SQL query is used at all, so
  *       there is no interpolation site for an injection to reach.</li>
@@ -413,7 +417,7 @@ import jakarta.persistence.LockModeType;
  *       caller through {@code Sort} or {@code Pageable}; no result set here depends on natural, heap or hash
  *       order. The single declared query returns at most one row by primary key, so its ordering is total by
  *       construction.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>How to build, run and test</h2>
  * <ul>
@@ -421,10 +425,11 @@ import jakarta.persistence.LockModeType;
  *       {@code failOnWarning}, so any warning is a hard failure rather than advisory output.</li>
  *   <li><b>Run:</b> this interface is not independently runnable. Spring Data materialises a proxy for it during
  *       application-context refresh, so it participates in a run only as part of the Spring Boot application,
- *       started with {@code ./mvnw -B spring-boot:run} or from the packaged JAR. <strong>Neither is possible at
- *       this commit, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point and no
- *       {@code application*.yml} profile exists, so no context can refresh. Two preconditions will fail fast at
- *       boot once it can: a reachable PostgreSQL 16 instance carrying the {@code account} table exactly as
+ *       started with {@code ./mvnw -B spring-boot:run} or from the packaged JAR. Both are now possible:
+ *       {@code CardDemoApplication} carries {@code @SpringBootApplication} and all four
+ *       {@code application*.yml} profiles are present, so the context refreshes. An earlier revision recorded
+ *       both as absent; that ceased to be true when those files were authored. Two preconditions fail fast at
+ *       boot: a reachable PostgreSQL 16 instance carrying the {@code account} table exactly as
  *       contracted below, and the environment-indirected JWT signing key, which has no committed default.</li>
  *   <li><b>Test:</b> {@code ./mvnw -B clean test} for the unit tier. The tests that matter for this type are
  *       integration tests under {@code src/test/java/com/cardemo/integration/repository}, executed by
@@ -435,7 +440,7 @@ import jakarta.persistence.LockModeType;
  *       recorded as passing.</li>
  *   <li><b>Verify:</b> {@code ./mvnw -B clean verify} additionally enforces the line-coverage floor and the
  *       dependency-vulnerability gate.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  * <ul>
@@ -475,18 +480,21 @@ import jakarta.persistence.LockModeType;
  *   <li><b>An empty {@link Optional} treated as an error in a batch step.</b> That inverts the source: a missing
  *       account in the posting job is reject code {@code 101}, not an abend. Check the call site against the
  *       preceding section before adding a throw.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Missing information disclosure</h2>
  * <p>
- * <b>Not available:</b> {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}. Measured
- * 1 August 2026, {@code src/main/resources/db/migration/V1__create_schema.sql} <b>is present</b>
- * and declares {@code CREATE TABLE account}, with {@code version BIGINT} and
- * {@code ck_account_active_status}, so the query and the locking semantics below are reconciled
- * against real DDL. What is needed is the two remaining migration files. Because
- * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile, a mismatch would fail
- * application-context startup rather than degrading gracefully, so the following is <b>what {@code V1}
- * declares and what this interface is typed over</b>: table {@code account} carrying the
+ * <b>All three Flyway migrations are present.</b> An earlier revision of this disclosure recorded
+ * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as not available; that is no longer true and
+ * the claim is withdrawn. {@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * {@code CREATE TABLE account} with {@code version BIGINT} and {@code ck_account_active_status};
+ * {@code V2} deliberately creates no index for this table, because {@code ACCTDATA} has no alternate index
+ * in {@code app/catlg/LISTCAT.txt} and the primary key is the only access path this interface needs; and
+ * {@code V3} seeds it from {@code app/data/ASCII/acctdata.txt} with position-aware overpunch decoding. The
+ * query and the locking semantics below are therefore reconciled against real DDL. Because
+ * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in all four profiles - which are present too -
+ * a mismatch fails application-context startup rather than degrading gracefully, so the following is
+ * <b>what {@code V1} declares and what this interface is typed over</b>: table {@code account} carrying the
  * twelve columns of the field contract above &mdash; <b>including the retained {@code acct_expiraion_date}
  * misspelling</b> &mdash; with {@code acct_id NUMERIC(11)} as primary key, the five money and cycle columns at
  * {@code NUMERIC(12,2)}, the six text columns at {@code CHAR}, a {@code version BIGINT} optimistic-lock column,
@@ -529,4 +537,39 @@ public interface AccountRepository extends JpaRepository<Account, Long> {
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select a from Account a where a.accountId = :accountId")
     Optional<Account> findByIdForUpdate(@Param("accountId") Long accountId);
+
+    /**
+     * Reads the next window of the key sequence, positioned by the last key already consumed.
+     *
+     * <p><strong>Finding, Medium severity - the sequential scan positioned by page number.</strong> The
+     * verification readers used {@code findAll(Pageable)}, which positions a window with SQL
+     * {@code OFFSET}. An {@code OFFSET} is not a seek: the engine produces and discards every preceding
+     * row, so the cost of window <em>n</em> grows with <em>n</em> and a full scan is quadratic in the row
+     * count. A keyset predicate is a single index descent whose cost is constant per window, which is also
+     * what the legacy {@code READ NEXT} actually is - VSAM resumes from the key it last returned and never
+     * re-reads the front of the cluster. The page-number form modelled something the source does not do.
+     *
+     * <p>Two further costs went with it. {@code findAll(Pageable)} returns a {@code Page}, so every window
+     * carried a {@code select count(*)} whose result the readers discarded; and the {@code OFFSET} form
+     * re-reads rows a concurrent insert may have shifted, which can skip or duplicate a row across window
+     * boundaries. A {@code List} keyed on the last consumed key has neither problem.
+     *
+     * <p><strong>The seed value.</strong> The first window is requested with any value strictly below every
+     * legal key. {@code ACCT-ID} is {@code PIC 9(11)} at {@code app/cpy/CVACT01Y.cpy:L5} - unsigned display,
+     * so its least legal value is zero, which {@code com.cardemo.model.entity.Account} enforces as its
+     * minimum - and the column is {@code NUMERIC(11) NOT NULL} at
+     * {@code src/main/resources/db/migration/V1__create_schema.sql:515}. Any negative seed is therefore
+     * provably below the whole key space; the reader passes {@code -1}.
+     *
+     * <p>The {@code Pageable} supplies the window size only. Its page number must be zero, because the
+     * predicate - not an offset - is what positions the window, and the ordering is fixed by the method
+     * name so it cannot be varied by a caller-supplied {@code Sort}.
+     *
+     * @param accountId the account identifier of the last row already consumed, or a negative value to
+     *     start at the beginning of the key sequence.
+     * @param pageable the window size; page number zero.
+     * @return the next window in ascending key order, never {@code null} and empty once the scan is
+     *     exhausted, which is the readers' end-of-file condition.
+     */
+    List<Account> findByAccountIdGreaterThanOrderByAccountIdAsc(Long accountId, Pageable pageable);
 }

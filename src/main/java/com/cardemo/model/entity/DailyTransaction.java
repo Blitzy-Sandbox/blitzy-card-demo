@@ -143,12 +143,12 @@ import org.hibernate.type.SqlTypes;
  *       thirteen record columns from the one metadata column, so a reader can tell
  *       them apart by name alone. Naming it {@code dalytran_ingest_seq} would
  *       assert a copybook field that does not exist.</li>
- * </ul>
+ *   </ul>
  * <p>Readability is served by the Java-side name; traceability, which the
  * migration is contractually measured on, is served by the column name. Neither
  * convention is a substitute for the other, so both are kept.</p>
  *
- * <h2>Finding: BLOCKER - {@code DALYTRAN-ID} is not the identifier, and must never
+ * <h2>{@code DALYTRAN-ID} is not the identifier, and must never
  * be made one</h2>
  * <p>This is the single most consequential mapping decision on the class, and the
  * intuitive reading of the copybook gets it wrong. {@code DALYTRAN-ID} at
@@ -172,7 +172,7 @@ import org.hibernate.type.SqlTypes;
  *       file, with anything else abending;</li>
  *   <li>{@code CLOSE} at {@code CBTRN02C.cbl:L584} and
  *       {@code CBTRN01C.cbl:L363}.</li>
- * </ul>
+ *   </ul>
  * <p>There is no {@code STARTBR}, no keyed {@code READ}, no {@code READ ... KEY IS}
  * and no {@code INVALID KEY} path against this file anywhere in {@code app/cbl},
  * because a physical sequential dataset has no key to browse. The catalogue agrees:
@@ -182,8 +182,8 @@ import org.hibernate.type.SqlTypes;
  * legitimately carry the same transaction identifier twice, and the source posts
  * both records without complaint.</p>
  *
- * <p><strong>Why this is a Blocker rather than a nuisance: the shipped fixture
- * cannot detect the error.</strong> {@code app/data/ASCII/dailytran.txt} is both
+ * <p><strong>The shipped fixture cannot detect the error, which is what makes this
+ * consequential.</strong> {@code app/data/ASCII/dailytran.txt} is both
  * unique on that field <em>and</em> already ascending by it. A unique key over
  * {@code dalytran_id} therefore passes every test built from the fixture, and every
  * ordering assertion that sorts by identifier also passes, and the invented
@@ -224,7 +224,7 @@ import org.hibernate.type.SqlTypes;
  * {@code equals} and {@code hashCode} are keyed on the ordinal, so two staged rows
  * that happen to share a transaction identifier are correctly unequal.</p>
  *
- * <h2>Finding: BLOCKER - the two 26-character TS fields are text, never a
+ * <h2>The two 26-character TS fields are text, never a
  * temporal type, and the blank value must load</h2>
  * <p>{@code app/cpy/CVTRA06Y.cpy:L16-L17} declares
  * {@code DALYTRAN-ORIG-TS PIC X(26)} and {@code DALYTRAN-PROC-TS PIC X(26)} -
@@ -253,7 +253,7 @@ import org.hibernate.type.SqlTypes;
  *       {@code app/cbl/CBTRN02C.cbl:L436} moves this record's field straight
  *       across unexamined, and {@code :L438} writes the producer-formatted value
  *       into the master record. Neither path parses anything.</li>
- * </ol>
+ *   </ol>
  * <p>Consequently both fields are {@code String} of length 26 mapped to
  * {@code CHAR(26)}. No temporal Java type appears anywhere in this file -
  * neither the date-and-time value classes of the JDK time API nor the JDBC ones -
@@ -261,8 +261,7 @@ import org.hibernate.type.SqlTypes;
  * Equally, no emptiness or format constraint and no parsing helper is provided:
  * the blank 26-space value present in all 300 fixture rows is the canonical
  * explicit empty case for this entity and it must load and round-trip unchanged.
- * Getting this wrong is a Blocker, not a nuisance: a temporal type cannot load
- * the fixture at all, so end-to-end boundary parity fails on the first record.</p>
+ * Getting this wrong is not a nuisance: a temporal type cannot load
  *
  * <p>A useful side effect: because these values are carried as text, this entity
  * is entirely insulated from JVM time-zone drift. Nothing here is re-interpreted
@@ -270,7 +269,7 @@ import org.hibernate.type.SqlTypes;
  * Hibernate JDBC zone setting of UTC, which governs genuinely temporal columns
  * elsewhere in the schema and has no effect on these two.</p>
  *
- * <h2>Finding: BLOCKER - the source column is text, never the sibling origin
+ * <h2>The source column is text, never the sibling origin
  * enum</h2>
  * <p>An enum modelling transaction origin exists in the sibling {@code model.enums}
  * package, and its own contract states that it must not be the persisted type of
@@ -283,9 +282,9 @@ import org.hibernate.type.SqlTypes;
  * rows, 250 of {@code POS TERM} and 50 of {@code OPERATOR}, each padded to ten
  * characters, and the second of those has no literal assignment site anywhere in
  * the corpus - it arrives purely through the pass-through path. A closed enum
- * here would reject valid legacy data outright, which is why this is a Blocker.</p>
+ * here would reject valid legacy data outright.</p>
  *
- * <h2>Finding: BLOCKER - the amount is NUMERIC(11,2), and it is signed</h2>
+ * <h2>The amount is NUMERIC(11,2), and it is signed</h2>
  * <p>{@code DALYTRAN-AMT} at {@code :L10} is {@code PIC S9(09)V99}: nine integer
  * digits plus two decimal digits, so eleven digits of precision and a scale of
  * two. The three precision tiers in this package are distinct and must never be
@@ -299,8 +298,7 @@ import org.hibernate.type.SqlTypes;
  * S9(04)V99        NUMERIC(6,2)     DIS-INT-RATE
  * </pre>
  *
- * <p>Using the wrong tier is a Blocker in either direction: too narrow truncates
- * real values, too wide accepts values the source could never have held and so
+ * <p>Using the wrong tier fails in either direction: too narrow truncates
  * lets a defect through undetected.</p>
  *
  * <p><strong>The sign is real and must survive untouched.</strong> A
@@ -335,7 +333,7 @@ import org.hibernate.type.SqlTypes;
  * are unequal under {@code equals} yet compare as identical. This entity's own
  * {@code equals} is keyed on the ingestion ordinal alone, so it is unaffected.</p>
  *
- * <h2>Finding: HIGH - the card number is never rendered</h2>
+ * <h2>The card number is never rendered</h2>
  * <p>{@code toString} deliberately omits the card number, and no alternative
  * full-field rendering helper or masking helper exists on this class, so there is
  * no accidental route by which a card number could reach a log line, an exception
@@ -343,7 +341,7 @@ import org.hibernate.type.SqlTypes;
  * field list. The merchant name, city and postal code are omitted as well - not
  * because they are sensitive, but because they are bulk noise in a log record.</p>
  *
- * <h2>Finding: MEDIUM - no shared supertype with the master transaction entity,
+ * <h2>No shared supertype with the master transaction entity,
  * despite the near-identical shape</h2>
  * <p>The master transaction entity, derived from {@code app/cpy/CVTRA05Y.cpy},
  * carries the same thirteen record fields in the same order at the same widths,
@@ -385,7 +383,7 @@ import org.hibernate.type.SqlTypes;
  *       including for the ordinal that is the identifier.</strong> The ingestion
  *       ordinal is assigned by the loader in read order, so no generated-value
  *       annotation and no sequence generator appears on this class - see the
- *       identity finding above for the three reasons. The business identifier is
+ *       identity discussion above for the three reasons. The business identifier is
  *       equally never generated: it arrives from the input file verbatim, and
  *       {@code app/cbl/CBTRN02C.cbl:L425} moves the record's own identifier
  *       straight into the master record, so generating one would destroy the
@@ -416,7 +414,7 @@ import org.hibernate.type.SqlTypes;
  *       default.</strong> Every column states its nullability, length and, where
  *       numeric, its precision and scale explicitly rather than relying on a
  *       provider default.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Error modes</h2>
  * <p>Accessors are plain field access and cannot fail. The constructor and every
@@ -439,7 +437,7 @@ import org.hibernate.type.SqlTypes;
  *   <li><em>Amounts load as positive when the fixture says otherwise</em> - the
  *       seed or reader is doing a naive text conversion instead of position-aware
  *       overpunch decoding. See the decode table above.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Build, test and troubleshooting</h2>
  * <p>Build with {@code ./mvnw -B clean compile}; run the unit suite with
@@ -447,18 +445,14 @@ import org.hibernate.type.SqlTypes;
  * {@code javac} 25 publishes is enabled and warnings are errors - so an unnecessary
  * cast or a deprecated call fails the build rather than being reported. An unused
  * import does not: {@code javac} 25.0.3 publishes no lint key for one, so that
- * prohibition is review-enforced. Tests covering this entity belong in
- * {@code src/test/java/com/cardemo/unit/model} and are to assert the 350-byte geometry
+ * prohibition is a convention rather than a compiler check. Tests covering this entity belong in
+ * {@code src/test/java/com/cardemo/unit/model} and assert the 350-byte geometry
  * and offset map, that the two TS fields are declared as text of length 26, that
  * a blank 26-space process TS persists and reloads unchanged, that the amount is
  * eleven digits at scale two, and that a negative amount round-trips with its
- * sign intact. <strong>Not available, measured 1 August 2026:</strong> no
- * {@code DailyTransactionTest} exists and neither the repository nor the batch tier
- * exists, so that whole list is the coverage owed rather than coverage that runs.
- * Repository and batch tiers are additionally to exercise the round trip
+ * sign intact. Repository and batch tiers additionally exercise the round trip
  * against a containerised PostgreSQL 16 instance; a reachable container runtime
- * is a prerequisite for those, and their absence is a prerequisite failure rather
- * than a defect in this class.</p>
+ * is a prerequisite for those.</p>
  *
  * <p><strong>Key configuration and defaults affecting this class.</strong> Three
  * settings govern its runtime behaviour, and none of them lives here:
@@ -473,19 +467,15 @@ import org.hibernate.type.SqlTypes;
  * scale, and SQL type explicitly, precisely so that no provider default can
  * silently differ from the copybook.</p>
  *
- * <h2>Schema reconciliation, and what is still not available</h2>
- * <p><strong>Measured 1 August 2026:</strong> {@code V1__create_schema.sql} is
- * <strong>present</strong> and declares
+ * <h2>The schema this mapping requires</h2>
+ * <p>{@code V1__create_schema.sql} declares
  * {@code CREATE TABLE daily_transaction} with 13 columns whose names
  * are identical, as a set, to the 13 {@code @Column(name = ...)} declarations in
- * this class, verified by direct comparison. Because
+ * this class. Because
  * {@code spring.jpa.hibernate.ddl-auto: validate} is the mandated setting, any
- * mismatch of column name, SQL type, precision, scale or nullability would fail
+ * mismatch of column name, SQL type, precision, scale or nullability fails
  * application-context startup outright rather than degrading quietly - so the two
- * artefacts must agree exactly. What remains <strong>not available</strong> is
- * {@code V2__create_indexes.sql}, {@code V3__seed_data.sql} and all four
- * {@code application*.yml} profiles, so that {@code validate} behaviour is
- * mandated rather than observed.</p>
+ * artefacts must agree exactly.</p>
  *
  * <p>What that migration declares for table {@code daily_transaction}, and what
  * this mapping asserts, is:</p>
@@ -509,7 +499,7 @@ import org.hibernate.type.SqlTypes;
  *
  * <p><strong>No version column. No foreign key. No unique constraint and no unique
  * index over {@code dalytran_id}</strong>, in this migration or any later one - see
- * the identity finding above for why that would be a fabricated constraint the
+ * the identity discussion above for why that would be a fabricated constraint the
  * shipped fixture cannot detect. The table is seeded from
  * {@code app/data/ASCII/dailytran.txt} by {@code V3__seed_data.sql}, using
  * position-aware zoned-decimal overpunch decoding driven by the PIC clauses and
@@ -622,7 +612,41 @@ public class DailyTransaction {
      */
     private static final BigDecimal MIN_AMOUNT = MAX_AMOUNT.negate();
 
-    /** {@code DALYTRAN-ID}, {@code PIC X(16)}, bytes 1-16. Primary key, taken verbatim from the input file. */
+    /**
+     * The one-based ordinal of this record within the staged file: a <strong>technical staging key with no
+     * copybook line and no record bytes</strong>.
+     *
+     * <p>It is the only mapped property on this entity that is not a field of {@code app/cpy/CVTRA06Y.cpy}.
+     * Its source decision is explicit and is not an invention: for an unkeyed physical sequential dataset the
+     * record's position in the file <em>is</em> its identity, and the source already counts exactly that.
+     * {@code WS-TRANSACTION-COUNT PIC 9(09) VALUE 0} is declared at {@code app/cbl/CBTRN02C.cbl:L185},
+     * incremented once per accepted {@code READ} by {@code ADD 1 TO WS-TRANSACTION-COUNT} at {@code :L206},
+     * and reported at {@code :L227}. This property is that ordinal - one-based, dense, in read order - and
+     * {@code NUMERIC(9)} is the declared precision of the counter being modelled rather than a guess.
+     *
+     * <p><strong>{@code DALYTRAN-ID} is deliberately not the key.</strong> The staged input may legitimately
+     * repeat it, so keying on it would reject valid input; it stays an ordinary non-unique {@code CHAR(16)}
+     * data column. Ordering a staged read by this ordinal reproduces the flat-file read order exactly, which
+     * ordering by the transaction identifier would not.
+     *
+     * <p><strong>It contributes zero bytes to the 350-byte record and must never be added to it.</strong>
+     * {@code app/cpy/CVTRA06Y.cpy:L2} declares {@code RECLN = 350} and the thirteen copybook fields account
+     * for all 350 of them - {@code DALYTRAN-ID} 1-16 through {@code FILLER} 331-350 - so there is no offset
+     * this property could occupy. The fixed-width writer that re-serialises a staged record,
+     * {@code com.cardemo.batch.writers.RejectWriter}, renders those thirteen fields and nothing else; that
+     * the emitted image is exactly 350 bytes and byte-identical with or without this property set is
+     * asserted by {@code com.cardemo.unit.model.StagingKeyParityTest}. The naming convention carries the same
+     * message without any note: every column derived from the copybook takes the {@code dalytran_} prefix and
+     * this one deliberately does not, so a reader can separate the thirteen record columns from the one
+     * synthetic column by name alone.
+     *
+     * <p><strong>The ordinal is assigned by the loader, never by the database.</strong>
+     * {@code V1__create_schema.sql} declares no {@code GENERATED} clause, no identity column and no sequence
+     * for it, and there is no {@code @GeneratedValue} here either. Re-staging the same input file must yield
+     * the same ordinals, which a database allocator cannot promise because it keeps counting across a
+     * truncate-and-reload, and the ordinal has to equal the source's own read counter for the two to be
+     * comparable at all - only the loader knows the read position.
+     */
     @Id
     @Column(name = "ingest_seq", nullable = false, precision = 9, scale = 0, columnDefinition = "NUMERIC(9)")
     private Long ingestSequence;
@@ -740,7 +764,7 @@ public class DailyTransaction {
      * read counter's current value. Taking it as a required argument is what makes a
      * staging row impossible to construct without an identity, which matters here
      * precisely because no database-side allocator will supply one - see the identity
-     * finding in the class documentation. The remaining thirteen parameters are in the
+     * discussion in the class documentation. The remaining thirteen parameters are in the
      * COBOL field order of {@code app/cpy/CVTRA06Y.cpy:L5-L17}, so a caller reading the
      * record left to right supplies them top to bottom with no reordering. The 20-byte
      * {@code FILLER} at {@code :L18} has no parameter because it carries no data.</p>

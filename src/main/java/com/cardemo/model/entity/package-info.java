@@ -1,6 +1,7 @@
 /*
  * ******************************************************************
  * Program     : package-info.java
+ * Package     : com.cardemo.model.entity
  * Application : CardDemo
  * Type        : Java Package Documentation (JPA persistence model)
  * Function    : Package-level documentation for the 11 JPA entities
@@ -50,8 +51,9 @@
  *       {@code CARDXREF.VSAM.AIX} ({@code L480} / {@code L482} {@code KEYLEN 11}) or
  *       {@code TRANSACT.VSAM.AIX} ({@code L3672} / {@code L3674} {@code KEYLEN 26}) becomes a class here.
  *       Each becomes a derived finder method on the matching interface in {@code com.cardemo.repository},
- *       backed by a non-unique B-tree index to be created in {@code V2__create_indexes.sql} (planned; absent at this
- * commit). Adding an entity for
+ *       backed by a non-unique B-tree index created in {@code V2__create_indexes.sql} -
+ *       {@code idx_card_acct_id}, {@code idx_card_cross_reference_acct_id} and
+ *       {@code idx_transaction_proc_ts} respectively. Adding an entity for
  *       an alternate index would duplicate the base record and give it a second, divergent mapping.</li>
  *   <li><strong>{@link Customer} serves two proven-duplicate copybooks.</strong> Running
  *       {@code diff -w app/cpy/CVCUS01Y.cpy app/cpy/CUSTREC.cpy} yields exactly two hunks: the field name
@@ -123,7 +125,7 @@
  *       swapping the persistence provider would require editing those nine files. No
  *       {@code jakarta.validation} type is imported anywhere in this package - the constraints live on the
  *       DTOs.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Five package-wide invariants hold, each because the source fixes it rather than by preference. Monetary
  * precision is tiered and never collapsed - {@code NUMERIC(12,2)} for {@code S9(10)V99},
@@ -141,11 +143,15 @@
  * from {@code com.cardemo.model.key} and {@code UserType} from {@code com.cardemo.model.enums}; everything
  * else comes from {@code jakarta.persistence}, {@code jakarta.validation} or the JDK.
  *
- * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root
- * compiles this package under {@code -Xlint:all -Werror}, so an unused import or a raw type here fails the
- * build outright. Unit tests for these entities live in {@code src/test/java/com/cardemo/unit/model} and
- * assert the record lengths, the key lengths, the three precision tiers, that the timestamp properties are
- * declared {@code String}, and that no accessor or {@code toString} exposes credential material or personal
+ * <p><strong>How to run, build and test.</strong> {@code ./mvnw clean verify} from the repository root compiles this
+ * package under {@code -Xlint:all -Werror}, so a raw type, an unchecked cast or a dangling documentation comment
+ * here fails the build outright. An unused import is not among them: {@code javac} 25 publishes no {@code unused}
+ * lint key, so Rule 1 Clause B's prohibition on one is review-enforced. Malformed Javadoc is likewise outside the
+ * build - no Javadoc plugin is bound in {@code pom.xml} - and is covered by the explicit doclint command published in
+ * {@code docs/technical-specifications.md}. Unit tests for these entities live in
+ * {@code src/test/java/com/cardemo/unit/model} and assert the record lengths, the key lengths, the three precision
+ * tiers, that the timestamp properties are declared {@code String}, and that no accessor or {@code toString} exposes
+ * credential material or personal
  * data. The mapping itself is proved by starting the application against a Flyway-built schema.
  *
  * <p><strong>Key configuration and defaults.</strong> These entities hold no configuration, but three
@@ -181,13 +187,20 @@
  *   <li><strong>Coverage.</strong> JaCoCo enforces an <strong>80 percent LINE</strong> coverage floor at the
  *       {@code verify} phase, with <strong>no exclusions</strong> for this package. The plugin version and
  *       the floor are pinned in {@code pom.xml}, which is the single authority for both; at this commit the
- *       plugin is {@code 0.8.13} and the floor property is {@code 0.80}. Coverage must come from meaningful
+ *       plugin is {@code 0.8.12} - not the {@code 0.8.13} an earlier revision of this sentence claimed - with
+ *       its transitive ASM reader overridden to {@code 9.9} and the runtime agent to {@code 0.8.14}, and the
+ *       floor property is {@code 0.80}. Coverage must come from meaningful
  *       assertions on field widths, precision and equality semantics. Padding the number by calling getters
  *       in a loop is not acceptable and defeats the purpose of the gate. This file is documentation only,
  *       contributes no executable lines, and so neither helps nor harms the figure.
- *       <strong>Measured 1 August 2026:</strong> exactly <strong>one of the eleven</strong> entities has a
- *       test class, {@code UserSecurityTest}. The other ten have none, so the floor has never been
- *       evaluated against this package and no coverage figure quoted anywhere is evidence about it.</li>
+ *       <strong>Four of the eleven</strong> entities carry a dedicated test class - {@code AccountTest},
+ *       {@code CardTest}, {@code CustomerTest} and {@code UserSecurityTest}, all under
+ *       {@code src/test/java/com/cardemo/unit/model}. The other seven have none yet, so per-entity coverage
+ *       is uneven rather than absent, and those seven are the outstanding obligation. They are not
+ *       untouched: every one of the eleven is constructed and asserted on from the service, repository and
+ *       batch test classes that consume it, which is why the merged bundle clears the floor while these
+ *       seven still lack a focused column-contract test. Counts move as the tree grows, so re-measure
+ *       rather than quoting them.</li>
  *   <li><strong>Schema agreement, measured rather than asserted - 1 August 2026.</strong> The type-pairing
  *       claims made throughout this package are reproducible from this tree without a Spring context, and
  *       they were re-executed rather than inherited. Applying
@@ -213,8 +226,10 @@
  *       only entity test that exists, so the record lengths, key lengths and precision tiers of the other
  *       ten entities are asserted <strong>nowhere</strong>. Treat the sentence above as the specification of
  *       the tests owed, not as a description of a suite that runs.</li>
- *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on
- *       that date after {@code source /etc/profile.d/10-carddemo-toolchain.sh}: {@code java} and
+ *   <li><strong>Toolchain actually present, measured 1 August 2026.</strong> Read in this container on that
+ *       date. The prerequisite is a capability and never a host path - JDK 25 on {@code PATH} with
+ *       {@code JAVA_HOME} set, however the host provides it, and Maven from the pinned wrapper; the
+ *       repository's own contract is {@code .env} plus {@code ./mvnw}. Measured: {@code java} and
  *       {@code javac} report OpenJDK <strong>25.0.3</strong>, {@code ./mvnw --version} reports Apache
  *       Maven <strong>3.9.11</strong> from the pinned wrapper distribution, and Docker Engine
  *       <strong>29.7.0</strong> with {@code docker compose}
@@ -226,7 +241,7 @@
  *       annotation processor. Constructors, accessors, {@code equals}, {@code hashCode} and
  *       {@code toString} are written out explicitly, so what is compiled is exactly what is read here and a
  *       generated method can never silently start emitting a sensitive field.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -279,7 +294,7 @@
  *       reformatting everything makes the real change hard to see, which is precisely why the formatting
  *       rules stop at the boundary of {@code app/}; {@code CONTRIBUTING.md:L34} requires that local tests
  *       pass before a change is offered.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -292,10 +307,10 @@
  *   <caption>Failure modes for the persistence model, with symptom and remediation</caption>
  *   <thead>
  *     <tr>
- *       <th scope="col">Severity</th>
- *       <th scope="col">Failure mode</th>
- *       <th scope="col">Symptom</th>
- *       <th scope="col">Remediation</th>
+ * <th scope="col">Severity</th>
+ * <th scope="col">Failure mode</th>
+ * <th scope="col">Symptom</th>
+ * <th scope="col">Remediation</th>
  *     </tr>
  *   </thead>
  *   <tbody>
@@ -353,7 +368,8 @@
  *       <td>Credential or personal-data leakage into logs, where it persists in aggregation systems long
  *           after the request has gone</td>
  *       <td>{@link UserSecurity} has no hash-bearing {@code toString}, emitting only its identifier and
- *           user type; {@link Card} exposes neither the card number nor the CVV; {@link Customer} exposes
+ *           user type; {@link Card} does not expose the card number and declares no verification value at
+ *           all, that field being deliberately unpersisted; {@link Customer} exposes
  *           no national identifier, telephone number, government-issued identifier, date of birth or
  *           electronic-funds account identifier. Log masking is the backstop; <strong>never emitting is the
  *           primary defence</strong>, because masking that is misconfigured fails silently</td>
@@ -392,14 +408,15 @@
  *       <td><strong>Low</strong></td>
  *       <td>A {@code PIC 9(n)} field with significant leading zeros mapped to a numeric type</td>
  *       <td>The leading zero is dropped, breaking byte-exact re-emission and the fixture round-trip</td>
- *       <td>{@code CUST-SSN}, {@code CUST-FICO-CREDIT-SCORE} and {@code CARD-CVV-CD} are {@code String}
- *           over {@code CHAR(n)}; leading zeros are present in the fixtures and are part of the value. Key
+ *       <td>{@code CUST-SSN} and {@code CUST-FICO-CREDIT-SCORE} are {@code String} over {@code CHAR(n)};
+ *           leading zeros are present in the fixtures and are part of the value. {@code CARD-CVV-CD} would
+ *           have been a third such field and is not persisted at all. Key
  *           identifiers stay numeric and are zero-padded at emission time by the fixed-width writers</td>
  *     </tr>
  *   </tbody>
  * </table>
  *
- * <h2>The SQL column contract: V1 exists and agrees; the index and seed migrations do not exist</h2>
+ * <h2>The SQL column contract: all three migrations exist and agree</h2>
  *
  * <p><strong>{@code src/main/resources/db/migration/V1__create_schema.sql} exists</strong> and is the
  * authoritative SQL column contract for these eleven entities. An earlier revision of this paragraph said
@@ -411,33 +428,38 @@
  * cross-checks every table, primary-key column order and column width against the record-layout copybooks
  * in {@code app/cpy} through the {@code RecordLayoutCopybook} oracle.
  *
- * <p><strong>Still genuinely absent: {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}.</strong>
- * Neither has ever existed in this repository, and {@code V1} contains zero {@code CREATE INDEX}
- * statements, so the three VSAM alternate indexes recorded in {@code app/catlg/LISTCAT.txt} —
- * {@code CARDDATA.VSAM.AIX}, {@code CARDXREF.VSAM.AIX} and {@code TRANSACT.VSAM.AIX} — have no relational
- * counterpart yet, and no row of seed data has been loaded. Every reference below to those two files
- * describes <strong>planned</strong> work. No SQL is invented here to fill either gap.
+ * <p><strong>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} exist as well.</strong> An earlier
+ * revision of this section said neither had ever existed and described both as planned work; that is no
+ * longer true and the claim is withdrawn. {@code V1} does contain zero {@code CREATE INDEX} statements, but
+ * that is a division of responsibility rather than a gap: indexes are owned by {@code V2}, which declares
+ * exactly three non-unique B-tree indexes standing in for the three VSAM alternate indexes recorded in
+ * {@code app/catlg/LISTCAT.txt} - {@code idx_card_acct_id} on {@code card(card_acct_id)} for
+ * {@code CARDDATA.VSAM.AIX}, {@code idx_card_cross_reference_acct_id} on
+ * {@code card_cross_reference(xref_acct_id)} for {@code CARDXREF.VSAM.AIX}, and
+ * {@code idx_transaction_proc_ts} on {@code "transaction"(tran_proc_ts)} for {@code TRANSACT.VSAM.AIX}. Each
+ * is non-unique because the alternate index it replaces carries {@code NONUNIQUEKEY}. {@code V3} seeds all
+ * ten fixture-backed tables - {@code account}, {@code card}, {@code card_cross_reference}, {@code customer},
+ * {@code daily_transaction}, {@code disclosure_group}, {@code transaction_category},
+ * {@code transaction_category_balance}, {@code transaction_type} and {@code user_security} - decoding the
+ * zoned-decimal overpunch signs position-aware from the PIC clauses, and stores the ten users from
+ * {@code app/jcl/DUSRSECJ.jcl} as ten BCrypt hashes with no plaintext anywhere.
  *
  * <p><strong>Direction of convergence, unchanged.</strong> These mappings were derived from the copybooks
  * and corroborated against {@code app/catlg/LISTCAT.txt}, so where the field tables and a migration ever
  * disagree, the tables carry the evidence and the migration is what changes.
  *
- * <p><strong>What is still not available.</strong> None of it is this package's responsibility:
+ * <p><strong>The profiles exist too, so {@code ddl-auto: validate} is an observed behaviour rather than a
+ * mandated one.</strong> All four of {@code application.yml}, {@code application-local.yml},
+ * {@code application-test.yml} and {@code application-prod.yml} are present, every one of them sets
+ * {@code spring.jpa.hibernate.ddl-auto} to {@code validate}, and the containerised integration tier boots
+ * against a real PostgreSQL 16 with Flyway applying {@code V1} through {@code V3} first. The agreement this
+ * section describes is therefore exercised on every such run, not merely asserted.
  *
- * <ol>
- *   <li>{@code V2__create_indexes.sql} with the three non-unique B-tree indexes standing in for the three
- *       VSAM alternate indexes.</li>
- *   <li>{@code V3__seed_data.sql} loading the nine ASCII fixtures with position-aware overpunch decoding
- *       and the ten seeded users stored only as BCrypt hashes.</li>
- *   <li>All four {@code application*.yml} profile files, which is why the {@code ddl-auto: validate}
- *       behaviour cited throughout this package is the mandated configuration rather than an observed one,
- *       and why no application boot has yet exercised the agreement described above.</li>
- * </ol>
- *
- * <p><strong>Severity: Medium.</strong> Not a Blocker, because the module compiles, all eleven entities are
- * complete and internally consistent, and the schema they must validate against now exists and agrees with
- * them. Not Low, because {@code ddl-auto: validate} means the first real application boot cannot be
- * demonstrated until a profile exists to boot with.
+ * <p><strong>Severity: Low, and informational rather than a finding.</strong> The module compiles, all
+ * eleven entities are complete and internally consistent, the schema they validate against exists and
+ * agrees with them, the indexes and seed rows exist, and a profile exists to boot with. What remains owed is
+ * narrower and is stated where it belongs: a focused column-contract test for seven of the eleven entities,
+ * recorded in the coverage bullet above.
  *
  * <h2>Package level constraints</h2>
  *
@@ -504,7 +526,7 @@
  *   <li><strong>The legacy corpus is frozen.</strong> Everything under {@code app/} is read-only reference
  *       material and remains byte for byte unmodified. This package is purely additive alongside it, and
  *       cites it rather than copying from it.</li>
- * </ul>
+ *   </ul>
  *
  * @see <a href="http://www.apache.org/licenses/LICENSE-2.0">Apache License, Version 2.0</a>
  */

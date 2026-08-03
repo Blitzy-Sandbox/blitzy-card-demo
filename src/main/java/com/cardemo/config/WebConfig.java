@@ -47,6 +47,7 @@ import java.util.Locale;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
 import org.springframework.format.FormatterRegistry;
@@ -58,10 +59,10 @@ import com.cardemo.exception.ValidationException;
 /**
  * Web-layer configuration: the request-binding half of the CICS-to-REST substitution.
  *
- * <p><b>What it does.</b> It contributes exactly four registrations to the Spring MVC conversion service and
- * overrides exactly one method, {@link #addFormatters(FormatterRegistry)}. Three of the four reproduce COBOL
- * behaviour that has no Spring default equivalent, and the fourth replaces the CICS attention-identifier
- * dispatch:</p>
+ * <p><b>What it does.</b> It publishes exactly three singleton beans, contributes exactly those same three
+ * objects as registrations to the Spring MVC conversion service, and overrides exactly one method,
+ * {@link #addFormatters(FormatterRegistry)}. All three reproduce COBOL behaviour that has no Spring default
+ * equivalent:</p>
  * <ul>
  *   <li><b>Numeric converter 1 of 2</b> - {@link StrictIdentifierConverter}, the digits-only parser standing
  *       in for plain {@code FUNCTION NUMVAL} on identifiers and card numbers.</li>
@@ -69,10 +70,20 @@ import com.cardemo.exception.ValidationException;
  *       standing in for {@code FUNCTION NUMVAL-C} on amounts, and on amounts only.</li>
  *   <li><b>The edited-amount formatter</b> - {@link EditedAmountPrinter}, reproducing the display picture
  *       {@code PIC +99999999.99} character for character.</li>
- *   <li><b>One non-numeric converter</b> - {@link NavigationActionConverter}, which turns a request-parameter
- *       token into a {@link NavigationAction}. It is deliberately excluded from the "exactly two numeric
- *       converters" count established below, because it parses no number.</li>
- * </ul>
+ *   </ul>
+ *
+ * <p><b>One object per rule, injected and registered.</b> Each of the three is a bean, and
+ * {@link #addFormatters(FormatterRegistry)} registers the bean instances rather than fresh copies, so a
+ * service that injects one of them and a request that binds through the conversion service exercise the same
+ * object. A request body never passes through the MVC conversion service at all - Jackson binds it - which is
+ * why the services that must apply {@code NUMVAL} and {@code NUMVAL-C} to a JSON payload inject these beans
+ * and invoke them explicitly.
+ *
+ * <p><b>There is no navigation-action converter and no navigation-action type.</b> One existed and had no
+ * consumer anywhere in the application: each operation that carries a navigation intent declares its own
+ * closed set of actions and validates the submitted token exactly, refusing every alias, case variant and
+ * surrounding space. A shared converter that trimmed and folded its input would have re-introduced exactly
+ * the coercion those operations exist to refuse, so it was removed rather than wired to something.
  *
  * <p><b>There are exactly two numeric converters and there is deliberately no third.</b> The frozen corpus
  * uses two different numeric intrinsics for two different jobs and never interchanges them. A census over
@@ -102,8 +113,9 @@ import com.cardemo.exception.ValidationException;
  *       permitted by this class. A permissive default would be an unsafe default.</li>
  *   <li><b>No static-resource handler, no directory listing, no view resolver and no user-interface route.</b>
  *       The target exposes REST and JSON plus actuator endpoints. There is no HTML, CSS, JavaScript,
- *       single-page front end or component library anywhere in scope, and the 460 BMS input fields are
- *       consumed as data-transfer-object field contracts only.</li>
+ *       single-page front end or component library anywhere in scope, and the <b>441</b> BMS input fields
+ *       are consumed as data-transfer-object field contracts only. That total is a recount of the seventeen
+ *       symbolic maps under {@code app/cpy-bms/}, in which {@code COACTVW} contributes 37.</li>
  *   <li><b>No message converter and no second object mapper.</b> The auto-configured converter is sufficient,
  *       so registering one would duplicate configuration that the application configuration resource owns.</li>
  *   <li><b>No global default page size and no pagination argument resolver.</b> See the pagination note.</li>
@@ -111,7 +123,7 @@ import com.cardemo.exception.ValidationException;
  *   <li><b>No {@code @ControllerAdvice}, {@code @ExceptionHandler} or {@code @ResponseStatus}.</b> Mapping a
  *       {@code com.cardemo.exception.ValidationException} onto a status code belongs to the error-handling
  *       layer, not to the binding layer.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Pagination.</b> Transformation rule 7 moves paging state out of the COMMAREA into request parameters
  * and response metadata, and {@code com.cardemo.model.dto.PageResponse} carries the outbound half. The page
@@ -123,12 +135,15 @@ import com.cardemo.exception.ValidationException;
  * {@code app/cbl/CBTRN03C.cbl}:131-132 is a batch report-line count belonging to the transaction report and is
  * not a page size at all.
  *
- * <p><b>Timestamps: character columns, not temporal types.</b> {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS}
- * are {@code PIC X(26)} and map to {@code CHAR(26)} character columns carried as {@code String}. The generated
- * value is 26 characters whose final four digits are always zeros, so it is millisecond precision padded, not
- * nanosecond precision. Any converter that parsed and re-rendered such a value would change every one of them;
- * severity <b>Blocker</b>. This class registers no string-to-temporal converter, applies no date format and
- * leaves those fields as plain string passthrough.
+ * <p><b>Timestamps: character columns, not temporal types.</b> {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are
+ * {@code PIC X(26)} and map to {@code CHAR(26)} character columns carried as {@code String}. The generated value is
+ * 26 characters at <b>centisecond</b> precision followed by four literal zero digits - two fraction digits, not three
+ * and not nine. {@code app/cbl/CBTRN02C.cbl:L159-L174} splits the fraction into {@code DB2-MIL PIC 9(002)} and
+ * {@code DB2-REST PIC X(04)}, and {@code :L700-L701} moves {@code COB-MIL} into the two-digit field and the literal
+ * {@code '0000'} into the four-character remainder, giving the shape {@code yyyy-MM-dd-HH.mm.ss.SS0000}. Any
+ * converter that parsed and re-rendered such a value would change every one of them; severity <b>Blocker</b>. This
+ * class registers no string-to-temporal converter, applies no date format and leaves those fields as plain string
+ * passthrough.
  *
  * <p><b>Locale, charset and time zone.</b> Every case-folding and formatting operation in this file uses
  * {@link Locale#ROOT}. The corpus applies {@code FUNCTION UPPER-CASE} and {@code FUNCTION LOWER-CASE} with no
@@ -197,23 +212,25 @@ import com.cardemo.exception.ValidationException;
  *       nine, so a magnitude of 100000000.00 or more loses its high-order digit. See
  *       {@link EditedAmountPrinter} for the two locators and the severity.</dd>
  *   <dt>A navigation action is rejected as unknown.</dt>
- *   <dd>Only the seven tokens the corpus actually uses are accepted, and the token is the canonical form -
- *       not the Java constant name. See {@link NavigationAction} for the list and for why an unknown action is
- *       rejected here where the source silently retained its previous value.</dd>
+ *   <dd>That refusal comes from the operation, not from this class. Each controller that accepts a navigation
+ *       intent declares its own closed action set and compares the submitted token to it exactly, so a
+ *       lower-case token, a padded token or an alias is refused. Send the canonical token the operation
+ *       documents. The source's {@code EVALUATE} at {@code app/cpy/CSSTRPFY.cpy}:21-78 had no
+ *       {@code WHEN OTHER} and silently retained its previous value; a stateless service has no previous
+ *       value to retain, so refusing is the only explicit behaviour available and it is a labelled
+ *       deviation.</dd>
  *   <dt>An empty parameter binds to null instead of failing.</dt>
  *   <dd>Intended. Both parsers translate blank input to null, mirroring the source's own
  *       {@code NOT = SPACES AND LOW-VALUES} guard, and the field-specific "must be entered" message belongs to
  *       the layer that knows which field was blank. Enforce presence with a validation constraint or a
  *       required parameter, not with a converter.</dd>
- * </dl>
+ *   </dl>
  *
  * <p><b>Not available.</b> {@code DFHAID}, {@code DFHBMSCA} and {@code DFHATTR} are supplied by the
  * transaction monitor, are absent from this repository, and consequently have no Java import, no type and no
  * citation here. What would be needed to model them: the CICS-supplied copybook members themselves, plus a
  * decision to emulate 3270 terminal semantics - which is explicitly out of scope, so the requirement is not
  * expected to arise.
- *
- * @see NavigationAction
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
@@ -285,22 +302,14 @@ public class WebConfig implements WebMvcConfigurer {
     public static final int AMOUNT_EDITED_LENGTH = 12;
 
     /**
-     * Declared width of {@code CCARD-AID} at {@code app/cpy/CVCRD01Y.cpy}:3, {@code PIC X(5)}, and therefore
-     * the width of every navigation token in {@link NavigationAction}.
-     *
-     * <p>The width is why two of the sixteen condition values at {@code app/cpy/CVCRD01Y.cpy}:6-7 are written
-     * space-padded as {@code 'PA1  '} and {@code 'PA2  '}. Neither of those two is reachable from any program
-     * in the corpus, so neither is modelled.
-     */
-    public static final int AID_TOKEN_LENGTH = 5;
-
-    /**
-     * Request-parameter name carrying the navigation action, and the field name reported on a
-     * {@code com.cardemo.exception.ValidationException} raised by {@link NavigationAction#fromToken(String)}.
+     * Request-parameter name carrying the navigation action, and the field name each operation reports on a
+     * {@code com.cardemo.exception.ValidationException} when the submitted token is not one of its own
+     * declared actions.
      *
      * <p>It is the stateless counterpart of {@code CCARD-AID} at {@code app/cpy/CVCRD01Y.cpy}:3, which the
      * procedural paragraph {@code YYYY-STORE-PFKEY} at {@code app/cpy/CSSTRPFY.cpy}:17 populated from the
-     * terminal's attention identifier.
+     * terminal's attention identifier. It is defined here, once, so that the two operations carrying a
+     * navigation intent name the parameter identically on the wire and in their refusals.
      */
     public static final String NAVIGATION_ACTION_PARAMETER = "action";
 
@@ -424,39 +433,125 @@ public class WebConfig implements WebMvcConfigurer {
 
     /**
      * Rejection message for a navigation action that was not supplied at all.
+     *
+     * <p>Published so that every operation carrying a navigation intent refuses a blank action in the same
+     * words. It names no submitted value, because the value is untrusted input.
      */
-    private static final String ACTION_BLANK_MESSAGE =
+    public static final String ACTION_BLANK_MESSAGE =
             "A navigation action must be supplied";
 
     /**
-     * Rejection message for a navigation action token the corpus never uses.
+     * Rejection message for a navigation action token the operation does not declare.
+     *
+     * <p>Published on the same terms as {@link #ACTION_BLANK_MESSAGE}. It never repeats the rejected token:
+     * echoing an untrusted value into a response body is how a diagnostic becomes an injection vector.
      */
-    private static final String ACTION_UNKNOWN_MESSAGE =
+    public static final String ACTION_UNKNOWN_MESSAGE =
             "Unrecognised navigation action";
 
     /**
-     * Creates the configuration.
+     * The one strict identifier converter. Constructed here, published by
+     * {@link #strictIdentifierConverter()} and registered by {@link #addFormatters(FormatterRegistry)}.
+     */
+    private final StrictIdentifierConverter strictIdentifierConverter;
+
+    /** The one currency-aware amount converter, on the same terms. */
+    private final CurrencyAwareAmountConverter currencyAwareAmountConverter;
+
+    /** The one edited-amount printer, on the same terms. */
+    private final EditedAmountPrinter editedAmountPrinter;
+
+    /**
+     * Creates the configuration and the three parsing objects it owns.
      *
-     * <p>Declared explicitly, and empty, to make two facts auditable rather than implied. First, this class has
-     * <b>no collaborators</b>: it injects nothing, because every registration it contributes is a pure function
-     * of its input and needs no service, no repository, no clock and no property. Inventing a dependency in
-     * order to demonstrate constructor injection would introduce unused state, which is the very thing the
-     * no-dead-code standard forbids. Second, injection is by constructor only - there is no field or setter
-     * injection anywhere in this file - so if a collaborator is ever genuinely required, this is where it
-     * arrives.
+     * <p>Two facts are made auditable here rather than implied. First, this class has <b>no injected
+     * collaborators</b>: it needs no service, no repository, no clock and no property, and inventing a
+     * dependency to demonstrate constructor injection would introduce unused state, which the no-dead-code
+     * standard forbids. Second, the three parsing objects are created <b>once, here</b>, and both the bean
+     * methods and the registry registration hand out those same three instances.
+     *
+     * <p>Constructing them in the constructor rather than inside each bean method is deliberate and is the
+     * point of the arrangement. A {@code @Configuration} class is normally CGLIB-subclassed so that a bean
+     * method called twice returns one object, but relying on that interception to establish the identity
+     * would make the identity a property of the container rather than of this class - untestable without a
+     * context, and silently lost if the class were ever consumed directly. Holding the instances as final
+     * fields makes "one object per parsing rule" true by construction, container or no container.
+     *
+     * <p>The three fields are immutable, stateless and documented thread safe, so sharing them is safe and
+     * this class remains free of mutable state.
      *
      * <p>The class is intentionally not {@code final}: a {@code @Configuration} class is subclassed by CGLIB.
      */
     public WebConfig() {
-        // No collaborators and no state to initialise. See the constructor documentation above.
+        this.strictIdentifierConverter = new StrictIdentifierConverter();
+        this.currencyAwareAmountConverter = new CurrencyAwareAmountConverter();
+        this.editedAmountPrinter = new EditedAmountPrinter();
     }
 
     /**
-     * Registers the two numeric converters, the edited-amount printer and the navigation-action converter.
+     * Publishes the digits-only parser as the application's single instance of it.
+     *
+     * <p>It is a bean, and it returns the field this class constructed, because there must be exactly
+     * <b>one</b> conversion path for {@code FUNCTION NUMVAL}. Before this became a bean the MVC registry held
+     * one instance while {@code com.cardemo.service.transaction.TransactionAddService} constructed a second
+     * privately, so the registered object was never the object that actually parsed a transaction amount or
+     * card number - two copies of one rule, either of which could drift from the other. Returning the field
+     * makes the registered instance and the injected instance the same object by construction, without
+     * depending on {@code @Configuration} proxying to make it so.
+     *
+     * <p>Side effects: none. The returned object is immutable and stateless.
+     *
+     * @return the single strict identifier converter; never null
+     */
+    @Bean
+    public StrictIdentifierConverter strictIdentifierConverter() {
+        return this.strictIdentifierConverter;
+    }
+
+    /**
+     * Publishes the currency-tolerant parser as the application's single instance of it.
+     *
+     * <p>Same rationale as {@link #strictIdentifierConverter()}: one {@code FUNCTION NUMVAL-C} rule, one
+     * object implementing it, shared by request binding and by the services that must apply it to a JSON
+     * body - which request binding never sees.
+     *
+     * <p>Side effects: none. The returned object is immutable and stateless.
+     *
+     * @return the single currency-aware amount converter; never null
+     */
+    @Bean
+    public CurrencyAwareAmountConverter currencyAwareAmountConverter() {
+        return this.currencyAwareAmountConverter;
+    }
+
+    /**
+     * Publishes the edited-amount printer as the application's single instance of it.
+     *
+     * <p>Same rationale as the two converters. The outbound half of the {@code PIC +99999999.99} round trip
+     * has to render identically wherever it is applied, and one shared object is the only way to guarantee
+     * that without asserting it.
+     *
+     * <p>Side effects: none. The returned object is immutable and stateless.
+     *
+     * @return the single edited-amount printer; never null
+     */
+    @Bean
+    public EditedAmountPrinter editedAmountPrinter() {
+        return this.editedAmountPrinter;
+    }
+
+    /**
+     * Registers the two numeric converters and the edited-amount printer, using the published bean instances
+     * rather than fresh copies.
      *
      * <p>Registration order is fixed by this method body rather than by any collection's iteration order, so it
      * is identical on every run and on every JVM. The two numeric converters are labelled in the body so an
      * audit of the "exactly two numeric converters" contract can be performed by reading it.
+     *
+     * <p><b>The three registered objects are the injected beans.</b> That identity is the point of the change:
+     * a caller that injects {@link StrictIdentifierConverter} and a request that binds through the MVC
+     * conversion service now run the same code on the same object, so there is exactly one parser per COBOL
+     * intrinsic in the whole application and no second copy that could be maintained separately.
      *
      * <p>The printer is registered through {@code addPrinter} rather than as a full formatter on purpose. A
      * formatter would supply both a printer and a parser for {@link BigDecimal} and would therefore supersede
@@ -469,6 +564,13 @@ public class WebConfig implements WebMvcConfigurer {
      * such type information; passing one fails at startup with an inability to determine the source and target
      * type.
      *
+     * <p><b>No navigation-action converter is registered, and no navigation-action type exists.</b> One did,
+     * and it had no consumer anywhere in the application: every operation that carries a navigation intent
+     * declares its own closed set of actions and now validates the submitted token itself, exactly, so that no
+     * alias, no case variant and no surrounding whitespace is accepted. A converter that normalised its input
+     * would have re-introduced precisely the coercion those operations exist to refuse, so it was removed
+     * rather than wired.
+     *
      * <p>Side effects: this method mutates only the registry it is handed, which Spring owns and calls once
      * during context refresh. It performs no input or output, opens no resource and starts no thread.
      *
@@ -478,23 +580,19 @@ public class WebConfig implements WebMvcConfigurer {
     public void addFormatters(final FormatterRegistry registry) {
 
         // NUMERIC CONVERTER 1 OF 2 - plain FUNCTION NUMVAL, for identifiers and card numbers.
-        registry.addConverter(new StrictIdentifierConverter());
+        registry.addConverter(this.strictIdentifierConverter);
 
         // NUMERIC CONVERTER 2 OF 2 - FUNCTION NUMVAL-C, for amounts and nothing else.
-        registry.addConverter(new CurrencyAwareAmountConverter());
+        registry.addConverter(this.currencyAwareAmountConverter);
 
         // THE EDITED-AMOUNT FORMATTER - the outbound half of the PIC +99999999.99 round trip.
-        registry.addPrinter(new EditedAmountPrinter());
-
-        // NON-NUMERIC CONVERTER - the navigation-action token. Parses no number and is deliberately outside
-        // the "exactly two numeric converters" count. It exists so that an unrecognised action fails as a
-        // ValidationException rather than as the IllegalArgumentException Spring's default enum binding raises.
-        registry.addConverter(new NavigationActionConverter());
+        registry.addPrinter(this.editedAmountPrinter);
 
         LOGGER.debug(
-                "Registered CardDemo web converters: 2 numeric (strict identifier, currency-aware amount), "
-                        + "1 edited-amount printer on mask {}, 1 navigation-action converter over {} actions",
-                AMOUNT_EDITED_MASK, NavigationAction.values().length);
+                "Registered CardDemo web converters: 2 numeric (strict identifier, currency-aware amount) "
+                        + "and 1 edited-amount printer on mask {}, all three being the published singleton "
+                        + "beans rather than private copies",
+                AMOUNT_EDITED_MASK);
     }
 
     /**
@@ -889,234 +987,6 @@ public class WebConfig implements WebMvcConfigurer {
                     .append(DECIMAL_POINT)
                     .append(padded, AMOUNT_MASK_INTEGER_DIGITS, padded.length())
                     .toString();
-        }
-    }
-
-    /**
-     * The navigation actions the corpus actually uses, replacing the CICS attention identifier.
-     *
-     * <p>{@code app/cpy/CVCRD01Y.cpy}:3 declares {@code 10 CCARD-AID PIC X(5)} and :4-19 give it sixteen
-     * condition names - {@code ENTER}, {@code CLEAR}, {@code 'PA1  '}, {@code 'PA2  '} and {@code PFK01}
-     * through {@code PFK12}, the two program-attention values space padded to the field width. The procedural
-     * copybook {@code app/cpy/CSSTRPFY.cpy} populated that field: its paragraph
-     * {@code YYYY-STORE-PFKEY} at :17 opens an {@code EVALUATE TRUE} at :21 whose twenty-eight branches at
-     * :22-77 map the terminal's attention identifier onto those condition names, with :54-77 aliasing the
-     * upper twelve function keys onto {@code PFK01} through {@code PFK12} so that twenty-eight branches
-     * resolve to only sixteen distinct states. That copybook is copied into the procedure division rather than
-     * the data division, so it has no entity, no data-transfer object and no import anywhere in the target.
-     *
-     * <p><b>Only seven of the sixteen states are reachable, so only seven are modelled.</b> A census of every
-     * attention-identifier reference across all twenty-eight programs in {@code app/cbl} at commit 7756d89
-     * returns exactly seven distinct keys and no others: enter at sixteen sites, function key 3 at fourteen,
-     * function key 4 at six, function keys 7, 8 and 5 at four each, and function key 12 at two. Clear, both
-     * program-attention keys, function keys 1, 2, 6, 9, 10 and 11, and the entire upper bank of twelve are
-     * never referenced by any program. Modelling twenty-four function keys, or building a terminal-key
-     * emulator, would create Java code that nothing can reach.
-     *
-     * <p><b>The token is the canonical wire form.</b> Each constant carries the five-character value the
-     * source itself stores in {@code CCARD-AID}, so the field contract survives the move to a request
-     * parameter. {@link #fromToken(String)} accepts that token and not the Java constant name, which is why
-     * this enum is bound by an explicit converter rather than by Spring's default enum binding.
-     *
-     * <p><b>Unknown actions are rejected, and that is a labelled deviation.</b> The {@code EVALUATE} at
-     * {@code app/cpy/CSSTRPFY.cpy}:21-78 has <b>no {@code WHEN OTHER} branch</b>, so when the attention
-     * identifier matched nothing the source left {@code CCARD-AID} holding whatever the previous interaction
-     * had put there and carried that stale value forward. Reproducing that in a stateless service is not
-     * possible and would not be desirable: there is no previous interaction to inherit from, and silently
-     * acting on a stale verb is the class of defect the explicit-behaviour standard exists to prevent. An
-     * unrecognised action is therefore rejected with a {@code com.cardemo.exception.ValidationException}.
-     *
-     * <p><b>What replaced the rest of the work area.</b> {@code CCARD-NEXT-PROG} at
-     * {@code app/cpy/CVCRD01Y.cpy}:21, {@code CCARD-NEXT-MAPSET} at :23 and {@code CCARD-NEXT-MAP} at :24
-     * named the next program, mapset and map; the target identifies its destination by URL instead, so the
-     * triple has no counterpart and no field here. {@code CCARD-ERROR-MSG} at :28 and
-     * {@code CCARD-RETURN-MSG} at :29, with its {@code 88 CCARD-RETURN-MSG-OFF VALUE LOW-VALUES} at :30,
-     * become response body fields rather than routing state. No screen state is retained anywhere.
-     *
-     * <p><b>Six fields of that copybook are commented out in the source and are deliberately not
-     * implemented</b> - {@code CCARD-LAST-PROG} at :20, {@code CCARD-RETURN-TO-PROG} at :22,
-     * {@code CCARD-RETURN-FLAG} with its two condition names at :25-27, and {@code CCARD-FUNCTION} with its two
-     * condition names at :31-33. Each of those lines carries an asterisk in the indicator area, so none of them
-     * exists in the compiled program. They are inert source comments rather than reachable no-ops preserved for
-     * parity, so implementing them would create dead Java code with nothing to trace it to.
-     */
-    public enum NavigationAction {
-
-        /**
-         * Submit the screen's primary action. The token of {@code 88 CCARD-AID-ENTER} at
-         * {@code app/cpy/CVCRD01Y.cpy}:4, set from the enter key at {@code app/cpy/CSSTRPFY.cpy}:22-23. The
-         * most heavily used key in the corpus, at sixteen sites.
-         */
-        SUBMIT("ENTER"),
-
-        /**
-         * Leave the current screen and return to the previous one, or to sign-on where there is no previous
-         * one. The token of {@code 88 CCARD-AID-PFK03} at {@code app/cpy/CVCRD01Y.cpy}:10, set at
-         * {@code app/cpy/CSSTRPFY.cpy}:34-35. Verified at {@code app/cbl/COADM01C.cbl}:96-98 and
-         * {@code app/cbl/COMEN01C.cbl}:96-98, which both return to sign-on, at
-         * {@code app/cbl/CORPT00C.cbl}:187-188, which returns to the main menu, and at
-         * {@code app/cbl/COBIL00C.cbl}:128-131, which returns to the caller when one is recorded and to the
-         * main menu otherwise.
-         */
-        BACK("PFK03"),
-
-        /**
-         * Clear the current screen's input without leaving it. The token of {@code 88 CCARD-AID-PFK04} at
-         * {@code app/cpy/CVCRD01Y.cpy}:11, set at {@code app/cpy/CSSTRPFY.cpy}:36-37. Verified at
-         * {@code app/cbl/COBIL00C.cbl}:136-137, {@code app/cbl/COTRN01C.cbl}:123-124,
-         * {@code app/cbl/COTRN02C.cbl}:144-145 and {@code app/cbl/COUSR01C.cbl}:96-97, each of which performs
-         * its clear-screen paragraph.
-         *
-         * <p>Named for function key 4 and <em>not</em> for {@code 88 CCARD-AID-CLEAR} at
-         * {@code app/cpy/CVCRD01Y.cpy}:5. That condition name corresponds to the terminal's clear key, which
-         * no program in the corpus ever tests, and it is not modelled.
-         */
-        CLEAR_SCREEN("PFK04"),
-
-        /**
-         * The screen's secondary action, whose meaning belongs to the endpoint rather than to the token. The
-         * token of {@code 88 CCARD-AID-PFK05} at {@code app/cpy/CVCRD01Y.cpy}:12, set at
-         * {@code app/cpy/CSSTRPFY.cpy}:38-39.
-         *
-         * <p>It is named neutrally because the corpus gives it four different meanings and inventing a single
-         * name would misdescribe three of them: {@code app/cbl/COTRN01C.cbl}:125-127 returns to the
-         * transaction list, {@code app/cbl/COTRN02C.cbl}:146-147 copies the last transaction's data,
-         * {@code app/cbl/COUSR02C.cbl}:122-123 commits a user update and
-         * {@code app/cbl/COUSR03C.cbl}:121-122 commits a user deletion.
-         */
-        SECONDARY_ACTION("PFK05"),
-
-        /**
-         * Page backward through a list. The token of {@code 88 CCARD-AID-PFK07} at
-         * {@code app/cpy/CVCRD01Y.cpy}:14, set at {@code app/cpy/CSSTRPFY.cpy}:42-43. Verified at
-         * {@code app/cbl/COTRN00C.cbl}:125-126 and {@code app/cbl/COUSR00C.cbl}:128-129.
-         *
-         * <p>Paging state itself is not carried here. It travels as request parameters and comes back as
-         * response metadata on {@code com.cardemo.model.dto.PageResponse}, and the page size belongs to the
-         * service bean that serves the list.
-         */
-        PAGE_BACKWARD("PFK07"),
-
-        /**
-         * Page forward through a list. The token of {@code 88 CCARD-AID-PFK08} at
-         * {@code app/cpy/CVCRD01Y.cpy}:15, set at {@code app/cpy/CSSTRPFY.cpy}:44-45. Verified at
-         * {@code app/cbl/COTRN00C.cbl}:127-128 and {@code app/cbl/COUSR00C.cbl}:130-131.
-         */
-        PAGE_FORWARD("PFK08"),
-
-        /**
-         * Return to the administration menu. The token of {@code 88 CCARD-AID-PFK12} at
-         * {@code app/cpy/CVCRD01Y.cpy}:19, set at {@code app/cpy/CSSTRPFY.cpy}:52-53. Verified at
-         * {@code app/cbl/COUSR02C.cbl}:124-126 and {@code app/cbl/COUSR03C.cbl}:123-125, both of which name
-         * the administration menu program as their destination.
-         */
-        RETURN_TO_ADMIN_MENU("PFK12");
-
-        /**
-         * The five-character value the source stores in {@code CCARD-AID}, and the canonical wire form of this
-         * action.
-         */
-        private final String token;
-
-        /**
-         * Binds a constant to its source token.
-         *
-         * @param actionToken the five-character {@code CCARD-AID} value for this action
-         */
-        NavigationAction(final String actionToken) {
-            this.token = actionToken;
-        }
-
-        /**
-         * Returns the source token for this action, preserving the {@code PIC X(5)} field contract of
-         * {@code app/cpy/CVCRD01Y.cpy}:3.
-         *
-         * @return the five-character token; never null and never blank
-         */
-        public String token() {
-            return token;
-        }
-
-        /**
-         * Resolves a request token to an action, which is what {@code YYYY-STORE-PFKEY} at
-         * {@code app/cpy/CSSTRPFY.cpy}:17-78 did for the terminal's attention identifier.
-         *
-         * <p>The candidate is trimmed and folded to upper case with {@link Locale#ROOT}, never with the default
-         * locale: under a Turkish locale a default-locale fold maps a dotless {@code i} to a dotted capital and
-         * the comparison silently stops matching. The search walks {@link #values()} in declaration order, so
-         * resolution is deterministic and depends on no hash ordering.
-         *
-         * <p>Comparison is by {@link String#equals(Object)}, which is the correct equality for a token. The
-         * requirement elsewhere in this file to compare with {@code compareTo} rather than {@code equals}
-         * concerns {@link BigDecimal} only, where {@code equals} additionally compares scale.
-         *
-         * @param candidate the raw token, typically the {@value WebConfig#NAVIGATION_ACTION_PARAMETER} request
-         * parameter. The canonical form is the source token such as {@code PFK08}, not the Java constant name.
-         * @return the matching action; never null
-         * @throws ValidationException with a blank failure kind when {@code candidate} is null, empty or
-         * entirely whitespace, and with an invalid failure kind when it is not one of the seven tokens the
-         * corpus uses. Unlike the two numeric converters, blank input is rejected rather than mapped to null:
-         * an absent identifier is a legitimate optional filter, whereas an absent verb leaves nothing to do and
-         * is exactly the stale-state hazard the missing {@code WHEN OTHER} branch created. The message never
-         * repeats the rejected token.
-         */
-        public static NavigationAction fromToken(final String candidate) {
-            if (candidate == null || candidate.isBlank()) {
-                throw new ValidationException(ACTION_BLANK_MESSAGE, NAVIGATION_ACTION_PARAMETER,
-                        ValidationException.FailureKind.BLANK);
-            }
-
-            final String normalised = candidate.trim().toUpperCase(Locale.ROOT);
-
-            // CCARD-AID is PIC X(5), so nothing of another length can be one of its condition values.
-            if (normalised.length() == AID_TOKEN_LENGTH) {
-                for (final NavigationAction action : values()) {
-                    if (action.token.equals(normalised)) {
-                        return action;
-                    }
-                }
-            }
-
-            throw new ValidationException(ACTION_UNKNOWN_MESSAGE, NAVIGATION_ACTION_PARAMETER,
-                    ValidationException.FailureKind.INVALID);
-        }
-    }
-
-    /**
-     * The one non-numeric converter: binds a request token to a {@link NavigationAction}.
-     *
-     * <p>It is registered so that an unrecognised action fails as a
-     * {@code com.cardemo.exception.ValidationException} carrying the offending parameter name and a failure
-     * kind, rather than as the {@code IllegalArgumentException} Spring's default enum binding raises. It also
-     * fixes the canonical form to the source token of {@code app/cpy/CVCRD01Y.cpy}:4-19 rather than the Java
-     * constant name, which the default binding would otherwise accept.
-     *
-     * <p>This converter parses no number and is deliberately outside the "exactly two numeric converters"
-     * contract documented on {@link WebConfig}.
-     *
-     * <p>Stateless, immutable and safe to share across request threads.
-     */
-    public static final class NavigationActionConverter implements Converter<String, NavigationAction> {
-
-        /**
-         * Creates the converter. It holds no state.
-         */
-        public NavigationActionConverter() {
-            // Stateless: nothing to initialise.
-        }
-
-        /**
-         * Resolves a request token to an action.
-         *
-         * @param source the raw token value
-         * @return the matching action; never null
-         * @throws ValidationException when {@code source} is blank or is not one of the seven tokens the corpus
-         * uses. See {@link NavigationAction#fromToken(String)} for why blank input is rejected here while the
-         * numeric converters map it to null.
-         */
-        @Override
-        public NavigationAction convert(final String source) {
-            return NavigationAction.fromToken(source);
         }
     }
 }

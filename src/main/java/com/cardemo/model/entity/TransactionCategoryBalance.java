@@ -10,7 +10,11 @@
  *               calculation job browses in key order. Batch only: the
  *               cluster has no CICS file definition, so no online screen
  *               program ever opens it.
- * Source      : app/cpy/CVTRA01Y.cpy (50 B, composite key 17) @ 7756d89
+ * Source      : app/cpy/CVTRA01Y.cpy   (50 B, composite key 17)
+ *               app/jcl/PRTCATBL.jcl   (SYMNAMES offset map, no COBOL
+ *                                       program; corroborates the 17-byte
+ *                                       key and the 11-digit balance)
+ *                                                              @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
@@ -65,17 +69,21 @@ import jakarta.persistence.Table;
  *       {@code ACCESS MODE IS SEQUENTIAL} and browses it in key order, detecting an account level
  *       control break at {@code :L194} ({@code IF TRANCAT-ACCT-ID NOT= WS-LAST-ACCT-NUM}). That break
  *       is the reason the composite key order is load bearing rather than cosmetic.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>How it is built, run and tested.</b> {@code ./mvnw -B clean compile} compiles this class under
  * {@code -Xlint:all -Werror} with {@code failOnWarning} set, so a lint finding in any category
  * {@code javac} 25 publishes is a hard build failure rather than a warning. An unused import is not such a
  * category and is forbidden by review instead. {@code ./mvnw -B clean test} is where this type's unit test
  * belongs, under {@code src/test/java/com/cardemo/unit/model}, and {@code ./mvnw -B clean verify}
- * additionally enforces the JaCoCo line coverage floor. <strong>Not available, measured
- * 1 August 2026:</strong> no {@code TransactionCategoryBalanceTest} exists, so nothing under that path
- * covers this type today. There is nothing to run: this type has no entry point and is
- * exercised only through the repository and batch layers.
+ * additionally enforces the JaCoCo line coverage floor. <strong>Not available:</strong> there is no
+ * dedicated {@code TransactionCategoryBalanceTest} under that path yet. That is narrower than "untested" -
+ * this type is constructed and asserted on from <strong>eight</strong> test classes, among them
+ * {@code unit/batch/TransactionPostingProcessorTest}, {@code unit/batch/InterestCalculationProcessorTest}
+ * and {@code unit/model/TransactionCategoryBalanceIdTest}, because the accepted-control-path upsert below is
+ * a posting behaviour rather than an accessor. What is owed is a focused test of the column contract itself.
+ * There is nothing to run: this type has no entry point and is exercised only through the repository and
+ * batch layers.
  *
  * <p><b>Key configuration and defaults.</b> This class configures nothing and reads no property. It
  * depends on exactly one setting owned elsewhere, {@code spring.jpa.hibernate.ddl-auto}, which the
@@ -141,9 +149,9 @@ import jakarta.persistence.Table;
  *       bytes, every line exactly 50 characters. Row 1 splits as
  *
  *       <pre>
- * 00000000001 01 0001 0000000000{ 0000000000000000000000
- * |         | |  |    |          |
- * 11 acct     2  4    11 balance  22 filler        = 50
+ *       00000000001 01 0001 0000000000{ 0000000000000000000000
+ *       |         | |  |    |          |
+ *       11 acct     2  4    11 balance  22 filler        = 50
  *       </pre>
  *
  *       The trailing {@code &#123;} on the balance is a zoned decimal trailing sign overpunch meaning
@@ -152,7 +160,7 @@ import jakarta.persistence.Table;
  *       the precision tier asserted below. A census of the whole fixture found exactly 50 occurrences of
  *       that one overpunch character and no other, so every seeded balance is {@code +0.00} and the
  *       accumulation genuinely starts from zero.</li>
- * </ol>
+ *   </ol>
  *
  * <p>{@code FILLER} is deliberately <em>not</em> modelled. It carries no data; it exists only to pad the
  * record to the catalogued 50 bytes, and a relational row has no such requirement. Its 22 byte width is
@@ -174,6 +182,38 @@ import jakarta.persistence.Table;
  * <p>The table is {@code transaction_category_balance}. That name is not a free choice: it is already
  * fixed by the documented contract of {@link TransactionCategoryBalanceId}, and it must match character
  * for character or {@code ddl-auto: validate} fails at context startup.
+
+ * <h2>Independent corroboration from {@code app/jcl/PRTCATBL.jcl}</h2>
+ *
+ * <p>The offset map and the balance precision above are confirmed a second time, by a member that is not a
+ * copybook. {@code app/jcl/PRTCATBL.jcl} prints this cluster, and its {@code SYMNAMES} control cards declare
+ * the record positions outright:
+ *
+ * <pre>
+ * TRANCAT-ACCT-ID,1,11,ZD     bytes  1-11   eleven zoned-decimal digits
+ * TRANCAT-TYPE-CD,12,2,CH     bytes 12-13   two characters
+ * TRANCAT-CD,14,4,ZD          bytes 14-17   four zoned-decimal digits
+ * TRAN-CAT-BAL,18,11,ZD       bytes 18-28   ELEVEN zoned-decimal digits
+ * </pre>
+ *
+ * <p>Two facts follow that are worth more than the copybook alone. The three key components occupy bytes 1
+ * through 17, which is the composite key length of 17 that {@code app/catlg/LISTCAT.txt} catalogues, derived
+ * here from positions rather than from addition. And {@code TRAN-CAT-BAL} is <b>eleven</b> positions wide, not
+ * twelve, which is the same {@code NUMERIC(11,2)} the Blocker below insists on - stated by a DFSORT symbol in
+ * a different file from the picture clause, so the two cannot both be wrong in the same way. The job's
+ * {@code OUTREC} then edits that field as {@code EDIT=(TTTTTTTTT.TT)}, nine integer digits and two decimals,
+ * which is the third independent statement of the same precision.
+ *
+ * <p><b>The job's own report step has no Java analogue in this branch, and that is a recorded decision rather
+ * than an omission.</b> {@code PRTCATBL.jcl} is three steps and no COBOL program: {@code DELDEF} pre-deletes
+ * the output with {@code IEFBR14}, {@code STEP05R} unloads the cluster to a {@code TCATBALF.BKUP(+1)}
+ * generation at {@code LRECL=50} through the shared {@code REPROC} procedure, and {@code STEP10R} sorts by the
+ * composite key and emits a 40-byte edited line. Nothing in it reads or writes any field this entity does not
+ * already declare, so it authorises the mapping above and adds no behaviour: a Java step for it would need a
+ * job, a reader and a writer that the plan does not list for this cluster, and inventing them would put three
+ * files outside the authored inventory in order to reproduce a print utility. What it does contribute is the
+ * corroboration above and one generation base, {@code TCATBALF.BKUP}, which is already one of the seven
+ * catalogued bases the object-storage layout covers.
  *
  * <h2>Blocker: the balance is NUMERIC(11,2), never NUMERIC(12,2)</h2>
  *
@@ -219,7 +259,7 @@ import jakarta.persistence.Table;
  *       recorded here because the accumulation performed on this value by the batch layer must apply
  *       it, and because a reader looking for the project's rounding convention will look at the field
  *       that holds the money.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>The balance is signed and may legitimately be negative.</b> The posting job adds the transaction
  * amount to it at {@code app/cbl/CBTRN02C.cbl:L508} on the create path and {@code :L527} on the update
@@ -248,7 +288,7 @@ import jakarta.persistence.Table;
  *   <li>expose pass-through accessors such as a {@code getAccountId()} that reaches into the embedded
  *       identifier. Those would duplicate the key class's public surface and invite the two to diverge;
  *       callers read a component through {@code getId().getAccountId()} instead.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Severity: Blocker.</b> Double mapping a column is a startup failure, not a runtime nuisance.
  * <b>Remediation:</b> the single import from a sibling model package,
@@ -288,7 +328,7 @@ import jakarta.persistence.Table;
  *       {@code 2700-B-UPDATE-TCATBAL-REC} for an existing one. The create branch initialises the record
  *       at {@code :L504}, moves the key at {@code :L505-L507} and adds the amount at {@code :L508}; the
  *       update branch adds the amount at {@code :L527}. Both branches accumulate identically.</li>
- * </ol>
+ *   </ol>
  *
  * <p><b>The leniency is scoped to the read guard alone, and this must not be overstated.</b> The write
  * verification at {@code app/cbl/CBTRN02C.cbl:L512} and the rewrite verification at {@code :L530} each
@@ -307,7 +347,7 @@ import jakarta.persistence.Table;
  *   <li>The balance is <b>not initialised to a default</b>, neither in the field declaration nor in the
  *       no-argument constructor. The caller supplies it. A field initialiser here would fabricate a value
  *       the source system never produced and would mask a caller that forgot to set one.</li>
- * </ul>
+ *   </ul>
  *
  * <p>This is one of only three places in the whole migration where "not found" is a legitimate outcome
  * rather than an error. The other two are the interest job's fallback to the default disclosure group
@@ -388,11 +428,15 @@ import jakarta.persistence.Table;
  * declaration taken together with the three components of
  * {@link com.cardemo.model.key.TransactionCategoryBalanceId}; the declared types and the component order
  * match the block reproduced below line for line. Because {@code spring.jpa.hibernate.ddl-auto} is
- * {@code validate} in every planned profile, any mismatch of column name, type, precision or nullability
- * would fail application context startup outright, so the agreement matters and is not a formality.
+ * {@code validate} in all four profiles, any mismatch of column name, type, precision or nullability
+ * fails application context startup outright, so the agreement matters and is not a formality.
  *
- * <p>{@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not available</b>. What
- * {@code V1__create_schema.sql} declares, and what this mapping asserts, is precisely:
+ * <p>Both later migrations exist. {@code V2__create_indexes.sql} creates nothing for this table beyond its
+ * composite primary key, correctly, because {@code TCATBALF} has no alternate index in
+ * {@code app/catlg/LISTCAT.txt} and the account-level control break of {@code CBACT04C} rides the primary
+ * key's leading component. {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/tcatbal.txt}. An
+ * earlier revision of this paragraph called both unavailable; that is no longer true and the claim is
+ * withdrawn. What {@code V1__create_schema.sql} declares, and what this mapping asserts, is precisely:
  *
  * <pre>
  * CREATE TABLE transaction_category_balance (
@@ -430,7 +474,7 @@ import jakarta.persistence.Table;
  *       In this particular fixture every one of the 50 rows carries that same positive zero overpunch, so
  *       a correct load produces 50 rows of {@code 0.00}, which is a cheap and exact assertion for the
  *       seed migration's own test.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Two boundaries of that migration are worth stating so this contract is not read too broadly.
  * {@code V1__create_schema.sql} creates exactly 11 tables with 10 foreign keys and 5 check constraints;
@@ -698,10 +742,14 @@ public class TransactionCategoryBalance {
      *
      * <p><b>The balance is excluded, which narrows an earlier form of this method.</b> The previous
      * reasoning was that the balance falls under no masking rule in the logging configuration and is
-     * therefore safe to render. That conflated two different questions. A masking rule is a backstop for
-     * values it can recognise by shape, and an unlabelled decimal has no recognisable shape, so the
-     * absence of a rule is not evidence of safety - it is the reason omission at source has to do the
-     * work. And the value itself is customer financial data: this rendering carries the account
+     * therefore safe to render. Both halves of that were wrong. {@code balance} and {@code TRAN-CAT-BAL}
+     * are masked paths in {@code src/main/resources/logback-spring.xml}, so a rule does exist - and its
+     * existence would not have made rendering safe anyway, because it keys on a JSON field name while this
+     * rendering interpolates the value into free text, where there is no field name to key on. A
+     * value-shaped rule cannot close that gap either: an unlabelled decimal is indistinguishable from the
+     * preserved counter and total {@code DISPLAY} reproductions the same file protects from
+     * over-redaction. Omission at source has to do the work. And the value itself is customer financial data: this
+     * rendering carries the account
      * identifier, so a log estate holding both holds a per-account, per-category balance ledger that
      * joins straight back to the row, reconstructable with no database access and no authorisation. A
      * reader who needs a balance should read the row, where the access is authorised and audited.

@@ -87,7 +87,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       oracle consumes nothing but this record's own components and a fixed clock. Together they are
  *       the executable specification the service tier must reproduce, and the proof that the 17
  *       components are <em>sufficient</em> to express every outcome the screen produces.</li>
- * </ol>
+ *   </ol>
  *
  * <p>The oracles are deliberately <strong>not</strong> a service. They are declared private, they
  * hold no state, they touch no collaborator and they are never exported. {@code ReportSubmissionService}
@@ -198,7 +198,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>No container, no Spring context, no database, no queue and no cloud client.</strong>
  *       This is the pure JVM tier. Nothing here opens a socket, so no endpoint, credential or
  *       privilege is involved.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. The date validation boundary</h2>
  *
@@ -216,10 +216,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * tolerated {@code MSG-NUM = '2513'} escape at {@code :L399}. That keeps the tier boundary visible in
  * the signature instead of hiding it behind a stub.</p>
  *
- * <h2>6. Findings, classified</h2>
+ * <h2>6. Source facts that are easy to get wrong</h2>
  *
- * <p><strong>Medium, closed - prior-generation plan prose described the monthly period as month to date.
- * The source computes a full calendar month.</strong> {@code app/cbl/CORPT00C.cbl:L217-L219} sets the
+ * <p><strong>The monthly period is a full calendar month, not month to date.</strong>
+ * {@code app/cbl/CORPT00C.cbl:L217-L219} sets the
  * start to the current
  * year and month with day {@code '01'}. {@code :L223-L230} then sets the day to 1, adds one to the
  * month, rolls the year when the month passes 12, and subtracts one day from the packed year month
@@ -227,25 +227,22 @@ import org.junit.jupiter.params.provider.ValueSource;
  * WS-CURDATE PIC 9(08)} over the very year, month and day subfields that {@code :L223-L227} has just
  * overwritten, the moves at {@code :L232-L234} emit the <strong>last day of the current month</strong>
  * - not the clock's day. The December rollover settles it: month 13 becomes January of the following
- * year, and one day less is the 31st of December of the original year. That prose's own yearly period
- * being a full calendar year is the consistent reading, and the current
- * {@code docs/technical-specifications.md} now describes a full calendar month.
- * <em>Remediation still owed by the service layer</em>: {@code ReportSubmissionService} must implement
- * {@code :L223-L234}, not the prose; that bean is <strong>not available</strong>, so the obligation is
- * recorded here rather than asserted as met.</p>
+ * year, and one day less is the 31st of December of the original year. A full calendar year for the
+ * yearly period is the consistent reading of the same arithmetic. The obligation this places on the
+ * service layer is to implement {@code :L223-L234} rather than any paraphrase of it; this class asserts
+ * the shape of the request that carries the result, and the period arithmetic itself is asserted by the
+ * service's own tests.</p>
  *
- * <p><strong>Medium, closed - prior-generation plan prose totalled 460 symbolic map input fields.</strong>
- * This map's own figure of 17 was correct in that prose and on disk, so nothing here is affected; the
- * corpus total now reads <strong>441</strong> in {@code docs/technical-specifications.md}, recounted from
- * the input groups and verified on 1 August 2026.</p>
+ * <p><strong>This map declares 17 input fields.</strong> A direct count across all seventeen symbolic
+ * maps totals <strong>441</strong> rather than the 460 that older prose quotes; this map's own figure is
+ * unaffected either way.</p>
  *
- * <p><strong>Medium, closed - prior-generation plan prose described eighteen job deck card images.</strong>
+ * <p><strong>The embedded job deck is seventeen card images, not eighteen.</strong>
  * {@code app/cbl/CORPT00C.cbl:L83-L125} declares <strong>seventeen</strong>: fourteen plain
- * {@code PIC X(80)} literals plus the three named multi part groups. The specification no longer states a
- * card count at all - it describes the deck as a run of eighty-byte literal constants - so nothing there
- * now contradicts the seventeen counted here. No impact on this type, which carries no card array.</p>
+ * {@code PIC X(80)} literals plus the three named multi part groups. It has no impact on this type, which
+ * carries no card array, and is stated only so the count is not re-derived from a paraphrase.</p>
  *
- * <p><strong>Low - the confirmation gate is not the billing screen's gate.</strong> Two differences,
+ * <p><strong>The confirmation gate is not the billing screen's gate.</strong> Two differences,
  * both verified. {@code app/cbl/CORPT00C.cbl:L464-L474} handles blank <em>outside</em> the
  * {@code EVALUATE} and treats it as an <strong>error</strong>, setting {@code WS-ERR-FLG} at
  * {@code :L471}, whereas {@code app/cbl/COBIL00C.cbl:L182-L184} makes {@code WHEN SPACES} /
@@ -255,16 +252,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@code 'Invalid value. Valid values are (Y/N)...'} without quoting. Assuming the billing wording
  * here would be wrong twice over.</p>
  *
- * <p><strong>Low - December 9999 is undefined in the source.</strong> {@code :L226} performs
+ * <p><strong>December 9999 is undefined in the source.</strong> {@code :L226} performs
  * {@code ADD 1 TO WS-CURDATE-YEAR} against a {@code PIC 9(04)} field
  * ({@code app/cpy/CSDAT01Y.cpy:L20}) with <strong>no {@code ON SIZE ERROR} clause</strong>, so 9999
  * plus one truncates high order to 0000 and the subsequent {@code FUNCTION INTEGER-OF-DATE} argument
  * is not a usable standard date. The oracle here reports the condition with context instead of
- * truncating silently; that is a labelled deviation, not parity. <em>Remediation</em>: none - the
+ * truncating silently; that is a labelled deviation, not parity. Nothing further is done about it: the
  * condition is unreachable in practice and correcting the legacy field would be a behaviour
  * change.</p>
  *
- * <p><strong>Low - the width guard is not reachable from the record component.</strong> The build pins
+ * <p><strong>The width guard is not reachable from the record component.</strong> The build pins
  * {@code jakarta.validation-api} 3.0.2, whose {@code @Size} declares
  * {@code @Target({METHOD, FIELD, ANNOTATION_TYPE, CONSTRUCTOR, PARAMETER, TYPE_USE})}. That artefact
  * predates {@code ElementType.RECORD_COMPONENT}, so the annotation is not applicable to a record
@@ -272,38 +269,37 @@ import org.junit.jupiter.params.provider.ValueSource;
  * against the compiled type, not assumed. Under JLS 8.10.1 it survives on the backing field, the
  * accessor and the canonical constructor parameter, which is how Hibernate Validator finds it. This
  * class therefore reads the accessor and the field and requires them to agree, and it asserts the
- * enforcement end to end through a real validation run rather than trusting reflection alone.
- * <em>Remediation</em>: none required; the constraint is enforced. Recorded because a width assertion
+ * enforcement end to end through a real validation run rather than trusting reflection alone. It is
+ * stated because a width assertion
  * written against the record component alone reports a false contract drift.</p>
  *
- * <p><strong>Not available.</strong> Three things this repository does not state, listed rather than
+ * <p><strong>Three things the corpus does not state</strong>, listed rather than
  * invented. (a) The behaviour of {@code FUNCTION NUMVAL-C} on a non numeric argument at
  * {@code :L305-L327}: the source's own guard is the {@code IS NOT NUMERIC} test that follows at
  * {@code :L329}, so the oracle passes such a value through unchanged and lets that test reject it.
  * (b) The lower bound of the {@code FUNCTION INTEGER-OF-DATE} domain: the oracle bounds the year by
- * the {@code PIC 9(04)} field width instead, which is repository evidence. (c) Any relational schema
- * claim - no migration file is a planned child of this test, so nothing about DDL is asserted
- * here.</p>
+ * the {@code PIC 9(04)} field width instead, which is repository evidence. (c) Anything about the
+ * relational schema, which is a database-tier concern and outside this pure-JVM tier.</p>
  *
- * <p><strong>Severity taxonomy applied to changes to this contract.</strong> <em>Blocker</em>:
+ * <p><strong>Changes that would break this contract.</strong> The ones that break observable output:
  * altering any of the fourteen message literals, including normalising the lower case {@code date} of
  * the two whole date literals to {@code Date}; modelling the confirmation as a {@code boolean}; or
- * collapsing absent, blank and low values into one state. <em>High</em>: implementing month to date
+ * collapsing absent, blank and low values into one state. The ones that break the source's semantics:
+ * implementing month to date
  * instead of the full calendar month; reading a wall clock; inventing a mutual exclusivity constraint;
  * requiring a specific tick character; using a temporal type for an assembled date; normalising the
  * blank date rendering; drifting the {@code CSUTLDTC-PARM} widths; carrying two copies of a date;
  * leaking the batch report's page size; factoring the header fields into a shared abstraction;
- * declaring a class level gated constraint; or adding a session or navigation field. <em>Medium</em>:
- * the three plan defects above. <em>Low</em>: the three observations above - the confirmation gate
- * divergence, the undefined December 9999 arithmetic and the annotation propagation.</p>
+ * declaring a class level gated constraint; or adding a session or navigation field.</p>
  *
  * <h2>7. Common failure modes and troubleshooting</h2>
  *
  * <ul>
  *   <li><em>The build fails on something trivial.</em> Compilation runs with {@code -Xlint:all},
  *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation, so one raw type or
- *       one deprecation is a hard error. An unused import is not - {@code javac} 25.0.3 publishes no lint
- *       key for one - so that is a review matter. Reproduce with {@code ./mvnw -q test-compile}.</li>
+ *       one deprecation is a hard error. An unused import is not - {@code javac} at release 25 publishes
+ *       no lint key for one - so it must be spotted by hand. Reproduce with
+ *       {@code ./mvnw -q test-compile}.</li>
  *   <li><em>A monthly assertion fails only in some months.</em> Month to date was implemented instead
  *       of the full calendar month, or a wall clock leaked in. The December and February cases fail
  *       first.</li>
@@ -318,11 +314,11 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       other tiers and are asserted absent here.</li>
  *   <li><em>A width assertion reports that a component declares no {@code @Size}.</em> It was read
  *       from the {@link RecordComponent} rather than from the accessor or the backing field; see the
- *       Low finding above. Read {@code component.getAccessor().getAnnotation(Size.class)}.</li>
+ *       accessor note above. Read {@code component.getAccessor().getAnnotation(Size.class)}.</li>
  *   <li><em>A locale sensitive assertion fails on another host.</em> Every format and parse in this
  *       class passes {@link Locale#ROOT}; a default locale can render digits outside ASCII, which is
  *       asserted explicitly.</li>
- * </ul>
+ *   </ul>
  *
  * @see ReportRequest
  * @see FixedClockProvider

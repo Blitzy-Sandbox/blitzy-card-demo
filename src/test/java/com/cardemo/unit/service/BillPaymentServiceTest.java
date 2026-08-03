@@ -129,7 +129,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>Twelve outcome literals are byte exact</strong>, including the misspelling
  *       {@code Tran ID already exist...} at {@code :536} and the same {@code Account ID NOT found...} text at
  *       three unrelated sites ({@code :361}, {@code :392}, {@code :425}).</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  *
@@ -140,8 +140,11 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Run the tier with {@code ./mvnw -B -ntp test} and this class alone with
  * {@code ./mvnw -B -ntp test -Dtest=BillPaymentServiceTest}. The full gate is
- * {@code ./mvnw -B -ntp clean verify}. Compilation is Java 25 with {@code -Xlint:all -Werror}, so a single
- * unused import or one unescaped angle bracket in this Javadoc fails the build outright.</p>
+ * {@code ./mvnw -B -ntp clean verify}. Compilation is Java 25 with {@code -Xlint:all -Werror}, so any warning
+ * {@code javac} emits fails the build outright. Two things it does not emit: an unused import, for which
+ * there is no lint key on this compiler, and a malformed Javadoc element such as an unescaped angle bracket -
+ * no Javadoc plugin is bound in {@code pom.xml}, so that is covered by the separate explicit doclint
+ * command.</p>
  *
  * <h2>3. Key configurations and defaults</h2>
  *
@@ -162,14 +165,16 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>{@code BigDecimal} throughout</strong>, compared with {@code compareTo} and never
  *       {@code equals}, because {@code 0} and {@code 0.00} are equal in value and unequal under
  *       {@code equals}. No {@code float} or {@code double} appears in any monetary assertion.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>The build fails with "warnings found and -Werror specified".</strong> Almost always one
- *       unused import left behind after an edit, or a raw angle bracket in this Javadoc. Escape it as
- *       {@code &lt;} - which matters here because the guard under test literally reads {@code <=}.</li>
+ *   <li><strong>The build fails with "warnings found and -Werror specified".</strong> Almost always a raw
+ *       type, an unchecked cast or a deprecated call. Neither an unused import left behind after an edit nor
+ *       a raw angle bracket in this Javadoc appears here - the first has no lint key and the second is a
+ *       doclint matter - but both must still be fixed: escape the bracket as {@code &lt;}, which matters
+ *       because the guard under test literally reads {@code <=}.</li>
  *   <li><strong>A zero-balance test suddenly passes the payment through.</strong> The guard was weakened from
  *       {@code &lt;=} to {@code &lt;}. Restore it.</li>
  *   <li><strong>Every generated identifier is zero.</strong> {@code ADD 1} was moved after
@@ -186,7 +191,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>Fixture names.</strong> The daily transaction fixture is {@code dailytran.txt}, never
  *       {@code dalytran.txt}. No fixture is read by this tier, but the trap is recorded because a sibling
  *       tier does read it.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Regression severities and their remediation</h2>
  *
@@ -214,13 +219,13 @@ import org.springframework.transaction.annotation.Transactional;
  *       that have nothing to do with it; the {@code exist} spelling at {@code :536}; the same
  *       {@code Account ID NOT found...} text at three sites. <em>Remediation:</em> none - all three are the
  *       source's own behaviour and are preserved deliberately, as section 6 records.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>6. Artefacts retained by the parity mandate</h2>
  *
- * <p>Four artefacts would read as dead or defective code in isolation. Each is a faithful reproduction of the
- * system of record, each is asserted here so the reproduction is provable rather than asserted, and each
- * carries its tracking reference in {@code DECISION_LOG.md} with a paragraph row in
+ * <p>Four artefacts would read as dead or defective code in isolation. Each is a faithful reproduction of the system
+ * of record, each is asserted here so the reproduction is provable rather than asserted, and each carries its
+ * tracking reference owed to the planned {@code DECISION_LOG.md} with a paragraph row in
  * {@code TRACEABILITY_MATRIX.md}. None is abandoned residue.</p>
  *
  * <ul>
@@ -235,7 +240,7 @@ import org.springframework.transaction.annotation.Transactional;
  *   <li><strong>The racy identifier generation</strong> of {@code :212}-{@code :217}. A sequence would remove
  *       the race and change every generated value, so the race stays and a collision surfaces as
  *       {@code DuplicateRecordException}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Evidence not available</h2>
  *
@@ -327,9 +332,6 @@ final class BillPaymentServiceTest {
 
     /** {@code ACTIDINI}, the field the source names on every input-error path. */
     private static final String FIELD_ACCOUNT_ID = "ACTIDINI";
-
-    /** {@code CONFIRMI}, the field the two confirmation branches name. */
-    private static final String FIELD_CONFIRMATION = "CONFIRMI";
 
     /** {@code ACCTDAT } as {@code app/cbl/COBIL00C.cbl:41} spells it, trailing blank included. */
     private static final String ACCTDAT_FILE = "ACCTDAT ";
@@ -475,8 +477,8 @@ final class BillPaymentServiceTest {
      */
     private Account arrangeConfirmedPayment(final BigDecimal balance) {
         final Account existing = arrangeAccount(balance);
-        when(this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                .thenReturn(List.of(crossReference()));
+        when(this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                .thenReturn(Optional.of(crossReference()));
         when(this.transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
         return existing;
     }
@@ -855,8 +857,8 @@ final class BillPaymentServiceTest {
             when(accountRepository.findByIdForUpdate(ACCOUNT_ID))
                     .thenReturn(Optional.of(account(new BigDecimal("1940.00"))))
                     .thenReturn(Optional.of(account(new BigDecimal("1940.00"))));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference()));
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference()));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
             final BillPaymentService bean = service();
 
@@ -887,17 +889,60 @@ final class BillPaymentServiceTest {
             verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
         }
 
+        /**
+         * The declined arm is a successful no-write termination, so {@code payBill} returns the cleared map
+         * rather than throwing.
+         *
+         * <p>The source arm at {@code :178}-{@code :181} performs {@code CLEAR-CURRENT-SCREEN} and moves
+         * {@code 'Y'} to {@code WS-ERR-FLG}, and does nothing else - it moves no message and positions no
+         * cursor to a field in error. There is therefore no rejection to report and nothing for a caller to
+         * correct, which is what distinguishes it from the {@code WHEN OTHER} arm at {@code :185}-{@code :190}.
+         * An earlier implementation fabricated a {@code ValidationException} carrying the invented literal
+         * {@code Bill payment was declined at the confirmation prompt.}, a string that appears nowhere in
+         * {@code app/cbl/COBIL00C.cbl}; that turned the operator's documented choice into a client error.</p>
+         *
+         * <p>Note that a screen <em>is</em> sent on this path even though the arm performs no explicit
+         * {@code SEND-BILLPAY-SCREEN}: {@code CLEAR-CURRENT-SCREEN} at {@code :552}-{@code :555} performs
+         * {@code INITIALIZE-ALL-FIELDS} and then sends. That is why there is a map to return at all.</p>
+         */
         @Test
-        @DisplayName("payBill raises the declined branch as a typed ValidationException on CONFIRMI")
-        void payBillRaisesTheDeclinedBranch() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service().payBill(ACCOUNT_ID_TEXT, "N"))
-                    .withMessage("Bill payment was declined at the confirmation prompt.")
-                    .satisfies(failure -> {
-                        assertThat(failure.getFieldName()).isEqualTo(FIELD_CONFIRMATION);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.INVALID);
-                    });
+        @DisplayName("payBill returns the cleared map for the declined branch and raises nothing")
+        void payBillReturnsTheClearedMapForTheDeclinedBranch() {
+            final BillPaymentScreen sent = service().payBill(ACCOUNT_ID_TEXT, "N");
+
+            assertThat(sent)
+                    .as(":555 sends the cleared map, so the declined pass has a screen to return")
+                    .isNotNull();
+            assertThat(sent.accountId()).isBlank();
+            assertThat(sent.confirmation()).isBlank();
+            assertThat(sent.errorMessage())
+                    .as(":180-:181 leaves WS-MESSAGE untouched, so there is no caption to relay")
+                    .isEmpty();
+            assertThat(sent.messageKind()).isEqualTo(MessageKind.NONE);
+            verifyNoInteractions(accountRepository, transactionRepository, cardCrossReferenceRepository);
+        }
+
+        /**
+         * The outcome is recorded as a success, not as a retained failure.
+         *
+         * <p>Asserted separately from the map, because this is the property the HTTP status depends on:
+         * {@code BillingController} answers {@code 200 OK} with {@code CANCELLED} only because no failure was
+         * retained. A regression that reinstated the fabricated exception would still clear the map, so the map
+         * assertions above would keep passing while the status silently reverted to {@code 400}.</p>
+         */
+        @Test
+        @DisplayName("the declined branch retains no failure, which is what makes it a 200 rather than a 400")
+        void theDeclinedBranchRetainsNoFailure() {
+            final BillPaymentResult result = enter(ACCOUNT_ID_TEXT, "N");
+
+            assertThat(result.outcome()).isEqualTo(PaymentOutcome.CONFIRMATION_DECLINED);
+            assertThat(result.failure())
+                    .as("a declined confirmation is an accepted choice, not a rejected input")
+                    .isEmpty();
+            assertThat(result.retainedFailure()).isNull();
+            assertThat(result.inputError())
+                    .as(":181 does set WS-ERR-FLG - it suppresses the downstream guards - so parity is kept")
+                    .isTrue();
         }
 
         @Test
@@ -1068,8 +1113,8 @@ final class BillPaymentServiceTest {
         @DisplayName(":216-:217 a populated store yields the maximum key plus one")
         void populatedStoreYieldsMaximumPlusOne() {
             arrangeAccount(new BigDecimal("100.00"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference()));
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference()));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc())
                     .thenReturn(Optional.of(previousTransaction("0000000000000041")));
 
@@ -1132,8 +1177,8 @@ final class BillPaymentServiceTest {
         @DisplayName(":215-:216 has no guard, so a failed browse abends on the high-values sentinel")
         void browseFailureAbendsOnTheHighValuesSentinel() {
             arrangeAccount(new BigDecimal("100.00"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference()));
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference()));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc())
                     .thenThrow(new QueryTimeoutException("browse timed out"));
 
@@ -1289,8 +1334,8 @@ final class BillPaymentServiceTest {
         @DisplayName(":425 an absent cross-reference emits the SAME Account ID NOT found... literal")
         void absentCrossReferenceEmitsTheSharedLiteralAtItsThirdSite() {
             arrangeAccount(new BigDecimal("100.00"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of());
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.empty());
             when(transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
 
             final BillPaymentResult result = enter(ACCOUNT_ID_TEXT, "Y");
@@ -1321,7 +1366,7 @@ final class BillPaymentServiceTest {
         @DisplayName(":432 a failed cross-reference read emits Unable to lookup XREF AIX file...")
         void failedCrossReferenceReadEmitsTheXrefLiteral() {
             arrangeAccount(new BigDecimal("100.00"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
                     .thenThrow(new QueryTimeoutException("cxacaix read timed out"));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
 
@@ -1341,7 +1386,7 @@ final class BillPaymentServiceTest {
         @DisplayName("payBill raises the cross-reference failure rather than reporting the later success")
         void payBillRaisesTheCrossReferenceFailure() {
             arrangeAccount(new BigDecimal("100.00"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
                     .thenThrow(new QueryTimeoutException("cxacaix read timed out"));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
 
@@ -1530,8 +1575,8 @@ final class BillPaymentServiceTest {
         @DisplayName("a balance that fits NUMERIC(12,2) but not NUMERIC(11,2) abends rather than truncating")
         void balanceBeyondTheAmountPictureAbends() {
             arrangeAccount(new BigDecimal("9999999999.99"));
-            when(cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
-                    .thenReturn(List.of(crossReference()));
+            when(cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(ACCOUNT_ID))
+                    .thenReturn(Optional.of(crossReference()));
             when(transactionRepository.findFirstByOrderByTransactionIdDesc()).thenReturn(Optional.empty());
 
             assertThatExceptionOfType(CardDemoException.class)

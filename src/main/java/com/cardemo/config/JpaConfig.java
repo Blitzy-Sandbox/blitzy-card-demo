@@ -106,7 +106,7 @@ import org.springframework.context.annotation.Configuration;
  *   <li><strong>No clock, no object-store client, no security filter chain, no observability registry and
  *       no web binding.</strong> Those belong to the sibling configuration classes of this package. This
  *       one is scoped to persistence.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The ten base clusters this schema replaces</h2>
  *
@@ -130,7 +130,7 @@ import org.springframework.context.annotation.Configuration;
  *   <li>{@code TRANTYPE} header :L3742, key 2 / record 60 :L3779 - the transaction type row</li>
  *   <li>{@code USRSEC} header :L3846, key 8 / record 80 :L3883, with the same 80 restated as the maximum
  *       record length on the following line :L3884 - the user security row</li>
- * </ul>
+ *   </ul>
  *
  * <p>Three of the ten carry independent job-control corroboration in the members named on this file's
  * banner: {@code app/jcl/ACCTFILE.jcl:L40-L41} declares {@code KEYS(11 0)} and
@@ -139,15 +139,12 @@ import org.springframework.context.annotation.Configuration;
  * {@code RECORDSIZE(50 50)}. Each agrees with the catalogue exactly, which is what makes the catalogue
  * usable as a specification rather than a report.
  *
- * <p><strong>Finding, severity Medium - a documentary correction.</strong> Narrative elsewhere in the
- * project states that {@code USRSEC} is defined in job control rather than catalogued. That is not what the
- * sources show. {@code USRSEC} <em>is</em> catalogued, at {@code app/catlg/LISTCAT.txt:L3846} with
- * {@code KEYLEN 8} and {@code AVGLRECL 80} at {@code :L3883-L3884}, and it is <em>also</em> defined in job
- * control at {@code app/jcl/DUSRSECJ.jcl:L64-L68}, which issues a cluster definition for
- * {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} with {@code KEYS(8,0)}, {@code RECORDSIZE(80,80)},
- * {@code REUSE} and {@code INDEXED}. Both sources exist and they agree. Remediation: cite both, which this
- * paragraph does, and treat the eight-character key and eighty-byte record as doubly attested rather than
- * inferred.
+ * <p>{@code USRSEC} is attested twice, and both attestations agree. It is catalogued at
+ * {@code app/catlg/LISTCAT.txt:L3846} with {@code KEYLEN 8} and {@code AVGLRECL 80} at
+ * {@code :L3883-L3884}, and it is also defined in job control at {@code app/jcl/DUSRSECJ.jcl:L64-L68},
+ * which issues a cluster definition for {@code AWS.M2.CARDDEMO.USRSEC.VSAM.KSDS} with {@code KEYS(8,0)},
+ * {@code RECORDSIZE(80,80)}, {@code REUSE} and {@code INDEXED}. The eight-character key and eighty-byte
+ * record are therefore doubly attested rather than inferred.
  *
  * <h2>The three alternate indexes and their three paths</h2>
  *
@@ -168,7 +165,7 @@ import org.springframework.context.annotation.Configuration;
  *       <strong>{@code AXRKP 304}</strong> :L3676. Offset 304 with a key length of 26 is the processing
  *       timestamp, which occupies bytes 305 to 330 of the 350-byte transaction record under the offset map
  *       recorded further below, so this becomes the processing-timestamp finder.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The paths are {@code CARDDATA.VSAM.AIX.PATH} :L150, {@code CARDXREF.VSAM.AIX.PATH} :L351 and
  * {@code TRANSACT.VSAM.AIX.PATH} :L3541. That the batch tier really consumed a path, rather than merely
@@ -203,7 +200,7 @@ import org.springframework.context.annotation.Configuration;
  *   <dt>The disclosure interest rate, {@code NUMERIC(6,2)}</dt>
  *   <dd>{@code DIS-INT-RATE} at {@code app/cpy/CVTRA02Y.cpy:L9} is {@code PIC S9(04)V99} - four integer
  *       digits and two decimals. It is the only field in the corpus at this precision.</dd>
- * </dl>
+ *   </dl>
  *
  * <p>Every one of those fields is a {@code java.math.BigDecimal} in Java and a {@code NUMERIC} column in
  * the schema. <strong>No binary IEEE-754 type appears in any financial field anywhere in the tree</strong>,
@@ -219,22 +216,19 @@ import org.springframework.context.annotation.Configuration;
  * deterministic and runs before the first request, which is why {@link #verifyPersistenceContract()} asserts
  * that the property still holds the value {@code validate}.
  *
- * <p>That coverage was measured rather than assumed. Against PostgreSQL 16.10 with the two shipped
- * migrations applied, all eleven entity mappings validate and the context starts; changing
- * {@code tran_orig_ts} on the transaction table from a fixed-width to a variable-width character type was
- * rejected; and dropping {@code tran_amt} outright was rejected.
+ * <p>Concretely, all eleven entity mappings validate against the migrated schema; changing
+ * {@code tran_orig_ts} on the transaction table from a fixed-width to a variable-width character type is
+ * rejected, and dropping {@code tran_amt} outright is rejected.
  *
- * <h3>What validate does not cover - severity Medium</h3>
+ * <h3>What validate does not cover</h3>
  *
- * <p><strong>Numeric precision and scale are not checked.</strong> In the same measurement, widening
- * {@code tran_amt} from eleven digits to twelve while leaving the entity mapping untouched was
- * <em>accepted</em>. The provider's schema validator compares a column's type, not its declared precision,
- * so the three precisions above are <strong>not</strong> machine-enforced at startup. This project's own
- * specification asserts that any precision divergence fails startup deterministically; for the existence
- * and type cases that holds, for precision and scale it does not, and the measured behaviour is recorded
- * here in preference to the unverified claim.
+ * <p><strong>Numeric precision and scale are not checked.</strong> Widening {@code tran_amt} from eleven
+ * digits to twelve while leaving the entity mapping untouched is <em>accepted</em>: the provider's schema
+ * validator compares a column's type, not its declared precision, so the three precisions above are
+ * <strong>not</strong> machine-enforced at startup.
  *
- * <p>Consequence and remediation. A precision divergence would not announce itself at startup. It would
+ * <p>That has a consequence worth stating plainly. A precision divergence would not announce itself at
+ * startup. It would
  * surface later and far more quietly, as a rounding difference or as an overflow on a value the copybook
  * field can represent and the column cannot - which is precisely the class of silent parity defect this
  * migration exists to avoid. Three controls carry that weight in place of the provider: the migration DDL is
@@ -242,7 +236,7 @@ import org.springframework.context.annotation.Configuration;
  * explicitly beside the PIC clause it derives from; and the parity tests compare computed money values
  * against the frozen fixtures. The residual risk is disclosed here rather than absorbed.
  *
- * <h2>The two 26-byte timestamp columns are character data - severity Blocker</h2>
+ * <h2>The two 26-byte timestamp columns are character data, and must stay so</h2>
  *
  * <p>{@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are declared {@code PIC X(26)} at
  * {@code app/cpy/CVTRA05Y.cpy:L16-L17}, and {@code TRNX-ORIG-TS} and {@code TRNX-PROC-TS} likewise at
@@ -255,20 +249,25 @@ import org.springframework.context.annotation.Configuration;
  * can round-trip all three:
  *
  * <ol>
- *   <li>The batch generator emits millisecond precision followed by four literal zero digits, in a form
- *       that separates the date from the time with a hyphen and the time components with dots.</li>
+ *   <li>The batch generator emits <strong>centisecond</strong> precision followed by four literal zero
+ *       digits - two fraction digits, not three and not nine - in a form that separates the date from the
+ *       time with a hyphen and the time components with dots, giving
+ *       {@code yyyy-MM-dd-HH.mm.ss.SS0000}. {@code app/cbl/CBTRN02C.cbl:L159-L174} declares
+ *       {@code DB2-FORMAT-TS PIC X(26)} with the fraction split into {@code DB2-MIL PIC 9(002)} and
+ *       {@code DB2-REST PIC X(04)}, and {@code :L700-L701} moves {@code COB-MIL} into the two-digit field
+ *       and the literal {@code '0000'} into the four-character remainder.</li>
  *   <li>The online generator emits a space between date and time, colons between the time components, and
  *       six zero digits of sub-second text.</li>
  *   <li><strong>The posting job passes bytes straight through, unvalidated.</strong>
  *       {@code app/cbl/CBTRN02C.cbl:L436} moves the incoming daily-transaction originating timestamp into
  *       the transaction record verbatim. Whatever 26 bytes arrived in the input file are what get stored,
  *       whether or not they parse as a moment in time at all.</li>
- * </ol>
+ *   </ol>
  *
  * <p>Mapping the column to a temporal type would force normalisation at the boundary, and normalisation is
  * exactly what parity forbids: the four trailing zero digits of form one are compared byte for byte against
  * the legacy baseline, and a temporal type would render them from whatever precision it happened to keep.
- * Remediation, and the standing instruction: leave these columns as fixed-width character data, and let the
+ * The standing instruction is therefore to leave these columns as fixed-width character data, and to let the
  * only interpretation happen where a specific consumer needs it, on a value it has already validated.
  *
  * <p>The offset map of the 350-byte transaction record, one-based, is what makes that fixed-width boundary
@@ -334,14 +333,12 @@ import org.springframework.context.annotation.Configuration;
  *       commented-out line at {@code :L3856}, which is direct evidence that the author considered and
  *       rejected it. <strong>A naive whole-string comparison reports a change on every single request</strong>,
  *       making the endpoint permanently unusable.</li>
- * </ul>
+ *   </ul>
  *
- * <p><strong>Finding, severity Low - a measurement correction.</strong> Narrative elsewhere describes this
- * paragraph as comparing twelve account predicates. Measured at {@code 7756d89} the account block spans
- * {@code :L4115-L4140} and compares <em>ten fields</em> rendered as <em>sixteen</em> conjoined clauses,
- * because three of the ten are dates compared component-wise; the customer block at {@code :L4152-L4186}
- * compares seventeen fields as nineteen clauses. Any single flat count rounds one of those two figures.
- * Remediation: cite the locators, which are the measurement, rather than a count.
+ * <p>The comparison is cited by locator rather than by a flat field count, because no single count fits
+ * both blocks. The account block spans {@code :L4115-L4140} and compares <em>ten fields</em> rendered as
+ * <em>sixteen</em> conjoined clauses, three of the ten being dates compared component-wise; the customer
+ * block at {@code :L4152-L4186} compares seventeen fields as nineteen clauses.
  *
  * <h2>The transaction boundary and the asymmetric rollback</h2>
  *
@@ -374,8 +371,8 @@ import org.springframework.context.annotation.Configuration;
  * decision log as a <strong>mechanism substitution, not a behaviour change</strong>, for a specific reason.
  * A reviewer reading the two sources side by side will see a rollback statement in the source with no
  * literal counterpart in the Java, and without that entry the natural conclusion is that something was
- * lost. Remediation for that reviewer: the counterpart is the transaction boundary itself, and the
- * behaviour to verify is that a failed customer write leaves the account row unchanged.
+ * lost. The counterpart is the transaction boundary itself, and the behaviour to verify is that a failed
+ * customer write leaves the account row unchanged.
  *
  * <p>Four outcome conditions are declared at {@code app/cbl/COACTUPC.cbl:L517-L523} - account lock failure,
  * customer lock failure, data changed before update, and locked but update failed - with a fifth marker at
@@ -394,20 +391,19 @@ import org.springframework.context.annotation.Configuration;
  *   <li>The daily posting routine at {@code app/cbl/CBTRN02C.cbl:L424-L465} performs a
  *       transaction-category-balance upsert at {@code :L440}, an account update at {@code :L441} and a
  *       transaction insert at {@code :L442}, which the Java target commits together.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Hence one deployable artefact, one data source, one transaction manager.
  *
- * <p><strong>Finding, severity Medium - a labelled deviation, not parity.</strong> The source performs those
- * three posting writes as three independent commits. Reject code 109 is assigned on the account-rewrite
+ * <p><strong>One labelled deviation, not parity.</strong> The source performs those three posting writes as
+ * three independent commits. Reject code 109 is assigned on the account-rewrite
  * failure path at {@code app/cbl/CBTRN02C.cbl:L556-L558}, but that path lies inside the already-validated
  * posting routine, so no reject record is written, the reject count is not incremented, execution continues
  * to the transaction write, and the value is cleared on the next iteration at {@code :L208}. The legacy
  * outcome is therefore an orphaned category-balance row and an orphaned transaction row against an account
  * that was never updated. Collapsing the three commits into one atomic Java transaction closes that hazard
- * as a side effect. That is a genuine behavioural improvement rather than parity, so it is labelled a
- * deviation in the decision log rather than presented as equivalence. Remediation: none - the improvement is
- * intended; the requirement is that it be disclosed, which this paragraph does.
+ * as a side effect. That is a genuine behavioural improvement rather than parity, and it is disclosed here
+ * as a deviation rather than presented as equivalence.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -467,7 +463,7 @@ import org.springframework.context.annotation.Configuration;
  *       reason there is no fourth migration: the batch metadata tables come from the framework's own schema
  *       script, so the migration set stays at three and the eleven-table count in the first migration
  *       stays provable.</dd>
- * </dl>
+ *   </dl>
  *
  * <p>Related settings that are owned elsewhere and are not this class's to police: statement batching and
  * insert and update ordering on the provider, the migration history table name and encoding, the transaction
@@ -492,7 +488,7 @@ import org.springframework.context.annotation.Configuration;
  *       services. The migrations run on first boot and take ownership of an empty schema, so the database
  *       must not be pre-migrated by hand - a hand-applied schema produces a checksum mismatch the moment a
  *       migration changes, and the disabled clean operation deliberately leaves no quick way out.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -528,7 +524,7 @@ import org.springframework.context.annotation.Configuration;
  *       recorded above: component-wise date comparison, the deliberate case asymmetry, and the
  *       date-of-birth offsets. A conflict on <em>every</em> request is the signature of a whole-string
  *       date-of-birth comparison.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Deferred hardening and residual risk</h2>
  *
@@ -548,43 +544,18 @@ import org.springframework.context.annotation.Configuration;
  *       social security number and a date of birth in clear columns, mirroring the source layout. Column
  *       encryption would change the stored representation and therefore the parity comparison, so it is a
  *       deliberate deferral and not an oversight.</li>
- * </ul>
+ *   </ul>
  *
- * <p><strong>Performance targets: {@code Not available}.</strong> No service-level objective for throughput,
- * latency or concurrency exists anywhere in the source corpus, so none is asserted here and none may be
- * invented. What would be needed to state one: a measured baseline from the target system under a defined
- * load, and a stakeholder-agreed objective to compare it against. Until both exist, the project records a
- * measurement rather than a target.
+ * <p><strong>No performance target is asserted.</strong> The source corpus publishes no service-level
+ * objective for throughput, latency or concurrency, so none is stated here and none may be invented; the
+ * project records a measured baseline instead.
  *
- * <h2>Findings register</h2>
- *
- * <p>Collected for convenience; each is developed in full at its own section above.
- *
- * <ul>
- *   <li><strong>Blocker</strong> - the two 26-byte timestamp columns are character data and must never be
- *       mapped to a temporal type, because one of their three producers passes bytes through unvalidated.
- *       Remediation: keep the fixed-width character mapping.</li>
- *   <li><strong>Medium</strong> - the three-commit posting sequence becomes one atomic transaction, which
- *       closes an orphaned-row hazard the source has. Remediation: none; disclose as a deviation.</li>
- *   <li><strong>Medium</strong> - {@code USRSEC} is catalogued <em>and</em> defined in job control, contrary
- *       to narrative that says job control only. Remediation: cite both sources.</li>
- *   <li><strong>Medium</strong> - the {@code validate} pass does <em>not</em> enforce numeric precision or
- *       scale, contrary to the specification's claim that any precision divergence fails startup. Measured
- *       against PostgreSQL 16.10: a missing column and a changed column type are both rejected, while
- *       widening a money column from eleven digits to twelve is accepted. Remediation: rely on the migration
- *       DDL as the single source of truth, on the explicit precision and scale declared beside each PIC
- *       clause, and on the parity tests; disclose the residual gap rather than assume the provider covers
- *       it.</li>
- *   <li><strong>Low</strong> - the account snapshot comparison measures ten fields as sixteen clauses, not a
- *       flat twelve. Remediation: cite locators rather than a count.</li>
- *   <li><strong>Low</strong> - {@code app/jcl/DEFCUST.jcl:L35-L38} defines an orphan cluster
- *       {@code AWS.CUSTDATA.CLUSTER} with {@code KEYS(10 0)} and {@code RECORDSIZE(500 500)} that
- *       <strong>no program opens</strong>, and which the same member's earlier step pairs with a deletion of
- *       a differently named cluster at {@code :L25}. It has no target in this schema and is recorded so that
- *       its absence is a decision rather than an omission: the customer row derives from the catalogued
- *       {@code CUSTDATA} cluster, key 9 and record 500, not from this one. Remediation: none required; do
- *       not model it.</li>
- * </ul>
+ * <p>One further catalogue entry is deliberately not modelled. {@code app/jcl/DEFCUST.jcl:L35-L38} defines an
+ * orphan cluster {@code AWS.CUSTDATA.CLUSTER} with {@code KEYS(10 0)} and {@code RECORDSIZE(500 500)} that
+ * <strong>no program opens</strong>, and the same member's earlier step pairs it with a deletion of a
+ * differently named cluster at {@code :L25}. The customer row derives from the catalogued {@code CUSTDATA}
+ * cluster, key 9 and record 500, not from this one, so its absence from the schema is a decision rather than
+ * an omission.
  */
 @Configuration
 public class JpaConfig {
@@ -631,16 +602,51 @@ public class JpaConfig {
     /** Lower-cased literal for a false boolean, compared under {@link Locale#ROOT}. */
     private static final String FALSE_LITERAL = "false";
 
+    /** Structured logger; the one bound value it emits is the validated contract summary. */
     private static final Logger LOG = LoggerFactory.getLogger(JpaConfig.class);
 
+    /**
+     * Bound value of {@code spring.jpa.hibernate.ddl-auto}, required to be
+     * {@value #REQUIRED_DDL_AUTO}: this application never generates schema, because
+     * {@code V1__create_schema.sql} owns it and the entities are checked against what it created.
+     */
     private final String ddlAuto;
+
+    /**
+     * Bound value of {@code spring.jpa.properties.hibernate.jdbc.time_zone}, required to be
+     * {@value #REQUIRED_TIME_ZONE} so that a 26-character timestamp reads identically wherever the
+     * container runs.
+     */
     private final String hibernateTimeZone;
+
+    /** Bound value of {@code spring.jpa.open-in-view}, required to be false: no session outlives a service call. */
     private final boolean openInView;
+
+    /** Bound value of {@code spring.jpa.show-sql}, required to be false: statement text is not log content. */
     private final boolean showSql;
+
+    /** Bound value of {@code spring.flyway.enabled}; the three migrations are the only schema authority. */
     private final boolean flywayEnabled;
+
+    /**
+     * Bound value of {@code spring.flyway.baseline-on-migrate}, required to be false so an unmigrated
+     * database is reported rather than silently adopted as a baseline.
+     */
     private final boolean flywayBaselineOnMigrate;
+
+    /**
+     * Bound value of {@code spring.flyway.validate-on-migrate}, required to be true so a checksum drift in
+     * an already-applied migration fails startup.
+     */
     private final boolean flywayValidateOnMigrate;
+
+    /** Bound value of {@code spring.flyway.clean-disabled}, required to be true: no path may drop the schema. */
     private final boolean flywayCleanDisabled;
+
+    /**
+     * Bound value of {@code spring.flyway.out-of-order}, required to be false so the three migrations can
+     * only ever apply in their declared V1, V2, V3 order.
+     */
     private final boolean flywayOutOfOrder;
 
     /**

@@ -100,7 +100,7 @@ import org.springframework.core.io.ResourceLoader;
  *       240 members - and {@code 02 LAST-3-OF-ZIP PIC X(3)} at {@code :L1314}, which carries no
  *       {@code 88} level here or anywhere in the corpus and is therefore <strong>never validated</strong>.
  *       See section 5.</li>
- * </ul>
+ *   </ul>
  *
  * <p>490 plus 410 plus 80 plus 56 plus 240 is 1276, which is exactly the number of single-quoted literals
  * in the file. Three interior comments punctuate the data and must be skipped when counting:
@@ -128,8 +128,9 @@ import org.springframework.core.io.ResourceLoader;
  * excludes only {@code **}{@code /integration/**} and {@code **}{@code /e2e/**}; a class placed outside
  * {@code src/test/java/com/cardemo/unit/} would be collected by neither Surefire nor Failsafe and would
  * silently never run. Compilation is Java 25 with {@code release 25}, no preview features, and
- * {@code -Xlint:all -Werror} with {@code failOnWarning}, which reaches test compilation - so a single
- * unused import fails the build rather than warning. To run this class alone:
+ * {@code -Xlint:all -Werror} with {@code failOnWarning}, which reaches test compilation - so a single raw
+ * type or dangling documentation comment fails the build rather than warning; an unused import does not,
+ * because {@code javac} 25 publishes no {@code unused} lint key. To run this class alone:
  * {@code ./mvnw -B test -Dtest=ValidationLookupServiceTest}, which also selects the complementary class
  * named in section 6 because the two share a simple name across two packages.
  *
@@ -148,8 +149,9 @@ import org.springframework.core.io.ResourceLoader;
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><em>A single unused import.</em> {@code -Werror} turns it into a build failure. <strong>Remedy:</strong>
- *       remove it; do not silence the lint.</li>
+ *   <li><em>A single unused import.</em> Rule 1 Clause B forbids it, but the build does not catch it -
+ *       {@code javac} 25 publishes no {@code unused} lint key, so {@code -Werror} has nothing to escalate.
+ *       <strong>Remedy:</strong> remove it at review; do not assume the build will find it.</li>
  *   <li><em>A silently-empty table</em>, severity <strong>Blocker</strong>. An empty table rejects every
  *       telephone number and every address while reporting success. The service must abend at construction
  *       instead, and section 7 proves it does. <strong>Remedy:</strong> never rescue a load failure into an
@@ -171,14 +173,14 @@ import org.springframework.core.io.ResourceLoader;
  *       combinations from the zip table, breaks parity in opposite directions.</li>
  *   <li><em>Enforcing state membership against the fixtures</em>, severity <strong>Blocker</strong>, for the
  *       reason given in section 1.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. The one retained parity artefact</h2>
  *
  * <p>{@code 02 LAST-3-OF-ZIP PIC X(3)} at {@code app/cpy/CSLKPCDY.cpy:L1314} is declared and never
  * validated. Rule 1 Clause B forbids <em>untracked</em> dead code; this artefact is tracked, cited and
  * justified, so parity governs and the field is retained rather than invented away. Its non-consultation is
- * asserted as behaviour in section 4 and it is recorded in {@code DECISION_LOG.md}. Severity
+ * asserted as behaviour in section 4 and it is owed an entry in the planned {@code DECISION_LOG.md}. Severity
  * <strong>Low</strong>. As measured, {@code DECISION_LOG.md} is <em>Not available</em> in this tree; what
  * is needed is that file, and this Javadoc together with the service's own is the record until it exists.
  *
@@ -679,8 +681,9 @@ class ValidationLookupServiceTest {
         void theLastThreeOfZipIsNeverConsulted() {
             // app/cpy/CSLKPCDY.cpy:L1314 declares 02 LAST-3-OF-ZIP PIC X(3) and no 88 level exists for it
             // anywhere in the corpus. INTENTIONAL NO-OP, RETAINED FOR PARITY: the field is kept as the
-            // service's own width constant and is deliberately never read. Tracked in DECISION_LOG.md;
-            // severity Low. Inventing a rule for it would add a validation the legacy system never performs.
+            // service's own width constant and is deliberately never read. Owed an entry in the planned
+            // DECISION_LOG.md; severity Low. Inventing a rule for it would add a validation the legacy system never
+            // performs.
             assertThat(SERVICE.isValidStateAndZipCode("WY", "83001")).isTrue();
             assertThat(SERVICE.isValidStateAndZipCode("WY", "83999")).isTrue();
             assertThat(SERVICE.isValidStateAndZipCode("WY", "83000")).isTrue();
@@ -906,6 +909,138 @@ class ValidationLookupServiceTest {
 
             assertThat(failure).isNotNull();
             assertThat(failure.getMessage()).contains(STATE_CODES_PATH).contains("empty array");
+        }
+
+        /**
+         * Every per-element shape guard of {@code ValidationLookupService.loadTable}, exercised against a
+         * substituted document that carries exactly one defective element.
+         *
+         * <p>The four guards run in a fixed order per element - not textual, then blank, then wrong width,
+         * then repeated - and each one exists because the alternative is a table that loads "successfully"
+         * with the wrong membership. A non-textual element would bind through a numeric or structural
+         * conversion and lose a leading zero, which matters because an area code and a postal-code prefix are
+         * {@code PIC X} character data where {@code 010} and {@code 10} are different values. A blank element
+         * would make the empty string a valid state code. A wrong-width element would make a one- or
+         * three-character value a member of a two-character table, so a truncated or padded input would match
+         * something. And a repeated element would silently shrink the table relative to the frozen copybook,
+         * which is a cardinality assertion elsewhere in this class made unfalsifiable.
+         *
+         * <p>Every case is asserted the same way and all of it matters: the failure is the fatal type and not
+         * a validation failure, because a defective resource is an abend rather than a rejected input; the
+         * abend culprit names the copybook; the message names the resource path, the table member and the
+         * offending element's index; the cause is {@code null}, because a structural defect has no throwable
+         * to attribute and inventing one would be a false attribution; and the message never quotes the
+         * offending value, because the tables carry telephone area codes and postal-code prefixes and Clause D
+         * of the project's single rule names tests explicitly.
+         *
+         * @param json   the substituted state-code document carrying exactly one defective element
+         * @param detail the fragment of the guard's own wording the message must carry
+         * @param leaked a distinctive value that must not appear anywhere in the message
+         */
+        @ParameterizedTest(name = "{1}")
+        @CsvSource(delimiter = '|', value = {
+            "{\"VALID-US-STATE-CODE\": [\"AL\", true]}                      | element 1 is not a JSON "
+                + "string | true",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", 42]}                        | element 1 is not a JSON "
+                + "string | 42",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", null]}                      | element 1 is not a JSON "
+                + "string | null",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", [\"AK\"]]}                  | element 1 is not a JSON "
+                + "string | AK",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", {\"code\": \"AK\"}]}        | element 1 is not a JSON "
+                + "string | AK",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"  \"]}                    | element 1 is blank | ZZZZ",
+            "{\"VALID-US-STATE-CODE\": [\"  \", \"AL\"]}                    | element 0 is blank | ZZZZ",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"\\t\"]}                   | element 1 is blank | ZZZZ",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"A\"]}                     | element 1 is 1 characters "
+                + "wide | ZZZZ",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"ALA\"]}                   | element 1 is 3 characters "
+                + "wide | ALA",
+            "{\"VALID-US-STATE-CODE\": [\"ALASKA\", \"AL\"]}                | element 0 is 6 characters "
+                + "wide | ALASKA",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"AK\", \"AL\"]}            | element 2 repeats an earlier "
+                + "element | ZZZZ",
+            "{\"VALID-US-STATE-CODE\": [\"AL\", \"AL\"]}                    | element 1 repeats an earlier "
+                + "element | ZZZZ",
+        })
+        @DisplayName("a defective element abends: non-textual, blank, wrong width and repeated")
+        void aDefectiveElementAbends(final String json, final String detail, final String leaked) {
+            final FatalProcessingException failure = loadFailure(STATE_CODES_LOCATION, jsonResource(json));
+
+            assertThat(failure)
+                    .as("a defective resource is an abend, never a narrowed table that answers false")
+                    .isNotNull();
+            assertThat(failure.getMessage())
+                    .contains("Cannot load CSLKPCDY lookup table")
+                    .contains(STATE_CODE_MEMBER)
+                    .contains(STATE_CODES_PATH)
+                    .contains(detail.strip());
+            assertThat(failure.getAbendCulprit()).isEqualTo("CSLKPCDY");
+            assertThat(failure.getCause())
+                    .as("a structural defect has no throwable to attribute, so none is invented")
+                    .isNull();
+            assertThat(failure.getMessage())
+                    .as("Clause D: the offending member value never reaches a message")
+                    .doesNotContain(leaked.strip());
+        }
+
+        @Test
+        @DisplayName("the repeated element is caught by the SET, so the table can never silently shrink")
+        void theRepeatedElementIsCaughtRatherThanAbsorbed() {
+            // The subtlest of the four. A LinkedHashSet absorbs a duplicate without complaint, so a loader
+            // that ignored the add result would load 61 members from a 62-element document and every
+            // cardinality assertion in this class would pass while the table was wrong. The guard reads the
+            // add result instead, which is why a repeat abends.
+            final FatalProcessingException failure = loadFailure(STATE_CODES_LOCATION,
+                    jsonResource("{\"VALID-US-STATE-CODE\": [\"AL\", \"AK\", \"AZ\", \"AK\"]}"));
+
+            assertThat(failure).isNotNull();
+            assertThat(failure.getMessage())
+                    .contains("element 3 repeats an earlier element")
+                    .contains("the source table has no duplicate");
+        }
+
+        @Test
+        @DisplayName("the guards fire in element order, so the FIRST defective element is the one reported")
+        void theGuardsFireInElementOrder() {
+            // Two defects in one document: a blank at index 1 and a wrong width at index 2. Reporting the
+            // later one would mean the loop had continued past a defect, which is what a collecting or
+            // tolerant loader would do.
+            final FatalProcessingException failure = loadFailure(STATE_CODES_LOCATION,
+                    jsonResource("{\"VALID-US-STATE-CODE\": [\"AL\", \"  \", \"ALA\"]}"));
+
+            assertThat(failure).isNotNull();
+            assertThat(failure.getMessage()).contains("element 1 is blank");
+            assertThat(failure.getMessage()).doesNotContain("element 2");
+        }
+
+        @Test
+        @DisplayName("the width guard is per-table, so a four-character zip combination is not a defect")
+        void theWidthGuardIsPerTable() {
+            // The state table declares two characters and the state-and-zip combination table declares four,
+            // so a single hard-coded width would reject one of the two real documents. Substituting a
+            // two-character element into the four-character table proves the width travels with the table.
+            final FatalProcessingException failure = loadFailure(STATE_ZIP_LOCATION,
+                    jsonResource("{\"VALID-US-STATE-ZIP-CD2-COMBO\": [\"AA34\", \"AL\"]}"));
+
+            assertThat(failure).isNotNull();
+            assertThat(failure.getMessage())
+                    .contains("element 1 is 2 characters wide")
+                    .contains("declares 4");
+            assertThat(SERVICE.getValidStateZipCodeCombinations())
+                    .as("and the real four-character document still loads in full")
+                    .hasSize(STATE_ZIP_COMBINATIONS);
+        }
+
+        @Test
+        @DisplayName("a well-formed substituted document loads, so the guards reject only what is wrong")
+        void aWellFormedSubstitutedDocumentLoads() {
+            final ValidationLookupService service =
+                    serviceWithStateCodeDocument("{\"VALID-US-STATE-CODE\": [\"AL\", \"AK\", \"AZ\"]}");
+
+            assertThat(service.getValidUsStateCodes()).containsExactly("AL", "AK", "AZ");
+            assertThat(service.isValidUsStateCode("AK")).isTrue();
+            assertThat(service.isValidUsStateCode("ZZ")).isFalse();
         }
 
         @Test

@@ -172,11 +172,11 @@ import java.util.Optional;
  *       the scope-coverage gate verifies.</li>
  *   <li><strong>Low</strong> - {@code 101} and {@code 109} carry byte-identical description text. This
  *       is what the source says and the duplication is reproduced, not resolved.</li>
- * </ul>
+ *   </ul>
  *
- * <p>Both findings are owed an entry in {@code DECISION_LOG.md} and a row in
- * {@code TRACEABILITY_MATRIX.md}. Measured 1 August 2026 <strong>neither file is available</strong> - both
- * are planned root artefacts that have not been authored - so until they are, this Javadoc together with
+ * <p>Both findings are owed an entry in the planned {@code DECISION_LOG.md} and a row in
+ * {@code TRACEABILITY_MATRIX.md}. Measured 1 August 2026 <strong>neither file is available</strong> - both are
+ * planned root artefacts that have not been authored - so until they are, this Javadoc together with
  * {@code docs/technical-specifications.md} is the tracking record. Neither finding is untracked residue.
  *
  * @see #toValidationTrailer()
@@ -241,11 +241,10 @@ public enum RejectCode {
      *       reject as {@code 102}, changing the reject file.</li>
      * </ul>
      *
-     * <p>Remediation: <strong>none - preserve and log.</strong> It is owed an entry in
-     * {@code DECISION_LOG.md} among the preserved legacy defects and a row in
-     * {@code TRACEABILITY_MATRIX.md} as a {@code CBTRN02C} fidelity hot spot. Measured 1 August 2026
-     * neither file is available - both are planned root artefacts not yet authored,
-     * so this Javadoc is the record until they are.
+     * <p>Remediation: <strong>none - preserve and log.</strong> It is owed an entry in the planned
+     * {@code DECISION_LOG.md} among the preserved legacy defects and a row in {@code TRACEABILITY_MATRIX.md} as a
+     * {@code CBTRN02C} fidelity hot spot. Measured 1 August 2026 neither file is available - both are planned root
+     * artefacts not yet authored, so this Javadoc is the record until they are.
      *
      * <p><strong>Two further quirks of the expiry test, part of the field contract.</strong>
      * <ul>

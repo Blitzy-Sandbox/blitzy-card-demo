@@ -1,0 +1,197 @@
+/*
+ * ******************************************************************
+ * Program     : AccountViewResponse.java
+ * Application : CardDemo
+ * Type        : Java 25 / Spring Boot 3.5.11 data transfer object
+ * Function    : The public HTTP body for the account read: the account
+ *               and its non-protected customer attributes, with every
+ *               high-risk personal identifier withheld and the sealed
+ *               as-displayed snapshot attached so a stateless update
+ *               can be confirmed.
+ * Source      : app/cbl/COACTVWC.cbl (941 lines) over mapset COACTVW,
+ *               app/cpy-bms/COACTVW.CPY:17-240 (37 input fields)
+ *               @ 7756d89
+ * Source      : app/cbl/COACTUPC.cbl:L669-L756 (ACUP-OLD-DETAILS, the
+ *               snapshot 9700-CHECK-CHANGE-IN-REC compares against)
+ *               @ 7756d89
+ * Source      : app/cpy/CVCUS01Y.cpy (500-byte CUSTOMER-RECORD:
+ *               CUST-SSN PIC 9(09), CUST-DOB-YYYY-MM-DD,
+ *               CUST-GOVT-ISSUED-ID, CUST-EFT-ACCOUNT-ID,
+ *               CUST-PHONE-NUM-1/2 - all withheld here) @ 7756d89
+ * ******************************************************************
+ * Copyright Amazon.com, Inc. or its affiliates.
+ * All Rights Reserved.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License").
+ * You may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND,
+ * either express or implied. See the License for the specific
+ * language governing permissions and limitations under the License
+ * ******************************************************************
+ */
+package com.cardemo.model.dto;
+
+import java.util.List;
+import java.util.Objects;
+
+/**
+ * One account, as an HTTP response.
+ *
+ * <h2>What it does</h2>
+ *
+ * <p>This is the wire type for the account read. It is deliberately not {@link AccountDto}: that record is the
+ * faithful thirty-seven-field transcription of mapset {@code COACTVW}, and nine of those thirty-seven are
+ * high-risk personal data that its own documentation marks "never emitted" - a statement the record itself
+ * cannot enforce, because Jackson serialises every component of a record. Enforcement therefore belongs to a
+ * separate response type, which is this one: the values are not withheld by annotation, they are
+ * <b>structurally absent</b>.</p>
+ *
+ * <h2>Withheld, and not recoverable from anything here</h2>
+ *
+ * <p>Nine values of the legacy projection have no component on this type: the social security number
+ * ({@code CUST-SSN PIC 9(09)}), the date of birth ({@code CUST-DOB-YYYY-MM-DD}), the first, middle and last
+ * names, both telephone numbers, the government-issued identifier and the electronic-funds account identifier.
+ * A 3270 terminal in a card-operations centre could display them; an HTTP response body is logged by proxies,
+ * cached by clients and captured by browser tooling, so it may not.</p>
+ *
+ * <p>Two consequences are worth stating plainly. A caller that legitimately needs those values needs an
+ * operation designed for that purpose, with its own authorisation, and none exists in this scope. And a caller
+ * updating an account does <b>not</b> need them: the values it must echo travel inside
+ * {@link #snapshotToken}, sealed, which is precisely why the update precondition can be satisfied without any
+ * protected value ever crossing the wire in the clear.</p>
+ *
+ * <h2>Money is text, exactly as the source rendered it</h2>
+ *
+ * <p>The four money members carry the legacy display renderings, not JSON numbers, because the source's
+ * pictures are the contract and a cycle debit legitimately holds negative values that are never normalised.
+ * Every one of them originates from a {@code PIC S9(10)V99} field and is handled as a scaled decimal
+ * throughout the application - no binary floating type appears on any path that produced them.</p>
+ *
+ * <h2>Inputs, outputs, side effects, failure modes</h2>
+ *
+ * <p><b>Inputs.</b> Built by {@link #of}, from a service-produced {@link AccountDto} and a sealed token.
+ * <b>Outputs.</b> Serialised by Jackson; every component is a JSON property and there are no others.
+ * <b>Side effects.</b> None. <b>Failure modes.</b> A null projection is a wiring defect and raises
+ * {@link NullPointerException}.</p>
+ *
+ * @param accountId the eleven-character account identifier, {@code ACCTSIDI PIC X(11)}
+ * @param accountStatus the one-character active status, {@code ACSTTUSI PIC X(1)}; relayed as text because the
+ *     map declares a character
+ * @param openDate the open date as text, {@code ADTOPENI PIC X(10)}
+ * @param expiryDate the expiry date as text, {@code AEXPDTI PIC X(10)}
+ * @param reissueDate the reissue date as text, {@code AREISDTI PIC X(10)}
+ * @param creditLimit the credit limit as display text, {@code ACRDLIMI PIC X(15)}
+ * @param cashCreditLimit the cash credit limit as display text, {@code ACSHLIMI PIC X(15)}
+ * @param currentBalance the current balance as display text, {@code ACURBALI PIC X(15)}
+ * @param currentCycleCredit the current cycle credit as display text, {@code ACRCYCRI PIC X(15)}
+ * @param currentCycleDebit the current cycle debit as display text, {@code ACRCYDBI PIC X(15)}; legitimately
+ *     negative and never normalised to an absolute value, because the posting logic accumulates negative
+ *     amounts here and the over-limit arithmetic subtracts it
+ * @param accountGroupId the disclosure group identifier, {@code AADDGRPI PIC X(10)}
+ * @param customerId the nine-character customer identifier, {@code ACSTNUMI PIC X(9)}
+ * @param customerFicoScore the FICO credit score as text, {@code ACSTFCOI PIC X(3)}
+ * @param addressLine1 the first address line, {@code ACSADL1I PIC X(50)}
+ * @param addressLine2 the second address line, {@code ACSADL2I PIC X(50)}
+ * @param addressCity the city, which the map declares after the postal code and which is in fact address
+ *     line 3, {@code ACSCITYI PIC X(50)}
+ * @param addressStateCode the two-character state code, {@code ACSSTTEI PIC X(2)}
+ * @param addressZip the postal code, five bytes on this map into which the ten-byte customer field is
+ *     truncated by the legacy move, {@code ACSZIPCI PIC X(5)}
+ * @param addressCountryCode the three-character country code, {@code ACSCTRYI PIC X(3)}
+ * @param primaryCardHolderIndicator the primary card holder indicator, a raw one-character code with no
+ *     enumerated counterpart, {@code ACSPFLGI PIC X(1)}
+ * @param informationMessage {@code INFOMSGI PIC X(45)}, the byte-exact screen literal; may be null
+ * @param errorMessage {@code ERRMSGI PIC X(78)}, on the same terms; may be null
+ * @param snapshotToken the sealed as-displayed snapshot to return in {@code If-Match} on a subsequent update.
+ *     Opaque, bound to this account, and expiring. It is the mechanism by which the legacy field-by-field
+ *     change detection survives statelessness without the caller holding - or being able to alter - the
+ *     values being compared
+ */
+public record AccountViewResponse(
+        String accountId,
+        String accountStatus,
+        String openDate,
+        String expiryDate,
+        String reissueDate,
+        String creditLimit,
+        String cashCreditLimit,
+        String currentBalance,
+        String currentCycleCredit,
+        String currentCycleDebit,
+        String accountGroupId,
+        String customerId,
+        String customerFicoScore,
+        String addressLine1,
+        String addressLine2,
+        String addressCity,
+        String addressStateCode,
+        String addressZip,
+        String addressCountryCode,
+        String primaryCardHolderIndicator,
+        String informationMessage,
+        String errorMessage,
+        String snapshotToken) {
+
+    /**
+     * The names of the legacy projection's components that this type must never carry.
+     *
+     * <p>Published so the contract is machine-checkable rather than merely documented: a test asserts that no
+     * component of this record bears any of these names, so adding one back would fail the build rather than
+     * quietly widen the response.</p>
+     */
+    public static final List<String> WITHHELD_COMPONENTS = List.of(
+            "customerSsn",
+            "customerDateOfBirth",
+            "customerFirstName",
+            "customerMiddleName",
+            "customerLastName",
+            "phoneNumber1",
+            "phoneNumber2",
+            "governmentIssuedId",
+            "eftAccountId");
+
+    /**
+     * Projects a service-produced account onto its response form, withholding the nine protected values and
+     * attaching the sealed snapshot.
+     *
+     * @param projection the thirty-seven-field projection the account-view service produced; must not be null
+     * @param snapshotToken the sealed as-displayed snapshot for a subsequent update; may be null only when one
+     *     could not be issued, in which case the client will be unable to update and the reason belongs in the
+     *     log rather than in this body
+     * @return the response; never null
+     * @throws NullPointerException if {@code projection} is null
+     */
+    public static AccountViewResponse of(final AccountDto projection, final String snapshotToken) {
+        Objects.requireNonNull(projection, "projection must not be null");
+        return new AccountViewResponse(
+                projection.accountId(),
+                projection.accountStatus(),
+                projection.openDate(),
+                projection.expiryDate(),
+                projection.reissueDate(),
+                projection.creditLimit(),
+                projection.cashCreditLimit(),
+                projection.currentBalance(),
+                projection.currentCycleCredit(),
+                projection.currentCycleDebit(),
+                projection.accountGroupId(),
+                projection.customerId(),
+                projection.customerFicoScore(),
+                projection.addressLine1(),
+                projection.addressLine2(),
+                projection.addressCity(),
+                projection.addressStateCode(),
+                projection.addressZip(),
+                projection.addressCountryCode(),
+                projection.primaryCardHolderIndicator(),
+                projection.informationMessage(),
+                projection.errorMessage(),
+                snapshotToken);
+    }
+}

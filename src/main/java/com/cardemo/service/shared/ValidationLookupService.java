@@ -65,14 +65,13 @@ import org.springframework.stereotype.Service;
  * five tables remain five independent tables; the collapse is of the <em>mechanism</em>, never of the
  * membership.
  *
- * <p><strong>Why the data is a resource and not a generated constants class.</strong> Transcribing 1276
- * literals into Java constants would add well over a thousand lines of source that no compiler check
- * makes safer, would put reference data inside a compilation unit, and would make the element counts
- * hard to audit against the copybook. Rule 1 Clause C forbids that duplication and Clause A asks for
- * minimal complexity; Clause A's performance clause is satisfied either way, because membership is an
- * immutable hash-set probe in both designs and the tables are read once at startup. Externalising the
- * data is therefore the justified tradeoff, and it is recorded as such in {@code DECISION_LOG.md}.
- * Generating a constants class instead is a <strong>High</strong> severity defect.
+ * <p><strong>Why the data is a resource and not a generated constants class.</strong> Transcribing 1276 literals into
+ * Java constants would add well over a thousand lines of source that no compiler check makes safer, would put
+ * reference data inside a compilation unit, and would make the element counts hard to audit against the copybook.
+ * Rule 1 Clause C forbids that duplication and Clause A asks for minimal complexity; Clause A's performance clause is
+ * satisfied either way, because membership is an immutable hash-set probe in both designs and the tables are read
+ * once at startup. Externalising the data is therefore the justified tradeoff, and it is owed an entry in the planned
+ * {@code DECISION_LOG.md}. Generating a constants class instead is a <strong>High</strong> severity defect.
  *
  * <h3>1.1 The source structure, verbatim</h3>
  *
@@ -113,7 +112,7 @@ import org.springframework.stereotype.Service;
  *       concatenates {@code ACUP-NEW-CUST-ADDR-STATE-CD} with {@code ACUP-NEW-CUST-ADDR-ZIP(1:2)} into
  *       {@code US-STATE-AND-FIRST-ZIP2} and tests {@code VALID-US-STATE-ZIP-CD2-COMBO}. That
  *       concatenation is reproduced by {@link #isValidStateAndZipCode(String, String)}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>{@code VALID-PHONE-AREA-CODE} and {@code VALID-EASY-RECOG-AREA-CODE} are declared but evaluated
  * nowhere in the corpus. They are still modelled, because the source declares them as independent
@@ -175,7 +174,7 @@ import org.springframework.stereotype.Service;
  *   <li>{@code validation/state-zip-prefixes.json} carries {@code VALID-US-STATE-ZIP-CD2-COMBO} at
  *       {@code :L1073} with <strong>240</strong> members, each four characters, from
  *       {@code PIC X(4)}.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Each document is a JSON object whose members are keyed by the hyphenated condition name exactly as
  * the copybook spells it. Each document also carries a {@code _metadata} member which is documentation
@@ -187,8 +186,14 @@ import org.springframework.stereotype.Service;
  * <p>The two area-code subsets are disjoint, and together they are the full table element for element:
  * 410 plus 80 is 490, with no stray in either direction. The full table is therefore the disjoint
  * partition of the other two. That identity is the strongest available guard against a transcription
- * error in the resources and is the unit tier's most important assertion - one it still owes, because
- * measured 1 August 2026 no {@code ValidationLookupServiceTest} exists. It is emphatically <em>not</em> a
+ * error in the resources and is the unit tier's most important assertion - one
+ * {@code src/test/java/com/cardemo/unit/service/ValidationLookupServiceTest.java} makes, pinning the tables
+ * at 490 and 410 members and asserting the order-preserving disjoint partition together with the single
+ * descent at the 409-to-410 seam; an earlier revision said no such class existed, which is false and is
+ * withdrawn. A second suite,
+ * {@code src/test/java/com/cardemo/unit/validation/ValidationLookupServiceTest.java}, covers the same class
+ * from the validation side; the two are complementary rather than duplicates. It is emphatically
+ * <em>not</em> a
  * licence to derive one table from the others, for the reason given in section 1.2.
  *
  * <p>Ordering is source ordering and is preserved, which is why every table is exposed as a
@@ -224,7 +229,7 @@ import org.springframework.stereotype.Service;
  * else in the corpus. The condition name sits on {@code US-STATE-AND-FIRST-ZIP2 PIC X(4)} alone, so the
  * legacy system validates a state code and the first two digits of a zip code and never the last three.
  *
- * <p><strong>Retained parity artefact, severity Low, tracked in {@code DECISION_LOG.md}.</strong> The
+ * <p><strong>Retained parity artefact, severity Low, owed an entry in the planned {@code DECISION_LOG.md}.</strong> The
  * field is reproduced here as documentation and as the width constant
  * {@link #LAST_THREE_OF_ZIP_WIDTH_NOT_VALIDATED}, and it is intentionally never consulted by any lookup.
  * Rule 1 Clause B forbids <em>untracked</em> dead code; this is tracked, cited and justified. Inventing
@@ -260,32 +265,31 @@ import org.springframework.stereotype.Service;
  *   <li><em>Iteration order is not what a caller expected.</em> It is source order, by design, and the
  *       accessors return {@link SequencedSet} to say so. Do not sort, do not deduplicate and do not
  *       fill the numeric gaps.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>5. Findings carried forward, classified by severity</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - a table that loads silently empty because a resource failed without
- *       failing startup. It would reject every input, or, if a caller inverted the test, accept every
- *       input. <em>Remedy:</em> the loader below throws on a missing, unreadable, malformed or empty
- *       table and never substitutes a default.</li>
- *   <li><strong>High</strong> - generating a constants class from the 1318 line copybook; inventing or
- *       omitting a single code; enabling polymorphic Jackson typing; fetching the numbering-plan
- *       registry over the network. <em>Remedy:</em> none of the four is present, and each is argued
- *       against explicitly above and in {@code DECISION_LOG.md}.</li>
- *   <li><strong>Medium</strong> - merging the full area-code table into its two subsets and dropping a
- *       condition name; sorting the state table instead of preserving source order; depending on hash
- *       iteration order for any exposed ordering. <em>Remedy:</em> five tables are modelled separately
- *       and every exposed table is a {@link SequencedSet} backed by insertion order.</li>
- *   <li><strong>Low</strong> - four cosmetic irregularities in the frozen source, recorded as evidence
- *       and deliberately not propagated: {@code app/cpy/CSLKPCDY.cpy:L1011} carries the stale comment
- *       {@code *Search list of valid Phone area codes} immediately above {@code 01
- *       US-STATE-CODE-TO-EDIT}, which is a state table and not a phone table; 1033 of the 1318 lines
- *       are indented with horizontal tabs, whereas the JSON resources and this file use spaces per the
- *       repository {@code .editorconfig}; the {@code VALUES} keyword at {@code :L931} is followed by
- *       two spaces rather than one before {@code '200'}; and {@code LAST-3-OF-ZIP} at {@code :L1314} is
- *       declared but never validated, as section 3.5 records.</li>
- * </ul>
+ *   <li><strong>Blocker</strong> - a table that loads silently empty because a resource failed without failing
+ *       startup. It would reject every input, or, if a caller inverted the test, accept every input. <em>Remedy:</em>
+ *       the loader below throws on a missing, unreadable, malformed or empty table and never substitutes a
+ *       default.</li>
+ *   <li><strong>High</strong> - generating a constants class from the 1318 line copybook; inventing or omitting a
+ *       single code; enabling polymorphic Jackson typing; fetching the numbering-plan registry over the network.
+ *       <em>Remedy:</em> none of the four is present, and each is argued against explicitly above and in the planned
+ *       {@code DECISION_LOG.md}.</li>
+ *   <li><strong>Medium</strong> - merging the full area-code table into its two subsets and dropping a condition
+ *       name; sorting the state table instead of preserving source order; depending on hash iteration order for any
+ *       exposed ordering. <em>Remedy:</em> five tables are modelled separately and every exposed table is a
+ *       {@link SequencedSet} backed by insertion order.</li>
+ *   <li><strong>Low</strong> - four cosmetic irregularities in the frozen source, recorded as evidence and
+ *       deliberately not propagated: {@code app/cpy/CSLKPCDY.cpy:L1011} carries the stale comment
+ *       {@code *Search list of valid Phone area codes} immediately above {@code 01 US-STATE-CODE-TO-EDIT}, which is a
+ *       state table and not a phone table; 1033 of the 1318 lines are indented with horizontal tabs, whereas the JSON
+ *       resources and this file use spaces per the repository {@code .editorconfig}; the {@code VALUES} keyword at
+ *       {@code :L931} is followed by two spaces rather than one before {@code '200'}; and {@code LAST-3-OF-ZIP} at
+ *       {@code :L1314} is declared but never validated, as section 3.5 records.</li>
+ *   </ul>
  *
  * <h2>6. Not available</h2>
  *
@@ -303,7 +307,7 @@ import org.springframework.stereotype.Service;
  *       publishes no service level of any kind, so none is invented here; the performance gate records
  *       a measured baseline rather than a target. What would be needed is a stated objective from the
  *       system owner.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Thread safety and lifecycle</h2>
  *
@@ -796,7 +800,7 @@ public final class ValidationLookupService {
      *       characters, because the resource path is required in the message and truncating to the legacy
      *       width would discard exactly the part an operator needs. The constructor stores the message
      *       unchanged, so the widening is contained here and is documented at this declaration. It is owed an
-     *       entry in {@code DECISION_LOG.md}, which is <strong>not available</strong> as measured
+     *       entry for {@code DECISION_LOG.md}, which is <strong>not available</strong> as measured
      *       1 August 2026, so this Javadoc is the record until that file is authored.</li>
      * </ul>
      *

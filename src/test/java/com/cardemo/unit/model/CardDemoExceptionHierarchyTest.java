@@ -92,13 +92,13 @@ import org.junit.jupiter.params.provider.MethodSource;
  *   <li><strong>Every type is serializable with a pinned serialVersionUID</strong>, because a
  *       {@link RuntimeException} may cross a serialization boundary and an unpinned form would break on any
  *       recompilation.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test                                                # whole unit tier
- * mvn -B -o test -Dtest=CardDemoExceptionHierarchyTest           # this class alone
+ * ./mvnw -B -ntp -o test                                                # whole unit tier
+ * ./mvnw -B -ntp -o test -Dtest=CardDemoExceptionHierarchyTest           # this class alone
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -119,7 +119,7 @@ import org.junit.jupiter.params.provider.MethodSource;
  *   <li><strong>The registry assertion fails.</strong> A type was added to or removed from the package
  *       without updating {@link #allConcreteTypes()}. Update the registry; that failure is the mechanism
  *       working, not a false alarm.</li>
- * </ul>
+ *   </ul>
  *
  * @see CardDemoException
  */

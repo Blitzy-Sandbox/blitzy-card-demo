@@ -16,7 +16,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -74,7 +73,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *
  * <p>Which maps as follows. The two key components are owned by {@link TransactionCategoryId}
  * and are listed here for the record only; this class does not declare them, for the reason
- * given under the Blocker finding below.
+ * given under the key-mapping decision below.
  *
  * <pre>
  * COBOL field          PIC     bytes  member                where declared     column              SQL
@@ -111,7 +110,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       category codes {@code 0001} through {@code 0005}, distributed 5, 3, 3, 3, 1, 2 and 1
  *       across the seven types. The type codes are exactly the seven rows of
  *       {@code app/data/ASCII/trantype.txt}, which is what makes the pairing meaningful.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>Note for the seed migration author.</b> The trailing four byte {@code FILLER} in this
  * fixture is <i>zero filled</i>, that is four literal {@code '0'} characters, and not space
@@ -120,9 +119,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * filler is not modelled, but a loader that trims rather than taking a fixed substring will
  * mis-slice the record. Take bytes 7 to 56 for the description and discard 57 to 60.
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>Mapping decisions that must not be undone</h2>
  *
- * <p><b>Blocker: the composite key class owns every key column, and this class must not restate
+ * <p><b>The composite key class owns every key column, and this class must not restate
  * one of them.</b> {@link TransactionCategoryId} is an {@code Embeddable} that already declares
  * {@code Column(name = "tran_type_cd", nullable = false, length = 2)} and
  * {@code Column(name = "tran_cat_cd", nullable = false)} in COBOL field order. Those names are
@@ -132,20 +131,20 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * identity mechanism such as {@code MapsId} or {@code IdClass}. Any of those would map one
  * database column twice; Hibernate then either rejects the model outright or, worse, resolves
  * the duplicate silently and lets {@code ddl-auto: validate} fail at context startup with a
- * message that names a column rather than the annotation that caused it. Remediation is simply
- * to leave the key mapping alone: the single {@code EmbeddedId} below is the whole of it.
+ * message that names a column rather than the annotation that caused it. Keep the key mapping
+ * alone: the single {@code EmbeddedId} below is the whole of it.
  *
- * <p><b>Blocker: a plain {@code jakarta.persistence} String mapping cannot start the application
+ * <p><b>A plain {@code jakarta.persistence} String mapping cannot start the application
  * context against a {@code CHAR} column.</b> {@code spring.jpa.hibernate.ddl-auto} is
  * {@code validate} in every profile, so a column name, type, precision or nullability mismatch
- * aborts startup rather than degrading quietly. The behaviour was measured on the pinned stack,
+ * aborts startup rather than degrading quietly. On the pinned stack,
  * Hibernate ORM 6.6.42.Final against PostgreSQL 16.10, and is recorded in full at
  * {@code src/main/java/com/cardemo/model/entity/TransactionType.java}: against a column created
  * as {@code CHAR(n)}, a bare {@code Column(length = n)} fails with
  * {@code found [bpchar (Types#CHAR)], but expecting [varchar(n) (Types#VARCHAR)]}, adding
  * {@code columnDefinition = "CHAR(n)"} still fails, and only
  * {@code JdbcTypeCode(SqlTypes.CHAR)} together with {@code Column(length = n)} passes.
- * Remediation, applied below: {@code categoryDescription} carries
+ * The mapping applied below is therefore: {@code categoryDescription} carries
  * {@code JdbcTypeCode(SqlTypes.CHAR)} so Hibernate derives the JDBC type {@code CHAR} instead of
  * defaulting a {@code String} to {@code VARCHAR}. {@code columnDefinition} is deliberately
  * omitted, because the declared length and the JDBC type code already produce the type and a
@@ -157,34 +156,32 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * the package rather than a local choice.
  *
  * <p><b>High: this table is deliberately mixed type, and the migration must reflect that.</b>
- * The two findings above interact. The house convention maps {@code PIC X(n)} to {@code CHAR(n)}
+ * The two decisions above interact. The house convention maps {@code PIC X(n)} to {@code CHAR(n)}
  * through {@code JdbcTypeCode}, and this class follows it for the one column it owns. The key
  * class, by contrast, restricts itself to the Jakarta Persistence API and documents that choice
  * explicitly, so it maps {@code tran_type_cd} as a plain {@code String} of length 2 and
  * {@code tran_cat_cd} as a plain {@code Integer}, which Hibernate resolves to {@code VARCHAR(2)}
- * and {@code INTEGER}. Because the Blocker above forbids restating or overriding a key column,
- * this class cannot and must not harmonise them. The consequence is precise, was measured rather
- * than inferred, and must not be guessed at by whoever authors the schema. So the
+ * and {@code INTEGER}. Because restating or overriding a key column is forbidden above,
+ * this class cannot and must not harmonise them. So the
  * {@code transaction_category} table is genuinely mixed type, and the exact required DDL is
- * enumerated under the schema section below. Remediation if the mixture is ever considered
+ * enumerated under the schema section below. Should the mixture ever be considered
  * unacceptable: change the key class, and change the migration in the same commit. Never patch it
  * from here.
- *
- * <p><b>Update, severity Blocker, applied when the migration became available.</b> One of the two
- * key columns did change, through the sanctioned route above rather than from here.
+ * <p><b>One key column is {@code NUMERIC(4)} rather than {@code INTEGER}, through the sanctioned
+ * route above rather than from here.</b>
  * {@code tran_cat_cd} is {@code NUMERIC(4)} and <em>not</em> {@code INTEGER}, because
  * {@code src/main/resources/db/migration/V1__create_schema.sql} declares a foreign key from
  * {@code "transaction" (tran_type_cd, tran_cat_cd)} to this table's primary key, the
  * {@code tran_cat_cd} column of {@code com.cardemo.model.entity.Transaction} is pinned to the
- * {@code NUMERIC} JDBC type code, and PostgreSQL 16.10 was measured to refuse a foreign key from a
+ * {@code NUMERIC} JDBC type code, and PostgreSQL refuses a foreign key from a
  * {@code NUMERIC} child column to an {@code INTEGER} parent column outright. The fix was made in
  * {@link TransactionCategoryId}, which now declares {@code columnDefinition = "numeric(4)"} on that
  * component - a pure {@code jakarta.persistence} attribute, so the key class stays inside its own
  * API restriction, and the same mechanism {@code DisclosureGroupId} already uses for its character
- * components. No {@code AttributeOverride} was added here and no key column is restated here: the
- * first Blocker above still holds in full. The table therefore mixes {@code VARCHAR(2)},
+ * components. No {@code AttributeOverride} is added here and no key column is restated here: the
+ * first decision above holds in full. The table therefore mixes {@code VARCHAR(2)},
  * {@code NUMERIC(4)} and {@code CHAR(50)}.
- *
+ * <p><b>The COBOL group name {@code TRAN-CAT-KEY} denotes two entirely different keys.</b>
  * <p><b>Medium: the COBOL group name {@code TRAN-CAT-KEY} denotes two entirely different keys.</b>
  * {@code app/cpy/CVTRA04Y.cpy:L5} declares {@code TRAN-CAT-KEY} as {@code TRAN-TYPE-CD PIC X(02)}
  * followed by {@code TRAN-CAT-CD PIC 9(04)}, which is 6 bytes over two components and is the key
@@ -200,12 +197,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * <b>this class must not reintroduce an abstraction either</b>: there is no shared key interface,
  * no common base identifier type, no generic key holder and no shared helper. Collapsing them
  * would couple two unrelated contracts, and an entity that accepted a supertype of both keys
- * could be handed the 17 byte account scoped key at compile time. Remediation is to keep the two
+ * could be handed the 17 byte account scoped key at compile time. Keep the two
  * types disjoint, which is what the single concrete {@link TransactionCategoryId} field below
  * achieves.
  *
- * <p><b>Medium: Hibernate does not preserve the COBOL key order internally, and the migration must
- * not be generated from its schema export.</b> Measured on this mapping with Hibernate ORM
+ * <p><b>Hibernate does not preserve the COBOL key order internally, and the migration must
+ * not be generated from its schema export.</b> On this mapping with Hibernate ORM
  * 6.6.42.Final: although {@link TransactionCategoryId} declares {@code tranTypeCd} first and
  * {@code tranCatCd} second, exactly as {@code app/cpy/CVTRA04Y.cpy:L5-L7} declares them, the
  * primary key Hibernate builds is ordered {@code (tran_cat_cd, tran_type_cd)}. The cause is that
@@ -213,8 +210,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * deterministic rather than dependent on the order reflection happens to report fields in, and
  * {@code tran_cat_cd} sorts before {@code tran_type_cd}. This cannot be corrected from the entity:
  * the ordering is a property of the embeddable, and the one annotation that could restate the key
- * columns here is the forbidden {@code AttributeOverride} of the first Blocker, which would not
- * change the ordering anyway.
+ * columns here is the forbidden {@code AttributeOverride} above, which would not
  *
  * <p>It does no harm, for two reasons that both need to hold and both do. First, Flyway owns the
  * DDL and {@code ddl-auto: validate} compares tables, column names, types and nullability but not
@@ -223,20 +219,19 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * every lookup go through both components together, so no application behaviour depends on which
  * component Hibernate lists first. What the internal order does affect is the DDL that Hibernate
  * would emit if schema generation were ever used, which would index the category code first and so
- * invert the VSAM browse prefix. Remediation, and it is the reason this finding is recorded:
+ * invert the VSAM browse prefix. That is the reason this note exists:
  * {@code V1__create_schema.sql} must be authored by hand as
  * {@code PRIMARY KEY (tran_type_cd, tran_cat_cd)}, and must never be produced by running
  * {@code hbm2ddl} against this mapping and pasting the result.
- *
+ * <p><b>This is a batch only dataset with no alternate index.</b>
  * <p><b>Low: this is a batch only dataset with no alternate index.</b>
  * {@code app/csd/CARDDEMO.CSD} defines exactly eight CICS file names, namely {@code ACCTDAT},
  * {@code CARDAIX}, {@code CARDDAT}, {@code CCXREF}, {@code CUSTDAT}, {@code CXACAIX},
  * {@code TRANSACT} and {@code USRSEC}. {@code TRANCATG} is not among them, so the dataset has no
  * online definition at all and is reached only from batch, exactly as {@code TCATBALF},
  * {@code DISCGRP} and {@code TRANTYPE} are. That shapes both the authorisation model, since no
- * REST endpoint fronts this table, and the integration test surface, since the table is to be exercised
- * through batch jobs rather than through controllers - a shape those tests are to take, since neither a
- * batch job nor an integration tier exists at this commit. It also has no alternate index:
+ * REST endpoint fronts this table, and the integration test surface, since the table is exercised
+ * through batch jobs rather than through controllers. It also has no alternate index:
  * {@code app/catlg/LISTCAT.txt:L3938} reports {@code AIX -------------------3} and all three
  * belong to {@code CARDDATA}, {@code CARDXREF} and {@code TRANSACT}, at
  * {@code app/catlg/LISTCAT.txt:L254}, {@code :L455} and {@code :L3645} respectively. The second
@@ -286,7 +281,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       {@link TransactionCategoryId} and a caller that needs a component goes through
  *       {@link #getId()}. Re-exposing them would duplicate the key class's public surface and
  *       invite the two copies to diverge, which Rule 1 clause C forbids.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Fixed width and CHAR semantics</h2>
  *
@@ -310,7 +305,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       and never trims: trimming would discard the geometry that the fixed width writers depend
  *       on. A caller comparing against unpadded text must strip first, or push the comparison
  *       into a database predicate where the blank insensitive rule applies.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Numeric policy</h2>
  *
@@ -332,14 +327,13 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * browse ordering is preserved rather than perturbed. Any fixed width rendering of it must zero
  * pad back to four digits.
  *
- * <h2>Required schema, and what is Not available</h2>
+ * <h2>The schema this mapping requires</h2>
  *
- * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
- * <b>present</b> and declares {@code CREATE TABLE transaction_category}
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * {@code CREATE TABLE transaction_category}
  * with 3 columns whose names are identical, as a set, to this class's {@code @Column(name = ...)}
  * declaration taken together with the two components of {@link com.cardemo.model.key.TransactionCategoryId}.
- * {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} remain <b>not available</b>. What that
- * migration declares, and what this mapping asserts, is precisely:
+ * What that migration declares, and what this mapping asserts, is precisely:
  *
  * <ul>
  *   <li>table {@code transaction_category} with, in this order,
@@ -348,8 +342,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *   <li>a composite {@code PRIMARY KEY (tran_type_cd, tran_cat_cd)} in that exact COBOL field
  *       order, because the VSAM browse order is the key byte order and reordering the declaration
  *       would change the prefix a range scan can use. This order must be written by hand: it is
- *       <b>not</b> the order Hibernate reports internally, which is alphabetical. See the second
- *       Medium finding above;</li>
+ *       <b>not</b> the order Hibernate reports internally, which is alphabetical;</li>
  *   <li><b>the two key column types are not negotiable and are not what the picture clauses
  *       suggest.</b> They must be {@code VARCHAR(2)} and {@code NUMERIC(4)}, matching exactly what
  *       {@link TransactionCategoryId} declares - a bare {@code String} of length 2 for the first,
@@ -357,16 +350,16 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       Writing {@code tran_type_cd CHAR(2)}, which is the intuitive reading of
  *       {@code PIC X(02)}, fails validation at startup, and so does writing
  *       {@code tran_cat_cd INTEGER}, which was the required type before the referencing foreign key
- *       forced the change. See the High severity finding and the Blocker update above;</li>
+ *       forced the change;</li>
  *   <li>the description column, by contrast, must be {@code CHAR(50)}, matching the
  *       {@code JdbcTypeCode(SqlTypes.CHAR)} mapping declared below;</li>
  *   <li>no version column;</li>
  *   <li>no index beyond the primary key;</li>
- *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit) from {@code
+ *   <li>seeded by {@code V3__seed_data.sql} from {@code
  *       app/data/ASCII/trancatg.txt}, which is 18
  *       rows of 60 bytes each: bytes 1 to 2 the type code, 3 to 6 the category code, 7 to 56 the
  *       description and 57 to 60 a zero filled filler that is discarded.</li>
- * </ul>
+ *   </ul>
  *
  * <p>For the migration author's wider orientation: the first migration creates exactly 11 tables
  * with 10 foreign keys and 5 check constraints, of which this table is one and contributes none of
@@ -383,10 +376,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * entity belong in {@code src/test/java/com/cardemo/unit/model} and are to assert the 60 byte record
  * arithmetic, the composite key length of 6, the table name {@code transaction_category}, that the
  * type is a class rather than an enum, and that no {@code AttributeOverride} and no duplicate key
- * column is declared. The repository tier is to be exercised against a Testcontainers PostgreSQL 16
- * instance from {@code src/test/java/com/cardemo/integration/repository}.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code TransactionCategoryTest} exists and
- * that integration directory does not exist, so both sentences state coverage owed, not coverage run. There is no
+ * instance from {@code src/test/java/com/cardemo/integration/repository}. There is no
  * configuration key and no default value specific to this class: it is a mapping, and every
  * setting that governs it, the datasource, the naming strategy and {@code ddl-auto: validate}, is
  * declared in the profile configuration.
@@ -401,8 +391,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       tran_type_cd ... found [bpchar (Types#CHAR)], but expecting [varchar(2)
  *       (Types#VARCHAR)]".</b> The migration declared a key column as {@code CHAR} while the key
  *       class maps it as {@code VARCHAR}. Correct the migration to {@code VARCHAR(2)} and
- *       {@code NUMERIC(4)}; see the High severity finding and the Blocker update above. Do not add
- *       an {@code AttributeOverride} here, which is the Blocker.</li>
+ *       {@code NUMERIC(4)}. Do not add an {@code AttributeOverride} here.</li>
  *   <li><b>Startup fails with "wrong column type ... for column tran_cat_type_desc ... found
  *       [bpchar (Types#CHAR)], but expecting [varchar(50) (Types#VARCHAR)]".</b> The
  *       {@code JdbcTypeCode(SqlTypes.CHAR)} annotation has been removed from
@@ -413,7 +402,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *   <li><b>A range query on the transaction type code does not use the primary key index.</b> The
  *       migration declared the primary key in Hibernate's internal alphabetical order,
  *       {@code (tran_cat_cd, tran_type_cd)}, rather than the COBOL order. Correct the migration to
- *       {@code PRIMARY KEY (tran_type_cd, tran_cat_cd)}; see the second Medium finding above.</li>
+ *       {@code PRIMARY KEY (tran_type_cd, tran_cat_cd)} in the COBOL field order stated above.</li>
  *   <li><b>A description comparison unexpectedly fails in Java.</b> The loaded value is blank
  *       padded to 50 characters by design. Strip before comparing, or compare in SQL.</li>
  *   <li><b>An {@code IllegalArgumentException} from the two argument constructor or from a
@@ -424,7 +413,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       data carries exactly 18 pairs over type codes {@code 01} to {@code 07}. The legacy
  *       program diagnoses a miss rather than failing, so an empty result is a data condition to
  *       report, not a mapping defect.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
  * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
@@ -433,8 +422,8 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * lookup reference data - a composite code and its description - and carries no credential, no personal
  * data and no customer figure, so unlike {@link Card} or {@link Customer} it is not what the barrier was
  * introduced to protect. It is applied here anyway, and deliberately without exception, because a barrier
- * that covers every entity in the package is checkable by inspection, whereas one applied only where a
- * reviewer judged it necessary has to be re-judged every time an entity is added or a column is widened.
+ * that covers every entity in the package is checkable by inspection, whereas one applied only where
+ * someone judged it necessary has to be re-judged every time an entity is added or a column is widened.
  * Persistence is unaffected: Hibernate reads and writes the annotated fields reflectively and never
  * consults Jackson visibility.</p>
  *

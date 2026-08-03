@@ -189,7 +189,7 @@ import jakarta.validation.constraints.Size;
  *       "Unable to lookup User..." and "Unable to Update User..." from the file-access paragraphs.</li>
  *   <li>Not available: the source declares no password policy, no rate limit and no service-level
  *       objective for this transaction, so none is invented. Nothing in the corpus supplies one.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Build, test and configuration.</strong> This type is compiled by the single root
  * {@code pom.xml} against Java 25 with {@code -Xlint:all -Werror}, so any warning it produced would fail
@@ -220,7 +220,7 @@ import jakarta.validation.constraints.Size;
  *       mapper disables failure on unknown properties, which is the framework default. Remediation
  *       applied: the guard below rejects unconditionally instead, so the behaviour does not depend on
  *       mapper configuration.</li>
- * </ul>
+ *   </ul>
  *
  * @param transactionName {@code TRNNAMEI PIC X(4)} at {@code app/cpy-bms/COUSR02.CPY:24}. Terminal header
  *                        field carrying the four-character CICS transaction identifier that the legacy

@@ -112,13 +112,13 @@ import org.springframework.dao.QueryTimeoutException;
  *       constraint violation and lose the colliding key. The test pins the order by asserting that a
  *       duplicate produces a {@link DuplicateRecordException} and specifically <em>not</em> a
  *       {@link DataIntegrityException}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>
- *   mvn -o -B test -Dtest=TransactionCombineProcessorCoverageTest -DfailIfNoSpecifiedTests=false
- *   mvn -o -B clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
+ *   ./mvnw -B -ntp -o test -Dtest=TransactionCombineProcessorCoverageTest -DfailIfNoSpecifiedTests=false
+ *   ./mvnw -B -ntp -o clean verify -Ddependency-check.skip=true   (full gate: coverage floor plus tests)
  * </pre>
  *
  * <p>No profile, container, database or network endpoint is required. The store failures are constructed
@@ -149,7 +149,7 @@ import org.springframework.dao.QueryTimeoutException;
  *       identifier accessor has been removed. That guard is reachable only through a subclass whose getter
  *       returns different values on successive calls, which is exactly what the test supplies; the guard
  *       exists because the entity is mutable and the identifier is read twice.</li>
- * </ul>
+ *   </ul>
  */
 @DisplayName("TransactionCombineProcessor - the COMBTRAN sort and REPRO combine step")
 final class TransactionCombineProcessorCoverageTest {

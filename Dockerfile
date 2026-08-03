@@ -89,10 +89,9 @@
 # A successful image build must never be reported as a pass of that
 # gate.
 #
-# Nor does it scan the produced image. No image scanner is installed in
-# this environment - trivy, grype, syft, snyk and the docker scout plugin
-# are all absent - so image vulnerability scanning is Not available here
-# and must not be recorded as a pass. It is however reproducible on
+# Nor does it scan the produced image. No image scanner runs as part of
+# this build, so an image build must never be recorded as an image scan.
+# Scanning is reproducible on
 # demand, because both bases are pinned by digest below rather than by a
 # moving tag; scan the exact content with, for example:
 #
@@ -106,7 +105,7 @@
 # HOW TO RUN
 #
 # The application takes ALL of its configuration from the environment;
-# see .env.example for the 33 key contract. Bring the substrate up
+# see .env.example for the full key contract. Bring the substrate up
 # first, then join the container to the same network so the service
 # names resolve. Container names carry the ${CLONE_INDEX} suffix that
 # docker-compose.yml applies, so adjust both if CLONE_INDEX is set:
@@ -116,7 +115,7 @@
 #     -p 8080:8080 \
 #     -e SPRING_PROFILES_ACTIVE=local \
 #     -e SERVER_PORT=8080 \
-#     -e JWT_SECRET="$JWT_SECRET" \
+#     -e JWT_SIGNING_KEY="$JWT_SIGNING_KEY" \
 #     -e POSTGRES_HOST=postgres \
 #     -e POSTGRES_DB=carddemo -e POSTGRES_USER=carddemo \
 #     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
@@ -136,20 +135,27 @@
 # Baked in, and nothing else is:
 #   SPRING_PROFILES_ACTIVE  empty. The image names NO profile; see the
 #                           note at the ENV instruction below.
-#   JAVA_TOOL_OPTIONS       container aware heap sizing plus fail fast
-#                           on OOM. Replace the whole variable to
-#                           override.
+#   JAVA_TOOL_OPTIONS       container aware heap sizing, fail fast on OOM,
+#                           and the JDK 25 Unsafe memory-access option that
+#                           keeps a plain-text JEP 498 warning out of the
+#                           JSON log stream. Replace the whole variable to
+#                           override; the ENV instruction below explains each
+#                           of the three options.
 #   HOME                    /opt/carddemo, which exists, is owned by
 #                           root and is not writable by the application.
 #   EXPOSE                  8080 only, matching server.port's documented
 #                           non-secret default in application.yml.
 #
 # Deliberately NOT baked in, because the image must stay environment
-# neutral and secret free: any Spring profile name, JWT_SECRET, the
-# datasource URL/user/password, AWS credentials or endpoint, the S3
+# neutral and secret free: any Spring profile name, the JWT signing key,
+# the datasource URL/user/password, the AWS emulator endpoint, the S3
 # bucket / SQS queue / SNS topic names, and the OTLP endpoint. An absent
 # value fails placeholder resolution and therefore fails startup, which
-# is the intended behaviour rather than a defect.
+# is the intended behaviour rather than a defect. Note that the AWS
+# endpoint and credential contract is not merely unset here: it is
+# supplied by the base profile as an emulator-only default and validated
+# by com.cardemo.config.AwsConfig before any client is built, so an
+# operator cannot turn this image into a live-AWS client by omission.
 #
 # FILESYSTEM AND PRIVILEGE
 #
@@ -187,7 +193,7 @@
 #       which one to ship. Remedy: inspect the listing the message
 #       prints and give the extra artefact a classifier the selection
 #       can exclude.
-#   run: "Could not resolve placeholder 'JWT_SECRET'" or similar
+#   run: "Could not resolve placeholder 'JWT_SIGNING_KEY'" or similar
 #       A required environment variable was not supplied. Compare the
 #       run command against .env.example; the image intentionally has
 #       no defaults for secrets or host names.
@@ -270,10 +276,10 @@ RUN ./mvnw -B -ntp test-compile
 # which is what makes the parity assertions assertions about the corpus
 # rather than about a second copy of the implementation. Surefire runs
 # with ${basedir} as its working directory, so those reads resolve
-# against this stage's WORKDIR. Measured: with only src/ present, the
-# in-image test run reported 482 errors and 8 failures purely because
-# these inputs were absent - all of them NoSuchFileException, none of
-# them a real defect. The readers, by evidence:
+# against this stage's WORKDIR. Omit any of them and the in-image test run
+# fails in the hundreds with NoSuchFileException on every such read - not
+# one of them a real defect, and every one of them attributed to the test
+# rather than to this file. The readers, by evidence:
 #   app/cpy/       Path.of("app","cpy") is listed, and members are
 #                  resolved dynamically as member + ".cpy" -
 #                  ExceptionHierarchyTest reads CSMSG02Y.cpy for the
@@ -282,7 +288,7 @@ RUN ./mvnw -B -ntp test-compile
 #                  COADM02Y.cpy, RecordLayoutCopybook reads the eleven
 #                  record layouts
 #   app/cpy-bms/   BmsSymbolicMap resolves members as member + ".CPY"
-#                  for the 460 screen field contracts
+#                  for the screen field contracts
 #   app/cbl/       TransactionSourceTest reads six programs, CBACT04C,
 #                  CBTRN02C, COADM01C, COBIL00C, COTRN02C and CSUTLDTC,
 #                  to recover literals from the corpus itself
@@ -467,12 +473,74 @@ EXPOSE 8080
 # UTF-8 is the default charset since JEP 400, and the java.security.egd
 # workaround has been inert since JDK 9.
 #
+# THE THIRD OPTION SUPPRESSES A JDK 25 WARNING THAT WOULD OTHERWISE BREAK
+# THE LOG CONTRACT. NOTATION: long JDK options take a leading pair of
+# hyphens, so in this prose the option is written WITHOUT its prefix, as
+# sun-misc-unsafe-memory-access=allow; the ENV line below carries the real,
+# fully prefixed form.
+#
+# JEP 498 made the memory-access methods of sun.misc.Unsafe terminally
+# deprecated in JDK 24 and warning-on-first-use in JDK 25. A packaged
+# startup was measured emitting, on stderr and in plain text:
+#   WARNING: A terminally deprecated method in sun.misc.Unsafe has been
+#   called ... by io.opentelemetry.internal.shaded.jctools.util.UnsafeAccess
+#   ... opentelemetry-sdk-trace-1.49.0.jar
+# Three reasons make that worth suppressing rather than tolerating. It is
+# UNSTRUCTURED: logback-spring.xml emits JSON with traceId, spanId and
+# correlationId, and this line has none of that shape, so a log pipeline
+# parsing the stream either drops it or records a parse failure on every
+# container start. It is UNACTIONABLE HERE: the caller is JCTools shaded
+# inside the OpenTelemetry SDK, reached through the Micrometer tracing
+# bridge, so nothing in this repository can stop the call. And it is
+# TRANSIENT-LOOKING BUT NOT TRANSIENT: without the option, JDK 26 is
+# expected to turn the warning into an error, so the option is also what
+# keeps this image booting on the next release.
+# The option is deliberately NARROW. It re-permits exactly one thing, the
+# Unsafe memory-access methods, and grants no other access; it is not
+# --add-opens, not --enable-native-access and not --illegal-access. The
+# alternative the finding also allows - upgrading OpenTelemetry or JCTools
+# past the shaded call - is rejected here because every non-BOM coordinate
+# in pom.xml is pinned deliberately and the OTel version is managed by the
+# Micrometer tracing BOM, so raising it to silence a warning would move a
+# transitive contract for a cosmetic gain.
+# The build stage already needed the identical option for its own reason -
+# .mvn/jvm.config carries it because the Guice 5.1.0 bundled with Maven
+# 3.9.11 calls the same methods - so both stages are now consistent, and
+# neither depends on the other.
+#
 # SPRING_PROFILES_ACTIVE is present and EMPTY on purpose. It names no
 # profile, so the image stays environment neutral exactly as the profile
 # layering contract in application.yml requires, while still declaring
 # the variable in the image configuration where `docker inspect` will
 # show it as part of the environment contract the operator must satisfy.
-ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError" \
+#
+# THAT EMPTY DEFAULT IS SAFE, AND IT IS SAFE STRUCTURALLY RATHER THAN BY
+# CONVENTION. It once was not. With no profile active, the base
+# configuration used to enable the S3, SQS and SNS clients while declaring
+# no endpoint override and no credentials, so a `docker run` with nothing
+# else supplied performed SDK regional endpoint discovery against real
+# amazonaws.com hosts and signed with whatever the SDK default provider
+# chain resolved - environment variables, a mounted credentials file,
+# container credentials or instance metadata. AAP 0.3.2 admits no such
+# path. Two changes closed it, neither of which depends on the operator
+# naming a profile:
+#   * application.yml, the BASE profile, now carries the three service
+#     endpoints - indirected through AWS_ENDPOINT_URL and defaulting to the
+#     emulator edge, a loopback address that cannot be an AWS host - and an
+#     inert static credential pair whose only function is to displace the
+#     SDK default provider chain.
+#   * com.cardemo.config.AwsConfig validates those five values in its
+#     constructor, which necessarily runs before the S3, SQS and SNS
+#     templates it declares, and aborts the context refresh unless every
+#     endpoint is an absolute http/https URL with an explicit port, no user
+#     information and a host on its permitted emulator list, and both
+#     credentials are present without a real AWS key prefix.
+# So the worst outcome of a profile-less `docker run` is a connection
+# failure to a loopback port, never a live AWS call. Supplying
+# SPRING_PROFILES_ACTIVE=local, as the run recipe above does, remains the
+# recommended way to get the developer defaults; it is no longer what makes
+# the run safe.
+ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=75.0 -XX:+ExitOnOutOfMemoryError --sun-misc-unsafe-memory-access=allow" \
     SPRING_PROFILES_ACTIVE=""
 
 # Readiness probe. bash is the only HTTP capable tool in this base -

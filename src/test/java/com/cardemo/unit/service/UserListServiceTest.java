@@ -89,7 +89,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.quality.Strictness;
 import org.springframework.dao.DataAccessResourceFailureException;
-import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.SliceImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -153,13 +153,15 @@ import org.springframework.transaction.annotation.Transactional;
  *       {@code app/jcl/DUSRSECJ.jcl} share is never written here in any form.</li>
  *   <li>Authorisation is {@code ADMIN} only and the session policy is stateless, but neither is enforced
  *       by this bean - see the failure modes below.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><strong>The build fails on one unused import.</strong> The compiler runs {@code -Xlint:all} with
- *       {@code -Werror} and {@code failOnWarning}, and that reaches test compilation. This class
+ *   <li><strong>An unused import must be pruned, though the build will not report it.</strong> The compiler
+ *       runs {@code -Xlint:all} with {@code -Werror} and {@code failOnWarning} and that reaches test
+ *       compilation, but {@code javac} 25 publishes no {@code unused} lint key, so an unused import is a
+ *       Rule 1 Clause B violation caught at review rather than a build failure. This class
  *       deliberately imports neither the shared fixed-clock helper of the sibling {@code unit.model}
  *       package nor any fixture loading helper: nothing on the user list path consults a fixture, and the
  *       one clock it needs is built inline. Naming either symbol here, even in prose, would trip the
@@ -202,7 +204,7 @@ import org.springframework.transaction.annotation.Transactional;
  *       either a named constant on the service for the second one, which is currently inlined at all three
  *       sites, or an accessor for the screen assembled on a throwing path; neither is in scope for a test
  *       and neither is invented here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Deliberately preserved source artefacts, and their severities</h2>
  *
@@ -215,10 +217,10 @@ import org.springframework.transaction.annotation.Transactional;
  * and {@code credentialsUsedHereAreWellFormedPlaceholders} proves the only credential shaped strings in this
  * file are synthetic. The seeded plaintext appears nowhere in this file in any form.
  *
- * <p>Four artefacts are retained rather than repaired, each carrying a {@code DECISION_LOG.md} entry and a
- * {@code TRACEABILITY_MATRIX.md} row, which is what satisfies clause B: the prohibition is on dead code
- * <em>without</em> an owner or tracking reference. The four hundred and eighty byte {@code WS-USER-DATA}
- * table at {@code :56-:64} has zero procedural references (Low). {@code WS-PAGE-NUM} at {@code :54} is
+ * <p>Four artefacts are retained rather than repaired, each carrying an entry in the planned {@code DECISION_LOG.md}
+ * and a {@code TRACEABILITY_MATRIX.md} row, which is what satisfies clause B: the prohibition is on dead code
+ * <em>without</em> an owner or tracking reference. The four hundred and eighty byte {@code WS-USER-DATA} table at
+ * {@code :56-:64} has zero procedural references (Low). {@code WS-PAGE-NUM} at {@code :54} is
  * referenced only by its own declaration (Low). The {@code CONTINUE} at {@code :601} terminates nothing,
  * so the four statements after it all execute (Medium). The commented out {@code GTEQ} at {@code :592}
  * leaves the browse on exact key semantics (High if restored). Each has a test below that fails if the
@@ -346,7 +348,7 @@ class UserListServiceTest {
 
     /**
      * The sixteen paragraph labels of {@code app/cbl/COUSR00C.cbl}, in source order, as the private method
-     * names they map to one for one. Never consolidated: {@code TRACEABILITY_MATRIX.md} is proved against
+     * names they map to one for one. Never consolidated: {@code TRACEABILITY_MATRIX.md} will be proved against
      * this correspondence.
      */
     private static final List<String> PARAGRAPH_METHOD_NAMES = List.of(
@@ -485,7 +487,7 @@ class UserListServiceTest {
             Pageable pageable = invocation.getArgument(0, Pageable.class);
             int from = Math.min((int) pageable.getOffset(), rows.size());
             int to = Math.min(from + pageable.getPageSize(), rows.size());
-            return new PageImpl<>(rows.subList(from, to), pageable, rows.size());
+            return new SliceImpl<>(rows.subList(from, to), pageable, to < rows.size());
         });
     }
 
@@ -506,7 +508,7 @@ class UserListServiceTest {
             }
             int from = Math.min((int) pageable.getOffset(), rows.size());
             int to = Math.min(from + pageable.getPageSize(), rows.size());
-            return new PageImpl<>(rows.subList(from, to), pageable, rows.size());
+            return new SliceImpl<>(rows.subList(from, to), pageable, to < rows.size());
         });
     }
 
@@ -531,7 +533,7 @@ class UserListServiceTest {
             }
             int from = Math.min((int) pageable.getOffset(), rows.size());
             int to = Math.min(from + pageable.getPageSize(), rows.size());
-            return new PageImpl<>(rows.subList(from, to), pageable, rows.size());
+            return new SliceImpl<>(rows.subList(from, to), pageable, to < rows.size());
         });
     }
 
@@ -657,7 +659,7 @@ class UserListServiceTest {
             Pageable pageable = invocation.getArgument(0, Pageable.class);
             int from = Math.min((int) pageable.getOffset(), rows.size());
             int to = Math.min(from + pageable.getPageSize(), rows.size());
-            return new PageImpl<>(rows.subList(from, to), pageable, Long.MAX_VALUE);
+            return new SliceImpl<>(rows.subList(from, to), pageable, true);
         });
     }
 
@@ -854,10 +856,10 @@ class UserListServiceTest {
      *
      * <p>Slot geometry is {@code 1 + 2 + 8 + 2 + 25 + 2 + 8}, so forty eight bytes, times ten, so four
      * hundred and eighty bytes never populated, never read and never cleared. The structure is retained as a
-     * documented dead artefact with a {@code DECISION_LOG.md} entry and a {@code TRACEABILITY_MATRIX.md}
-     * row. It is neither deleted nor resurrected as the response shape, and the tests here prove the second
-     * half of that: had it shaped the response, name data would be lossy and the type field eight times too
-     * wide.
+     * documented dead artefact with an entry in the planned {@code DECISION_LOG.md} and a
+     * {@code TRACEABILITY_MATRIX.md} row. It is neither deleted nor resurrected as the response shape, and the tests
+     * here prove the second half of that: had it shaped the response, name data would be lossy and the type field
+     * eight times too wide.
      */
     @Nested
     @DisplayName("Phase 2 - the dead 480-byte work table shapes nothing")
@@ -969,7 +971,7 @@ class UserListServiceTest {
      * {@code POPULATE-USER-DATA} at {@code app/cbl/COUSR00C.cbl:384-:437} moves four fields per row -
      * identifier, first name, last name and type - as four separate screen fields, fully unrolled across ten
      * {@code WHEN} branches for forty {@code MOVE} statements. The Java collapses that into one loop, a
-     * mechanism substitution recorded in {@code DECISION_LOG.md}, with both asymmetries kept explicit.
+     * mechanism substitution owed an entry in the planned {@code DECISION_LOG.md}, with both asymmetries kept explicit.
      *
      * <p><strong>Correction to the written plan.</strong> The plan states that {@code WHEN 1} alone captures
      * a boundary key and that no other branch captures anything. Inspection of {@code :433-:435} shows
@@ -1615,16 +1617,15 @@ class UserListServiceTest {
      * findings.
      *
      * <ol>
-     *   <li><strong>High if reversed.</strong> {@code GTEQ} is commented out at {@code :592}, so the browse
-     *       positions on an <em>exact</em> key. A supplied identifier that does not exist takes the not found
-     *       arm instead of positioning on the next higher key. It is preserved as written, with a
-     *       {@code DECISION_LOG.md} entry; restoring the option would change first page behaviour.</li>
-     *   <li><strong>Medium.</strong> The {@code CONTINUE} at {@code :601} does <em>not</em> terminate its
-     *       branch: the four statements at {@code :602-:606} all execute. A reader who assumes otherwise
-     *       drops the end of data flag, the message, the cursor reposition and the send.</li>
-     *   <li><strong>Medium.</strong> The not found arm never sets {@code WS-ERR-FLG}. Only
-     *       {@code WHEN OTHER} does. Not found on a browse start is therefore an edge of data control path,
-     *       not an error state.</li>
+     *   <li><strong>High if reversed.</strong> {@code GTEQ} is commented out at {@code :592}, so the browse positions
+     *       on an <em>exact</em> key. A supplied identifier that does not exist takes the not found arm instead of
+     *       positioning on the next higher key. It is preserved as written, with an entry in the planned
+     *       {@code DECISION_LOG.md}; restoring the option would change first page behaviour.</li>
+     *   <li><strong>Medium.</strong> The {@code CONTINUE} at {@code :601} does <em>not</em> terminate its branch: the
+     *       four statements at {@code :602-:606} all execute. A reader who assumes otherwise drops the end of data
+     *       flag, the message, the cursor reposition and the send.</li>
+     *   <li><strong>Medium.</strong> The not found arm never sets {@code WS-ERR-FLG}. Only {@code WHEN OTHER} does.
+     *       Not found on a browse start is therefore an edge of data control path, not an error state.</li>
      * </ol>
      *
      * <p>The browse key is {@code SEC-USR-ID} with {@code KEYLENGTH (LENGTH OF SEC-USR-ID)}, so eight,
@@ -2556,7 +2557,7 @@ class UserListServiceTest {
                 List<UserSecurity> rows = store(25);
                 int from = Math.min((int) pageable.getOffset(), rows.size());
                 int to = Math.min(from + pageable.getPageSize(), rows.size());
-                return new PageImpl<>(rows.subList(from, to), pageable, rows.size());
+                return new SliceImpl<>(rows.subList(from, to), pageable, to < rows.size());
             });
             UserListService shifted = new UserListService(other, new FileStatusMapper(),
                     Clock.fixed(Instant.parse("1999-12-31T23:58:01Z"), ZoneOffset.UTC), PAGE_SIZE);

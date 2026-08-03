@@ -77,7 +77,7 @@ import jakarta.validation.constraints.Size;
  *    05 CDEMO-MORE-INFO.                                   &lt;- L42
  *       10  CDEMO-LAST-MAP               PIC X(7).         &lt;- L43   OMIT
  *       10  CDEMO-LAST-MAPSET            PIC X(7).         &lt;- L44   OMIT
- * </pre>
+ *       </pre>
  *
  * <p>The count of seventeen declarations, of which nine are live, is arrived at as follows: the copybook
  * declares sixteen elementary fields under the five {@code 05} group items, and the omitted
@@ -138,7 +138,7 @@ import jakarta.validation.constraints.Size;
  *       redisplay it. There is no BMS layer in the target and no terminal to redisplay to; the
  *       presentation layer is JSON, and the seventeen symbolic maps are consumed as field contracts
  *       rather than reimplemented.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Documented type divergence: PIC 9(16) versus PIC X(16)</h2>
  *
@@ -190,9 +190,10 @@ import jakarta.validation.constraints.Size;
  * as a length, and no name field in any form. No alternative full rendering and no masking helper is
  * provided, so there is no second path to the same disclosure.
  *
- * <p>A central masking rule would be a second line of defence, but no {@code logback-spring.xml}
- * exists under {@code src/main/resources} yet, so there is nothing behind this omission to catch what
- * it misses. Never emitting the card number is therefore the only defence, not the first of two.
+ * <p>A central masking rule is the second line of defence, and one exists:
+ * {@code src/main/resources/logback-spring.xml} installs a masking decorator with field-name paths and
+ * value-mask regexes, applied identically in every profile. Never emitting the card number remains the
+ * first line, because a mask recognises only the names and shapes it was given.
  *
  * <p>This type carries no credential material of any kind: the COMMAREA declares no password and no hash,
  * so there is none to omit. It exposes exactly the nine fields the copybook declares as live and not one
@@ -245,7 +246,7 @@ import jakarta.validation.constraints.Size;
  *   <li>It does not map {@code userType} onto a granted authority. Role mapping is an authorisation
  *       concern owned by the security and configuration packages, which is also why this file imports no
  *       framework type beyond the two validation annotations.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Instances are immutable and inherently thread safe, subject only to the caller not mutating an
  * argument after construction - which cannot happen here, because every component is a {@code String}

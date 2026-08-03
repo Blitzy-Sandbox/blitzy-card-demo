@@ -177,8 +177,10 @@
 -- fifty-row fixtures:
 --   customer.cust_ssn               6 of 50 rows lead with a zero
 --   customer.cust_fico_credit_score 7 of 50 rows lead with a zero
---   card.card_cvv_cd                8 of 50 rows lead with a zero
 -- customer.cust_id, also PIC 9(09), has no such row and stays numeric.
+-- card.card_cvv_cd would have been a third such column - 8 of its 50
+-- fixture rows lead with a zero - but it is not declared at all; see the
+-- note on the card table below.
 -- For cust_ssn the demotion is compensated by a CHECK restoring the
 -- numeric domain the copybook declared.
 --
@@ -285,7 +287,7 @@
 -- the operation repeatable, and a migration that cannot do what it was
 -- asked must fail loudly with its root cause intact.
 --
--- NO DATABASE-SIDE KEY ALLOCATION. Severity Blocker if added. The
+-- NO DATABASE-SIDE KEY ALLOCATION, AND ADDING ONE WOULD BREAK PARITY. The
 -- legacy transaction identifier is produced by browsing the keyed file
 -- backwards from HIGH-VALUES to the maximum key and adding one:
 -- app/cbl/COTRN02C.cbl:444-451 and app/cbl/COBIL00C.cbl:212-219 both
@@ -688,20 +690,22 @@ CREATE TABLE customer (
 -- created here, and it is deliberately NOT unique - a customer may
 -- hold several cards on one account.
 --
--- card_cvv_cd IS FIXED-WIDTH CHARACTER, NOT NUMERIC, despite
--- PIC 9(03): 8 of the 50 rows of app/data/ASCII/carddata.txt carry a
--- significant leading zero. No digits-only constraint is added, because
--- there is ZERO card-verification validation anywhere in app/cbl - the
--- only occurrences of the field are PIC X(03) over PIC 9(03)
--- redefinition pairs used for numeric conversion, at
+-- card_cvv_cd IS NOT DECLARED. Card verification data is not retained
+-- after authorisation, so the column does not exist and V3 loads no
+-- value for it. The evidence that nothing observable depends on it is
+-- collected at the column position below. Note what the corpus does
+-- NOT contain: there is ZERO card-verification validation anywhere in
+-- app/cbl - the only occurrences of the field are PIC X(03) over
+-- PIC 9(03) redefinition pairs used for numeric conversion, at
 -- app/cbl/COCRDLIC.cbl:102-103, app/cbl/COCRDUPC.cbl:107-108, :294,
--- :306 and :317, and app/cbl/COCRDSLC.cbl:76-77. No 88-level, no range
--- test and no digits test exists, so a constraint would be an
--- invention.
+-- :306 and :317, and app/cbl/COCRDSLC.cbl:76-77, none of which is ever
+-- referenced. No 88-level, no range test and no digits test exists.
 --
--- Geometry: 16 + 11 + 3 + 50 + 10 + 1 = 91 modelled bytes, plus the
--- FILLER X(59) at app/cpy/CVACT02Y.cpy:L11 = 150. Matches
--- AVGLRECL 150.
+-- Geometry: 16 + 11 + 50 + 10 + 1 = 88 modelled bytes, plus the 3
+-- unmodelled CARD-CVV-CD bytes and the FILLER X(59) at
+-- app/cpy/CVACT02Y.cpy:L11 = 150. Matches AVGLRECL 150. The record is
+-- still 150 bytes wide in the frozen copybook and in every fixture; it
+-- is three of those bytes that are not persisted.
 CREATE TABLE card (
   -- CARD-NUM             PIC X(16)  app/cpy/CVACT02Y.cpy:L5   bytes [1-16]
   card_num             CHAR(16)    NOT NULL,
@@ -712,8 +716,21 @@ CREATE TABLE card (
   -- join-side machinery.
   card_acct_id         NUMERIC(11) NOT NULL,
   -- CARD-CVV-CD          PIC 9(03)  app/cpy/CVACT02Y.cpy:L7   bytes [28-30]
-  -- Character, not numeric: leading zeros must survive the load.
-  card_cvv_cd          CHAR(3)     NOT NULL,
+  -- DELIBERATELY NOT DECLARED. Card verification data must not be
+  -- retained after authorisation, and encrypting it would not make
+  -- retention acceptable, so there is no column here to hold it and no
+  -- seed value in V3 to load into one. The field stays declared in the
+  -- frozen copybook, which is where the legacy geometry is preserved;
+  -- what is removed is the live column, not the record of the contract.
+  -- Nothing observable in the source depends on it: it appears in NONE
+  -- of the 17 BMS symbolic maps, so no screen ever displayed or accepted
+  -- it; app/cbl/COCRDSLC.cbl:76-77 and app/cbl/COCRDLIC.cbl:102-103
+  -- declare redefinition pairs for it and never reference them; and in
+  -- app/cbl/COCRDUPC.cbl the new-value field CCUP-NEW-CVV-CD at :306 is
+  -- INITIALIZEd at :586 and read at :1464 but is never assigned by any
+  -- statement in the program, so the legacy update path had no input
+  -- source for it either. See the entity documentation on
+  -- com.cardemo.model.entity.Card for the labelled deviation.
   -- CARD-EMBOSSED-NAME   PIC X(50)  app/cpy/CVACT02Y.cpy:L8   bytes [31-80]
   card_embossed_name   CHAR(50)    NOT NULL,
   -- CARD-EXPIRAION-DATE  PIC X(10)  app/cpy/CVACT02Y.cpy:L9   bytes [81-90]
@@ -1109,7 +1126,7 @@ CREATE TABLE "transaction" (
 -- Online access : none. DALYTRAN appears zero times in
 --                 app/csd/CARDDEMO.CSD.
 --
--- BLOCKER - dalytran_id IS NOT THE PRIMARY KEY AND MUST NEVER BE MADE
+-- dalytran_id IS NOT THE PRIMARY KEY AND MUST NEVER BE MADE
 -- ONE. The dataset is unkeyed, so DALYTRAN-ID carries no uniqueness
 -- guarantee of any kind, and nothing in the corpus supplies one.
 -- Exactly two programs open this file - app/cbl/CBTRN01C.cbl and
@@ -1174,7 +1191,7 @@ CREATE TABLE "transaction" (
 -- as "AIX -------------------3" at app/catlg/LISTCAT.txt:L3938, none
 -- of which belongs to this table.
 --
--- BLOCKER - THIS TABLE HAS NO FOREIGN KEY, AND ADDING ONE BREAKS THE
+-- THIS TABLE HAS NO FOREIGN KEY, AND ADDING ONE BREAKS THE
 -- POSTING JOB. A staged row must be loadable while referencing a card
 -- that does not exist and an account that does not exist, because
 -- those are precisely the two reject outcomes the posting job is
@@ -1228,11 +1245,11 @@ CREATE TABLE daily_transaction (
   -- WS-TRANSACTION-COUNT PIC 9(09) at app/cbl/CBTRN02C.cbl:185 which
   -- :206 increments once per accepted READ. Assigned by the loader in
   -- read order; deliberately NOT a GENERATED or IDENTITY column. See
-  -- the identity BLOCKER note above.
+  -- the key-allocation note above.
   ingest_seq              NUMERIC(9)    NOT NULL,
   -- DALYTRAN-ID             PIC X(16)      app/cpy/CVTRA06Y.cpy:L5   bytes [1-16]
   -- ORDINARY NON-UNIQUE DATA, not the key. The unkeyed PS input may
-  -- repeat it - see the identity BLOCKER note above.
+  -- repeat it - see the key-allocation note above.
   dalytran_id             CHAR(16)      NOT NULL,
   -- DALYTRAN-TYPE-CD        PIC X(02)      app/cpy/CVTRA06Y.cpy:L6   bytes [17-18]
   dalytran_type_cd        CHAR(2)       NOT NULL,
@@ -1358,7 +1375,7 @@ CREATE TABLE user_security (
   -- SEC-USR-LNAME  PIC X(20)  app/cpy/CSUSR01Y.cpy:L20  bytes [29-48]
   sec_usr_lname  CHAR(20)    NOT NULL,
   -- SEC-USR-PWD    PIC X(08)  app/cpy/CSUSR01Y.cpy:L21  bytes [49-56]
-  -- BCrypt strength-10 digest only - see the BLOCKER note above. This
+  -- BCrypt strength-10 digest only - see the credential note above. This
   -- declaration carries the width and the nullability; the digest
   -- SHAPE is enforced by the persistence invariant on
   -- com.cardemo.model.entity.UserSecurity, not by a sixth CHECK.
@@ -1405,8 +1422,8 @@ CREATE TABLE user_security (
 -- daily_transaction (ingest_seq), the ingestion ordinal, because its
 -- dataset is unkeyed physical sequential and has no key field to
 -- promote. That is the only synthetic key in the schema and the only
--- column in the schema with no copybook line; see the identity
--- BLOCKER note on TABLE 10. Still zero GENERATED clauses, zero
+-- column in the schema with no copybook line; see the key-allocation
+-- note on TABLE 10. Still zero GENERATED clauses, zero
 -- IDENTITY columns and zero sequences: the ordinal is
 -- application-assigned in read order.
 --
@@ -1513,10 +1530,10 @@ CREATE TABLE user_security (
 -- and diplomatic codes and the Freely Associated State codes, which are
 -- prefix-valid but not state-code-valid.
 --
--- NO DIGITS-ONLY CONSTRAINT ON card.card_cvv_cd or on
--- customer.cust_fico_credit_score. For the first, exhaustive search of
--- app/cbl finds ZERO validation of the field, so a constraint would be
--- an invention. The second is left unconstrained while the
+-- NO DIGITS-ONLY CONSTRAINT ON customer.cust_fico_credit_score. The
+-- card verification column that would otherwise have been named here
+-- alongside it does not exist at all, so it needs no constraint and can
+-- carry no value. This column is left unconstrained while the
 -- national-identifier column gets CHECK 5, and the asymmetry is
 -- deliberate: that column is the one whose numeric domain the source
 -- both declares AND actively validates, at
@@ -1543,16 +1560,15 @@ CREATE TABLE user_security (
 
 
 -- ==================================================================
--- DISCREPANCY REGISTER
+-- WAYS THIS SCHEMA GETS BROKEN
 --
--- Findings carried forward from authoring this migration, classified
--- Blocker, High, Medium and Low, each with its remediation. Recorded
--- here because a schema is read where it is applied; the project-level
--- decision log and validation-gate document carry the same entries.
+-- Each entry below is a mistake this file is written to prevent, with
+-- the evidence that settles it. They are recorded here because a schema
+-- is read where it is applied.
 --
--- BLOCKER - A NUMERIC CHILD COLUMN CANNOT REFERENCE AN INTEGER PARENT
--- IN POSTGRESQL. Measured directly against PostgreSQL 16.10 before
--- this file was written: declaring a foreign key from a NUMERIC(4)
+-- A NUMERIC CHILD COLUMN CANNOT REFERENCE AN INTEGER PARENT
+-- IN POSTGRESQL. Measured against PostgreSQL 16: declaring a foreign
+-- key from a NUMERIC(4)
 -- column to an INTEGER column is refused with "foreign key constraint
 -- cannot be implemented ... Key columns are of incompatible types:
 -- numeric and integer". The same refusal applies to NUMERIC(4)
@@ -1562,9 +1578,8 @@ CREATE TABLE user_security (
 -- whereas the embedded key class TransactionCategoryId declared a
 -- plain 32-bit integral component, which schema validation would have
 -- required to be INTEGER. The two requirements were mutually
--- impossible as authored.
--- Remediation applied, minimal and in scope: the key class component
--- now declares its own numeric column spelling, exactly as its sibling
+-- impossible as authored, so the key class component
+-- declares its own numeric column spelling, exactly as its sibling
 -- DisclosureGroupId already declares fixed-width character spellings
 -- for two of its components. That makes schema validation accept
 -- NUMERIC for the component and lets edge 6 be created. No column was
@@ -1574,73 +1589,72 @@ CREATE TABLE user_security (
 -- entity attribute and changed the reported type of a posted-record
 -- column.
 --
--- BLOCKER - ANY FOREIGN KEY ON daily_transaction. Remediation: omit,
--- permanently. Staged rows must load while referencing a non-existent
+-- NO FOREIGN KEY ON daily_transaction, permanently.
+-- Staged rows must load while referencing a non-existent
 -- card, which is reject 100 at app/cbl/CBTRN02C.cbl:383-385, and a
 -- non-existent account, which is reject 101 at :394-397. A constraint
 -- would make both rejects unstageable.
 --
--- BLOCKER - A CREDIT-SCORE RANGE CONSTRAINT. Remediation: omit.
+-- NO CREDIT-SCORE RANGE CONSTRAINT.
 -- app/cbl/COACTUPC.cbl:848-849 declares 300 through 850, but 21 of the
 -- 50 fixture rows fall below 300 and the rule governs a screen
 -- snapshot field, not a stored one.
 --
--- HIGH - transaction_type's key column is tran_type, not
--- tran_type_cd. Remediation: use tran_type. Evidence
+-- transaction_type's key column is tran_type, not
+-- tran_type_cd. Evidence
 -- app/cpy/CVTRA03Y.cpy:L5, corroborated by the FD-TRAN-TYPE target
 -- field at app/cbl/CBTRN03C.cbl:189. Guessing the suffixed spelling
 -- stops application start-up under schema validation.
 --
--- HIGH - fabricating a cluster definition for DALYTRAN. Remediation:
--- none exists; cite the physical sequential dataset at
--- app/jcl/POSTTRAN.jcl:L31 and state Not available for a cluster
--- definition, as table 10 does.
+-- NO CLUSTER DEFINITION EXISTS FOR DALYTRAN, and none may be
+-- fabricated. Cite the physical sequential dataset at
+-- app/jcl/POSTTRAN.jcl:L31 and say so plainly, as table 10 does.
 --
--- HIGH - TRAN-CAT-KEY is declared twice with different arity.
--- Remediation: document both and merge neither.
+-- TRAN-CAT-KEY is declared twice with different arity. Document both
+-- and merge neither.
 -- app/cpy/CVTRA01Y.cpy:L5 is 17 bytes over three fields;
 -- app/cpy/CVTRA04Y.cpy:L5 is 6 bytes over two.
 --
--- HIGH - both occurrences of the EXPIRAION misspelling must survive.
--- Remediation: preserve. app/cpy/CVACT01Y.cpy:L11 and
+-- BOTH occurrences of the EXPIRAION misspelling must survive.
+-- app/cpy/CVACT01Y.cpy:L11 and
 -- app/cpy/CVACT02Y.cpy:L9. The account field is in active use at
 -- app/cbl/COACTUPC.cbl:3836-3839 and :4131-4133 and at
 -- app/cbl/CBTRN02C.cbl:414.
 --
--- MEDIUM - zero-based AXRKP and KEYS offsets mixed with one-based
--- record-byte prose. Remediation: always state the base. AXRKP 16 is
+-- ZERO-BASED AXRKP and KEYS offsets are mixed with one-based
+-- record-byte prose, so always state the base. AXRKP 16 is
 -- byte 17, AXRKP 25 is byte 26 and AXRKP 304 is byte 305. Applied
 -- throughout this file.
 --
--- MEDIUM - the specification claims USRSEC is not catalogued.
--- Remediation: it is. Cite app/catlg/LISTCAT.txt:L3881 and :L3883
+-- USRSEC IS CATALOGUED, whatever prose elsewhere says.
+-- Cite app/catlg/LISTCAT.txt:L3881 and :L3883
 -- alongside app/jcl/DUSRSECJ.jcl:L65-L66; both report key 8 and record
 -- length 80.
 --
--- MEDIUM - Hibernate compares JDBC type codes, so a plausible-looking
--- widening can fail schema validation. Remediation: pair the Java and
+-- HIBERNATE COMPARES JDBC TYPE CODES, so a plausible-looking
+-- widening can fail schema validation. Pair the Java and
 -- SQL types consistently and reconcile with the mapped attribute,
 -- never widen a column to silence an error. The measured rules are in
 -- the TYPE-CODE CONTRACT above.
 --
--- MEDIUM - an unqualified "KEYLEN 16" citation is ambiguous.
--- Remediation: cite the line. app/catlg/LISTCAT.txt:L896 is DISCGRP;
+-- AN UNQUALIFIED "KEYLEN 16" CITATION IS AMBIGUOUS, so cite the line.
+-- app/catlg/LISTCAT.txt:L896 is DISCGRP;
 -- :L202 is CARDDATA and :L403 is CARDXREF, and all three report 16.
 --
--- MEDIUM - inferring composite key order from MOVE statements.
--- Remediation: read the copybook. app/cbl/CBACT04C.cbl:210-212
+-- NEVER INFER COMPOSITE KEY ORDER FROM MOVE STATEMENTS; read the
+-- copybook. app/cbl/CBACT04C.cbl:210-212
 -- populates the disclosure-group lookup key in group, category, type
 -- order while app/cpy/CVTRA02Y.cpy:L6-L8 declares group, type,
 -- category. The copybook governs.
 --
--- LOW - the record-layout copybooks lack the Apache banner, so the
+-- The record-layout copybooks lack the Apache banner, so the
 -- full-form exemplar for this file's header was taken from
 -- app/cbl/CBACT04C.cbl:L1-L21 rather than from a copybook. Only 12 of
 -- the 28 members of app/cpy carry a banner at all;
 -- app/cpy/CSUSR01Y.cpy is one of them, at :L1-L16, and its :L15 is the
 -- proof that the closing Apache line carries no trailing period.
 --
--- LOW - a file's total line count is a fragile citation.
--- Remediation: cite fields by line number, which is exact and stable,
--- and never by the enclosing file's length.
+-- A FILE'S TOTAL LINE COUNT IS A FRAGILE CITATION. Cite fields by
+-- line number, which is exact and stable, and never by the enclosing
+-- file's length.
 -- ==================================================================

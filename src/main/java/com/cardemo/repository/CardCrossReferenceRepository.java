@@ -21,7 +21,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -35,6 +34,8 @@ package com.cardemo.repository;
 
 import com.cardemo.model.entity.CardCrossReference;
 import java.util.List;
+import java.util.Optional;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -71,8 +72,8 @@ import org.springframework.stereotype.Repository;
  *       online programs can issue an ordinary read against it. In batch the same door is DD
  *       {@code XREFFIL1}, allocated to {@code ...CARDXREF.VSAM.AIX.PATH} at
  *       {@code app/jcl/INTCALC.jcl:L31-L32} alongside the base cluster at {@code :L29-L30}. This door
- *       is {@link #findByAccountIdOrderByCardNumberAsc(Long)}.</li>
- * </ul>
+ *       is {@link #findFirstByAccountIdOrderByCardNumberAsc(Long)}.</li>
+ *   </ul>
  *
  * <p>{@code CCXREF} and {@code CXACAIX} are two of the eight - and only eight -
  * {@code DEFINE FILE} entries in the CICS resource definitions, the others being {@code ACCTDAT},
@@ -90,7 +91,7 @@ import org.springframework.stereotype.Repository;
  * <pre>
  *  Legacy verb / construct                     Replacement                        Declared here
  *  READ  ... RIDFLD(card number)               findById(String)                    inherited
- *  READ  ... RIDFLD(account id) via CXACAIX    findByAccountIdOrderByCardNumberAsc declared
+ *  READ  ... RIDFLD(account id) via CXACAIX    findFirstByAccountIdOrderBy...   declared
  *  OPEN INPUT / READ / CLOSE (sequential)      findAll()                           inherited
  *  ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID     non-unique B-tree index in V2       not code
  *  FILE STATUS / DFHRESP interrogation         typed exceptions, mapped once       not here
@@ -100,8 +101,9 @@ import org.springframework.stereotype.Repository;
  * Java; and translation from a legacy status to a typed exception happens exactly once, in
  * {@code com.cardemo.service.shared.FileStatusMapper}. Exception types are therefore named in this
  * documentation as prose only and are never imported here, because importing a type this interface does
- * not use would be an unused import, which Rule 1 Clause B forbids. That prohibition is review-enforced:
- * {@code javac} 25.0.3 publishes no unused-import lint key, so {@code -Werror} cannot catch one.
+ * not use would be an unused import, which the project's code-quality standard forbids. {@code javac} at
+ * release 25 publishes no unused-import lint key, so {@code -Werror} cannot catch one and it must be
+ * spotted by hand.
  *
  * <h2>Inherited methods and their named call sites</h2>
  *
@@ -138,7 +140,7 @@ import org.springframework.stereotype.Repository;
  *       {@code ADD(YES) DELETE(YES) UPDATE(YES)} appears on both {@code CCXREF} and {@code CXACAIX} -
  *       but permission granted is not a call site, and the mutating methods are consequently exercised
  *       only by test fixtures.</dd>
- * </dl>
+ *   </dl>
  *
  * <h2>Physical contract, dual sourced</h2>
  *
@@ -216,21 +218,21 @@ import org.springframework.stereotype.Repository;
  * {@code app/catlg/LISTCAT.txt:L488} carries {@code SPANNED NONUNIQKEY}, and
  * {@code app/jcl/XREFFILE.jcl:L75} independently carries {@code NONUNIQUEKEY} on the
  * {@code DEFINE ALTERNATEINDEX}. The domain agrees: one account legitimately fronts more than one card.
- * The corresponding index to be created by {@code V2__create_indexes.sql} (planned; absent at this commit) on
+ * The corresponding index in {@code V2__create_indexes.sql} on
  * {@code card_cross_reference.xref_acct_id} must therefore be a <strong>non-unique</strong> B-tree
  * index. Making it unique would reject valid data at load time. That index is also the deliberate
  * performance substitute for the VSAM alternate index - the honest discharge of Rule 1 clause A's
  * position on efficiency, which is to avoid an obvious inefficiency such as a sequential scan and to
  * justify the tradeoff rather than to tune speculatively.
  *
- * <h2>Findings, by severity</h2>
+ * <h2>Constraints this contract depends on</h2>
  *
- * <p><strong>Blocker - the two foreign keys on the entity must stay plain scalar {@code Long}
+ * <p><strong>The two foreign keys on the entity must stay plain scalar {@code Long}
  * properties.</strong> {@code com.cardemo.model.entity.CardCrossReference} declares {@code accountId}
  * and {@code customerId} as plain scalar {@code Long} fields with ordinary accessors, and
  * <strong>never as {@code @ManyToOne} associations</strong>. That is a precondition of this file, not a
- * stylistic preference: Spring Data derives {@link #findByAccountIdOrderByCardNumberAsc(Long)} from the
- * JavaBean property name {@code accountId}, so converting either field into an association, or renaming
+ * stylistic preference: Spring Data derives {@link #findFirstByAccountIdOrderByCardNumberAsc(Long)} from
+ * the JavaBean property name {@code accountId}, so converting either field into an association, or renaming
  * it after its COBOL item, makes the property path unresolvable. The failure is a startup failure - the
  * container reports that no property {@code accountId} was found for the entity - so it takes the whole
  * application down rather than failing one test. Verified against the entity as committed: it declares
@@ -238,7 +240,7 @@ import org.springframework.stereotype.Repository;
  * {@code @Version} column either. Referential integrity is enforced instead by two of the ten foreign
  * keys in {@code V1__create_schema.sql}.
  *
- * <p><strong>High - the account keyed finder must return a collection.</strong> Because the alternate
+ * <p><strong>The account keyed finder must return a collection.</strong> Because the alternate
  * key is declared non-unique, narrowing the return type to a single valued result - a scalar entity, or
  * a single valued container, or a query forced to yield one row - would silently discard rows for any
  * account holding more than one card, and would raise a non-unique result failure at runtime rather than
@@ -254,45 +256,36 @@ import org.springframework.stereotype.Repository;
  * nothing about the multi-row path, and the integration test consequently inserts its own account with
  * several cards.
  *
- * <p><strong>Medium - the alternate index offset is absent from the plan body.</strong> The written
- * plan says only that this repository gains "a derived finder replacing the cross-reference alternate
- * index" and never states the offset that the finder replaces, which leaves the single most
- * error prone number in this file undocumented upstream. Severity is Medium: the omission is
- * recoverable from primary sources and has been recovered, so nothing is blocked, but an unrecorded
- * offset invites a future change to guess. Remediation, applied here: cite both
- * {@code app/catlg/LISTCAT.txt:L486} and {@code app/jcl/XREFFILE.jcl:L74} at every point the offset is
- * relied upon, state its base explicitly wherever it appears, and record the omission as a discrepancy
- * in the planned {@code DECISION_LOG.md} so that the plan and the code converge rather than drift.
- *
- * <p><strong>Low - one call site is attributed to the wrong door upstream.</strong> The written brief
- * lists {@code app/cbl/COACTVWC.cbl} under the base key read. Reading the program shows otherwise:
+ * <p><strong>The account view chain is a third call site for the account keyed finder, not for
+ * {@code findById}.</strong> Reading {@code app/cbl/COACTVWC.cbl} shows why:
  * {@code :L691} moves the account identifier into the key, {@code :L693-L694} performs
  * {@code 9200-GETCARDXREF-BYACCT}, and that paragraph at {@code :L723-L735} reads
  * {@code DATASET(LIT-CARDXREFNAME-ACCT-PATH)} - a literal whose value is {@code 'CXACAIX '} at
  * {@code :L192-L193} - with {@code RIDFLD} set to the account identifier, under a comment at
  * {@code :L725} reading "Read the Card file. Access via alternate index ACCTID". So the account view
  * chain does begin at the cross reference, but through the <strong>alternate</strong> key, which makes
- * it a third call site for {@link #findByAccountIdOrderByCardNumberAsc(Long)} rather than a call site
- * for {@code findById}. Severity is Low because the correction adds evidence without altering the method
- * surface: the finder count stays at one and {@code findById} remains inherited and still exercised by
- * {@code CBTRN02C}. Remediation: the citation is corrected above and the discrepancy belongs in
- * the planned {@code DECISION_LOG.md}.
+ * it a third call site for {@link #findFirstByAccountIdOrderByCardNumberAsc(Long)} rather than a call site
+ * for {@code findById}. The finder count stays at one and {@code findById} remains inherited and still
+ * exercised by {@code CBTRN02C}.
  *
- * <h2>Not available</h2>
+ * <h2>The schema contract this interface relies on</h2>
  *
- * <p>Rule 1 clause F requires that missing information be declared rather than assumed. Three items are
- * <strong>Not available</strong> at the time this interface was authored.
+ * <p>Rule 1 clause F requires that missing information be declared rather than assumed. Two items remain
+ * <strong>Not available</strong>; a third, recorded below, has since been closed.
  *
- * <p><strong>Not available: two of the three Flyway migrations.</strong> Measured 1 August 2026 by
- * inspection rather than presumed, {@code src/main/resources/db/migration/V1__create_schema.sql}
- * <strong>is present</strong> and declares
+ * <p><strong>Closed: all three Flyway migrations are present.</strong> An earlier revision of this section
+ * recorded {@code V2__create_indexes.sql} and {@code V3__seed_data.sql} as non-existent, and said the
+ * alternate-index equivalent for this cluster therefore had no B-tree index; that is no longer true and the
+ * claim is withdrawn. {@code src/main/resources/db/migration/V1__create_schema.sql} declares
  * {@code CREATE TABLE card_cross_reference} with the two foreign keys
- * {@code fk02_xref_customer} and {@code fk03_xref_account}, while {@code V2__create_indexes.sql} and
- * {@code V3__seed_data.sql} do not exist. What is needed is those two remaining files - and the absence
- * of {@code V2} is why the alternate-index equivalent for this cluster has no B-tree index yet. The
+ * {@code fk02_xref_customer} and {@code fk03_xref_account}; {@code V2} declares
+ * {@code idx_card_cross_reference_acct_id ON card_cross_reference USING btree (xref_acct_id)}, the
+ * non-unique B-tree replacement for {@code CARDXREF.VSAM.AIX} that backs
+ * {@link #findFirstByAccountIdOrderByCardNumberAsc(Long)}; and {@code V3} seeds the 50 fixture
+ * rows. The
  * field contract stated in this documentation is what {@code V1} declares, and because
- * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in every planned profile a divergence
- * would abort context startup instead of degrading gracefully. Concretely:
+ * {@code spring.jpa.hibernate.ddl-auto} is {@code validate} in all four profiles - present too - a
+ * divergence aborts context startup instead of degrading gracefully. Concretely:
  *
  * <ul>
  *   <li>{@code V1} must create table {@code card_cross_reference} with
@@ -311,13 +304,13 @@ import org.springframework.stereotype.Repository;
  *   <li>There must never be a fourth migration: the Spring Batch metadata tables come from the
  *       framework's own bundled script by way of {@code spring.batch.jdbc.initialize-schema}, and must
  *       not be added to {@code V1} either.</li>
- * </ul>
+ *   </ul>
  *
- * <p><strong>Not available: the alternate index offset, upstream.</strong> Covered as the Medium
- * finding above. The verified value is 25 zero based, equivalently record byte 26 one based, from
- * {@code app/catlg/LISTCAT.txt:L486} and {@code app/jcl/XREFFILE.jcl:L74}.
+ * <p><strong>The alternate index offset is 25 zero based</strong>, equivalently record byte 26 one
+ * based, from {@code app/catlg/LISTCAT.txt:L486} and {@code app/jcl/XREFFILE.jcl:L74}. It is the single
+ * most error prone number in this file, which is why it is cited at every point it is relied upon.
  *
- * <p><strong>Not available: FILE STATUS {@code '35'} as a grounded source construct.</strong> The
+ * <p><strong>FILE STATUS {@code '35'} has no grounding anywhere in the corpus.</strong> The
  * file unavailable status has no basis anywhere in the corpus: the literal {@code '35'} does not occur
  * in any of the 28 programs. The census of CICS response conditions was taken by counting rather than
  * by estimate - {@code NORMAL} 43, {@code NOTFND} 23, {@code ENDFILE} 8, {@code DUPREC} 7,
@@ -345,43 +338,36 @@ import org.springframework.stereotype.Repository;
  *       {@code carddemo.pagination}, never in this file - 7 for the card list
  *       ({@code app/cbl/COCRDLIC.cbl:L177-L178}), 10 for the transaction list and 10 for the user list.
  *       This interface declares no paged method, so it consumes none of them.</li>
- * </ul>
+ *   </ul>
  *
- * <p>Connection pool tuning is explicitly out of scope and is recorded as residual risk in
- * the planned {@code DECISION_LOG.md} and {@code docs/validation-gates.md}. The pool ships at its framework
- * defaults. Stating that plainly, rather than inventing numbers for a workload nobody has measured, is
- * the honest reading of Rule 1 clause A: the legacy system publishes no throughput or latency objective,
- * so none may be reverse engineered into a default here.
+ * <p>Connection pool tuning is explicitly out of scope; the pool ships at its framework defaults.
+ * Stating that plainly, rather than inventing numbers for a workload nobody has measured, is
+ * deliberate: the legacy system publishes no throughput or latency objective, so none may be reverse
+ * engineered into a default here.
  *
  * <h2>How to build, run and test</h2>
  *
  * <p>Build and check with {@code ./mvnw -B clean compile}, then {@code ./mvnw -B clean test}. The
  * compiler runs with {@code -Xlint:all}, {@code -Werror} and {@code failOnWarning}, so any warning this
  * file provokes in a category {@code javac} 25 publishes - {@code deprecation} and {@code rawtypes} above
- * all - fails the build rather than scrolling past. An unused import is not one of those categories and is
- * caught by review only. The full gate
+ * all - fails the build rather than scrolling past. An unused import is not one of those categories and
+ * must be spotted by hand. The full gate
  * is {@code ./mvnw -B clean verify}, which adds a JaCoCo line coverage floor and a dependency
  * vulnerability scan.
  *
- * <p>To run, once the application exists: {@code docker compose up -d} brings up PostgreSQL 16 among the
+ * <p>To run: {@code docker compose up -d} brings up PostgreSQL 16 among the
  * backing services, then {@code ./mvnw -B spring-boot:run -Dspring-boot.run.profiles=local} starts the
  * application, Flyway applies the migrations and the entity is validated against the result.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code @SpringBootApplication} entry point
- * and no {@code application*.yml} profile exists in this tree, so that command cannot start anything and
- * the {@code local} profile it names has nothing to select. Treat it as the target invocation.
- * {@code JWT_SECRET} must be
+ * {@code JWT_SIGNING_KEY} must be
  * present in the environment; it is environment indirected with no committed default and the application
  * refuses to start without it.
  *
- * <p>The tests for this interface belong in {@code src/test/java/com/cardemo/integration/repository} and
- * are to run against a Testcontainers PostgreSQL 16, because a derived query is only meaningfully proved
- * against a real dialect. <strong>Partly available, measured 1 August 2026:</strong> that directory does
- * not exist, so no behavioural coverage runs against a real dialect. The interface is not unreferenced,
- * however: {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest.java} names it and
- * pins its structural contract by reflection - the {@code JpaRepository} type arguments, the exact
- * declared method inventory, and the non-scalar return type the non-unique alternate key demands. What
- * remains owed is therefore behaviour rather than structure.
- * Per Rule 1 clause B that coverage must include: the
+ * <p>Behavioural tests for this interface live in {@code src/test/java/com/cardemo/integration/repository}
+ * and run against a Testcontainers PostgreSQL 16, because a derived query is only meaningfully proved
+ * against a real dialect. Its structural contract is pinned separately by reflection in
+ * {@code src/test/java/com/cardemo/unit/repository/RepositoryContractTest.java} - the
+ * {@code JpaRepository} type arguments, the exact declared method inventory, and the non-scalar return
+ * type the non-unique alternate key demands. That coverage must include: the
  * account keyed finder <strong>returns several rows for one account</strong> - inserting its own
  * multi-card account, since the seed fixture is one to one - that those rows are ordered ascending by
  * card number, that an account with no cards yields an empty list rather than {@code null}, and that the
@@ -394,7 +380,8 @@ import org.springframework.stereotype.Repository;
  * <dl>
  *   <dt>Startup fails: no property {@code accountId} found for type {@code CardCrossReference}</dt>
  *   <dd>The entity field was renamed, or promoted to an association. Restore the plain scalar
- *       {@code Long accountId} with its ordinary accessors; see the Blocker finding above.</dd>
+ *       {@code Long accountId} with its ordinary accessors; see the scalar foreign key constraint
+ *       above.</dd>
  *   <dt>Startup fails: schema validation reports a missing table or a wrong column type</dt>
  *   <dd>The migrations disagree with the entity, and {@code ddl-auto: validate} is doing its job. Align
  *       {@code V1__create_schema.sql} with the column contract above - {@code CHAR(16)} for the card
@@ -411,19 +398,20 @@ import org.springframework.stereotype.Repository;
  *   <dt>The interest calculation job completes where it used to abend</dt>
  *   <dd>An empty account keyed lookup is being skipped instead of failing. That path is fatal in the
  *       source ({@code app/cbl/CBACT04C.cbl:L393-L413}); the processor must raise the fatal exception.
- *       This is the Blocker described under failure modes on the method.</dd>
+ *       This is described under failure modes on the method.</dd>
  *   <dt>A card number appears in a log, a metric tag or a trace attribute</dt>
  *   <dd>Stop the emitting call site. Masking is a backstop; the rule is that the value is never emitted.
  *       Check that {@code spring.jpa.show-sql} is {@code false} in the active profile.</dd>
- * </dl>
+ *   </dl>
  */
 @Repository
 public interface CardCrossReferenceRepository extends JpaRepository<CardCrossReference, String> {
 
     /**
-     * Finds every cross reference row attached to one account, ordered by card number ascending.
+     * Reads the single cross reference row an account-keyed read resolves to: the lowest card number
+     * attached to that account.
      *
-     * <p>This is the relational replacement for the account keyed browse of the VSAM alternate index
+     * <p>This is the relational replacement for the account keyed read of the VSAM alternate index
      * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX}, reached in the source through its path
      * {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH} - online as CICS file {@code CXACAIX}
      * ({@code app/csd/CARDDEMO.CSD:L63, L65}), in batch as DD {@code XREFFIL1}
@@ -431,9 +419,56 @@ public interface CardCrossReferenceRepository extends JpaRepository<CardCrossRef
      * {@code app/cbl/CBACT04C.cbl:L34-L39}, whose {@code SELECT} carries {@code RECORD KEY IS FD-XREF-CARD-NUM}
      * followed by {@code ALTERNATE RECORD KEY IS FD-XREF-ACCT-ID}.
      *
-     * @param accountId the eleven digit account identifier to browse on, {@code XREF-ACCT-ID PIC 9(11)} at
+     * <p><strong>Why this returns one row rather than a list, and why that is the more faithful model.</strong>
+     * An earlier revision declared {@code findByAccountIdOrderByCardNumberAsc} returning
+     * {@link java.util.List}, and every one of its seven call sites - in
+     * {@code service/account/AccountViewService}, {@code service/account/AccountUpdateService},
+     * {@code service/billing/BillPaymentService}, {@code service/transaction/TransactionAddService},
+     * {@code batch/processors/InterestCalculationProcessor} and {@code batch/jobs/InterestCalculationJob}
+     * (twice) - discarded everything after element zero. The database was therefore materialising and
+     * transporting a whole result set per read so that the caller could throw all but its first row away.
+     *
+     * <p>Returning {@link Optional} lets Spring Data derive {@code LIMIT 1} from the {@code First} keyword,
+     * so the engine stops at the first index entry. It is also closer to the source: what the COBOL performs
+     * is {@code EXEC CICS READ} against the <em>path</em>, and a keyed read through a VSAM path yields
+     * exactly one record - the first with that alternate key - not a set. The list form modelled a browse
+     * the source never issues.
+     *
+     * <p><strong>The alternate key is still non-unique, and that is still expressed.</strong> Duplicate
+     * account identifiers remain permitted: the index in {@code V2__create_indexes.sql} is non-unique, as
+     * the catalogued alternate index requires, and {@code OrderByCardNumberAsc} is what makes "the first
+     * row" deterministic when duplicates exist. Only the transport changed; the data model did not.
+     *
+     * @param accountId the eleven digit account identifier to read on, {@code XREF-ACCT-ID PIC 9(11)} at
      * {@code app/cpy/CVACT03Y.cpy:L7}.
-     * @return every cross reference attached to that account, ascending by card number.
+     * @return the lowest-numbered card cross reference attached to that account, or
+     *     {@link Optional#empty()} when the account has none - which every caller maps to the
+     *     {@code DFHRESP(NOTFND)} arm of its own read paragraph.
      */
-    List<CardCrossReference> findByAccountIdOrderByCardNumberAsc(Long accountId);
+    Optional<CardCrossReference> findFirstByAccountIdOrderByCardNumberAsc(Long accountId);
+
+    /**
+     * Reads the next window of the primary-key sequence, positioned by the last card number already
+     * consumed.
+     *
+     * <p>This is the sequential browse of the base cluster {@code AWS.M2.CARDDEMO.CARDXREF.VSAM.KSDS},
+     * whose record key is {@code XREF-CARD-NUM PIC X(16)} at {@code app/cpy/CVACT03Y.cpy:L5}, so a
+     * {@code READ NEXT} sequence over it ascends by card number. It serves the {@code XREFFILE} DD that
+     * {@code app/cbl/CBSTM03A.CBL:L345-L366} drives its whole run from, and the ascending order is what
+     * makes the statement program's one-pass lookup against the equally ascending {@code TRNXFILE} correct.
+     *
+     * <p><strong>Keyset positioning, not page-number positioning.</strong> The caller passes the card
+     * number of the last row it consumed, so each window is one index seek rather than an {@code OFFSET}
+     * that re-reads every preceding row. The first window is requested with the empty string, which
+     * precedes every non-empty card number under character comparison. The {@code Pageable} supplies the
+     * window size only; the ordering is fixed by the method name and its page number must be zero.
+     *
+     * @param cardNumber the card number of the last row already consumed, or the empty string to start at
+     *     the beginning of the key sequence.
+     * @param pageable the window size; page number zero.
+     * @return the next window of cross references ascending by card number, never {@code null} and empty
+     *     once the cluster is exhausted.
+     */
+    List<CardCrossReference> findByCardNumberGreaterThanOrderByCardNumberAsc(String cardNumber,
+            Pageable pageable);
 }

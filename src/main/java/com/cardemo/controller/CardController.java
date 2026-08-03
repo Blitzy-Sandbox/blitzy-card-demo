@@ -33,6 +33,8 @@ import java.util.List;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -42,6 +44,7 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -53,9 +56,14 @@ import com.cardemo.exception.FileAccessException;
 import com.cardemo.exception.FileUnavailableException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.config.WebConfig;
 import com.cardemo.model.dto.CardDto;
+import com.cardemo.model.dto.CardListResponse;
+import com.cardemo.model.dto.CardResponse;
 import com.cardemo.model.dto.CardUpdateRequest;
 import com.cardemo.model.dto.PageResponse;
+import com.cardemo.observability.CorrelationIdFilter;
+import com.cardemo.security.SnapshotTokenService;
 import com.cardemo.service.card.CardDetailService;
 import com.cardemo.service.card.CardListService;
 import com.cardemo.service.card.CardUpdateService;
@@ -79,7 +87,7 @@ import com.cardemo.service.card.CardUpdateService;
  *       {@code DESCRIPTION(CREDIT CARD UPDATE TRANSACTION)} at {@code :L368}, fronting
  *       {@code PROGRAM(COCRDUPC)} at {@code :L369} - {@code app/cbl/COCRDUPC.cbl}, 1,560 lines and 48
  *       paragraph labels, painting mapset {@code COCRDUP}. Reached by {@link #updateCard}.</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>{@code CCDL} fronts {@code COCRDSLC}, the card <em>select</em> program, and nothing else.</strong>
  * The name is one letter away from {@code COCRDSEC}, and the two are trivially confused, so the
@@ -116,7 +124,7 @@ import com.cardemo.service.card.CardUpdateService;
  * {@code CardListService} rather than here - that service rejects at startup any value disagreeing with
  * the physical row count of mapset {@code COCRDLI}. No page-size literal appears anywhere in this file
  * and no client may supply one; the value in force is reported back on every page through
- * {@code PageResponse.getPageSize()}. Authentication and authorisation are configured centrally in
+ * {@code CardListResponse.pageSize()}. Authentication and authorisation are configured centrally in
  * {@code SecurityConfig}, request-parameter conversion in {@code WebConfig}, JSON in the Jackson
  * configuration under {@code src/main/resources}, and log masking in {@code logback-spring.xml}; this
  * class overrides none of them.</p>
@@ -134,10 +142,12 @@ import com.cardemo.service.card.CardUpdateService;
  *   <tr><th>Condition</th><th>Type</th><th>Status</th></tr>
  *   <tr><td>A filter or field was rejected</td><td>{@code ValidationException}</td><td>400</td></tr>
  *   <tr><td>No such card or account</td><td>{@code RecordNotFoundException}</td><td>404</td></tr>
- *   <tr><td>Update lost a race, or was unconfirmed</td><td>{@code ConcurrentUpdateException}</td>
- *       <td>409, or 428 when unconfirmed</td></tr>
+ *   <tr><td>Update lost a race</td><td>{@code ConcurrentUpdateException}</td><td>409</td></tr>
+ *   <tr><td>As-displayed snapshot absent</td><td>{@code ConcurrentUpdateException}</td><td>428</td></tr>
+ *   <tr><td>As-displayed snapshot unverifiable or stale</td><td>{@code ConcurrentUpdateException}</td>
+ *       <td>412</td></tr>
  *   <tr><td>File not open, status {@code '35'}</td><td>{@code FileUnavailableException}</td><td>503</td></tr>
- *   <tr><td>I/O failure, the {@code '9x'} family</td><td>{@code FileAccessException}</td><td>500</td></tr>
+ *   <tr><td>I/O failure, the {@code '9x'} family</td><td>{@code FileAccessException}</td><td>502</td></tr>
  *   <tr><td>Unexpected status, abend 999</td><td>{@code FatalProcessingException}</td><td>500</td></tr>
  * </table>
  *
@@ -145,21 +155,22 @@ import com.cardemo.service.card.CardUpdateService;
  * filter that supplies it also supplies {@code traceId} and {@code spanId}, and this class neither adds
  * to nor removes from that context. A 400 carries the rejected field name and the two-state failure kind,
  * which is what distinguishes a blank filter from an invalid one; a 409 carries the concurrency outcome;
- * a 500 from an I/O failure carries the four-character expanded file status. No response and no log line
+ * a 502 from an I/O failure carries the four-character expanded file status. No response and no log line
  * ever carries a card number, a cardholder name or any other protected field - the diagnostics below name
- * fields, operations and files only, never their values.</p>
+ * fields, operations and files only, never their values, and every card number a response does carry is
+ * tail-masked before it is written.</p>
  *
  * <p>Two boundary conditions are worth stating because they are answers rather than faults. A page beyond
  * the last one, and an empty result set, both return {@code 200} with an empty row list and
  * {@code nextPageAvailable} false; the source behaves the same way, reporting "no more pages" as a screen
  * message rather than as an error. And a total element count and a total page count are <b>Not
- * available</b> by design: {@code PageResponse} declares neither, because the source never computes
+ * available</b> by design: {@code CardListResponse} declares neither, because the source never computes
  * either - its browse learns only whether one further record exists. What would be needed to supply them
  * is a counting query the legacy program never issues, which would be new behaviour rather than parity.</p>
  *
  * <h2>Findings and deviations, with severities</h2>
  *
- * <p>Every finding this class carries is classified and tracked; each is also recorded in
+ * <p>Every finding this class carries is classified and tracked; each is also owed an entry in the planned
  * {@code DECISION_LOG.md} under the entry named at the end of its item. Nothing in this list is a silent
  * substitution, and nothing in it is a defect left unstated.</p>
  *
@@ -204,7 +215,7 @@ import com.cardemo.service.card.CardUpdateService;
  *       diverge from the commarea the source maintains - but it changes no row, no attribute and no
  *       message on this transaction, and it appears in no response. Decision log entry:
  *       <em>user type carried not tested</em>.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>State and thread safety</h2>
  *
@@ -297,6 +308,18 @@ public class CardController {
     private static final int LOWEST_SCREEN_NUMBER = 0;
 
     /**
+     * The longest page token accepted before the value is parsed at all.
+     *
+     * <p>Two digits rather than one on purpose: the single-digit domain is enforced by
+     * {@code requirePageWithinScreenNumberDomain}, which is where that rule is stated and cited, so
+     * refusing a two-digit token here as well would state the same rule twice and leave the range check
+     * unreachable for the values it exists to describe. What this bound does is keep the parse from ever
+     * seeing an arbitrarily long digit run, so a rejected value is rejected as out of range rather than as
+     * an overflow.</p>
+     */
+    private static final int MAXIMUM_PAGE_TOKEN_DIGITS = 2;
+
+    /**
      * The largest value {@code WS-CA-SCREEN-NUM} can hold, {@code app/cbl/COCRDLIC.cbl:L237}.
      *
      * <p>A single unsigned digit, so nine is its ceiling. The source's own increment wraps at that ceiling
@@ -307,6 +330,26 @@ public class CardController {
 
     /** The name reported for a page cursor outside the domain the source declares for it. */
     private static final String PAGE_FIELD = "page";
+
+    /** The request-parameter and field name of the page cursor a client echoes back. */
+    private static final String NEXT_PAGE_FIELD = "nextPageAvailable";
+
+    /** The two tokens the boolean page-state parameter accepts, and the only two. */
+    private static final String TRUE_TOKEN = "true";
+
+    /** The second of them. */
+    private static final String FALSE_TOKEN = "false";
+
+    /**
+     * The browse this operation's page cursors are sealed for.
+     *
+     * <p>Sealing is bound to a browse, so a cursor issued by the card list cannot be presented to the
+     * transaction list or to any other operation.</p>
+     */
+    private static final String CARD_LIST_CURSOR_KIND = "card-list-cursor";
+
+    /** The field name reported when a sealed page cursor cannot be opened. */
+    private static final String CURSOR_FIELD = "cursor";
 
     /** Problem-detail title for a rejected card request. */
     private static final String VALIDATION_PROBLEM_TITLE = "Card request rejected";
@@ -335,6 +378,17 @@ public class CardController {
     private static final String UNAVAILABLE_PROBLEM_DETAIL =
             "The card file is not currently available. Retry once the datastore is reachable.";
 
+    /** Problem-detail title for the {@code FILE STATUS '9x'} family, answered with {@code 502}. */
+    private static final String IO_PROBLEM_TITLE = "Card data store input-output failure";
+
+    /**
+     * The detail returned for an input-output failure. It attributes the fault to the store rather than to
+     * the request, which is what {@code 502} states, and it names no cause: the cause stays attached to the
+     * exception and is logged.
+     */
+    private static final String IO_PROBLEM_DETAIL =
+            "The card data store reported an input-output failure. The request was not completed.";
+
     /** Problem-detail member carrying the rejected field name. */
     private static final String FIELD_PROPERTY = "field";
 
@@ -344,20 +398,87 @@ public class CardController {
     /** Problem-detail member carrying the concurrency outcome, which keeps the five outcomes distinct. */
     private static final String OUTCOME_PROPERTY = "outcome";
 
-    /** Problem-detail member carrying the four-character expanded file status. */
-    private static final String IO_STATUS_PROPERTY = "ioStatus";
+    /**
+     * The problem-detail property carrying the stable, machine-readable code for the failure class.
+     * <p>
+     * Every error body this controller returns carries exactly one of the {@code ERROR_CODE_*} constants
+     * below. A client branches on that code, never on the wording of {@code detail} and never on a property
+     * naming an internal resource: the code is the supported contract, so the internal detail that used to
+     * travel beside it could be withdrawn without breaking any caller.
+     */
+    private static final String ERROR_CODE_PROPERTY = "errorCode";
 
-    /** Problem-detail member carrying the logical file or DD name whose I/O failed. */
-    private static final String FILE_PROPERTY = "file";
+    /**
+     * The problem-detail property carrying the correlation identifier of the failing request.
+     * <p>
+     * This is the hinge of the {@code CWE-209} fix. The relation, constraint, logical file, operation and
+     * file-status values that used to be returned to the client are now written only to the log, and this
+     * identifier is what lets a caller reporting a failure be joined to those log records: it is the same
+     * value {@code CorrelationIdFilter} placed in the diagnostic context and echoed on the
+     * {@code X-Correlation-Id} response header, so support can retrieve the internal detail while an
+     * attacker holding the response body cannot.
+     */
+    private static final String CORRELATION_ID_PROPERTY = "correlationId";
 
-    /** Problem-detail member carrying the attempted file operation. */
-    private static final String OPERATION_PROPERTY = "operation";
+    /**
+     * The value substituted when no correlation identifier is in the diagnostic context.
+     * <p>
+     * {@code CorrelationIdFilter} runs at {@code HIGHEST_PRECEDENCE} and every request that reaches a
+     * handler here has passed through it, so this is unreachable in the server. It exists because a
+     * standalone unit test may invoke a handler directly, and because a null property would serialise as a
+     * {@code null} member and make the body's shape depend on how it was produced.
+     */
+    private static final String CORRELATION_ID_UNAVAILABLE = "unavailable";
 
-    /** Problem-detail member carrying the legacy abend code, {@code 999}. */
-    private static final String ABEND_CODE_PROPERTY = "abendCode";
+    /**
+     * Stable error code meaning that the request was refused by a field-level validation rule.
+     */
+    private static final String ERROR_CODE_VALIDATION = "CARDDEMO-VALIDATION-REJECTED";
 
-    /** Problem-detail member carrying the legacy batch return code, {@code 12}. */
-    private static final String RETURN_CODE_PROPERTY = "returnCode";
+    /**
+     * Stable error code meaning that a record the operation needed does not exist.
+     */
+    private static final String ERROR_CODE_NOT_FOUND = "CARDDEMO-RECORD-NOT-FOUND";
+
+    /**
+     * The fixed detail returned when a card or account record does not exist.
+     *
+     * <p><strong>Fixed rather than relayed, on a type rule rather than a path argument.</strong> This
+     * exception type is one of the five {@code FileStatusMapper} composes, and the message it composes names
+     * the operation, the logical file and the {@code COBOL FILE STATUS}. It happens to be true today that no
+     * collaborator on this resource group reaches that mapper - but that is a whole-program property, not one
+     * a reader of this file can check, and one line added to a service three files away would reinstate the
+     * disclosure with no test failing. The rule is therefore applied by type: a detail is never taken from an
+     * exception the mapper can construct. Only {@code ValidationException} and
+     * {@code ConcurrentUpdateException}, which appear nowhere in that mapper, keep their relayed literal.
+     */
+    private static final String NOT_FOUND_PROBLEM_DETAIL =
+            "No record was found for the identifier supplied.";
+
+    /**
+     * Stable error code meaning that the update was not applied because the stored state moved or was not confirmed.
+     */
+    private static final String ERROR_CODE_UPDATE_CONFLICT = "CARDDEMO-UPDATE-CONFLICT";
+
+    /**
+     * Stable error code meaning that a required data store or queue could not be reached; the request is retryable.
+     */
+    private static final String ERROR_CODE_UNAVAILABLE = "CARDDEMO-RESOURCE-UNAVAILABLE";
+
+    /**
+     * Stable error code meaning that the store behind this service reported an input-output failure.
+     */
+    private static final String ERROR_CODE_IO_FAILURE = "CARDDEMO-IO-FAILURE";
+
+    /**
+     * Stable error code meaning that processing terminated abnormally.
+     */
+    private static final String ERROR_CODE_ABEND = "CARDDEMO-PROCESSING-ABEND";
+
+    /**
+     * Stable error code meaning that an unexpected typed failure occurred.
+     */
+    private static final String ERROR_CODE_INTERNAL = "CARDDEMO-INTERNAL-FAILURE";
 
     /** The abend code as text, for the abend that carries none of its own. */
     private static final String ABEND_CODE = String.valueOf(FatalProcessingException.BATCH_ABEND_CODE);
@@ -397,6 +518,17 @@ public class CardController {
     private final CardUpdateService cardUpdateService;
 
     /**
+     * Seals and opens the two page cursors.
+     *
+     * <p>Needed because on this resource the browse's saved keys <em>are</em> card numbers:
+     * {@code app/cbl/COCRDLIC.cbl:L1197-L1205} records the first and last card number of the displayed page
+     * so the next turn can reposition from them. Emitting them would publish two primary account numbers per
+     * page in the one place a client is most likely to log, cache or bookmark, so the sealed forms travel
+     * instead and the browse behaves identically.</p>
+     */
+    private final SnapshotTokenService snapshotTokenService;
+
+    /**
      * Creates the controller over the three card services.
      *
      * <p>Constructor injection is the only injection form used: there is no field injection, no setter
@@ -411,13 +543,23 @@ public class CardController {
      * select program, not {@code COCRDSEC}; must not be null.
      * @param cardUpdateService the card-update service replacing {@code app/cbl/COCRDUPC.cbl}; must not be
      * null.
-     * @throws IllegalArgumentException if any service is null, which is a bean-wiring defect rather than a
-     * request-time condition
+     * @param snapshotTokenService the sealer of page cursors, whose plain values are card numbers on this
+     * resource; must not be null.
+     * @throws IllegalArgumentException if any collaborator is null, which is a bean-wiring defect rather
+     * than a request-time condition
      */
     public CardController(final CardListService cardListService,
             final CardDetailService cardDetailService,
-            final CardUpdateService cardUpdateService) {
+            final CardUpdateService cardUpdateService,
+            final SnapshotTokenService snapshotTokenService) {
 
+        if (snapshotTokenService == null) {
+            throw new IllegalArgumentException("snapshotTokenService must not be null; it is the"
+                    + " replacement for the CCUP-OLD-DETAILS snapshot comparison of app/cbl/COCRDUPC.cbl"
+                    + " and the WS-CA-SCREEN-NUM browse position of app/cbl/COCRDLIC.cbl, and it is what"
+                    + " keeps a card number out of a page cursor and an as-displayed snapshot out of a"
+                    + " caller's control");
+        }
         if (cardListService == null) {
             throw new IllegalArgumentException(
                     "cardListService must not be null; it is the replacement for app/cbl/COCRDLIC.cbl");
@@ -434,6 +576,7 @@ public class CardController {
         this.cardListService = cardListService;
         this.cardDetailService = cardDetailService;
         this.cardUpdateService = cardUpdateService;
+        this.snapshotTokenService = snapshotTokenService;
     }
 
     /**
@@ -494,7 +637,7 @@ public class CardController {
      *       {@code BLANK}, so the two remain separable on the wire and are never merged.</li>
      * </ul>
      *
-     * <p><strong>Outputs.</strong> {@code 200} with a {@code PageResponse} of {@code CardDto.CardListRow}
+     * <p><strong>Outputs.</strong> {@code 200} with a {@code CardListResponse} of masked card rows
      * carrying the rows in browse order - ascending card number, the key order of the {@code CARDDAT}
      * cluster, so the ordering is deterministic and repeatable for a given cursor. The page also carries
      * the page number, the page size in force, whether a further record exists, and the first and last
@@ -502,9 +645,21 @@ public class CardController {
      * incompatible sentinels for it - {@code app/cbl/COCRDLIC.cbl:L243} tests {@code LOW-VALUES} while
      * {@code app/cbl/COTRN00C.cbl} uses {@code 'N'} - and neither byte is transported, because a JSON
      * contract cannot carry both and need carry neither. A total element count and a total page count are
-     * <b>Not available</b>: {@code PageResponse} declares neither member, because the browse never counts
-     * - it looks ahead exactly one record. Supplying them would need a counting query the source never
-     * issues.</p>
+     * <b>Not available</b>: {@code CardListResponse} declares neither member, because the browse never
+     * counts - it looks ahead exactly one record. Supplying them would need a counting query the source
+     * never issues.</p>
+     *
+     * <p><strong>Two things the response deliberately does not carry, and one it now does.</strong> No row
+     * carries a card number in the clear: {@code CardListResponse} tail-masks every one of them, because a
+     * page of this browse is a page of primary account numbers and a list response is the single place a
+     * client is most likely to log, cache or bookmark. Neither page cursor carries one either -
+     * {@code WS-CA-FIRST-CARD-NUM} at {@code app/cbl/COCRDLIC.cbl:L234} and
+     * {@code WS-CA-LAST-CARD-NUM} at {@code :L231} <em>are</em> card numbers, so they travel sealed by
+     * {@code SnapshotTokenService} and are opened again on the next turn, which leaves the browse behaving
+     * identically while making the wire value meaningless to anyone but this server. What the response does
+     * now carry is the source's own screen text: the information and error messages
+     * {@code 1000-SEND-MAP} painted, plus whether row selection was open, none of which HTTP can express
+     * and all of which the source reported on every turn.</p>
      *
      * <p><strong>Side effects.</strong> None. The operation reads and returns; it writes no row, publishes
      * no message and mutates no field of this class.</p>
@@ -519,8 +674,12 @@ public class CardController {
      *
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} when a filter is present and not
      * numeric, or when the page cursor is outside the single digit the source declares; the response names
-     * the field and the failure kind. {@code 500} when the browse itself fails, as
-     * {@code FileAccessException} carrying the expanded file status, or as an abend carrying code
+     * the field and the failure kind - and the three control tokens are matched exactly, so
+     * {@code action} accepts only the three declared spellings, {@code page} only ASCII digits and
+     * {@code nextPageAvailable} only {@code true} and {@code false}, with no alias, no trim and no case
+     * fold. {@code 412} when a page cursor was presented that this server did not seal, or whose seal has
+     * expired. {@code 502} when the browse itself fails, as {@code FileAccessException} carrying the
+     * expanded file status, and {@code 500} for an abend carrying code
      * {@code 999} and return code {@code 12} with the original throwable preserved as the cause. A page
      * past the end and an empty result are not failures: both return {@code 200} with no rows and
      * {@code nextPageAvailable} false, which is the source reporting the same condition as a screen
@@ -531,17 +690,19 @@ public class CardController {
      * verbatim. Absent, empty and populated are three distinct states and none is converted into another.
      * @param cardFilter the card filter as typed, or null when the parameter was absent; relayed verbatim
      * on the same terms. Protected data: never logged and never echoed into a diagnostic.
-     * @param action the navigation intent; defaults to {@link CardListAction#SUBMIT}. An unrecognised
-     * token is refused by request-parameter conversion before this method is entered.
-     * @param page the page number being echoed back, the transcription of {@code WS-CA-SCREEN-NUM PIC 9(1)}
-     * at {@code app/cbl/COCRDLIC.cbl:L237}; zero on a first request, which is what a first entry sends.
-     * @param firstKey the saved first key of the page displayed, used to page backward and to redisplay;
-     * null on a first request. Protected data, never logged.
-     * @param lastKey the saved last key of the page displayed, used to page forward; null on a first
-     * request. Protected data, never logged.
-     * @param nextPageAvailable whether the previous response reported a further record; false on a first
-     * request. The page-forward action needs it, exactly as {@code :L945} needs
-     * {@code CA-NEXT-PAGE-EXISTS}.
+     * @param actionToken the navigation intent as typed, matched exactly against the three declared
+     * tokens; null defaults to {@link CardListAction#SUBMIT}, which is what a bare request means.
+     * @param pageToken the page number being echoed back, the transcription of
+     * {@code WS-CA-SCREEN-NUM PIC 9(1)} at {@code app/cbl/COCRDLIC.cbl:L237}; null resolves to zero, which
+     * is what a first entry sends. Accepted only as ASCII digits.
+     * @param firstKey the sealed first cursor of the page displayed, used to page backward and to
+     * redisplay; null on a first request. Its plain value is a card number, which is why it arrives sealed
+     * and is never logged.
+     * @param lastKey the sealed last cursor of the page displayed, used to page forward; null on a first
+     * request, and sealed on the same terms.
+     * @param nextPageToken whether the previous response reported a further record; null resolves to false,
+     * which is what a first request means, and only {@code true} and {@code false} are accepted. The
+     * page-forward action needs it, exactly as {@code :L945} needs {@code CA-NEXT-PAGE-EXISTS}.
      * @param authentication the authenticated principal Spring Security resolved for this request, from
      * which alone the administrator flag is derived; may be null, and then resolves to non-administrator.
      * @return {@code 200 OK} with one page of card rows and the cursor for the adjacent page; never null
@@ -551,15 +712,25 @@ public class CardController {
      * failure
      */
     @GetMapping
-    public ResponseEntity<PageResponse<CardDto.CardListRow>> listCards(
+    public ResponseEntity<CardListResponse> listCards(
             @RequestParam(name = "accountFilter", required = false) final String accountFilter,
             @RequestParam(name = "cardFilter", required = false) final String cardFilter,
-            @RequestParam(name = "action", defaultValue = "SUBMIT") final CardListAction action,
-            @RequestParam(name = "page", defaultValue = "0") final int page,
+            @RequestParam(name = WebConfig.NAVIGATION_ACTION_PARAMETER, required = false)
+            final String actionToken,
+            @RequestParam(name = PAGE_FIELD, required = false) final String pageToken,
             @RequestParam(name = "firstKey", required = false) final String firstKey,
             @RequestParam(name = "lastKey", required = false) final String lastKey,
-            @RequestParam(name = "nextPageAvailable", defaultValue = "false") final boolean nextPageAvailable,
+            @RequestParam(name = NEXT_PAGE_FIELD, required = false) final String nextPageToken,
             final Authentication authentication) {
+
+        // Every control token is matched here, exactly, rather than converted. See resolveAction,
+        // requirePageToken and requireBooleanToken for why: the framework's default converters normalise -
+        // they trim an enum token, accept a signed integer and treat six spellings as a boolean - and a
+        // normalising converter on a control token silently accepts instructions the operation never
+        // declared.
+        final CardListAction action = resolveAction(actionToken);
+        final int page = requirePageToken(pageToken);
+        final boolean nextPageAvailable = requireBooleanToken(nextPageToken);
 
         requirePageWithinScreenNumberDomain(page);
 
@@ -583,20 +754,20 @@ public class CardController {
                 page,
                 LAST_PAGE_NOT_SHOWN,
                 nextPageAvailable,
-                firstKey,
-                lastKey,
+                this.snapshotTokenService.openCursor(CARD_LIST_CURSOR_KIND, firstKey),
+                this.snapshotTokenService.openCursor(CARD_LIST_CURSOR_KIND, lastKey),
                 List.of(),
                 null,
                 null);
 
-        final PageResponse<CardDto.CardListRow> listing = retrieveCardList(request);
+        final CardListResponse listing = retrieveCardList(request);
 
         // Presence, never content: a filter value is an account identifier or a card number, and neither
         // may reach a log line. The keys and the rows are omitted for the same reason.
         LOG.debug("Served transaction {} program {} action {}: page={}, size={}, rows={}, nextPage={}, "
                 + "accountFilterPresent={}, cardFilterPresent={}",
-                CARD_LIST_TRANSACTION_ID, CARD_LIST_PROGRAM, action, listing.getPageNumber(),
-                listing.getPageSize(), listing.getRows().size(), listing.isNextPageAvailable(),
+                CARD_LIST_TRANSACTION_ID, CARD_LIST_PROGRAM, action, listing.pageNumber(),
+                listing.pageSize(), listing.rows().size(), listing.nextPageAvailable(),
                 accountFilter != null, cardFilter != null);
 
         return ResponseEntity.ok(listing);
@@ -628,7 +799,7 @@ public class CardController {
      * index, and <em>nothing performs them</em>: {@code 9000-READ-DATA.} at {@code :L726} performs only the
      * {@code 9100} range, and the label {@code 9150} occurs nowhere else in the program. The pair is
      * genuinely unreachable and is retained for parity in the <em>service</em> layer, where the paragraph
-     * map must stay complete and mechanically checkable; it is cited in {@code DECISION_LOG.md} and
+     * map must stay complete and mechanically checkable; it is owed an entry in the planned {@code DECISION_LOG.md} and
      * {@code TRACEABILITY_MATRIX.md} as tracked rather than abandoned code, which is what keeps it
      * compatible with the no-dead-code standard. Two consequences bind here. It is documented at this
      * operation but <em>not reproduced</em> at it, because a controller has no paragraph map. And
@@ -649,12 +820,24 @@ public class CardController {
      * Detail carries fifteen input fields and update seventeen, and those counts are the contract.</p>
      *
      * <p><strong>Outputs.</strong> {@code 200} with the populated card projection: the header fields, the
-     * account identifier, the card number, the cardholder name, the active status and the expiry month and
-     * year, each at the width its symbolic map declares. Expiry components are relayed as text and never
-     * as a date type, because the map declares them as characters and parsing them would invent a
-     * validation the map does not express.</p>
+     * account identifier, the tail-masked card number, the cardholder name, the active status and the
+     * expiry month and year, each at the width its symbolic map declares. Expiry components are relayed as
+     * text and never as a date type, because the map declares them as characters and parsing them would
+     * invent a validation the map does not express.</p>
      *
-     * <p><strong>Side effects.</strong> None; a single read.</p>
+     * <p><strong>The response is also the precondition for the update.</strong> It carries a sealed
+     * as-displayed snapshot, published both as a body member and as the {@code ETag} header, and the
+     * matching {@code PUT} requires that value in {@code If-Match}. The snapshot is what
+     * {@code 9300-CHECK-CHANGE-IN-REC} at {@code app/cbl/COCRDUPC.cbl} compares against, so it must be the
+     * values <em>this read displayed</em> rather than values a caller composed - a caller-composed snapshot
+     * makes the comparison tautologically true and destroys the guard. It is produced by the update
+     * service, sealed with authenticated encryption, bound to this card and to a lifetime, and opaque:
+     * a caller cannot read it, cannot alter it and cannot make one. That is also how the card verification
+     * value of {@code app/cbl/COCRDUPC.cbl:L294} takes part in the comparison without ever being returned
+     * in a readable form.</p>
+     *
+     * <p><strong>Side effects.</strong> None; a single read, plus the sealing of the snapshot it returns.
+     * Nothing is written and no state is retained: the snapshot lives in the token, not on the server.</p>
      *
      * <p><strong>Configuration and defaults.</strong> None. This operation reads no property; it takes no
      * default beyond the absence of both parameters, which is itself a refusal rather than a default.</p>
@@ -662,9 +845,9 @@ public class CardController {
      * <p><strong>Failure modes and troubleshooting.</strong> {@code 400} when either filter is absent,
      * blank or not the required number of digits - the response names the field and the failure kind, so a
      * fifteen or seventeen digit card number is distinguishable from an omitted one. {@code 404} when no
-     * card carries that number, the translation of the not-found arm at {@code :L756}. {@code 500} when
-     * the read fails, carrying the expanded file status, or as an abend carrying code {@code 999} and
-     * return code {@code 12}. If a request that looks correct returns {@code 400}, check the account
+     * card carries that number, the translation of the not-found arm at {@code :L756}. {@code 502} when
+     * the read fails, carrying the expanded file status, and {@code 500} for an abend carrying code
+     * {@code 999} and return code {@code 12}. If a request that looks correct returns {@code 400}, check the account
      * filter first: the source validates it before the card filter and stops at the first refusal, so the
      * reported field is the earlier one.</p>
      *
@@ -672,7 +855,8 @@ public class CardController {
      * verbatim, with absent, blank and populated kept distinct.
      * @param cardFilter the card filter as typed, or null when the parameter was absent; relayed verbatim
      * on the same terms. Protected data: never logged and never echoed into a diagnostic.
-     * @return {@code 200 OK} with the card detail projection; never null
+     * @return {@code 200 OK} with the masked card detail projection and the sealed as-displayed snapshot,
+     * the latter also published as the {@code ETag}; never null
      * @throws ValidationException if either filter is absent, blank or not exactly the required number of
      * digits
      * @throws RecordNotFoundException if no card carries that number
@@ -680,16 +864,26 @@ public class CardController {
      * failure
      */
     @GetMapping(DETAIL_PATH)
-    public ResponseEntity<CardDto> getCardDetail(
+    public ResponseEntity<CardResponse> getCardDetail(
             @RequestParam(name = "accountFilter", required = false) final String accountFilter,
             @RequestParam(name = "cardFilter", required = false) final String cardFilter) {
 
         final CardDto detail = retrieveCardDetail(accountFilter, cardFilter);
 
-        LOG.debug("Served transaction {} program {}: detail returned for one card",
+        // The as-displayed snapshot the matching update requires. It is produced by the update service,
+        // because that service owns CCUP-OLD-DETAILS and because the snapshot includes the card
+        // verification value of app/cbl/COCRDUPC.cbl:L294 - a value that must never reach this class in a
+        // readable form, let alone a response. What comes back is one opaque string.
+        final String snapshotToken =
+                this.cardUpdateService.issueUpdateSnapshot(accountFilter, cardFilter);
+        final CardResponse response = CardResponse.readOf(detail, snapshotToken);
+
+        LOG.debug("Served transaction {} program {}: detail returned for one card with a sealed snapshot",
                 CARD_DETAIL_TRANSACTION_ID, CARD_DETAIL_PROGRAM);
 
-        return ResponseEntity.ok(detail);
+        // The token is additionally published as an entity tag, so a client may use the standard
+        // conditional-request idiom rather than reading it out of the body.
+        return ResponseEntity.ok().eTag(quotedETag(snapshotToken)).body(response);
     }
 
     /**
@@ -707,15 +901,26 @@ public class CardController {
      *
      * <p><strong>Inputs.</strong> A {@code CardUpdateRequest} body carrying the seventeen input fields of
      * {@code app/cpy-bms/COCRDUP.CPY} - including {@code EXPDAYI PIC X(2)}, which the detail map does not
-     * have - plus the two snapshot groups {@code CCUP-OLD-DETAILS} and {@code CCUP-NEW-DETAILS} of
-     * {@code app/cbl/COCRDUPC.cbl:L291-L313}. The old group is mandatory in substance: a stateless request
-     * cannot keep the as-displayed values on the server between turns, so the client must return them, and
-     * deriving them from the live row instead would make the comparison tautologically true and destroy
-     * the guard. {@code @Valid} is applied so that the width constraints the record declares, and those of
-     * its nested groups, are enforced before the service is entered.</p>
+     * have - and the as-edited group {@code CCUP-NEW-DETAILS} of
+     * {@code app/cbl/COCRDUPC.cbl:L303-L313}. {@code @Valid} is applied so that the width constraints the
+     * record declares, and those of its nested groups, are enforced before the service is entered.</p>
      *
-     * <p><strong>Outputs.</strong> {@code 200} with the refreshed card detail projection, so a client sees
-     * what was actually stored rather than what it sent.</p>
+     * <p><strong>The as-displayed snapshot is a header, not a body member.</strong> The other half of
+     * {@code app/cbl/COCRDUPC.cbl:L291-L301}, {@code CCUP-OLD-DETAILS}, arrives in {@code If-Match} as the
+     * sealed value the preceding detail read returned, and a body that carries an {@code oldDetails} group
+     * is <em>refused</em> rather than ignored. Three reasons, each sufficient on its own. A precondition a
+     * caller composes is not a precondition: the change detection would compare the live row against values
+     * the caller chose, which it can always make match. The snapshot includes the card verification value
+     * of {@code app/cbl/COCRDUPC.cbl:L294}, so accepting it from the body would require a client to hold
+     * and replay a credential-grade value, and returning it from the read to enable that would be worse.
+     * And a sealed token is bound to this card and to a lifetime, so it cannot be replayed against another
+     * record or indefinitely against this one. The values themselves still reach the comparison unchanged -
+     * they travel inside the seal - so the guard behaves exactly as the source's did.</p>
+     *
+     * <p><strong>Outputs.</strong> {@code 200} with the refreshed card detail projection, masked, so a
+     * client sees what was actually stored rather than what it sent. The write response carries no
+     * snapshot: a further update needs a fresh read, which is what the source required too - the screen was
+     * repainted before the next turn.</p>
      *
      * <p><strong>Side effects.</strong> Writes one card row on success, inside the service's transaction.
      * On any failure nothing is written.</p>
@@ -737,14 +942,19 @@ public class CardController {
      * expiry month outside one to twelve are refused by the fifth and sixth of them respectively.
      * {@code 404} when the card row is absent. {@code 409} when the update lost a race - the response
      * carries the concurrency outcome, so a record changed by someone else stays distinguishable from a
-     * lock that could not be taken and from a write that failed after locking. {@code 428} when the
-     * as-displayed snapshot was not supplied and the update therefore could not be confirmed: supply
-     * {@code oldDetails} from a preceding detail read and retry. {@code 500} for an I/O failure or an
-     * abend.</p>
+     * lock that could not be taken and from a write that failed after locking. {@code 428} when
+     * {@code If-Match} was absent, so the lost-update guard had nothing to compare against and the write
+     * was never attempted: read the record and resend with the {@code ETag} that read returns.
+     * {@code 412} when {@code If-Match} was present but did not verify - a value this server did not seal,
+     * one sealed for another card, one whose lifetime has passed, or a record that changed since the read -
+     * all of which are answered with one message, because distinguishing them would let a caller probe the
+     * sealing key. {@code 502} for an I/O failure and {@code 500} for an abend.</p>
      *
-     * @param request the received map plus the as-displayed and as-edited snapshot groups; must not be
-     * null, and is relayed to the service exactly as bound.
-     * @return {@code 200 OK} with the refreshed card detail projection; never null
+     * @param request the received map and the as-edited group; must not be null, is relayed to the service
+     * exactly as bound, and must not carry an {@code oldDetails} group.
+     * @param ifMatch the sealed as-displayed snapshot the preceding detail read returned, quoted as an
+     * entity tag or bare; null when the header was absent, which the service reports as unconfirmed.
+     * @return {@code 200 OK} with the refreshed and masked card detail projection; never null
      * @throws ValidationException if an edit paragraph refuses a field
      * @throws RecordNotFoundException if the card row is absent
      * @throws ConcurrentUpdateException if the update was abandoned for any of the recorded outcomes
@@ -752,14 +962,18 @@ public class CardController {
      * failure
      */
     @PutMapping
-    public ResponseEntity<CardDto> updateCard(@Valid @RequestBody final CardUpdateRequest request) {
+    public ResponseEntity<CardResponse> updateCard(
+            @Valid @RequestBody final CardUpdateRequest request,
+            @RequestHeader(name = HttpHeaders.IF_MATCH, required = false) final String ifMatch) {
 
-        final CardDto updated = applyCardUpdate(request);
+        rejectBodyCarriedSnapshot(request);
+
+        final CardDto updated = applyCardUpdate(request, unquotedETag(ifMatch));
 
         LOG.debug("Served transaction {} program {}: one card row updated",
                 CARD_UPDATE_TRANSACTION_ID, CARD_UPDATE_PROGRAM);
 
-        return ResponseEntity.ok(updated);
+        return ResponseEntity.ok(CardResponse.writeOf(updated));
     }
 
     /**
@@ -785,7 +999,7 @@ public class CardController {
      * @param rejection the validation failure raised by a card service, never null when Spring MVC
      * dispatches here.
      * @return {@code 400 Bad Request} carrying a problem detail, the rejected field name when the exception
-     * named one, and the failure kind
+     * named one, the failure kind, the stable error code and the correlation identifier
      */
     @ExceptionHandler(ValidationException.class)
     public ResponseEntity<ProblemDetail> handleValidationFailure(final ValidationException rejection) {
@@ -805,15 +1019,19 @@ public class CardController {
         LOG.warn("Refused a card request with 400 for field {} and failure kind {}",
                 rejection.getFieldName(), rejection.getFailureKind());
 
-        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(withPublicEnvelope(problem, ERROR_CODE_VALIDATION));
     }
 
     /**
      * Maps an absent card or account onto {@code 404 Not Found}.
      *
      * <p>The translation of the {@code DFHRESP(NOTFND)} arm of {@code 9100-GETCARD-BYACCTCARD.} at
-     * {@code app/cbl/COCRDSLC.cbl:L756} and of file status {@code '23'}. The message is relayed byte for
-     * byte for the same reason as a validation refusal - it is a screen caption.</p>
+     * {@code app/cbl/COCRDSLC.cbl:L756} and of file status {@code '23'}. The detail is
+     * {@value #NOT_FOUND_PROBLEM_DETAIL} rather than the exception's message: this type is one of the five
+     * {@code FileStatusMapper} composes, and although no card service reaches that mapper today, relying on
+     * that would be relying on a property of three other files rather than of this one. The screen caption
+     * travels on the screen result of a successful exchange, where the source put it.</p>
      *
      * <p><strong>The record key is deliberately not reported.</strong> The exception can carry a record
      * type and a record key, but on this resource group the key is a card number, so the throwing sites use
@@ -822,7 +1040,8 @@ public class CardController {
      *
      * @param absent the not-found failure raised by a card service, never null when Spring MVC dispatches
      * here.
-     * @return {@code 404 Not Found} carrying a problem detail and no record key
+     * @return {@code 404 Not Found} carrying the fixed detail, the stable error code and the correlation
+     * identifier, and no record type and no record key
      */
     @ExceptionHandler(RecordNotFoundException.class)
     public ResponseEntity<ProblemDetail> handleRecordNotFound(final RecordNotFoundException absent) {
@@ -830,33 +1049,37 @@ public class CardController {
         final ProblemDetail problem = ProblemDetail.forStatus(HttpStatus.NOT_FOUND);
         problem.setTitle(NOT_FOUND_PROBLEM_TITLE);
 
-        final String absentMessage = absent.getMessage();
-        if (absentMessage != null) {
-            problem.setDetail(absentMessage);
-        }
+        problem.setDetail(NOT_FOUND_PROBLEM_DETAIL);
 
         LOG.warn("Refused a card request with 404: no matching record. No key is logged or returned");
 
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(withPublicEnvelope(problem, ERROR_CODE_NOT_FOUND));
     }
 
     /**
-     * Maps an abandoned card update onto {@code 409 Conflict}, or onto {@code 428 Precondition Required}
-     * when the update could not be confirmed at all.
+     * Maps an abandoned card update onto {@code 409 Conflict}, {@code 412 Precondition Failed} or
+     * {@code 428 Precondition Required}, according to which of the five outcomes the service recorded.
      *
      * <p>The five outcomes are kept distinct rather than merged, because the source distinguishes them and a
-     * client can act on the difference. Four of them are genuine conflicts on a record that exists:
-     * {@code COULD_NOT_LOCK_ACCOUNT} and {@code COULD_NOT_LOCK_CUSTOMER} are lock refusals,
-     * {@code DATA_CHANGED_BEFORE_UPDATE} is the change-detection guard of
-     * {@code 9300-CHECK-CHANGE-IN-REC} firing, and {@code LOCKED_BUT_UPDATE_FAILED} is a write that failed
-     * after the lock was taken. All four answer {@code 409}, and the outcome is reported as a problem-detail
-     * member so that they stay separable.</p>
+     * client can act on the difference. Three of them are genuine conflicts on a record that exists:
+     * {@code COULD_NOT_LOCK_ACCOUNT} and {@code COULD_NOT_LOCK_CUSTOMER} are lock refusals and
+     * {@code LOCKED_BUT_UPDATE_FAILED} is a write that failed after the lock was taken. All three answer
+     * {@code 409}, and the outcome is reported as a problem-detail member so that they stay separable.</p>
      *
-     * <p>{@code CHANGES_NOT_CONFIRMED} is different in kind and answers {@code 428}. It means the
-     * as-displayed snapshot was not supplied, so the lost-update guard had nothing to compare against and
-     * the write was never attempted - a missing precondition on the request rather than a conflict with
-     * another writer. That is exactly the condition {@code 428} exists for, and the distinct status tells a
-     * client to fetch the detail and resend rather than to re-read and merge.</p>
+     * <p>{@code DATA_CHANGED_BEFORE_UPDATE} answers {@code 412}. It is the change-detection guard of
+     * {@code 9300-CHECK-CHANGE-IN-REC} firing, and it is equally what an {@code If-Match} value that does
+     * not verify produces - a value this server did not seal, one sealed for another card, or one whose
+     * lifetime has passed. Since the as-displayed snapshot travels as an entity tag in {@code If-Match},
+     * a precondition that fails is answered with the status the conditional-request rules define for exactly
+     * that, and it is the status the account update already answers for the same outcome, so one outcome now
+     * produces one status across both update surfaces.</p>
+     *
+     * <p>{@code CHANGES_NOT_CONFIRMED} is different in kind again and answers {@code 428}. It means no
+     * {@code If-Match} was presented at all, so the lost-update guard had nothing to compare against and
+     * the write was never attempted - an absent precondition rather than a failed one. That is exactly the
+     * condition {@code 428} exists for, and the distinct status tells a client to fetch the detail and
+     * resend rather than to re-read and merge.</p>
      *
      * <p>The message is relayed byte for byte where the exception carries one, which is how the legacy
      * caption {@code 'Record changed by some one else. Please review'} reaches a client intact. One
@@ -871,16 +1094,15 @@ public class CardController {
      *
      * @param conflict the concurrency failure raised by the card-update service, never null when Spring MVC
      * dispatches here.
-     * @return {@code 409 Conflict}, or {@code 428 Precondition Required} for an unconfirmed update, in
-     * either case carrying the outcome when the exception recorded one
+     * @return {@code 409 Conflict} for a lock refusal or a failed write, {@code 412 Precondition Failed}
+     * for a snapshot that did not verify, and {@code 428 Precondition Required} for an absent one, in every
+     * case carrying the outcome when the exception recorded one
      */
     @ExceptionHandler(ConcurrentUpdateException.class)
     public ResponseEntity<ProblemDetail> handleConcurrentUpdate(final ConcurrentUpdateException conflict) {
 
         final ConcurrentUpdateException.Outcome outcome = conflict.getOutcome();
-        final HttpStatus status = outcome == ConcurrentUpdateException.Outcome.CHANGES_NOT_CONFIRMED
-                ? HttpStatus.PRECONDITION_REQUIRED
-                : HttpStatus.CONFLICT;
+        final HttpStatus status = statusFor(outcome);
 
         final ProblemDetail problem = ProblemDetail.forStatus(status);
         problem.setTitle(CONFLICT_PROBLEM_TITLE);
@@ -900,7 +1122,31 @@ public class CardController {
         // diagnose this failure; the correlation identifier ties the record back to the request.
         LOG.warn("Refused a card update with {} for outcome {}", status.value(), outcome);
 
-        return ResponseEntity.status(status).body(problem);
+        return ResponseEntity.status(status).body(withPublicEnvelope(problem, ERROR_CODE_UPDATE_CONFLICT));
+    }
+
+    /**
+     * Selects the status for a recorded concurrency outcome.
+     *
+     * <p>Extracted so the three-way choice is stated once and can be read without the surrounding
+     * problem-detail construction. A null outcome resolves to {@code 409}: the exception can be raised
+     * without one, and a conflict is the safest reading of "abandoned for a reason the service did not
+     * record".</p>
+     *
+     * @param outcome the outcome the service recorded, or null when it recorded none.
+     * @return the status this resource answers for that outcome, never null
+     */
+    private static HttpStatus statusFor(final ConcurrentUpdateException.Outcome outcome) {
+
+        if (outcome == null) {
+            return HttpStatus.CONFLICT;
+        }
+        return switch (outcome) {
+            case CHANGES_NOT_CONFIRMED -> HttpStatus.PRECONDITION_REQUIRED;
+            case DATA_CHANGED_BEFORE_UPDATE -> HttpStatus.PRECONDITION_FAILED;
+            case COULD_NOT_LOCK_ACCOUNT, COULD_NOT_LOCK_CUSTOMER, LOCKED_BUT_UPDATE_FAILED ->
+                    HttpStatus.CONFLICT;
+        };
     }
 
     /**
@@ -912,9 +1158,13 @@ public class CardController {
      * {@code 500} an I/O failure receives. The detail is fixed and names no cause; the cause stays attached
      * to the exception and is logged.</p>
      *
+     * <p><strong>The resource name is no longer returned.</strong> It named the dataset behind the failure,
+     * which a caller cannot act on and an attacker can map. It is logged at {@code ERROR} and reachable
+     * through the correlation identifier the body carries.</p>
+     *
      * @param unavailable the unavailable-file failure, never null when Spring MVC dispatches here.
-     * @return {@code 503 Service Unavailable} carrying a fixed problem detail and the resource name when
-     * the throwing site identified one
+     * @return {@code 503 Service Unavailable} carrying a fixed problem detail, the stable error code and the
+     * correlation identifier
      */
     @ExceptionHandler(FileUnavailableException.class)
     public ResponseEntity<ProblemDetail> handleFileUnavailable(final FileUnavailableException unavailable) {
@@ -922,63 +1172,71 @@ public class CardController {
         final ProblemDetail problem =
                 ProblemDetail.forStatusAndDetail(HttpStatus.SERVICE_UNAVAILABLE, UNAVAILABLE_PROBLEM_DETAIL);
         problem.setTitle(UNAVAILABLE_PROBLEM_TITLE);
-        unavailable.resourceName().ifPresent(name -> problem.setProperty(FILE_PROPERTY, name));
 
-        LOG.error("A card operation could not reach its file", unavailable);
+        // The logical file name is logged, not returned: naming the dataset tells a caller nothing it can
+        // act on and tells an attacker the internal topology.
+        LOG.error("A card operation could not reach file {}", unavailable.resourceName().orElse("unnamed"),
+                unavailable);
 
-        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(problem);
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(withPublicEnvelope(problem, ERROR_CODE_UNAVAILABLE));
     }
 
     /**
-     * Maps a card-file I/O failure onto {@code 500 Internal Server Error}.
+     * Maps a card-file I/O failure onto {@code 502 Bad Gateway}.
      *
      * <p>The translation of the {@code '9x'} file-status family and of the {@code WHEN OTHER} arms of the
-     * read paragraphs. The four-character expanded status is reported, because it is the diagnostic the
-     * legacy status renderer produced and it identifies the failure without disclosing anything about the
-     * data; the file and the operation are reported for the same reason. No key and no field value is
-     * reported. The detail itself is fixed, and the cause is logged rather than returned.</p>
+     * read paragraphs. A physical or logical input-output failure is a fault in the store behind this
+     * service rather than in the request or in this service, which is exactly what a gateway status
+     * describes - and it is the status the account, transaction, billing and report surfaces already answer
+     * for the identical exception, so one file status now produces one status code across the whole API
+     * rather than {@code 502} on four surfaces and {@code 500} on this one.</p>
+     *
+     * <p>The four-character expanded status that the legacy status renderer produced, the logical file and the
+     * operation are all <strong>logged rather than returned</strong>. An earlier revision reported all three in
+     * the body on the grounds that each identifies the failure without disclosing any data; individually that
+     * is true, but together they tell a caller which internal dataset failed which verb with which status,
+     * which is the disclosure {@code CWE-209} names. No key and no field value is reported either. The detail
+     * is fixed, the body carries {@value #ERROR_CODE_IO_FAILURE} and the correlation identifier that joins it
+     * to the log record holding the three withheld values, and the cause is logged rather than returned.</p>
      *
      * @param failure the I/O failure, never null when Spring MVC dispatches here.
-     * @return {@code 500 Internal Server Error} carrying the expanded file status, and the file and
-     * operation when the throwing site identified them
+     * @return {@code 502 Bad Gateway} carrying a fixed problem detail, the stable error code and the
+     * correlation identifier
      */
     @ExceptionHandler(FileAccessException.class)
     public ResponseEntity<ProblemDetail> handleFileAccessFailure(final FileAccessException failure) {
 
         final ProblemDetail problem =
-                ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
-        problem.setTitle(FAILURE_PROBLEM_TITLE);
-        problem.setProperty(IO_STATUS_PROPERTY, failure.getExpandedStatus());
+                ProblemDetail.forStatusAndDetail(HttpStatus.BAD_GATEWAY, IO_PROBLEM_DETAIL);
+        problem.setTitle(IO_PROBLEM_TITLE);
 
-        final String logicalFileName = failure.getLogicalFileName();
-        if (logicalFileName != null) {
-            problem.setProperty(FILE_PROPERTY, logicalFileName);
-        }
-        final String operation = failure.getOperation();
-        if (operation != null) {
-            problem.setProperty(OPERATION_PROPERTY, operation);
-        }
+        // The expanded status, the logical file and the operation are logged, not returned. Together they
+        // describe which internal dataset failed which verb and how, which is precisely the disclosure
+        // CWE-209 names; separately, none of the three is actionable by a caller. The status stays 502 rather
+        // than 500 because the fault is in the store behind this service, which is what every other
+        // controller in this package answers for this exception.
+        LOG.error("Answered a card request with 502: status {} on file {} during {}",
+                failure.getExpandedStatus(), failure.getLogicalFileName(), failure.getOperation(), failure);
 
-        LOG.error("A card file operation failed: status {} file {} operation {}",
-                failure.getExpandedStatus(), logicalFileName, operation, failure);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(withPublicEnvelope(problem, ERROR_CODE_IO_FAILURE));
     }
 
     /**
-     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract in the
-     * response metadata.
+     * Maps an abend onto {@code 500 Internal Server Error}, preserving the legacy abend contract on the
+     * diagnostic log.
      *
      * <p>The abend routine moved {@code 999} into {@code ABEND-CODE} and called the language-environment
-     * abend service, and the batch stream reported return code {@code 12}. Both values are carried as
-     * problem-detail members so that the contract stays observable, while the detail itself is fixed and
-     * reveals nothing about the cause. The cause remains attached to the exception and is logged at
-     * {@code ERROR}, so diagnosis proceeds from the correlation identifier rather than from the response
-     * body.</p>
+     * abend service, and the batch stream reported return code {@code 12}. <strong>Both are logged and
+     * neither is returned:</strong> they describe an internal termination path, so a caller can act on
+     * neither while a caller who can read them learns which path a crafted request reached. The detail is
+     * fixed, the body carries {@value #ERROR_CODE_ABEND} and the correlation identifier, and the cause
+     * remains attached to the exception and is logged at {@code ERROR}.</p>
      *
      * @param abend the fatal failure, never null when Spring MVC dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail plus the abend code and the
-     * batch return code
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and
+     * the correlation identifier
      */
     @ExceptionHandler(FatalProcessingException.class)
     public ResponseEntity<ProblemDetail> handleAbend(final FatalProcessingException abend) {
@@ -987,14 +1245,14 @@ public class CardController {
                 ProblemDetail.forStatusAndDetail(HttpStatus.INTERNAL_SERVER_ERROR, FAILURE_PROBLEM_DETAIL);
         problem.setTitle(FAILURE_PROBLEM_TITLE);
 
-        final String carriedAbendCode = abend.getAbendCode();
-        problem.setProperty(ABEND_CODE_PROPERTY, carriedAbendCode == null ? ABEND_CODE : carriedAbendCode);
-        problem.setProperty(RETURN_CODE_PROPERTY, FatalProcessingException.BATCH_RETURN_CODE);
+        // Logged, not returned: 999 and 12 are internals of the terminating path.
+        LOG.error("A card operation abended: code {} returnCode {} culprit {} reason {}",
+                abend.getAbendCode() == null ? ABEND_CODE : abend.getAbendCode(),
+                FatalProcessingException.BATCH_RETURN_CODE, abend.getAbendCulprit(), abend.getAbendReason(),
+                abend);
 
-        LOG.error("A card operation abended: code {} culprit {} reason {}", carriedAbendCode,
-                abend.getAbendCulprit(), abend.getAbendReason(), abend);
-
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_ABEND));
     }
 
     /**
@@ -1010,7 +1268,8 @@ public class CardController {
      * returned.</p>
      *
      * @param failure the typed failure, never null when Spring MVC dispatches here.
-     * @return {@code 500 Internal Server Error} carrying a fixed problem detail
+     * @return {@code 500 Internal Server Error} carrying a fixed problem detail, the stable error code and the
+     * correlation identifier
      */
     @ExceptionHandler(CardDemoException.class)
     public ResponseEntity<ProblemDetail> handleTypedFailure(final CardDemoException failure) {
@@ -1021,7 +1280,8 @@ public class CardController {
 
         LOG.error("A card operation failed with a typed CardDemo exception", failure);
 
-        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(problem);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(withPublicEnvelope(problem, ERROR_CODE_INTERNAL));
     }
 
     /**
@@ -1034,21 +1294,31 @@ public class CardController {
      * re-wrapping an already-typed failure. Every other runtime failure becomes an abend with the original
      * throwable preserved as the cause.</p>
      *
-     * <p>Only the paging payload is surfaced. The rest of the turn outcome is 3270 furniture with no place
-     * on a JSON contract - the screen header and its two message lines, the seven row-selection and
-     * highlight attribute flags, the four filter attribute flags, the cursor field, and the navigation
-     * intent naming the program a transfer of control would have gone to. A paging payload is absent only
-     * on such a transfer, which the three modelled actions cannot cause, so its absence here is a broken
-     * service contract rather than a request outcome and is reported as an abend rather than as an empty
-     * page.</p>
+     * <p><b>The turn's status messages are surfaced, and that is a correction rather than an addition.</b>
+     * {@code WS-INFO-MSG} at {@code app/cbl/COCRDLIC.cbl:L112} and {@code WS-ERROR-MSG} at {@code :L117} are
+     * the only place several outcomes are reported at all - reaching the last page, an empty result, a
+     * refused row selection - and {@code :L431-L435} deliberately re-reads the list whenever the failure is
+     * not a filter failure, so an error-bearing turn still has rows to show. Returning the rows alone would
+     * discard everything the screen told the operator.</p>
+     *
+     * <p>What is still not surfaced is 3270 furniture with no place on a JSON contract: the screen header,
+     * the seven row-selection and highlight attribute flags, the four filter attribute flags, the cursor
+     * field, and the navigation intent naming the program a transfer of control would have gone to. The one
+     * selection-related value that <em>is</em> surfaced is whether row selection is available at all, which
+     * is business state rather than an attribute: a client that offers a per-row action needs to know that
+     * correcting the filter comes first.</p>
+     *
+     * <p><b>The two page cursors are sealed here.</b> The service's own keys are card numbers, so they are
+     * replaced by opaque values before the envelope is built and reopened on the next request. A paging
+     * payload is absent only on a transfer of control, which the three modelled actions cannot cause, so its
+     * absence is a broken service contract rather than a request outcome and is reported as an abend.</p>
      *
      * @param request the rebuilt commarea halves and the received filters.
-     * @return the paging payload, never null
+     * @return the list envelope, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure, or returns no paging payload
      */
-    private PageResponse<CardDto.CardListRow> retrieveCardList(
-            final CardListService.CardListRequest request) {
+    private CardListResponse retrieveCardList(final CardListService.CardListRequest request) {
 
         final CardListService.CardListResult result;
         try {
@@ -1064,7 +1334,13 @@ public class CardController {
             throw new FatalProcessingException(ABEND_CODE, CARD_LIST_PROGRAM, CARD_LIST_ABEND_REASON,
                     CARD_LIST_ABEND_MESSAGE);
         }
-        return result.page;
+        final PageResponse<CardDto.CardListRow> page = result.page;
+        return CardListResponse.of(page,
+                this.snapshotTokenService.sealCursor(CARD_LIST_CURSOR_KIND, page.getFirstKey()),
+                this.snapshotTokenService.sealCursor(CARD_LIST_CURSOR_KIND, page.getLastKey()),
+                result.informationMessage,
+                result.errorMessage,
+                !result.rowSelectionProtected);
     }
 
     /**
@@ -1101,21 +1377,204 @@ public class CardController {
      * through - because the change detection compares the two snapshot groups as they arrive and any
      * normalisation here would change its verdict.</p>
      *
-     * @param request the received map plus the two snapshot groups, relayed verbatim.
+     * @param request the received map and the as-edited group, relayed verbatim.
+     * @param snapshotToken the sealed as-displayed snapshot taken from {@code If-Match}; null and blank are
+     * both reported by the service as unconfirmed.
      * @return the refreshed card projection, never null
      * @throws FatalProcessingException when the service fails for any reason other than a typed CardDemo
      * failure
      */
-    private CardDto applyCardUpdate(final CardUpdateRequest request) {
+    private CardDto applyCardUpdate(final CardUpdateRequest request, final String snapshotToken) {
 
         try {
-            return this.cardUpdateService.updateCard(request);
+            return this.cardUpdateService.updateCard(request, snapshotToken);
         } catch (final CardDemoException modelled) {
             throw modelled;
         } catch (final RuntimeException unexpected) {
             throw new FatalProcessingException(ABEND_CODE, CARD_UPDATE_PROGRAM, CARD_UPDATE_ABEND_REASON,
                     CARD_UPDATE_ABEND_MESSAGE, unexpected);
         }
+    }
+
+    /**
+     * Refuses a request body that carries an as-displayed snapshot.
+     *
+     * <p>The group still exists on the request type, because it is the transcription of
+     * {@code CCUP-OLD-DETAILS} at {@code app/cbl/COCRDUPC.cbl:L291-L301} and because it is the shape the
+     * sealed token carries internally. What it is not is a wire input: the authentic snapshot arrives in
+     * {@code If-Match}, sealed, and the service reads it from there and from nowhere else.</p>
+     *
+     * <p>A body that carries one is therefore refused rather than ignored. Ignoring it would leave a caller
+     * believing it controlled the write precondition when it did not - the worst of the three possible
+     * behaviours, because it fails silently and only under concurrency. Refusing states the contract at the
+     * one moment the caller can act on it.</p>
+     *
+     * @param request the bound request body; never null once the framework has bound one.
+     * @throws ValidationException with failure kind {@code INVALID} when {@code oldDetails} is present
+     */
+    private static void rejectBodyCarriedSnapshot(final CardUpdateRequest request) {
+
+        if (request.oldDetails() != null) {
+            throw ValidationException.invalidField("oldDetails",
+                    "oldDetails must not be sent: the as-displayed snapshot is server-issued and travels in"
+                            + " the If-Match header, because it includes a card verification value that no"
+                            + " read may return and because a caller-supplied precondition is not a"
+                            + " precondition");
+        }
+    }
+
+    /**
+     * Resolves the enumerated navigation action from its raw token, accepting nothing but an exact match.
+     *
+     * <p>The framework's default enum binding trims its input before resolving, so {@code " SUBMIT "} would
+     * bind as {@code SUBMIT}. That is coercion of a control token: the value decides which browse direction
+     * runs, so accepting a spelling the operation never declared is accepting an instruction it never
+     * declared. Comparison here is by {@link String#equals(Object)} against the constant names, with no trim
+     * and no case fold.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * {@link CardListAction#SUBMIT}, so a bare request returns the first page exactly as before.
+     * @return the resolved action, never null
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is not one of the three declared tokens. Neither message repeats the
+     * rejected value
+     */
+    private static CardListAction resolveAction(final String token) {
+
+        if (token == null) {
+            return CardListAction.SUBMIT;
+        }
+        if (token.isEmpty()) {
+            throw new ValidationException(WebConfig.ACTION_BLANK_MESSAGE,
+                    WebConfig.NAVIGATION_ACTION_PARAMETER, ValidationException.FailureKind.BLANK);
+        }
+        for (final CardListAction candidate : CardListAction.values()) {
+            if (candidate.name().equals(token)) {
+                return candidate;
+            }
+        }
+        throw new ValidationException(WebConfig.ACTION_UNKNOWN_MESSAGE,
+                WebConfig.NAVIGATION_ACTION_PARAMETER, ValidationException.FailureKind.INVALID);
+    }
+
+    /**
+     * Resolves the page cursor from its raw token, accepting ASCII digits and nothing else.
+     *
+     * <p>The framework's default {@code int} binding accepts a leading sign and surrounding whitespace, so
+     * {@code " +3 "} would bind as three. {@code WS-CA-SCREEN-NUM} at {@code app/cbl/COCRDLIC.cbl:L237} is
+     * {@code PIC 9(1)} - unsigned, one digit - and the COBOL {@code IS NUMERIC} class test that guards every
+     * such field admits only the characters zero through nine. This reproduces that test rather than the
+     * framework's. The single-digit <em>domain</em> is a separate rule and stays where it was, in
+     * {@code requirePageWithinScreenNumberDomain}; this method owns the character class only.</p>
+     *
+     * <p>The digit range is written out rather than delegated to {@link Character#isDigit(char)} on purpose:
+     * that method is true for every decimal digit in Unicode, so a guard written with it would admit an
+     * Arabic-Indic digit string that no 3270 terminal could have sent.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * zero, the field's own initial value on a first entry.
+     * @return the page cursor
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is not a run of ASCII digits
+     */
+    private static int requirePageToken(final String token) {
+
+        if (token == null) {
+            return LOWEST_SCREEN_NUMBER;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(PAGE_FIELD,
+                    "page must be supplied as a digit when the parameter is present at all");
+        }
+        for (int index = 0; index < token.length(); index++) {
+            final char character = token.charAt(index);
+            if (character < '0' || character > '9') {
+                throw ValidationException.invalidField(PAGE_FIELD,
+                        "page must consist of ASCII digits only, the domain of the COBOL IS NUMERIC class"
+                                + " test that guards the single-digit screen number");
+            }
+        }
+        // Parsed rather than range-checked here: the domain check belongs to
+        // requirePageWithinScreenNumberDomain, which states the single-digit rule once and cites the field
+        // it comes from. What this method owns is the character class - the COBOL IS NUMERIC test - and a
+        // value too long for the field is refused by the range check rather than duplicated here. A digit
+        // run of any length parses without overflow because the length itself is bounded first.
+        if (token.length() > MAXIMUM_PAGE_TOKEN_DIGITS) {
+            throw ValidationException.invalidField(PAGE_FIELD,
+                    "page must be at most " + MAXIMUM_PAGE_TOKEN_DIGITS + " digits; a longer value was never"
+                            + " representable in the screen number the card list browse maintains");
+        }
+        return Integer.parseInt(token);
+    }
+
+    /**
+     * Resolves the page-state flag from its raw token, accepting only {@code true} and {@code false}.
+     *
+     * <p>The framework's default {@code boolean} binding additionally accepts {@code on}, {@code off},
+     * {@code yes}, {@code no}, {@code 1} and {@code 0}. This flag decides whether a page-forward is attempted
+     * at all, so admitting six aliases for two values admits five spellings of an instruction the operation
+     * never declared.</p>
+     *
+     * @param token the raw request-parameter value, or null when the parameter was absent - which defaults to
+     * false, which is what a first request means.
+     * @return the flag
+     * @throws ValidationException with failure kind {@code BLANK} when the parameter was present and empty,
+     * and {@code INVALID} when it is neither exact token
+     */
+    private static boolean requireBooleanToken(final String token) {
+
+        if (token == null) {
+            return false;
+        }
+        if (token.isEmpty()) {
+            throw ValidationException.missingField(NEXT_PAGE_FIELD,
+                    "nextPageAvailable must be supplied as " + TRUE_TOKEN + " or " + FALSE_TOKEN
+                            + " when the parameter is present at all");
+        }
+        if (TRUE_TOKEN.equals(token)) {
+            return true;
+        }
+        if (FALSE_TOKEN.equals(token)) {
+            return false;
+        }
+        throw ValidationException.invalidField(NEXT_PAGE_FIELD,
+                "nextPageAvailable accepts exactly " + TRUE_TOKEN + " and " + FALSE_TOKEN
+                        + "; no alias and no other spelling is accepted");
+    }
+
+    /**
+     * Wraps a sealed token in the double quotes an entity tag requires.
+     *
+     * @param token the sealed token, which is base64url and therefore contains no character needing escape.
+     * @return the quoted entity-tag value, or null when {@code token} is null
+     */
+    private static String quotedETag(final String token) {
+        return token == null ? null : "\"" + token + "\"";
+    }
+
+    /**
+     * Strips the entity-tag quoting from an {@code If-Match} value, so a client may return either the header
+     * value verbatim or the bare token.
+     *
+     * <p>A weak-validator prefix is also stripped: a sealed snapshot is a strong validator, but a client
+     * echoing back what it received should not be refused on a syntactic detail it did not choose.</p>
+     *
+     * @param headerValue the raw header value, or null when the header was absent.
+     * @return the bare token, or null when the header was absent
+     */
+    private static String unquotedETag(final String headerValue) {
+
+        if (headerValue == null) {
+            return null;
+        }
+        String value = headerValue.trim();
+        if (value.startsWith("W/")) {
+            value = value.substring(2).trim();
+        }
+        if (value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"")) {
+            value = value.substring(1, value.length() - 1);
+        }
+        return value;
     }
 
     /**
@@ -1258,5 +1717,36 @@ public class CardController {
         public String aidToken() {
             return this.aidToken;
         }
+    }
+
+    /**
+     * Stamps the two properties every error body carries, and returns the same instance for chaining.
+     *
+     * <p>Called by each {@code @ExceptionHandler} above as the last thing it does to the body, so a future
+     * handler cannot omit the envelope by accident: the {@code return} statement reads
+     * {@code body(withPublicEnvelope(problem, ...))}, and a handler written without it does not compile
+     * into that shape.
+     *
+     * <p><strong>This is the whole of the {@code CWE-209} posture.</strong> What the body carries is the
+     * status, the title, a detail that is either a legacy screen literal or a fixed sentence, the error code
+     * and the correlation identifier. What it no longer carries is the relation, the constraint name, the
+     * logical file or dataset name, the input-output operation, the expanded file status, the record type,
+     * the abend code and the batch return code. Every one of those is still emitted - at {@code WARN} or
+     * {@code ERROR}, on a log stream the caller cannot read - so no diagnostic capability is lost and
+     * nothing is swallowed.
+     *
+     * @param problem the body under construction; must not be null.
+     * @param errorCode one of the {@code ERROR_CODE_*} constants.
+     * @return {@code problem}, so the call can be inlined into the {@code body(...)} argument
+     */
+    private static ProblemDetail withPublicEnvelope(final ProblemDetail problem, final String errorCode) {
+
+        problem.setProperty(ERROR_CODE_PROPERTY, errorCode);
+
+        final String correlationId = MDC.get(CorrelationIdFilter.MDC_KEY_CORRELATION_ID);
+        problem.setProperty(CORRELATION_ID_PROPERTY,
+                correlationId == null || correlationId.isEmpty() ? CORRELATION_ID_UNAVAILABLE : correlationId);
+
+        return problem;
     }
 }

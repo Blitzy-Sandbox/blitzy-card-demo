@@ -97,14 +97,18 @@ import jakarta.validation.constraints.Size;
  *       year-month-day value. Because {@code app/cpy/CSDAT01Y.cpy:20-23} declares that value as a
  *       redefinition of the same year, month and day subfields, the moves at {@code :232-234} emit
  *       the <strong>last day of the current month</strong>. The monthly period is therefore a full
- *       calendar month, first day through last day. See <em>Findings</em> below: prior-generation plan
- *       prose described this as month-to-date, which the source does not support.</li>
+ *       calendar month, first day through last day - not month-to-date. The reading that gives
+ *       month-to-date is a trap worth naming: the moves at {@code :232-234} name the current-date
+ *       subfields, which look like today, but {@code :223-230} has already overwritten them in place.
+ *       The December rollover settles it, since month 13 becomes January of the following year and one
+ *       day less is the 31st of December, and it is the reading consistent with the yearly period
+ *       being a full calendar year.</li>
  *   <li><strong>Yearly</strong> ({@code app/cbl/CORPT00C.cbl:239-255}) - the first through the last
  *       day of the current year, built from the literals {@code '01'}/{@code '01'} and
  *       {@code '12'}/{@code '31'}.</li>
  *   <li><strong>Custom</strong> ({@code app/cbl/CORPT00C.cbl:256} and {@code :381-410}) - the six
  *       discrete components described above.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Deriving the monthly or yearly period must not consult the platform default time zone. The
  * boundary of a period is an observable output, so resolving "today" against an ambient zone would
@@ -140,7 +144,7 @@ import jakarta.validation.constraints.Size;
  *       {@code 'Select a report type to print report...'}.</li>
  *   <li>Each selector is {@code X(1)} with blank, selected and invalid states. A {@code boolean}
  *       collapses three states into two.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Consequently nothing from the enum package is imported here.</p>
  *
@@ -157,7 +161,7 @@ import jakarta.validation.constraints.Size;
  *       re-displays;</li>
  *   <li>invalid - any other character at {@code :484-490} - builds a message that
  *       <strong>quotes the offending character back to the caller</strong>.</li>
- * </ul>
+ *   </ul>
  *
  * <p>It is therefore modelled as a raw one-character string. A {@code boolean} would collapse four
  * states into two, and a {@code Boolean} would collapse four into three while silently mapping an
@@ -210,7 +214,7 @@ import jakarta.validation.constraints.Size;
  *       <em>string</em>, not as an instant;</li>
  *   <li>the statement projection delivers a processing timestamp with only 24 significant
  *       characters in a 26-byte field, which is not a parseable timestamp at all.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Parsing at the boundary would also destroy the blank and invalid states that the source
  * reports on distinctly.</p>
@@ -272,7 +276,7 @@ import jakarta.validation.constraints.Size;
  *   <li><strong>No non-null requirement</strong> anywhere: the source tolerates spaces and
  *       low-values on every one of these fields, so a required-field constraint would be stricter
  *       than the behaviour being reproduced.</li>
- * </ul>
+ *   </ul>
  *
  * <p>For the same reason the canonical constructor performs no argument checking, no normalisation
  * and no coercion: with every field legitimately blank, any check would be an invented rule.
@@ -295,7 +299,7 @@ import jakarta.validation.constraints.Size;
  *       composite, an unselected or multiply-selected period, an unconfirmed or invalidly confirmed
  *       submission, and a failed queue publication - are all decided by the service, which reports
  *       them through {@code errorMessage} using the source literals.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security posture</h2>
  *
@@ -316,8 +320,9 @@ import jakarta.validation.constraints.Size;
  * temporal type or a {@code java.time} import; adding a constraint the source does not perform, of
  * which a start-before-end assertion is the most tempting; collapsing the six date components or the
  * three selectors; normalising a value on ingest, which breaks the echoed confirmation character;
- * and leaving an unused import, which Clause B forbids even though {@code javac} 25.0.3 publishes no lint
- * key that would catch it, so it is review-enforced.</p>
+ * and leaving an unused import, which the project's code-quality standard forbids even though
+ * {@code javac} at release 25 publishes no lint key that would catch it, so it must be spotted by
+ * hand.</p>
  *
  * <p>The file header follows the source-banner convention that is universal in the legacy corpus - a
  * rule of asterisks, the component identification lines, a second rule, then the copyright and the
@@ -346,57 +351,13 @@ import jakarta.validation.constraints.Size;
  * <p><strong>{@link #rejectUnrecognisedProperty} refuses anything the map does not declare.</strong>
  * The declarative alternative is inert: Jackson consults a type-level unknown-property setting only
  * while the mapper still has {@code FAIL_ON_UNKNOWN_PROPERTIES} enabled, the framework disables it
- * by default, and this repository contains no {@code application*.yml} that could re-enable it -
- * {@code src/main/resources} holds one migration and three validation resources and nothing else.
+ * by default. The base profile does set
+ * {@code spring.jackson.deserialization.fail-on-unknown-properties} to true, but that is a property a
+ * profile can turn off, so it is not something this type may rely on.
  * Silently discarding a property matters specifically here because the three period selectors are
  * mutually exclusive raw characters evaluated in a fixed order at {@code :213}, {@code :239} and
  * {@code :256}: a caller who misspells one would have the request bound with no period selected,
  * which the source reports as its own distinct error rather than as a rejected payload.</p>
- *
- * <h2>Findings</h2>
- *
- * <p>Recorded here because the surrounding plan prose and the source disagree, and the source is the
- * authority. Neither of the first two affects the code of this type; the last two were defects in it
- * and have been remediated.</p>
- *
- * <ul>
- *   <li><strong>Medium, closed - monthly period described as month-to-date.</strong> Prior-generation
- *       plan prose stated that the monthly end date is the current year, month and day. The source
- *       computes the last day of
- *       the current month, as traced above through {@code app/cbl/CORPT00C.cbl:223-234} and
- *       {@code app/cpy/CSDAT01Y.cpy:20-23}; the December rollover confirms it, since month 13
- *       becomes January of the following year and one day less is the 31st of December. The prose
- *       error is explainable: the moves at {@code :232-234} name the current-date subfields, which
- *       look like today, but {@code :223-230} has already overwritten them in place. It is also the
- *       reading consistent with the yearly period being a full calendar year. The specification has been
- *       corrected and now describes a full calendar month. <em>Remediation still owed by the service
- *       layer</em>: {@code ReportSubmissionService} must implement the arithmetic at {@code :223-234}
- *       rather than the prose description; that bean is <strong>not available</strong> - it has not been
- *       authored - so the obligation is recorded here. No impact on this type, which performs no date
- *       arithmetic.</li>
- *   <li><strong>Medium, closed - symbolic-map field census.</strong> Prior-generation plan prose totalled
- *       460 input fields across the seventeen symbolic maps; counting the input groups directly gives
- *       <strong>441</strong>. That prose's own per-map table summed to 440, because it recorded one map
- *       as having 36 input fields where that copybook declares 37. This map is unaffected: its count
- *       is 17 both in the table and on disk, which is the figure implemented here. The corpus total now
- *       reads 441 in {@code docs/technical-specifications.md}, verified on 1 August 2026.</li>
- *   <li><strong>Medium, closed - job-deck card count.</strong> Prior-generation plan prose described
- *       eighteen card images; {@code app/cbl/CORPT00C.cbl:80-127} declares <strong>seventeen</strong> -
- *       fourteen plain eighty-byte literals plus three named multi-part groups, each summing to eighty
- *       bytes, counted directly from {@code 01 JOB-DATA.} at {@code :81-125}. The specification no longer
- *       states a card count at all - it describes the deck as a run of eighty-byte literal constants - so
- *       nothing there now contradicts the seventeen counted here. No impact on this type, which carries no
- *       card array.</li>
- *   <li><strong>High, resolved - implicit rendering of seventeen untrusted strings.</strong> The
- *       record's generated rendering emitted every component, including the caller-controlled
- *       seventy-eight-character message line and the six custom-range components, into any log
- *       record or diagnostic message that interpolated an instance. <em>Remediation applied</em>:
- *       {@link #toString()} renders only the transaction name and the program name.</li>
- *   <li><strong>Medium, resolved - unrecognised properties silently discarded.</strong> A misspelled
- *       or invented property was dropped during binding, so a request that selected no period at all
- *       bound successfully. <em>Remediation applied</em>: {@link #rejectUnrecognisedProperty} refuses
- *       unconditionally, independently of mapper configuration.</li>
- * </ul>
  *
  * @param transactionName {@code TRNNAMEI}, {@code PIC X(4)}, {@code app/cpy-bms/CORPT00.CPY:24} -
  *        the originating transaction identifier echoed in the screen header. Header field, declared
@@ -614,9 +575,10 @@ public record ReportRequest(
      *
      * <p>The guard is local rather than declarative because the declarative alternative is inert
      * here, for the reasons set out in this type's class documentation: the framework disables
-     * failure on unknown properties by default and this repository contains no
-     * {@code application*.yml} that could re-enable it. Rejecting unconditionally makes the
-     * behaviour independent of mapper configuration.</p>
+     * failure on unknown properties by default, and the profile property that re-enables it,
+     * {@code spring.jackson.deserialization.fail-on-unknown-properties}, can be turned off again by
+     * any profile. Rejecting unconditionally makes the behaviour independent of mapper
+     * configuration.</p>
      *
      * <p>Neither the offending property name nor its value is reproduced in the thrown message.
      * Both are untrusted input, and copying either into a message that reaches a log record would

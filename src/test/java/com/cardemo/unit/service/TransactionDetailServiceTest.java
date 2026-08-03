@@ -90,6 +90,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.slf4j.LoggerFactory;
@@ -139,36 +140,39 @@ import org.springframework.dao.QueryTimeoutException;
  *
  * <p><strong>4. Common failure modes and troubleshooting.</strong>
  * <ul>
- *   <li><em>{@code warnings found and -Werror specified}.</em> Test compilation runs under
- *       {@code -Xlint:all -Werror}, so one unused import or one dangling documentation comment fails the
- *       build. Note the licence banner above is a plain block comment, never {@code /**}, precisely so it
- *       cannot be read as a dangling doc comment.</li>
+ *   <li><em>{@code warnings found and -Werror specified}.</em> Test compilation runs under {@code -Xlint:all -Werror}
+ *   , so one dangling documentation comment, raw type or unchecked cast fails the build - but <em>not</em> an unused
+ *   import, for which {@code javac} 25 publishes no lint key, so that one is review-enforced. Note the licence banner
+ *   above is a plain block comment, never {@code /**}, precisely so it cannot be read as a dangling doc
+ *   comment.</li>
  *   <li><em>An identifier wider than sixteen characters appears to pass.</em> It reaches the repository
  *       unvalidated on purpose. Only the not-found route may be used for it, because a found record would
  *       then breach {@code TransactionDto}'s width contract on {@code transactionIdInput}.</li>
  *   <li><em>A test asserting a numeric guard fails.</em> There is no numeric guard to assert; see the
- *       Medium finding below.</li>
+ *       source facts below.</li>
  *   <li><em>An {@code UnnecessaryStubbingException}.</em> Strict stubs are deliberate. Stub inside the test
  *       that consumes the stubbing, never in a shared {@code @BeforeEach}.</li>
  *   <li><em>A timestamp assertion fails after a formatting change.</em> {@code TRAN-ORIG-TS} and
- *       {@code TRAN-PROC-TS} are text, not temporal values; see the Medium finding below.</li>
- * </ul>
+ *       {@code TRAN-PROC-TS} are text, not temporal values; see the source facts below.</li>
+ *   <li><em>The Surefire report for this class reads {@code tests="0"}.</em> That is Surefire's convention
+ *       for a class whose tests all live in {@code @Nested} inner classes; the {@code testcase} elements are
+ *       present and counted in the aggregate. It is a reporting artefact, not a collection failure.</li>
+ *   </ul>
  *
- * <p><strong>Findings, classified per Rule 1 clause F.</strong>
+ * <p><strong>Source facts this class pins, and the ways they get broken.</strong>
  * <ul>
- *   <li><strong>Blocker - a test class outside the Surefire tree runs nowhere.</strong> The root build binds
+ *   <li><strong>A test class outside the Surefire tree runs nowhere.</strong> The root build binds
  *       Surefire to {@code src/test/java/com/cardemo/unit/} and its subtree. A class placed outside it
  *       matches neither Surefire's nor Failsafe's include set, so it is collected by neither plugin: the
  *       build stays green, both plugins report success, and coverage silently records the class as untested -
- *       no error, no warning. <em>Remediation:</em> this class sits inside that tree, and its collection is
- *       proved empirically rather than assumed - see the validation evidence below.</li>
- *   <li><strong>High - {@code READ … UPDATE} on a strictly read-only path.</strong> {@code :267-279} reads
+ *       no error, no warning. This class sits inside that tree, and its report file is the proof.</li>
+ *   <li><strong>{@code READ … UPDATE} on a strictly read-only path.</strong> {@code :267-279} reads
  *       {@code TRANSACT} with the {@code UPDATE} option at {@code :275}, taking an exclusive record lock.
  *       A repository-wide scan of this program returns <strong>zero</strong> occurrences of
  *       {@code REWRITE}, {@code UNLOCK}, {@code SYNCPOINT} and {@code WRITE} - its entire CICS verb
  *       inventory is {@code RETURN}, {@code XCTL}, {@code SEND}, {@code RECEIVE} and that one {@code READ} -
  *       so the program is a pure detail view and the lock is acquired needlessly and released only
- *       implicitly at task end. <em>Remediation, and the labelled deviation:</em> the Java retrieval reaches
+ *       implicitly at task end. <em>The labelled deviation:</em> the Java retrieval reaches
  *       the store as a plain keyed read through {@link TransactionRepository#findById(Object)} with no lock
  *       hint, no write and no flush, which is what
  *       {@link ReadOnlyRetrievalContract#repositoryReceivesOnlyOnePlainKeyedRead()} pins. Translating
@@ -181,60 +185,44 @@ import org.springframework.dao.QueryTimeoutException;
  *       the contract it can hold true - that the <em>repository</em> is never asked for a lock, a write or a
  *       flush, and that the lock is never attempted when no row was found - and records the divergence here
  *       rather than encoding it silently as correct.</li>
- *   <li><strong>High - cardholder data in diagnostics.</strong> {@code TRAN-CARD-NUM} occupies bytes 263-278
+ *   <li><strong>Cardholder data must not reach diagnostics.</strong> {@code TRAN-CARD-NUM} occupies bytes 263-278
  *       of the 350-byte record. It legitimately reaches the response, because the map displays it, but must
  *       never reach a log, an exception message or a test message; {@code :290}'s
  *       {@code DISPLAY 'RESP:' … 'REAS:'} must carry status codes only.</li>
- *   <li><strong>Medium - inventing a numeric guard.</strong> {@code :146-156} tests for empty and nothing
- *       else. The sibling program's {@code Tran ID must be Numeric ...} has no counterpart here, so a
+ *   <li><strong>No numeric guard exists, and none may be invented.</strong> {@code :146-156} tests for empty
+ *       and nothing else. The sibling program's {@code Tran ID must be Numeric ...} has no counterpart here, so a
  *       non-numeric identifier must reach the repository and fail as not-found.</li>
- *   <li><strong>Medium - widening the amount mask.</strong> {@code :49} declares
+ *   <li><strong>The amount mask must not be widened.</strong> {@code :49} declares
  *       {@code WS-TRAN-AMT PIC +99999999.99}: eight integer digits against the record's nine, so a value of
  *       one hundred million or more silently loses its leading digit. The truncation is asserted, not
  *       corrected.</li>
- *   <li><strong>Medium - converting the timestamps.</strong> Both are {@code PIC X(26)} text. Three
+ *   <li><strong>The timestamps must not be converted.</strong> Both are {@code PIC X(26)} text. Three
  *       incompatible producers exist across the corpus, so the service passes the characters through and
  *       must never reformat them.</li>
- *   <li><strong>Medium - asserting pagination on a single-record view.</strong> There is none to assert.</li>
- *   <li><strong>Low - the vestigial {@code WS-USR-MODIFIED} flag</strong> at {@code :45-47}, set once at
+ *   <li><strong>A single-record view has no pagination to assert.</strong></li>
+ *   <li><strong>The vestigial {@code WS-USR-MODIFIED} flag</strong> at {@code :45-47}, set once at
  *       {@code :89} and read nowhere, in a program that modifies nothing.</li>
- *   <li><strong>Low - the cloned {@code CDEMO-CT01-INFO} pagination extension</strong> at {@code :53-61},
+ *   <li><strong>The cloned {@code CDEMO-CT01-INFO} pagination extension</strong> at {@code :53-61},
  *       appended after {@code COPY COCOM01Y.} and a verbatim clone of the transaction list's group.
  *       {@code app/cpy/COCOM01Y.cpy} itself declares no page-number and no next-page flag, so both are
  *       program-local. Only {@code CDEMO-CT01-TRN-SELECTED} carries meaning here.</li>
- *   <li><strong>Low - divergent capitalisation.</strong> This program's {@code :292} capitalises
+ *   <li><strong>Divergent capitalisation.</strong> This program's {@code :292} capitalises
  *       {@code Transaction} where the sibling list program does not. Both spellings are contracts, so no
  *       message constant is shared between the two test classes.</li>
- *   <li><strong>Low - the cursor move on the success branch.</strong> {@code :154} parks the cursor inside
- *       {@code WHEN OTHER} before {@code CONTINUE}, so it happens on the valid path as well as the error
- *       path.</li>
- * </ul>
+ *   <li><strong>The cursor move sits on the success branch too.</strong> {@code :154} parks the cursor
+ *       inside {@code WHEN OTHER} before {@code CONTINUE}, so it happens on the valid path as well as the
+ *       error path.</li>
+ *   </ul>
  *
- * <p><strong>Validation evidence, per Rule 1 clause F.</strong> Recorded rather than asserted, on
- * OpenJDK 25.0.3 with Apache Maven 3.9.11 driven through {@code ./mvnw}:
- * {@code ./mvnw -B -ntp test-compile} exits {@code 0} with zero warnings under {@code -Xlint:all -Werror};
- * {@code ./mvnw -B -ntp test -Dtest=TransactionDetailServiceTest} exits {@code 0} with 87 tests, no
- * failures, no errors and nothing skipped; and
- * {@code ./mvnw -B -ntp -Ddependency-check.skip=true clean verify} exits {@code 0} with 6622 tests and zero
- * warnings across the module. Collection is proved by the regenerated report
- * {@code target/surefire-reports/TEST-com.cardemo.unit.service.TransactionDetailServiceTest.xml}, which
- * carries all 87 {@code testcase} elements with none failed, errored or skipped; its {@code tests="0"} root
- * attribute is Surefire's convention for a class whose tests all live in {@code @Nested} inner classes and is
- * not a collection failure. JaCoCo reports {@link TransactionDetailService} at 170 of 170 lines.
- *
- * <p><strong>Not available.</strong> Two things are deliberately out of reach from here and are stated rather
- * than papered over. First, the repository-wide JaCoCo line floor of eighty percent cannot be met by this
- * class: the module stands near sixty percent while sibling tiers are still being written, so the gated build
- * above is run with {@code -Djacoco.line.coverage.minimum=0.0}. What is needed is those remaining tiers; the
- * floor configured in the build is left untouched. Second, an assertion against a live {@code TRANSACT} table
- * is not available in a pure-JVM tier - it needs a container runtime and belongs to the integration tier,
+ * <p><strong>Boundaries of this tier.</strong> An assertion against a live {@code TRANSACT} table cannot be
+ * made from a pure-JVM tier: it needs a container runtime and belongs to the integration tier,
  * which Failsafe owns and which this class must not duplicate.
  *
  * <p><strong>The documented conflict - parity governs.</strong> Rule 1 clause B forbids dead code, while the
  * migration mandate requires one-to-one control-flow parity. They collide on the two vestigial declarations
  * above and on the {@code :275} {@code UPDATE} keyword itself. Parity governs, and clause B is satisfied on
  * its own terms: what it prohibits is an artefact <em>without an owner or tracking reference</em>, and each
- * retained item carries a decision-log entry, a traceability-matrix row, the source locator cited above and
+ * retained item carries the source locator cited above and
  * an explicit intentional-no-op marker on the test that pins it. Deleting any of them would break the
  * paragraph and field map the scope-coverage gate is proved against.
  */
@@ -469,22 +457,55 @@ final class TransactionDetailServiceTest {
     }
 
     /**
-     * {@code READ-TRANSACT-FILE}, {@code app/cbl/COTRN01C.cbl:267-279}, and the High finding recorded on this
+     * {@code READ-TRANSACT-FILE}, {@code app/cbl/COTRN01C.cbl:267-279}, and the response-code note on this
      * class: the {@code UPDATE} option at {@code :275} takes an exclusive lock on a path that never writes.
      *
      * <p>A scan of the program returns zero occurrences of {@code REWRITE}, {@code UNLOCK}, {@code SYNCPOINT}
      * and {@code WRITE}; its complete CICS verb inventory is {@code RETURN} at {@code :136}, {@code XCTL} at
      * {@code :205}, {@code SEND} at {@code :219}, {@code RECEIVE} at {@code :232} and the {@code READ} at
-     * {@code :269}. The labelled deviation is therefore that the Java retrieval reaches the store as a plain
-     * keyed read: no lock hint, no write and no flush reaches the repository, because a Java pessimistic lock
-     * would hold a row lock for the whole request and change the concurrency profile.
+     * {@code :269}. So no write verb may reach the store.
+     *
+     * <p><strong>Correction.</strong> An earlier revision of this nested class asserted the opposite of the
+     * production contract: it stated that the retrieval reaches the store as a plain keyed read with "no lock
+     * hint", and it omitted any assertion about the lock. That was wrong on both counts and is corrected
+     * here. {@code TransactionDetailService} escalates the found row to
+     * {@link LockModeType#PESSIMISTIC_WRITE} through {@link EntityManager#lock(Object, LockModeType)},
+     * which is what reproduces the {@code UPDATE} option; Hibernate renders it as
+     * {@code SELECT ... FOR UPDATE}. The earlier assertions passed only because that escalation travels
+     * through the {@link EntityManager}, not through {@link TransactionRepository}, so a
+     * {@code verifyNoMoreInteractions} on the repository could never have observed it. Verifying the
+     * repository alone is therefore not sufficient to describe this path, and both collaborators are
+     * asserted below.
      */
     @Nested
-    @DisplayName("READ-TRANSACT-FILE :267-279 - the retrieval is read-only (High)")
+    @DisplayName("READ-TRANSACT-FILE :267-279 - keyed read, escalated to PESSIMISTIC_WRITE, never written")
     final class ReadOnlyRetrievalContract {
 
         @Test
-        @DisplayName("the store sees exactly one plain keyed read and nothing else")
+        @DisplayName("the found row IS escalated to PESSIMISTIC_WRITE, reproducing the UPDATE option at :275")
+        void foundRowIsEscalatedToPessimisticWrite() {
+            final Transaction record = canonicalTransaction();
+
+            viewFound(record);
+
+            verify(entityManager).lock(record, LockModeType.PESSIMISTIC_WRITE);
+            verifyNoMoreInteractions(entityManager);
+        }
+
+        @Test
+        @DisplayName("the escalation locks the very row the store returned, not a copy of it")
+        void theLockedRowIsTheRowTheStoreReturned() {
+            final Transaction record = canonicalTransaction();
+
+            viewFound(record);
+
+            final ArgumentCaptor<Object> locked = ArgumentCaptor.forClass(Object.class);
+            verify(entityManager).lock(locked.capture(), eq(LockModeType.PESSIMISTIC_WRITE));
+            assertThat(locked.getValue()).isSameAs(record);
+        }
+
+        @Test
+        @DisplayName("the store sees exactly one plain keyed read: the lock travels via the entity manager")
         void repositoryReceivesOnlyOnePlainKeyedRead() {
             viewFound(canonicalTransaction());
 
@@ -723,7 +744,7 @@ final class TransactionDetailServiceTest {
      * The cursor and the field clearing of {@code PROCESS-ENTER-KEY}, {@code app/cbl/COTRN01C.cbl:144-192}.
      *
      * <p>{@code :151} parks the cursor on the error branch and {@code :154} parks it again inside
-     * {@code WHEN OTHER} before {@code CONTINUE}, so the move happens on the valid path too - the Low finding
+     * {@code WHEN OTHER} before {@code CONTINUE}, so the move happens on the valid path too - the ordering note
      * recorded on this class. {@code :158-171} then blanks the thirteen record-bearing fields before the read,
      * so a failed lookup cannot leave a previous record on the screen.
      */
@@ -786,7 +807,7 @@ final class TransactionDetailServiceTest {
     }
 
     /**
-     * The guard the source does <strong>not</strong> have - the Medium finding recorded on this class.
+     * The guard the source does <strong>not</strong> have - the absent-guard note on this class.
      *
      * <p>{@code :146-156} tests for empty and for nothing else. The sibling transaction-list program carries
      * {@code Tran ID must be Numeric ...} at its {@code :214}; this program has no equivalent, so every
@@ -862,7 +883,7 @@ final class TransactionDetailServiceTest {
 
     /**
      * The {@code :290} diagnostic, {@code DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD}, and the High
-     * cardholder-data finding recorded on this class.
+     * cardholder-data note on this class.
      *
      * <p>One {@code DISPLAY} in the source becomes one structured log event. It must carry the status codes and
      * the file and operation context only: no card number, and nothing that could identify a cardholder.
@@ -923,13 +944,80 @@ final class TransactionDetailServiceTest {
                     .isThrownBy(() -> service.viewTransaction(ID))
                     .withMessageNotContaining(SYNTHETIC_CARD_NUMBER);
         }
+
+        @Test
+        @DisplayName("the success path logs no VALUE of the record - not the amount, the merchant or the card")
+        void successPathLogsNoFieldOfTheRecord() {
+            // Masking the card number alone was never enough. This one line carried the amount and the
+            // merchant identifier BESIDE the transaction identifier, so it disclosed what a cardholder spent
+            // and where, and the identifier then links that back to the card through a single lookup - which
+            // made the masked card number no protection at all. This path runs once per view request, so
+            // those three together amounted to a ledger in the log stream.
+            //
+            // The boundary is between VALUES and KEYS, and it is asserted in both directions. The amount, the
+            // merchant identifier, the merchant name and the card number are gone, replaced by fixed-width
+            // placeholders of their declared widths - width by construction, so the geometry invariant holds
+            // even in a redacted line. The transaction identifier, the type and category codes, the source
+            // and the two dates are KEPT: they are reference and key data, they are what this event exists to
+            // confirm, and logback-spring.xml records that the value masks deliberately leave
+            // identifier-shaped lines alone rather than over-redact them. Removing them would leave an event
+            // that confirms nothing and an incident with no key to follow; the exception path is where the
+            // identifier is withheld from the log and carried on the throwable instead, which its own test
+            // asserts.
+            final TransactionDetailScreen screen = viewFound(canonicalTransaction());
+
+            assertThat(screen.detail()).isNotNull();
+            assertThat(capturedLogText())
+                    .as("no VALUE from the record may appear in any captured event")
+                    .doesNotContain(SYNTHETIC_CARD_NUMBER)
+                    .doesNotContain("123.45")
+                    .doesNotContain("COFFEE");
+            assertThat(capturedLogText())
+                    .as("each redaction is a fixed-width placeholder of the field's declared width")
+                    .contains("amount=" + "*".repeat(12))
+                    .contains("merchantId=" + "*".repeat(9));
+            assertThat(capturedLogText())
+                    .as("the key and reference fields are kept, so the event still confirms something")
+                    .contains("transactionId=" + ID)
+                    .contains("processingDate=");
+        }
+
+        @Test
+        @DisplayName("the failure path logs no transaction identifier either")
+        void failurePathLogsNoTransactionIdentifier() {
+            // The identifier is caller-supplied input and the failure is a property of the store, so naming
+            // the record adds nothing a correlation identifier does not already give.
+            final QueryTimeoutException boom = new QueryTimeoutException("read timed out");
+            when(transactionRepository.findById(ID)).thenThrow(boom);
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.viewTransaction(ID));
+
+            assertThat(capturedLogText()).doesNotContain(ID);
+        }
+
+        @Test
+        @DisplayName("the appender is at TRACE, so the assertions above cover every enabled level")
+        void everyLevelIsCaptured() {
+            // Without this, a value emitted at DEBUG or TRACE would slip past the assertions above and the
+            // whole nest would be proving something weaker than it claims.
+            assertThat(serviceLogger.getLevel()).isEqualTo(Level.TRACE);
+            assertThat(serviceLogger.isTraceEnabled()).isTrue();
+            assertThat(serviceLogger.isDebugEnabled()).isTrue();
+
+            viewFound(canonicalTransaction());
+
+            assertThat(logEvents.list)
+                    .as("the populate path does emit, so the absence assertions are not vacuous")
+                    .isNotEmpty();
+        }
     }
 
     /**
      * Field contracts and decimal precision: the 350-byte record of {@code app/cpy/CVTRA05Y.cpy} projected
      * onto the 21 input fields of {@code app/cpy-bms/COTRN01.CPY}.
      *
-     * <p>Two Medium findings recorded on this class are pinned here. {@code WS-TRAN-AMT PIC +99999999.99} at
+     * <p>Two source characteristics noted on this class are pinned here. {@code WS-TRAN-AMT PIC +99999999.99} at
      * {@code :49} holds eight integer digits while {@code TRAN-AMT} is {@code S9(09)V99} with nine, so a value
      * of one hundred million or more silently loses its leading digit - the truncation is asserted, never
      * widened. And {@code TRAN-ORIG-TS} and {@code TRAN-PROC-TS} are {@code PIC X(26)} text, so they are

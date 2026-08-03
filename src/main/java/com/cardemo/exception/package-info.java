@@ -1,6 +1,7 @@
 /*
  * ******************************************************************
  * Program     : package-info.java
+ * Package     : com.cardemo.exception
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
  * Function    : Package documentation for the typed exception hierarchy
@@ -61,7 +62,7 @@
  *       {@code app/cpy/CSMSG02Y.cpy}, whose internal title is {@code CABENDD.CPY} and which holds
  *       {@code ABEND-CODE}, {@code ABEND-CULPRIT}, {@code ABEND-REASON} and {@code ABEND-MSG} rather than
  *       screen messages.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Five contracts bind every class here. <strong>Dependency direction</strong> runs from {@code exception} to
  * {@code model} and never the reverse, so an enumeration never imports an exception. <strong>Mapping</strong>
@@ -98,7 +99,7 @@
  *       dependency vulnerability scan. It runs <strong>no integration test</strong>: measured
  *       1 August 2026 the {@code src/test/java/com/cardemo/integration} and {@code .../e2e} trees are
  *       <strong>not available</strong>, so failsafe has nothing to bind.</li>
- * </ul>
+ *   </ul>
  *
  * <p>{@code maven-compiler-plugin:3.14.1} is configured with {@code -Xlint:all} and {@code -Werror}, and
  * with {@code failOnWarning} set to {@code true}. <strong>Every file must therefore be warning clean, and a
@@ -117,50 +118,78 @@
  *       between them. Reversing that order, or making the banner a documentation comment, produces two
  *       candidate package comments and fails the build. The ordering is a compile requirement here, not a
  *       matter of taste.</li>
- * </ul>
+ *   </ul>
  *
- * <h3>Test</h3>
+ * <h2>Test</h2>
  *
  * <p>Unit tests live in {@code src/test/java/com/cardemo/unit}; the surefire configuration discovers
  * {@code **}{@code /*Test.java} and {@code **}{@code /*Tests.java} and excludes the {@code integration} and
- * {@code e2e} trees so they cannot run in the {@code test} phase. Those two exclusion patterns are
- * pre-emptive: measured 1 August 2026 neither tree exists, so they currently match nothing.
+ * {@code e2e} trees so they cannot run in the {@code test} phase. The {@code integration} exclusion is
+ * live rather than pre-emptive - {@code src/test/java/com/cardemo/integration} exists, holding the two
+ * abstract Testcontainers bases {@code batch/AbstractBatchIntegrationTest} and
+ * {@code repository/AbstractRepositoryIntegrationTest} - so that pattern is what keeps a container-dependent
+ * class out of the unit phase. The {@code e2e} exclusion remains pre-emptive, because that tree has not been
+ * authored yet and the pattern therefore matches nothing. An earlier revision of this sentence said neither
+ * tree existed; the {@code integration} half of that is false and is withdrawn.
  * <strong>No test file lives in this package</strong>, and none should: production and test sources are
  * never mixed in the same directory in this tree.
  *
  * <p>{@code jacoco-maven-plugin} enforces an <strong>80 percent line coverage floor at {@code verify}, with
  * no exclusions</strong> ({@code jacoco.line.coverage.minimum} is {@code 0.80}). Because there are no
  * exclusions, the constructors and accessors of all nine classes must be <strong>genuinely exercised</strong>
- * by tests that assert behaviour, not merely instantiated to move the number. <strong>Not available,
- * measured 1 August 2026:</strong> none of the nine types has a test class, and none is referenced from the
- * test tree, so this package contributes zero covered lines and the floor has never been evaluated against
- * it. That is a real gap, stated rather than implied by silence. The plugin is pinned to
- * {@code 0.8.13} rather than the {@code 0.8.12} named in the original requirement, for a hard technical
- * reason recorded in {@code pom.xml} and in {@code DECISION_LOG.md}: Java 25 emits class file major version
- * 69, which {@code 0.8.12} rejects outright, so the report goal fails before any coverage figure exists.
- * {@code 0.8.13} is the smallest release that can read it, which keeps the preference for the lower pin
- * intact.
+ * by tests that assert behaviour, not merely instantiated to move the number. This package <strong>is</strong>
+ * exercised: {@code src/test/java/com/cardemo/unit/exception/ExceptionHierarchyTest.java},
+ * {@code unit/model/CardDemoExceptionHierarchyTest.java} and
+ * {@code unit/model/FatalProcessingExceptionTest.java} target it directly, and every one of the nine types is
+ * referenced from between six and twenty-two test classes across the tree, because the services and batch
+ * components that raise them assert on them. What is <strong>not</strong> present is a dedicated test class
+ * per type, so per-type coverage is uneven rather than absent - a narrower and more accurate statement than
+ * the one this paragraph previously made.
  *
- * <h3>Verifying this file in particular</h3>
+ * <p>The plugin is pinned to <strong>{@code 0.8.12}</strong>, exactly the version the requirement names, and
+ * an earlier revision of this paragraph wrongly said it had been raised to {@code 0.8.13}; that claim is
+ * withdrawn. Java 25 emits class file major version 69, and the release that rejects it is <strong>ASM</strong>
+ * rather than any {@code org.jacoco} artefact, so the pin is honoured literally and only the plugin's
+ * transitive reader is advanced: {@code org.ow2.asm:asm}, {@code asm-commons} and {@code asm-tree} to
+ * <strong>9.9</strong>, with the runtime agent at the matching <strong>0.8.14</strong> build. Both halves are
+ * required. The measurement is recorded beside the property in {@code pom.xml}; the divergence is
+ * <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>, which does not exist at this
+ * commit.
  *
- * <p>Because {@code pom.xml} configures no Javadoc plugin, {@code verify} does not check documentation
- * well-formedness. This file is almost entirely a documentation comment, so it is checked directly:
+ * <p>The plugin pin is {@code 0.8.12}, exactly as the requirement names it, and it is not raised. Java 25
+ * emits class file major version 69 and the ASM 9.7 build inside 0.8.12 has a ceiling of 67, so the naive
+ * reading is that the pin must move; the actual fix is that a plugin classpath is overridable, so
+ * {@code pom.xml} keeps the pin literal and advances only the bytecode reader - ASM to 9.9 and
+ * {@code jacoco.agent.runtime.version} to {@code 0.8.14}. Both halves are required. Recorded in
+ * {@code pom.xml} and in {@code DECISION_LOG.md}.
+ *
+ * <h2>Verifying this file in particular</h2>
+ *
+ * <p>Because {@code pom.xml} configures no Javadoc plugin and no {@code -Xdoclint}, {@code verify} does not
+ * check documentation well-formedness. This file is almost entirely a documentation comment, so it is
+ * covered instead by the explicit, repository-owned doclint command published once in
+ * {@code docs/technical-specifications.md} under the dated checkpoint section:
  *
  * <ul>
- *   <li>{@code javadoc -Xdoclint:all -d target/jd -sourcepath src/main/java
- *       src/main/java/com/cardemo/exception/*.java} must report zero errors and zero warnings. It did, on
- *       {@code javadoc} 25.0.3 on 1 August 2026. Run it after any edit here; a malformed element, an
- *       unescaped angle bracket or an unresolved reference is caught by this and by nothing else in the
- *       build. The {@code -sourcepath} argument is not optional: this package imports
- *       {@link com.cardemo.model.enums.FileStatus}, and without it {@code javadoc} exits 1 with
- *       {@code package com.cardemo.model.enums does not exist}. No dependency classpath is needed,
- *       because the package imports nothing outside {@code com.cardemo}.</li>
- * </ul>
+ *   <li>That command runs {@code javadoc -private -Xdoclint:all --release 25} over the whole
+ *       {@code src/main/java} and {@code src/test/java} trees against the resolved test classpath, and must
+ *       exit 0. Run it after any edit here; a malformed element, an unescaped angle bracket, an unresolved
+ *       reference or a heading used out of sequence is caught by it and by nothing else in the build.</li>
+ *   <li>It is deliberately a whole-tree invocation rather than a per-package one. A per-package run needs a
+ *       {@code -sourcepath} to resolve {@link com.cardemo.model.enums.FileStatus} and, being narrow, can
+ *       report zero errors while defects sit in a sibling package - which is exactly how the earlier
+ *       per-file attestations in this tree came to be wrong.</li>
+ *   <li>Warnings are reported by that command and are <strong>not</strong> part of the gate; only the exit
+ *       status is. The default {@code -Xmaxwarns} caps the printed warning list, so the printed count is
+ *       never evidence on its own.</li>
+ *   </ul>
  *
- * <h3>Toolchain actually present in this environment</h3>
+ * <h2>Toolchain actually present in this environment</h2>
  *
- * <p>Measured on 1 August 2026 in this container, after {@code source
- * /etc/profile.d/10-carddemo-toolchain.sh}: {@code javac 25.0.3}, {@code javadoc 25.0.3}, {@code Apache
+ * <p>Measured on 1 August 2026 in this container. The prerequisite is a capability and never a host path -
+ * JDK 25 on {@code PATH} with {@code JAVA_HOME} set, however the host provides it, and Maven from the pinned
+ * wrapper; the repository's own contract is {@code .env} plus {@code ./mvnw}. Measured: {@code javac 25.0.3},
+ * {@code javadoc 25.0.3}, {@code Apache
  * Maven 3.9.11} running on the same JDK, a warm local repository allowing fully offline resolution with
  * {@code -o}, and {@code Docker 29.7.0} with {@code Docker Compose v5.3.1} both available. The pinned pair
  * is therefore present on the host and {@code ./mvnw -q -DskipTests compile} runs directly.
@@ -198,7 +227,7 @@
  *       status. The width is not a choice: {@code IO-STATUS-04} is a group of {@code PIC 9} followed by
  *       {@code PIC 999} at {@code app/cbl/CBTRN02C.cbl:L138-L140 @ 7756d89}, so one digit plus three digits,
  *       four characters exactly.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Two pieces of configuration this package <strong>depends on without owning</strong>:
  *
@@ -216,7 +245,7 @@
  *       comes from the abend path instead. These are <strong>two independent paths</strong>, and
  *       <strong>no exception in this package may produce return code 4</strong>: rejects are counted and
  *       written, never thrown.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -246,7 +275,7 @@
  *       carrying the four character expanded status.</li>
  *   <li>anything else - unexpected. {@link com.cardemo.exception.FatalProcessingException}, abend code
  *       {@code 999}, return code {@code 12}.</li>
- * </ul>
+ *   </ul>
  *
  * <h3>The three scoped sites where a non {@code '00'} status is success</h3>
  *
@@ -288,7 +317,7 @@
  *       {@code '10'} as end of file and abend on anything else. So {@code '04'} is success at the nine
  *       {@code IF} sites and <strong>not</strong> at the four {@code EVALUATE} sites, in the same
  *       program.</li>
- * </ul>
+ *   </ul>
  *
  * <p>One measured note that strengthens the rule, and corrects a plausible misreading. Across the whole
  * corpus a literal {@code '23'} appears in a status comparison at <strong>exactly three lines in two
@@ -331,7 +360,7 @@
  *   <li>{@code WHEN DATA-WAS-CHANGED-BEFORE-UPDATE} sets {@code ACUP-SHOW-DETAILS}, value {@code 'S'}</li>
  *   <li>{@code WHEN OTHER} sets {@code ACUP-CHANGES-OKAYED-AND-DONE}, value {@code 'C'}, meaning the changes
  *       were accepted and applied</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>{@code COULD-NOT-LOCK-CUST-FOR-UPDATE} occurs at exactly two lines in this 4,236 line
  * program</strong>: {@code :L519}, where it is declared, and {@code :L3939}, where it is set when the
@@ -371,7 +400,7 @@
  *   <li>status {@code '9'} followed by {@code X'01'} takes the other branch, which copies the {@code 9}
  *       through and expands the second byte from a binary field into three digits, giving {@code 9001}, so
  *       the line reads {@code FILE STATUS IS: NNNN9001}</li>
- * </ul>
+ *   </ul>
  *
  * <p><strong>Preserve it; never tidy it.</strong> Emitting {@code FILE STATUS IS: 0023}, or interpolating the
  * digits into the placeholder, is a diff against the parity baseline. Severity of reformatting it:
@@ -558,7 +587,7 @@
  *   <li><strong>Return code 4 is not an exception at all.</strong> It means the posting run completed with
  *       rejects. Read the reject records, count them against the run summary, and do not look for a stack
  *       trace, because there is none and there should be none.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Severity register for this package</h2>
  *
@@ -581,7 +610,7 @@
  *   <li><strong>Low</strong> - the online {@code '9999'} versus batch {@code 999} abend code distinction; and
  *       both account update rewrite failure paths sharing the single {@code LOCKED-BUT-UPDATE-FAILED}
  *       flag, so the outcome does not reveal which write failed.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Package level constraints</h2>
  *
@@ -610,8 +639,9 @@
  *       <strong>zero imports</strong>, which is deliberate rather than incidental: every type it names is
  *       either in this package, and so resolves without one, or is referenced in prose. An import used only
  *       inside documentation is an unused import, which Rule 1 Clause B forbids; {@code -Werror} does not
- *       catch one, because {@code javac} 25.0.3 publishes no unused-import lint key, so the zero-import
- *       count above is a review guarantee rather than a compiler-enforced one. No
+ *       catch one, because {@code javac} 25.0.3 publishes no {@code unused} lint key at all - as
+ *       {@code javac --help-lint} shows - so the zero-import count above is a review guarantee rather than a
+ *       compiler-enforced one. No
  *       deferred work marker of any kind appears anywhere in the package, so a scan for the usual tokens
  *       returns nothing; the two Not available disclosures above are findings carrying evidence and a
  *       severity, which is the opposite of an untracked reminder.</li>
@@ -653,7 +683,7 @@
  *       file.</li>
  *   <li><strong>The legacy corpus is frozen.</strong> Nothing under {@code app} or {@code samples} is read
  *       for anything but evidence, and nothing there is ever modified. The migration is purely additive.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The one documented conflict, and why it is not instantiated here</h2>
  *
@@ -663,17 +693,25 @@
  * {@code app/cbl/CBACT04C.cbl:L216 @ 7756d89}. Deleting it would break the paragraph level correspondence
  * that the scope coverage gate verifies; keeping it looks like the dead code Clause B forbids.
  *
- * <p><strong>Parity governs</strong>, because the clause forbids dead code that is <em>untracked</em>, and
- * each retained artefact is cited in {@code TRACEABILITY_MATRIX.md} and justified in {@code DECISION_LOG.md}.
- * A documented, cited, deliberately preserved reproduction of a reachable no-op in the system of record is
- * not abandoned residue.
+ * <p><strong>Parity governs</strong>, because the clause forbids dead code that is <em>untracked</em>. What
+ * makes a retained no-op tracked is stated per artefact, at its own declaration: its COBOL locator, a proof of
+ * reachability, an explicit intentional-no-op marker, and - until the file exists - an acknowledgement that it
+ * is <strong>owed an entry in the planned {@code DECISION_LOG.md}</strong>. Neither
+ * {@code DECISION_LOG.md} nor {@code TRACEABILITY_MATRIX.md} exists at this commit, so no artefact may yet be
+ * described as already cited or already justified in them, and an earlier revision of this paragraph that said
+ * so is corrected here.
  *
- * <p><strong>No retained parity artefact lives in this package.</strong> The tree has five of them and every
- * one is elsewhere: the empty fee paragraph and its call site in the interest processor, an unreachable final
- * flush branch, a dead path, a redundant index assignment, and reject code 109 as a constant in
- * {@code com.cardemo.model.enums.RejectCode}. Every one of the nine classes here is reachable, constructed by
- * real callers and exercised by tests. The conflict is recorded here because this package documents the error
- * taxonomy the interest job reports through, not because it hosts an instance of it.
+ * <p><strong>No retained parity artefact lives in this package</strong> - and that local fact is all that is
+ * asserted. An earlier revision added "the tree has five of them" and enumerated five, while
+ * {@code com.cardemo.security} and {@code com.cardemo.repository} each said three. The tallies contradicted one
+ * another because each was maintained by hand in a comment that no build step checks. Severity of what that
+ * left in place: <strong>High</strong>. The count and the enumeration are both withdrawn, and deliberately not
+ * replaced by a corrected count: the per-artefact justification above is the register of record, and no file
+ * holds a global list.
+ *
+ * <p>Every one of the nine classes here is reachable and constructed by real callers. The conflict is recorded
+ * in this package because this package documents the error taxonomy the interest job reports through, not
+ * because it hosts an instance of it.
  */
 
 package com.cardemo.exception;

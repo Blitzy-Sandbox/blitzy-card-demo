@@ -106,7 +106,7 @@ import org.slf4j.LoggerFactory;
  *       {@code :L20} - {@code CDEMO-ADMIN-OPT-COUNT PIC 9(02) VALUE 4}; {@code :L22} onward - the four
  *       populated slots; {@code :L44-L48} - the {@code REDEFINES} over the same storage with
  *       {@code CDEMO-ADMIN-OPT OCCURS 9 TIMES} and its three sub-fields.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Two contrast locators are asserted as well, because the administrator menu is defined as much by what
  * it lacks as by what it has. {@code app/cbl/COMEN01C.cbl:L146} carries the same placeholder guard, which
@@ -133,7 +133,8 @@ import org.slf4j.LoggerFactory;
  * </pre>
  *
  * <p>Test compilation is governed by {@code maven-compiler-plugin} 3.14.1 at {@code release 25} with
- * {@code -Xlint:all -Werror}, so any warning - a single unused import included - fails the build.
+ * {@code -Xlint:all -Werror}, so any warning {@code javac} emits fails the build. An unused import is not
+ * among them: {@code javac} 25 publishes no {@code unused} lint key, so that prohibition is review-enforced.
  *
  * <h2>3. Key configuration and defaults</h2>
  *
@@ -151,14 +152,15 @@ import org.slf4j.LoggerFactory;
  *   <li>The construction seam is package-private and this class sits in a different package, so it is
  *       reached reflectively through {@code MenuServiceTestSupport}, which is shared with the sibling menu
  *       test rather than duplicated here.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>4. Common failure modes and troubleshooting</h2>
  *
  * <ul>
- *   <li><em>"warnings found and -Werror specified"</em> - one unused import is enough. Every import in this
- *       file is used; adding an assertion without its import, or removing the last use of one, breaks the
- *       build rather than the test.</li>
+ *   <li><em>"warnings found and -Werror specified"</em> - one raw type, unchecked cast or dangling doc
+ *       comment is enough. Every import in this file is used, which Rule 1 Clause B requires, but note that
+ *       removing the last use of one produces no build failure: {@code javac} 25 has no {@code unused} lint
+ *       key, so an unused import is caught at review.</li>
  *   <li><em>An option between five and nine resolves instead of being refused</em> - the bound was taken
  *       from the {@code OCCURS 9} extent instead of the count field. See {@link TheCountFieldIsTheOnlyBound}.</li>
  *   <li><em>A compilation error about a user type on an administrator option</em> - a user-class gate was
@@ -170,7 +172,7 @@ import org.slf4j.LoggerFactory;
  *       {@code app/cbl/COADM01C.cbl:L143} was not modelled as a terminal transfer.</li>
  *   <li><em>An {@code IndexOutOfBoundsException} instead of a refusal</em> - the bounds check was placed
  *       after the option-record lookup rather than before it.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings this class pins, by severity</h2>
  *
@@ -207,7 +209,7 @@ import org.slf4j.LoggerFactory;
  *       instead. Remediation: name the label in the Javadoc of {@code receiveMenuScreen}. Recorded rather
  *       than corrected, because {@code src/main} is owned elsewhere, and asserted with a containment check
  *       so that the later fix strengthens the source without breaking this class.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Retained rather than deleted, with an owner</h2>
  *
@@ -325,13 +327,29 @@ class AdminMenuServiceTest {
     /**
      * The rendered option lines {@code BUILD-MENU-OPTIONS} assembles at
      * {@code app/cbl/COADM01C.cbl:L233-L236}: a {@code PIC 9(02)} number, so zero-padded to two digits, the
-     * two-character literal {@code '. '}, and the caption. Hence {@code 01.} and not {@code 1.}
+     * two-character literal {@code '. '}, and the whole {@code PIC X(35)} caption. Hence {@code 01.} and not
+     * {@code 1.}
+     *
+     * <p>Each line is <strong>exactly forty characters</strong>, the width of {@code WS-ADMIN-OPT-TXT PIC
+     * X(40)} at {@code app/cbl/COADM01C.cbl:L48} and of the {@code OPTN001O} screen slot it is moved into.
+     * Two digits plus two separator characters plus thirty-five caption characters is thirty-nine, and the
+     * fortieth is the space the {@code MOVE SPACES} at {@code :L231} left behind.
      */
     private static final List<String> EXPECTED_OPTION_LABELS = List.of(
-            "01. User List (Security)",
-            "02. User Add (Security)",
-            "03. User Update (Security)",
-            "04. User Delete (Security)");
+            padToScreenSlot("01. User List (Security)"),
+            padToScreenSlot("02. User Add (Security)"),
+            padToScreenSlot("03. User Update (Security)"),
+            padToScreenSlot("04. User Delete (Security)"));
+
+    /**
+     * Pads a rendered line to the forty-column screen slot the source's receiving field declares.
+     *
+     * @param line the line as its three operands compose it, never {@code null}
+     * @return the line at exactly forty characters, never {@code null}
+     */
+    private static String padToScreenSlot(final String line) {
+        return line + " ".repeat(MenuResponse.SCREEN_OPTION_SLOT_LENGTH - line.length());
+    }
 
     /**
      * The seven paragraph labels of {@code app/cbl/COADM01C.cbl} paired with the private method each one
@@ -649,7 +667,7 @@ class AdminMenuServiceTest {
             // EXEC CICS SEND MAP with no EXEC CICS RETURN, so the source falls through a bounds-check
             // failure into the guard at :L138, which subscripts the over-redefined region. Java refuses
             // before any element access, because reading uninitialised storage has no defined semantics
-            // here. Recorded in DECISION_LOG.md.
+            // here. Owed an entry in the planned DECISION_LOG.md.
             final AdminMenuService service = new AdminMenuService();
 
             final Throwable refusal = catchThrowable(() -> service.selectOption("9"));

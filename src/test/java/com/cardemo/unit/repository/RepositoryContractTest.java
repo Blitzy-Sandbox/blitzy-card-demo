@@ -77,6 +77,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.DisplayName;
@@ -253,16 +254,23 @@ class RepositoryContractTest {
             assertThat(text)
                     .as("the four documentation subjects required of every module, plus the honest "
                             + "unavailability disclosure and the Apache-2.0 provenance banner")
+                    // The heading wording is the one PackageDocumentationInventoryTest enforces across all
+                    // 24 package documents, so every module names the four Clause E subjects identically. This
+                    // test previously pinned two abbreviated forms - "How to run/build/test" and "Key configs
+                    // and defaults" - which were unique to this one file; they were normalised rather than
+                    // preserved, because a per-file heading vocabulary is exactly the inconsistency Clause C
+                    // objects to.
                     .contains("<h2>What it does</h2>")
-                    .contains("<h2>How to run/build/test</h2>")
-                    .contains("<h2>Key configs and defaults</h2>")
+                    .contains("<h2>How to run, build and test</h2>")
+                    .contains("<h2>Key configuration and defaults</h2>")
                     .contains("<h2>Common failure modes and troubleshooting</h2>")
                     .contains("Not available")
                     .contains("http://www.apache.org/licenses/LICENSE-2.0")
                     .contains("package com.cardemo.repository;");
             assertThat(text)
-                    .as("no import and no annotation, both of which would be gratuitous here and an "
-                            + "unused one of which is a build failure under -Werror")
+                    .as("no import and no annotation, both of which would be gratuitous here; an unused "
+                            + "import is a Rule 1 Clause B violation caught at review, not by -Werror, "
+                            + "because javac 25 publishes no unused lint key")
                     .doesNotContain("\nimport ")
                     .doesNotContain("\n@");
         }
@@ -357,33 +365,63 @@ class RepositoryContractTest {
     class DeclaredFinders {
 
         @Test
-        @DisplayName("the two read-for-update interfaces declare exactly their locking finder")
-        void readForUpdateInterfacesDeclareOnlyTheirLockingFinder() {
+        @DisplayName("the two read-for-update interfaces declare their locking finder and their keyset scan")
+        void readForUpdateInterfacesDeclareTheirLockingFinderAndKeysetScan() {
             assertThat(declaredMethodNames(AccountRepository.class))
-                    .containsExactly("findByIdForUpdate");
+                    .as("the locking finder serves the EXEC CICS READ ... UPDATE of "
+                            + "app/cbl/COACTUPC.cbl:L3894-L3906, and the keyset finder serves the "
+                            + "sequential ACCTFILE browse of app/cbl/CBACT01C.cbl:L93; nothing else is "
+                            + "declared, because a finder without a consumer is dead code")
+                    .containsExactly("findByAccountIdGreaterThanOrderByAccountIdAsc", "findByIdForUpdate");
             assertThat(declaredMethodNames(CustomerRepository.class))
-                    .containsExactly("findByIdForUpdate");
+                    .as("the locking finder serves the EXEC CICS READ ... UPDATE of "
+                            + "app/cbl/COACTUPC.cbl:L3920-L3932, and the keyset finder serves the "
+                            + "sequential CUSTFILE browse of app/cbl/CBCUS01C.cbl:L93")
+                    .containsExactly("findByCustomerIdGreaterThanOrderByCustomerIdAsc", "findByIdForUpdate");
         }
 
         @Test
         @DisplayName("the alternate-key interfaces declare their account finder and nothing surplus")
         void alternateKeyInterfacesDeclareTheirAccountFinder() {
+            // findByCardNumberAndAccountId is the ownership-scoped single-record read that COCRDUPC :1379
+            // and :1424 and COCRDSLC :739 all describe and all leave commented out. It is a third declared
+            // finder rather than a replacement for either: the ordered account scan still serves the card
+            // list's seven-row page, and the unfiltered scan still serves the batch reader.
             assertThat(declaredMethodNames(CardRepository.class))
-                    .containsExactly("findAllByOrderByCardNumberAsc", "findByAccountIdOrderByCardNumberAsc");
+                    .as("the account finder serves the alternate index, the unfiltered finder serves the "
+                            + "online base-key browse, the card-number keyset finder serves the sequential "
+                            + "CARDFILE browse of app/cbl/CBACT02C.cbl:L93, and the locking finder serves "
+                            + "the EXEC CICS READ ... UPDATE of app/cbl/COCRDUPC.cbl:1427-1436, while the "
+                            + "two ownership-scoped finders serve 9100-GETCARD-BYACCTCARD - the read-only "
+                            + "one for the snapshot the screen displays and the locking one for the rewrite "
+                            + "that follows it")
+                    .containsExactly("findAllByOrderByCardNumberAsc", "findByAccountIdOrderByCardNumberAsc",
+                            "findByCardNumberAndAccountId",
+                            "findByCardNumberGreaterThanOrderByCardNumberAsc",
+                            "findByIdAndAccountIdForUpdate", "findByIdForUpdate");
             assertThat(declaredMethodNames(CardCrossReferenceRepository.class))
-                    .containsExactly("findByAccountIdOrderByCardNumberAsc");
+                    .as("the account finder serves the alternate index as a single-record keyed READ, and "
+                            + "the card-number keyset finder serves the sequential XREFFILE browse of "
+                            + "app/cbl/CBSTM03A.CBL:L345-L366, whose ascending order the statement "
+                            + "lookup's early exit depends on")
+                    .containsExactly("findByCardNumberGreaterThanOrderByCardNumberAsc",
+                            "findFirstByAccountIdOrderByCardNumberAsc");
         }
 
         @Test
-        @DisplayName("the transaction interface declares the five paths its callers need")
-        void transactionInterfaceDeclaresFivePaths() {
+        @DisplayName("the transaction interface declares the six paths its callers need")
+        void transactionInterfaceDeclaresSixPaths() {
             assertThat(declaredMethodNames(TransactionRepository.class))
+                    .as("the sixth is the statement sort order of app/jcl/CREASTMT.JCL:L53, reached by "
+                            + "keyset rather than by page number so a full-run scan costs one index seek "
+                            + "per window instead of re-reading every preceding row")
                     .containsExactly(
                             "findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc",
                             "findByTransactionIdGreaterThanEqualOrderByTransactionIdAsc",
                             "findByTransactionIdGreaterThanOrderByTransactionIdAsc",
                             "findByTransactionIdLessThanOrderByTransactionIdDesc",
-                            "findFirstByOrderByTransactionIdDesc");
+                            "findFirstByOrderByTransactionIdDesc",
+                            "findStatementOrderAfter");
         }
 
         @Test
@@ -427,13 +465,28 @@ class RepositoryContractTest {
         }
 
         @Test
-        @DisplayName("the CARDXREF alternate index yields a List of cross-references keyed by account")
-        void cardXrefAlternateIndexYieldsAList() {
+        @DisplayName("the CARDXREF alternate index yields one cross-reference, because CXACAIX is never browsed")
+        void cardXrefAlternateIndexYieldsOneRecord() {
             final Method finder = declaredMethod(CardCrossReferenceRepository.class,
-                    "findByAccountIdOrderByCardNumberAsc", Long.class);
+                    "findFirstByAccountIdOrderByCardNumberAsc", Long.class);
+            // AXRKP 25 at app/catlg/LISTCAT.txt:L486 is NONUNIQKEY at :L488, so the INDEX permits
+            // duplicates - and it still does; V2__create_indexes.sql declares it non-unique. But a
+            // non-unique index is not the same thing as a multi-row READ, and conflating the two is what
+            // produced the earlier List return type.
+            //
+            // EVERY account-keyed access to this dataset in the whole corpus is a SINGLE-RECORD keyed read,
+            // and the receiving field proves it: EXEC CICS READ ... INTO (CARD-XREF-RECORD) at
+            // app/cbl/COTRN02C.cbl:579-583 and app/cbl/COBIL00C.cbl:411-415, the same literal 'CXACAIX '
+            // in app/cbl/COACTVWC.cbl:193 and app/cbl/COACTUPC.cbl:582, and
+            // READ XREF-FILE INTO CARD-XREF-RECORD KEY IS FD-XREF-ACCT-ID at app/cbl/CBACT04C.cbl:394-396.
+            // CARD-XREF-RECORD is a single 01-level group, not a table, so the source physically cannot
+            // receive a second row. There is NO STARTBR, READNEXT, READPREV or ENDBR against CXACAIX
+            // anywhere in app/cbl - contrast CARDAIX, which COCRDLIC genuinely browses at :1129 and :1146.
             assertThat(finder.getReturnType())
-                    .as("AXRKP 25 at app/catlg/LISTCAT.txt:L486 is NONUNIQKEY at :L488")
-                    .isEqualTo(List.class);
+                    .as("a keyed READ through a VSAM path surfaces exactly the first record carrying the "
+                            + "alternate key, so LIMIT 1 is the faithful model and no row is dropped that "
+                            + "the source would ever have read")
+                    .isEqualTo(Optional.class);
         }
 
         @Test
@@ -454,22 +507,29 @@ class RepositoryContractTest {
         }
 
         @Test
-        @DisplayName("no alternate-key finder narrows its result to Optional or to a scalar")
-        void noAlternateKeyFinderNarrowsItsResult() {
-            final List<Method> alternateKeyFinders = List.of(
+        @DisplayName("every alternate-key finder the source BROWSES returns a collection, never a scalar")
+        void everyBrowsedAlternateKeyFinderReturnsACollection() {
+            // The rule is about the OPERATION, not about the index. An earlier revision of this test
+            // required every alternate-key finder to return a collection "because its source index is
+            // NONUNIQKEY", which is the wrong premise: non-uniqueness makes duplicates possible, while it
+            // is the source's verb that decides how many rows a call may yield. The two finders below are
+            // reached by STARTBR/READNEXT browses and must therefore stay multi-row; CXACAIX is reached
+            // only by a single-record keyed READ and is asserted separately.
+            final List<Method> browsedAlternateKeyFinders = List.of(
+                    // CARDAIX: EXEC CICS STARTBR at app/cbl/COCRDLIC.cbl:1129 then READNEXT at :1146,
+                    // filling a seven-row screen table.
                     declaredMethod(CardRepository.class, "findByAccountIdOrderByCardNumberAsc",
                             Long.class, Pageable.class),
-                    declaredMethod(CardCrossReferenceRepository.class, "findByAccountIdOrderByCardNumberAsc",
-                            Long.class),
+                    // TRANSACT.VSAM.AIX: the processing-timestamp range scan of the report sort.
                     declaredMethod(TransactionRepository.class,
                             "findByProcessingTimestampHalfOpenRangeOrderByCardNumberAsc",
                             String.class, String.class, Pageable.class));
-            for (final Method finder : alternateKeyFinders) {
+            for (final Method finder : browsedAlternateKeyFinders) {
                 final Class<?> returnType = finder.getReturnType();
                 assertThat(Collection.class.isAssignableFrom(returnType) || Slice.class.isAssignableFrom(
                         returnType))
-                        .as("%s must return a collection because its source index is NONUNIQKEY",
-                                finder.getName())
+                        .as("%s is reached by a browse in the source, so narrowing it would drop rows the "
+                                + "source does read", finder.getName())
                         .isTrue();
                 assertThat(returnType).isNotEqualTo(Optional.class);
             }
@@ -533,6 +593,48 @@ class RepositoryContractTest {
                     .as("the legacy browse positioned at HIGH-VALUES and read backwards once, "
                             + "with no argument")
                     .isZero();
+        }
+
+        @Test
+        @DisplayName("all four sequential-scan readers browse by keyset seek, never by page number")
+        void sequentialScanReadersBrowseByKeysetSeek() {
+            // One row per read-only verification step: the four COBOL programs whose whole body is
+            // OPEN / READ / CLOSE. Each names the interface, the finder, and the key type its cluster
+            // declares, so the seek bound cannot silently be given the wrong type.
+            final Map<Class<?>, Map.Entry<String, Class<?>>> scans = Map.of(
+                    AccountRepository.class, Map.entry(
+                            "findByAccountIdGreaterThanOrderByAccountIdAsc", Long.class),
+                    CustomerRepository.class, Map.entry(
+                            "findByCustomerIdGreaterThanOrderByCustomerIdAsc", Long.class),
+                    CardRepository.class, Map.entry(
+                            "findByCardNumberGreaterThanOrderByCardNumberAsc", String.class),
+                    CardCrossReferenceRepository.class, Map.entry(
+                            "findByCardNumberGreaterThanOrderByCardNumberAsc", String.class));
+
+            for (final Map.Entry<Class<?>, Map.Entry<String, Class<?>>> scan : scans.entrySet()) {
+                final Class<?> repository = scan.getKey();
+                final String name = scan.getValue().getKey();
+                final Class<?> keyType = scan.getValue().getValue();
+                final Method finder = declaredMethod(repository, name, keyType, Pageable.class);
+
+                assertThat(finder.getName())
+                        .as("%s#%s must bound the window by a strict key comparison: an OFFSET page makes "
+                                + "the store produce and discard every preceding row, so a full scan costs "
+                                + "work quadratic in the relation size", repository.getSimpleName(), name)
+                        .contains("GreaterThan")
+                        .doesNotContain("GreaterThanEqual");
+                assertThat(finder.getName())
+                        .as("%s#%s must fix its ascending order in the method name, because a VSAM "
+                                + "sequential READ over an INDEXED cluster returns rows in key order and "
+                                + "that order is the parity contract", repository.getSimpleName(), name)
+                        .contains("OrderBy")
+                        .endsWith("Asc");
+                assertThat(finder.getReturnType())
+                        .as("%s#%s must return List, not Page: nothing on the reader path reads a total, "
+                                + "so a Page would issue a COUNT(*) per refill that is discarded",
+                                repository.getSimpleName(), name)
+                        .isEqualTo(List.class);
+            }
         }
 
         @Test
@@ -657,21 +759,38 @@ class RepositoryContractTest {
     class LockingAndLeastPrivilege {
 
         @Test
-        @DisplayName("both read-for-update finders take a pessimistic write lock")
-        void bothReadForUpdateFindersTakeAPessimisticWriteLock() {
+        @DisplayName("all three read-for-update finders take a pessimistic write lock")
+        void allReadForUpdateFindersTakeAPessimisticWriteLock() {
             final Method accountFinder = declaredMethod(AccountRepository.class,
                     "findByIdForUpdate", Long.class);
             final Method customerFinder = declaredMethod(CustomerRepository.class,
                     "findByIdForUpdate", Long.class);
-            for (final Method finder : List.of(accountFinder, customerFinder)) {
+            final Method cardFinder = declaredMethod(CardRepository.class,
+                    "findByIdForUpdate", String.class);
+            for (final Method finder : List.of(accountFinder, customerFinder, cardFinder)) {
                 final Lock lock = finder.getAnnotation(Lock.class);
                 assertThat(lock)
-                        .as("app/cbl/COACTUPC.cbl:L3894 and :L3920 both read UPDATE before the paired "
-                                + "rewrites, and the @Version column alone cannot close that window")
+                        .as("app/cbl/COACTUPC.cbl:L3894 and :L3920 and app/cbl/COCRDUPC.cbl:1427 all read "
+                                + "UPDATE before their rewrites, and the @Version column alone cannot close "
+                                + "that window because it detects a clash instead of preventing one")
                         .isNotNull();
                 assertThat(lock.value()).isEqualTo(LockModeType.PESSIMISTIC_WRITE);
                 assertThat(finder.getReturnType()).isEqualTo(Optional.class);
             }
+        }
+
+        @Test
+        @DisplayName("every read-for-update finder is keyed on its entity's own identifier type")
+        void readForUpdateFindersAreKeyedOnTheirIdentifierType() {
+            // The card key is the sixteen-character card number, not a Long: app/cpy/CVACT02Y.cpy:L5
+            // declares CARD-NUM PIC X(16) and leading zeroes are significant, which is why the entity
+            // identifier is String and this finder's parameter must be too.
+            assertThat(declaredMethod(CardRepository.class, "findByIdForUpdate", String.class)
+                    .getParameterTypes()).containsExactly(String.class);
+            assertThat(declaredMethod(AccountRepository.class, "findByIdForUpdate", Long.class)
+                    .getParameterTypes()).containsExactly(Long.class);
+            assertThat(declaredMethod(CustomerRepository.class, "findByIdForUpdate", Long.class)
+                    .getParameterTypes()).containsExactly(Long.class);
         }
 
         @Test

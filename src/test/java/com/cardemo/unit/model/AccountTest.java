@@ -72,16 +72,16 @@ import org.junit.jupiter.params.provider.ValueSource;
  *   <li><strong>Round-trip of every accessor</strong>, so the thirteen getter/setter pairs are exercised
  *       rather than merely present.</li>
  *   <li><strong>The overpunch-decoded fixture values.</strong> The first record of
- *       {@code app/data/ASCII/acctdata.txt} carries {@code 00000001940{}, {@code 00000020200{} and
- *       {@code 00000010200{}, where the trailing {@code &#123;} denotes {@code +0}, decoding to
+ *       {@code app/data/ASCII/acctdata.txt} carries {@code 00000001940&#123;}, {@code 00000020200&#123;} and
+ *       {@code 00000010200&#123;}, where the trailing {@code &#123;} denotes {@code +0}, decoding to
  *       {@code +194.00}, {@code +2020.00} and {@code +1020.00}. Those exact values are used, so the test
  *       data is the real seed data rather than invented numbers.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to run it</h2>
  *
  * <pre>{@code
- * mvn -B -o test -Dtest=AccountTest
+ * ./mvnw -B -ntp -o test -Dtest=AccountTest
  * }</pre>
  *
  * <h2>3. Configuration and defaults</h2>
@@ -98,7 +98,7 @@ import org.junit.jupiter.params.provider.ValueSource;
  *       column name and the copybook field would then disagree, and the parity comparison would break.</li>
  *   <li><strong>The 300-byte geometry assertion fails.</strong> A field width changed. Re-derive it from
  *       {@code CVACT01Y.cpy}; the widths are not negotiable because the S3 boundary is byte-exact.</li>
- * </ul>
+ *   </ul>
  */
 class AccountTest {
 

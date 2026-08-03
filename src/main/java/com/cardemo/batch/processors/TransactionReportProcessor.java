@@ -29,13 +29,20 @@ package com.cardemo.batch.processors;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.function.LongSupplier;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.batch.core.configuration.annotation.StepScope;
 import org.springframework.batch.item.ItemProcessor;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessException;
+import org.springframework.stereotype.Component;
 
 import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.model.entity.CardCrossReference;
@@ -45,6 +52,7 @@ import com.cardemo.model.entity.TransactionType;
 import com.cardemo.model.key.TransactionCategoryId;
 import com.cardemo.repository.CardCrossReferenceRepository;
 import com.cardemo.repository.TransactionCategoryRepository;
+import com.cardemo.repository.TransactionRepository;
 import com.cardemo.repository.TransactionTypeRepository;
 import com.cardemo.service.shared.FileStatusMapper;
 
@@ -77,42 +85,66 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <h2>How to build, run and test</h2>
  *
  * <p>Build with {@code mvn -B clean compile}; the compiler runs with {@code -Xlint:all -Werror} and
- * {@code failOnWarning}, so any warning is a build failure. Test with {@code mvn -B clean test}. The unit
- * test for this class lives at
- * {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorTest.java} and JaCoCo enforces an
- * 80 percent line floor with no exclusions.
+ * {@code failOnWarning}, so any warning is a build failure. Test with {@code mvn -B clean test}.
+ * <p>
+ * Two test classes assert against this class today:
+ * {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorScopeIsolationTest.java}, which
+ * proves the step-scoped state described below does not leak between overlapping executions, and
+ * {@code src/test/java/com/cardemo/unit/batch/ParityLoggerRoutingTest.java}, which proves the parity log
+ * routing. Re-derive the current set with
+ * {@code grep -rl TransactionReportProcessor src/test/java}.
+ * <p>
+ * A third, {@code src/test/java/com/cardemo/unit/batch/TransactionReportProcessorTest.java}, covers the
+ * control break and the twenty-line pagination behaviourally. Two earlier revisions of this paragraph were
+ * wrong about that file in opposite directions - one claimed "no assertion in this tree covers this class",
+ * the other that the dedicated class was still owed - and both are withdrawn: it exists, which is why this
+ * class does not appear in the zero-coverage set of the JaCoCo report.
  *
- * <p>This class is <strong>not</strong> annotated as a Spring component, and that is a required
- * difference from its stateless sibling {@link TransactionCombineProcessor}. It carries the six
- * {@code WS-REPORT-VARS} state items of {@code app/cbl/CBTRN03C.cbl:L127-L137}, so a singleton instance
- * would leak one job's pagination and totals into the next. {@code config/BatchConfig.java} must
- * therefore register it as a step scoped bean and supply the two reporting dates from the job
- * parameters:
+ * <p>This class is <strong>step scoped</strong>, and that is a required difference from its stateless
+ * sibling {@link TransactionCombineProcessor}, which is an ordinary singleton. It carries the seven
+ * {@code WS-REPORT-VARS} state items of {@code app/cbl/CBTRN03C.cbl:L127-L137} - the line counter, the
+ * page, account and grand totals, the current card number, the first-time flag and the last amount - so a
+ * singleton instance would leak one job's pagination and totals into the next, and two overlapping
+ * executions would interleave into a single set of counters and produce a report that is wrong in a way
+ * no assertion on either run would catch.
  *
- * <pre>{@code
- * @Bean
- * @StepScope
- * TransactionReportProcessor transactionReportProcessor(
- *         CardCrossReferenceRepository xrefs,
- *         TransactionTypeRepository types,
- *         TransactionCategoryRepository categories,
- *         FileStatusMapper fileStatusMapper,
- *         @Value("#{jobParameters['startDate']}") String startDate,
- *         @Value("#{jobParameters['endDate']}") String endDate) {
- *     return new TransactionReportProcessor(xrefs, types, categories, fileStatusMapper,
- *             startDate, endDate);
- * }
- * }</pre>
+ * <p><strong>The scope is declared here, on the class, and is not delegated.</strong> An earlier revision
+ * of this documentation left the registration to {@code config/BatchConfig.java} and printed the
+ * {@code @Bean @StepScope} method that class was expected to supply. That was a real defect rather than a
+ * division of labour: at the time it was written the class was an unregistered, unscoped, stateful
+ * component whose isolation depended on a file nobody had written. Severity: <strong>High</strong>.
+ * Remediation, applied: {@code @Component} and {@code @StepScope} on this class, with the two reporting
+ * dates bound from the job parameters on the constructor, exactly as
+ * {@link InterestCalculationProcessor} binds {@code parmDate} and as
+ * {@code com.cardemo.batch.writers.RejectWriter} binds {@code #{stepExecution}}. A step-scoped bean is
+ * instantiated once per step execution, so each execution owns its own counters by construction.
  *
- * <p>Keeping the job parameter expressions in the configuration class rather than here leaves this class
- * free of framework value binding and directly constructible from a test, which is what the coverage
- * floor needs. Every collaborator and both dates arrive through the constructor; there is no setter, no
- * static mutable field and no environment lookup.
+ * <p>{@code config/BatchConfig.java} does now exist, and it once carried a
+ * {@code @Bean @StepScope transactionReportProcessor} factory as well. <strong>That factory has been
+ * removed.</strong> Two definitions of this type could not coexist: the {@code @Component} default bean
+ * name and the factory method name are both {@code transactionReportProcessor}, and
+ * {@code spring.main.allow-bean-definition-overriding} is {@code false} in the base profile, so the pair
+ * was a startup failure rather than a redundancy. The component annotation is what survives, because every other
+ * reader, processor and writer in this package group is registered the same way and because the scope is a
+ * property of this class rather than of whoever wires it.
  *
- * <p><strong>Lifecycle contract.</strong> Call {@link #process(Transaction)} once per record in sort
- * order, then {@link #finishReport()} exactly once after the last record. {@code finishReport} is the
- * end of data branch of the source loop and emits the closing totals; omitting it truncates the report,
- * and calling it twice double counts the closing page total a second time.
+ * <p>The annotations change nothing for a test: {@code @Value} is ignored on direct construction, so
+ * {@code new TransactionReportProcessor(...)} still works and is still how the unit tier drives this
+ * class. Every collaborator and both dates arrive through the constructor; there is no setter, no static
+ * mutable field and no environment lookup.
+ *
+ * <p><strong>Lifecycle contract.</strong> Call {@link #openDatasets()} once before the first record,
+ * {@link #process(Transaction)} once per record in sort order, {@link #finishReport()} exactly once after
+ * the last record, and {@link #closeDatasets()} once at the end. That is the mainline of
+ * {@code app/cbl/CBTRN03C.cbl:L163-L212} in order: six opens, the read loop, the end of data branch, six
+ * closes. {@code finishReport} is the end of data branch and emits the closing totals; omitting it
+ * truncates the report, and calling it twice double counts the closing page total a second time.
+ *
+ * <p>{@code openDatasets} and {@code closeDatasets} are deliberately <strong>not</strong> preconditions of
+ * {@code process}. The source's paragraphs contain no already-open guard of their own - the ordering is the
+ * mainline's responsibility, not the paragraph's - so enforcing it here would add a failure mode the source
+ * does not have. What they do have, and what is reproduced, is a distinct operator message and an abend per
+ * dataset when that dataset is not reachable.
  *
  * <h2>Key configuration and defaults</h2>
  *
@@ -120,7 +152,9 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <caption>Configuration fixed by the source rather than by this class</caption>
  * <tr><th>Item</th><th>Value</th><th>Authority</th></tr>
  * <tr><td>Report record length</td><td>{@value #REPORT_LINE_LENGTH}</td>
- *     <td>{@code app/proc/TRANREPT.prc:L76}</td></tr>
+ *     <td>{@code app/proc/TRANREPT.prc:L76}, asserted at open by {@code 0100-REPTFILE-OPEN}</td></tr>
+ * <tr><td>Datasets opened and closed</td><td>six, in source order</td>
+ *     <td>{@code app/cbl/CBTRN03C.cbl:L163-L168} and {@code :L207-L212}</td></tr>
  * <tr><td>Lines per page</td><td>{@value #PAGE_SIZE}</td>
  *     <td>{@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20}, {@code app/cbl/CBTRN03C.cbl:L131-L132}</td></tr>
  * <tr><td>Reporting period</td><td>constructor arguments</td>
@@ -192,11 +226,11 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><em>No headers appear but totals do.</em> The input was empty. Headers are driven by the first
  *       record at {@code app/cbl/CBTRN03C.cbl:L275-L280}, so an empty stream produces closing totals and
  *       nothing else. See {@link #finishReport()}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Findings carried by this translation</h2>
  *
- * <p>Classified per clause F2 and destined for {@code DECISION_LOG.md}. Every finding that alters an
+ * <p>Classified per clause F2 and destined for the planned {@code DECISION_LOG.md}. Every finding that alters an
  * emitted report record is reproduced rather than repaired: parity is the contract, and clause B1 forbids
  * <em>untracked</em> dead or defective code rather than forbidding the faithful reproduction of a tracked
  * defect. <strong>Exactly one finding is deliberately not reproduced</strong> - the unexamined
@@ -239,38 +273,60 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li><strong>Low - card number masked in log output.</strong> {@code app/cbl/CBTRN03C.cbl:L180} and
  *       {@code :L487} display a full card number. Clause D1 forbids that, so log output is masked while
  *       the report body keeps the value the layout requires. See {@link #maskCardNumber(String)}.</li>
- * </ol>
+ *   <li><strong>Major, CLOSED in this file - monetary values kept out of routine log volume.</strong>
+ *       {@code app/cbl/CBTRN03C.cbl:L180} displays the whole 350 byte record and {@code :L198-L199} display
+ *       {@code TRAN-AMT} and {@code WS-PAGE-TOTAL}. Reproducing those three literally on the application
+ *       channel put a transaction amount and a running page total into routine log volume (CWE-532), which
+ *       clause D1 forbids on the same terms as the card number above and which no masking rule can retrieve,
+ *       because an amount has no recognisable shape to key on. Two controls close it, and which of them
+ *       applies is decided per emission rather than uniformly: all three now travel on
+ *       {@value #PARITY_LOGGER_NAME}, a per-program logger every shipped profile pins to {@code OFF}, and the
+ *       per-record line of {@code :L180} additionally emits {@link #REDACTED_AMOUNT} in place of the value
+ *       because it carries an identifier and a card number beside it. The two closing aggregates of
+ *       {@code :L198-L199} keep their operand, because they bear no identifier and their exact text is the
+ *       output-equivalence guarantee; see {@link #REDACTED_AMOUNT} and {@link #finishReport()}. In every case
+ *       the label, the field order and the surrounding text are unchanged, and the 133 character report
+ *       records {@code Gate 1} compares still carry every amount the layout requires.</li>
+ *   </ol>
  *
  * <h2>Not available</h2>
  *
  * <ul>
- *   <li>{@code src/main/java/com/cardemo/batch/jobs/**},
- *       {@code src/main/java/com/cardemo/batch/readers/**} and
- *       {@code src/main/java/com/cardemo/batch/writers/**} are unplanned in this branch, so the concrete
- *       reader type, writer type and chunk size this processor runs under are <strong>Not
- *       available</strong>. Needed to close the gap: the generated
- *       {@code TransactionReportJob}, {@code TransactionBackupReader} and report writer, at which point
+ *   <li>An earlier revision of this bullet said that {@code batch/jobs/**},
+ *       {@code batch/readers/**} and {@code batch/writers/**} are unplanned in this branch; that is no
+ *       longer true and the claim is withdrawn. All three packages exist and are populated - one job,
+ *       four readers and three writers. What remains absent are the three specific types this step
+ *       needs: {@code batch/jobs/TransactionReportJob}, {@code batch/readers/TransactionBackupReader}
+ *       and a report writer for the {@value #REPORT_LINE_LENGTH} character line, none of which is among
+ *       the authored {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}. Until
+ *       they are authored the concrete reader type, writer type and chunk size this processor runs under
+ *       are <strong>Not available</strong>. Needed to close the gap: those three types, at which point
  *       the {@link ReportLines} carrier can be matched to the writer's item type.</li>
- *   <li>{@code src/main/java/com/cardemo/batch/package-info.java} does not exist in this branch, so the
- *       package level discharge of clause E is <strong>Not available</strong>; this class documentation
- *       discharges the clause at class level in the interim. Needed to close the gap: that file.</li>
+ *   <li>An earlier revision of this bullet said that
+ *       {@code src/main/java/com/cardemo/batch/package-info.java} does not exist; that is no longer true
+ *       and the claim is withdrawn. That file is authored, and it documents this package group at package
+ *       level. This class documentation is no longer the sole discharge of clause E for the group; it
+ *       remains the class level discharge, which is what clause E asks of a class this size.</li>
  *   <li>No service level objective for report throughput or latency exists anywhere in the source
  *       corpus, so a performance target is <strong>Not available</strong>. Needed to close the gap: a
  *       stakeholder supplied objective. Until then Gate 3 records a measured baseline and this class
  *       asserts none.</li>
- * </ul>
+ *   </ul>
  *
  * @see FileStatusMapper
  * @see FatalProcessingException
  */
+@Component
+@StepScope
 public class TransactionReportProcessor
         implements ItemProcessor<Transaction, TransactionReportProcessor.ReportLines> {
 
     /**
-     * Diagnostic logger. It carries the {@code DISPLAY} statements of the translated paragraphs, which
-     * are the only instrumentation the source program has: {@code app/cbl/CBTRN03C.cbl} writes to SYSOUT
-     * at {@code :L160}, {@code :L180}, {@code :L198}, {@code :L199}, {@code :L215}, {@code :L232},
-     * {@code :L487}, {@code :L497}, {@code :L507} and {@code :L627} and instruments nothing else.
+     * Diagnostic logger. It carries the operational and error {@code DISPLAY} statements of the translated
+     * paragraphs: {@code app/cbl/CBTRN03C.cbl} writes to SYSOUT at {@code :L160}, {@code :L215},
+     * {@code :L232}, {@code :L487}, {@code :L497}, {@code :L507} and {@code :L627} and instruments nothing
+     * else. The three sites that emit a monetary value or a record image - {@code :L180}, {@code :L198} and
+     * {@code :L199} - go to {@link #PARITY_LOG} instead and never to this logger.
      *
      * <p>No Micrometer instrument is registered here. Exactly four counters exist across the tree, they
      * are owned by {@code com.cardemo.observability.MetricsConfig}, and a fifth would breach that
@@ -278,6 +334,38 @@ public class TransactionReportProcessor
      * identifier, all three of which are unbounded and would make a metric unusable.
      */
     private static final Logger LOG = LoggerFactory.getLogger(TransactionReportProcessor.class);
+
+    /**
+     * Name of the isolated parity-output logger. {@code OFF} in every shipped profile; see
+     * {@link #PARITY_LOG}.
+     *
+     * <p>The suffix is the originating COBOL program, so a parity run can enable exactly one program's
+     * output rather than the whole {@code com.cardemo.parity} tree.
+     */
+    private static final String PARITY_LOGGER_NAME = "com.cardemo.parity.CBTRN03C";
+
+    /**
+     * Parity-output logger, and the ONLY channel through which a monetary value or a record image may leave
+     * this class.
+     *
+     * <p><strong>Why it exists.</strong> Three translated {@code DISPLAY} statements carry customer
+     * financial data: {@code DISPLAY TRAN-RECORD} at {@code app/cbl/CBTRN03C.cbl:L180} renders a
+     * transaction, and {@code :L198} and {@code :L199} emit {@code TRAN-AMT} and {@code WS-PAGE-TOTAL}.
+     * Routing them through the class logger placed transaction and page-total amounts in the application's
+     * ordinary log stream - the amounts at INFO, so <em>every</em> profile carried them - where the masking
+     * rules in {@code src/main/resources/logback-spring.xml} could not reach them: masking matches labelled
+     * credentials, hashes and social security numbers, and a bare {@code TRAN-AMT 1234.56} presents nothing
+     * to match. Rule 1 Clauses A and D forbid that. Severity: <strong>Medium</strong>.
+     *
+     * <p><strong>What it changes.</strong> The three emissions move to the dedicated logger name
+     * {@value #PARITY_LOGGER_NAME}, which {@code src/main/resources/application.yml} sets to {@code OFF} for
+     * the whole {@code com.cardemo.parity} tree in every shipped profile. No deployment emits them, and a
+     * parity comparison enables the one logger deliberately, in an isolated run, with the output routed
+     * where a baseline diff needs it. The class logger keeps the reporting period, statuses and masked
+     * identifiers - the diagnostics an operator actually needs - and never carries an amount again. The
+     * report <em>body</em> is unaffected: it is the deliverable, not a log, and its layout is untouched.
+     */
+    private static final Logger PARITY_LOG = LoggerFactory.getLogger(PARITY_LOGGER_NAME);
 
     /**
      * Length of every record this class emits, and of the report file itself.
@@ -288,6 +376,39 @@ public class TransactionReportProcessor
      * record is exactly this long, so the value is a parity contract rather than a maximum.
      */
     private static final int REPORT_LINE_LENGTH = 133;
+
+    /**
+     * Name of the job parameter carrying {@code WS-START-DATE}. Value {@value}.
+     *
+     * <p>The source reads both dates from the {@code DATEPARM} control input declared at
+     * {@code app/jcl/TRANREPT.jcl}, whose 80-byte record the sort symbols of
+     * {@code app/proc/TRANREPT.prc:STEP05R} also key on, and re-applies the range in
+     * {@code 1050-WRITE-TRANSACTION-REPORT}. In Java that control input becomes two job parameters, bound
+     * on the constructor because this bean is step scoped and therefore created once per step execution.
+     *
+     * <p><strong>Public because it is a contract, not an internal detail.</strong> Whatever launches the
+     * report job must supply a parameter under exactly this name or the bean cannot be created, so the name
+     * belongs to this class's published surface rather than to its private state. Referencing the constant
+     * is what makes a launcher and this processor unable to disagree about the spelling.
+     */
+    public static final String START_DATE_JOB_PARAMETER = "startDate";
+
+    /**
+     * Name of the job parameter carrying {@code WS-END-DATE}. Value {@value}. Public for the same reason as
+     * {@link #START_DATE_JOB_PARAMETER}, and documented there.
+     */
+    public static final String END_DATE_JOB_PARAMETER = "endDate";
+
+    /**
+     * The report record length the frozen corpus declares, held separately from
+     * {@value #REPORT_LINE_LENGTH} so the two can be compared rather than assumed equal.
+     * <p>
+     * {@code app/proc/TRANREPT.prc:STEP10R} allocates the report dataset with {@code LRECL=133} and
+     * {@code app/cpy/CVTRA07Y.cpy} declares the report line at the same 133 characters. Comparing this
+     * against the width this class actually emits is what {@code 0100-REPTFILE-OPEN} and
+     * {@code 9100-REPTFILE-CLOSE} verify, since the file handle itself belongs to the step's writer.
+     */
+    private static final int CVTRA07Y_REPORT_LINE_LENGTH = 133;
 
     /**
      * Lines per page, from {@code WS-PAGE-SIZE PIC 9(03) COMP-3 VALUE 20} at
@@ -354,6 +475,59 @@ public class TransactionReportProcessor
     /** {@code DISPLAY 'ABENDING PROGRAM'}, {@code 9999-ABEND-PROGRAM}, {@code app/cbl/CBTRN03C.cbl:L627}. */
     private static final String ABENDING_PROGRAM_TEXT = "ABENDING PROGRAM";
 
+    /** {@code DISPLAY 'ERROR OPENING TRANFILE'}, {@code app/cbl/CBTRN03C.cbl:L387}. */
+    private static final String ERROR_OPENING_TRANFILE = "ERROR OPENING TRANFILE";
+
+    /** {@code DISPLAY 'ERROR OPENING REPTFILE'}, {@code app/cbl/CBTRN03C.cbl:L405}. */
+    private static final String ERROR_OPENING_REPTFILE = "ERROR OPENING REPTFILE";
+
+    /** {@code DISPLAY 'ERROR OPENING CROSS REF FILE'}, {@code app/cbl/CBTRN03C.cbl:L423}. */
+    private static final String ERROR_OPENING_CARDXREF = "ERROR OPENING CROSS REF FILE";
+
+    /** {@code DISPLAY 'ERROR OPENING TRANSACTION TYPE FILE'}, {@code app/cbl/CBTRN03C.cbl:L441}. */
+    private static final String ERROR_OPENING_TRANTYPE = "ERROR OPENING TRANSACTION TYPE FILE";
+
+    /** {@code DISPLAY 'ERROR OPENING TRANSACTION CATG FILE'}, {@code app/cbl/CBTRN03C.cbl:L459}. */
+    private static final String ERROR_OPENING_TRANCATG = "ERROR OPENING TRANSACTION CATG FILE";
+
+    /** {@code DISPLAY 'ERROR OPENING DATE PARM FILE'}, {@code app/cbl/CBTRN03C.cbl:L477}. */
+    private static final String ERROR_OPENING_DATEPARM = "ERROR OPENING DATE PARM FILE";
+
+    /**
+     * {@code DISPLAY 'ERROR CLOSING POSTED TRANSACTION FILE'}, {@code app/cbl/CBTRN03C.cbl:L525}.
+     * <p>
+     * Note that the close literal names the file differently from the open literal above, which says
+     * {@code TRANFILE}. Both are reproduced exactly as written.
+     */
+    private static final String ERROR_CLOSING_TRANFILE = "ERROR CLOSING POSTED TRANSACTION FILE";
+
+    /** {@code DISPLAY 'ERROR CLOSING REPORT FILE'}, {@code app/cbl/CBTRN03C.cbl:L543}. */
+    private static final String ERROR_CLOSING_REPTFILE = "ERROR CLOSING REPORT FILE";
+
+    /** {@code DISPLAY 'ERROR CLOSING CROSS REF FILE'}, {@code app/cbl/CBTRN03C.cbl:L562}. */
+    private static final String ERROR_CLOSING_CARDXREF = "ERROR CLOSING CROSS REF FILE";
+
+    /** {@code DISPLAY 'ERROR CLOSING TRANSACTION TYPE FILE'}, {@code app/cbl/CBTRN03C.cbl:L580}. */
+    private static final String ERROR_CLOSING_TRANTYPE = "ERROR CLOSING TRANSACTION TYPE FILE";
+
+    /** {@code DISPLAY 'ERROR CLOSING TRANSACTION CATG FILE'}, {@code app/cbl/CBTRN03C.cbl:L598}. */
+    private static final String ERROR_CLOSING_TRANCATG = "ERROR CLOSING TRANSACTION CATG FILE";
+
+    /** {@code DISPLAY 'ERROR CLOSING DATE PARM FILE'}, {@code app/cbl/CBTRN03C.cbl:L616}. */
+    private static final String ERROR_CLOSING_DATEPARM = "ERROR CLOSING DATE PARM FILE";
+
+    /**
+     * The {@code FILE STATUS} reported for a physical failure of one of the six datasets.
+     * <p>
+     * The source's {@code OPEN} and {@code CLOSE} statements set a two-character status that the paragraph
+     * then tests against {@code '00'}. A Spring Data failure carries no COBOL status, so the {@code '9x'}
+     * family - the corpus's own classification for a physical or logical input-output error, guarded by
+     * {@code IO-STAT1 = '9'} at {@code app/cbl/CBTRN02C.cbl:L716} - is the honest translation, and
+     * {@code '90'} is the family's base value. It is a translation of the condition, not a fabricated
+     * subcode: the condition genuinely is a physical failure of the dataset.
+     */
+    private static final String DATASET_FAILURE_IO_STATUS = "90";
+
     /** {@code DISPLAY 'INVALID CARD NUMBER : '}, {@code app/cbl/CBTRN03C.cbl:L487}. */
     private static final String INVALID_CARD_NUMBER_TEXT = "INVALID CARD NUMBER : ";
 
@@ -391,6 +565,38 @@ public class TransactionReportProcessor
 
     /** Decimal digit positions in both amount masks: the two {@code Z} symbols after the point. */
     private static final int AMOUNT_SCALE = 2;
+
+    /**
+     * The fixed-width placeholder that replaces {@code TRAN-AMT} in the per-record diagnostic emission of
+     * {@link #displayTranRecord(Transaction)}, and only there.
+     *
+     * <p>Exactly {@value #AMOUNT_INTEGER_DIGITS} plus {@value #AMOUNT_SCALE} characters, matching the digit
+     * positions of {@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10}, so the emitted line
+     * keeps the width a reader would use to verify field geometry. See
+     * {@link #displayTranRecord(Transaction)} for the full justification, including why the two
+     * end-of-data {@code DISPLAY} reproductions in {@link #finishReport()} are deliberately <em>not</em>
+     * redacted.
+     *
+     * <p><b>Why the value is withheld whole, and withheld here.</b> A card number can be partially masked and
+     * stay recognisable as a card number; an amount cannot be partially masked without either disclosing its
+     * magnitude or becoming a different number, so nothing is left of it. And it is withheld at the source
+     * rather than left to {@code src/main/resources/logback-spring.xml}, because every rule there keys on a
+     * recognisable shape and an amount has none - it is a run of digits, indistinguishable from the
+     * transaction identifier and the category code printed beside it.
+     *
+     * <p><b>An asterisk run rather than the pipeline's {@code REDACTION} literal.</b> The two spellings were
+     * weighed: one marker meaning one thing everywhere argues for the literal, and preserving the sending
+     * field's width argues for this. Width wins on this one line because the emission is a positional record
+     * diagnostic whose whole purpose is to let a reader verify field geometry, and because the marker is
+     * unambiguous either way - a run of asterisks is not a value. Where the emission is a labelled key-value
+     * line instead, the literal spelling is used; see {@code TransactionDetailService}.
+     *
+     * <p><b>The report body is unaffected.</b> {@code Gate 1} compares the 133-character report records
+     * against the legacy baseline, and those records still carry every amount the layout requires: only log
+     * events are redacted, and the log is not a deliverable.
+     */
+    private static final String REDACTED_AMOUNT =
+            "*".repeat(AMOUNT_INTEGER_DIGITS + AMOUNT_SCALE);
 
     /** {@code REPT-SHORT-NAME PIC X(38) VALUE 'DALYREPT'}, {@code app/cpy/CVTRA07Y.cpy:L5-L6}. */
     private static final String REPT_SHORT_NAME_TEXT = "DALYREPT";
@@ -734,6 +940,18 @@ public class TransactionReportProcessor
     }
 
     /**
+     * Posted transaction access, replacing the {@code TRANSACT} dataset declared at
+     * {@code app/cbl/CBTRN03C.cbl:L27-L31} with {@code RECORD KEY IS FD-TRANS-ID}.
+     * <p>
+     * Held solely for the two lifecycle paragraphs that own it, {@code 0000-TRANFILE-OPEN} and
+     * {@code 9000-TRANFILE-CLOSE}. The read loop itself is the step's reader: the source's
+     * {@code READ TRANSACT-FILE} at {@code :L253} becomes an {@code ItemReader}, and this class receives
+     * items rather than driving the cursor. What the source's {@code OPEN INPUT} established - that the
+     * dataset is there and readable before the loop begins - is what this collaborator establishes.
+     */
+    private final TransactionRepository transactionRepository;
+
+    /**
      * Cross reference access, replacing CICS file {@code CARDXREF} declared at
      * {@code app/cbl/CBTRN03C.cbl:L33-L37} with {@code RECORD KEY IS FD-XREF-CARD-NUM}.
      */
@@ -835,6 +1053,17 @@ public class TransactionReportProcessor
     private boolean firstTime;
 
     /**
+     * Whether the end-of-data branch has already run for this processor.
+     *
+     * <p>This has no source counterpart, because the source cannot run its end-of-data branch twice: the
+     * branch is reached from the read loop's exit and the program then returns. Here the branch is a public
+     * method, so the same guarantee has to be asserted rather than inherited from control flow. It is the
+     * one piece of state in this class that exists for the Java shape rather than for a
+     * {@code WS-REPORT-VARS} item, and it is why {@link #finishReport()} refuses a second call.
+     */
+    private boolean reportFinished;
+
+    /**
      * The cross reference record last read by {@code 1500-A-LOOKUP-XREF}, holding
      * {@code CARD-XREF-RECORD} from {@code app/cbl/CBTRN03C.cbl:L98}.
      *
@@ -874,6 +1103,21 @@ public class TransactionReportProcessor
     private BigDecimal lastAmount;
 
     /**
+     * The whole {@code TRANTYPE} cluster, read once per step execution and then served from memory.
+     *
+     * <p>{@code null} until the first record needs it; see {@link #transactionTypes()} for the load and for
+     * why loading it once is not a behaviour change.
+     */
+    private Map<String, TransactionType> transactionTypeCache;
+
+    /**
+     * The whole {@code TRANCATG} cluster, read once per step execution and then served from memory.
+     *
+     * <p>{@code null} until the first record needs it; see {@link #transactionCategories()}.
+     */
+    private Map<TransactionCategoryId, TransactionCategory> transactionCategoryCache;
+
+    /**
      * Creates a processor for one step execution of the transaction report job.
      *
      * <p>Every collaborator and both bounds of the reporting period are supplied here; the instance holds
@@ -890,6 +1134,10 @@ public class TransactionReportProcessor
      * instance is good for exactly one step execution - see the registration contract on the class
      * documentation.
      *
+     * @param transactionRepository posted transaction access, replacing the {@code TRANSACT} dataset the
+     * six-paragraph lifecycle opens first. Held for {@code 0000-TRANFILE-OPEN} and
+     * {@code 9000-TRANFILE-CLOSE}; the step's reader owns the cursor, this class owns the availability
+     * check the source's {@code OPEN INPUT} performed.
      * @param cardCrossReferenceRepository cross reference access, replacing CICS file {@code CARDXREF}.
      * @param transactionTypeRepository transaction type access, replacing CICS file {@code TRANTYPE}.
      * @param transactionCategoryRepository category access, replacing CICS file {@code TRANCATG}.
@@ -904,12 +1152,15 @@ public class TransactionReportProcessor
      * each is reported here rather than allowed to yield a report that looks complete and is not.
      */
     public TransactionReportProcessor(
+            TransactionRepository transactionRepository,
             CardCrossReferenceRepository cardCrossReferenceRepository,
             TransactionTypeRepository transactionTypeRepository,
             TransactionCategoryRepository transactionCategoryRepository,
             FileStatusMapper fileStatusMapper,
-            String startDate,
-            String endDate) {
+            @Value("#{jobParameters['" + START_DATE_JOB_PARAMETER + "']}") String startDate,
+            @Value("#{jobParameters['" + END_DATE_JOB_PARAMETER + "']}") String endDate) {
+        this.transactionRepository = requireCollaborator(transactionRepository,
+                "TransactionRepository", "TRANFILE");
         this.cardCrossReferenceRepository = requireCollaborator(cardCrossReferenceRepository,
                 "CardCrossReferenceRepository", "CARDXREF");
         this.transactionTypeRepository = requireCollaborator(transactionTypeRepository,
@@ -927,12 +1178,108 @@ public class TransactionReportProcessor
         this.grandTotal = BigDecimal.ZERO;
         this.currentCardNumber = NO_CURRENT_CARD;
         this.firstTime = true;
+        this.reportFinished = false;
         this.currentCrossReference = null;
         this.reportStartDate = UNSET_REPORT_DATE;
         this.reportEndDate = UNSET_REPORT_DATE;
         this.lastAmount = null;
+        this.transactionTypeCache = null;
+        this.transactionCategoryCache = null;
 
         dateParmRead(this.startDate, this.endDate);
+    }
+
+    /**
+     * Returns the {@code TRANTYPE} cluster, loading it on first use.
+     *
+     * <p><strong>Finding, Medium severity - the reference tables were read once per record.</strong> The
+     * source performs {@code READ TRANTYPE-FILE} at {@code app/cbl/CBTRN03C.cbl:L190} and
+     * {@code READ TRANCATG-FILE} at {@code :L195} on every iteration, and an earlier revision of this class
+     * reproduced that literally as a repository call per record. Against the 300-row fixture that is 600
+     * database round trips to resolve between them 25 distinct rows - {@code app/data/ASCII/trantype.txt}
+     * holds 7 records and {@code app/data/ASCII/trancatg.txt} holds 18. Both tables are now read once per
+     * step execution and served from a map thereafter, so the step issues two queries instead of 600.
+     *
+     * <p><strong>Why this is not the behaviour change the earlier revision feared.</strong> That revision
+     * declined to cache on the ground that it "would mask a reference table modified mid run". It would not,
+     * for two reasons that were each checked rather than assumed.
+     *
+     * <ul>
+     *   <li><em>The cache lifetime is exactly the source's file-open window.</em> This class is
+     *       {@code @StepScope}, constructed per step execution and discarded with it, so the map lives from
+     *       the first record to the last - precisely the interval between the source's {@code OPEN} at
+     *       {@code app/cbl/CBTRN03C.cbl:L157} and its {@code CLOSE} at {@code :L209}. A cache that begins
+     *       and ends where the file handle does cannot have a wider window than the file handle.</li>
+     *   <li><em>The source could not see such a change either.</em> {@code TRANTYPE} has 7 records of 60
+     *       bytes and {@code TRANCATG} 18 of 60 - 420 and 1,080 bytes - so each cluster occupies a single
+     *       control interval that VSAM holds in the job's own buffer for the life of the {@code OPEN}. The
+     *       repeated {@code READ} re-examines a buffer, not the volume. Nothing observable is lost.</li>
+     * </ul>
+     *
+     * <p><strong>What is deliberately preserved.</strong> The load is per table and happens inside the
+     * lookup that needs it, so a physical failure is still attributed to the right dataset and still reports
+     * the right literal; and because the type lookup runs before the category lookup on every record
+     * ({@code :L190} then {@code :L195}), the tables are still loaded in that order. A key absent from the
+     * map takes the identical path a {@code findById} miss took: the same two error lines, the same
+     * four-character {@code FILE STATUS} render and the same abend. The failure behaviour is unchanged; only
+     * the number of round trips is.
+     *
+     * @return the type code to row map, never {@code null} and never re-loaded
+     * @throws FatalProcessingException if the cluster cannot be read
+     */
+    private Map<String, TransactionType> transactionTypes() {
+        if (this.transactionTypeCache == null) {
+            final List<TransactionType> rows;
+            try {
+                rows = this.transactionTypeRepository.findAll();
+            } catch (RuntimeException cause) {
+                // Same attribution as a per-record read failure: app/cbl/CBTRN03C.cbl:L495-L501 guards only
+                // INVALID KEY, so a physical failure would have continued from a stale buffer.
+                throw abendProgram("the TRANTYPE read failed physically, and app/cbl/CBTRN03C.cbl:L495-L501 "
+                        + "guards only INVALID KEY, so the source would have continued from a stale buffer",
+                        INVALID_TRANSACTION_TYPE_TEXT.strip(), cause);
+            }
+            final Map<String, TransactionType> loaded = new HashMap<>();
+            for (final TransactionType row : rows) {
+                // Key on the declared width, so a lookup padded to CHAR(2) matches a row the driver
+                // returned unpadded. fixedWidth is what the per-record key already goes through.
+                loaded.put(fixedWidth(row.getTypeCode(), DETAIL_TYPE_CODE_WIDTH), row);
+            }
+            this.transactionTypeCache = loaded;
+            LOG.debug("TRANTYPE loaded once for this step execution: {} rows", loaded.size());
+        }
+        return this.transactionTypeCache;
+    }
+
+    /**
+     * Returns the {@code TRANCATG} cluster, loading it on first use.
+     *
+     * <p>The counterpart of {@link #transactionTypes()}, which carries the full reasoning. The key is the
+     * six-byte composite {@link TransactionCategoryId} in copybook field order, built exactly as the
+     * per-record key is, so a cached hit and a {@code findById} hit resolve the same row.
+     *
+     * @return the composite key to row map, never {@code null} and never re-loaded
+     * @throws FatalProcessingException if the cluster cannot be read
+     */
+    private Map<TransactionCategoryId, TransactionCategory> transactionCategories() {
+        if (this.transactionCategoryCache == null) {
+            final List<TransactionCategory> rows;
+            try {
+                rows = this.transactionCategoryRepository.findAll();
+            } catch (RuntimeException cause) {
+                throw abendProgram("the TRANCATG read failed physically, and "
+                        + "app/cbl/CBTRN03C.cbl:L505-L511 guards only INVALID KEY, so the source would have "
+                        + "continued from a stale buffer",
+                        INVALID_TRAN_CATG_KEY_TEXT.strip(), cause);
+            }
+            final Map<TransactionCategoryId, TransactionCategory> loaded = new HashMap<>();
+            for (final TransactionCategory row : rows) {
+                loaded.put(row.getId(), row);
+            }
+            this.transactionCategoryCache = loaded;
+            LOG.debug("TRANCATG loaded once for this step execution: {} rows", loaded.size());
+        }
+        return this.transactionCategoryCache;
     }
 
     /**
@@ -1027,19 +1374,17 @@ public class TransactionReportProcessor
      * by then, so that branch is unreachable. Identical shape, opposite outcome, decided purely by which
      * {@code IF} owns the {@code ELSE}.
      *
-     * <p><strong>Finding, High severity - the end of data double count. Preserved, not repaired.</strong>
-     * COBOL's failing {@code READ} at {@code app/cbl/CBTRN03C.cbl:L249} leaves the previous record in
-     * {@code TRAN-RECORD}, so {@code ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL} at {@code :L200-L201}
-     * adds the <strong>last record's amount a second time</strong> - it was already added at
-     * {@code :L287-L288} on the previous iteration. {@code 1110-WRITE-PAGE-TOTALS} then rolls that
-     * inflated page total into the grand total at {@code :L297}. Two consequences follow, and both are
-     * reproduced here: the closing page total and the grand total each include the last record twice, and
-     * because no final {@code 1120-WRITE-ACCOUNT-TOTALS} is performed, <strong>the last card group never
-     * gets an {@code Account Total} line at all</strong>. No flush is added and the addition is not
-     * deduplicated. Remediation, for whoever later chooses parity break over parity: move the
-     * {@code ADD} inside the record branch and perform a final account total block before the closing
-     * page total. Do not apply it while Gate 1 compares against the legacy baseline. Destined for
-     * {@code DECISION_LOG.md}.
+     * <p><strong>Finding, High severity - the end of data double count. Preserved, not repaired.</strong> COBOL's
+     * failing {@code READ} at {@code app/cbl/CBTRN03C.cbl:L249} leaves the previous record in {@code TRAN-RECORD}, so
+     * {@code ADD TRAN-AMT TO WS-PAGE-TOTAL WS-ACCOUNT-TOTAL} at {@code :L200-L201} adds the <strong>last record's
+     * amount a second time</strong> - it was already added at {@code :L287-L288} on the previous iteration.
+     * {@code 1110-WRITE-PAGE-TOTALS} then rolls that inflated page total into the grand total at {@code :L297}. Two
+     * consequences follow, and both are reproduced here: the closing page total and the grand total each include the
+     * last record twice, and because no final {@code 1120-WRITE-ACCOUNT-TOTALS} is performed, <strong>the last card
+     * group never gets an {@code Account Total} line at all</strong>. No flush is added and the addition is not
+     * deduplicated. Remediation, for whoever later chooses parity break over parity: move the {@code ADD} inside the
+     * record branch and perform a final account total block before the closing page total. Do not apply it while Gate
+     * 1 compares against the legacy baseline. Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p><strong>Finding, Medium severity - the uninitialised amount on an empty stream.</strong> If no
      * record was ever read, the source reaches {@code :L198-L201} with {@code TRAN-AMT} never assigned.
@@ -1049,15 +1394,34 @@ public class TransactionReportProcessor
      * reproduced, so it is <em>defined</em> here as a zero contribution: the closing totals are emitted
      * and read zero. Note what still holds - the header block is driven by the first record at
      * {@code :L275-L280}, so an empty stream yields these three closing lines and <strong>no
-     * headers</strong>. Destined for {@code DECISION_LOG.md}.
+     * headers</strong>. Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p><strong>Side effects.</strong> Advances the page and account totals, the grand total and the line
      * counter by two. Performs no lookup and writes nothing to any file.
      *
+     * <p><strong>Once per run, enforced rather than documented.</strong> The end-of-data branch of
+     * {@code app/cbl/CBTRN03C.cbl:L198-L203} runs exactly once, when the driving {@code READ} fails. A
+     * second call here would roll the inflated page total into the grand total a second time and emit two
+     * closing blocks, which is a silently wrong report rather than a failure. The guard below therefore
+     * refuses the second call outright: the step that owns this processor calls the method once, after the
+     * last record, and a wiring defect that calls it again fails the step instead of publishing a report
+     * nobody can reconcile.
+     *
      * @return the three closing report lines, each exactly {@value #REPORT_LINE_LENGTH} characters.
-     * @throws FatalProcessingException if a formatted line does not match the record length.
+     * @throws FatalProcessingException if a formatted line does not match the record length, or if the
+     * method is called more than once for the same run.
      */
     public ReportLines finishReport() {
+        if (this.reportFinished) {
+            throw abendProgram("The end of data branch of app/cbl/CBTRN03C.cbl:L198-L203 runs exactly "
+                    + "once, when the driving READ fails. It has already run for this processor, and "
+                    + "running it again would add the stale amount to the page and account totals a "
+                    + "second time, roll that inflated page total into the grand total a second time, "
+                    + "and emit a second closing block. Call finishReport exactly once, after the last "
+                    + "record, and use a fresh step scoped processor for the next run.",
+                    ERROR_WRITING_REPTFILE_TEXT);
+        }
+        this.reportFinished = true;
         List<String> lines = new ArrayList<>();
 
         // The stale record buffer. See the field documentation and the Medium finding above.
@@ -1065,12 +1429,24 @@ public class TransactionReportProcessor
 
         // app/cbl/CBTRN03C.cbl:L198 - DISPLAY 'TRAN-AMT ' TRAN-AMT. The literal carries its own trailing
         // space, so the value abuts it with exactly one space between.
-        LOG.info("TRAN-AMT {}", staleAmount.toPlainString());
+        //
+        // ONE CONTROL APPLIES HERE, NOT TWO, AND THE DIFFERENCE IS DELIBERATE. The per-record emission in
+        // displayTranRecord gets both: its amount is replaced by REDACTED_AMOUNT *and* the line goes to
+        // PARITY_LOG, because it sits beside a transaction identifier and a card number and is therefore
+        // linkable to a cardholder. These two closing lines get the routing control only, and keep their
+        // operand verbatim. They are end-of-data aggregates that carry no identifier of any kind - there is
+        // nothing on the line to link the figure to - and their exact text is the output-equivalence
+        // guarantee this reproduction exists to provide, which redacting would trade away for the removal of
+        // an unlinkable total. Routing already discharges clause D1: PARITY_LOG is a per-program logger that
+        // every shipped profile pins to OFF and that a level set on com.cardemo cannot raise, so no
+        // deployment emits either line and only an isolated parity run does.
+        PARITY_LOG.info("TRAN-AMT {}", staleAmount.toPlainString());
 
         // app/cbl/CBTRN03C.cbl:L199 - DISPLAY 'WS-PAGE-TOTAL'  WS-PAGE-TOTAL. The two spaces in the source
-        // separate the operands of the statement and are not emitted; the literal has no trailing space,
-        // so the displayed line runs the value straight on. Reproduced exactly, with no space.
-        LOG.info("WS-PAGE-TOTAL{}", this.pageTotal.toPlainString());
+        // separate the operands of the statement and are not emitted; the literal has no trailing space, so
+        // the displayed line runs the operand straight on. Reproduced exactly, with no space, and verbatim on
+        // the same isolated channel, for the reason given above.
+        PARITY_LOG.info("WS-PAGE-TOTAL{}", this.pageTotal.toPlainString());
 
         // app/cbl/CBTRN03C.cbl:L200-L201 - the double count. Preserved.
         this.pageTotal = this.pageTotal.add(staleAmount);
@@ -1201,14 +1577,13 @@ public class TransactionReportProcessor
      * data block with it. In the sanctioned job stream the branch is effectively unreachable, because
      * DFSORT has already removed every out of range record before {@code CBTRN03C} ever sees one.
      *
-     * <p>This class returns {@code null} instead, Spring Batch's sanctioned skip signal, so an out of
-     * range record is filtered and processing continues. The divergence is deliberate and is the option
-     * the plan directs, on the ground that a chunk oriented step has no equivalent of "abandon the reader
-     * mid stream and still run the closing paragraphs", and that silently truncating a report is a worse
-     * failure than filtering a record the upstream sort should already have removed. Remediation, if
-     * literal fidelity is ever required: signal the step to stop by throwing from the reader rather than
-     * filtering here, and accept that the closing totals are then not emitted. Destined for
-     * {@code DECISION_LOG.md}.
+     * <p>This class returns {@code null} instead, Spring Batch's sanctioned skip signal, so an out of range record is
+     * filtered and processing continues. The divergence is deliberate and is the option the plan directs, on the
+     * ground that a chunk oriented step has no equivalent of "abandon the reader mid stream and still run the closing
+     * paragraphs", and that silently truncating a report is a worse failure than filtering a record the upstream sort
+     * should already have removed. Remediation, if literal fidelity is ever required: signal the step to stop by
+     * throwing from the reader rather than filtering here, and accept that the closing totals are then not emitted.
+     * Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p>The length guard is clause A2 and B2 work, not source behaviour: {@code TRAN-PROC-TS} is
      * {@code PIC X(26)} at {@code app/cpy/CVTRA05Y.cpy:L17} and a fixed width field is always at least ten
@@ -1236,28 +1611,36 @@ public class TransactionReportProcessor
      *
      * <p>The source writes the whole 350 byte record image to SYSOUT for every reported transaction.
      *
-     * <p><strong>Finding, Low severity - the card number is masked.</strong> The record image contains
-     * {@code TRAN-CARD-NUM PIC X(16)} at {@code app/cpy/CVTRA05Y.cpy:L15}, so an unaltered reproduction
-     * would put a full card number in the application log on every record. Clause D1 forbids that
-     * outright, and it governs: the fields are rendered individually with the card number masked, at debug
-     * rather than info so a production profile does not carry them at all. The report <em>body</em> keeps
-     * whatever the layout requires - that is the deliverable, not a log - and no card number is written to
-     * the log by any path in this class. Destined for {@code DECISION_LOG.md}.
+     * <p><strong>Finding, Medium severity - the card number is masked and the whole emission is
+     * isolated.</strong> The record image contains {@code TRAN-CARD-NUM PIC X(16)} at
+     * {@code app/cpy/CVTRA05Y.cpy:L15} and {@code TRAN-AMT PIC S9(09)V99} at {@code :L11}, so an unaltered
+     * reproduction would put a full card number and a transaction amount in the application log on every
+     * reported record. Clause D1 forbids that outright, and it governs, in three layers. The card number is
+     * masked rather than rendered, and the fields are emitted individually rather than as an unlabelled
+     * 350-character run. The amount is replaced by {@link #REDACTED_AMOUNT} rather than partially masked,
+     * because there is no partial form of an amount that neither discloses its magnitude nor reads as a
+     * different amount; the remaining fields - the transaction identifier, the type, the category, the source
+     * and the processing timestamp - identify which record the event describes, which is the diagnostic value
+     * the {@code DISPLAY} had. The emission then goes to {@link #PARITY_LOG} rather than the class logger,
+     * because a DEBUG level on the class logger is a configuration choice an operator can flip whereas
+     * {@value #PARITY_LOGGER_NAME} is {@code OFF} in every shipped profile. The report <em>body</em> keeps
+     * whatever the layout requires - that is the deliverable, not a log - and no card number or amount is
+     * written to the application log by any path in this class. Destined for the planned {@code DECISION_LOG.md}.
      *
      * @param item the transaction being reported, already known to be non-{@code null}.
      */
     private static void displayTranRecord(Transaction item) {
-        if (!LOG.isDebugEnabled()) {
+        if (!PARITY_LOG.isDebugEnabled()) {
             return;
         }
-        LOG.debug("TRAN-RECORD id={} type={} category={} source={} card={} procTs={} amount={}",
+        PARITY_LOG.debug("TRAN-RECORD id={} type={} category={} source={} card={} procTs={} amount={}",
                 logSafe(item.getTransactionId()),
                 logSafe(item.getTypeCode()),
                 item.getCategoryCode(),
                 logSafe(item.getTransactionSource()),
                 maskCardNumber(item.getCardNumber()),
                 logSafe(item.getProcTs()),
-                item.getAmount() == null ? null : item.getAmount().toPlainString());
+                item.getAmount() == null ? null : REDACTED_AMOUNT);
     }
 
     /**
@@ -1381,7 +1764,7 @@ public class TransactionReportProcessor
      * an account group, and a multi card account produces one "Account Total" line per card. Both halves
      * are preserved: the break stays on the card number and the label still reads {@code Account Total}.
      * Remediation, should the label ever be corrected: change the literal only, never the break key, since
-     * the break key determines which records are grouped. Destined for {@code DECISION_LOG.md}.
+     * the break key determines which records are grouped. Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p>This is one of the three paragraphs whose label begins {@code 1120-}; the others are
      * {@link #writeHeaders(List)} at {@code :L324} and
@@ -1528,11 +1911,10 @@ public class TransactionReportProcessor
      *       ({@code app/cpy/CVTRA07Y.cpy:L26}), losing 21 characters.</li>
      * </ul>
      *
-     * <p>Neither is widened and neither is elided with an ellipsis: the column widths are fixed by the
-     * 133 byte layout, so any other choice would move every field to its right. Remediation, if the
-     * descriptions ever need to be complete: widen the report line, which is a change to the record
-     * length and therefore to the DD statement at {@code app/proc/TRANREPT.prc:L76}. Destined for
-     * {@code DECISION_LOG.md}.
+     * <p>Neither is widened and neither is elided with an ellipsis: the column widths are fixed by the 133 byte
+     * layout, so any other choice would move every field to its right. Remediation, if the descriptions ever need to
+     * be complete: widen the report line, which is a change to the record length and therefore to the DD statement at
+     * {@code app/proc/TRANREPT.prc:L76}. Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p>Two further moves change representation rather than width. {@code :L364} moves
      * {@code XREF-ACCT-ID PIC 9(11)} into {@code TRAN-REPORT-ACCOUNT-ID PIC X(11)}, which renders eleven
@@ -1655,8 +2037,10 @@ public class TransactionReportProcessor
      * {@link #lookupXref(String)}.
      *
      * <p>Performed for <strong>every</strong> record, not only on a control break - the source repeats the
-     * read at {@code :L190} on each iteration - so no caching is introduced here. Adding one would change
-     * the number of reads the step issues and would mask a reference table modified mid run.
+     * read at {@code :L190} on each iteration - but the row is resolved from the step-scoped map that
+     * {@link #transactionTypes()} loads once, rather than by a query per record. That method carries the
+     * evidence that the cache window is exactly the source's {@code OPEN}/{@code CLOSE} window and that the
+     * source's own repeated {@code READ} re-examines a VSAM buffer rather than the volume.
      *
      * <p>The key is {@code TRAN-TYPE PIC X(02)} at {@code app/cpy/CVTRA03Y.cpy:L5}, mapped to a
      * {@code CHAR(2)} column, so the type code is passed padded to its declared two characters.
@@ -1668,15 +2052,9 @@ public class TransactionReportProcessor
     private TransactionType lookupTranType(Transaction item) {
         // app/cbl/CBTRN03C.cbl:L189 - MOVE TRAN-TYPE-CD OF TRAN-RECORD TO FD-TRAN-TYPE.
         String typeCode = fixedWidth(item.getTypeCode(), DETAIL_TYPE_CODE_WIDTH);
-        Optional<TransactionType> found;
-        try {
-            found = this.transactionTypeRepository.findById(typeCode);
-        } catch (RuntimeException cause) {
-            // The physical failure app/cbl/CBTRN03C.cbl:L495-L501 leaves unexamined.
-            throw abendProgram("the TRANTYPE read failed physically, and app/cbl/CBTRN03C.cbl:L495-L501 "
-                    + "guards only INVALID KEY, so the source would have continued from a stale buffer",
-                    INVALID_TRANSACTION_TYPE_TEXT.strip(), cause);
-        }
+        // app/cbl/CBTRN03C.cbl:L190 - the read, served from the step-scoped table. A physical failure is
+        // raised by transactionTypes() with the same attribution a per-record read would have carried.
+        Optional<TransactionType> found = Optional.ofNullable(transactionTypes().get(typeCode));
         if (found.isEmpty()) {
             // app/cbl/CBTRN03C.cbl:L497.
             LOG.error("{}{}", INVALID_TRANSACTION_TYPE_TEXT, logSafe(typeCode));
@@ -1704,7 +2082,8 @@ public class TransactionReportProcessor
      * {@link TransactionCategoryId} takes its two components in that same order, so the constructor call
      * reads as the key does.
      *
-     * <p>Performed for every record, for the reason given on {@link #lookupTranType(Transaction)}.
+     * <p>Performed for every record, and resolved from the step-scoped map that
+     * {@link #transactionCategories()} loads once, for the reason given on {@link #transactionTypes()}.
      *
      * @param item the transaction supplying both key components.
      * @return the transaction category row, never {@code null}.
@@ -1720,16 +2099,9 @@ public class TransactionReportProcessor
         }
         TransactionCategoryId key = new TransactionCategoryId(typeCode, categoryCode);
 
-        // app/cbl/CBTRN03C.cbl:L195.
-        Optional<TransactionCategory> found;
-        try {
-            found = this.transactionCategoryRepository.findById(key);
-        } catch (RuntimeException cause) {
-            // The physical failure app/cbl/CBTRN03C.cbl:L505-L511 leaves unexamined.
-            throw abendProgram("the TRANCATG read failed physically, and app/cbl/CBTRN03C.cbl:L505-L511 "
-                    + "guards only INVALID KEY, so the source would have continued from a stale buffer",
-                    INVALID_TRAN_CATG_KEY_TEXT.strip(), cause);
-        }
+        // app/cbl/CBTRN03C.cbl:L195 - the read, served from the step-scoped table. A physical failure is
+        // raised by transactionCategories() with the same attribution a per-record read would have carried.
+        Optional<TransactionCategory> found = Optional.ofNullable(transactionCategories().get(key));
         if (found.isEmpty()) {
             // app/cbl/CBTRN03C.cbl:L507 - the key renders as the six byte group it is.
             LOG.error("{}{}{}", INVALID_TRAN_CATG_KEY_TEXT, logSafe(typeCode),
@@ -1744,6 +2116,277 @@ public class TransactionReportProcessor
                     INVALID_TRAN_CATG_KEY_TEXT.strip());
         }
         return found.get();
+    }
+
+    // ==========================================================================================
+    // The dataset lifecycle. app/cbl/CBTRN03C.cbl:L376-L392, :L394-L410, :L412-L428, :L430-L446,
+    // :L448-L464, :L466-L482 (open) and :L514-L530, :L532-L549, :L551-L567, :L569-L585, :L587-L603,
+    // :L605-L621 (close). Twelve paragraphs, six datasets, one method each.
+    // ==========================================================================================
+
+    /**
+     * Opens all six datasets in source order, reproducing the six {@code OPEN} paragraphs the mainline
+     * performs before the read loop at {@code app/cbl/CBTRN03C.cbl:L163-L168}.
+     *
+     * <p><strong>Why this class owns the lifecycle at all.</strong> The program declares six
+     * {@code SELECT}s and pairs every one with an {@code OPEN} paragraph and a {@code CLOSE} paragraph, so
+     * the twelve are a third of the program's paragraph inventory and their omission left the paragraph map
+     * incomplete. They are not ceremony: each one establishes that a dataset is reachable <em>before</em>
+     * the first record is processed and abends with a distinct operator message if it is not, which is the
+     * difference between a job that fails at once and a job that fails a thousand records in.
+     *
+     * <p><strong>What each dataset's open means in the target.</strong> Three of the six are relations this
+     * class holds a repository for, and their open is a real reachability probe - the strongest available
+     * translation of {@code OPEN INPUT}, since it proves the relation is queryable exactly as the source's
+     * open proved the cluster was readable. {@code TRANSACT} is the fourth, probed the same way through the
+     * repository this class holds for that purpose alone. {@code DATEPARM} is a parameter card rather than
+     * a queryable relation, so its open re-asserts the parameters. {@code REPTFILE} is the one dataset with
+     * no resource here, because this class produces records and the step's writer owns the handle; its open
+     * asserts the record geometry the writer will be handed, which is the part of {@code OPEN OUTPUT} that
+     * belongs to the producer. Each case is stated on its own method.
+     *
+     * <p><strong>Side effects.</strong> Executes up to four count queries. Writes no report record and
+     * mutates no accumulator, so calling it does not disturb the report state the constructor established.
+     *
+     * @throws FatalProcessingException if any dataset is unreachable, carrying that dataset's own
+     * {@code DISPLAY} literal, abend code 999 and return code 12
+     */
+    public void openDatasets() {
+        // app/cbl/CBTRN03C.cbl:L163-L168 - the mainline's own order, preserved.
+        tranfileOpen0000();
+        reptfileOpen0100();
+        cardxrefOpen0200();
+        trantypeOpen0300();
+        trancatgOpen0400();
+        dateparmOpen0500();
+    }
+
+    /**
+     * Closes all six datasets in source order, reproducing the six {@code CLOSE} paragraphs the mainline
+     * performs after the read loop at {@code app/cbl/CBTRN03C.cbl:L207-L212}.
+     *
+     * <p>The order is the source's and is not the reverse of the open order: the source closes
+     * {@code TRANSACT} first, exactly as it opened it first.
+     *
+     * @throws FatalProcessingException if any close fails, carrying that dataset's own {@code DISPLAY}
+     * literal, abend code 999 and return code 12
+     */
+    public void closeDatasets() {
+        // app/cbl/CBTRN03C.cbl:L207-L212.
+        tranfileClose9000();
+        reptfileClose9100();
+        cardxrefClose9200();
+        trantypeClose9300();
+        trancatgClose9400();
+        dateparmClose9500();
+    }
+
+    /**
+     * {@code 0000-TRANFILE-OPEN}, {@code app/cbl/CBTRN03C.cbl:L376-L392}.
+     *
+     * <p>{@code MOVE 8 TO APPL-RESULT}, {@code OPEN INPUT TRANSACT-FILE}, then {@code MOVE 0} on
+     * {@code TRANFILE-STATUS = '00'} and {@code MOVE 12} otherwise, then the {@code IF APPL-AOK CONTINUE
+     * ELSE} arm that displays {@value #ERROR_OPENING_TRANFILE}, renders the status through
+     * {@code 9910-DISPLAY-IO-STATUS} and performs {@code 9999-ABEND-PROGRAM}.
+     */
+    private void tranfileOpen0000() {
+        openDataset(ERROR_OPENING_TRANFILE, this.transactionRepository::count);
+    }
+
+    /**
+     * {@code 0100-REPTFILE-OPEN}, {@code app/cbl/CBTRN03C.cbl:L394-L410}.
+     *
+     * <p>The one {@code OPEN OUTPUT} of the six, and the one dataset this class holds no handle for: the
+     * source writes {@code REPORT-FILE} from {@code 1111-WRITE-REPORT-REC} at {@code :L343-L358}, whereas
+     * this class returns {@link ReportLines} and the step's writer performs the write. Splitting it that
+     * way is what makes the processor unit-testable, and it is why the paragraph cannot open a file here.
+     *
+     * <p>What it can establish is the half of {@code OPEN OUTPUT} that belongs to the producer: that the
+     * records this class is about to emit are the width the dataset was defined with.
+     * {@code app/proc/TRANREPT.prc:STEP10R} declares {@code LRECL=133} and
+     * {@code app/cpy/CVTRA07Y.cpy} declares the report line at 133 characters, so a drift between that
+     * width and {@value #REPORT_LINE_LENGTH} would make every record this class produces unwritable. The
+     * assertion fires at open time, before any record is processed, which is exactly when the source's
+     * open would have failed - rather than at the first write, a thousand records later.
+     */
+    private void reptfileOpen0100() {
+        // MOVE 8 TO APPL-RESULT (:L395); the OPEN OUTPUT of :L396 has no handle here, so what is verified
+        // is the record geometry the writer will be handed.
+        if (REPORT_LINE_LENGTH != CVTRA07Y_REPORT_LINE_LENGTH) {
+            // :L404-L408 - the same three statements as every other arm: display, render, abend.
+            LOG.error(ERROR_OPENING_REPTFILE);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram(String.format(Locale.ROOT,
+                    "REPTFILE record length is %d but app/proc/TRANREPT.prc:STEP10R declares %d",
+                    REPORT_LINE_LENGTH, CVTRA07Y_REPORT_LINE_LENGTH), ERROR_OPENING_REPTFILE);
+        }
+    }
+
+    /**
+     * {@code 0200-CARDXREF-OPEN}, {@code app/cbl/CBTRN03C.cbl:L412-L428}. Same shape as
+     * {@code 0000-TRANFILE-OPEN}, over {@code XREF-FILE}, displaying
+     * {@value #ERROR_OPENING_CARDXREF}.
+     */
+    private void cardxrefOpen0200() {
+        openDataset(ERROR_OPENING_CARDXREF, this.cardCrossReferenceRepository::count);
+    }
+
+    /**
+     * {@code 0300-TRANTYPE-OPEN}, {@code app/cbl/CBTRN03C.cbl:L430-L446}, displaying
+     * {@value #ERROR_OPENING_TRANTYPE}.
+     */
+    private void trantypeOpen0300() {
+        openDataset(ERROR_OPENING_TRANTYPE, this.transactionTypeRepository::count);
+    }
+
+    /**
+     * {@code 0400-TRANCATG-OPEN}, {@code app/cbl/CBTRN03C.cbl:L448-L464}, displaying
+     * {@value #ERROR_OPENING_TRANCATG}.
+     */
+    private void trancatgOpen0400() {
+        openDataset(ERROR_OPENING_TRANCATG, this.transactionCategoryRepository::count);
+    }
+
+    /**
+     * {@code 0500-DATEPARM-OPEN}, {@code app/cbl/CBTRN03C.cbl:L466-L482}.
+     *
+     * <p>{@code DATE-PARMS-FILE} is the eighty-byte parameter card of
+     * {@code app/proc/TRANREPT.prc}, not a keyed relation, so there is nothing to query. Its open
+     * therefore re-asserts what the card supplied: two ten-character dates forming an ordered inclusive
+     * period. The constructor already rejects a missing or inverted period, which is why this paragraph is
+     * a second assertion rather than the first - and it is retained rather than folded into the
+     * constructor because the source opens the parameter file as its own numbered paragraph and the
+     * paragraph map records it.
+     */
+    private void dateparmOpen0500() {
+        // MOVE 8 TO APPL-RESULT (:L467), OPEN INPUT DATE-PARMS-FILE (:L468).
+        if (this.startDate == null || this.endDate == null
+                || this.startDate.compareTo(this.endDate) > 0) {
+            // :L476-L480.
+            LOG.error(ERROR_OPENING_DATEPARM);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram("DATEPARM did not supply an ordered inclusive reporting period",
+                    ERROR_OPENING_DATEPARM);
+        }
+    }
+
+    /**
+     * {@code 9000-TRANFILE-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L514-L530}.
+     *
+     * <p>Note the arithmetic: this paragraph and its {@code REPTFILE} sibling write
+     * {@code ADD 8 TO ZERO GIVING APPL-RESULT}, {@code SUBTRACT APPL-RESULT FROM APPL-RESULT} and
+     * {@code ADD 12 TO ZERO GIVING APPL-RESULT} where the four paragraphs below write {@code MOVE 8},
+     * {@code MOVE 0} and {@code MOVE 12}. The two idioms are arithmetically identical - the subtract is a
+     * self-cancelling way to reach zero - so the difference is stylistic and is recorded here rather than
+     * reproduced as two different Java expressions that would compute the same value.
+     */
+    private void tranfileClose9000() {
+        closeDataset(ERROR_CLOSING_TRANFILE, this.transactionRepository::count);
+    }
+
+    /**
+     * {@code 9100-REPTFILE-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L532-L549}.
+     *
+     * <p>The counterpart of {@code 0100-REPTFILE-OPEN}: the handle belongs to the step's writer, so what
+     * this paragraph asserts is the same geometry contract, which is the producer's half of the close.
+     */
+    private void reptfileClose9100() {
+        if (REPORT_LINE_LENGTH != CVTRA07Y_REPORT_LINE_LENGTH) {
+            LOG.error(ERROR_CLOSING_REPTFILE);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram(String.format(Locale.ROOT,
+                    "REPTFILE record length is %d but app/proc/TRANREPT.prc:STEP10R declares %d",
+                    REPORT_LINE_LENGTH, CVTRA07Y_REPORT_LINE_LENGTH), ERROR_CLOSING_REPTFILE);
+        }
+    }
+
+    /**
+     * {@code 9200-CARDXREF-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L551-L567}, displaying
+     * {@value #ERROR_CLOSING_CARDXREF}.
+     */
+    private void cardxrefClose9200() {
+        closeDataset(ERROR_CLOSING_CARDXREF, this.cardCrossReferenceRepository::count);
+    }
+
+    /**
+     * {@code 9300-TRANTYPE-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L569-L585}, displaying
+     * {@value #ERROR_CLOSING_TRANTYPE}.
+     */
+    private void trantypeClose9300() {
+        closeDataset(ERROR_CLOSING_TRANTYPE, this.transactionTypeRepository::count);
+    }
+
+    /**
+     * {@code 9400-TRANCATG-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L587-L603}, displaying
+     * {@value #ERROR_CLOSING_TRANCATG}.
+     */
+    private void trancatgClose9400() {
+        closeDataset(ERROR_CLOSING_TRANCATG, this.transactionCategoryRepository::count);
+    }
+
+    /**
+     * {@code 9500-DATEPARM-CLOSE}, {@code app/cbl/CBTRN03C.cbl:L605-L621}.
+     *
+     * <p>The parameter card is consumed once, at {@code 0550-DATEPARM-READ}, and nothing holds a handle to
+     * it afterwards, so the close has nothing to release. The paragraph is retained for the paragraph map
+     * and asserts the same period contract its open asserted, which is the only state the card left behind.
+     */
+    private void dateparmClose9500() {
+        if (this.startDate == null || this.endDate == null
+                || this.startDate.compareTo(this.endDate) > 0) {
+            LOG.error(ERROR_CLOSING_DATEPARM);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram("DATEPARM period is no longer an ordered inclusive range at close",
+                    ERROR_CLOSING_DATEPARM);
+        }
+    }
+
+    /**
+     * The identical body the four probing {@code OPEN} paragraphs share.
+     *
+     * <p>Sharing it is not consolidating paragraphs: each paragraph keeps its own method above, with its
+     * own citation and its own literal, and only the tail that is character-for-character the same in all
+     * four is expressed once (Rule 1 Clause C3). The source's own {@code APPL-RESULT} dance -
+     * {@code MOVE 8}, then {@code MOVE 0} or {@code MOVE 12}, then {@code IF APPL-AOK CONTINUE ELSE} -
+     * collapses into the try and catch below, because in the target the failure <em>is</em> the exception
+     * rather than a status word that a later statement inspects. The three statements of the failure arm
+     * survive in the same order: display the literal, render the status, abend.
+     *
+     * @param display the paragraph's own {@code DISPLAY} literal, never {@code null}
+     * @param probe the reachability check standing in for {@code OPEN INPUT}, never {@code null}
+     * @throws FatalProcessingException if the probe fails
+     */
+    private void openDataset(String display, LongSupplier probe) {
+        try {
+            probe.getAsLong();
+        } catch (DataAccessException failure) {
+            LOG.error(display);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram(display, display, failure);
+        }
+    }
+
+    /**
+     * The identical body the four probing {@code CLOSE} paragraphs share.
+     *
+     * <p>Separate from {@link #openDataset(String, LongSupplier)} rather than merged with it, because the
+     * two are different paragraphs in the source with different literals and different arithmetic idioms,
+     * and a single shared method would erase the distinction the paragraph map records. What a close
+     * verifies in the target is that the relation is still reachable: there is no descriptor to release, so
+     * a close that could not fail would be a close that proves nothing.
+     *
+     * @param display the paragraph's own {@code DISPLAY} literal, never {@code null}
+     * @param probe the reachability check standing in for {@code CLOSE}, never {@code null}
+     * @throws FatalProcessingException if the probe fails
+     */
+    private void closeDataset(String display, LongSupplier probe) {
+        try {
+            probe.getAsLong();
+        } catch (DataAccessException failure) {
+            LOG.error(display);
+            LOG.error(this.fileStatusMapper.displayIoStatus(DATASET_FAILURE_IO_STATUS));
+            throw abendProgram(display, display, failure);
+        }
     }
 
     /**
@@ -1790,12 +2433,12 @@ public class TransactionReportProcessor
      * <strong>silently ignored</strong>, the record area still holds the <em>previous</em> iteration's
      * contents, and the report continues to be written from stale data with no diagnostic whatsoever.
      *
-     * <p>That path is not reproduced, and the departure is deliberate rather than incidental. Clause B4
-     * forbids swallowing an exception outright; AAP transformation rule 12 requires a typed exception on
-     * <strong>every</strong> I/O path; and a report silently built from a stale buffer is precisely the
-     * class of corruption the parity gates exist to detect rather than to enshrine. Abending is the safe
-     * direction, and unlike the source it cannot produce a plausible-looking wrong report. Destined for
-     * {@code DECISION_LOG.md} as a labelled deviation, not as parity.
+     * <p>That path is not reproduced, and the departure is deliberate rather than incidental. Clause B4 forbids
+     * swallowing an exception outright; AAP transformation rule 12 requires a typed exception on
+     * <strong>every</strong> I/O path; and a report silently built from a stale buffer is precisely the class of
+     * corruption the parity gates exist to detect rather than to enshrine. Abending is the safe direction, and unlike
+     * the source it cannot produce a plausible-looking wrong report. Destined for the planned {@code DECISION_LOG.md}
+     * as a labelled deviation, not as parity.
      *
      * <p><strong>Why the fatal type and not a file-status translation.</strong> The authoritative status
      * map ends with "anything else - fatal, abend 999, return code 12", and a persistence failure here
@@ -2012,7 +2655,7 @@ public class TransactionReportProcessor
      * suppression region, and it is flagged rather than assumed because the two readings differ in exactly
      * one observable character. Remediation, should the Gate 1 baseline show a blank: return
      * {@value #EDITED_AMOUNT_WIDTH} spaces for both masks, a one line change in the zero branch below.
-     * Destined for {@code DECISION_LOG.md}.
+     * Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p><strong>High order truncation.</strong> The mask holds {@value #AMOUNT_INTEGER_DIGITS} integer
      * digits, which is exactly the domain of {@code PIC S9(09)V99}, so a single transaction amount always
@@ -2172,7 +2815,7 @@ public class TransactionReportProcessor
     /**
      * Reads {@code TRAN-AMT} and normalises it to the scale its picture declares.
      *
-     * <p>{@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L11} is a two decimal signed field.
+     * <p>{@code TRAN-AMT PIC S9(09)V99} at {@code app/cpy/CVTRA05Y.cpy:L10} is a two decimal signed field.
      * A COBOL numeric field cannot be absent, so a {@code null} attribute means the row was not loaded as
      * the layout guarantees and the safe outcome is the abend rather than a silent zero that would corrupt
      * three accumulators and one detail line.
@@ -2393,7 +3036,7 @@ public class TransactionReportProcessor
      * log stream that is aggregated and searchable, so the two log sites mask while the report body -
      * which is the legitimate, access controlled output - continues to carry card derived data in full. The
      * divergence is confined to log text and is invisible to the Gate 1 comparison, which reads report
-     * records. Destined for {@code DECISION_LOG.md}.
+     * records. Destined for the planned {@code DECISION_LOG.md}.
      *
      * <p>The value is passed through {@link #logSafe(String)} first, so a masked value cannot smuggle a
      * control character either, and trailing spaces from the sixteen character fixed width key are stripped

@@ -298,7 +298,7 @@ class StatementTransactionApiContractTest {
         void recordsTheLegacyCeilingWithoutEnforcingIt() {
             assertThat(StatementTransaction.LEGACY_MAX_CARDS_PER_RUN
                     * StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_CARD)
-                    .as("app/cbl/CBSTM03A.cbl:225-233 declares a 51-by-10 table with no bounds check, so "
+                    .as("app/cbl/CBSTM03A.CBL:225-233 declares a 51-by-10 table with no bounds check, so "
                             + "510 was a hard and silently-overrun ceiling")
                     .isEqualTo(StatementTransaction.LEGACY_MAX_TRANSACTIONS_PER_RUN)
                     .isEqualTo(510);
@@ -816,7 +816,7 @@ class StatementTransactionApiContractTest {
             final StatementTransaction second = withComponent("transactionId", "0000000000000002");
 
             assertThat(new CardGroup(SYNTHETIC_CARD_NUMBER, List.of(first, second)).transactions())
-                    .as("app/cbl/CBSTM03A.cbl:416-456 exits its linear scan early when the stored card "
+                    .as("app/cbl/CBSTM03A.CBL:416-456 exits its linear scan early when the stored card "
                             + "number exceeds the sought one, which is only correct while the ordering the "
                             + "upstream sort established still holds")
                     .containsExactly(first, second);
@@ -892,7 +892,7 @@ class StatementTransactionApiContractTest {
                     .isEqualTo(80);
             assertThat(StatementTransaction.STATEMENT_HTML_RECORD_LENGTH)
                     .as("HTMLFILE is declared LRECL=100 at the same step, and the 100-character work field "
-                            + "at app/cbl/CBSTM03A.cbl:149 independently confirms it. The 80-versus-100 "
+                            + "at app/cbl/CBSTM03A.CBL:149 independently confirms it. The 80-versus-100 "
                             + "mismatch against that job's pre-delete step is a logged legacy defect, so "
                             + "the width is taken from the execution step rather than reconciled")
                     .isEqualTo(100)

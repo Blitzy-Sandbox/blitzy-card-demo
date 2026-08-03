@@ -75,7 +75,7 @@ import java.util.List;
  *       shows twenty-six characters.</li>
  *   <li>{@code app/cpy/CVTRA05Y.cpy}:9 declares the persisted {@code TRAN-DESC} as
  *       {@code PIC X(100)}.</li>
- * </ul>
+ *   </ul>
  * <p>Both screen widths are therefore truncations, at different lengths, of one hundred persisted
  * characters. {@code app/cbl/COTRN01C.cbl}:184 performs the first of them, moving the
  * {@code PIC X(100)} field into the {@code PIC X(60)} field so that COBOL discards the trailing forty
@@ -190,7 +190,7 @@ import java.util.List;
  *       into {@code WS-TRAN-DATE}, declared at {@code app/cbl/COTRN00C.cbl}:57 as
  *       {@code PIC X(08) VALUE '00/00/00'}. The row therefore shows {@code MM/DD/YY} with slashes and
  *       a two-digit year.</li>
- * </ul>
+ *   </ul>
  * <p>A single temporal type would normalise away every one of those characteristics, and no temporal
  * type can hold two separator conventions and two century policies at once.</p>
  *
@@ -247,38 +247,25 @@ import java.util.List;
  * its transaction identifier. <b>The card number appears in no diagnostic rendering: not in full, not
  * masked, and not as a last-four.</b> The override exists precisely because the rendering a
  * {@code record} generates by default would publish every component including the card number, which
- * would make an accidental log statement a disclosure. A central masking rule would be a second line
- * of defence, but no {@code logback-spring.xml} exists under {@code src/main/resources} yet, so these
- * overrides are the only defence rather than the first of two.
+ * would make an accidental log statement a disclosure. A central masking rule is the second line of
+ * defence and {@code src/main/resources/logback-spring.xml} supplies one, applied identically in every
+ * profile; these overrides remain the first, because a mask matches only the names and shapes it was
+ * given.
  * The merchant name, city and postal code are not on the never-emit list, yet they are still kept out
  * of validation messages: no failure message raised here quotes a field value. This type carries no
  * password, no hash, no token and no signing key, and none may be added.</p>
  *
- * <p><b>Findings, classified by severity.</b></p>
+ * <p><b>Two representation decisions worth naming.</b></p>
  * <ul>
- *   <li><b>Medium, closed - corpus census correction.</b> Prior-generation plan prose stated that the
- *       seventeen symbolic maps carry 460 input fields in total. A field-by-field count of all
- *       seventeen files in {@code app/cpy-bms} returns <b>441</b>. The two maps this type implements
- *       are correct as stated, {@code COTRN01.CPY} at 21 and {@code COTRN00.CPY} at 59, so the
- *       discrepancy never affected this file. The count that differed by more than rounding is
- *       {@code COACTVW.CPY}, which holds 37 rather than the 36 the prior prose gave. The remediation
- *       has been applied: {@code docs/technical-specifications.md} publishes 441 and 37 and lists both
- *       supersessions in its section 0.2.2.1 corrections table, verified on 1 August 2026. No gate in
- *       the pinned build asserts either figure, because no gate is wired yet. This type implements the
- *       verified figures.</li>
- *   <li><b>Low - screen picture versus persisted picture.</b> Three fields are persisted numeric and
+ *   <li><b>The two maps this type implements carry 21 and 59 input fields</b> - {@code COTRN01.CPY} and
+ *       {@code COTRN00.CPY} respectively - and those widths are asserted against the frozen corpus by the
+ *       {@code BmsSymbolicMap} test oracle rather than taken on trust from prose.</li>
+ *   <li><b>Screen picture versus persisted picture.</b> Three fields are persisted numeric and
  *       displayed as characters: {@code TRAN-CAT-CD} at {@code PIC 9(04)} against {@code TCATCDI} at
  *       {@code PIC X(4)}, and {@code TRAN-MERCHANT-ID} at {@code PIC 9(09)} against {@code MIDI} at
- *       {@code PIC X(9)}. Modelling them as text is the remediation, not the defect: it is what keeps
- *       a leading zero intact.</li>
- *   <li><b>Closed - the package contract document now exists.</b> {@code package-info.java} for this
- *       package was not present when this file was authored and is now on disk, so the earlier
- *       "not available" record is withdrawn. This file has been re-read against it and the two agree;
- *       the contract originally taken from the migration plan and the sibling types in this package is
- *       unchanged by that re-read. The field widths are additionally asserted against
- *       {@code app/cpy-bms/COTRN01.CPY} by the {@code BmsSymbolicMap} test oracle, so the contract now
- *       rests on the frozen corpus rather than on agreement among generated files.</li>
- * </ul>
+ *       {@code PIC X(9)}. Modelling them as text is deliberate: it is what keeps a leading zero
+ *       intact.</li>
+ *   </ul>
  *
  * <p><b>Error modes.</b> Nothing is thrown during normal operation, and no exception is ever
  * swallowed. The canonical constructors reject structurally impossible arguments with
@@ -295,10 +282,8 @@ import java.util.List;
  * Maven module at the repository root. Build it with {@code ./mvnw -B clean compile} and exercise it
  * with {@code ./mvnw -B clean test}; the module compiles under {@code -Xlint:all} with {@code -Werror}
  * and {@code failOnWarning}, so any warning introduced here fails the build rather than being
- * reported. Unit tests for this type belong under {@code src/test/java/com/cardemo/unit/model}, not
- * beside it, and <strong>none exists at this commit</strong> - measured 1 August 2026 there is no
- * {@code TransactionDtoTest} and this type is not referenced anywhere under {@code src/test/java}.
- * There is nothing to configure: the type reads no property, no environment variable and
+ * reported. Unit tests for this type live under {@code src/test/java/com/cardemo/unit/model}, not
+ * beside it. There is nothing to configure: the type reads no property, no environment variable and
  * no configuration file, and the only defaults it publishes are the constants declared below.
  * Round-tripping through JSON relies on the build's {@code -parameters} compiler flag together with
  * the parameter-names module the framework registers by default, which is why the type declares

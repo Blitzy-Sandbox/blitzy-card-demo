@@ -66,7 +66,7 @@ import org.springframework.stereotype.Component;
  *       duplication of the kind Rule 1 Clause C forbids.</li>
  *   <li>Emitting a log record belongs to the caller. This class never logs, never registers a metric,
  *       never touches a repository, reads no configuration and performs no input or output.</li>
- * </ul>
+ *   </ul>
  *
  * <p>What this class does add, and what {@code FileStatus} deliberately leaves undone, is the assembly of
  * the legacy diagnostic line from those two owned parts - see {@link #displayIoStatus(String)}. Assembly
@@ -84,8 +84,9 @@ import org.springframework.stereotype.Component;
  *       {@link #requireFileServiceSuccessOrEndOfFile(String, String, String)}. It is
  *       <strong>not</strong> in the general map and is fatal on every general path.</li>
  *   <li>{@code '10'} end of file - <strong>loop termination, not an error.</strong> Never mapped to an
- *       exception by {@link #toException(String, String, String)} or by
- *       {@link #requireSuccessOrEndOfFile(String, String, String)}.</li>
+ *       exception by {@link #toException(String, String, String)}, and classified as
+ *       {@value #APPL_EOF} rather than as a failure by
+ *       {@link #applResultForSequentialRead(String)}.</li>
  *   <li>{@code '22'} duplicate key - {@code com.cardemo.exception.DuplicateRecordException}.</li>
  *   <li>{@code '23'} record not found - {@code com.cardemo.exception.RecordNotFoundException}, except at
  *       the three scoped sites described below.</li>
@@ -95,7 +96,7 @@ import org.springframework.stereotype.Component;
  *   <li>anything else - {@code com.cardemo.exception.FatalProcessingException}, abend code
  *       {@value com.cardemo.exception.FatalProcessingException#BATCH_ABEND_CODE} and process return code
  *       {@value com.cardemo.exception.FatalProcessingException#BATCH_RETURN_CODE}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The two guard shapes, and why one class cannot serve both with one method</h2>
  *
@@ -113,8 +114,13 @@ import org.springframework.stereotype.Component;
  *       everything else to the abend path. The same fourteen lines recur at
  *       {@code app/cbl/CBACT01C.cbl:L94-L103}, {@code app/cbl/CBACT02C.cbl:L98},
  *       {@code app/cbl/CBACT03C.cbl:L98} and {@code app/cbl/CBCUS01C.cbl:L98}. Reproduced by
- *       {@link #requireSuccessOrEndOfFile(String, String, String)}.</li>
- * </ul>
+ *       {@link #applResultForSequentialRead(String)}, which the four sequential readers call and then
+ *       branch on. It returns the result code rather than throwing, because each of those paragraphs has
+ *       work to do <em>between</em> the classification and the branch - {@code CBACT01C} performs
+ *       {@code 1100-DISPLAY-ACCT-RECORD} at {@code :L96}, before the {@code IF APPL-AOK} at {@code :L104}
+ *       - and each abends with its own {@code DISPLAY} literal and its own culprit. A method that threw
+ *       could carry neither.</li>
+ *   </ul>
  *
  * <p>Collapsing the two into one method would either abend a legitimate end of file or silently accept an
  * end of file reported by an open. Both are behaviour changes, so both shapes are kept.
@@ -137,7 +143,7 @@ import org.springframework.stereotype.Component;
  *       which accept {@code '04'} alongside {@code '00'}. Reproduced by
  *       {@link #requireFileServiceSuccess(String, String, String)} and
  *       {@link #requireFileServiceSuccessOrEndOfFile(String, String, String)}.</li>
- * </ol>
+ *   </ol>
  *
  * <h2>Reject codes are not exceptions and never pass through here</h2>
  *
@@ -156,7 +162,7 @@ import org.springframework.stereotype.Component;
  * <p>Java 25 and Maven 3.9.11, against {@code spring-boot-starter-parent:3.5.11}. The compiler runs
  * {@code -Xlint:all} with {@code -Werror} and {@code failOnWarning}, so a raw type, a switch fall through
  * or a deprecated call is a build failure rather than a warning. An unused import is not: {@code javac}
- * 25.0.3 publishes no lint key for one, so Rule 1 Clause B's prohibition on it is enforced by review.
+ * at release 25 publishes no lint key for one, so it must be spotted by hand.
  * Build with {@code ./mvnw -B clean compile},
  * run the unit suite with {@code ./mvnw -B clean test} and gate coverage with {@code ./mvnw -B verify},
  * which enforces an eighty percent line floor with no package excluded. This class adds no dependency,
@@ -190,7 +196,7 @@ import org.springframework.stereotype.Component;
  *       to its width rather than as null.</li>
  *   <li>The exact legacy failure literals for the three scoped sites, held as constants so that the text
  *       the parity gate compares exists in one place.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security</h2>
  *
@@ -206,7 +212,7 @@ import org.springframework.stereotype.Component;
  * {@code N} characters followed by four digits, or by one status byte and three digits. It must therefore
  * pass through {@code logback-spring.xml} unmasked, unreformatted and byte for byte. Adding a masking or
  * reformatting rule that touches it would break the end to end parity comparison while protecting
- * nothing. This is recorded here so that a later reviewer does not harden it by mistake.
+ * nothing. This is recorded here so that a later reader does not harden it by mistake.
  *
  * <p><strong>The precise limit of that carve-out.</strong> The one status byte the parity line can carry is
  * copied through unaltered, so a malformed status - one that never came from the corpus, but from a store
@@ -219,52 +225,49 @@ import org.springframework.stereotype.Component;
  * caller-supplied parts, are logged at many sites and are wrapped by other messages, so the same character
  * that is tolerable once in a fixed line is not tolerable there.
  *
- * <h2>Findings carried by this translation, by severity</h2>
+ * <h2>Ways this translation gets broken</h2>
  *
  * <ul>
- *   <li><strong>Blocker</strong> - mis-rendering the {@code FILE STATUS IS: NNNN} line. Remedy: never
+ *   <li>Mis-rendering the {@code FILE STATUS IS: NNNN} line. Never
  *       assemble it by hand; call {@link #displayIoStatus(String)}, which concatenates the two owned
  *       parts and substitutes nothing.</li>
- *   <li><strong>Blocker</strong> - omitting the low order byte mask in the three digit expansion, which
+ *   <li>Omitting the low order byte mask in the three digit expansion, which
  *       sign extends any byte above {@code 0x7F} into a negative number and destroys the three digit
- *       width. Remedy: the mask is applied once, inside
+ *       width. The mask is applied once, inside
  *       {@code FileStatus.renderIoStatus04(String)}; never re-derive the expansion.</li>
- *   <li><strong>Blocker</strong> - mapping a missing disclosure group default row to a not found. It
- *       abends. Remedy: use {@link #requireDefaultDisclosureGroupReadSuccess(String)}, which raises the
+ *   <li>Mapping a missing disclosure group default row to a not found. It
+ *       abends. Use {@link #requireDefaultDisclosureGroupReadSuccess(String)}, which raises the
  *       fatal type for {@code '23'} exactly as {@code app/cbl/CBACT04C.cbl:L446-L458} does.</li>
- *   <li><strong>High</strong> - treating {@code '10'} as an error. Remedy: use
- *       {@link #requireSuccessOrEndOfFile(String, String, String)} at a sequential read.</li>
- *   <li><strong>High</strong> - admitting {@code '04'} to the general map. Remedy: it is reachable only
+ *   <li>Treating {@code '10'} as an error. Use {@link #applResultForSequentialRead(String)} at a sequential
+ *       read, or {@link #requireFileServiceSuccessOrEndOfFile(String, String, String)} at a file service
+ *       call.</li>
+ *   <li>Admitting {@code '04'} to the general map. It is reachable only
  *       through the two file service methods, and no general method accepts it.</li>
- *   <li><strong>High</strong> - implementing the rendering a second time in another class. Remedy: there
+ *   <li>Implementing the rendering a second time in another class. There
  *       is exactly one implementation, in {@code FileStatus}, and this class delegates to it.</li>
- *   <li><strong>Medium</strong> - citing the renderer paragraph as ending at line 731. Its body ends at
- *       {@code app/cbl/CBTRN02C.cbl:L727}; lines 728 onward are version stamp comments.</li>
- *   <li><strong>Medium</strong> - citing line 445 for the disclosure group retry guard. The verified line
- *       is {@code app/cbl/CBACT04C.cbl:L446}.</li>
- *   <li><strong>Low</strong> - the source writes {@code '00'} then two spaces then {@code OR '23'} at
- *       both lenient guards, so a naive single space search finds neither.</li>
- * </ul>
+ *   <li>Searching the source for a single space between the two lenient literals: the source writes
+ *       {@code '00'} then two spaces then {@code OR '23'} at both guards, so a naive search finds
+ *       neither.</li>
+ *   </ul>
  *
- * <h2>Not available</h2>
+ * <h2>Two things the corpus does not supply</h2>
  *
  * <ul>
- *   <li><strong>Not available:</strong> any service level objective for I/O latency or throughput. None
+ *   <li>Any service level objective for I/O latency or throughput. None
  *       exists anywhere in the frozen corpus - the legacy system publishes no service level agreement, and
- *       the performance gate records a measured baseline rather than a target. What would be needed is a
- *       published latency or throughput requirement in the source; there is none, and none is invented
+ *       the performance gate records a measured baseline rather than a target. No objective is invented
  *       here.</li>
- *   <li><strong>Not available:</strong> a literal source site for {@code '22'} or for {@code '35'}. A
+ *   <li>A literal source site for {@code '22'} or for {@code '35'}. A
  *       census of {@code app/cbl} at commit {@code 7756d89} finds {@code '00'} 88 times in 9 files,
  *       {@code '04'} 9 times in 1 file, {@code '10'} 11 times in 9 files, {@code '23'} 3 times in 2
  *       files, and {@code '22'} and {@code '35'} <strong>zero times each</strong>. Both are reachable
  *       only through the else arm of the binary guard, so their mappings are retained as runtime
- *       reachable rather than deleted; see the notes on them in {@code failureFor}. What would be needed
- *       is a COBOL guard that tests those two literals; none exists. The CICS side has its own separate
+ *       reachable rather than deleted; see the notes on them in {@code failureFor}. Grounding them would
+ *       need a COBOL guard that tests those two literals; none exists. The CICS side has its own separate
  *       vocabulary, 23 sites of {@code DFHRESP(NOTFND)}, 7 of {@code DFHRESP(DUPREC)}, 3 of
  *       {@code DFHRESP(DUPKEY)} and none at all of {@code DFHRESP(NOTOPEN)}, and this class deliberately
  *       does not conflate the two.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  *
@@ -280,9 +283,9 @@ import org.springframework.stereotype.Component;
  *       this class. Remedy: that path used {@code FileStatus.renderIoStatus04(String)} where it needed
  *       {@code FileStatus.renderIoStatus04ForDiagnostics(String)}; {@link #displayIoStatus(String)} is the
  *       only site permitted to emit the unencoded form.</li>
- *   <li>An abend where an orderly end of loop was expected means a sequential read used the two way
- *       guard. Remedy: switch that call site to
- *       {@link #requireSuccessOrEndOfFile(String, String, String)}.</li>
+ *   <li>An abend where an orderly end of loop was expected means a sequential read classified its status
+ *       with {@link #applResultForGuard(String)}, which is the {@code OPEN} and {@code WRITE} shape.
+ *       Remedy: switch that call site to {@link #applResultForSequentialRead(String)}.</li>
  *   <li>A {@code RecordNotFoundException} escaping the interest calculation job means the default
  *       disclosure group retry used a general method. Remedy: switch it to
  *       {@link #requireDefaultDisclosureGroupReadSuccess(String)}.</li>
@@ -299,7 +302,7 @@ import org.springframework.stereotype.Component;
  *   <li>A message that contains a record key, an account identifier or a card number means a caller passed
  *       one as the logical file name. Remedy: pass the DD or logical file name only; this class adds no
  *       other content and deliberately passes no key to the exception types that accept one.</li>
- * </ul>
+ *   </ul>
  */
 @Component
 public class FileStatusMapper {
@@ -586,30 +589,6 @@ public class FileStatusMapper {
     }
 
     /**
-     * Applies the three way sequential read guard of
-     * {@code app/cbl/CBTRN02C.cbl:L345-L369 1000-DALYTRAN-GET-NEXT}: reports end of file for {@code '10'},
-     * returns for {@code '00'} and throws otherwise.
-     *
-     * @param ioStatus the raw two character file status, which may be {@code null}, shorter or longer
-     * @param logicalFileName the logical file or DD name, permitted to be {@code null}, and an identity only
-     * @param operation the attempted operation, permitted to be {@code null}
-     * @return {@code true} when the status is {@code '10'} and the caller must stop reading, {@code false} when
-     * the status is {@code '00'} and a record was returned
-     * @throws com.cardemo.exception.CardDemoException for every other status; the concrete subtype is chosen by
-     * the map documented on {@link #requireSuccess(String, String, String)}
-     */
-    public boolean requireSuccessOrEndOfFile(String ioStatus, String logicalFileName, String operation) {
-        int applResult = applResultForSequentialRead(ioStatus);
-        if (applResult == APPL_AOK) {
-            return false;
-        }
-        if (applResult == APPL_EOF) {
-            return true;
-        }
-        throw failureFor(ioStatus, logicalFileName, operation, null, ABEND_CULPRIT_UNSET, null);
-    }
-
-    /**
      * Scoped carve-out 1 of 3. Applies the lenient read guard of
      * {@code app/cbl/CBTRN02C.cbl:L467-L499 2700-UPDATE-TCATBAL}, where a record not found is an accepted
      * control path rather than an error because the paragraph is an upsert.
@@ -744,14 +723,14 @@ public class FileStatusMapper {
         }
         return switch (classified.get()) {
             // FILE STATUS '22'. No literal source site in app/cbl (census: 0 occurrences); retained as a
-            // runtime-reachable-only mapping, tracked in DECISION_LOG.md. No colliding key is passed: this
+            // runtime-reachable-only mapping. No colliding key is passed: this
             // class never places a key value in an exception.
             case DUPLICATE_KEY -> new DuplicateRecordException(message, logicalFileName, null, cause);
             // FILE STATUS '23'. Cited at app/cbl/CBTRN02C.cbl:L481 and app/cbl/CBACT04C.cbl:L422 and :L436.
             // No record key is passed, for the same reason.
             case RECORD_NOT_FOUND -> new RecordNotFoundException(message, logicalFileName, null, cause);
             // FILE STATUS '35'. No literal source site in app/cbl (census: 0 occurrences); retained as a
-            // runtime-reachable-only mapping, tracked in DECISION_LOG.md.
+            // runtime-reachable-only mapping.
             case FILE_UNAVAILABLE -> new FileUnavailableException(message, logicalFileName, cause);
             // The '9x' family, from the guard IO-STAT1 = '9' at app/cbl/CBTRN02C.cbl:L716. The RAW status is
             // handed over; that type expands it once through the single owning renderer.

@@ -30,7 +30,6 @@ import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 
@@ -91,14 +90,17 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       chain and then rethrows the typed exception that the miss produced. The typed exception is built by
  *       {@code com.cardemo.service.shared.FileStatusMapper} on every I/O path and retained on the request
  *       context; it is never discarded, so no exception is swallowed by the screen-parity path either.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>2. How to build, run and test</h2>
  *
- * <p>Build and verify the whole module with {@code ./mvnw -q -B verify} from the repository root against the
- * pinned toolchain - OpenJDK 25 and Apache Maven 3.9.11, both provisioned by
- * {@code /etc/profile.d/10-carddemo-toolchain.sh}. {@code mvn -B -o clean compile} and
- * {@code mvn -B -o clean test} both run offline against the warm local repository. Nothing in this file is
+ * <p>Build and verify the whole module with {@code ./mvnw -B -ntp -q verify} from the repository root. The
+ * prerequisite is stated as a capability rather than as a host path: JDK 25 on {@code PATH} with
+ * {@code JAVA_HOME} set, however the host provides it, with Apache Maven 3.9.11 supplied by the pinned
+ * wrapper. {@code ./mvnw -B -ntp -o clean compile} and {@code ./mvnw -B -ntp -o clean test} both run offline
+ * against the warm local repository; note that {@code -o} also causes Maven to skip
+ * {@code dependency-check:check}, which declares {@code requiresOnline}, and a skipped scan is never
+ * evidence that the scan passes. Nothing in this file is
  * executable standalone: it is a Spring bean and is exercised either through
  * {@code com.cardemo.controller.AccountController} or directly from unit tests under
  * {@code src/test/java/com/cardemo/unit/service/}, which construct it with the five collaborators of
@@ -121,12 +123,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       entity mappings fails at start-up rather than corrupting a projection at run time.</li>
  *   <li>A {@code java.time.Clock} bean must be present in the context. That is not a new requirement
  *       introduced here: {@code com.cardemo.service.shared.DateValidationService} already declares a
- *       {@code Clock} constructor parameter, so the context already needs the bean. The default supplied by
- *       a configuration class is expected to be {@code Clock.systemDefaultZone()}; tests inject
- *       {@code Clock.fixed(...)}.</li>
+ *       {@code Clock} constructor parameter, so the context already needs the bean. It is supplied by
+ *       {@code com.cardemo.config.ObservabilityConfig#clock(String)} as a system clock in the deployment's own
+ *       zone, which is the one production declaration in the tree; tests inject {@code Clock.fixed(...)} as
+ *       {@code @Primary}.</li>
  *   <li>{@code com.cardemo.service.shared.FileStatusMapper} is a {@code @Component} with a no-argument
  *       constructor, so it is auto-wired with no configuration.</li>
- * </ul>
+ *   </ul>
  *
  * <p>No default is hard-coded here for any of the four. There is no secret, credential, token or signing key
  * anywhere in this class.</p>
@@ -230,7 +233,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  * <p>Eight legacy behaviours below are defects, redundancies or unreachable artefacts. Seven are reproduced
  * rather than repaired, because behavioural parity is the acceptance contract and the paragraph-level
  * traceability matrix must stay mechanically provable; the eighth cannot be reproduced and is labelled a
- * deviation rather than dressed up as parity. Each is tracked in {@code DECISION_LOG.md} and
+ * deviation rather than dressed up as parity. Each is owed an entry in the planned {@code DECISION_LOG.md} and
  * {@code TRACEABILITY_MATRIX.md}, so none is untracked deferred work, and no deferred-work marker token of
  * any kind appears anywhere in this file.</p>
  *
@@ -293,7 +296,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       absent and the substitution does fire, yielding
  *       {@code FatalProcessingException.DEFAULT_ABEND_MESSAGE}. This is the author's evident intent and is
  *       the one item in this register that is a deviation rather than a reproduction.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>7. Reconciliations against the migration brief</h2>
  *
@@ -311,12 +314,13 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       {@code AccountDto.CURRENT_TIME_LENGTH} is 8, confirming it; a nine-byte {@code CURTIME} would not
  *       fit.</li>
  *   <li>The cross-reference finder is
- *       {@code CardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc}, returning a list, not a
- *       singular {@code findByAccountId}. {@code app/catlg/LISTCAT.txt:488} marks the alternate index
- *       {@code NONUNIQKEY}, so the account key is not unique. The first element of the ascending list is the
- *       record a VSAM {@code READ} through {@code CXACAIX} would return; an empty list is the
- *       {@code NOTFND} condition. {@code findById} is <strong>not</strong> used: it would key on the card
- *       number and silently return a different record.</li>
+ *       {@code CardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc}, keyed on the account
+ *       identifier rather than the card number. {@code app/catlg/LISTCAT.txt:488} marks the alternate index
+ *       {@code NONUNIQKEY}, so the account key is not unique and the index stays non-unique - but a VSAM
+ *       {@code READ} through {@code CXACAIX} surfaces the <em>first</em> record in ascending card-number
+ *       order, so the finder applies {@code LIMIT 1} and returns an {@code Optional}; an empty
+ *       {@code Optional} is the {@code NOTFND} condition. {@code findById} is <strong>not</strong> used: it
+ *       would key on the card number and silently return a different record.</li>
  *   <li>{@code 2000-PROCESS-INPUTS} performs four further moves at {@code :601-604} -
  *       {@code WS-RETURN-MSG} to {@code CCARD-ERROR-MSG}, {@code LIT-THISPGM} to {@code CCARD-NEXT-PROG},
  *       {@code LIT-THISMAPSET} to {@code CCARD-NEXT-MAPSET} and {@code LIT-THISMAP} to
@@ -329,7 +333,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>The {@code *} test at {@code :628} compares an {@code X(11)} field against the one-character literal
  *       {@code '*'}, which COBOL pads with blanks, so it matches a <em>single</em> asterisk followed by
  *       spaces - not a run of asterisks. {@code '***'} is not "not supplied"; it is invalid input.</li>
- * </ul>
+ *   </ul>
  *
  * <p>One further reconciliation concerns the money rendering, and it is the only place where this class
  * takes ownership of a contract another file declared unavailable. {@code AccountDto} documents the byte
@@ -770,14 +774,31 @@ public class AccountViewService {
     /** How many low-order digits of a card number survive masking on a logging path. */
     private static final int MASK_VISIBLE_DIGITS = 4;
 
+    /**
+     * Access point for {@code CCXREF} through its account path {@code CXACAIX}, the first of the three
+     * reads in the lookup chain of {@code app/cbl/COACTVWC.cbl:727-735}.
+     */
     private final CardCrossReferenceRepository cardCrossReferenceRepository;
 
+    /**
+     * Access point for the base cluster {@code ACCTDAT}, the second read in the chain at
+     * {@code app/cbl/COACTVWC.cbl:776-784}.
+     */
     private final AccountRepository accountRepository;
 
+    /**
+     * Access point for {@code CUSTDAT}, the third read in the chain at
+     * {@code app/cbl/COACTVWC.cbl:826-834}.
+     */
     private final CustomerRepository customerRepository;
 
+    /** The sole owner of the status-to-exception decision; never re-implemented here. */
     private final FileStatusMapper fileStatusMapper;
 
+    /**
+     * Injected time source replacing {@code FUNCTION CURRENT-DATE}, so the screen header pair
+     * {@code CURDATE} and {@code CURTIME} is reproducible in a test rather than read from the wall clock.
+     */
     private final Clock clock;
 
     /**
@@ -1039,7 +1060,7 @@ public class AccountViewService {
             context.abendReason = ABEND_REASON_SPACES;
             context.returnMessage = UNEXPECTED_DATA_SCENARIO_MESSAGE;
             LOG.warn("CAVW unexpected data scenario; abend payload built and discarded "
-                            + "(code={} culprit={} reason-length={}) - see DECISION_LOG.md defect V6",
+                            + "(code={} culprit={} reason-length={}) - see the planned DECISION_LOG.md defect V6",
                     context.abendCode, context.abendCulprit, context.abendReason.length());
             return sendPlainText(context);
         } catch (final CardDemoException typed) {
@@ -1101,7 +1122,7 @@ public class AccountViewService {
      * admits no exception for duplicates and the scope-coverage gate reads the citations.</p>
      */
     private void mainExit0000AtLine408() {
-        // Intentional unreachable no-op preserved for control-flow parity; see DECISION_LOG.md
+        // Intentional unreachable no-op preserved for control-flow parity; see the planned DECISION_LOG.md
     }
 
     /**
@@ -1114,7 +1135,7 @@ public class AccountViewService {
      * scope-coverage gate verifies, so two are emitted with distinct citations.</p>
      */
     private void mainExit0000AtLine411() {
-        // Intentional unreachable no-op preserved for control-flow parity; see DECISION_LOG.md
+        // Intentional unreachable no-op preserved for control-flow parity; see the planned DECISION_LOG.md
     }
 
     /**
@@ -1156,7 +1177,7 @@ public class AccountViewService {
      * {@code :441}, into the same {@code WS-CURDATE-DATA} area. The first read is redundant: nothing consumes
      * it before the second overwrites it. Both invocations are reproduced through the injected
      * {@code java.time.Clock} and the redundancy is made observable on the trace log rather than quietly
-     * dropped (severity Low; see {@code DECISION_LOG.md}). Reading through the injected clock rather than
+     * dropped (severity Low; see the planned {@code DECISION_LOG.md}). Reading through the injected clock rather than
      * {@code LocalDateTime.now()} is what makes this paragraph deterministic and testable.</p>
      *
      * <p>The renderings are {@code MM/dd/yy} at {@code :443-447} - a two-digit year, taken by the reference
@@ -1181,7 +1202,7 @@ public class AccountViewService {
         // :441 MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA - the read the header actually consumes
         final LocalDateTime headerTimestamp = LocalDateTime.now(this.clock);
         if (LOG.isTraceEnabled()) {
-            // Intentional redundant re-read preserved for parity; see DECISION_LOG.md
+            // Intentional redundant re-read preserved for parity; see the planned DECISION_LOG.md
             LOG.trace("CAVW header timestamp read twice at :434 and :441 (first={} second={})",
                     redundantFirstRead, headerTimestamp);
         }
@@ -1225,11 +1246,40 @@ public class AccountViewService {
      * misspelled in {@code app/cpy/CVACT01Y.cpy:11} itself and is never corrected, here or in the entity
      * accessor {@code Account.getExpiraionDate()}.</p>
      *
-     * <p>Three COBOL {@code MOVE} truncations in the customer block are load-bearing rather than cosmetic,
-     * because {@code AccountDto}'s canonical constructor rejects an over-width component instead of repairing
-     * it: {@code CUST-ADDR-ZIP X(10)} into {@code ACSZIPCO X(5)}, and both
-     * {@code CUST-PHONE-NUM-1/2 X(15)} into {@code ACSPHN1O/ACSPHN2O X(13)}. COBOL alphanumeric moves
-     * left-justify and truncate on the right, which is what {@link #moveAlphanumeric(String, int)} does.</p>
+     * <p><em>Three COBOL {@code MOVE} truncations in the customer block are load-bearing rather than
+     * cosmetic</em>, because {@code AccountDto}'s canonical constructor rejects an over-width component
+     * instead of repairing it. Each is a decision over two independently declared widths, so both are cited
+     * rather than remembered:</p>
+     * <table>
+     *   <caption>The three narrowing moves, with the locator that declares each width</caption>
+     *   <tr><th>Move</th><th>Record field</th><th>Screen field</th><th>Bytes dropped</th></tr>
+     *   <tr>
+     *     <td>{@code :515}</td>
+     *     <td>{@code CUST-ADDR-ZIP PIC X(10)}, {@code app/cpy/CVCUS01Y.cpy}:14</td>
+     *     <td>{@code ACSZIPCO PIC X(5)}, {@code app/cpy-bms/COACTVW.CPY}:410</td>
+     *     <td>5</td>
+     *   </tr>
+     *   <tr>
+     *     <td>{@code :517}</td>
+     *     <td>{@code CUST-PHONE-NUM-1 PIC X(15)}, {@code app/cpy/CVCUS01Y.cpy}:15</td>
+     *     <td>{@code ACSPHN1O PIC X(13)}, {@code app/cpy-bms/COACTVW.CPY}:428</td>
+     *     <td>2</td>
+     *   </tr>
+     *   <tr>
+     *     <td>{@code :518}</td>
+     *     <td>{@code CUST-PHONE-NUM-2 PIC X(15)}, {@code app/cpy/CVCUS01Y.cpy}:16</td>
+     *     <td>{@code ACSPHN2O PIC X(13)}, {@code app/cpy-bms/COACTVW.CPY}:440</td>
+     *     <td>2</td>
+     *   </tr>
+     * </table>
+     * <p>The screen fields named are the {@code O}-suffixed OUTPUT fields, which are what the two
+     * {@code MOVE}s at {@code app/cbl/COACTVWC.cbl}:517-518 actually target; the {@code I}-suffixed input
+     * twins {@code ACSPHN1I} at {@code app/cpy-bms/COACTVW.CPY}:204 and {@code ACSPHN2I} at {@code :216}
+     * carry the same {@code PIC X(13)} and are not the destination. COBOL alphanumeric moves left-justify and
+     * truncate on the RIGHT, so the bytes that SURVIVE are the leading ones - which is what
+     * {@link #moveAlphanumeric(String, int)} does, and what
+     * {@code AccountViewServiceTest} asserts by comparing against the leading substring rather than merely
+     * against a length.</p>
      *
      * @param context the per-request work areas; its screen buffer is filled
      */
@@ -1277,7 +1327,7 @@ public class AccountViewService {
                 }
                 // When the guard passes on FOUND-CUST-IN-MASTER alone - reachable only because of defect V1 -
                 // the source renders residual ACCOUNT-RECORD storage. Undefined storage has no Java
-                // counterpart, so the ten components above stay unset. See DECISION_LOG.md.
+                // counterpart, so the ten components above stay unset. See the planned DECISION_LOG.md.
             }
 
             // :493 IF FOUND-CUST-IN-MASTER
@@ -1373,7 +1423,7 @@ public class AccountViewService {
      * {@code WHEN FLG-ACCTFILTER-NOT-OK}, {@code WHEN FLG-ACCTFILTER-BLANK} and {@code WHEN OTHER}, and in
      * which <strong>all three execute the identical statement</strong> {@code MOVE -1 TO ACCTSIDL}. The
      * decision is wholly redundant. The structure is reproduced rather than collapsed, on the same reasoning
-     * that keeps the redundant index assignment in {@code app/cbl/CBSTM03A.cbl}.</p>
+     * that keeps the redundant index assignment in {@code app/cbl/CBSTM03A.CBL}.</p>
      *
      * <p>{@code :561-565} is the reason a single boolean per field is insufficient. The {@code '*'} marker and
      * the red colour are applied only when the filter state is <em>blank</em>, so blank must stay
@@ -1400,7 +1450,7 @@ public class AccountViewService {
             // :549 WHEN FLG-ACCTFILTER-NOT-OK / WHEN FLG-ACCTFILTER-BLANK
             context.cursorPosition = CURSOR_ON_ACCOUNT_FILTER;
         } else {
-            // :551 WHEN OTHER - Intentional redundant decision preserved for parity; see DECISION_LOG.md
+            // :551 WHEN OTHER - Intentional redundant decision preserved for parity; see the planned DECISION_LOG.md
             context.cursorPosition = CURSOR_ON_ACCOUNT_FILTER;
         }
         // :555 MOVE DFHDFCOL TO ACCTSIDC
@@ -1688,11 +1738,11 @@ public class AccountViewService {
      * is neither set nor tested; the {@code IF} that would have read it is commented out at {@code :696}.</p>
      *
      * <p><strong>Consequence: after an account-master miss the chain continues into the customer lookup at
-     * {@code :708-711}.</strong> The general claim that a downstream lookup must not run once an upstream one
-     * failed is true here <em>only</em> of cross-reference to account; the account-to-customer transition is
-     * unguarded. This is reproduced verbatim. No guard the source lacks is added, and the two dead guards are
-     * retained as written so that the paragraph map stays provable. Severity High; tracked in
-     * {@code DECISION_LOG.md} and {@code TRACEABILITY_MATRIX.md}.</p>
+     * {@code :708-711}.</strong> The general claim that a downstream lookup must not run once an upstream one failed
+     * is true here <em>only</em> of cross-reference to account; the account-to-customer transition is unguarded. This
+     * is reproduced verbatim. No guard the source lacks is added, and the two dead guards are retained as written so
+     * that the paragraph map stays provable. Severity High; owed an entry in the planned {@code DECISION_LOG.md} and
+     * {@code TRACEABILITY_MATRIX.md}.</p>
      *
      * @param context the per-request work areas; the cross-reference, account and customer results plus the
      *                found flags, the filter states and any diagnostic message are set
@@ -1714,7 +1764,7 @@ public class AccountViewService {
         getAcctDataByAcct9300(context);
         // :704-706 IF DID-NOT-FIND-ACCT-IN-ACCTDAT / GO TO 9000-READ-ACCT-EXIT
         // Intentional no-op: the source SET is commented out at app/cbl/COACTVWC.cbl:L792; the guard can
-        // never fire, so the chain falls through to the customer lookup. See DECISION_LOG.md defect V1.
+        // never fire, so the chain falls through to the customer lookup. See the planned DECISION_LOG.md defect V1.
         if (DID_NOT_FIND_ACCOUNT_IN_ACCTDAT.equals(context.returnMessage)) {
             readAcct9000Exit();
             return;
@@ -1725,7 +1775,7 @@ public class AccountViewService {
         getCustDataByCust9400(context);
         // :713-715 IF DID-NOT-FIND-CUST-IN-CUSTDAT / GO TO 9000-READ-ACCT-EXIT
         // Intentional no-op: the source SET is commented out at app/cbl/COACTVWC.cbl:L842; the guard can
-        // never fire. See DECISION_LOG.md defect V1.
+        // never fire. See the planned DECISION_LOG.md defect V1.
         if (DID_NOT_FIND_CUSTOMER_IN_CUSTDAT.equals(context.returnMessage)) {
             readAcct9000Exit();
             return;
@@ -1760,11 +1810,12 @@ public class AccountViewService {
      * <p>{@code app/csd/CARDDEMO.CSD:63} declares {@code DEFINE FILE(CXACAIX)} over
      * {@code DSNAME AWS.M2.CARDDEMO.CARDXREF.VSAM.AIX.PATH} with
      * {@code DESCRIPTION(ALTERNATE INDEX TO CCXREF VIA ACCOUNT KEY)}. This therefore maps to the derived
-     * finder {@code findByAccountIdOrderByCardNumberAsc}, <strong>never</strong> to {@code findById}, which
-     * would key on the sixteen-character card number and silently return a different record. The alternate key
-     * is non-unique ({@code app/catlg/LISTCAT.txt:488} marks it {@code NONUNIQKEY}), so the finder returns a
-     * list; the first element in ascending card-number order is the record a VSAM {@code READ} through the
-     * path would surface, and an empty list is the {@code NOTFND} condition.</p>
+     * finder {@code findFirstByAccountIdOrderByCardNumberAsc}, <strong>never</strong> to {@code findById},
+     * which would key on the sixteen-character card number and silently return a different record. The
+     * alternate key is non-unique ({@code app/catlg/LISTCAT.txt:488} marks it {@code NONUNIQKEY}), so
+     * duplicates are permitted; the first record in ascending card-number order is what a VSAM {@code READ}
+     * through the path would surface, so the finder applies {@code LIMIT 1} and an empty {@code Optional} is
+     * the {@code NOTFND} condition.</p>
      *
      * <p>Latch placement matters and differs between the three read paragraphs. Here the two moves of the
      * response pair into {@code ERROR-RESP} and {@code ERROR-RESP2} sit <em>inside</em> the
@@ -2086,7 +2137,7 @@ public class AccountViewService {
      */
     private AccountViewResult sendLongText(final ViewContext context) {
         // Intentional unreachable: all three PERFORM sites are commented out at
-        // app/cbl/COACTVWC.cbl:L768, :L818, :L867. See DECISION_LOG.md defect V2.
+        // app/cbl/COACTVWC.cbl:L768, :L818, :L867. See the planned DECISION_LOG.md defect V2.
         // :897-902 EXEC CICS SEND TEXT FROM(WS-LONG-MSG) LENGTH(LENGTH OF WS-LONG-MSG) ERASE FREEKB
         final String text = padRight(context.longMessage, LONG_MESSAGE_LENGTH);
         LOG.debug("CAVW long-text diagnostic response of {} bytes issued", text.length());
@@ -2111,7 +2162,7 @@ public class AccountViewService {
      * defect V2.
      */
     private void sendLongTextExit() {
-        // Intentional unreachable: reached only from SEND-LONG-TEXT. See DECISION_LOG.md defect V2.
+        // Intentional unreachable: reached only from SEND-LONG-TEXT. See the planned DECISION_LOG.md defect V2.
     }
 
     /**
@@ -2133,13 +2184,13 @@ public class AccountViewService {
      * {@code FatalProcessingException}, and the empty-message substitution is already implemented there as
      * {@code DEFAULT_ABEND_MESSAGE}, so it is reused rather than reimplemented.</p>
      *
-     * <p>Defect V8 lives on the first line of the body. {@code ABEND-DATA} is an independent {@code 01} group
-     * and is not among the three groups {@code INITIALIZE} names at {@code :268-270}, so its
-     * {@code VALUE SPACES} stands and {@code ABEND-MSG} holds blanks rather than {@code LOW-VALUES}; the
-     * program assigns it nowhere. Under a strict reading the test at {@code :918} is therefore false and
-     * seventy-two blanks are sent. A thrown exception has no terminal to send blanks to, so the unset message
-     * is treated as absent here and the substitution fires - a labelled deviation, severity Low, recorded in
-     * the class-level register and in {@code DECISION_LOG.md}.</p>
+     * <p>Defect V8 lives on the first line of the body. {@code ABEND-DATA} is an independent {@code 01} group and is
+     * not among the three groups {@code INITIALIZE} names at {@code :268-270}, so its {@code VALUE SPACES} stands and
+     * {@code ABEND-MSG} holds blanks rather than {@code LOW-VALUES}; the program assigns it nowhere. Under a strict
+     * reading the test at {@code :918} is therefore false and seventy-two blanks are sent. A thrown exception has no
+     * terminal to send blanks to, so the unset message is treated as absent here and the substitution fires - a
+     * labelled deviation, severity Low, recorded in the class-level register and in the planned
+     * {@code DECISION_LOG.md}.</p>
      *
      * <p>Reconciliation: the abend code here is the <strong>online</strong> four-character
      * {@value #ONLINE_ABEND_CODE}, which exactly fills {@code PIC X(4)}. It is not the batch
@@ -2263,10 +2314,11 @@ public class AccountViewService {
     /**
      * Performs the alternate-index read of {@code :727-735} and reports its outcome as a file status.
      *
-     * <p>{@code app/catlg/LISTCAT.txt} marks {@code CARDXREF.VSAM.AIX} non-unique, so the derived finder
-     * returns a list. A VSAM {@code READ} through the {@code CXACAIX} path surfaces the first record in
-     * alternate-then-primary key order, which is what {@code findByAccountIdOrderByCardNumberAsc} reproduces;
-     * an empty list is the {@code NOTFND} condition and nothing else.</p>
+     * <p>{@code app/catlg/LISTCAT.txt} marks {@code CARDXREF.VSAM.AIX} non-unique, so duplicates are
+     * permitted. A VSAM {@code READ} through the {@code CXACAIX} path surfaces the first record in
+     * alternate-then-primary key order, which is what
+     * {@code findFirstByAccountIdOrderByCardNumberAsc} reproduces with {@code LIMIT 1} applied by the
+     * database; an empty {@code Optional} is the {@code NOTFND} condition and nothing else.</p>
      *
      * @param context the per-request work areas; the cross-reference record, the response pair and any
      *                underlying cause are recorded
@@ -2274,13 +2326,15 @@ public class AccountViewService {
      */
     private String readCrossReference(final ViewContext context) {
         try {
-            final List<CardCrossReference> matches =
-                    this.cardCrossReferenceRepository.findByAccountIdOrderByCardNumberAsc(
+            // LIMIT 1 at the database: a keyed read through the CXACAIX path yields one record, and only
+            // the first was ever used here. See CardCrossReferenceRepository for the full reasoning.
+            final Optional<CardCrossReference> found =
+                    this.cardCrossReferenceRepository.findFirstByAccountIdOrderByCardNumberAsc(
                             context.ridAccountId);
-            if (matches.isEmpty()) {
+            if (found.isEmpty()) {
                 return recordResponse(context, CICS_RESP_NOTFND, IO_STATUS_RECORD_NOT_FOUND);
             }
-            context.crossReference = matches.get(0);
+            context.crossReference = found.get();
             return recordResponse(context, CICS_RESP_NORMAL, IO_STATUS_SUCCESS);
         } catch (final DataAccessException failure) {
             context.ioFailureCause = failure;
@@ -2942,6 +2996,15 @@ public class AccountViewService {
      * published.</p>
      */
     private static final class ScreenBuffer {
+        /**
+         * Creates the work area with every member at its post-{@code INITIALIZE} value, which is the state
+         * the legacy {@code WORKING-STORAGE SECTION} begins each task in. Declared explicitly rather than
+         * left implicit so the surface is documented; it takes no argument and performs no work.
+         */
+        private ScreenBuffer() {
+            // Every member carries its initial value in its own declaration above, exactly as a COBOL
+            // VALUE clause does, so there is nothing for this constructor to assign.
+        }
 
         /** {@code TRNNAMEO PIC X(4)}, stamped at {@code :438}. */
         private String transactionName;

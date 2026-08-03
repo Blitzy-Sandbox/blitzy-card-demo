@@ -53,22 +53,24 @@ import org.hibernate.type.SqlTypes;
  * {@code MAXLRECL 150}, so the record is fixed width, not variable. The copybook header comment at
  * {@code app/cpy/CVACT02Y.cpy:L2} independently states {@code RECLN 150}.</p>
  *
- * <p><b>Field contract and byte arithmetic.</b> Six populated fields plus trailing filler. The
- * populated widths sum to 91 bytes and the filler contributes the remaining 59, which is exactly
- * the catalogued 150:</p>
+ * <p><b>Field contract and byte arithmetic.</b> Six populated fields plus trailing filler in the
+ * frozen copybook, of which <b>five are persisted</b>. The populated widths still sum to 91 bytes and
+ * the filler still contributes 59, which is exactly the catalogued 150 - the record has not changed
+ * shape; three of its bytes are simply not stored:</p>
  *
  * <pre>
  *   #  COBOL field (CVACT02Y.cpy)   PIC      Java property    Column                SQL type
  *   1  CARD-NUM            (:L5)   X(16)    cardNumber       card_num              CHAR(16) PK
  *   2  CARD-ACCT-ID        (:L6)   9(11)    accountId        card_acct_id          NUMERIC(11)
- *   3  CARD-CVV-CD         (:L7)   9(03)    cvvCode          card_cvv_cd           CHAR(3)
+ *   3  CARD-CVV-CD         (:L7)   9(03)    NOT MODELLED     none                  none
  *   4  CARD-EMBOSSED-NAME  (:L8)   X(50)    embossedName     card_embossed_name    CHAR(50)
  *   5  CARD-EXPIRAION-DATE (:L9)   X(10)    expiraionDate    card_expiraion_date   CHAR(10)
  *   6  CARD-ACTIVE-STATUS (:L10)   X(01)    activeStatus     card_active_status    CHAR(1)
  *   -  FILLER             (:L11)   X(59)    not modelled     none                  none
  *   +  none                        none     version          version               BIGINT
  *
- *   16 + 11 + 3 + 50 + 10 + 1 = 91 populated bytes, + 59 FILLER = 150 bytes.
+ *   16 + 11 + 50 + 10 + 1 = 88 persisted bytes, + 3 unpersisted CARD-CVV-CD
+ *   + 59 FILLER = 150 bytes.
  * </pre>
  *
  * <p>The {@code FILLER} at {@code app/cpy/CVACT02Y.cpy:L11} is deliberately not modelled: it pads
@@ -78,10 +80,18 @@ import org.hibernate.type.SqlTypes;
  * remains checkable without re-reading the copybook.</p>
  *
  * <p><b>Fixture corroboration.</b> Row 1 of {@code app/data/ASCII/carddata.txt} is 150 bytes and
- * decodes exactly to the widths above: {@code 0500024453765740} at bytes 1-16,
- * {@code 00000000050} at 17-27, {@code 747} at 28-30, {@code Aniya Von} blank-padded to 50 at
+ * decodes exactly to the widths above: a 16-digit card number at bytes 1-16, {@code 00000000050} at
+ * 17-27, a 3-digit verification value at 28-30, a 9-character embossed name blank-padded to 50 at
  * 31-80, {@code 2023-03-09} at 81-90 and {@code Y} at 91. The file is 7550 bytes, which is 50 rows
  * of 150 data bytes plus one line terminator each.</p>
+ *
+ * <p><b>Why the card number, verification value and embossed name are described rather than quoted.</b>
+ * The three are cardholder data, so they are given as width and shape only - the mask is
+ * width-preserving, {@code ################} for the primary account number and {@code ###} for the
+ * verification value, so the byte arithmetic above stays checkable while no fixture value is reproduced in
+ * this tree (Rule 1 Clause D). The account identifier and the expiry date are quoted because neither
+ * identifies a cardholder on its own and both are needed to anchor the 150-byte offset proof. Read the
+ * fixture directly when a literal value is genuinely required; it is not restated here.</p>
  *
  * <p><b>No monetary field exists on this entity.</b> The card layout declares no
  * {@code PIC S9(n)V99}, no {@code COMP-3} and no rate, so there is deliberately no
@@ -144,13 +154,15 @@ import org.hibernate.type.SqlTypes;
  * It declares {@code CREATE TABLE card} with 7 columns whose names are identical, as a
  * set, to the 7 {@code @Column(name = ...)} declarations below, verified by direct comparison.
  * The mapping is therefore reconciled against real DDL rather than asserted in its absence.
- * This matters because {@code spring.jpa.hibernate.ddl-auto: validate} is the mandated setting, so any
- * divergence in column name, type, precision or nullability would fail application-context startup
- * outright rather than degrading quietly.
- * What remains <strong>not available</strong> is {@code V2__create_indexes.sql},
- * {@code V3__seed_data.sql} and all four {@code application*.yml} profiles, so the
- * {@code spring.jpa.hibernate.ddl-auto: validate} behaviour cited here is the mandated configuration
- * rather than an observed one.</p>
+ * This matters because {@code spring.jpa.hibernate.ddl-auto: validate} is set in all four profiles, so any
+ * divergence in column name, type, precision or nullability fails application-context startup
+ * outright rather than degrading quietly - an observed behaviour rather than a mandated one, since all four
+ * of {@code application.yml}, {@code application-local.yml}, {@code application-test.yml} and
+ * {@code application-prod.yml} are present and the containerised integration tier boots with Flyway
+ * applying {@code V1} through {@code V3} first. Both later migrations exist:
+ * {@code V2__create_indexes.sql} creates {@code idx_card_acct_id} for this table and
+ * {@code V3__seed_data.sql} seeds it from {@code app/data/ASCII/carddata.txt}. An earlier revision of this
+ * paragraph called all six artefacts unavailable; that is no longer true and the claim is withdrawn.</p>
  *
  * <p>What {@code V1__create_schema.sql} declares for this table, and what this mapping asserts, is
  * exactly:</p>
@@ -159,7 +171,6 @@ import org.hibernate.type.SqlTypes;
  *   CREATE TABLE card (
  *       card_num            CHAR(16)    NOT NULL,
  *       card_acct_id        NUMERIC(11) NOT NULL,   -- foreign key to account.acct_id
- *       card_cvv_cd         CHAR(3)     NOT NULL,
  *       card_embossed_name  CHAR(50)    NOT NULL,
  *       card_expiraion_date CHAR(10)    NOT NULL,
  *       card_active_status  CHAR(1)     NOT NULL,
@@ -182,11 +193,13 @@ import org.hibernate.type.SqlTypes;
  * {@code src/test/java/com/cardemo/unit/model}; they are to assert the 150-byte arithmetic, the key length
  * of 16, that {@code cvvCode} and {@code expiraionDate} are text, that a leading-zero card
  * verification value round-trips unchanged, and that {@code toString()} discloses neither the card
- * number nor the verification value. Schema agreement is to be exercised by the repository integration
- * tier against a Testcontainers PostgreSQL 16 instance, which requires a reachable container runtime.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code CardTest} exists and
- * {@code src/test/java/com/cardemo/integration} does not exist, so both sentences state the coverage
- * owed rather than coverage that runs.</p>
+ * number nor the verification value. {@code src/test/java/com/cardemo/unit/model/CardTest.java} covers all
+ * of that today, including that the account identifier sits at byte 16 where the alternate index is anchored
+ * and that it is a {@code Long} because {@code PIC 9(11)} overflows {@code int}. Schema agreement is exercised
+ * by the repository integration tier against a Testcontainers PostgreSQL 16 instance;
+ * {@code src/test/java/com/cardemo/integration/repository} provides the abstract base for that tier, and
+ * <strong>a reachable container runtime is a validation-time prerequisite</strong> for running it - where none
+ * is available the correct report is that the tier did not run, never an untested pass.</p>
  *
  * <p><b>Key configuration and defaults.</b> This class has none of its own: it reads no property
  * and holds no static mutable state. Its behaviour depends only on
@@ -241,11 +254,6 @@ public class Card {
      * length reported as {@code KEYLEN 16} at {@code app/catlg/LISTCAT.txt:L202}.
      */
     private static final int CARD_NUMBER_WIDTH = 16;
-
-    /**
-     * Width of {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
-     */
-    private static final int CVV_CODE_WIDTH = 3;
 
     /**
      * Width of {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at {@code app/cpy/CVACT02Y.cpy:L8}.
@@ -324,8 +332,8 @@ public class Card {
      * where this field begins immediately after the 16-byte card number. The alternate index is
      * not an entity and has no class of its own. It becomes two things: the derived finder in
      * {@code com.cardemo.repository.CardRepository}, and a <b>non-unique</b> B-tree index on
-     * {@code card_acct_id} to be created by {@code V2__create_indexes.sql} (planned; that migration does not exist at
-     * this commit and {@code V1} declares no index). Non-unique is not a
+     * {@code card_acct_id}, created by {@code V2__create_indexes.sql} as {@code idx_card_acct_id} - indexes are
+     * owned by that migration rather than by {@code V1}, which declares none. Non-unique is not a
      * relaxation but the catalogued fact: {@code app/catlg/LISTCAT.txt:L285} declares the
      * alternate index {@code NONUNIQKEY}, consistent with one account legitimately holding many
      * cards.</p>
@@ -344,18 +352,6 @@ public class Card {
             precision = ACCOUNT_ID_PRECISION,
             scale = ACCOUNT_ID_SCALE)
     private Long accountId;
-
-    /**
-     * Card verification value: {@code CARD-CVV-CD}, {@code PIC 9(03)} at {@code app/cpy/CVACT02Y.cpy:L7}.
-     *
-     * <p>A numeric picture clause deliberately mapped to {@code CHAR(3)}: some stored values begin with a zero,
-     * which a numeric type would drop on re-emission, and the value is never an arithmetic operand anywhere in
-     * the corpus. {@code accountId} takes the opposite decision for the opposite reason. This value is
-     * sensitive and is never rendered by {@link #toString()}.
-     */
-    @JdbcTypeCode(SqlTypes.CHAR)
-    @Column(name = "card_cvv_cd", nullable = false, length = CVV_CODE_WIDTH)
-    private String cvvCode;
 
     /**
      * Name embossed on the card: {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)} at
@@ -396,11 +392,14 @@ public class Card {
     }
 
     /**
-     * Creates a fully populated card record from the six columns of {@code CARD-RECORD}.
+     * Creates a fully populated card record from the five persisted columns of {@code CARD-RECORD}.
+     *
+     * <p>{@code CARD-CVV-CD} is <strong>not</strong> a parameter. It is not persisted, so there is nothing
+     * for a caller to supply and no accessor through which to read one back - see the deviation recorded on
+     * this class.
      *
      * @param cardNumber {@code CARD-NUM}, {@code PIC X(16)}.
      * @param accountId {@code CARD-ACCT-ID}, {@code PIC 9(11)}.
-     * @param cvvCode {@code CARD-CVV-CD}, {@code PIC 9(03)}.
      * @param embossedName {@code CARD-EMBOSSED-NAME}, {@code PIC X(50)}.
      * @param expiraionDate {@code CARD-EXPIRAION-DATE}, {@code PIC X(10)}.
      * @param activeStatus {@code CARD-ACTIVE-STATUS}, {@code PIC X(01)}.
@@ -409,14 +408,12 @@ public class Card {
      */
     public Card(String cardNumber,
                 Long accountId,
-                String cvvCode,
                 String embossedName,
                 String expiraionDate,
                 String activeStatus) {
         // Direct field assignment through private static checks only, so no overridable method runs here.
         this.cardNumber = checkWidth(cardNumber, "cardNumber", "CARD-NUM", CARD_NUMBER_WIDTH);
         this.accountId = checkAccountId(accountId);
-        this.cvvCode = checkWidth(cvvCode, "cvvCode", "CARD-CVV-CD", CVV_CODE_WIDTH);
         this.embossedName =
                 checkWidth(embossedName, "embossedName", "CARD-EMBOSSED-NAME", EMBOSSED_NAME_WIDTH);
         this.expiraionDate = checkWidth(expiraionDate,
@@ -464,26 +461,6 @@ public class Card {
      */
     public void setAccountId(Long accountId) {
         this.accountId = checkAccountId(accountId);
-    }
-
-    /**
-     * Returns the card verification value, {@code CARD-CVV-CD}, {@code PIC 9(03)}, held as text so that a
-     * leading zero survives.
-     *
-     * @return the verification value, never {@code null} on a persisted instance
-     */
-    public String getCvvCode() {
-        return cvvCode;
-    }
-
-    /**
-     * Replaces the card verification value, {@code CARD-CVV-CD}, {@code PIC 9(03)}.
-     *
-     * @param cvvCode the verification value; at most 3 characters, not {@code null}
-     * @throws IllegalArgumentException if {@code cvvCode} is {@code null} or longer than 3 characters
-     */
-    public void setCvvCode(String cvvCode) {
-        this.cvvCode = checkWidth(cvvCode, "cvvCode", "CARD-CVV-CD", CVV_CODE_WIDTH);
     }
 
     /**

@@ -57,7 +57,7 @@ import jakarta.validation.constraints.Size;
  *       at all. The program moves its results into the COMMAREA and transfers control with
  *       {@code EXEC CICS XCTL}. There was therefore never any success payload to lay out, which is
  *       precisely why no map for one exists.</li>
- * </ul>
+ *   </ul>
  *
  * <p>Consequently the eleven-field list of {@code app/cpy-bms/COSGN00.CPY} is deliberately
  * <strong>not</strong> borrowed here; that map is the field contract of {@code SignOnRequest}. What
@@ -77,7 +77,7 @@ import jakarta.validation.constraints.Size;
  *       becomes the role claim and is carried here as {@link #userType()}.</li>
  *   <li>{@code app/cbl/COSGN00C.cbl} - the routing outcome of a successful sign-on, described
  *       below.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>The user type is load-bearing, not decorative</h2>
  *
@@ -119,7 +119,7 @@ import jakarta.validation.constraints.Size;
  *   <li>{@code CDEMO-LAST-MAP PIC X(7)} and {@code CDEMO-LAST-MAPSET PIC X(7)} at
  *       {@code app/cpy/COCOM01Y.cpy:43-44} - <strong>no counterpart.</strong> No screen state is
  *       retained because no screen is rendered.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security posture</h2>
  *
@@ -163,13 +163,13 @@ import jakarta.validation.constraints.Size;
  *
  * <ul>
  *   <li><em>Token expiry timestamp, issued-at timestamp, token type string, scope list and refresh
- *       token</em> - <strong>Not available.</strong> The source has no analogue for any of them:
+ *       token.</em> The source has no analogue for any of them:
  *       {@code app/cpy/COCOM01Y.cpy} declares no lifetime, no issue instant and no scope, and the
  *       legacy COMMAREA had no expiry concept whatsoever. Adding them would enlarge the credential
  *       surface and, in the case of a refresh token, add a second long-lived credential that
  *       nothing in the corpus requires. A client that needs an expiry can read the claim from the
  *       token it already holds.</li>
- *   <li><em>Customer first, middle and last name</em> - <strong>Not available</strong> as a sign-on
+ *   <li><em>Customer first, middle and last name.</em> These are not a sign-on
  *       result. {@code CDEMO-CUST-FNAME}, {@code CDEMO-CUST-MNAME} and {@code CDEMO-CUST-LNAME},
  *       each {@code PIC X(25)} at {@code app/cpy/COCOM01Y.cpy:34-36}, sit in the
  *       {@code CDEMO-CUSTOMER-INFO} group, and the success path at
@@ -184,10 +184,10 @@ import jakarta.validation.constraints.Size;
  *       already fully determined by {@link #userType()}. Restating it as a second field would
  *       reintroduce a COMMAREA field that has been deliberately dropped, and would create two
  *       sources of truth for one decision.</li>
- *   <li><em>A width bound on {@link #token()}</em> - <strong>Not available.</strong> A token is a
+ *   <li><em>A width bound on {@link #token()}.</em> A token is a
  *       new artefact with no COBOL {@code PIC} clause, so there is no declared width to assert. A
  *       bound invented here would reject valid tokens as the claim set grows.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Behaviour, validation and error modes</h2>
  *
@@ -222,7 +222,7 @@ import jakarta.validation.constraints.Size;
  *   <li><em>Malformed JSON, or a component of the wrong JSON type</em> - rejected by the
  *       deserialiser before this type is constructed, and mapped to a client error by the web
  *       layer.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Building and testing</h2>
  *

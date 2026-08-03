@@ -85,7 +85,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       {@code DEFINE CLUSTER (NAME(AWS.M2.CARDDEMO.TRANTYPE.VSAM.KSDS)} with
  *       {@code KEYS(2 0)} and {@code RECORDSIZE(60 60)}, which states the same two facts a
  *       third time and states them as an exact rather than an average length.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The fixture {@code app/data/ASCII/trantype.txt} closes the loop at 427 bytes: seven rows
  * of exactly 60 characters plus one line terminator each, which is the {@code REC-TOTAL 7}
@@ -102,12 +102,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * substring. Every one of the seven codes is exactly two digits, so the key column is fully
  * occupied and never blank padded.
  *
- * <h2>Findings, classified by severity</h2>
+ * <h2>Mapping decisions that must not be undone</h2>
  *
- * <p><b>Blocker: a plain {@code jakarta.persistence} String mapping cannot start the
+ * <p><b>A plain {@code jakarta.persistence} String mapping cannot start the
  * application context against these columns.</b> The persistence configuration sets
  * {@code spring.jpa.hibernate.ddl-auto: validate} in every profile, so a column name, type,
- * precision or nullability mismatch aborts startup rather than degrading quietly. Measured on
+ * precision or nullability mismatch aborts startup rather than degrading quietly. On
  * the pinned stack, Hibernate ORM 6.6.42.Final against PostgreSQL 16.10, with the table
  * created as {@code tran_type CHAR(2) NOT NULL PRIMARY KEY, tran_type_desc CHAR(50) NOT NULL}:
  *
@@ -125,7 +125,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *                               columnDefinition = "CHAR(n)")  PASS
  * </pre>
  *
- * <p>Remediation, applied below: annotate both properties with
+ * <p>The mapping applied below is therefore to annotate both properties with
  * {@code JdbcTypeCode(SqlTypes.CHAR)}. Hibernate then derives the JDBC type {@code CHAR}
  * instead of defaulting a {@code String} to {@code VARCHAR}, the reported and expected types
  * agree, and schema generation emits precisely
@@ -145,12 +145,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * {@code TRANCAT-TYPE-CD}. Only {@code app/cpy/CVTRA03Y.cpy:L5} names it plainly
  * {@code TRAN-TYPE}. The copybook is authoritative for the column, so the column is
  * {@code tran_type} and <i>not</i> the underscored form of {@code TRAN-TYPE-CD} that the
- * sibling copybooks would suggest. Remediation is to leave it alone:
+ * sibling copybooks would suggest. It must be left alone:
  * harmonising the column name to match the sibling copybooks would diverge from the source of
  * record and would fail {@code validate} at startup with a missing column, which is why the
- * divergence is recorded here at the mapping site rather than only in the decision log. The
- * Java property is named {@code typeCode} for readability and to match the {@code typeCode}
- * property on the transaction entities; only the column name follows the copybook literally.
+ * divergence is recorded here at the mapping site. The
  *
  * <p><b>Low: this is a batch only dataset.</b> {@code app/csd/CARDDEMO.CSD} defines exactly
  * eight CICS file names, {@code ACCTDAT}, {@code CARDAIX}, {@code CARDDAT}, {@code CCXREF},
@@ -223,7 +221,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       {@code -Werror} then turns into a build failure. Nothing in the design serialises this
  *       type through Java serialisation, so the interface is simply not implemented and the
  *       insecure deserialisation surface never opens.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Fixed width and CHAR semantics</h2>
  *
@@ -244,7 +242,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       the geometry that the fixed width writers depend on. A caller that wants to compare
  *       against an unpadded literal must strip first, or push the comparison into a database
  *       predicate where the blank insensitive rule applies.</li>
- * </ul>
+ *   </ul>
  *
  * <p>The key column is unaffected by this asymmetry in practice: every seeded code is exactly
  * two digits, so {@code CHAR(2)} is fully occupied and no padding is ever added to it. That is
@@ -263,13 +261,13 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * {@code 15.00} and {@code 15.0} as different amounts. No binary approximation type,
  * primitive or boxed, appears anywhere in this file.
  *
- * <h2>Required schema, and what is Not available</h2>
+ * <h2>The schema this mapping requires</h2>
  *
- * <p><b>Measured 1 August 2026:</b> {@code src/main/resources/db/migration/V1__create_schema.sql} is
- * <b>present</b> and declares {@code CREATE TABLE transaction_type} with 2
+ * <p>{@code src/main/resources/db/migration/V1__create_schema.sql} declares
+ * {@code CREATE TABLE transaction_type} with 2
  * columns whose names are identical, as a set, to the 2 {@code @Column(name = ...)} declarations in this
- * class, verified by direct comparison. {@code V2__create_indexes.sql} and {@code V3__seed_data.sql}
- * remain <b>not available</b>. What that migration declares, and what this mapping asserts, is
+ * class. What that migration declares, and what this mapping asserts, is
+ * precisely:
  * precisely:
  *
  * <ul>
@@ -277,10 +275,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       {@code tran_type_desc CHAR(50) NOT NULL};</li>
  *   <li>no version column;</li>
  *   <li>no index beyond the primary key;</li>
- *   <li>to be seeded by {@code V3__seed_data.sql} (planned; absent at this commit) from {@code
+ *   <li>seeded by {@code V3__seed_data.sql} from {@code
  *       app/data/ASCII/trantype.txt}, which is
  *       7 rows of 60 bytes each.</li>
- * </ul>
+ *   </ul>
  *
  * <p>For the migration author's wider orientation: the first migration creates exactly 11
  * tables with 10 foreign keys and 5 check constraints, of which this table is one and
@@ -299,9 +297,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * byte record arithmetic, the key length of 2, the column name {@code tran_type} and that the type
  * is a class rather than an enum. The repository tier is to be exercised against a Testcontainers
  * PostgreSQL 16 instance from {@code src/test/java/com/cardemo/integration/repository}.
- * <strong>Not available, measured 1 August 2026:</strong> no {@code TransactionTypeTest} exists and
- * that integration directory does not exist, so both sentences state coverage owed, not coverage run. There
- * is no configuration key and no default value specific to this class: it is a mapping, and
+ * PostgreSQL 16 instance from {@code src/test/java/com/cardemo/integration/repository}. There
  * every setting that governs it, the datasource, the naming strategy and
  * {@code ddl-auto: validate}, is declared in the profile configuration.
  *
@@ -312,12 +308,12 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       first migration has not run or created a differently named table. Check the migration
  *       history and the table name; do not rename the mapping to match a wrong table.</li>
  *   <li><b>Startup fails with "Schema-validation: missing column [tran_type]".</b> Almost
- *       always the {@code TRAN-TYPE-CD} harmonisation described under the Medium finding
- *       above. The column is {@code tran_type}; correct the migration, not this class.</li>
+ *       always the {@code TRAN-TYPE-CD} harmonisation described above. The column is
+ *       {@code tran_type}; correct the migration, not this class.</li>
  *   <li><b>Startup fails with "wrong column type ... found [bpchar (Types#CHAR)], but
  *       expecting [varchar(2) (Types#VARCHAR)]".</b> The {@code JdbcTypeCode(SqlTypes.CHAR)}
  *       annotation has been removed from a property while the column remained {@code CHAR}.
- *       Restore it; see the Blocker finding above for the measured evidence.</li>
+ *       Restore it; see the mapping table above for the exact validate outcomes.</li>
  *   <li><b>A description comparison unexpectedly fails.</b> The loaded value is blank padded
  *       to 50 characters by design. Strip before comparing in Java, or compare in SQL.</li>
  *   <li><b>A type code lookup returns nothing for a code the report expects.</b> The seed data
@@ -325,7 +321,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       diagnoses this with "INVALID TRANSACTION TYPE" at
  *       {@code app/cbl/CBTRN03C.cbl:L497} rather than failing, so an empty result is a data
  *       condition to report, not a mapping defect.</li>
- * </ul>
+ *   </ul>
  *
  * <p><b>JSON serialisation barrier.</b> This class is structurally unserialisable by Jackson.
  * {@link JsonIgnoreType} removes any property whose declared type is this class from an enclosing object's
@@ -335,7 +331,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * personal data and no customer figure, so unlike {@link Card} or {@link Customer} it is not what the
  * barrier was introduced to protect. It is applied here anyway, and deliberately without exception,
  * because a barrier that covers every entity in the package is checkable by inspection, whereas one
- * applied only where a reviewer judged it necessary has to be re-judged every time an entity is added or
+ * applied only where someone judged it necessary has to be re-judged every time an entity is added or
  * a column is widened. Persistence is unaffected: Hibernate reads and writes the annotated fields
  * reflectively and never consults Jackson visibility.</p>
  *

@@ -18,7 +18,6 @@
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- *
  *    http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing,
@@ -78,7 +77,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       <code>DEFAULT   01000100150&#123;0000000000000000000000000000</code> and decomposes as
  *       {@code DEFAULT} plus three blanks (10) + {@code 01} (2) + {@code 0001} (4) = the 16-byte key, then
  *       <code>00150&#123;</code> (6) for the rate, then 28 filler characters.</li>
- * </ol>
+ *   </ol>
  * <p>{@code FILLER} is never modelled. It carries no data; it exists only to pad the record out to the
  * catalogued 50 bytes, and its 28-byte width is recorded here rather than in a field. Citing {@code :L896}
  * precisely matters, because {@code app/catlg/LISTCAT.txt:L202} (CARDDATA) and {@code :L403} (CARDXREF) also
@@ -216,7 +215,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       be algebraically rewritten as a division by one hundred followed by a division by twelve, because the
  *       two forms round differently. That computation lives in the interest processor and is intentionally
  *       absent from this file.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Key configuration and defaults</h2>
  * <p>Every profile is mandated to set {@code spring.jpa.hibernate.ddl-auto: validate}, so the schema is never
@@ -230,7 +229,10 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  * {@code DIS-INT-RATE PIC S9(04)V99} — is asserted mechanically by {@code SchemaStructureTest} against
  * {@code app/cpy/CVTRA02Y.cpy}, not by inspection. The field contract remains the normative column
  * contract, so any future divergence is resolved by changing {@code V1}. The shape it declares is exactly
- * this, and {@code V2__create_indexes.sql} remains <strong>planned</strong> and absent:</p>
+ * this. {@code V2__create_indexes.sql} exists and deliberately creates nothing for this table beyond its
+ * composite primary key, because {@code DISCGRP} has no alternate index in
+ * {@code app/catlg/LISTCAT.txt}; an earlier revision of this sentence called that migration planned and
+ * absent, which is no longer true and is withdrawn:</p>
  * <pre>
  * table disclosure_group
  *   acct_group_id  CHAR(10)      NOT NULL   -- part of PK; mapping owned by DisclosureGroupId
@@ -240,20 +242,24 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *   PRIMARY KEY (acct_group_id, tran_type_cd, tran_cat_cd)   -- in this exact COBOL field order
  * </pre>
  * <p>{@code CHAR(10)}, not {@code VARCHAR(10)}, on the group id, so the space-padded default group matches, as
- * argued above. No version column. No index beyond the primary key. To be seeded by {@code V3__seed_data.sql}
- * (planned; absent at this commit, so no row is loaded yet) from
+ * argued above. No version column. No index beyond the primary key. Seeded by {@code V3__seed_data.sql} from
  * {@code app/data/ASCII/discgrp.txt} - 51 rows of 50 bytes, of which 17 carry the default group id - with
  * position-aware zoned-decimal overpunch decoding driven by the picture clause: the trailing {@code &#123;} in
  * {@code 00150&#123;} denotes {@code +0}, so that row's rate is {@code +15.00}, not {@code 1500}. Across the
  * wider migration, {@code V1} creates exactly 11 tables with 10 foreign keys and 5 check constraints; Spring
  * Batch's own {@code BATCH_*} tables come from the framework's bundled script, so they belong neither in
  * {@code V1} nor in a fourth migration.</p>
- * <p><strong>Not available, and a Blocker if resolved the wrong way: the SQL type of
+ * <p><strong>Resolved, and still a Blocker if changed the wrong way: the SQL type of
  * {@code tran_cat_cd}.</strong> {@code DIS-TRAN-CAT-CD PIC 9(04)} is logically four unsigned display digits,
  * which reads as {@code NUMERIC(4)}, and the source requirement for this migration states it that way. That
- * spelling does not validate. {@link DisclosureGroupId} maps the component as an {@code Integer} and records
- * having measured, against Hibernate ORM 6.6.42.Final and PostgreSQL 16.10 with schema validation enabled, that
- * an {@code Integer} validates against {@code INTEGER} and {@code BIGINT} but fails against both
+ * spelling does not validate. {@code V1__create_schema.sql} settles the question in favour of the measured
+ * answer: it declares {@code tran_cat_cd INTEGER NOT NULL} in {@code CREATE TABLE disclosure_group}, together
+ * with {@code dis_int_rate NUMERIC(6,2)} and the composite primary key
+ * {@code (acct_group_id, tran_type_cd, tran_cat_cd)} in COBOL field order. So this is no longer an open
+ * question but a live constraint to preserve. {@link DisclosureGroupId} maps the component as an
+ * {@code Integer} and records having measured, against Hibernate ORM 6.6.42.Final and PostgreSQL 16.10 with
+ * schema validation enabled, that an {@code Integer} validates against {@code INTEGER} and {@code BIGINT}
+ * but fails against both
  * {@code NUMERIC(4)} and {@code SMALLINT}. Because the identifier class is the artefact that actually declares
  * this column, it is authoritative for it, and {@code INTEGER} is enumerated above on that basis. Remediation
  * if a future migration prefers the literal {@code NUMERIC(4)}: the component's Java type in
@@ -297,7 +303,7 @@ import com.fasterxml.jackson.annotation.JsonIgnoreType;
  *       zero rate is valid and never causes this.</li>
  *   <li><em>Low - a row appears absent although it is in the table.</em> All three key components must be
  *       populated; a partially populated key is a different value and matches nothing.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security</h2>
  * <p>Nothing here is a credential or personally identifiable: an account group id, a two-character type code, a

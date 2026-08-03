@@ -64,9 +64,10 @@
 # Ownership boundary - four artefacts, four responsibilities, no overlap:
 #   * src/main/java/com/cardemo/observability/MetricsConfig.java DEFINES the
 #     measurements. Their names are its own constants.
-#   * com.cardemo.config.ObservabilityConfig together with
-#     src/main/resources/application.yml REGISTER and EXPOSE them on the
-#     actuator surface, whose exposure list that file alone owns.
+#   * src/main/resources/application.yml EXPOSES them on the actuator surface,
+#     whose exposure list that file alone owns (application.yml:801). Spring
+#     Boot's Micrometer and Actuator auto-configuration performs the
+#     registration, so no project class is required for it.
 #   * observability/prometheus.yml SCRAPES that surface.
 #   * observability/grafana/dashboards/carddemo-dashboard.json DISPLAYS the
 #     resulting series.
@@ -74,8 +75,13 @@
 # no management.* property, carries no scrape configuration and embeds no
 # dashboard. Each of those belongs to exactly one artefact above, and
 # restating any of them here would duplicate an owner and go stale the moment
-# that owner changed. The boundary records ownership rather than on-disk
-# status: ObservabilityConfig is added by a separate unit of the migration.
+# that owner changed. Availability, re-measured at this commit: MetricsConfig
+# .java exists; ObservabilityConfig does NOT exist and is Not available. An
+# earlier revision of this comment named ObservabilityConfig as a co-owner of
+# registration and exposure and said it "is added by a separate unit of the
+# migration", which pointed a reader at a file that is not there; the owner is
+# application.yml. Severity of what that left in place: Medium. Corrected
+# above rather than refreshed.
 #
 # ============================================================================
 # HOW TO RUN AND VALIDATE

@@ -68,7 +68,7 @@ import java.util.Objects;
  *   <li>the seed fixture {@code app/data/ASCII/discgrp.txt:L1}, whose first record begins
  *       {@code A000000000} + {@code 01} + {@code 0001} - a 10/2/4 split - followed by the six-byte rate field
  *       and 28 filler bytes, 50 bytes in total across all 51 rows.</li>
- * </ol>
+ *   </ol>
  * <p>Citing {@code L896} precisely matters: {@code app/catlg/LISTCAT.txt:L202} (CARDDATA, {@code AVGLRECL 150})
  * and {@code L403} (CARDXREF, {@code AVGLRECL 50}) also report {@code KEYLEN 16} for entirely different
  * clusters, so a vaguer citation would point at the wrong dataset.</p>
@@ -151,36 +151,33 @@ import java.util.Objects;
  * Switching those columns to {@code VARCHAR} would therefore break the DEFAULT group fallback for any caller
  * that supplies the literal unpadded, and such a caller would then have to pad to ten characters exactly as
  * {@code app/cbl/CBACT04C.cbl:L437} does. Record that consequence rather than making the change silently.</p>
- * <p><strong>Both artefacts this paragraph once reported missing now exist.</strong> An earlier revision
- * said {@code src/main/resources/db/migration/} did not exist and that the sibling entity
- * {@code com.cardemo.model.entity.DisclosureGroup} was unavailable; both claims are withdrawn.
- * {@code V1__create_schema.sql} declares the {@code disclosure_group} table with its
+ * <p>{@code V1__create_schema.sql} declares the {@code disclosure_group} table with its
  * three-column composite primary key in COBOL field order, summing to the catalogued key length of 16,
- * and {@code DisclosureGroup} is present and maps this class through {@code @EmbeddedId}. That agreement
- * is asserted mechanically by {@code SchemaStructureTest} and {@code CompositeKeyContractTest} rather than
- * by inspection. The contract above remains normative and no SQL type beyond it has been invented here.
- * What is still genuinely absent is {@code V2__create_indexes.sql}, which has never existed.</p>
+ * and the sibling entity {@code com.cardemo.model.entity.DisclosureGroup} maps this class through
+ * {@code @EmbeddedId}. That agreement is asserted mechanically by {@code SchemaStructureTest} and
+ * {@code CompositeKeyContractTest} rather than by inspection, and no SQL type beyond the contract above
+ * has been invented here.</p>
  *
  * <h2>Common failure modes and troubleshooting</h2>
  * <ul>
- *   <li><em>Blocker, if the migration disagrees - schema validation rejects {@code tran_cat_cd}.</em> Measured
- *       on Hibernate ORM 6.6.42.Final and PostgreSQL 16.10, an {@code Integer} component validates against an
+ *   <li><em>Schema validation rejects {@code tran_cat_cd}.</em> On Hibernate ORM 6.6.42.Final and
+ *       PostgreSQL 16.10, an {@code Integer} component validates against an
  *       {@code INTEGER} column, and against {@code BIGINT}, but fails against both {@code NUMERIC(4)} and
  *       {@code SMALLINT}. That {@code SMALLINT} also fails is worth stating plainly, because it is the
- *       intuitive narrow choice for a four-digit code and it does not work. Remediation: declare
+ *       intuitive narrow choice for a four-digit code and it does not work. Declare
  *       {@code tran_cat_cd} as {@code INTEGER} in {@code V1__create_schema.sql}. Anyone who deviates must
  *       change this component in step and say so, so that entity, key and migration stay paired.</li>
- *   <li><em>Medium - the DEFAULT group lookup finds nothing.</em> Check whether the group id was supplied
+ *   <li><em>The DEFAULT group lookup finds nothing.</em> Check whether the group id was supplied
  *       unpadded against a {@code VARCHAR} column; against {@code CHAR(10)} it matches either way, as measured
  *       above. The legacy behaviour when the default row is genuinely missing is an abend, per
  *       {@code app/cbl/CBACT04C.cbl:L443-L460}.</li>
- *   <li><em>Low - an entity appears not to be found although the row exists.</em> Confirm all three components
+ *   <li><em>An entity appears not to be found although the row exists.</em> Confirm all three components
  *       are populated: a partially populated key is a distinct value and never compares equal to a complete
  *       one, by design.</li>
- *   <li><em>Low - {@code IllegalArgumentException} from the all-components constructor.</em> The message names
+ *   <li><em>{@code IllegalArgumentException} from the all-components constructor.</em> The message names
  *       the offending component and the limit it broke; the input violated the source field width or the
  *       unsigned four-digit domain of {@code PIC 9(04)}.</li>
- * </ul>
+ *   </ul>
  *
  * <h2>Security</h2>
  * <p>No component is credential or personally identifiable material: an account group id, a two-character
