@@ -5,11 +5,13 @@
  * Application : CardDemo
  * Type        : Java 25 / Spring Boot 3.5.11 package documentation
  *               (Spring Batch item-reader layer)
- * Function    : ItemReader implementations for the four read-only
- *               sequential scan programs. Each has a verb inventory of
- *               OPEN, READ and CLOSE only - no WRITE, no REWRITE, no
+ * Function    : ItemReader implementations for the batch read paths. The
+ *               four sequential scan programs each have a verb inventory
+ *               of OPEN, READ and CLOSE only - no WRITE, no REWRITE, no
  *               DELETE anywhere - so each becomes a verification step
- *               that reads and reports and mutates nothing.
+ *               that reads and reports and mutates nothing. The fifth
+ *               reader supplies the 350-byte DALYTRAN input that the
+ *               daily posting program consumes.
  * Source      : app/cbl/CBACT01C.cbl (193 lines; account file scan)
  *               @ 7756d89
  * Source      : app/cbl/CBACT02C.cbl (178 lines; card file scan)
@@ -20,6 +22,9 @@
  *               @ 7756d89
  * Source      : app/jcl/READACCT.jcl, READCARD.jcl, READXREF.jcl,
  *               READCUST.jcl (the four jobs that ran them) @ 7756d89
+ * Source      : app/cbl/CBTRN02C.cbl (731 lines; the DALYTRAN input path,
+ *               a keyless SEQUENTIAL SELECT over a 350-byte record) and
+ *               app/cpy/CVTRA06Y.cpy (350-byte DALYTRAN-RECORD) @ 7756d89
  * Source      : app/cbl/CBACT01C.cbl:L78 (DISPLAY ACCOUNT-RECORD),
  *               :L119-L129 (eleven labelled field lines), :L130 (the
  *               49-hyphen rule) @ 7756d89
@@ -45,8 +50,9 @@
  */
 
 /**
- * Sequential readers: the {@code ItemReader} side of the batch stream, and specifically the four legacy programs
- * whose entire purpose was to read a dataset from start to finish and report on it.
+ * Sequential readers: the {@code ItemReader} side of the batch stream. Four of them are the legacy programs
+ * whose entire purpose was to read a dataset from start to finish and report on it; the fifth feeds the daily
+ * posting job its fixed-width input.
  *
  * <p><strong>The read-only property is proved from the source, not assumed.</strong> Each of
  * {@code app/cbl/CBACT01C.cbl}, {@code CBACT02C.cbl}, {@code CBACT03C.cbl} and {@code CBCUS01C.cbl} has a verb
@@ -67,14 +73,18 @@
  *       ({@code app/catlg/LISTCAT.txt:L403}).</li>
  *   <li>{@link com.cardemo.batch.readers.CustomerReader} - {@code app/cbl/CBCUS01C.cbl}, 178 lines, over the
  *       customer cluster: key length 9, record length 500.</li>
+ *   <li>{@link com.cardemo.batch.readers.DailyTransactionReader} - the DALYTRAN input path of
+ *       {@code app/cbl/CBTRN02C.cbl}, a keyless {@code SEQUENTIAL} {@code SELECT} with no {@code RECORD KEY}
+ *       over the 350-byte {@code DALYTRAN-RECORD} of {@code app/cpy/CVTRA06Y.cpy}. This is the one reader here
+ *       that feeds a processing job rather than a verification step, and it decodes zoned-decimal overpunch
+ *       signs position-aware from the {@code PIC} clauses, so a negative amount stays negative.</li>
  *   </ul>
  *
- * <p><strong>Not available: the three input readers of the processing jobs.</strong> Measured 3 August 2026 at
- * commit {@code 2e087c4}, this package contains the four verification readers above and no others. The
- * 350-byte fixed-width daily transaction reader of {@code app/cbl/CBTRN02C.cbl}, the backup-generation reader
- * of {@code app/proc/TRANREPT.prc:STEP01R} and the concatenated-input reader of
+ * <p><strong>Not available: two of the three input readers.</strong> Measured 3 August 2026, this package
+ * contains the four verification readers and the daily transaction reader above, and no others. The
+ * backup-generation reader of {@code app/proc/TRANREPT.prc:STEP01R} and the concatenated-input reader of
  * {@code app/jcl/COMBTRAN.jcl:STEP05R} are <strong>planned and not present</strong>. Nothing here may be read
- * as a claim that they exist.
+ * as a claim that either of them exists.
  *
  * <h3>Two source behaviours that shape every reader here</h3>
  *
@@ -123,9 +133,11 @@
  *       {@code set -a; . ./.env; set +a}.</li>
  *   <li><strong>Test.</strong> Unit tests belong in {@code src/test/java/com/cardemo/unit/batch} and
  *       repository-backed tests in {@code src/test/java/com/cardemo/integration}. {@code ParityLoggerRoutingTest}
- *       asserts that this package's account reader resolves its parity logger by the shared tree name.
- *       <strong>Not available, measured 3 August 2026:</strong> none of the four readers has a unit test class
- *       of its own, so no coverage figure quoted anywhere is evidence about them. The required assertions are:
+ *       asserts that this package's account reader resolves its parity logger by the shared tree name, and
+ *       {@code AccountReaderTest}, {@code CardReaderTest}, {@code CardCrossReferenceReaderTest} and
+ *       {@code CustomerReaderTest} cover the four verification readers.
+ *       <strong>Not available, measured 3 August 2026:</strong> the daily transaction reader has no test class
+ *       of its own, so no coverage figure quoted anywhere is evidence about it. The required assertions are:
  *       the fixed-width rendering matching the copybook offsets; the 49-hyphen rule being neither 48 nor 50; the
  *       eleven labels at exactly 25 characters with the colon in column 25; a status of {@code '10'} ending the
  *       scan without an exception; a {@code '9x'} status abending with code 999 and return code 12; the

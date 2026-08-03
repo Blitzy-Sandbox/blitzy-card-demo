@@ -50,13 +50,18 @@ import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import jakarta.persistence.OptimisticLockException;
 
+import java.lang.annotation.Annotation;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -65,6 +70,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -76,19 +82,20 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.dao.QueryTimeoutException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 
 import com.cardemo.exception.CardDemoException;
-import com.cardemo.exception.ConcurrentUpdateException;
-import com.cardemo.exception.FatalProcessingException;
 import com.cardemo.exception.RecordNotFoundException;
 import com.cardemo.exception.ValidationException;
+import com.cardemo.model.dto.UserSecurityDto;
 import com.cardemo.model.dto.UserUpdateRequest;
 import com.cardemo.model.entity.UserSecurity;
 import com.cardemo.model.enums.UserType;
@@ -175,6 +182,29 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       each test and stubbing with the exact expected argument is itself an assertion.</li>
  *   </ul>
  *
+ * <h2>Two inefficiencies retained deliberately, and why</h2>
+ *
+ * <p>The source does two things twice that a Java author would naturally do once, and both are kept. They
+ * are named here because an unexplained duplicate looks like a defect introduced in translation, and because
+ * an optimisation that removed either would be a behaviour change wearing the clothes of a cleanup.
+ *
+ * <ul>
+ *   <li><strong>A save reads the record again.</strong> {@code app/cbl/COUSR02C.cbl}:163 reads on the
+ *       {@code ENTER} arm and {@code :217} reads again inside {@code UPDATE-USER-INFO}, so a
+ *       display-then-save conversation issues two reads. The second one is not redundant: it is what the
+ *       four change predicates at {@code :219-233} compare against, and comparing against a value cached
+ *       from the first read would compare against a stale record instead. The suite therefore asserts the
+ *       second read explicitly, in order, rather than allowing it to be collapsed away.</li>
+ *   <li><strong>A successful lookup sends the screen twice.</strong> The {@code CONTINUE} at {@code :335}
+ *       terminates nothing, so {@code :336-339} all execute and the read itself sends the screen; then
+ *       {@code :171} sends it again. Reading that {@code CONTINUE} as ending its branch is the single easiest
+ *       way to lose the save hint altogether, which is why the hint's text and its neutral marker are both
+ *       asserted. The identical shape recurs at {@code app/cbl/COUSR00C.cbl}:601.</li>
+ *   </ul>
+ *
+ * <p>Neither is an oversight and neither is optimised away: behavioural parity is the contract, both are
+ * observable, and each is owed an entry in the planned {@code DECISION_LOG.md}.
+ *
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ul>
@@ -196,7 +226,107 @@ import com.cardemo.service.shared.FileStatusMapper;
  *       declared width before comparing. Severity: <strong>Medium</strong>.</li>
  *   <li><strong>Two outcomes become indistinguishable.</strong> Four literals and three colours are
  *       observable state. Remedy: keep the arms distinct. Severity: <strong>Medium</strong>.</li>
+ *   <li><strong>A non-administrator reaches the screen.</strong> This bean performs no authorisation and
+ *       cannot: it reads no role, takes no principal and carries only {@code @Service}. A user able to
+ *       change a user class could raise its own account to administrator. Remedy: the {@code /api/admin/**}
+ *       rule belongs to the filter chain, and {@code src/test/java/com/cardemo/unit/config/SecurityConfigTest.java}
+ *       owns it; what this suite asserts is that nothing here can weaken it. Severity:
+ *       <strong>Blocker</strong>.</li>
+ *   <li><strong>A snapshot comparison is made mandatory.</strong> The comparison at {@code :219-233} reads
+ *       the record as freshly re-read at {@code :217}, not a request-carried snapshot, so a caller that
+ *       supplies none must still be able to write. Remedy: keep the snapshot optional. Severity:
+ *       <strong>High</strong>.</li>
+ *   <li><strong>A validation rule the source lacks is added.</strong> Upper-casing, a credential policy, a
+ *       length floor or a user-class membership test at the input gate all reject input the system of record
+ *       accepts. Remedy: emptiness only, exactly as {@code :146} and {@code :179-213} test it. Severity:
+ *       <strong>High</strong>.</li>
+ *   <li><strong>A duplicate-record outcome appears on the write path.</strong> The rewrite at
+ *       {@code :360-366} carries no {@code RIDFLD} and therefore has no duplicate-key arm to translate.
+ *       Remedy: delete the invented branch. Severity: <strong>Medium</strong>.</li>
+ *   <li><strong>The unrecognised-key message is re-declared locally.</strong> It is the one message here
+ *       that is shared corpus-wide - {@code CCDA-MSG-INVALID-KEY} of {@code app/cpy/CSMSG01Y.cpy} - and this
+ *       suite reads it off the production declaration rather than transcribing it. Severity:
+ *       <strong>Medium</strong>.</li>
+ *   <li><strong>The five guards are shared with the add screen.</strong> The literals are identical and the
+ *       precedence is not: this program leads with the identifier, {@code app/cbl/COUSR01C.cbl} leads with
+ *       the first name. Sharing an implementation silently changes which message wins. Remedy: keep the two
+ *       chains apart, as {@code src/test/java/com/cardemo/unit/service/UserAddServiceTest.java} keeps its
+ *       own. Severity: <strong>Medium</strong>.</li>
+ *   <li><strong>A message literal is re-spaced.</strong> Three messages carry a space before their ellipsis
+ *       and three do not; the ellipsis is always exactly three periods. Severity: <strong>Low</strong>.</li>
+ *   <li><strong>The no-change refusal is recoloured.</strong> {@code :241} marks it {@code DFHRED}, so a
+ *       submission that changed nothing is reported as an error rather than as a benign outcome. It looks
+ *       wrong and is the contract. Severity: <strong>Low</strong>.</li>
+ *   <li><strong>A retained no-op is deleted.</strong> The {@code CONTINUE} at {@code :154} and at
+ *       {@code :212} terminate nothing, and the one at {@code :335} is why every successful read emits the
+ *       save hint at all. Severity: <strong>Low</strong>.</li>
+ *   <li><strong>The vestigial block is treated as live.</strong> Of {@code :51-58} only
+ *       {@code CDEMO-CU02-USR-SELECTED} is read; the page number, next-page flag and first-and-last keys are
+ *       a list screen's block cloned onto a single-record screen. Severity: <strong>Low</strong>.</li>
+ *   <li><strong>The dataset literal is trimmed of its padding.</strong> {@code :39} declares
+ *       {@code 'USRSEC  '} with two trailing spaces; the bean holds it unpadded because it is used as an
+ *       identity on a typed failure and never as a fixed-width field. Severity: <strong>Low</strong>.</li>
  *   </ul>
+ *
+ * <h2>What is settled here, and what is not</h2>
+ *
+ * <p>Two questions about this path can only be answered by reading the artefacts that own them, so both were
+ * read rather than assumed, and both turn out to be settled.
+ *
+ * <ul>
+ *   <li><strong>Optimistic version column: settled - there is none.</strong>
+ *       {@code com.cardemo.model.entity.UserSecurity} declares five persistent fields and no version
+ *       counter, and the first migration creates no such column for this table. The store-level concurrency
+ *       layer is therefore a stale-write guard rather than a version comparison, which is why this suite
+ *       drives it with the provider's own optimistic failures instead of by moving a counter. No snapshot
+ *       comparison is introduced on account of it either way, because the source has none.</li>
+ *   <li><strong>Eight-character credential truncation: settled - the value is refused, not truncated.</strong>
+ *       The bean bounds the presented credential at the source's eight characters and rejects anything wider
+ *       with a field-named refusal, so no silent truncation exists to preserve. The stored column is sixty
+ *       characters because it holds a digest, which is the one field on this record that is deliberately not
+ *       byte-parity with {@code app/cpy/CSUSR01Y.cpy}.</li>
+ *   </ul>
+ *
+ * <p>Three things are genuinely <strong>Not available</strong> from this tier, and each is named rather than
+ * papered over:
+ *
+ * <ul>
+ *   <li><strong>Cursor placement on any arm that raises: Not available.</strong> Seven {@code MOVE -1}
+ *       statements park the cursor on a field at fault - {@code :196}, {@code :202}, {@code :208},
+ *       {@code :344}, {@code :351}, {@code :381} and {@code :388} - and every one of those arms ends in a
+ *       typed failure, which carries no screen. The placement is therefore asserted where it <em>is</em>
+ *       observable: on the arms that return a screen, at {@code :98}, {@code :153}, {@code :211} and
+ *       {@code :405}, and through the field name a {@code ValidationException} carries everywhere else.
+ *       <em>What is needed:</em> a field name on the file-access failure type, which is a decision for the
+ *       exception hierarchy and not for a test.</li>
+ *   <li><strong>The 80-into-78 narrowing as a live truncation: Not available.</strong> The narrowing is real
+ *       and is asserted as a width, but no literal this program emits is longer than the channel, so nothing
+ *       is actually cut. <em>What is needed:</em> a reachable message longer than seventy-eight characters;
+ *       none exists, and one must not be invented to manufacture the observation.</li>
+ *   <li><strong>Any latency or throughput figure: Not available.</strong> The source publishes no service
+ *       level anywhere, so none is invented and none is asserted. <em>What is needed:</em> a stated
+ *       objective, which only a stakeholder can supply; the performance gate records a measured baseline
+ *       instead of a target for exactly this reason.</li>
+ *   <li><strong>The exit arm returning to its originating program: Not available.</strong> {@code :113-118}
+ *       resolves {@code CDEMO-FROM-PROGRAM} when one was recorded and falls back to {@code 'COADM01C'}
+ *       otherwise, but that field is communication-area state with no counterpart under the stateless
+ *       mandate, so only the {@code :114} outcome is reachable and the {@code ELSE} at {@code :116-117}
+ *       cannot be exercised at all. What <em>is</em> asserted is that both leaving arms resolve to the
+ *       administrative menu, and that the exit arm writes first while the cancel arm does not.
+ *       <em>What is needed:</em> a caller-supplied originating context on the request, which is a routing
+ *       decision for the controller and not for a test to invent.</li>
+ *   </ul>
+ *
+ * <p>Every deliberately preserved oddity above is owed an entry in the planned {@code DECISION_LOG.md} and a
+ * row in the planned {@code TRACEABILITY_MATRIX.md}; the citations in this file are what those entries will
+ * be written from. Three contracts this path touches are deliberately <em>not</em> re-asserted here, because
+ * duplicating them would let the two copies drift:
+ * {@code src/test/java/com/cardemo/unit/model/UserUpdateRequestTest.java} owns the map area's twelve-field
+ * shape and its declared widths, {@code src/test/java/com/cardemo/unit/model/UserSecurityTest.java} owns the
+ * record's own invariants, and
+ * {@code src/test/java/com/cardemo/unit/model/FatalProcessingExceptionTest.java} together with
+ * {@code src/test/java/com/cardemo/unit/model/ConcurrentUpdateExceptionTest.java} own the payloads of the two
+ * failure types this bean raises but does not define.
  */
 @DisplayName("UserUpdateService: app/cbl/COUSR02C.cbl - update one USRSEC row (CU02)")
 @ExtendWith(MockitoExtension.class)
@@ -283,23 +413,18 @@ class UserUpdateServiceTest {
     private static final String USRSEC_FILE = "USRSEC";
 
     // ----------------------------------------------------------------------------------------------------
-    // Cursor fields: the symbolic-map length fields that received MOVE -1.
+    // Cursor fields: the symbolic-map length fields that received MOVE -1. Only the two that land on an arm
+    // returning a screen are named here. The placements at :196, :202, :208, :344, :351, :381 and :388 all
+    // sit on arms that raise a typed failure, and a raised failure carries no screen, so the Java-side
+    // marker for those is the field NAME the failure carries - which is what those tests assert. Naming a
+    // constant that no assertion can reach would be dead code under Rule 1 Clause B.
     // ----------------------------------------------------------------------------------------------------
 
-    /** {@code USRIDINL}. */
+    /** {@code USRIDINL}, from {@code :98}, {@code :153} and {@code :405} - all arms that return a screen. */
     private static final String CURSOR_USER_ID = "USRIDIN";
 
-    /** {@code FNAMEL}. */
+    /** {@code FNAMEL}, from the {@code WHEN OTHER} arm at {@code :211}, which precedes the no-change screen. */
     private static final String CURSOR_FIRST_NAME = "FNAME";
-
-    /** {@code LNAMEL}. */
-    private static final String CURSOR_LAST_NAME = "LNAME";
-
-    /** {@code PASSWDL}. */
-    private static final String CURSOR_PASSWORD = "PASSWD";
-
-    /** {@code USRTYPEL}. */
-    private static final String CURSOR_USER_TYPE = "USRTYPE";
 
     // ----------------------------------------------------------------------------------------------------
     // Literals. Byte exact: "can NOT" with capital N O T, every ellipsis exactly three periods, and the
@@ -319,7 +444,7 @@ class UserUpdateServiceTest {
     private static final String LAST_NAME_REQUIRED_MESSAGE = "Last Name can NOT be empty...";
 
     /** {@code :200}. */
-    private static final String PASSWORD_REQUIRED_MESSAGE = "Password can NOT be empty...";
+    private static final String CREDENTIAL_REQUIRED_MESSAGE = "Password can NOT be empty...";
 
     /** {@code :206}. */
     private static final String USER_TYPE_REQUIRED_MESSAGE = "User Type can NOT be empty...";
@@ -357,6 +482,71 @@ class UserUpdateServiceTest {
     /** The message the invalid user-type code produces, which has no source literal and is target-only. */
     private static final String USER_TYPE_DOMAIN_MESSAGE =
             "User Type must be A for an administrator or U for a regular user";
+
+    // ----------------------------------------------------------------------------------------------------
+    // Concrete failure types, named rather than imported. Three of the nine members of
+    // com.cardemo.exception are reachable from this bean but sit outside this suite's declared dependency
+    // set, so each is asserted through the com.cardemo.exception.CardDemoException supertype plus its
+    // simple name. That keeps the import set inside the declared boundary and, more usefully, keeps the
+    // payload contracts of those types where they belong: their own suites own the field-level
+    // assertions, and repeating them here would be duplication that Rule 1 Clause C forbids.
+    // ----------------------------------------------------------------------------------------------------
+
+    /** Raised on both concurrency routes; see {@code app/cbl/COUSR02C.cbl}:322-331 for the lock it replaces. */
+    private static final String CONCURRENT_UPDATE_TYPE = "ConcurrentUpdateException";
+
+    /** Raised when a status has no typed translation - the {@code WHEN OTHER} arms at {@code :346} and {@code :383}. */
+    private static final String FILE_ACCESS_TYPE = "FileAccessException";
+
+    /** Raised when the encoder yields no digest, which is an abend rather than a rejected field. */
+    private static final String FATAL_PROCESSING_TYPE = "FatalProcessingException";
+
+    /**
+     * The message both concurrency routes carry. It is the legacy text of the one outcome this program's
+     * condition is, and it is asserted here as an observable message rather than through the outcome
+     * enumeration, whose own constants are asserted by the suite that owns that type.
+     */
+    private static final String DATA_CHANGED_MESSAGE = "Record changed by some one else. Please review";
+
+    /** The tail of the abend reason recorded when the encoder yields nothing, from the production bean. */
+    private static final String ENCODER_ABEND_REASON_TAIL = "ENCODER RETURNED NO DIGEST";
+
+    // ----------------------------------------------------------------------------------------------------
+    // Record and channel geometry, from app/cpy/CSUSR01Y.cpy:17-23 and app/cbl/COUSR02C.cbl:38.
+    // ----------------------------------------------------------------------------------------------------
+
+    /** {@code WS-MESSAGE PIC X(80)} at {@code app/cbl/COUSR02C.cbl}:38 - the work area, not the channel. */
+    private static final int WORK_AREA_MESSAGE_WIDTH = 80;
+
+    /** {@code SEC-USR-PWD PIC X(08)} - the source credential field, and the presented value's bound. */
+    private static final int SOURCE_CREDENTIAL_WIDTH = 8;
+
+    /** {@code SEC-USR-FILLER PIC X(23)} - declared, unused by any program, and not modelled as a column. */
+    private static final int SOURCE_FILLER_WIDTH = 23;
+
+    /**
+     * {@code RECORDSIZE(80,80)} on the cluster, which is what {@code LENGTH OF SEC-USER-DATA} resolves to on
+     * the read at {@code :325} and the rewrite at {@code :363}.
+     */
+    private static final int USRSEC_RECORD_LENGTH = 80;
+
+    /** The digest column's width - the one field that is deliberately not byte-parity with the source. */
+    private static final int DIGEST_COLUMN_WIDTH = 60;
+
+    /** A seven-character identifier: shorter than the field, which the source bounds only from above. */
+    private static final String SHORT_USER_ID = "USER000";
+
+    /** A single-character credential: {@code :198} tests emptiness, so one character clears it. */
+    private static final String MINIMAL_CREDENTIAL = "q";
+
+    /** A user class outside {@code 'A'} and {@code 'U'} - non-empty, so all five guards pass. */
+    private static final String UNMAPPABLE_USER_TYPE = "X";
+
+    /** An eight-character identifier carrying relational metacharacters, to prove parameter binding. */
+    private static final String HOSTILE_USER_ID = "A' OR '1";
+
+    /** Tokens that would betray query text assembled inside the bean; none appears in any source literal. */
+    private static final List<String> QUERY_TOKENS = List.of("select", "from", "where", ";", "--");
 
     // ----------------------------------------------------------------------------------------------------
     // Time.
@@ -514,6 +704,111 @@ class UserUpdateServiceTest {
         final Field field = UserUpdateService.class.getDeclaredField(name);
         field.setAccessible(true);
         return field.get(null);
+    }
+
+    /**
+     * Names the concrete failure type raised, so a subtype can be asserted precisely while the import set
+     * stays inside this suite's declared dependency boundary.
+     *
+     * @param failure the raised failure; must not be {@code null}
+     * @return the simple name of its runtime class
+     */
+    private static String typeOf(final CardDemoException failure) {
+        return failure.getClass().getSimpleName();
+    }
+
+    /**
+     * Reads an abend field off a failure raised on the encoder path. The accessor is declared by a subtype
+     * outside this suite's dependency boundary, so it is reached by name; the field-level contract of that
+     * subtype is asserted by the suite that owns it, and only its arrival here is asserted.
+     *
+     * @param failure  the raised failure; must not be {@code null}
+     * @param accessor the accessor name; must not be {@code null}
+     * @return the value the accessor returns
+     * @throws ReflectiveOperationException if the accessor is absent, which is itself the finding
+     */
+    private static Object abendField(final CardDemoException failure, final String accessor)
+            throws ReflectiveOperationException {
+        final Method method = failure.getClass().getMethod(accessor);
+        return method.invoke(failure);
+    }
+
+    /**
+     * The component names a record declares, in declaration order.
+     *
+     * @param carrier the record type; must not be {@code null}
+     * @return the component names
+     */
+    private static List<String> componentNames(final Class<?> carrier) {
+        return Arrays.stream(carrier.getRecordComponents()).map(component -> component.getName()).toList();
+    }
+
+    /**
+     * Every value of every {@code String} constant the service declares, so a structural claim is made
+     * against the production declarations rather than against a transcription of them.
+     *
+     * @return the declared string constants
+     */
+    private static List<String> declaredStringConstants() {
+        return Arrays.stream(UserUpdateService.class.getDeclaredFields())
+                .filter(field -> Modifier.isStatic(field.getModifiers()))
+                .filter(field -> field.getType() == String.class)
+                .map(field -> {
+                    field.setAccessible(true);
+                    try {
+                        return (String) field.get(null);
+                    } catch (final IllegalAccessException unreachable) {
+                        throw new AssertionError("a static field made accessible refused to be read",
+                                unreachable);
+                    }
+                })
+                .filter(value -> value != null)
+                .toList();
+    }
+
+    /**
+     * The simple names of the annotations a member carries, so an absence can be asserted without importing
+     * the annotation types whose absence is the point.
+     *
+     * @param annotations the annotations present; must not be {@code null}
+     * @return their simple names
+     */
+    private static List<String> annotationNames(final Annotation[] annotations) {
+        return Arrays.stream(annotations).map(a -> a.annotationType().getSimpleName()).toList();
+    }
+
+    /**
+     * Locates a public entry point by name.
+     *
+     * @param name the method name; must not be {@code null}
+     * @return the declared method
+     */
+    private static Method entryPoint(final String name) {
+        return Arrays.stream(UserUpdateService.class.getDeclaredMethods())
+                .filter(method -> method.getName().equals(name))
+                .filter(method -> Modifier.isPublic(method.getModifiers()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no public entry point named " + name));
+    }
+
+    /**
+     * Arranges the store to accept a rewrite and hand back the row it was given, which is what a positioned
+     * {@code REWRITE} at {@code app/cbl/COUSR02C.cbl}:360-366 does.
+     */
+    private void arrangeRewriteAccepted() {
+        when(this.userSecurityRepository.saveAndFlush(any(UserSecurity.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+    }
+
+    /**
+     * Captures the row handed to the store by the rewrite.
+     *
+     * @return the persisted row
+     */
+    private UserSecurity capturePersistedRow() {
+        final ArgumentCaptor<UserSecurity> written = ArgumentCaptor.forClass(UserSecurity.class);
+        verify(this.userSecurityRepository).saveAndFlush(written.capture());
+        return written.getValue();
     }
 
     // =====================================================================================================
@@ -684,6 +979,27 @@ class UserUpdateServiceTest {
         }
 
         @Test
+        @DisplayName("both leaving arms resolve to the admin menu, :116-117 having no counterpart")
+        void bothLeavingArmsResolveToTheAdminMenu() {
+            arrangeStoredRow();
+            arrangeCredentialMatches();
+
+            final UserUpdateScreen afterExit = service.submitScreen(AttentionIdentifier.PF3,
+                    unchangedRequest(), null);
+            final UserUpdateScreen afterCancel = service.submitScreen(AttentionIdentifier.PF12,
+                    unchangedRequest(), null);
+
+            assertThat(afterExit.navigationTarget())
+                    .as(":113-118 tests CDEMO-FROM-PROGRAM, a communication-area field with no counterpart "
+                            + "under the stateless mandate, so only the :114 outcome is reachable and the "
+                            + "ELSE at :116-117 cannot be exercised")
+                    .isEqualTo(ADMIN_MENU_PROGRAM);
+            assertThat(afterCancel.navigationTarget())
+                    .as(":125 moves 'COADM01C' unconditionally, with no guard of any kind")
+                    .isEqualTo(ADMIN_MENU_PROGRAM);
+        }
+
+        @Test
         @DisplayName("PF12 leaves WITHOUT writing, which is the arm that behaves as a cancel")
         void pf12LeavesWithoutWriting() {
             final UserUpdateScreen screen = service.submitScreen(AttentionIdentifier.PF12,
@@ -804,6 +1120,22 @@ class UserUpdateServiceTest {
             assertThat(screen.errorMessage()).isEqualTo(INVALID_KEY_MESSAGE);
             assertThat(screen.navigationTarget()).isNull();
             verifyNoInteractions(userSecurityRepository, passwordEncoder);
+        }
+
+        @Test
+        @DisplayName("that message is the SHARED corpus constant of CSMSG01Y, not a literal invented here")
+        void theInvalidKeyMessageComesFromTheSharedConstant() throws ReflectiveOperationException {
+            final UserUpdateScreen screen = service.submitScreen(AttentionIdentifier.OTHER,
+                    request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                            STORED_USER_TYPE),
+                    null);
+
+            assertThat(screen.errorMessage())
+                    .as(":129 moves CCDA-MSG-INVALID-KEY, a constant of app/cpy/CSMSG01Y.cpy that is shared "
+                            + "corpus-wide, whereas every other message on this screen is a literal of this "
+                            + "program alone. Asserting it against the production declaration rather than "
+                            + "against a copy is what stops the two drifting apart")
+                    .isEqualTo(declaredConstant("INVALID_KEY_MESSAGE"));
         }
 
         @Test
@@ -977,7 +1309,7 @@ class UserUpdateServiceTest {
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, null, null), null))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(PASSWORD_REQUIRED_MESSAGE);
+                        assertThat(failure.getMessage()).isEqualTo(CREDENTIAL_REQUIRED_MESSAGE);
                         assertThat(failure.getFieldName()).isEqualTo("password");
                         assertThat(failure.getMessage()).doesNotContain(PRESENTED_CREDENTIAL);
                     });
@@ -1029,7 +1361,7 @@ class UserUpdateServiceTest {
             assertThat(USER_ID_REQUIRED_MESSAGE).isEqualTo("User ID can NOT be empty...");
             assertThat(FIRST_NAME_REQUIRED_MESSAGE).isEqualTo("First Name can NOT be empty...");
             assertThat(LAST_NAME_REQUIRED_MESSAGE).isEqualTo("Last Name can NOT be empty...");
-            assertThat(PASSWORD_REQUIRED_MESSAGE).isEqualTo("Password can NOT be empty...");
+            assertThat(CREDENTIAL_REQUIRED_MESSAGE).isEqualTo("Password can NOT be empty...");
             assertThat(USER_TYPE_REQUIRED_MESSAGE).isEqualTo("User Type can NOT be empty...");
         }
 
@@ -1131,13 +1463,12 @@ class UserUpdateServiceTest {
         void aChangedFirstNameIsRefused() {
             arrangeStoredRow();
 
-            assertThatExceptionOfType(ConcurrentUpdateException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(),
                             new UserSnapshot("STALE", STORED_LAST_NAME, STORED_USER_TYPE)))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE
-                                        .getLegacyMessage());
+                        assertThat(typeOf(failure)).isEqualTo(CONCURRENT_UPDATE_TYPE);
+                        assertThat(failure.getMessage()).isEqualTo(DATA_CHANGED_MESSAGE);
                         assertThat(failure.getCause())
                                 .as("the business-level layer has no provider failure to carry")
                                 .isNull();
@@ -1150,9 +1481,11 @@ class UserUpdateServiceTest {
         void aChangedLastNameIsRefused() {
             arrangeStoredRow();
 
-            assertThatExceptionOfType(ConcurrentUpdateException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(),
-                            new UserSnapshot(STORED_FIRST_NAME, "STALE", STORED_USER_TYPE)));
+                            new UserSnapshot(STORED_FIRST_NAME, "STALE", STORED_USER_TYPE)))
+                    .satisfies(failure -> assertThat(typeOf(failure))
+                            .isEqualTo(CONCURRENT_UPDATE_TYPE));
         }
 
         @Test
@@ -1160,9 +1493,11 @@ class UserUpdateServiceTest {
         void aChangedUserClassIsRefused() {
             arrangeStoredRow();
 
-            assertThatExceptionOfType(ConcurrentUpdateException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(),
-                            new UserSnapshot(STORED_FIRST_NAME, STORED_LAST_NAME, OTHER_USER_TYPE)));
+                            new UserSnapshot(STORED_FIRST_NAME, STORED_LAST_NAME, OTHER_USER_TYPE)))
+                    .satisfies(failure -> assertThat(typeOf(failure))
+                            .isEqualTo(CONCURRENT_UPDATE_TYPE));
         }
 
         @Test
@@ -1210,14 +1545,13 @@ class UserUpdateServiceTest {
             when(passwordEncoder.matches(PRESENTED_CREDENTIAL, storedDigest())).thenReturn(true);
             when(userSecurityRepository.saveAndFlush(any(UserSecurity.class))).thenThrow(collision);
 
-            assertThatExceptionOfType(ConcurrentUpdateException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
                                     STORED_USER_TYPE), null))
                     .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .isEqualTo(ConcurrentUpdateException.Outcome.DATA_CHANGED_BEFORE_UPDATE
-                                        .getLegacyMessage());
+                        assertThat(typeOf(failure)).isEqualTo(CONCURRENT_UPDATE_TYPE);
+                        assertThat(failure.getMessage()).isEqualTo(DATA_CHANGED_MESSAGE);
                         assertThat(failure.getCause())
                                 .as("the cause is what tells the store-level layer from the business one")
                                 .isSameAs(collision);
@@ -1233,11 +1567,15 @@ class UserUpdateServiceTest {
             when(passwordEncoder.matches(PRESENTED_CREDENTIAL, storedDigest())).thenReturn(true);
             when(userSecurityRepository.saveAndFlush(any(UserSecurity.class))).thenThrow(collision);
 
-            assertThatExceptionOfType(ConcurrentUpdateException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
                                     STORED_USER_TYPE), null))
-                    .satisfies(failure -> assertThat(failure.getCause()).isSameAs(collision));
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure)).isEqualTo(CONCURRENT_UPDATE_TYPE);
+                        assertThat(failure.getMessage()).isEqualTo(DATA_CHANGED_MESSAGE);
+                        assertThat(failure.getCause()).isSameAs(collision);
+                    });
         }
     }
 
@@ -1381,6 +1719,21 @@ class UserUpdateServiceTest {
                     .isEqualTo(COLOUR_RED);
             assertThat(screen.userModified()).isFalse();
             verify(userSecurityRepository, never()).saveAndFlush(any(UserSecurity.class));
+        }
+
+        @Test
+        @DisplayName("the no-change screen parks the cursor on the first name, per the WHEN OTHER arm at :211")
+        void theNoChangeScreenParksTheCursorOnTheFirstName() {
+            arrangeStoredRow();
+            arrangeCredentialMatches();
+
+            final UserUpdateScreen screen = service.updateUser(unchangedRequest(), null);
+
+            assertThat(screen.cursorField())
+                    .as("the arm at :210-212 moves -1 into FNAMEL and then executes a CONTINUE that "
+                            + "terminates nothing; the cursor placement is the only observable trace of a "
+                            + "retained no-op, which is why it is asserted rather than assumed")
+                    .isEqualTo(CURSOR_FIRST_NAME);
         }
 
         @Test
@@ -1554,9 +1907,19 @@ class UserUpdateServiceTest {
 
             assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(unchangedRequest(), null))
-                    .satisfies(failure -> assertThat(failure.getCause())
-                            .as("the provider's failure is carried, never swallowed")
-                            .isSameAs(timedOut));
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure))
+                                .as("the '9x' family maps to the file-access type, :346-352")
+                                .isEqualTo(FILE_ACCESS_TYPE);
+                        assertThat(failure.getMessage())
+                                .as("the dataset of :323 and the verb of :322 both reach the message")
+                                .contains(USRSEC_FILE)
+                                .contains("READ");
+                        assertThat(failure.getCause())
+                                .as("the provider's failure is carried, never swallowed")
+                                .isSameAs(timedOut);
+                    });
+            verify(userSecurityRepository, never()).saveAndFlush(any(UserSecurity.class));
         }
 
         @Test
@@ -1571,7 +1934,14 @@ class UserUpdateServiceTest {
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
                                     STORED_USER_TYPE), null))
-                    .satisfies(failure -> assertThat(failure.getCause()).isSameAs(timedOut));
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure)).isEqualTo(FILE_ACCESS_TYPE);
+                        assertThat(failure.getMessage())
+                                .as("the dataset of :361 and the verb of :360 both reach the message")
+                                .contains(USRSEC_FILE)
+                                .contains("REWRITE");
+                        assertThat(failure.getCause()).isSameAs(timedOut);
+                    });
         }
 
         @Test
@@ -1605,6 +1975,57 @@ class UserUpdateServiceTest {
                     .isEqualTo(COLOUR_NEUTRAL)
                     .isNotEqualTo(COLOUR_RED)
                     .isNotEqualTo(COLOUR_GREEN);
+        }
+
+        @Test
+        @DisplayName("an unclassifiable read status falls back to the literal of :349, byte exactly")
+        void anUnclassifiableReadStatusFallsBackToTheReadLiteral() {
+            final FileStatusMapper silent = mock(FileStatusMapper.class);
+            when(silent.toException(anyString(), anyString(), anyString(), any()))
+                    .thenReturn(Optional.empty());
+            final UserUpdateService withSilentMapper = new UserUpdateService(userSecurityRepository,
+                    passwordEncoder, silent, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+            final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
+            when(userSecurityRepository.findById(USER_ID)).thenThrow(timedOut);
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> withSilentMapper.lookupUser(USER_ID))
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure)).isEqualTo(FILE_ACCESS_TYPE);
+                        assertThat(failure.getMessage())
+                                .as("the WHEN OTHER arm at :346-352 moves this literal into WS-MESSAGE, and "
+                                        + "an unclassifiable status must not lose it")
+                                .isEqualTo(UNABLE_TO_LOOKUP_MESSAGE);
+                        assertThat(failure.getCause()).isSameAs(timedOut);
+                    });
+        }
+
+        @Test
+        @DisplayName("an unclassifiable rewrite status falls back to the literal of :386, byte exactly")
+        void anUnclassifiableRewriteStatusFallsBackToTheUpdateLiteral() {
+            final FileStatusMapper silent = mock(FileStatusMapper.class);
+            when(silent.toException(anyString(), anyString(), anyString(), any()))
+                    .thenReturn(Optional.empty());
+            final UserUpdateService withSilentMapper = new UserUpdateService(userSecurityRepository,
+                    passwordEncoder, silent, Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC));
+            final QueryTimeoutException timedOut = new QueryTimeoutException("timed out");
+            arrangeStoredRow();
+            arrangeCredentialMatches();
+            when(userSecurityRepository.saveAndFlush(any(UserSecurity.class))).thenThrow(timedOut);
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> withSilentMapper.updateUser(
+                            request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                                    STORED_USER_TYPE), null))
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure)).isEqualTo(FILE_ACCESS_TYPE);
+                        assertThat(failure.getMessage())
+                                .as("the verb is correct on this path: an update failure on an update path, "
+                                        + ":386, and it differs from the read literal of :349")
+                                .isEqualTo(UNABLE_TO_UPDATE_MESSAGE)
+                                .isNotEqualTo(UNABLE_TO_LOOKUP_MESSAGE);
+                        assertThat(failure.getCause()).isSameAs(timedOut);
+                    });
         }
     }
 
@@ -1666,15 +2087,19 @@ class UserUpdateServiceTest {
             when(passwordEncoder.matches(REPLACEMENT_CREDENTIAL, storedDigest())).thenReturn(false);
             when(passwordEncoder.encode(REPLACEMENT_CREDENTIAL)).thenReturn(null);
 
-            assertThatExceptionOfType(FatalProcessingException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, REPLACEMENT_CREDENTIAL,
                                     STORED_USER_TYPE), null))
                     .satisfies(failure -> {
-                        assertThat(failure.getAbendCulprit()).isEqualTo(PROGRAM_NAME);
-                        assertThat(failure.getAbendReason()).isEqualTo("PASSWORD ENCODER RETURNED NO DIGEST");
-                        assertThat(failure.getAbendCode())
-                                .isEqualTo(String.valueOf(FatalProcessingException.BATCH_ABEND_CODE));
+                        assertThat(typeOf(failure)).isEqualTo(FATAL_PROCESSING_TYPE);
+                        assertThat(abendField(failure, "getAbendCulprit"))
+                                .as("the abend names the program that raised it, :36")
+                                .isEqualTo(PROGRAM_NAME);
+                        assertThat((String) abendField(failure, "getAbendReason"))
+                                .as("the reason names the encoder, and carries no credential material")
+                                .endsWith(ENCODER_ABEND_REASON_TAIL)
+                                .doesNotContain(REPLACEMENT_CREDENTIAL);
                     });
             verify(userSecurityRepository, never()).saveAndFlush(any(UserSecurity.class));
         }
@@ -1686,12 +2111,15 @@ class UserUpdateServiceTest {
             when(passwordEncoder.matches(REPLACEMENT_CREDENTIAL, storedDigest())).thenReturn(false);
             when(passwordEncoder.encode(REPLACEMENT_CREDENTIAL)).thenReturn("");
 
-            assertThatExceptionOfType(FatalProcessingException.class)
+            assertThatExceptionOfType(CardDemoException.class)
                     .isThrownBy(() -> service.updateUser(
                             request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, REPLACEMENT_CREDENTIAL,
                                     STORED_USER_TYPE), null))
-                    .satisfies(failure -> assertThat(failure.getAbendReason())
-                            .isEqualTo("PASSWORD ENCODER RETURNED NO DIGEST"));
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure)).isEqualTo(FATAL_PROCESSING_TYPE);
+                        assertThat((String) abendField(failure, "getAbendReason"))
+                                .endsWith(ENCODER_ABEND_REASON_TAIL);
+                    });
         }
 
         @Test
@@ -1828,6 +2256,460 @@ class UserUpdateServiceTest {
                     .isThrownBy(() -> watchedService.updateUser(unchangedRequest(), null));
 
             verify(watched).toException(anyString(), eq(USRSEC_FILE), eq("READ"), any());
+        }
+    }
+
+    // =====================================================================================================
+    // 13. The message channel and the record geometry
+    // =====================================================================================================
+
+    /**
+     * The two widths the source states and one it does not. {@code WS-MESSAGE} is {@code PIC X(80)} at
+     * {@code app/cbl/COUSR02C.cbl}:38 while the map field it feeds is {@code PIC X(78)}, so the
+     * {@code MOVE} at {@code :270} narrowed by two bytes. The record is exactly eighty bytes, which is what
+     * {@code LENGTH OF SEC-USER-DATA} at {@code :325} and {@code :363} resolves to.
+     */
+    @Nested
+    @DisplayName("13. Widths - the 80-into-78 narrowing at :270, and the 80-byte record of CSUSR01Y")
+    class WidthsAndRecordGeometry {
+
+        @Test
+        @DisplayName("the channel is 78 characters, two narrower than the work area that feeds it")
+        void theChannelIsTwoNarrowerThanTheWorkArea() {
+            assertThat(UserSecurityDto.ERROR_MESSAGE_WIDTH)
+                    .as("ERRMSGI and ERRMSGO are PIC X(78); the MOVE at :270 takes WS-MESSAGE PIC X(80)")
+                    .isEqualTo(78);
+            assertThat(WORK_AREA_MESSAGE_WIDTH - UserSecurityDto.ERROR_MESSAGE_WIDTH)
+                    .as("a two-byte narrowing, asserted rather than widened away")
+                    .isEqualTo(2);
+        }
+
+        @ParameterizedTest(name = "[{0}] fits the channel")
+        @DisplayName("every literal this program can emit fits the 78-character channel uncut")
+        @ValueSource(strings = {
+            "Invalid key pressed. Please see below...",
+            "User ID can NOT be empty...",
+            "First Name can NOT be empty...",
+            "Last Name can NOT be empty...",
+            "Password can NOT be empty...",
+            "User Type can NOT be empty...",
+            "Please modify to update ...",
+            "Press PF5 key to save your updates ...",
+            "User ID NOT found...",
+            "Unable to lookup User...",
+            "Unable to Update User..."})
+        void everyEmittedLiteralFitsTheChannel(final String literal) {
+            assertThat(literal.length())
+                    .as("a literal longer than the channel would lose its tail at :270")
+                    .isLessThanOrEqualTo(UserSecurityDto.ERROR_MESSAGE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the assembled confirmation fits the channel even at the widest possible identifier")
+        void theAssembledConfirmationFitsTheChannelAtFullWidth() {
+            final String widest = UPDATED_MESSAGE_PREFIX + "X".repeat(UserSecurityDto.USER_ID_WIDTH)
+                    + UPDATED_MESSAGE_SUFFIX;
+
+            assertThat(widest.length())
+                    .as("the STRING at :372-375 over an eight-character SEC-USR-ID is the longest message "
+                            + "this program can build")
+                    .isLessThanOrEqualTo(UserSecurityDto.ERROR_MESSAGE_WIDTH);
+        }
+
+        @Test
+        @DisplayName("the arm that sends no screen echoes the submitted message, neither padded nor cut")
+        void theNonSendingArmEchoesTheSubmittedMessageUnchanged() {
+            final String submitted = "x".repeat(UserSecurityDto.ERROR_MESSAGE_WIDTH);
+
+            final UserUpdateScreen screen = service.submitScreen(AttentionIdentifier.PF12,
+                    new UserUpdateRequest("ZZZZ", "t1", "01/01/00", "ZZZZZZZZ", "t2", "00:00:00", USER_ID,
+                            STORED_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL, STORED_USER_TYPE,
+                            submitted),
+                    null);
+
+            assertThat(screen.errorMessage())
+                    .as(":124-126 never performs SEND-USRUPD-SCREEN, so the received field survives the turn")
+                    .isEqualTo(submitted)
+                    .hasSize(UserSecurityDto.ERROR_MESSAGE_WIDTH);
+            verifyNoInteractions(userSecurityRepository);
+        }
+
+        @Test
+        @DisplayName("the record is 80 bytes: 8 + 20 + 20 + 8 + 1 + 23, the LENGTH the rewrite declares")
+        void theRecordIsEightyBytes() {
+            final int assembled = UserSecurityDto.USER_ID_WIDTH
+                    + UserSecurityDto.NAME_WIDTH
+                    + UserSecurityDto.NAME_WIDTH
+                    + SOURCE_CREDENTIAL_WIDTH
+                    + UserSecurityDto.USER_TYPE_WIDTH
+                    + SOURCE_FILLER_WIDTH;
+
+            assertThat(assembled)
+                    .as("app/cpy/CSUSR01Y.cpy:17-23 and RECORDSIZE(80,80) on the cluster")
+                    .isEqualTo(USRSEC_RECORD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("a credential exactly on the source's eight-character width is accepted")
+        void aCredentialExactlyOnTheSourceWidthIsAccepted() {
+            assertThat(PRESENTED_CREDENTIAL)
+                    .as("the fixture sits exactly on the width the source field declares")
+                    .hasSize(SOURCE_CREDENTIAL_WIDTH);
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            when(passwordEncoder.matches(PRESENTED_CREDENTIAL, storedDigest())).thenReturn(false);
+            when(passwordEncoder.encode(PRESENTED_CREDENTIAL)).thenReturn(replacementDigest());
+
+            final UserUpdateScreen screen = service.updateUser(unchangedRequest(), null);
+
+            assertThat(screen.userModified())
+                    .as("SEC-USR-PWD is PIC X(08), so eight characters is the widest value the source could "
+                            + "hold and must be accepted rather than refused")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the stored credential column is 60, the one field deliberately not byte-parity")
+        void theStoredCredentialColumnIsSixty() {
+            assertThat(storedDigest())
+                    .as("the eight-byte plaintext field becomes a sixty-character digest column")
+                    .hasSize(DIGEST_COLUMN_WIDTH);
+        }
+    }
+
+    // =====================================================================================================
+    // 14. Stateless handling, the vestigial clone, and the branches that are NOT invented
+    // =====================================================================================================
+
+    /**
+     * Three absences, each asserted rather than assumed. The pseudo-conversational re-entry of
+     * {@code app/cbl/COUSR02C.cbl}:135-138 has no counterpart. The pagination block appended at
+     * {@code :49-58} to a single-record screen is vestigial but for its last member. And the rewrite at
+     * {@code :360-366} carries no {@code RIDFLD}, so it has no duplicate-key arm to translate.
+     */
+    @Nested
+    @DisplayName("14. Absences - stateless at :135-138, vestigial at :49-58, no duplicate arm at :360-366")
+    class StatelessHandlingAndAbsentMechanisms {
+
+        @Test
+        @DisplayName("the screen declares no re-entry, context or last-map component")
+        void theScreenDeclaresNoPseudoConversationalState() {
+            assertThat(componentNames(UserUpdateScreen.class))
+                    .as("CDEMO-PGM-CONTEXT, CDEMO-LAST-MAP and CDEMO-LAST-MAPSET have no counterpart; the "
+                            + "enter-versus-re-enter flag of :95-96 collapses into stateless handling")
+                    .noneSatisfy(name -> assertThat(name.toLowerCase(Locale.ROOT))
+                            .containsAnyOf("context", "reenter", "lastmap", "mapset", "session", "commarea"));
+        }
+
+        @Test
+        @DisplayName("no page number, next-page flag or first-and-last key is carried anywhere")
+        void noPaginationStateIsCarried() {
+            final List<String> everyComponent = List.of(
+                    String.join(",", componentNames(UserUpdateScreen.class)).toLowerCase(Locale.ROOT),
+                    String.join(",", componentNames(UserSnapshot.class)).toLowerCase(Locale.ROOT),
+                    String.join(",", componentNames(UserUpdateRequest.class)).toLowerCase(Locale.ROOT));
+
+            assertThat(everyComponent)
+                    .as("CDEMO-CU02-USRID-FIRST, -USRID-LAST, -PAGE-NUM, -NEXT-PAGE-FLG and -USR-SEL-FLG at "
+                            + ":51-57 clone a list screen's block onto a single-record screen; only "
+                            + "-USR-SELECTED at :58 is live, and the rest stay vestigial")
+                    .allSatisfy(joined -> assertThat(joined)
+                            .doesNotContain("page")
+                            .doesNotContain("useridfirst")
+                            .doesNotContain("useridlast")
+                            .doesNotContain("firstkey")
+                            .doesNotContain("lastkey")
+                            .doesNotContain("selectionflag")
+                            .doesNotContain("selflg"));
+        }
+
+        @Test
+        @DisplayName("exactly one value crosses from the list screen: the selected identifier of :101-102")
+        void onlyTheSelectedIdentifierCrossesOver() {
+            assertThat(entryPoint("openScreen").getParameterTypes())
+                    .as("CDEMO-CU02-USR-SELECTED is the only live member of the block at :50-58")
+                    .containsExactly(String.class);
+        }
+
+        @Test
+        @DisplayName("the bean declares no HTTP, session or security collaborator, so no state can survive")
+        void theBeanDeclaresNoSessionOrSecurityCollaborator() {
+            final List<String> fieldTypes = Arrays.stream(UserUpdateService.class.getDeclaredFields())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .map(field -> field.getType().getName())
+                    .toList();
+
+            assertThat(fieldTypes)
+                    .as("four collaborators and nothing else: no request, no session, no principal")
+                    .allSatisfy(name -> assertThat(name)
+                            .doesNotContain("servlet")
+                            .doesNotContain("Session")
+                            .doesNotContain("security.core")
+                            .doesNotContain("Authentication"));
+        }
+
+        @Test
+        @DisplayName("the bean carries no method-security annotation, so least privilege is enforced upstream")
+        void theBeanCarriesNoMethodSecurityAnnotation() {
+            assertThat(annotationNames(UserUpdateService.class.getAnnotations()))
+                    .as("the ADMIN-only rule over /api/admin/** belongs to the filter chain, whose own suite "
+                            + "owns it; this bean neither reads a role nor can relax one")
+                    .containsExactly("Service");
+
+            for (final String name : List.of("openWithoutContext", "openScreen", "lookupUser", "updateUser",
+                    "submitScreen")) {
+                assertThat(annotationNames(entryPoint(name).getAnnotations()))
+                        .as("%s must carry no authorisation annotation of its own", name)
+                        .doesNotContain("PreAuthorize", "Secured", "RolesAllowed", "PostAuthorize");
+            }
+        }
+
+        @Test
+        @DisplayName("no entry point accepts a role, principal or authentication argument")
+        void noEntryPointAcceptsAPrincipal() {
+            for (final String name : List.of("openScreen", "lookupUser", "updateUser", "submitScreen")) {
+                assertThat(Arrays.stream(entryPoint(name).getParameterTypes())
+                        .map(Class::getName)
+                        .toList())
+                        .as("%s must take screen input only, never an identity", name)
+                        .allSatisfy(type -> assertThat(type)
+                                .doesNotContain("Authentication")
+                                .doesNotContain("Principal")
+                                .doesNotContain("UserDetails")
+                                .doesNotContain("GrantedAuthority"));
+            }
+        }
+
+        @Test
+        @DisplayName("a user class can only ever become one of the two the corpus defines")
+        void aUserClassCanOnlyBecomeOneOfTwo() {
+            assertThat(UserType.values())
+                    .as("the 88-levels of app/cpy/COCOM01Y.cpy admit 'A' and 'U' and nothing else, which is "
+                            + "what bounds an elevation this screen could otherwise perform")
+                    .containsExactly(UserType.ADMIN, UserType.USER);
+        }
+
+        @Test
+        @DisplayName("a duplicate-shaped store failure on the rewrite is NOT reported as a duplicate record")
+        void aDuplicateShapedFailureIsNotADuplicateRecord() {
+            arrangeStoredRow();
+            arrangeCredentialMatches();
+            final DataIntegrityViolationException collision =
+                    new DataIntegrityViolationException("key already present");
+            when(userSecurityRepository.saveAndFlush(any(UserSecurity.class))).thenThrow(collision);
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.updateUser(
+                            request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                                    STORED_USER_TYPE), null))
+                    .satisfies(failure -> {
+                        assertThat(typeOf(failure))
+                                .as("the REWRITE at :360-366 carries no RIDFLD and so has no DUPKEY or "
+                                        + "DUPREC arm; inventing one would add an outcome the source cannot "
+                                        + "produce")
+                                .isEqualTo(FILE_ACCESS_TYPE)
+                                .isNotEqualTo("DuplicateRecordException");
+                        assertThat(failure.getCause()).isSameAs(collision);
+                    });
+        }
+
+        @Test
+        @DisplayName("no duplicate-key file status is declared on the bean at all")
+        void noDuplicateKeyStatusIsDeclared() {
+            assertThat(declaredStringConstants())
+                    .as("statuses 00, 23 and 9x are the three this program can reach; '22' is not one")
+                    .doesNotContain("22");
+        }
+
+        @Test
+        @DisplayName("the map area declares no snapshot or old-details group, the source having neither")
+        void theMapAreaDeclaresNoSnapshotGroup() {
+            assertThat(componentNames(UserUpdateRequest.class))
+                    .as("the comparison at :219-233 reads the FRESHLY re-read record of :217, not a "
+                            + "request-carried snapshot; COACTUPC carries one and this program does not")
+                    .allSatisfy(name -> assertThat(name.toLowerCase(Locale.ROOT))
+                            .doesNotContain("old")
+                            .doesNotContain("snapshot")
+                            .doesNotContain("expected")
+                            .doesNotContain("details"));
+        }
+
+        @Test
+        @DisplayName("the write proceeds with no snapshot at all, which is the source's own shape")
+        void theWriteProceedsWithNoSnapshotAtAll() {
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            when(passwordEncoder.matches(PRESENTED_CREDENTIAL, storedDigest())).thenReturn(true);
+
+            final UserUpdateScreen screen = service.updateUser(
+                    request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                            STORED_USER_TYPE),
+                    null);
+
+            assertThat(screen.userModified())
+                    .as("no concurrency guard exists at :215-245, so an absent snapshot must not block the "
+                            + "write the source would have performed")
+                    .isTrue();
+        }
+    }
+
+    // =====================================================================================================
+    // 15. Hostile input, and the normalisations the source does NOT perform
+    // =====================================================================================================
+
+    /**
+     * Untrusted input taken at its word. The guards at {@code app/cbl/COUSR02C.cbl}:146 and
+     * {@code :179-213} test emptiness and nothing else - no length floor, no character set, no credential
+     * policy and no case folding anywhere - so anything narrower than that would reject input the system of
+     * record accepts.
+     */
+    @Nested
+    @DisplayName("15. Hostile input - emptiness only at :146 and :179-213, no folding, no policy")
+    class HostileInputAndAbsentNormalisations {
+
+        @Test
+        @DisplayName("a seven-character identifier is accepted, the field being bounded only from above")
+        void aShorterIdentifierIsAccepted() {
+            when(userSecurityRepository.findById(SHORT_USER_ID))
+                    .thenReturn(Optional.of(new UserSecurity(SHORT_USER_ID, STORED_FIRST_NAME,
+                            STORED_LAST_NAME, storedDigest(), UserType.USER)));
+
+            final UserUpdateScreen screen = service.lookupUser(SHORT_USER_ID);
+
+            assertThat(screen.errorMessage())
+                    .as("no length floor exists at :146, so a short key reaches the read unchanged")
+                    .isEqualTo(SAVE_HINT_MESSAGE);
+        }
+
+        @Test
+        @DisplayName("a single-character credential is accepted: :198 tests emptiness, not strength")
+        void aSingleCharacterCredentialIsAccepted() {
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            when(passwordEncoder.matches(MINIMAL_CREDENTIAL, storedDigest())).thenReturn(false);
+            when(passwordEncoder.encode(MINIMAL_CREDENTIAL)).thenReturn(replacementDigest());
+
+            final UserUpdateScreen screen = service.updateUser(
+                    request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, MINIMAL_CREDENTIAL,
+                            STORED_USER_TYPE),
+                    null);
+
+            assertThat(screen.userModified())
+                    .as("no minimum length, no character class and no history exists in the source")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("no field is upper-cased: a lower-case name is stored exactly as presented")
+        void noFieldIsUpperCased() {
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            arrangeCredentialMatches();
+            final String lowerCase = "ajitha";
+
+            service.updateUser(request(USER_ID, lowerCase, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                    STORED_USER_TYPE), null);
+
+            assertThat(capturePersistedRow().getSecUsrFname())
+                    .as("the MOVE at :220 transcribes the field; COACTUPC applies FUNCTION UPPER-CASE and "
+                            + "this program applies nothing")
+                    .isEqualTo(lowerCase);
+        }
+
+        @Test
+        @DisplayName("a case-only difference IS a change, proving the comparison folds nothing either")
+        void aCaseOnlyDifferenceIsAChange() {
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            arrangeCredentialMatches();
+
+            final UserUpdateScreen screen = service.updateUser(
+                    request(USER_ID, STORED_FIRST_NAME.toLowerCase(Locale.ROOT),
+                            STORED_LAST_NAME, PRESENTED_CREDENTIAL, STORED_USER_TYPE),
+                    null);
+
+            assertThat(screen.userModified())
+                    .as("IF FNAMEI NOT = SEC-USR-FNAME at :219 is a plain comparison with no case function")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("an unmappable user class clears all five guards and is refused as INVALID, not BLANK")
+        void anUnmappableUserClassClearsTheEmptinessGuards() {
+            arrangeStoredRow();
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.updateUser(
+                            request(USER_ID, STORED_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                                    UNMAPPABLE_USER_TYPE), null))
+                    .satisfies(failure -> {
+                        assertThat(failure.getFailureKind())
+                                .as("a non-empty code clears :204, so the refusal is INVALID and emphatically "
+                                        + "not the BLANK arm of the five emptiness guards")
+                                .isEqualTo(ValidationException.FailureKind.INVALID)
+                                .isNotEqualTo(ValidationException.FailureKind.BLANK);
+                        assertThat(failure.getFieldName()).isEqualTo("userType");
+                        assertThat(failure.getMessage())
+                                .as("the narrowing to a closed enumeration is target-only, so the message is "
+                                        + "the target's own and none of the five source literals")
+                                .isEqualTo(USER_TYPE_DOMAIN_MESSAGE)
+                                .isNotEqualTo(USER_TYPE_REQUIRED_MESSAGE);
+                    });
+            verify(userSecurityRepository, never()).saveAndFlush(any(UserSecurity.class));
+        }
+
+        @Test
+        @DisplayName("the lookup issues exactly one unlocked read and reaches no other store method")
+        void theLookupIssuesExactlyOneUnlockedRead() {
+            arrangeStoredRow();
+
+            service.lookupUser(USER_ID);
+
+            verify(userSecurityRepository, times(1)).findById(USER_ID);
+            verifyNoMoreInteractions(userSecurityRepository);
+        }
+
+        @Test
+        @DisplayName("the save issues its own read first, in order, reproducing :217 before :237")
+        void theSaveIssuesItsOwnReadFirst() {
+            arrangeStoredRow();
+            arrangeRewriteAccepted();
+            arrangeCredentialMatches();
+
+            service.updateUser(request(USER_ID, NEW_FIRST_NAME, STORED_LAST_NAME, PRESENTED_CREDENTIAL,
+                    STORED_USER_TYPE), null);
+
+            final InOrder sequence = inOrder(userSecurityRepository);
+            sequence.verify(userSecurityRepository).findById(USER_ID);
+            sequence.verify(userSecurityRepository).saveAndFlush(any(UserSecurity.class));
+            sequence.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("a hostile identifier crosses as a bound parameter, verbatim and unescaped")
+        void aHostileIdentifierCrossesAsABoundParameter() {
+            when(userSecurityRepository.findById(HOSTILE_USER_ID)).thenReturn(Optional.empty());
+
+            assertThatExceptionOfType(RecordNotFoundException.class)
+                    .isThrownBy(() -> service.lookupUser(HOSTILE_USER_ID));
+
+            final ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+            verify(userSecurityRepository).findById(key.capture());
+            assertThat(key.getValue())
+                    .as("the key reaches a derived finder as one bound argument, so relational "
+                            + "metacharacters are data and the outcome is an ordinary not-found")
+                    .isEqualTo(HOSTILE_USER_ID);
+        }
+
+        @Test
+        @DisplayName("the bean declares no query text, so nothing can be concatenated into one")
+        void theBeanDeclaresNoQueryText() {
+            for (final String token : QUERY_TOKENS) {
+                assertThat(declaredStringConstants())
+                        .as("a constant containing [%s] would be the beginning of assembled query text", token)
+                        .allSatisfy(value -> assertThat(value.toLowerCase(Locale.ROOT))
+                                .doesNotContain(token));
+            }
         }
     }
 }

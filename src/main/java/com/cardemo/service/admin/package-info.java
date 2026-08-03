@@ -13,7 +13,7 @@
  * Source      : app/cbl/COUSR00C.cbl (695 lines, 16 paragraphs; user list, 10 rows per page at :L57) @ 7756d89
  * Source      : app/cbl/COUSR01C.cbl (299 lines, 9 paragraphs; user add) @ 7756d89
  * Source      : app/cbl/COUSR02C.cbl (414 lines, 11 paragraphs; user update) @ 7756d89
- * Source      : app/cbl/COUSR03C.cbl (359 lines; user delete - NOT translated in this package) @ 7756d89
+ * Source      : app/cbl/COUSR03C.cbl (359 lines, 11 paragraphs; user delete) @ 7756d89
  * Source      : app/cpy/CSUSR01Y.cpy:L17-L23 (80-byte SEC-USER-DATA layout, key 8) @ 7756d89
  * Source      : app/cpy-bms/COUSR00.CPY (59 input fields), COUSR01.CPY (12), COUSR02.CPY (12) @ 7756d89
  * Source      : app/jcl/DUSRSECJ.jcl:L64-L66 (KEYS(8,0) RECORDSIZE(80,80) REUSE INDEXED) @ 7756d89
@@ -37,7 +37,7 @@
  */
 
 /**
- * User administration: the services behind the four {@code CU} transactions, of which three are present.
+ * User administration: the services behind the four {@code CU} transactions, all four of which are present.
  *
  * <h2>What it does</h2>
  *
@@ -51,18 +51,21 @@
  *       rather than a swallowed status.</li>
  *   <li>{@link com.cardemo.service.admin.UserUpdateService} - {@code app/cbl/COUSR02C.cbl}, 414 lines. A
  *       read-modify-write with change detection.</li>
+ *   <li>{@link com.cardemo.service.admin.UserDeleteService} - {@code app/cbl/COUSR03C.cbl}, 359 lines, 11
+ *       paragraphs. The read-confirm-delete chain behind transaction {@code CU03}, carrying the absent
+ *       self-delete guard described immediately below.</li>
  *   </ul>
  *
- * <p><strong>Not available: the delete service.</strong> Measured 3 August 2026 at commit {@code 2e087c4}, this
- * package contains the three services above and no others. {@code app/cbl/COUSR03C.cbl} - 359 lines, the
- * read-confirm-delete chain behind transaction {@code CU03} - is <strong>planned and not present</strong>.
- * Nothing here may be read as a claim that a delete path exists.
+ * <p>Measured 3 August 2026, this package contains the four services above and no others, so the {@code CU}
+ * leaf is complete. <strong>Not available: the REST adapter.</strong> {@code AdminController} is planned and
+ * not yet authored, so nothing in this package is reachable over HTTP; nothing here may be read as a claim
+ * that an administrative endpoint exists.
  *
- * <p>When it is authored, one property of the source must survive: <strong>{@code COUSR03C} has no self-delete
+ * <p>One property of the source survives in the delete path: <strong>{@code COUSR03C} has no self-delete
  * guard.</strong> It never compares the target user identifier against the signed-on identifier, so an
  * administrator can delete their own row. That is a preserved legacy behaviour, not an oversight to be closed:
  * adding the guard is a behaviour change, and behavioural parity is the acceptance contract. It is recorded here
- * so that whoever writes the service does not "improve" it in passing.
+ * so that nobody "improves" it in passing.
  *
  * <h3>The record contract</h3>
  *
@@ -97,8 +100,9 @@
  * <h2>Common failure modes and troubleshooting</h2>
  *
  * <ol>
- *   <li><p><strong>Symptom: a 404 from the user delete path.</strong> Cause: the service does not exist - see the
- *       Not available note. <em>Remediation:</em> author it, preserving the absent self-delete guard.
+ *   <li><p><strong>Symptom: a 404 from the user delete path.</strong> Cause: no REST adapter reaches it -
+ *       {@code UserDeleteService} is authored, {@code AdminController} is not. <em>Remediation:</em> author the
+ *       controller, and do not add a self-delete guard while doing so.
  *       <strong>Severity: High.</strong></p></li>
  *   <li><p><strong>Symptom: a password digest is returned in a payload.</strong> Cause: the read model exposes
  *       the password field. <em>Remediation:</em> never return it, at any authority level. Rule 1 Clause D
@@ -136,9 +140,9 @@
  *       environment loaded with {@code set -a; . ./.env; set +a}, because {@code JWT_SIGNING_KEY} has no default and
  *       startup fails without it by design.</li>
  *   <li><strong>Test.</strong> Tests belong in {@code src/test/java/com/cardemo/unit/service}.
- *       {@code UserListServiceTest} and {@code UserAddServiceTest} exist. <strong>Not available, measured 3
- *       August 2026:</strong> {@code UserUpdateService} has no test class and is not referenced anywhere under
- *       {@code src/test/java}, so no coverage figure quoted anywhere is evidence about it. The required
+ *       {@code UserListServiceTest}, {@code UserAddServiceTest} and {@code UserUpdateServiceTest} exist.
+ *       <strong>Not available, measured 3 August 2026:</strong> {@code UserDeleteService} has no test class of
+ *       its own, so no coverage figure quoted anywhere is evidence about it. The required
  *       assertions across the package are: page size exactly 10 with forward and backward paging; the
  *       field-by-field validation order of the add path as written; a duplicate identifier surfacing as a
  *       duplicate-record outcome and performing no update; an update leaving unsent fields untouched; and no

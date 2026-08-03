@@ -203,9 +203,9 @@ import com.cardemo.model.enums.RejectCode;
  * <h2>Ownership: this class defines, others register, scrape and display</h2>
  *
  * <p>Four responsibilities, four owners, no overlap. <strong>This class defines the instruments.</strong>
- * {@code com.cardemo.config.ObservabilityConfig} - <strong>planned, not yet authored</strong> - is to own
- * registration and exposure of the observability layer and the wiring of its three classes; until it exists
- * these three classes are self-registering, so nothing here is disabled by its absence.
+ * {@code com.cardemo.config.ObservabilityConfig} owns the documented wiring contract for the observability
+ * layer and publishes the single production time source; it deliberately declares no counter bean, because the
+ * three classes in this package are self-registering and a second definition would be a duplicate.
  * {@code observability/prometheus.yml} owns the scrape. The dashboard
  * JSON owns display. Accordingly this file declares no {@code @Enable...} annotation, no component scan, no
  * {@code MeterRegistry} implementation bean, no meter filter or common-tag customiser, no exporter or

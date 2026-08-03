@@ -1553,7 +1553,7 @@ public class UserAddService {
     // ------------------------------------------------------------------------------------------------
     // Nested types. Declared inside the service so that the fixed four-file budget of
     // com.cardemo.service.admin is unaffected: UserListService, UserAddService, UserUpdateService and
-    // UserDeleteService (that fourth one is planned and not yet authored), and no package-info.java.
+    // UserDeleteService, alongside this package's package-info.java.
     // ------------------------------------------------------------------------------------------------
 
     /**

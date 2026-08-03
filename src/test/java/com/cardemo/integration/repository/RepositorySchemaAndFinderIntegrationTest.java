@@ -204,15 +204,20 @@ class RepositorySchemaAndFinderIntegrationTest extends AbstractRepositoryIntegra
         }
 
         @Test
-        @DisplayName("no seeded password is stored in the legacy plaintext form")
+        @DisplayName("no seeded credential is stored in the legacy plaintext form")
         void everySeededPasswordIsHashed() {
             List<String> stored = jdbcTemplate.queryForList(
                     "SELECT sec_usr_pwd FROM user_security", String.class);
 
             assertThat(stored).hasSize(10);
-            assertThat(stored).noneMatch(value -> "PASSWORD".equals(value.trim()));
-            assertThat(stored).allMatch(value -> value.startsWith("$2a$")
-                    || value.startsWith("$2b$") || value.startsWith("$2y$"));
+            // Proved POSITIVELY rather than by comparison against the plaintext. The single shared literal
+            // plaintext value recorded at app/jcl/DUSRSECJ.jcl:35-44 is eight characters; a BCrypt digest at
+            // the pinned strength is sixty and carries a version tag, a cost factor of 10 and a radix-64
+            // salt and digest. Satisfying that envelope is structurally incompatible with holding the
+            // plaintext, so the weaker "does not equal the plaintext" check is unnecessary - and writing the
+            // plaintext in order to make it is itself what Rule 1 Clause D forbids, which names tests
+            // explicitly. Asserted through a derived boolean so that no failure message can echo a digest.
+            assertThat(stored).allMatch(value -> value.matches("^\\$2[aby]\\$10\\$[./A-Za-z0-9]{53}$"));
         }
     }
 

@@ -515,7 +515,7 @@ final class CardUpdateServiceTest {
                                                      final String expiryMonth,
                                                      final String expiryDay,
                                                      final String cardStatusCode) {
-        return new CardUpdateRequest.CardDetails(ACCOUNT_ID, CARD_NUMBER, 
+        return new CardUpdateRequest.CardDetails(ACCOUNT_ID, CARD_NUMBER,
                 new CardUpdateRequest.CardData(cardholderName,
                         new CardUpdateRequest.ExpiraionDate(expiryYear, expiryMonth, expiryDay),
                         cardStatusCode));
@@ -2656,8 +2656,18 @@ final class CardUpdateServiceTest {
         void alteredSnapshotTokenIsRefused() {
             final CardUpdateRequest request = changedNameRequest(matchingSnapshot());
             final String authentic = sealed(request);
+            // The seal frames a fresh SecureRandom nonce ahead of the ciphertext and base64url-encodes the
+            // pair, so every character of the token varies from run to run. The substitute must therefore
+            // be chosen against the character actually being replaced: testing any other position leaves
+            // the token byte-identical on the runs where the replaced position already holds the
+            // substitute, and an unaltered token opens and the write is not refused at all.
+            final char penultimate = authentic.charAt(authentic.length() - 2);
             final String tampered = authentic.substring(0, authentic.length() - 2)
-                    + (authentic.endsWith("A") ? "B" : "A") + authentic.charAt(authentic.length() - 1);
+                    + (penultimate == 'A' ? 'B' : 'A') + authentic.charAt(authentic.length() - 1);
+            assertThat(tampered)
+                    .as("the alteration must land whatever nonce this run drew, or nothing is altered")
+                    .isNotEqualTo(authentic)
+                    .hasSize(authentic.length());
 
             final ConcurrentUpdateException failure = catchThrowableOfType(
                     ConcurrentUpdateException.class, () -> service.updateCard(request, tampered));

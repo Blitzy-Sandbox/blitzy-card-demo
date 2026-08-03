@@ -295,7 +295,7 @@ import com.cardemo.service.shared.FileStatusMapper;
  *   <li>An earlier revision of this bullet said that {@code batch/jobs/**},
  *       {@code batch/readers/**} and {@code batch/writers/**} are unplanned in this branch; that is no
  *       longer true and the claim is withdrawn. All three packages exist and are populated - one job,
- *       four readers and three writers. What remains absent are the three specific types this step
+ *       five readers and three writers. What remains absent are the three specific types this step
  *       needs: {@code batch/jobs/TransactionReportJob}, {@code batch/readers/TransactionBackupReader}
  *       and a report writer for the {@value #REPORT_LINE_LENGTH} character line, none of which is among
  *       the authored {@code RejectWriter}, {@code StatementWriter} and {@code TransactionWriter}. Until

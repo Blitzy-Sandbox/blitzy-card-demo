@@ -67,15 +67,17 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
  * <p>Component scanning is rooted at {@code com.cardemo} - the default of {@code @SpringBootApplication},
  * which is why no {@code scanBasePackages} attribute appears below - so it reaches whatever is authored,
  * without enumeration. The subpackage counts below are stated as <strong>present / target</strong> wherever
- * the two differ, so that a planned type is never read as a delivered one: {@code config}
- * <strong>4 / 6</strong>, {@code security} 3, {@code model} (entity 11, key 3, enums 4, dto 17),
- * {@code repository} 11, {@code service} <strong>20 / 21</strong> across nine leaves, {@code controller}
+ * the two differ, so that a planned type is never read as a delivered one: {@code config} 6,
+ * {@code security} 4, {@code model} (entity 11, key 3, enums 4, dto 26),
+ * {@code repository} 11, {@code service} 21 across nine leaves, {@code controller}
  * <strong>6 / 8</strong> exposing <strong>12 operations today of a target 17</strong>, {@code batch}
- * (jobs <strong>1 / 6</strong>, processors 5, readers <strong>4 / 7</strong>, writers 3),
- * {@code exception} 9 and {@code observability} 3. The target total is 132 {@code .java} files - 118
- * production classes including this entry point, plus 14 {@code package-info.java} files, all fourteen of
- * which now exist. <strong>The tree has not reached that target yet</strong>; the authoritative dated
- * inventory, with the command that reproduces it, is section 0.4.5.1 of
+ * (jobs <strong>1 / 6</strong>, processors 5, readers <strong>5 / 7</strong>, writers 3),
+ * {@code exception} 9 and {@code observability} 3. Measured 3 August 2026 the tree holds 143
+ * {@code .java} files - 119 production classes including this entry point, plus 24
+ * {@code package-info.java} files, one for each package that declares a type.
+ * <strong>The tree has not reached its target yet</strong>: five batch jobs, two batch readers and two
+ * controllers are still to be authored, and each is named individually in the leaf document for its
+ * package. The authoritative dated inventory, with the command that reproduces it, is section 0.4.5.1 of
  * {@code docs/technical-specifications.md}. Dependencies are supplied by constructor injection throughout;
  * field and setter injection are not used anywhere.
  *

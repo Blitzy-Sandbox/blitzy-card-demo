@@ -6,26 +6,28 @@
  * Application : CardDemo
  * Type        : JUnit 5 unit test - pure JVM tier, no container, no
  *               Spring context, no database, no live endpoint
- * Function    : Proves that ReportSubmissionService reproduces CORPT00C
- *               exactly - ten paragraphs mapped one to one, three entry
- *               modes and three attention identifiers, the monthly
- *               period resolved as a FULL CALENDAR MONTH with the
- *               twelve-month roll, the yearly period as January first
- *               through December thirty-first, the custom period through
- *               its six ordered emptiness guards, its NUMVAL-like
- *               normalisation, its string upper bounds and its
- *               start-then-end date validation with severity 0000
- *               accepted outright and message number 2513 tolerated, the
- *               four-state confirmation handshake, the seventeen
- *               eighty-byte job cards collapsed into one FIFO message,
+ * Function    : Proves that ReportSubmissionService reproduces the
+ *               frozen CORPT00C exactly - ten paragraphs mapped one to
+ *               one, the monthly period resolved as a FULL CALENDAR
+ *               MONTH with the twelve-month carry, the yearly period as
+ *               January first through December thirty-first, the custom
+ *               period through its six ordered emptiness guards, its
+ *               NUMVAL-C normalisation, its string upper bounds with no
+ *               lower bound and no year bound at all, and its
+ *               start-then-end whole-date validation with severity 0000
+ *               accepted outright and message number 2513 tolerated;
+ *               the four-state confirmation handshake; the seventeen
+ *               eighty-byte job cards collapsed into ONE FIFO message;
  *               and the byte-exact queue-failure literal
  * Source      : app/cbl/CORPT00C.cbl (649 lines, 10 paragraphs) @ 7756d89
  * Source      : app/cpy-bms/CORPT00.CPY (17 input fields) @ 7756d89
+ * Source      : app/csd/CARDDEMO.CSD (TRANSACTION(CR00), TDQUEUE(JOBS)) @ 7756d89
+ * Source      : app/cbl/CSUTLDTC.cbl (the validator behind the two CALLs) @ 7756d89
+ * Source      : app/proc/TRANREPT.prc (the procedure the deck submits) @ 7756d89
+ * Source      : app/jcl/TRANREPT.jcl (the job the deck names) @ 7756d89
  * Source      : app/cpy/CSMSG01Y.cpy (CCDA-MSG-INVALID-KEY) @ 7756d89
  * Source      : app/cpy/COTTL01Y.cpy (CCDA-TITLE01, CCDA-TITLE02) @ 7756d89
- * Source      : app/csd/CARDDEMO.CSD (TRANSACTION(CR00), TDQUEUE(JOBS)) @ 7756d89
- * Source      : app/cbl/CSUTLDTC.cbl (the date validator behind :392) @ 7756d89
- * Source      : app/proc/TRANREPT.prc (the job the deck submits) @ 7756d89
+ * Source      : app/cbl/CBACT04C.cbl:1-21 (this banner's canonical form) @ 7756d89
  * ******************************************************************
  * Copyright Amazon.com, Inc. or its affiliates.
  * All Rights Reserved.
@@ -49,42 +51,44 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
 import static org.assertj.core.api.Assertions.assertThatNullPointerException;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
-import com.cardemo.exception.FileAccessException;
+import com.cardemo.exception.CardDemoException;
 import com.cardemo.exception.ValidationException;
 import com.cardemo.model.dto.ReportRequest;
+import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.report.ReportSubmissionService.AttentionIdentifier;
 import com.cardemo.service.report.ReportSubmissionService.JobSubmissionMessage;
 import com.cardemo.service.report.ReportSubmissionService.ReportSubmissionScreen;
-import com.cardemo.service.report.ReportSubmissionService;
 import com.cardemo.service.shared.DateValidationService;
+import com.cardemo.unit.model.FixedClockProvider;
+import io.awspring.cloud.sns.core.SnsTemplate;
 import io.awspring.cloud.sqs.operations.MessagingOperationFailedException;
 import io.awspring.cloud.sqs.operations.SendResult;
 import io.awspring.cloud.sqs.operations.SqsSendOptions;
-import io.awspring.cloud.sns.core.SnsTemplate;
 import io.awspring.cloud.sqs.operations.SqsTemplate;
 import io.micrometer.tracing.Tracer;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.RecordComponent;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -96,6 +100,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
@@ -104,366 +109,444 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.messaging.support.GenericMessage;
 
 /**
- * Unit tests for {@code com.cardemo.service.report.ReportSubmissionService}, the Java replacement for
- * {@code app/cbl/CORPT00C.cbl} - 649 lines and 10 paragraphs, the CICS program behind transaction
- * {@code CR00}, which resolves a reporting period and submits the transaction-report job.
+ * Unit tests for {@link ReportSubmissionService}, the Java replacement for {@code app/cbl/CORPT00C.cbl} -
+ * 649 lines and 10 paragraphs, the CICS program behind transaction {@code CR00}, which resolves a reporting
+ * period and submits the transaction-report job.
  *
- * <h2>What it does</h2>
+ * <h2>1. What it does</h2>
  *
- * <p>It proves parity against the frozen source rather than against an idea of what the source ought to do.
- * Every assertion cites the paragraph or line it proves, and the citations were verified by direct
- * inspection at commit {@code 7756d89}. Six groups of behaviour carry the weight.
+ * <p>It proves parity against the frozen corpus rather than against an idea of what the corpus ought to do.
+ * Every assertion cites the paragraph or line it proves, and every locator below was verified by direct
+ * inspection at commit {@code 7756d89}: {@code app/cbl/CORPT00C.cbl} at
+ * {@code :58} ({@code WS-REPORT-NAME PIC X(10)}),
+ * {@code :60-72} (the two dash-separated ten-character date groups and {@code WS-DATE-FORMAT}),
+ * {@code :82} ({@code JOB-DATA-1}),
+ * {@code :106}, {@code :111}, {@code :118} and {@code :120} (the four parameter slots),
+ * {@code :123} and {@code :125} (the {@code /*} card and the {@code /*EOF} terminator),
+ * {@code :129-136} (the validator parameter block, with {@code :137} blank - so a
+ * {@code :129-137} citation drifts by one),
+ * {@code :163} ({@code MAIN-PARA}),
+ * {@code :208} and {@code :210} ({@code PROCESS-ENTER-KEY} and its trace {@code DISPLAY}),
+ * {@code :212-238} (monthly), {@code :239-255} (yearly),
+ * {@code :256-303} (the emptiness guards, with literals at {@code :261}, {@code :268}, {@code :275},
+ * {@code :282}, {@code :289} and {@code :296}),
+ * {@code :329-379} (the six range guards, with literals at {@code :331}, {@code :340}, {@code :348},
+ * {@code :357}, {@code :366} and {@code :374}),
+ * {@code :388-406} and {@code :392} and {@code :400} (start-date validation),
+ * {@code :408-426} and {@code :412} and {@code :420} (end-date validation),
+ * {@code :429-433} (the parameter moves, then the report name),
+ * {@code :437-440} (no selector at all),
+ * {@code :462} and {@code :464-494} ({@code SUBMIT-JOB-TO-INTRDR} and the confirmation handshake),
+ * {@code :496-510} (the card loop), {@code :515} and {@code :517-537}
+ * ({@code WIRTE-JOBSUB-TDQ}, misspelled in the source and cited as the source spells it),
+ * {@code :540} ({@code RETURN-TO-PREV-SCREEN}), {@code :556} ({@code SEND-TRNRPT-SCREEN}),
+ * {@code :585} ({@code RETURN-TO-CICS}), {@code :596} ({@code RECEIVE-TRNRPT-SCREEN}),
+ * {@code :609} ({@code POPULATE-HEADER-INFO}) and {@code :633} ({@code INITIALIZE-ALL-FIELDS}).
  *
- * <ul>
- *   <li><strong>The monthly period is a FULL CALENDAR MONTH, not month-to-date.</strong> This is the single
- *       most easily got-wrong value on this path, and the frozen source settles it: {@code :223} does
- *       {@code MOVE 1 TO WS-CURDATE-DAY}, {@code :224-228} adds one to the month with the twelve-month roll,
- *       and {@code :229-230} takes {@code DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1)} - the first of the next
- *       month less one day, which is the last day of <em>this</em> one. The end date is therefore the month
- *       end and never today. Asserted across a mid-month day, a month end, both February lengths and
- *       December, so the roll is proved rather than assumed.</li>
- *   <li><strong>The custom period's five stages, in order.</strong> Six emptiness guards at
- *       {@code :259-300} in their source order; a NUMVAL-like normalisation at {@code :305-327} that drops
- *       non-digits, stops at a decimal point and reduces modulo the receiving width; six range checks at
- *       {@code :329-379} performed as <em>string</em> comparisons against {@code '12'} and {@code '31'} with
- *       <em>no bound at all</em> on either year; assembly to {@code YYYY-MM-DD}; then start-then-end
- *       validation.</li>
- *   <li><strong>Message number 2513 is tolerated.</strong> {@code :399} accepts a non-zero severity when the
- *       message number is {@code '2513'}. This suite proves it with the <em>real</em>
- *       {@link DateValidationService}, for which a date before the Lillian day zero of 15 October 1582
- *       genuinely reports severity {@code 0003} and message number {@code 2513} - so a custom range starting
- *       in the year 1000 is <em>accepted</em>, exactly as the source accepts it.</li>
- *   <li><strong>The four-state confirmation handshake.</strong> {@code :464-493}: blank re-prompts naming the
- *       report, {@code 'Y'} or {@code 'y'} publishes, {@code 'N'} or {@code 'n'} clears the form and ends the
- *       turn <em>with no message and no cursor</em>, and anything else quotes the offending value back. The
- *       gate is the {@code PIC X(1)} map field, so it is truncated to one character first - which means
- *       {@code "YES"} confirms, a quirk preserved and asserted.</li>
- *   <li><strong>Seventeen job cards become one FIFO message.</strong> {@code :498-508} wrote seventeen
- *       eighty-byte cards including the {@code /*EOF} terminator, which is written <em>before</em> the loop
- *       exits. One typed message replaces the deck, published exactly once, carrying the queue name, the
- *       payload and the message group from configuration - and no deduplication identifier.</li>
- *   <li><strong>The queue-failure literal.</strong> {@code :528-534} produces
- *       {@code Unable to Write TDQ (JOBS)...} byte for byte, with the cause preserved and <em>no</em>
- *       fabricated file status: the program declares no {@code FILE-CONTROL}, no {@code SELECT} and no
- *       {@code FD}, so there is no I/O status to render.</li>
- *   </ul>
- *
- * <h2>How to build and test</h2>
+ * <h2>2. How to build and test</h2>
  *
  * <ul>
  *   <li>{@code ./mvnw -B -ntp test} - runs this class under {@code maven-surefire-plugin:3.5.4}. Residence
- *       in the {@code unit} tree is load-bearing: a class outside it matches neither Surefire's nor
- *       Failsafe's include set and would silently never run.</li>
- *   <li>{@code ./mvnw -B -ntp test-compile} - {@code -Xlint:all -Werror} with {@code failOnWarning} reaches
- *       test compilation, so one unused import is fatal.</li>
+ *       in the {@code unit} tree is load-bearing: a class outside it matches neither Surefire's include set
+ *       nor Failsafe's and would silently never run, with both plugins reporting success.</li>
  *   <li>{@code ./mvnw -B -ntp -Dtest=ReportSubmissionServiceTest test} - runs this class alone.</li>
+ *   <li>{@code ./mvnw -B -ntp test-compile} - {@code maven-compiler-plugin:3.14.1} at
+ *       {@code release 25} with {@code showWarnings}, {@code failOnWarning}, {@code -Xlint:all} and
+ *       {@code -Werror}, all of which reach TEST compilation. One unused import is fatal.</li>
+ *   <li>{@code ./mvnw -B -ntp verify} - adds the JaCoCo 0.8.12 bundle gate at 80 percent of lines, with no
+ *       exclusions, and the doclint gate.</li>
  * </ul>
  *
- * <h2>Key configuration and defaults</h2>
+ * <h2>3. Key configuration and defaults</h2>
  *
  * <ul>
- *   <li><strong>A real date validator.</strong> {@link DateValidationService} is a pure function over an
- *       injected clock, and its outcomes are the behaviour under test, so the real one is used rather than a
- *       double. That is what makes the {@code '2513'} exemption provable instead of merely stubbed: no
- *       fabricated eighty-character result area appears anywhere in this file.</li>
- *   <li><strong>A hand-written send-options recorder.</strong> {@link SqsSendOptions} is a fluent interface,
- *       and the production code configures it inside a lambda the template invokes. A recording
- *       implementation captures exactly what the lambda sets - and, just as importantly, what it does
- *       <em>not</em> set - which a return-value assertion could not see.</li>
- *   <li><strong>Fixed and advancing clocks.</strong> A clock fixed at {@code 2022-06-10T19:27:53Z} for the
- *       deterministic cases, and an advancing clock that counts its reads for the two tests that prove each
- *       period is derived from a <em>single</em> reading and cannot straddle a boundary.</li>
- *   <li><strong>Mockito strict stubs.</strong> An unused stub fails the test, so the publish stub is
- *       arranged only in the tests that reach the queue.</li>
- *   <li><strong>Synthetic configuration.</strong> The queue name, logical name and message group are
- *       injected values; the literals here are transparently synthetic and no endpoint, credential or
- *       account identifier appears anywhere in this file.</li>
- *   </ul>
+ *   <li><strong>An injected fixed clock, never an ambient one.</strong> Every clock in this class comes from
+ *       {@link FixedClockProvider}, the sibling helper in {@code com.cardemo.unit.model}. The monthly and
+ *       yearly periods are computed from {@code FUNCTION CURRENT-DATE} at {@code :215} and {@code :241}, so
+ *       a wall clock would make the December-carry test pass or fail depending on the month it ran in.
+ *       Every ambient-clock reading - {@code LocalDate}, {@code Instant}, {@code System} milliseconds,
+ *       {@code Calendar}, the default zone and the default locale - is absent from this file.</li>
+ *   <li><strong>A stubbed date validator.</strong> {@link DateValidationService} is a Mockito mock, and the
+ *       assertions here are about the <em>interaction</em> and the caller's reaction to a severity code and
+ *       a message number. The validator's own data contract - the severity taxonomy and the message-number
+ *       catalogue - is owned by {@code com.cardemo.unit.validation} and by
+ *       {@code DateValidationServiceTest}, and is deliberately not duplicated here.</li>
+ *   <li><strong>Mockito strict stubs.</strong> {@link Strictness#STRICT_STUBS}: an unused stub fails the
+ *       test, so each stub is arranged only in the tests that consume it.</li>
+ *   <li><strong>A hand-written send-options recorder.</strong> {@link SqsSendOptions} is a fluent interface
+ *       the production code configures inside a lambda, so a recording implementation captures exactly what
+ *       the lambda sets - and, just as importantly, what it does not.</li>
+ *   <li><strong>A hand-written tracer provider.</strong> Tracing is optional, so the provider yields no
+ *       tracer. A plain implementation is used rather than a lenient mock, so no stub in this class needs
+ *       leniency.</li>
+ *   <li><strong>Synthetic configuration.</strong> The queue name, logical name, message group and topic are
+ *       transparently synthetic values. No endpoint, host, port, URL, ARN, account identifier or credential
+ *       appears anywhere in this file, and no code path here can reach a real service. The FIFO queue the
+ *       deployment actually uses is named by configuration in {@code com.cardemo.config.AwsConfig} and is
+ *       never a literal here. The real round trip belongs to {@code com.cardemo.integration.aws}.</li>
+ * </ul>
  *
- * <h2>Common failure modes and troubleshooting</h2>
+ * <h2>4. Common failure modes and troubleshooting</h2>
+ *
+ * <p>Findings are classified Blocker, High, Medium or Low, each with its remediation.
  *
  * <ul>
- *   <li><strong>The monthly end date becomes today.</strong> Someone implemented month-to-date. The frozen
- *       source computes the month end; the report would silently cover a short period. Remedy: restore
- *       {@code first-of-next-month minus one day}. Severity: <strong>High</strong>.</li>
- *   <li><strong>A date before 1582 starts being rejected.</strong> The {@code '2513'} exemption was dropped.
- *       Remedy: restore the message-number test at {@code :399}. Severity: <strong>High</strong>.</li>
- *   <li><strong>The year gains an upper bound.</strong> {@code :347-354} and {@code :373-379} test numeric
- *       only - no bound of any kind - so a year of {@code 0000} must reach the date validator and be
- *       rejected <em>there</em>, with the date literal rather than the year literal. Remedy: remove the
- *       bound. Severity: <strong>Medium</strong>.</li>
- *   <li><strong>The confirmation stops accepting a longer value.</strong> The gate is a {@code PIC X(1)}
- *       field, so the source only ever saw one character and {@code "YES"} confirmed. Remedy: truncate
- *       before comparing. Severity: <strong>Low</strong>, but it is behaviour.</li>
- *   <li><strong>Two messages are published, or none.</strong> The deck's seventeen cards collapse into one
- *       message; the loop's terminator card is not a second message. Remedy: publish once. Severity:
- *       <strong>Medium</strong>.</li>
- *   <li><strong>The declined arm grows a message or a cursor.</strong> {@code :480-483} sets neither.
- *       Remedy: leave both absent. Severity: <strong>Low</strong>.</li>
- *   </ul>
+ *   <li><strong>Blocker - the monthly period becomes month-to-date.</strong> A secondary description of this
+ *       program calls the monthly range month-to-date. The frozen source settles it the other way:
+ *       {@code :223} moves 1 to the day, {@code :224-228} adds one to the month and carries the year, and
+ *       {@code :229-230} takes {@code DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1)} - the first of the next
+ *       month less one day, which is the last day of <em>this</em> one. Every monthly report's range would
+ *       be short. Remedy: first of next month, minus one day.</li>
+ *   <li><strong>Blocker - a wall clock replaces the injected one.</strong> The verdict then changes with the
+ *       calendar. Remedy: {@link FixedClockProvider}.</li>
+ *   <li><strong>High - a non-zero severity whose message number is 2513 starts being rejected.</strong>
+ *       {@code :399} and {@code :419} accept it. Remedy: restore the message-number test.</li>
+ *   <li><strong>High - the December carry is dropped.</strong> {@code :225-228} is the only place the year
+ *       advances. Remedy: restore the {@code &gt; 12} test.</li>
+ *   <li><strong>High - the loop breaks before writing the terminating card.</strong> {@code :504} sets the
+ *       flag and {@code :507} still writes on that same iteration, so seventeen cards are written, not
+ *       sixteen. Remedy: write, then test.</li>
+ *   <li><strong>High - an endpoint is named, or a deck image is placed in the message body.</strong> The
+ *       legacy path submitted an executable job deck to an internal reader; the target publishes a typed
+ *       three-field message. Remedy: keep the body typed and the endpoint in configuration.</li>
+ *   <li><strong>High - a lower bound or a numeric conversion is added to the month and day guards.</strong>
+ *       {@code :330} and {@code :339} compare character strings against {@code '12'} and {@code '31'} and
+ *       have no lower bound at all. Remedy: compare as strings, upper bound only.</li>
+ *   <li><strong>Medium - the six range guards are collapsed into an {@code EVALUATE}.</strong> They are six
+ *       independent {@code IF} statements at {@code :329-379}, but each ends in
+ *       {@code PERFORM SEND-TRNRPT-SCREEN}, and that paragraph ends {@code GO TO RETURN-TO-CICS} at
+ *       {@code :580} - a terminal {@code EXEC CICS RETURN}. The first guard to fire therefore ends the turn
+ *       and no later guard can run. A secondary description claims the last guard wins; it cannot. Remedy:
+ *       fail on the first, in source order, and never accumulate.</li>
+ *   <li><strong>Medium - a range check is added to either year.</strong> {@code :347} and {@code :373} test
+ *       numeric only. Remedy: let {@code 0000} and {@code 9999} through to the date validator.</li>
+ *   <li><strong>Medium - the deck is counted as eighteen cards.</strong> It is seventeen:
+ *       {@code :83-125} declares ten whole-card fillers, two parameter cards, a {@code /*} card, the
+ *       {@code DATEPARM} card, the second parameter card, a second {@code /*} card and the terminator.
+ *       Remedy: seventeen.</li>
+ *   <li><strong>Medium - the confirmation comparison is made case-insensitive.</strong> {@code :478} is the
+ *       combined relation {@code = 'Y' OR 'y'}, not a case function. Remedy: compare two literals; no
+ *       {@code toUpperCase}, and where a case operation is unavoidable elsewhere, {@code Locale.ROOT}.</li>
+ *   <li><strong>Medium - eighteen messages are published instead of one.</strong> The deck collapses.
+ *       Remedy: publish once.</li>
+ *   <li><strong>Low - the cursor goes to the monthly selector on a queue failure whatever the report
+ *       type.</strong> {@code :533} moves -1 to {@code MONTHLYL} unconditionally. A copy-paste defect,
+ *       preserved. Remedy: none; do not correct it.</li>
+ *   <li><strong>Low - the {@code WIRTE-JOBSUB-TDQ} misspelling is corrected.</strong> {@code :515} spells it
+ *       that way. Remedy: keep the misspelling in the method name and in every citation.</li>
+ *   <li><strong>Low - the empty quoted confirmation segment is expected to be reachable.</strong> A
+ *       secondary description says a value beginning with a space yields {@code "" is not a valid value to
+ *       confirm...}. It cannot: {@code CONFIRMI} is {@code PIC X(1)}, so a value whose first character is a
+ *       space <em>is</em> all spaces in that field and the blank guard at {@code :464} fires first. Remedy:
+ *       expect the blank re-prompt.</li>
+ *   <li><strong>Not available</strong> - the semantic meaning of message number {@code 2513} in the language
+ *       environment's date service. The source tolerates it at {@code :399} and {@code :419} without
+ *       explaining it, and {@code app/cbl/CSUTLDTC.cbl} passes the code through without interpreting it.
+ *       What would be needed: the vendor's feedback-code catalogue. The sibling
+ *       {@code com.cardemo.unit.validation} package owns that data contract; this class treats the number
+ *       as an opaque token, which is exactly how the caller treats it.</li>
+ * </ul>
+ *
+ * @see ReportSubmissionService
+ * @see ReportRequest
+ * @see DateValidationService
+ * @see FixedClockProvider
  */
 @DisplayName("ReportSubmissionService: app/cbl/CORPT00C.cbl - resolve a period and submit the job (CR00)")
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.STRICT_STUBS)
 class ReportSubmissionServiceTest {
 
-    // ----------------------------------------------------------------------------------------------------
-    // Screen and program identity, app/cbl/CORPT00C.cbl:56-57 and app/cpy/COTTL01Y.cpy:18-22.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
+    // Screen and program identity. app/cbl/CORPT00C.cbl:37-38 and app/cpy/COTTL01Y.cpy.
+    // -----------------------------------------------------------------------------------------------------
 
-    /** {@code WS-TRANID PIC X(04) VALUE 'CR00'}, bound to this program by the CSD. */
+    /** {@code WS-TRANID PIC X(04) VALUE 'CR00'}, app/cbl/CORPT00C.cbl:37, rendered at :619. */
     private static final String TRANSACTION_ID = "CR00";
 
-    /** {@code WS-PGMNAME PIC X(08) VALUE 'CORPT00C'}. */
+    /** {@code WS-PGMNAME PIC X(08) VALUE 'CORPT00C'}, app/cbl/CORPT00C.cbl:38, rendered at :620. */
     private static final String PROGRAM_NAME = "CORPT00C";
 
-    /** The {@code EIBCALEN = 0} destination at {@code :172-174}, and the blank default at {@code :542}. */
+    /** The default navigation target, named at app/cbl/CORPT00C.cbl:173 and again at :543. */
     private static final String SIGN_ON_PROGRAM = "COSGN00C";
 
-    /** The {@code WHEN DFHPF3} destination at {@code :187-189}. */
+    /** The PF3 navigation target, app/cbl/CORPT00C.cbl:188. */
     private static final String MAIN_MENU_PROGRAM = "COMEN01C";
 
-    /** {@code CCDA-TITLE01 PIC X(40)}, forty characters including its padding. */
+    /** {@code CCDA-TITLE01} from app/cpy/COTTL01Y.cpy, forty characters including its centring blanks. */
     private static final String SCREEN_TITLE_01 = "      AWS Mainframe Modernization       ";
 
-    /** {@code CCDA-TITLE02 PIC X(40)}, forty characters including its padding. */
+    /** {@code CCDA-TITLE02} from app/cpy/COTTL01Y.cpy, forty characters including its centring blanks. */
     private static final String SCREEN_TITLE_02 = "              CardDemo                  ";
 
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
     // Cursor fields: the symbolic-map length fields that received MOVE -1.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
 
-    /** {@code MONTHLYL}, the shared landing cursor for every non-field failure. */
+    /** app/cbl/CORPT00C.cbl:441, :533 and :181. */
     private static final String CURSOR_MONTHLY = "MONTHLYL";
 
-    /** {@code SDTMML}. */
+    /** app/cbl/CORPT00C.cbl:264, :334 and :403. */
     private static final String CURSOR_START_MONTH = "SDTMML";
 
-    /** {@code SDTDDL}. */
+    /** app/cbl/CORPT00C.cbl:271 and :343. */
     private static final String CURSOR_START_DAY = "SDTDDL";
 
-    /** {@code SDTYYYYL}. */
+    /** app/cbl/CORPT00C.cbl:278 and :351. */
     private static final String CURSOR_START_YEAR = "SDTYYYYL";
 
-    /** {@code EDTMML}. */
+    /** app/cbl/CORPT00C.cbl:285, :360 and :423. */
     private static final String CURSOR_END_MONTH = "EDTMML";
 
-    /** {@code EDTDDL}. */
+    /** app/cbl/CORPT00C.cbl:292 and :369. */
     private static final String CURSOR_END_DAY = "EDTDDL";
 
-    /** {@code EDTYYYYL}. */
+    /** app/cbl/CORPT00C.cbl:299 and :377. */
     private static final String CURSOR_END_YEAR = "EDTYYYYL";
 
-    /** {@code CONFIRML}. */
+    /** app/cbl/CORPT00C.cbl:472 and :492. */
     private static final String CURSOR_CONFIRM = "CONFIRML";
 
-    // ----------------------------------------------------------------------------------------------------
-    // Literals. Byte exact: every ellipsis exactly three periods, "can NOT" with capital N O T, and the
-    // submitted notice carrying a space before its ellipsis where the empties do not.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
+    // Message literals, byte exact. Every ellipsis is exactly three full stops; "can NOT" carries a capital
+    // N, O and T; and the submitted notice carries a space before its ellipsis where the empties do not.
+    // -----------------------------------------------------------------------------------------------------
 
-    /** {@code CCDA-MSG-INVALID-KEY} from {@code app/cpy/CSMSG01Y.cpy}, used at {@code :190-194}. */
+    /** {@code CCDA-MSG-INVALID-KEY} from app/cpy/CSMSG01Y.cpy, moved at app/cbl/CORPT00C.cbl:192. */
     private static final String MSG_INVALID_KEY = "Invalid key pressed. Please see below...";
 
-    /** {@code :260-261}. */
+    /** app/cbl/CORPT00C.cbl:261. */
     private static final String MSG_START_MONTH_EMPTY = "Start Date - Month can NOT be empty...";
 
-    /** {@code :267-268}. */
+    /** app/cbl/CORPT00C.cbl:268. */
     private static final String MSG_START_DAY_EMPTY = "Start Date - Day can NOT be empty...";
 
-    /** {@code :274-275}. */
+    /** app/cbl/CORPT00C.cbl:275. */
     private static final String MSG_START_YEAR_EMPTY = "Start Date - Year can NOT be empty...";
 
-    /** {@code :281-282}. */
+    /** app/cbl/CORPT00C.cbl:282. */
     private static final String MSG_END_MONTH_EMPTY = "End Date - Month can NOT be empty...";
 
-    /** {@code :288-289}. */
+    /** app/cbl/CORPT00C.cbl:289. */
     private static final String MSG_END_DAY_EMPTY = "End Date - Day can NOT be empty...";
 
-    /** {@code :295-296}. */
+    /** app/cbl/CORPT00C.cbl:296. */
     private static final String MSG_END_YEAR_EMPTY = "End Date - Year can NOT be empty...";
 
-    /** {@code :330-331}. */
+    /** app/cbl/CORPT00C.cbl:331. */
     private static final String MSG_START_MONTH_INVALID = "Start Date - Not a valid Month...";
 
-    /** {@code :339-340}. */
+    /** app/cbl/CORPT00C.cbl:340. */
     private static final String MSG_START_DAY_INVALID = "Start Date - Not a valid Day...";
 
-    /** {@code :348-349}. */
+    /** app/cbl/CORPT00C.cbl:348. */
     private static final String MSG_START_YEAR_INVALID = "Start Date - Not a valid Year...";
 
-    /** {@code :356-357}. */
+    /** app/cbl/CORPT00C.cbl:357. */
     private static final String MSG_END_MONTH_INVALID = "End Date - Not a valid Month...";
 
-    /** {@code :365-366}. */
+    /** app/cbl/CORPT00C.cbl:366. */
     private static final String MSG_END_DAY_INVALID = "End Date - Not a valid Day...";
 
-    /** {@code :374-375}. */
+    /** app/cbl/CORPT00C.cbl:374. */
     private static final String MSG_END_YEAR_INVALID = "End Date - Not a valid Year...";
 
-    /** {@code :400-401}, raised by the assembled-date validation rather than a component check. */
+    /** app/cbl/CORPT00C.cbl:400. */
     private static final String MSG_START_DATE_INVALID = "Start Date - Not a valid date...";
 
-    /** {@code :420-421}. */
+    /** app/cbl/CORPT00C.cbl:420. */
     private static final String MSG_END_DATE_INVALID = "End Date - Not a valid date...";
 
-    /** {@code :437-442}, the {@code WHEN OTHER} arm with no selector supplied. */
+    /** app/cbl/CORPT00C.cbl:438. */
     private static final String MSG_SELECT_REPORT_TYPE = "Select a report type to print report...";
 
-    /** {@code :465-470}, assembled around the report name. */
+    /** app/cbl/CORPT00C.cbl:466, the {@code DELIMITED BY SIZE} head of the re-prompt. */
     private static final String MSG_CONFIRM_PREFIX = "Please confirm to print the ";
 
-    /** {@code :465-470}. */
+    /** app/cbl/CORPT00C.cbl:469, the {@code DELIMITED BY SIZE} tail of the re-prompt. */
     private static final String MSG_CONFIRM_SUFFIX = " report...";
 
-    /**
-     * {@code :485-490}, which quotes the offending value back. Note that this constant <em>opens</em> with
-     * the closing double quote of the quoted value, exactly as the source's third {@code STRING} fragment
-     * does, so a caller appends it directly after the value and adds no quote of its own.
-     */
+    /** app/cbl/CORPT00C.cbl:486, the opening double quote of the rejection. */
+    private static final String MSG_INVALID_CONFIRM_PREFIX = "\"";
+
+    /** app/cbl/CORPT00C.cbl:488, the tail of the rejection. */
     private static final String MSG_INVALID_CONFIRM_SUFFIX = "\" is not a valid value to confirm...";
 
-    /** {@code :449-452}, assembled around the report name with {@code DELIMITED BY SPACE}. */
+    /** app/cbl/CORPT00C.cbl:450-451, the tail of the success notice. */
     private static final String MSG_SUBMITTED_SUFFIX = " report submitted for printing ...";
 
-    /** {@code :531-532}. */
+    /** app/cbl/CORPT00C.cbl:531. */
     private static final String MSG_UNABLE_TO_WRITE_TDQ = "Unable to Write TDQ (JOBS)...";
 
-    // ----------------------------------------------------------------------------------------------------
-    // The three report names, app/cbl/CORPT00C.cbl:214, :240 and :433. Unpadded, because DELIMITED BY SPACE
-    // stops at the first blank of the PIC X(10) field.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
+    // The three report names, app/cbl/CORPT00C.cbl:214, :240 and :433. Unpadded, because every use composes
+    // through DELIMITED BY SPACE, which stops at the first blank of the PIC X(10) field.
+    // -----------------------------------------------------------------------------------------------------
 
-    /** {@code MOVE 'Monthly' TO WS-REPORT-NAME} at {@code :214}. */
+    /** app/cbl/CORPT00C.cbl:214. */
     private static final String REPORT_NAME_MONTHLY = "Monthly";
 
-    /** {@code MOVE 'Yearly' TO WS-REPORT-NAME} at {@code :240}. */
+    /** app/cbl/CORPT00C.cbl:240. */
     private static final String REPORT_NAME_YEARLY = "Yearly";
 
-    /** {@code MOVE 'Custom' TO WS-REPORT-NAME} at {@code :433}. */
+    /** app/cbl/CORPT00C.cbl:433, assigned only after both dates have been validated. */
     private static final String REPORT_NAME_CUSTOM = "Custom";
 
-    // ----------------------------------------------------------------------------------------------------
-    // Time. The instant every seed fixture carries.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
+    // Validator outcome tokens, app/cbl/CORPT00C.cbl:396 and :399. Opaque to this class by design.
+    // -----------------------------------------------------------------------------------------------------
 
-    /** The reference instant: the tenth of June 2022, mid-month, so the month end is distinguishable. */
-    private static final Instant FIXED_INSTANT = Instant.parse("2022-06-10T19:27:53Z");
+    /** The severity that accepts a date outright, app/cbl/CORPT00C.cbl:396. */
+    private static final String SEVERITY_ACCEPTED = "0000";
 
-    /** {@code MM/DD/YY} as {@code :622-626} assembles it. */
+    /** A non-zero severity, used to drive the two branches that only a non-zero severity reaches. */
+    private static final String SEVERITY_NON_ZERO = "0003";
+
+    /** The message number a non-zero severity is forgiven for, app/cbl/CORPT00C.cbl:399 and :419. */
+    private static final String MESSAGE_NUMBER_TOLERATED = "2513";
+
+    /** A message number carrying no exemption. */
+    private static final String MESSAGE_NUMBER_REJECTED = "0304";
+
+    /** The eleven-character literal filler between the severity and the message number, :134. */
+    private static final String MESG_CODE_FILLER = "Mesg Code: ";
+
+    /** {@code CSUTLDTC-RESULT-SEV-CD PIC X(04)}, app/cbl/CORPT00C.cbl:133. */
+    private static final int SEVERITY_CODE_LENGTH = 4;
+
+    /** {@code CSUTLDTC-RESULT-MSG-NUM PIC X(04)}, app/cbl/CORPT00C.cbl:135. */
+    private static final int MESSAGE_NUMBER_LENGTH = 4;
+
+    // -----------------------------------------------------------------------------------------------------
+    // Deck and field geometry, app/cbl/CORPT00C.cbl:79-127 and app/cpy-bms/CORPT00.CPY.
+    // -----------------------------------------------------------------------------------------------------
+
+    /** The cards the deck declares at app/cbl/CORPT00C.cbl:83-125. Seventeen, not eighteen. */
+    private static final int JOB_CARD_COUNT = 17;
+
+    /** {@code JCL-RECORD PIC X(80)} at :79, matching {@code RECORDSIZE(80)} in app/csd/CARDDEMO.CSD. */
+    private static final int JOB_CARD_LENGTH = 80;
+
+    /** The loop bound at :498, matching {@code OCCURS 1000 TIMES} at :127. */
+    private static final int JOB_LINE_LIMIT = 1000;
+
+    /** The terminating card, app/cbl/CORPT00C.cbl:125. */
+    private static final String JOB_TERMINATOR_CARD = "/*EOF";
+
+    /** {@code ERRMSGI PIC X(78)} of app/cpy-bms/CORPT00.CPY, the narrower screen carrier. */
+    private static final int SCREEN_MESSAGE_WIDTH = 78;
+
+    /** {@code WS-MESSAGE PIC X(80)}, the wider working-storage carrier. */
+    private static final int WORKING_MESSAGE_WIDTH = 80;
+
+    /** The components app/cpy-bms/CORPT00.CPY declares as input, and the DTO therefore carries. */
+    private static final int MAP_INPUT_FIELD_COUNT = 17;
+
+    /** The ten input components {@code INITIALIZE-ALL-FIELDS} blanks at :637-645. */
+    private static final int CLEARED_FIELD_COUNT = 10;
+
+    // -----------------------------------------------------------------------------------------------------
+    // Time. Every instant is explicit; none is read from the host.
+    // -----------------------------------------------------------------------------------------------------
+
+    /** Mid-June 2022, a thirty-day month. The instant every seed fixture in this repository carries. */
+    private static final Instant MID_THIRTY_DAY_MONTH = FixedClockProvider.CANONICAL_INSTANT;
+
+    /** The header date the canonical instant renders to, app/cbl/CORPT00C.cbl:622-626. */
     private static final String EXPECTED_HEADER_DATE = "06/10/22";
 
-    /** {@code HH:MM:SS} as {@code :627-628} assembles it. */
+    /** The header time the canonical instant renders to, app/cbl/CORPT00C.cbl:627-628. */
     private static final String EXPECTED_HEADER_TIME = "19:27:53";
 
-    // ----------------------------------------------------------------------------------------------------
-    // Injected configuration. Transparently synthetic: no endpoint, credential or account identifier.
-    // ----------------------------------------------------------------------------------------------------
+    // -----------------------------------------------------------------------------------------------------
+    // Injected configuration. Transparently synthetic: no endpoint, host, port, URL, ARN, account identifier
+    // or credential, and nothing here can reach a real service.
+    // -----------------------------------------------------------------------------------------------------
 
-    /** The physical queue name, {@code carddemo.aws.sqs.report-queue}. */
+    /** A synthetic physical queue name. The deployed value lives in configuration, never in a test. */
     private static final String QUEUE_NAME = "unit-test-report-jobs.fifo";
 
-    /** The logical name, standing in for {@code DEFINE TDQUEUE(JOBS)} in diagnostics. */
+    /** The logical name diagnostics use, which is what {@code QUEUE ('JOBS')} at :518 called it. */
     private static final String QUEUE_LOGICAL_NAME = "JOBS";
 
-    /** The FIFO message group, {@code carddemo.aws.sqs.report-message-group-id}. */
+    /** A synthetic FIFO message group. Its value rules are owned by the sibling message-group suite. */
     private static final String MESSAGE_GROUP_ID = "unit-test-report-group";
 
-    /**
-     * The notification topic, {@code carddemo.aws.sns.notification-topic}.
-     *
-     * <p>The operator notification is the counterpart of the {@code NOTIFY} continuation on the job card
-     * that {@code app/cbl/CORPT00C.cbl} carries among its eighty-byte card images, so the topic is addressed
-     * by name and never carries a report parameter.
-     */
+    /** A synthetic notification destination, standing in for the operator notify card at :85-86. */
     private static final String TOPIC = "unit-test-carddemo-notifications";
 
-    /**
-     * The expanded status a failure carries when the throwing site had no file status at all. This program
-     * declares no {@code FILE-CONTROL}, no {@code SELECT} and no {@code FD}, so there is none to render, and
-     * this is the faithful rendering of an uninitialised two-byte status field.
-     */
-    private static final String NO_FILE_STATUS = " 032";
+    // -----------------------------------------------------------------------------------------------------
+    // Collaborators. Instance state only - no static mutable field exists in this class, so no test can
+    // observe another's leftovers (Rule 1 Clause B, "avoid global mutable state").
+    // -----------------------------------------------------------------------------------------------------
 
-    // ----------------------------------------------------------------------------------------------------
-    // Collaborators.
-    // ----------------------------------------------------------------------------------------------------
-
+    /** The queue-publishing collaborator, mocked: nothing here may reach a real client. */
     @Mock
     private SqsTemplate sqsTemplate;
 
-    /** Real, not stubbed: its outcomes are the behaviour under test. */
+    /** The notification collaborator, mocked: the notify card is a courtesy with no error path. */
+    @Mock
+    private SnsTemplate snsTemplate;
+
+    /** The date validator, mocked under strict stubs so its outcomes are driven, not reproduced. */
+    @Mock
     private DateValidationService dateValidationService;
 
-    /** Captures exactly what the production lambda sets on the send options, and what it does not. */
+    /** What the production lambda set on the fluent send options. */
     private RecordingSendOptions sendOptions;
 
+    /** The subject, rebuilt for every test on a clock fixed at {@link #MID_THIRTY_DAY_MONTH}. */
     private ReportSubmissionService service;
 
-    /** Assembles the bean over the publisher double, a real date validator and the fixed clock. */
     @BeforeEach
     void setUp() {
-        final Clock clock = Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
-        this.dateValidationService = new DateValidationService(clock);
         this.sendOptions = new RecordingSendOptions();
-        this.service = new ReportSubmissionService(this.sqsTemplate, mock(SnsTemplate.class),
-                this.dateValidationService, clock,
-                noTracer(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC);
+        this.service = serviceWithClock(FixedClockProvider.fixedClock(MID_THIRTY_DAY_MONTH));
     }
 
     // -----------------------------------------------------------------------------------------------------
-    // Fixtures and helpers. Every helper is used; an unused one would be dead code under Rule 1 Clause B.
+    // Fixtures and helpers. Every one is used; an unused helper would be dead code under Rule 1 Clause B.
     // -----------------------------------------------------------------------------------------------------
 
     /**
-     * Builds the service over an alternative clock, for the period and header tests that need one.
+     * Builds the subject over an explicit clock, which is the only way a period assertion can be
+     * deterministic. app/cbl/CORPT00C.cbl:215 and :241 each read {@code FUNCTION CURRENT-DATE}.
      *
-     * @param clock the time source; must not be {@code null}
-     * @return a service reading that clock
+     * @param clock the time source to inject; must not be {@code null}
+     * @return a fresh subject
      */
     private ReportSubmissionService serviceWithClock(final Clock clock) {
-        return new ReportSubmissionService(this.sqsTemplate, mock(SnsTemplate.class),
-                new DateValidationService(clock), clock,
-                noTracer(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC);
+        return new ReportSubmissionService(this.sqsTemplate, this.snsTemplate, this.dateValidationService,
+                clock, new NoTracerProvider(), QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC);
     }
 
     /**
-     * A provider that resolves to no tracer, which is the shape the service must tolerate: tracing is an
-     * optional collaborator, and a publish still has to happen when none is registered.
+     * Builds the subject over a clock fixed at the supplied calendar day, at noon so that no zone rule can
+     * shift the day the period is derived from.
      *
-     * @return a provider yielding {@code null}
+     * @param isoDate the day the clock reports, as {@code yyyy-MM-dd}
+     * @return a fresh subject
      */
-    @SuppressWarnings("unchecked")
-    private static ObjectProvider<Tracer> noTracer() {
-        final ObjectProvider<Tracer> provider = mock(ObjectProvider.class);
-        // lenient() rather than when(): this class runs under STRICT_STUBS, and tracing is an OPTIONAL
-        // collaborator that only the publish path resolves (ReportSubmissionService:2396). Most tests here
-        // construct the service to exercise validation, period derivation or message-group rules and never
-        // reach that line, so an eager stub would be reported as unnecessary and fail the test that set it.
-        // Leniency is scoped to this one stub, so every other stub in the class stays strictly checked; the
-        // service's actual use of the provider is asserted by ReportSubmissionServiceIntegrationSeamTest,
-        // which supplies a real tracer instead of withholding one.
-        lenient().when(provider.getIfAvailable()).thenReturn(null);
-        return provider;
+    private ReportSubmissionService serviceOn(final String isoDate) {
+        return serviceWithClock(FixedClockProvider.fixedClock(Instant.parse(isoDate + "T12:00:00Z")));
     }
 
-
     /**
-     * Builds a seventeen-component map area. The six header components carry values that differ from what
-     * the service computes, so any assertion on a returned header proves they were overwritten rather than
-     * echoed.
+     * Builds a map area from its seventeen components, in the declaration order of
+     * app/cpy-bms/CORPT00.CPY:24-120. The six header components carry deliberately wrong submitted values so
+     * that {@code POPULATE-HEADER-INFO} overwriting them at :616-628 is observable.
      *
-     * @param monthly      the monthly selector; may be {@code null}
-     * @param yearly       the yearly selector; may be {@code null}
-     * @param custom       the custom selector; may be {@code null}
-     * @param startMonth   the start month component; may be {@code null}
-     * @param startDay     the start day component; may be {@code null}
-     * @param startYear    the start year component; may be {@code null}
-     * @param endMonth     the end month component; may be {@code null}
-     * @param endDay       the end day component; may be {@code null}
-     * @param endYear      the end year component; may be {@code null}
-     * @param confirmation the confirmation gate; may be {@code null}
-     * @return the map area
+     * @param monthly      {@code MONTHLYI}
+     * @param yearly       {@code YEARLYI}
+     * @param custom       {@code CUSTOMI}
+     * @param startMonth   {@code SDTMMI}
+     * @param startDay     {@code SDTDDI}
+     * @param startYear    {@code SDTYYYYI}
+     * @param endMonth     {@code EDTMMI}
+     * @param endDay       {@code EDTDDI}
+     * @param endYear      {@code EDTYYYYI}
+     * @param confirmation {@code CONFIRMI}
+     * @return the assembled map area
      */
     private static ReportRequest mapArea(final String monthly, final String yearly, final String custom,
             final String startMonth, final String startDay, final String startYear,
@@ -476,35 +559,35 @@ class ReportSubmissionServiceTest {
     }
 
     /**
-     * A monthly request with the given confirmation gate.
+     * A monthly selection, app/cbl/CORPT00C.cbl:213.
      *
-     * @param confirmation the gate; may be {@code null}
-     * @return the map area
+     * @param confirmation the confirmation gate
+     * @return the assembled map area
      */
     private static ReportRequest monthlyRequest(final String confirmation) {
         return mapArea("Y", null, null, null, null, null, null, null, null, confirmation);
     }
 
     /**
-     * A yearly request with the given confirmation gate.
+     * A yearly selection, app/cbl/CORPT00C.cbl:239.
      *
-     * @param confirmation the gate; may be {@code null}
-     * @return the map area
+     * @param confirmation the confirmation gate
+     * @return the assembled map area
      */
     private static ReportRequest yearlyRequest(final String confirmation) {
         return mapArea(null, "Y", null, null, null, null, null, null, null, confirmation);
     }
 
     /**
-     * A custom request over the six date components, confirmed.
+     * A custom selection with an affirmative confirmation, app/cbl/CORPT00C.cbl:256.
      *
-     * @param startMonth the start month component; may be {@code null}
-     * @param startDay   the start day component; may be {@code null}
-     * @param startYear  the start year component; may be {@code null}
-     * @param endMonth   the end month component; may be {@code null}
-     * @param endDay     the end day component; may be {@code null}
-     * @param endYear    the end year component; may be {@code null}
-     * @return the map area
+     * @param startMonth {@code SDTMMI}
+     * @param startDay   {@code SDTDDI}
+     * @param startYear  {@code SDTYYYYI}
+     * @param endMonth   {@code EDTMMI}
+     * @param endDay     {@code EDTDDI}
+     * @param endYear    {@code EDTYYYYI}
+     * @return the assembled map area
      */
     private static ReportRequest customRequest(final String startMonth, final String startDay,
             final String startYear, final String endMonth, final String endDay, final String endYear) {
@@ -512,28 +595,25 @@ class ReportSubmissionServiceTest {
     }
 
     /**
-     * A custom request over a range the real validator accepts outright, with the given gate.
+     * A custom selection over a range that resolves, carrying the supplied confirmation gate.
      *
-     * @param confirmation the gate; may be {@code null}
-     * @return the map area
+     * @param confirmation the confirmation gate
+     * @return the assembled map area
      */
     private static ReportRequest customRequestConfirmedWith(final String confirmation) {
         return mapArea(null, null, "Y", "06", "01", "2022", "06", "30", "2022", confirmation);
     }
 
     /**
-     * Arranges the publisher to invoke the production lambda against the recorder and report success.
-     *
-     * <p>Installed only in the tests that reach the queue, because an unused stub fails under strict stubs -
-     * which makes the absence of this call in a test an assertion in its own right.
+     * Arranges the publish stub. Called only by tests that reach the queue, because an unused stub fails
+     * under {@link Strictness#STRICT_STUBS}.
      */
     private void arrangePublish() {
         doAnswer(invocation -> {
             final Consumer<SqsSendOptions<JobSubmissionMessage>> configurer = invocation.getArgument(0);
             configurer.accept(this.sendOptions);
-            // sendAsync, not send: the service publishes asynchronously and then waits on the returned future
-            // for a bounded deadline (ReportSubmissionService:2340-2346), so a stub of the synchronous form is
-            // never invoked and the unstubbed asynchronous one answers null, which the wait dereferences.
+            // sendAsync, not send: the production code publishes asynchronously and then waits on the
+            // returned future for a bounded deadline, so a stub of the synchronous form is never invoked.
             return CompletableFuture.completedFuture(new SendResult<>(
                     UUID.nameUUIDFromBytes("unit-test".getBytes(StandardCharsets.UTF_8)),
                     QUEUE_NAME, new GenericMessage<>(this.sendOptions.payload()), Map.of()));
@@ -541,11 +621,60 @@ class ReportSubmissionServiceTest {
     }
 
     /**
-     * Reads a private static constant off the service, so a declared value is asserted against the
-     * production declaration rather than a copy of it.
+     * Arranges the date validator to accept whatever date it is handed, through the severity arm at
+     * app/cbl/CORPT00C.cbl:396.
+     */
+    private void arrangeDateValidatorAccepts() {
+        when(this.dateValidationService.validate(anyString(), any()))
+                .thenReturn(validatorResult(SEVERITY_ACCEPTED, SEVERITY_ACCEPTED, "no error"));
+    }
+
+    /**
+     * Builds a validator outcome from a severity code and a message number, laid out exactly as
+     * {@code CSUTLDTC-RESULT} is at app/cbl/CORPT00C.cbl:132-136: four characters of severity, eleven of
+     * literal filler, four of message number and sixty-one of message text - eighty in all.
      *
-     * @param name the field name; must not be {@code null}
-     * @return the declared value
+     * <p>The taxonomy behind these values is not this class's subject. The caller consults the severity code
+     * and the message number and nothing else, so driving those two is what proves the caller's behaviour.
+     *
+     * @param severityCode  the four characters at offset 0
+     * @param messageNumber the four characters at offset 15
+     * @param messageText   the text the caller must ignore
+     * @return an eighty-character outcome
+     */
+    private static DateValidationService.DateValidationResult validatorResult(
+            final String severityCode, final String messageNumber, final String messageText) {
+        final String area = fixedWidth(severityCode, SEVERITY_CODE_LENGTH)
+                + MESG_CODE_FILLER
+                + fixedWidth(messageNumber, MESSAGE_NUMBER_LENGTH)
+                + fixedWidth(messageText, DateValidationService.MESSAGE_TEXT_LENGTH);
+        return new DateValidationService.DateValidationResult(
+                new DateValidationService.FeedbackCode(
+                        Integer.parseInt(severityCode), Integer.parseInt(messageNumber)),
+                area);
+    }
+
+    /**
+     * Pads or truncates to an exact width, which is what a COBOL {@code MOVE} into a {@code PIC X(n)} item
+     * does.
+     *
+     * @param value the value to fit
+     * @param width the receiving width
+     * @return a string of exactly {@code width} characters
+     */
+    private static String fixedWidth(final String value, final int width) {
+        if (value.length() >= width) {
+            return value.substring(0, width);
+        }
+        return value + " ".repeat(width - value.length());
+    }
+
+    /**
+     * Reads a declared constant of the subject, so that a geometry the target no longer executes is still
+     * pinned by a test rather than only by a comment.
+     *
+     * @param name the field name
+     * @return the field's value
      * @throws ReflectiveOperationException if the field is absent, which is itself the finding
      */
     private static Object declaredConstant(final String name) throws ReflectiveOperationException {
@@ -554,1673 +683,163 @@ class ReportSubmissionServiceTest {
         return field.get(null);
     }
 
+    /**
+     * The names of the subject's declared methods, used to prove the paragraph map.
+     *
+     * @return every declared method name
+     */
+    private static List<String> declaredMethodNames() {
+        return Arrays.stream(ReportSubmissionService.class.getDeclaredMethods())
+                .map(Method::getName)
+                .toList();
+    }
+
     // =====================================================================================================
-    // 1. Construction
+    // 1. Construction and state. Rule 1 Clause B: explicit null handling, and no global mutable state.
     // =====================================================================================================
 
-    /**
-     * Constructor injection only, with every collaborator and configuration value refused when absent.
-     *
-     * <p>Nine arguments, and each arm below withholds exactly one of them while supplying the other eight,
-     * so the message it asserts can only have come from the argument under test. The publish path and the
-     * notification path each contribute a template, and the notification topic is required for the same
-     * reason the queue name is: a set-but-absent destination is a runtime failure on the first submission
-     * rather than at startup, which is the outcome fail-fast construction exists to prevent.
-     */
     @Nested
-    @DisplayName("1. Construction - nine dependencies, each refused when absent")
+    @DisplayName("1. Construction - every collaborator refused when absent, and no mutable state anywhere")
     class Construction {
 
-        /** The clock every arm supplies, so that only the withheld argument can be the cause. */
-        private Clock fixedClock() {
-            return Clock.fixed(FIXED_INSTANT, ZoneOffset.UTC);
-        }
-
         @Test
-        @DisplayName("the publisher is required")
+        @DisplayName("the publisher is required, it being the only route off the online tier")
         void thePublisherIsRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(null, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("sqsTemplate must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(null, snsTemplate, dateValidationService,
+                            FixedClockProvider.canonicalClock(), new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("sqsTemplate");
         }
 
         @Test
-        @DisplayName("the notification template is required, because the operator notify is not optional")
+        @DisplayName("the notification template is required, the notify card not being optional wiring")
         void theNotificationTemplateIsRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, null,
-                            dateValidationService, fixedClock(), noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("snsTemplate must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, null, dateValidationService,
+                            FixedClockProvider.canonicalClock(), new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("snsTemplate");
         }
 
         @Test
-        @DisplayName("the date validator is required, because the custom period cannot resolve without it")
+        @DisplayName("the date validator is required, the custom period being unresolvable without it")
         void theDateValidatorIsRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class), null,
-                            fixedClock(), noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("dateValidationService must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate, null,
+                            FixedClockProvider.canonicalClock(), new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("dateValidationService");
         }
 
         @Test
-        @DisplayName("the time source is required, so no path can reach a wall clock")
+        @DisplayName("the time source is required, so no path can fall back to a wall clock")
         void theTimeSourceIsRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, null, noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("clock must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, null, new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("clock");
         }
 
         @Test
         @DisplayName("the tracer provider is required, although the tracer it yields is not")
         void theTracerProviderIsRequired() {
-            // An absent provider and a provider that yields no tracer are different facts. The service
-            // tolerates the second - noTracer() is what every other arm supplies - and refuses the first,
-            // because a null provider would fail on the first span rather than at startup.
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), null, QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("tracerProvider must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(), null,
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("tracerProvider");
         }
 
         @Test
-        @DisplayName("the queue name is required")
-        void theQueueNameIsRequired() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), noTracer(), null,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("reportQueueName must not be null");
-        }
-
-        @Test
-        @DisplayName("the logical queue name is required, being what diagnostics name")
-        void theLogicalQueueNameIsRequired() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), noTracer(), QUEUE_NAME, null,
-                            MESSAGE_GROUP_ID, TOPIC))
-                    .withMessage("reportQueueLogicalName must not be null");
-        }
-
-        @Test
-        @DisplayName("the FIFO message group is required")
-        void theMessageGroupIsRequired() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, null, TOPIC))
-                    .withMessage("reportMessageGroupId must not be null");
-        }
-
-        @Test
-        @DisplayName("the notification topic is required, being what the notify is addressed to")
-        void theNotificationTopicIsRequired() {
-            // The template carries no default destination, so the topic name is the whole address. A null
-            // one would publish nowhere and be discovered on the first accepted submission.
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, mock(SnsTemplate.class),
-                            dateValidationService, fixedClock(), noTracer(), QUEUE_NAME,
-                            QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, null))
-                    .withMessage("notificationTopic must not be null");
-        }
-
-        @Test
-        @DisplayName("every instance field is private and final, so the bean holds no state across turns")
-        void everyInstanceFieldIsPrivateAndFinal() {
-            final List<Field> mutable = Arrays.stream(ReportSubmissionService.class.getDeclaredFields())
-                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
-                    .filter(field -> !Modifier.isFinal(field.getModifiers())
-                            || !Modifier.isPrivate(field.getModifiers()))
-                    .toList();
-            assertThat(mutable)
-                    .as("the pseudo-conversational WS-ERR-FLG and WS-MESSAGE became method-local values, so "
-                            + "no turn can leave residue for the next")
-                    .isEmpty();
-        }
-    }
-
-    // =====================================================================================================
-    // 2. Paragraph correspondence
-    // =====================================================================================================
-
-    /**
-     * Ten paragraph labels, ten private methods. {@code app/cbl/CORPT00C.cbl} declares
-     * {@code MAIN-PARA} at :163, {@code PROCESS-ENTER-KEY} at :208, {@code SUBMIT-JOB-TO-INTRDR} at :462,
-     * {@code WIRTE-JOBSUB-TDQ} at :515 - the source's own misspelling, preserved - {@code RETURN-TO-PREV-SCREEN}
-     * at :540, {@code SEND-TRNRPT-SCREEN} at :556, {@code RETURN-TO-CICS} at :585,
-     * {@code RECEIVE-TRNRPT-SCREEN} at :596, {@code POPULATE-HEADER-INFO} at :609 and
-     * {@code INITIALIZE-ALL-FIELDS} at :633. Ten and not eleven: {@code app/cpy/CSSTRPFY.cpy} is not among
-     * this program's {@code COPY} members, so the key cascade is inline in {@code MAIN-PARA}.
-     */
-    @Nested
-    @DisplayName("2. Paragraph correspondence - ten labels, ten private methods, three public entry points")
-    class ParagraphCorrespondence {
-
-        @Test
-        @DisplayName("all ten paragraphs have a private counterpart")
-        void allTenParagraphsHaveAPrivateCounterpart() {
-            final List<String> expected = List.of("mainPara", "processEnterKey", "submitJobToIntrdr",
-                    "wirteJobsubTdq", "returnToPrevScreen", "sendTrnrptScreen", "returnToCics",
-                    "receiveTrnrptScreen", "populateHeaderInfo", "initializeAllFields");
-            final List<String> declared = Arrays.stream(ReportSubmissionService.class.getDeclaredMethods())
-                    .filter(method -> Modifier.isPrivate(method.getModifiers()))
-                    .map(Method::getName)
-                    .distinct()
-                    .toList();
-            assertThat(declared).containsAll(expected);
-        }
-
-        @Test
-        @DisplayName("the source's own misspelling of WIRTE-JOBSUB-TDQ is preserved, not corrected")
-        void theSourceMisspellingIsPreserved() {
-            assertThat(Arrays.stream(ReportSubmissionService.class.getDeclaredMethods())
-                    .map(Method::getName)
-                    .toList())
-                    .as("app/cbl/CORPT00C.cbl:515 spells it WIRTE; renaming it would break the paragraph map "
-                            + "the scope-coverage gate reads")
-                    .contains("wirteJobsubTdq")
-                    .doesNotContain("writeJobsubTdq");
-        }
-
-        @Test
-        @DisplayName("exactly three public operations exist, one per entry mode")
-        void exactlyThreePublicOperationsExist() {
-            final List<String> publicMethods = Arrays.stream(ReportSubmissionService.class
-                            .getDeclaredMethods())
-                    .filter(method -> Modifier.isPublic(method.getModifiers()))
-                    .map(Method::getName)
-                    .distinct()
-                    .sorted()
-                    .toList();
-            assertThat(publicMethods)
-                    .containsExactly("openReportScreen", "openWithoutContext", "submitScreen");
-        }
-
-        @Test
-        @DisplayName("the attention identifier has exactly three constants, matching EVALUATE EIBAID")
-        void theAttentionIdentifierHasExactlyThreeConstants() {
-            assertThat(AttentionIdentifier.values())
-                    .as("app/cbl/CORPT00C.cbl:184-195 has three arms and no more")
-                    .containsExactly(AttentionIdentifier.ENTER, AttentionIdentifier.PF3,
-                            AttentionIdentifier.OTHER);
-        }
-    }
-
-    // =====================================================================================================
-    // 3. Entry modes and the attention identifier - app/cbl/CORPT00C.cbl:165-195
-    // =====================================================================================================
-
-    /**
-     * The three entry modes of {@code MAIN-PARA} and the three arms of {@code EVALUATE EIBAID}. Nothing in
-     * this group reaches the queue, which is why no publish stub is arranged: an unused stub would fail the
-     * test, so its absence is itself the assertion.
-     */
-    @Nested
-    @DisplayName("3. Entry modes and EIBAID :165-195 - first entry, no commarea, and the three key arms")
-    class EntryModeAndAttentionIdentifier {
-
-        @Test
-        @DisplayName("first entry paints an empty form with the cursor on the monthly selector")
-        void firstEntryPaintsAnEmptyForm() {
-            final ReportSubmissionScreen screen = service.openReportScreen();
-
-            assertThat(screen.form().monthlySelected())
-                    .as(":179 MOVE LOW-VALUES TO CORPT0AO - the whole map area is cleared")
-                    .isNull();
-            assertThat(screen.form().yearlySelected()).isNull();
-            assertThat(screen.form().customSelected()).isNull();
-            assertThat(screen.form().confirmation()).isNull();
-            assertThat(screen.cursorField())
-                    .as(":180 MOVE -1 TO MONTHLYL")
-                    .isEqualTo(CURSOR_MONTHLY);
-            assertThat(screen.errorFlagOn()).isFalse();
-            assertThat(screen.successHighlight()).isFalse();
-            assertThat(screen.navigationTarget())
-                    .as("the form is painted, not left")
-                    .isNull();
-            assertThat(screen.form().errorMessage())
-                    .as(":169-170 MOVE SPACES TO WS-MESSAGE and to ERRMSGO")
-                    .isEmpty();
-        }
-
-        @Test
-        @DisplayName("first entry populates the six header fields, because SEND-TRNRPT-SCREEN performs :558")
-        void firstEntryPopulatesTheHeader() {
-            final ReportSubmissionScreen screen = service.openReportScreen();
-
-            assertThat(screen.form().transactionName()).isEqualTo(TRANSACTION_ID);
-            assertThat(screen.form().programName()).isEqualTo(PROGRAM_NAME);
-            assertThat(screen.form().title01()).isEqualTo(SCREEN_TITLE_01);
-            assertThat(screen.form().title02()).isEqualTo(SCREEN_TITLE_02);
-            assertThat(screen.form().currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
-            assertThat(screen.form().currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
-        }
-
-        @Test
-        @DisplayName("an absent communication area leaves for the sign-on program without painting anything")
-        void anAbsentCommunicationAreaLeavesForSignOn() {
-            final ReportSubmissionScreen screen = service.openWithoutContext();
-
-            assertThat(screen.navigationTarget())
-                    .as(":172-174 MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM, PERFORM RETURN-TO-PREV-SCREEN")
-                    .isEqualTo(SIGN_ON_PROGRAM);
-            assertThat(screen.form().transactionName())
-                    .as("RETURN-TO-PREV-SCREEN does not perform POPULATE-HEADER-INFO, so nothing is painted")
-                    .isNull();
-            assertThat(screen.cursorField()).isNull();
-            assertThat(screen.errorFlagOn()).isFalse();
-            assertThat(screen.successHighlight()).isFalse();
-        }
-
-        @Test
-        @DisplayName("PF3 leaves for the main menu, carrying the submitted map area unchanged")
-        void pf3LeavesForTheMainMenu() {
-            final ReportRequest submitted = monthlyRequest("Y");
-
-            final ReportSubmissionScreen screen = service.submitScreen(AttentionIdentifier.PF3, submitted);
-
-            assertThat(screen.navigationTarget())
-                    .as(":187-189 MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM")
-                    .isEqualTo(MAIN_MENU_PROGRAM);
-            assertThat(screen.form())
-                    .as("RECEIVE-TRNRPT-SCREEN :598-603 reads the map and examines nothing")
-                    .isEqualTo(submitted);
-            assertThat(screen.cursorField()).isNull();
-        }
-
-        @Test
-        @DisplayName("PF3 never reaches the queue, so leaving cannot submit a job")
-        void pf3NeverReachesTheQueue() {
-            service.submitScreen(AttentionIdentifier.PF3, monthlyRequest("Y"));
-
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @Test
-        @DisplayName("any other key produces the shared invalid-key message on the monthly selector")
-        void anyOtherKeyProducesTheSharedInvalidKeyMessage() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.OTHER, monthlyRequest("Y")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_INVALID_KEY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_MONTHLY);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.INVALID);
-                    });
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @Test
-        @DisplayName("the attention identifier is required")
-        void theAttentionIdentifierIsRequired() {
-            final ReportRequest request = monthlyRequest("Y");
-            assertThatNullPointerException()
-                    .isThrownBy(() -> service.submitScreen(null, request))
-                    .withMessage("attentionIdentifier must not be null");
-        }
-
-        @Test
-        @DisplayName("the map area is required on a re-enter turn")
-        void theMapAreaIsRequiredOnAReEnterTurn() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, null))
-                    .withMessage("request must not be null");
-        }
-    }
-
-    // =====================================================================================================
-    // 4. Report-type precedence - app/cbl/CORPT00C.cbl:212-442
-    // =====================================================================================================
-
-    /**
-     * {@code EVALUATE TRUE} with three selector arms and a {@code WHEN OTHER}. First match wins, so a form
-     * with several selectors set resolves the earliest, and the later ones are never evaluated.
-     */
-    @Nested
-    @DisplayName("4. Report-type precedence :212-442 - monthly, then yearly, then custom, then none")
-    class ReportTypePrecedence {
-
-        @Test
-        @DisplayName("monthly wins when every selector is supplied")
-        void monthlyWinsWhenEverySelectorIsSupplied() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea("Y", "Y", "Y", "99", "99", "9999", "99", "99", "9999", "Y"));
-
-            assertThat(sendOptions.payload().reportName())
-                    .as("the monthly arm at :213 is evaluated first, so the invalid custom components below "
-                            + "it are never reached")
-                    .isEqualTo(REPORT_NAME_MONTHLY);
-        }
-
-        @Test
-        @DisplayName("yearly wins over custom when monthly is absent")
-        void yearlyWinsOverCustom() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, "Y", "Y", "99", "99", "9999", "99", "99", "9999", "Y"));
-
-            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_YEARLY);
-        }
-
-        @Test
-        @DisplayName("custom is reached only when neither of the first two is supplied")
-        void customIsReachedLast() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
-
-            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_CUSTOM);
-        }
-
-        @Test
-        @DisplayName("no selector at all produces the select-a-report-type message")
-        void noSelectorProducesTheSelectMessage() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            mapArea(null, null, null, null, null, null, null, null, null, "Y")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_SELECT_REPORT_TYPE);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_MONTHLY);
-                    });
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @ParameterizedTest(name = "a selector of [{0}] counts as not supplied")
-        @DisplayName("a blank, empty or low-value selector is not a selection")
-        @ValueSource(strings = {"", " ", "  ", "\u0000", "\u0000\u0000"})
-        void aBlankOrLowValueSelectorIsNotASelection(final String selector) {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            mapArea(selector, null, null, null, null, null, null, null, null, "Y")))
-                    .withMessage(MSG_SELECT_REPORT_TYPE);
-        }
-
-        @ParameterizedTest(name = "a selector of [{0}] counts as supplied")
-        @DisplayName("any non-blank selector is a selection - the source tests presence, never a value")
-        @ValueSource(strings = {"Y", "y", "X", "1", "-"})
-        void anyNonBlankSelectorIsASelection(final String selector) {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(selector, null, null, null, null, null, null, null, null, "Y"));
-
-            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_MONTHLY);
-        }
-    }
-
-    // =====================================================================================================
-    // 5. The monthly period - app/cbl/CORPT00C.cbl:213-236
-    // =====================================================================================================
-
-    /**
-     * <strong>A full calendar month, not month-to-date.</strong> {@code :223} sets the day to one,
-     * {@code :224-228} adds one to the month with the twelve-month roll, and {@code :229-230} subtracts one
-     * day from the resulting integer date. The end is the month end.
-     */
-    @Nested
-    @DisplayName("5. The monthly period :213-236 - a FULL CALENDAR MONTH with the twelve-month roll")
-    class MonthlyPeriod {
-
-        @ParameterizedTest(name = "on {0} the period is {1} through {2}")
-        @DisplayName("the period spans the whole calendar month containing today")
-        @CsvSource({
-            "2022-06-10T19:27:53Z, 2022-06-01, 2022-06-30",
-            "2022-06-01T00:00:00Z, 2022-06-01, 2022-06-30",
-            "2022-06-30T23:59:59Z, 2022-06-01, 2022-06-30",
-            "2022-01-31T12:00:00Z, 2022-01-01, 2022-01-31",
-            "2024-02-05T12:00:00Z, 2024-02-01, 2024-02-29",
-            "2023-02-05T12:00:00Z, 2023-02-01, 2023-02-28",
-            "2022-12-15T12:00:00Z, 2022-12-01, 2022-12-31",
-            "2022-11-15T12:00:00Z, 2022-11-01, 2022-11-30"})
-        void thePeriodSpansTheWholeCalendarMonth(final String instant, final String expectedStart,
-                final String expectedEnd) {
-            arrangePublish();
-            final ReportSubmissionService onDate =
-                    serviceWithClock(Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
-
-            onDate.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo(expectedStart);
-            assertThat(sendOptions.payload().endDate()).isEqualTo(expectedEnd);
-        }
-
-        @Test
-        @DisplayName("the end date is the month end and NOT today, which is the whole point of :229-230")
-        void theEndDateIsTheMonthEndAndNotToday() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().endDate())
-                    .as("month-to-date would report the tenth; the source reports the thirtieth")
-                    .isEqualTo("2022-06-30")
-                    .isNotEqualTo("2022-06-10");
-        }
-
-        @Test
-        @DisplayName("December rolls the month to January of the next year before subtracting a day")
-        void decemberRollsToJanuaryBeforeSubtracting() {
-            arrangePublish();
-            final ReportSubmissionService inDecember = serviceWithClock(
-                    Clock.fixed(Instant.parse("2022-12-31T23:00:00Z"), ZoneOffset.UTC));
-
-            inDecember.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-12-01");
-            assertThat(sendOptions.payload().endDate())
-                    .as(":224-228 ADD 1 TO WS-CURDATE-MONTH with the twelve-month roll, then :229-230 less "
-                            + "one day - so the year does not advance in the emitted value")
-                    .isEqualTo("2022-12-31");
-        }
-
-        @Test
-        @DisplayName("both dates come from ONE clock reading, so the period cannot straddle a month end")
-        void bothDatesComeFromOneClockReading() {
-            arrangePublish();
-            // Starting on the last day of June and advancing a day per read: a second read would land in
-            // July and the end date would become the thirty-first.
-            final AdvancingClock advancing = new AdvancingClock(Instant.parse("2022-06-30T12:00:00Z"),
-                    Duration.ofDays(1L), ZoneOffset.UTC);
-            final ReportSubmissionService onAdvancingClock = serviceWithClock(advancing);
-
-            onAdvancingClock.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
-            assertThat(sendOptions.payload().endDate())
-                    .as(":215 MOVE FUNCTION CURRENT-DATE happens once and both dates derive from it")
-                    .isEqualTo("2022-06-30");
-            assertThat(advancing.reads())
-                    .as("one read for the period and one for the screen header, and no more")
-                    .isEqualTo(2);
-        }
-
-        @Test
-        @DisplayName("the report name is the unpadded literal of :214")
-        void theReportNameIsTheUnpaddedLiteral() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().reportName())
-                    .isEqualTo(REPORT_NAME_MONTHLY)
-                    .doesNotContain(" ");
-        }
-
-        @Test
-        @DisplayName("both dates are ten-character dashed values, matching PARM-START-DATE-1 PIC X(10)")
-        void bothDatesAreTenCharacterDashedValues() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).hasSize(10).matches("\\d{4}-\\d{2}-\\d{2}");
-            assertThat(sendOptions.payload().endDate()).hasSize(10).matches("\\d{4}-\\d{2}-\\d{2}");
-        }
-
-        @Test
-        @DisplayName("the monthly arm ignores the six custom date components entirely")
-        void theMonthlyArmIgnoresTheCustomComponents() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea("Y", null, null, "01", "01", "1999", "12", "31", "1999", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
-        }
-    }
-
-    // =====================================================================================================
-    // 6. The yearly period - app/cbl/CORPT00C.cbl:239-253
-    // =====================================================================================================
-
-    /** January first through December thirty-first of the current year, with no month arithmetic at all. */
-    @Nested
-    @DisplayName("6. The yearly period :239-253 - January first through December thirty-first")
-    class YearlyPeriod {
-
-        @ParameterizedTest(name = "on {0} the period is {1} through {2}")
-        @DisplayName("the period spans the whole calendar year containing today")
-        @CsvSource({
-            "2022-06-10T19:27:53Z, 2022-01-01, 2022-12-31",
-            "2022-01-01T00:00:00Z, 2022-01-01, 2022-12-31",
-            "2022-12-31T23:59:59Z, 2022-01-01, 2022-12-31",
-            "2024-02-29T12:00:00Z, 2024-01-01, 2024-12-31"})
-        void thePeriodSpansTheWholeCalendarYear(final String instant, final String expectedStart,
-                final String expectedEnd) {
-            arrangePublish();
-            final ReportSubmissionService onDate =
-                    serviceWithClock(Clock.fixed(Instant.parse(instant), ZoneOffset.UTC));
-
-            onDate.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo(expectedStart);
-            assertThat(sendOptions.payload().endDate()).isEqualTo(expectedEnd);
-        }
-
-        @Test
-        @DisplayName("both dates come from ONE clock reading, so the period cannot straddle a year end")
-        void bothDatesComeFromOneClockReading() {
-            arrangePublish();
-            final AdvancingClock advancing = new AdvancingClock(Instant.parse("2022-12-31T12:00:00Z"),
-                    Duration.ofDays(1L), ZoneOffset.UTC);
-            final ReportSubmissionService onAdvancingClock = serviceWithClock(advancing);
-
-            onAdvancingClock.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-01-01");
-            assertThat(sendOptions.payload().endDate())
-                    .as(":241 reads the clock once; a second read would have moved the year to 2023")
-                    .isEqualTo("2022-12-31");
-        }
-
-        @Test
-        @DisplayName("the report name is the unpadded literal of :240")
-        void theReportNameIsTheUnpaddedLiteral() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
-
-            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_YEARLY);
-        }
-
-        @Test
-        @DisplayName("the yearly arm ignores the six custom date components entirely")
-        void theYearlyArmIgnoresTheCustomComponents() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, "Y", null, "99", "99", "9999", "99", "99", "9999", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-01-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-12-31");
-        }
-    }
-
-    // =====================================================================================================
-    // 7. Custom range, stage 1: the six emptiness guards - app/cbl/CORPT00C.cbl:258-303
-    // =====================================================================================================
-
-    /**
-     * {@code EVALUATE TRUE} with six arms in a fixed order and a {@code WHEN OTHER} that does nothing. First
-     * match wins, so a form empty in several components reports only the earliest.
-     */
-    @Nested
-    @DisplayName("7. Custom stage 1 :258-303 - six emptiness guards in source order, first match wins")
-    class CustomRangeSupplied {
-
-        @Test
-        @DisplayName("a wholly empty range reports the START MONTH, the first arm")
-        void aWhollyEmptyRangeReportsTheStartMonth() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest(null, null, null, null, null, null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_MONTH_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_MONTH);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.BLANK);
-                    });
-        }
-
-        @Test
-        @DisplayName("the start day is reported second")
-        void theStartDayIsReportedSecond() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", null, null, null, null, null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_DAY_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_DAY);
-                    });
-        }
-
-        @Test
-        @DisplayName("the start year is reported third")
-        void theStartYearIsReportedThird() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", null, null, null, null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_YEAR_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_YEAR);
-                    });
-        }
-
-        @Test
-        @DisplayName("the end month is reported fourth")
-        void theEndMonthIsReportedFourth() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", null, null, null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_MONTH_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_MONTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("the end day is reported fifth")
-        void theEndDayIsReportedFifth() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", "06", null, null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_DAY_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_DAY);
-                    });
-        }
-
-        @Test
-        @DisplayName("the end year is reported sixth and last")
-        void theEndYearIsReportedSixth() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", "06", "30", null)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_YEAR_EMPTY);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_YEAR);
-                    });
-        }
-
-        @ParameterizedTest(name = "a component of [{0}] counts as empty")
-        @DisplayName("SPACES, LOW-VALUES and an absent value are all empty; nothing else is")
-        @ValueSource(strings = {"", " ", "  ", "\u0000", "\u0000\u0000"})
-        void spacesLowValuesAndAbsentAreAllEmpty(final String component) {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest(component, "01", "2022", "06", "30", "2022")))
-                    .withMessage(MSG_START_MONTH_EMPTY);
-        }
-
-        @Test
-        @DisplayName("all six populated falls through the WHEN OTHER arm and proceeds")
-        void allSixPopulatedProceeds() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
-
-            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_CUSTOM);
-        }
-
-        @Test
-        @DisplayName("no emptiness failure reaches the queue")
-        void noEmptinessFailureReachesTheQueue() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest(null, null, null, null, null, null)));
-
-            verifyNoInteractions(sqsTemplate);
-        }
-    }
-
-    // =====================================================================================================
-    // 8. Custom range, stage 2: NUMVAL-like normalisation - app/cbl/CORPT00C.cbl:305-327
-    // =====================================================================================================
-
-    /**
-     * Each component is moved through a {@code PIC 9(n)} working item, which drops non-digits, discards
-     * everything from a decimal point onward, reduces modulo the receiving width and zero-pads on the left.
-     * Observed through the published payload rather than by reflection, so the assertion is on behaviour.
-     */
-    @Nested
-    @DisplayName("8. Custom stage 2 :305-327 - the MOVE through PIC 9(n) that normalises each component")
-    class CustomRangeNormalisation {
-
-        @ParameterizedTest(name = "start {0}/{1}/{2} normalises into {3}")
-        @DisplayName("a single digit is zero-padded, extra digits are truncated on the left")
-        @CsvSource({
-            "6,     1,    2022,  2022-06-01",
-            "06,    01,   2022,  2022-06-01",
-            "006,   001,  2022,  2022-06-01",
-            "106,   101,  12022, 2022-06-01",
-            "6.9,   1.9,  2022,  2022-06-01",
-            "0x6,   0-1,  2/022, 2022-06-01"})
-        void componentsAreNormalisedThroughTheReceivingWidth(final String startMonth, final String startDay,
-                final String startYear, final String expectedStart) {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", startMonth, startDay, startYear, "06", "30", "2022", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo(expectedStart);
-        }
-
-        @Test
-        @DisplayName("the decimal point stops the scan, so the fractional digits never contribute")
-        void theDecimalPointStopsTheScan() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", "1.9", "2.9", "2022.9", "06", "30", "2022", "Y"));
-
-            assertThat(sendOptions.payload().startDate())
-                    .as("the receiving item has no decimal places, so everything after the point is dropped")
-                    .isEqualTo("2022-01-02");
-        }
-
-        @Test
-        @DisplayName("the end components normalise on the same rules")
-        void theEndComponentsNormaliseOnTheSameRules() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", "06", "01", "2022", "6", "3", "22022", "Y"));
-
-            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-03");
-        }
-
-        @Test
-        @DisplayName("a component with no digits at all normalises to zeros and is caught by the validator")
-        void aComponentWithNoDigitsNormalisesToZeros() {
-            // "xx" is not blank, so stage 1 passes it; stage 2 turns it into "00"; stage 3 accepts "00"
-            // because it is numeric and not greater than "12"; the assembled date is what finally fails.
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("xx", "01", "2022", "06", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .as("month zero is a date failure, not a component failure - the component "
-                                        + "check has no lower bound")
-                                .isEqualTo(MSG_START_DATE_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_MONTH);
-                    });
-        }
-    }
-
-    // =====================================================================================================
-    // 9. Custom range, stage 3: the string upper bounds - app/cbl/CORPT00C.cbl:329-379
-    // =====================================================================================================
-
-    /**
-     * Six checks, each a numeric test plus - for the four month and day components only - a
-     * <em>string</em> comparison against {@code '12'} or {@code '31'}. Neither year has any bound at all,
-     * which is behaviour rather than an oversight.
-     */
-    @Nested
-    @DisplayName("9. Custom stage 3 :329-379 - string bounds on months and days, NO bound on either year")
-    class CustomRangeValues {
-
-        @Test
-        @DisplayName("a start month above twelve is rejected on the month field")
-        void aStartMonthAboveTwelveIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("13", "01", "2022", "06", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_MONTH_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_MONTH);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.INVALID);
-                    });
-        }
-
-        @Test
-        @DisplayName("a start day above thirty-one is rejected on the day field")
-        void aStartDayAboveThirtyOneIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "32", "2022", "06", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_DAY_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_DAY);
-                    });
-        }
-
-        @Test
-        @DisplayName("an end month above twelve is rejected on the end month field")
-        void anEndMonthAboveTwelveIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", "13", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_MONTH_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_MONTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("an end day above thirty-one is rejected on the end day field")
-        void anEndDayAboveThirtyOneIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", "06", "32", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_DAY_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_DAY);
-                    });
-        }
-
-        @ParameterizedTest(name = "month {0} is within bound")
-        @DisplayName("twelve and thirty-one are ON the bound and therefore accepted, not rejected")
-        @ValueSource(strings = {"01", "06", "12"})
-        void theBoundsAreInclusive(final String month) {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", month, "01", "2022", "12", "31", "2022", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).endsWith("-" + month + "-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-12-31");
-        }
-
-        @Test
-        @DisplayName("the start month is checked before the start day, which is checked before the end month")
-        void theSixChecksRunInSourceOrder() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("13", "32", "2022", "13", "32", "2022")))
-                    .as("every one of the four is out of range, and only the first is reported")
-                    .withMessage(MSG_START_MONTH_INVALID);
-        }
-
-        @Test
-        @DisplayName("neither year has an upper bound, so a year of 0000 passes stage 3 and fails at the date")
-        void neitherYearHasAnUpperBound() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "0000", "06", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .as(":347-354 tests numeric only - so this failure comes from the date "
-                                        + "validator and carries the DATE literal, not the YEAR literal")
-                                .isEqualTo(MSG_START_DATE_INVALID)
-                                .isNotEqualTo(MSG_START_YEAR_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_START_MONTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("a four-digit year far in the future is accepted, there being no bound to fail")
-        void aFarFutureYearIsAccepted() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", "01", "01", "9999", "12", "31", "9999", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("9999-01-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("9999-12-31");
-        }
-
-        @Test
-        @DisplayName("the year-invalid literals exist for the arms the source retains but cannot reach")
-        void theYearInvalidLiteralsExistForTheRetainedArms() throws ReflectiveOperationException {
-            // :347-354 and :373-379 are unreachable after stage 2 normalisation, which always yields four
-            // digits. They are retained one for one because the source evaluates them, and their literals
-            // must still be the source's own - which is what these two assertions pin.
-            assertThat(declaredConstant("MSG_START_YEAR_INVALID")).isEqualTo(MSG_START_YEAR_INVALID);
-            assertThat(declaredConstant("MSG_END_YEAR_INVALID")).isEqualTo(MSG_END_YEAR_INVALID);
-        }
-    }
-
-    // =====================================================================================================
-    // 10. Custom range, stages 4 and 5: assembly and validation - app/cbl/CORPT00C.cbl:381-426
-    // =====================================================================================================
-
-    /**
-     * Assembly to {@code YYYY-MM-DD} then two validator calls, start first. Severity {@code '0000'} is
-     * accepted outright at {@code :396-397}; any other severity is accepted anyway when the message number
-     * is {@code '2513'} at {@code :399}; everything else is rejected.
-     */
-    @Nested
-    @DisplayName("10. Custom stages 4 and 5 :381-426 - assembly, then start-then-end validation")
-    class AssembledDateValidation {
-
-        @Test
-        @DisplayName("a valid range is accepted with severity 0000")
-        void aValidRangeIsAccepted() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
-        }
-
-        @Test
-        @DisplayName("a start date that does not exist is rejected with the START DATE literal")
-        void aNonExistentStartDateIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("02", "30", "2022", "06", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_START_DATE_INVALID);
-                        assertThat(failure.getFieldName())
-                                .as(":404 MOVE -1 TO SDTMML - the cursor lands on the month component")
-                                .isEqualTo(CURSOR_START_MONTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("an end date that does not exist is rejected with the END DATE literal")
-        void aNonExistentEndDateIsRejected() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("06", "01", "2022", "02", "30", "2022")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_END_DATE_INVALID);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_END_MONTH);
-                    });
-        }
-
-        @Test
-        @DisplayName("the START date is validated first, so only it is reported when both are impossible")
-        void theStartDateIsValidatedFirst() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("02", "30", "2022", "02", "31", "2022")))
-                    .as(":388-406 precedes :408-426, and only one message is ever produced")
-                    .withMessage(MSG_START_DATE_INVALID);
-        }
-
-        @Test
-        @DisplayName("MESSAGE NUMBER 2513 IS TOLERATED - a date before 15 October 1582 is accepted")
-        void messageNumber2513IsTolerated() {
-            arrangePublish();
-
-            // The real validator reports severity 0003 and message number 2513 for any date before the
-            // Lillian day zero. :399 tests the message number and falls through to acceptance, so this
-            // range submits successfully - which is the whole point of the exemption.
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", "01", "01", "1000", "01", "31", "1000", "Y"));
-
-            assertThat(sendOptions.payload().startDate()).isEqualTo("1000-01-01");
-            assertThat(sendOptions.payload().endDate()).isEqualTo("1000-01-31");
-        }
-
-        @Test
-        @DisplayName("the tolerated number applies to the END date too, both calls sharing the exemption")
-        void theToleratedNumberAppliesToTheEndDateToo() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER,
-                    mapArea(null, null, "Y", "10", "15", "1582", "10", "14", "1582", "Y"));
-
-            assertThat(sendOptions.payload().startDate())
-                    .as("15 October 1582 is the first representable date and validates outright")
-                    .isEqualTo("1582-10-15");
-            assertThat(sendOptions.payload().endDate())
-                    .as("14 October 1582 is the day before it and is tolerated under 2513")
-                    .isEqualTo("1582-10-14");
-        }
-
-        @Test
-        @DisplayName("the real validator genuinely reports 2513 for that range, so the exemption is exercised")
-        void theRealValidatorGenuinelyReports2513() throws ReflectiveOperationException {
-            final DateValidationService.DateValidationResult tolerated =
-                    dateValidationService.validate("1000-01-01", DateValidationService.MASK_YYYY_MM_DD);
-
-            assertThat(tolerated.severityCode())
-                    .as("a non-zero severity, so :396-397 does not accept it")
-                    .isNotEqualTo(declaredConstant("SEVERITY_ACCEPTED"));
-            assertThat(tolerated.messageNumber())
-                    .as("but the message number :399 singles out, so the range is accepted anyway")
-                    .isEqualTo(declaredConstant("SEVERITY_TOLERATED_MESSAGE_NUMBER"));
-        }
-
-        @Test
-        @DisplayName("a rejected date is one whose message number is anything else")
-        void aRejectedDateCarriesAnotherMessageNumber() throws ReflectiveOperationException {
-            final DateValidationService.DateValidationResult rejected =
-                    dateValidationService.validate("2022-02-30", DateValidationService.MASK_YYYY_MM_DD);
-
-            assertThat(rejected.severityCode()).isNotEqualTo(declaredConstant("SEVERITY_ACCEPTED"));
-            assertThat(rejected.messageNumber())
-                    .isNotEqualTo(declaredConstant("SEVERITY_TOLERATED_MESSAGE_NUMBER"));
-        }
-
-        @Test
-        @DisplayName("the assembled date is year-dash-month-dash-day, exactly ten characters")
-        void theAssembledDateIsTenCharacters() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
-
-            assertThat(sendOptions.payload().startDate())
-                    .as(":381-383 the components are concatenated with dashes, 4 + 1 + 2 + 1 + 2")
-                    .hasSize(10)
-                    .isEqualTo("2022-06-01");
-        }
-
-        @Test
-        @DisplayName("no date failure reaches the queue")
-        void noDateFailureReachesTheQueue() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequest("02", "30", "2022", "06", "30", "2022")));
-
-            verifyNoInteractions(sqsTemplate);
-        }
-    }
-
-    // =====================================================================================================
-    // 11. The confirmation handshake - app/cbl/CORPT00C.cbl:464-493
-    // =====================================================================================================
-
-    /**
-     * Four states over a {@code PIC X(1)} gate. Blank re-prompts naming the report; {@code 'Y'} or
-     * {@code 'y'} publishes; {@code 'N'} or {@code 'n'} clears the form and ends the turn with no message and
-     * no cursor; anything else quotes the offending value back.
-     */
-    @Nested
-    @DisplayName("11. The confirmation handshake :464-493 - four states over a one-character gate")
-    class ConfirmationHandshake {
-
-        @ParameterizedTest(name = "a gate of [{0}] re-prompts")
-        @DisplayName("a blank gate re-prompts, naming the resolved report in the message")
-        @ValueSource(strings = {"", " ", "\u0000"})
-        void aBlankGateRePrompts(final String gate) {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .isEqualTo(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_CONFIRM);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.BLANK);
-                    });
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @Test
-        @DisplayName("an absent gate re-prompts on the same message")
-        void anAbsentGateRePrompts() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(null)))
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX);
-        }
-
-        @Test
-        @DisplayName("the re-prompt names the resolved report, so the custom arm reads Custom")
-        void theRePromptNamesTheResolvedReport() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequestConfirmedWith(" ")))
-                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_CUSTOM + MSG_CONFIRM_SUFFIX);
-        }
-
-        @ParameterizedTest(name = "a gate of [{0}] confirms")
-        @DisplayName("upper and lower case Y both confirm, compared as two literals rather than case-folded")
-        @ValueSource(strings = {"Y", "y"})
-        void bothCasesOfYesConfirm(final String gate) {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate));
-
-            assertThat(sendOptions.payload()).isNotNull();
-        }
-
-        @ParameterizedTest(name = "a gate of [{0}] declines")
-        @DisplayName("upper and lower case N both decline, clearing the form and ending the turn")
-        @ValueSource(strings = {"N", "n"})
-        void bothCasesOfNoDecline(final String gate) {
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate));
-
-            assertThat(screen.errorFlagOn())
-                    .as(":481 MOVE 'Y' TO WS-ERR-FLG")
-                    .isTrue();
-            assertThat(screen.successHighlight()).isFalse();
-            assertThat(screen.cursorField())
-                    .as(":480-483 sets no cursor at all, unlike every other failing arm")
-                    .isNull();
-            assertThat(screen.form().errorMessage())
-                    .as(":646 INITIALIZE WS-MESSAGE - the cleared form carries a blank message area")
-                    .isEmpty();
-            assertThat(screen.navigationTarget()).isNull();
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @Test
-        @DisplayName("declining clears all nine input fields but leaves the header painted")
-        void decliningClearsTheInputFieldsButPaintsTheHeader() {
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
-
-            assertThat(screen.form().monthlySelected()).isEmpty();
-            assertThat(screen.form().yearlySelected()).isEmpty();
-            assertThat(screen.form().customSelected()).isEmpty();
-            assertThat(screen.form().startDateMonth()).isEmpty();
-            assertThat(screen.form().startDateDay()).isEmpty();
-            assertThat(screen.form().startDateYear()).isEmpty();
-            assertThat(screen.form().endDateMonth()).isEmpty();
-            assertThat(screen.form().endDateDay()).isEmpty();
-            assertThat(screen.form().endDateYear()).isEmpty();
-            assertThat(screen.form().confirmation()).isEmpty();
-            assertThat(screen.form().transactionName())
-                    .as("SEND-TRNRPT-SCREEN performs POPULATE-HEADER-INFO before the send")
-                    .isEqualTo(TRANSACTION_ID);
-        }
-
-        @ParameterizedTest(name = "a gate of [{0}] is unrecognised")
-        @DisplayName("any other single character is quoted back as an invalid confirmation value")
-        @ValueSource(strings = {"X", "1", "-", "Z"})
-        void anyOtherCharacterIsQuotedBack(final String gate) {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate)))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage())
-                                .isEqualTo("\"" + gate + MSG_INVALID_CONFIRM_SUFFIX);
-                        assertThat(failure.getFieldName()).isEqualTo(CURSOR_CONFIRM);
-                        assertThat(failure.getFailureKind())
-                                .isEqualTo(ValidationException.FailureKind.INVALID);
-                    });
-            verifyNoInteractions(sqsTemplate);
-        }
-
-        @Test
-        @DisplayName("the gate is truncated to the PIC X(1) width, so YES confirms - a preserved quirk")
-        void theGateIsTruncatedToOneCharacter() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("YES"));
-
-            assertThat(sendOptions.payload())
-                    .as("CONFIRMI is PIC X(1), so the source only ever compared one character")
-                    .isNotNull();
-        }
-
-        @Test
-        @DisplayName("the quoted value in the invalid message is the TRUNCATED gate, not the whole field")
-        void theQuotedValueIsTheTruncatedGate() {
-            assertThatExceptionOfType(ValidationException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            monthlyRequest("XYZ")))
-                    .withMessage("\"X" + MSG_INVALID_CONFIRM_SUFFIX);
-        }
-
-        @Test
-        @DisplayName("a longer value beginning with N declines, on the same truncation")
-        void aLongerValueBeginningWithNoDeclines() {
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("NO"));
-
-            assertThat(screen.errorFlagOn()).isTrue();
-            verifyNoInteractions(sqsTemplate);
-        }
-    }
-
-    // =====================================================================================================
-    // 12. Queue publication - app/cbl/CORPT00C.cbl:496-523
-    // =====================================================================================================
-
-    /**
-     * Seventeen eighty-byte job cards, written one at a time by a loop bounded at a thousand, collapse into
-     * one typed message published once.
-     */
-    @Nested
-    @DisplayName("12. Queue publication :496-523 - seventeen job cards collapse into ONE FIFO message")
-    class QueuePublication {
-
-        @Test
-        @DisplayName("exactly one message is published per confirmed submission")
-        void exactlyOneMessageIsPublished() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            verify(sqsTemplate).sendAsync(any());
-        }
-
-        @Test
-        @DisplayName("the configured queue, payload and message group all cross the boundary")
-        void theConfiguredValuesAllCrossTheBoundary() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(sendOptions.queue()).isEqualTo(QUEUE_NAME);
-            assertThat(sendOptions.messageGroupId())
-                    .as("a FIFO queue requires a group, and the value is configuration rather than a literal")
-                    .isEqualTo(MESSAGE_GROUP_ID);
-            assertThat(sendOptions.payload()).isNotNull();
-        }
-
-        @Test
-        @DisplayName("the four send options are set and nothing else is")
-        void onlyTheFourSendOptionsAreSet() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            // Four, not three. The fourth is the trace-context propagation header set the publish carries so
-            // that a message leaving this process can be joined to the log records and the span it came from,
-            // which is the outbound half of what CorrelationIdFilter does at the request boundary. An earlier
-            // revision of this assertion predated that header and named only the first three.
-            assertThat(sendOptions.invoked())
-                    .containsExactly("queue", "payload", "messageGroupId", "headers");
-            assertThat(sendOptions.messageDeduplicationId())
-                    .as("no deduplication identifier is set: two identical submissions are two distinct "
-                            + "job requests, exactly as two WRITEQ TD calls were")
-                    .isNull();
-        }
-
-        @Test
-        @DisplayName("the payload carries the report name and both parameter dates and nothing else")
-        void thePayloadCarriesTheThreeValues() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            final JobSubmissionMessage published = sendOptions.payload();
-            assertThat(published.reportName()).isEqualTo(REPORT_NAME_MONTHLY);
-            assertThat(published.startDate()).isEqualTo("2022-06-01");
-            assertThat(published.endDate()).isEqualTo("2022-06-30");
-            assertThat(JobSubmissionMessage.class.getRecordComponents())
-                    .as("each date was injected twice across the deck and needs one field here")
-                    .hasSize(3);
-        }
-
-        @Test
-        @DisplayName("the message refuses to be built without a report name")
-        void theMessageRefusesAnAbsentReportName() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new JobSubmissionMessage(null, "2022-06-01", "2022-06-30"))
-                    .withMessage("reportName must not be null");
-        }
-
-        @Test
-        @DisplayName("the message refuses to be built without a start date")
-        void theMessageRefusesAnAbsentStartDate() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, null, "2022-06-30"))
-                    .withMessage("startDate must not be null");
-        }
-
-        @Test
-        @DisplayName("the message refuses to be built without an end date")
-        void theMessageRefusesAnAbsentEndDate() {
-            assertThatNullPointerException()
-                    .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, "2022-06-01", null))
-                    .withMessage("endDate must not be null");
-        }
-
-        @Test
-        @DisplayName("two submissions publish two messages, so the operation is not idempotent by accident")
-        void twoSubmissionsPublishTwoMessages() {
-            arrangePublish();
-
-            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-            service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
-
-            verify(sqsTemplate, org.mockito.Mockito.times(2)).sendAsync(any());
-            assertThat(sendOptions.payload().reportName())
-                    .as("the recorder holds the most recent payload, which is the yearly one")
-                    .isEqualTo(REPORT_NAME_YEARLY);
-        }
-    }
-
-    // =====================================================================================================
-    // 13. Queue failure - app/cbl/CORPT00C.cbl:528-534
-    // =====================================================================================================
-
-    /**
-     * The {@code WHEN OTHER} arm of the write. The literal is byte exact, the cause is preserved, and no
-     * file status is fabricated: the program declares no {@code FILE-CONTROL}, no {@code SELECT} and no
-     * {@code FD}.
-     */
-    @Nested
-    @DisplayName("13. Queue failure :528-534 - byte-exact literal, cause preserved, no fabricated status")
-    class QueueFailure {
-
-        @Test
-        @DisplayName("a publish failure becomes an I/O failure carrying the source literal")
-        void aPublishFailureBecomesAnIoFailure() {
-            final RuntimeException unavailable = new IllegalStateException("queue unavailable");
-            doThrow(unavailable).when(sqsTemplate).sendAsync(any());
-
-            assertThatExceptionOfType(FileAccessException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ);
-                        assertThat(failure.getCause()).isSameAs(unavailable);
-                    });
-        }
-
-        @Test
-        @DisplayName("no file status is fabricated, because the program declares no file at all")
-        void noFileStatusIsFabricated() {
-            doThrow(new IllegalStateException("queue unavailable")).when(sqsTemplate).sendAsync(any());
-
-            assertThatExceptionOfType(FileAccessException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getExpandedStatus())
-                                .as("the two-argument form is used deliberately; the four-argument form "
-                                        + "would render a FILE STATUS this program does not have")
-                                .isEqualTo(NO_FILE_STATUS);
-                        assertThat(failure.getLogicalFileName()).isNull();
-                        assertThat(failure.getOperation()).isNull();
-                    });
-        }
-
-        @Test
-        @DisplayName("a messaging failure carrying an endpoint is reported with that endpoint as the reason")
-        void aMessagingFailureCarriesItsEndpoint() {
-            final MessagingOperationFailedException withEndpoint =
-                    new MessagingOperationFailedException("send failed", QUEUE_NAME);
-            doThrow(withEndpoint).when(sqsTemplate).sendAsync(any());
-
-            assertThatExceptionOfType(FileAccessException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
-                    .satisfies(failure -> {
-                        assertThat(failure.getMessage()).isEqualTo(MSG_UNABLE_TO_WRITE_TDQ);
-                        assertThat(failure.getCause()).isSameAs(withEndpoint);
-                    });
-            assertThat(withEndpoint.getEndpoint())
-                    .as("the endpoint is the closest analogue of RESP2 the publisher offers")
-                    .isEqualTo(QUEUE_NAME);
-        }
-
-        @Test
-        @DisplayName("the failure literal is byte exact, parenthesised queue name included")
-        void theFailureLiteralIsByteExact() {
-            assertThat(MSG_UNABLE_TO_WRITE_TDQ).isEqualTo("Unable to Write TDQ (JOBS)...");
-        }
-
-        @Test
-        @DisplayName("a failed publish produces no screen, so no success notice can be mistaken for one")
-        void aFailedPublishProducesNoScreen() {
-            doThrow(new IllegalStateException("queue unavailable")).when(sqsTemplate).sendAsync(any());
-
-            assertThatExceptionOfType(FileAccessException.class)
-                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
-                            customRequestConfirmedWith("Y")));
-        }
-    }
-
-    // =====================================================================================================
-    // 14. The success tail - app/cbl/CORPT00C.cbl:445-454
-    // =====================================================================================================
-
-    /**
-     * The clear precedes the message, and the message is composed from the report name with
-     * {@code DELIMITED BY SPACE} - so the unpadded literal is the correct operand. The attribute is
-     * {@code DFHGREEN}, the one place this program distinguishes a success notice from an error.
-     */
-    @Nested
-    @DisplayName("14. The success tail :445-454 - clear, then compose, with the green attribute")
-    class SuccessTail {
-
-        @Test
-        @DisplayName("the notice names the report and reads exactly as :449-452 assembles it")
-        void theNoticeNamesTheReport() {
-            arrangePublish();
-
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(screen.form().errorMessage())
-                    .isEqualTo(REPORT_NAME_MONTHLY + MSG_SUBMITTED_SUFFIX)
-                    .isEqualTo("Monthly report submitted for printing ...");
-        }
-
-        @ParameterizedTest(name = "the {0} report reports its own name")
-        @DisplayName("each of the three report names appears in its own notice")
-        @CsvSource({"Monthly", "Yearly", "Custom"})
-        void eachReportNameAppearsInItsOwnNotice(final String reportName) {
-            arrangePublish();
-            final ReportRequest request = switch (reportName) {
-                case "Monthly" -> monthlyRequest("Y");
-                case "Yearly" -> yearlyRequest("Y");
-                default -> customRequestConfirmedWith("Y");
-            };
-
-            final ReportSubmissionScreen screen = service.submitScreen(AttentionIdentifier.ENTER, request);
-
-            assertThat(screen.form().errorMessage()).isEqualTo(reportName + MSG_SUBMITTED_SUFFIX);
-        }
-
-        @Test
-        @DisplayName("the form is cleared before the notice is composed, so the notice survives the clear")
-        void theFormIsClearedBeforeTheNoticeIsComposed() {
-            arrangePublish();
-
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
-
-            assertThat(screen.form().customSelected()).isEmpty();
-            assertThat(screen.form().startDateMonth()).isEmpty();
-            assertThat(screen.form().endDateYear()).isEmpty();
-            assertThat(screen.form().confirmation()).isEmpty();
-            assertThat(screen.form().errorMessage())
-                    .as(":447 clears first and :449-452 composes second, from WS-REPORT-NAME which the "
-                            + "clear does not touch")
-                    .isEqualTo(REPORT_NAME_CUSTOM + MSG_SUBMITTED_SUFFIX);
-        }
-
-        @Test
-        @DisplayName("the success screen carries the green attribute and no error flag")
-        void theSuccessScreenCarriesTheGreenAttribute() {
+        @DisplayName("a provider that yields no tracer is accepted, tracing being optional")
+        void aProviderThatYieldsNoTracerIsAccepted() {
             arrangePublish();
 
             final ReportSubmissionScreen screen =
                     service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
 
             assertThat(screen.successHighlight())
-                    .as(":448 MOVE DFHGREEN TO ERRMSGC")
+                    .as("an absent tracer must not fail a submission")
                     .isTrue();
-            assertThat(screen.errorFlagOn()).isFalse();
-            assertThat(screen.cursorField())
-                    .as(":453 MOVE -1 TO MONTHLYL")
-                    .isEqualTo(CURSOR_MONTHLY);
-            assertThat(screen.navigationTarget())
-                    .as("the screen is repainted, not left")
-                    .isNull();
         }
 
         @Test
-        @DisplayName("the declined screen and the success screen are distinguishable by their two flags")
-        void theDeclinedAndSuccessScreensAreDistinguishable() {
-            arrangePublish();
-
-            final ReportSubmissionScreen success =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-            final ReportSubmissionScreen declined =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
-
-            assertThat(success.successHighlight()).isTrue();
-            assertThat(success.errorFlagOn()).isFalse();
-            assertThat(declined.successHighlight()).isFalse();
-            assertThat(declined.errorFlagOn()).isTrue();
-        }
-
-        @Test
-        @DisplayName("the map area is required on a screen outcome")
-        void theMapAreaIsRequiredOnAScreenOutcome() {
+        @DisplayName("the queue name is required")
+        void theQueueNameIsRequired() {
             assertThatNullPointerException()
-                    .isThrownBy(() -> new ReportSubmissionScreen(null, false, false, null, null))
-                    .withMessage("form must not be null");
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(),
+                            new NoTracerProvider(),
+                            null, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("reportQueueName");
         }
 
         @Test
-        @DisplayName("both cursor and navigation target are legitimately absent, so neither is required")
-        void bothCursorAndNavigationTargetMayBeAbsent() {
-            final ReportSubmissionScreen bare = new ReportSubmissionScreen(monthlyRequest("Y"), true, false,
-                    null, null);
-
-            assertThat(bare.cursorField()).isNull();
-            assertThat(bare.navigationTarget()).isNull();
-        }
-    }
-
-    // =====================================================================================================
-    // 15. POPULATE-HEADER-INFO and INITIALIZE-ALL-FIELDS - app/cbl/CORPT00C.cbl:609-647
-    // =====================================================================================================
-
-    /**
-     * Six header values computed rather than echoed, over a clock read once per paragraph, and a clear that
-     * touches ten fields and leaves the six header fields and the message field alone.
-     */
-    @Nested
-    @DisplayName("15. Header and clear :609-647 - six computed values, ten cleared fields")
-    class ScreenPresentation {
-
-        @Test
-        @DisplayName("the submitted header components are overwritten, never echoed back")
-        void theSubmittedHeaderComponentsAreOverwritten() {
-            arrangePublish();
-
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(screen.form().transactionName()).isEqualTo(TRANSACTION_ID).isNotEqualTo("ZZZZ");
-            assertThat(screen.form().programName()).isEqualTo(PROGRAM_NAME).isNotEqualTo("ZZZZZZZZ");
-            assertThat(screen.form().title01()).isEqualTo(SCREEN_TITLE_01);
-            assertThat(screen.form().title02()).isEqualTo(SCREEN_TITLE_02);
-            assertThat(screen.form().currentDate()).isEqualTo(EXPECTED_HEADER_DATE).isNotEqualTo("01/01/00");
-            assertThat(screen.form().currentTime()).isEqualTo(EXPECTED_HEADER_TIME).isNotEqualTo("00:00:00");
+        @DisplayName("the logical queue name is required, being what a diagnostic is allowed to name")
+        void theLogicalQueueNameIsRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(),
+                            new NoTracerProvider(),
+                            QUEUE_NAME, null, MESSAGE_GROUP_ID, TOPIC))
+                    .withMessageContaining("reportQueueLogicalName");
         }
 
         @Test
-        @DisplayName("both titles are byte exact at their declared PIC X(40) width, padding included")
-        void bothTitlesAreByteExactAtFortyCharacters() {
-            assertThat(SCREEN_TITLE_01).hasSize(40).contains("AWS Mainframe Modernization");
-            assertThat(SCREEN_TITLE_02).hasSize(40).contains("CardDemo");
+        @DisplayName("the FIFO message group is required; its value rules belong to the sibling suite")
+        void theMessageGroupIsRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(),
+                            new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, null, TOPIC))
+                    .withMessageContaining("reportMessageGroupId");
         }
 
         @Test
-        @DisplayName("the header date and time come from ONE clock reading per paragraph")
-        void theHeaderComesFromOneClockReadingPerParagraph() {
-            // Only the header is rendered on this path - the invalid-key arm raises before any period is
-            // resolved - so exactly one read must occur.
-            final AdvancingClock advancing = new AdvancingClock(Instant.parse("2022-06-10T23:59:59Z"),
-                    Duration.ofHours(1L), ZoneOffset.UTC);
-            final ReportSubmissionService onAdvancingClock = serviceWithClock(advancing);
-
-            final ReportSubmissionScreen screen = onAdvancingClock.openReportScreen();
-
-            assertThat(advancing.reads())
-                    .as(":611 MOVE FUNCTION CURRENT-DATE happens once per paragraph")
-                    .isEqualTo(1);
-            assertThat(screen.form().currentDate()).isEqualTo("06/10/22");
-            assertThat(screen.form().currentTime())
-                    .as("a second read would have moved the time past midnight and the date to the eleventh")
-                    .isEqualTo("23:59:59");
+        @DisplayName("the notification destination is required")
+        void theNotificationDestinationIsRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new ReportSubmissionService(sqsTemplate, snsTemplate,
+                            dateValidationService, FixedClockProvider.canonicalClock(),
+                            new NoTracerProvider(),
+                            QUEUE_NAME, QUEUE_LOGICAL_NAME, MESSAGE_GROUP_ID, null))
+                    .withMessageContaining("notificationTopic");
         }
 
         @Test
-        @DisplayName("the clear leaves the six header fields untouched, they being absent from :637-645")
-        void theClearLeavesTheHeaderFieldsUntouched() {
-            final ReportSubmissionScreen declined =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
+        @DisplayName("every instance field is private and final, so the bean carries nothing between turns")
+        void everyInstanceFieldIsPrivateAndFinal() {
+            final List<String> offenders = Arrays.stream(ReportSubmissionService.class.getDeclaredFields())
+                    .filter(field -> !field.isSynthetic())
+                    .filter(field -> !Modifier.isStatic(field.getModifiers()))
+                    .filter(field -> !Modifier.isPrivate(field.getModifiers())
+                            || !Modifier.isFinal(field.getModifiers()))
+                    .map(Field::getName)
+                    .toList();
 
-            assertThat(declined.form().transactionName()).isEqualTo(TRANSACTION_ID);
-            assertThat(declined.form().currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
-            assertThat(declined.form().title01()).isEqualTo(SCREEN_TITLE_01);
-        }
-
-        @Test
-        @DisplayName("the map area has seventeen components, matching app/cpy-bms/CORPT00.CPY")
-        void theMapAreaHasSeventeenComponents() {
-            assertThat(ReportRequest.class.getRecordComponents())
-                    .as("CORPT00.CPY declares seventeen input fields, and the map area carries all of them")
-                    .hasSize(17);
-        }
-
-        @Test
-        @DisplayName("no submitted value leaks into a screen outcome except through its own field")
-        void noSubmittedValueLeaksIntoAScreenOutcome() {
-            arrangePublish();
-
-            final ReportSubmissionScreen screen =
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
-
-            assertThat(screen.form().errorMessage())
-                    .as("the submitted message field is replaced by the notice, never concatenated with it")
-                    .doesNotContain("submitted-message");
-        }
-    }
-
-    // =====================================================================================================
-    // 16. Deck geometry and thresholds - app/cbl/CORPT00C.cbl:80-127 and :496-508
-    // =====================================================================================================
-
-    /**
-     * The constants the collapsed deck must still record: seventeen cards of eighty bytes, a loop bound of a
-     * thousand matching {@code OCCURS 1000 TIMES}, the {@code /*EOF} terminator, and the two thresholds the
-     * date validation turns on.
-     */
-    @Nested
-    @DisplayName("16. Deck geometry :80-127 and :496-508 - 17 cards, 80 bytes, bound 1000, terminator")
-    class DeckGeometry {
-
-        @Test
-        @DisplayName("seventeen job cards are recorded, being the deck the message replaces")
-        void seventeenJobCardsAreRecorded() throws ReflectiveOperationException {
-            assertThat(declaredConstant("JOB_CARD_COUNT")).isEqualTo(17);
-        }
-
-        @Test
-        @DisplayName("each card was eighty bytes, matching the TDQUEUE RECORDSIZE(80) of the CSD")
-        void eachCardWasEightyBytes() throws ReflectiveOperationException {
-            assertThat(declaredConstant("JOB_CARD_LENGTH")).isEqualTo(80);
-        }
-
-        @Test
-        @DisplayName("the loop bound is a thousand, matching OCCURS 1000 TIMES at :127")
-        void theLoopBoundIsAThousand() throws ReflectiveOperationException {
-            assertThat(declaredConstant("JOB_LINE_LIMIT")).isEqualTo(1000);
-        }
-
-        @Test
-        @DisplayName("the terminator card is recorded byte exact")
-        void theTerminatorCardIsRecordedByteExact() throws ReflectiveOperationException {
-            assertThat(declaredConstant("JOB_TERMINATOR_CARD")).isEqualTo("/*EOF");
-        }
-
-        @Test
-        @DisplayName("the accepted severity is four zeros and the tolerated message number is 2513")
-        void theTwoDateThresholdsAreRecorded() throws ReflectiveOperationException {
-            assertThat(declaredConstant("SEVERITY_ACCEPTED")).isEqualTo("0000");
-            assertThat(declaredConstant("SEVERITY_TOLERATED_MESSAGE_NUMBER")).isEqualTo("2513");
-        }
-
-        @Test
-        @DisplayName("the two range bounds are the source's string literals, not integers")
-        void theTwoRangeBoundsAreStringLiterals() throws ReflectiveOperationException {
-            assertThat(declaredConstant("MONTH_UPPER_BOUND"))
-                    .as(":330 compares SDTMMI > '12' as text, which is why the normalisation must zero-pad")
-                    .isEqualTo("12");
-            assertThat(declaredConstant("DAY_UPPER_BOUND")).isEqualTo("31");
-        }
-
-        @Test
-        @DisplayName("the confirmation gate is one character wide, matching CONFIRMI PIC X(1)")
-        void theConfirmationGateIsOneCharacterWide() throws ReflectiveOperationException {
-            assertThat(declaredConstant("CONFIRMATION_WIDTH")).isEqualTo(1);
-        }
-
-        @Test
-        @DisplayName("the component widths are two for months and days and four for years")
-        void theComponentWidthsAreTwoAndFour() throws ReflectiveOperationException {
-            assertThat(declaredConstant("MONTH_DAY_WIDTH")).isEqualTo(2);
-            assertThat(declaredConstant("YEAR_WIDTH")).isEqualTo(4);
+            assertThat(offenders)
+                    .as("WS-ERR-FLG, END-LOOP-YES and WS-IDX are method local in the target, never fields")
+                    .isEmpty();
         }
 
         @Test
         @DisplayName("every static field is final, so no turn can mutate class-level state")
         void everyStaticFieldIsFinal() {
-            final List<Field> mutableStatics = Arrays.stream(ReportSubmissionService.class
-                            .getDeclaredFields())
+            final List<String> offenders = Arrays.stream(ReportSubmissionService.class.getDeclaredFields())
+                    .filter(field -> !field.isSynthetic())
                     .filter(field -> Modifier.isStatic(field.getModifiers()))
                     .filter(field -> !Modifier.isFinal(field.getModifiers()))
+                    .map(Field::getName)
                     .toList();
-            assertThat(mutableStatics).isEmpty();
+
+            assertThat(offenders).isEmpty();
         }
 
         @Test
-        @DisplayName("two turns on one instance are independent, the bean holding nothing between them")
+        @DisplayName("two turns on one instance are independent, the first leaving nothing behind")
         void twoTurnsOnOneInstanceAreIndependent() {
             arrangePublish();
 
@@ -2235,26 +854,2095 @@ class ReportSubmissionServiceTest {
                     .as("the second turn must behave as though the first never happened")
                     .isEqualTo(REPORT_NAME_MONTHLY + MSG_SUBMITTED_SUFFIX);
         }
+    }
+
+    // =====================================================================================================
+    // 2. Paragraph correspondence and the field budget. app/cbl/CORPT00C.cbl has ten labels and
+    // app/cpy-bms/CORPT00.CPY seventeen input fields.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("2. Paragraph map - ten labels, ten methods, three public entry points, seventeen fields")
+    class ParagraphMap {
 
         @Test
-        @DisplayName("the declined arm returns an outcome rather than raising, so the two are not conflated")
-        void theDeclinedArmReturnsRatherThanRaising() {
-            final Optional<ReportSubmissionScreen> declined = Optional.of(
-                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N")));
+        @DisplayName("all ten paragraph labels have a private counterpart, none consolidated")
+        void allTenParagraphsHaveAPrivateCounterpart() {
+            assertThat(declaredMethodNames())
+                    .as("MAIN-PARA :163, PROCESS-ENTER-KEY :208, SUBMIT-JOB-TO-INTRDR :462, "
+                            + "WIRTE-JOBSUB-TDQ :515, RETURN-TO-PREV-SCREEN :540, SEND-TRNRPT-SCREEN :556, "
+                            + "RETURN-TO-CICS :585, RECEIVE-TRNRPT-SCREEN :596, POPULATE-HEADER-INFO :609 "
+                            + "and INITIALIZE-ALL-FIELDS :633")
+                    .contains("mainPara", "processEnterKey", "submitJobToIntrdr", "wirteJobsubTdq",
+                            "returnToPrevScreen", "sendTrnrptScreen", "returnToCics",
+                            "receiveTrnrptScreen", "populateHeaderInfo", "initializeAllFields");
+        }
 
-            assertThat(declined)
-                    .as(":480-483 ends the turn with a send; the other three arms raise or fall through")
-                    .isPresent();
+        @Test
+        @DisplayName("RETURN-TO-CICS survives as a labelled method although a REST turn needs no return")
+        void returnToCicsSurvivesAsALabelledMethod() {
+            assertThat(declaredMethodNames())
+                    .as(":585 has no behaviour of its own in a stateless service, and is retained so the "
+                            + "paragraph map stays provable rather than deleted as apparent dead code")
+                    .contains("returnToCics");
+        }
+
+        @Test
+        @DisplayName("the source's own misspelling of WIRTE-JOBSUB-TDQ is preserved, not corrected")
+        void theSourceMisspellingIsPreserved() {
+            assertThat(declaredMethodNames())
+                    .as(":515 spells the label WIRTE-JOBSUB-TDQ; correcting it would break the map")
+                    .contains("wirteJobsubTdq")
+                    .doesNotContain("writeJobsubTdq");
+        }
+
+        @Test
+        @DisplayName("exactly three public operations exist, one per entry mode of :165-183")
+        void exactlyThreePublicOperationsExist() {
+            final List<String> publicMethods = Arrays.stream(
+                            ReportSubmissionService.class.getDeclaredMethods())
+                    .filter(method -> !method.isSynthetic())
+                    .filter(method -> Modifier.isPublic(method.getModifiers()))
+                    .map(Method::getName)
+                    .sorted()
+                    .toList();
+
+            assertThat(publicMethods)
+                    .containsExactly("openReportScreen", "openWithoutContext", "submitScreen");
+        }
+
+        @Test
+        @DisplayName("the entry mode has exactly three constants, matching :172, :177 and :183")
+        void theEntryModeHasExactlyThreeConstants() {
+            assertThat(ReportSubmissionService.EntryMode.values())
+                    .containsExactly(ReportSubmissionService.EntryMode.NO_COMMAREA,
+                            ReportSubmissionService.EntryMode.FIRST_ENTRY,
+                            ReportSubmissionService.EntryMode.RE_ENTER);
+        }
+
+        @Test
+        @DisplayName("the attention identifier has exactly three constants, matching EVALUATE EIBAID :184")
+        void theAttentionIdentifierHasExactlyThreeConstants() {
+            assertThat(AttentionIdentifier.values())
+                    .as(":185 DFHENTER, :187 DFHPF3, :190 WHEN OTHER - three arms and no more")
+                    .containsExactly(AttentionIdentifier.ENTER, AttentionIdentifier.PF3,
+                            AttentionIdentifier.OTHER);
+        }
+
+        @Test
+        @DisplayName("the map area the service consumes carries seventeen components, one per input field")
+        void theMapAreaCarriesSeventeenComponents() {
+            final RecordComponent[] components = ReportRequest.class.getRecordComponents();
+
+            assertThat(components)
+                    .as("app/cpy-bms/CORPT00.CPY:24-120 declares seventeen input fields, and the exhaustive "
+                            + "shape contract for the payload itself belongs to the unit model suite")
+                    .hasSize(MAP_INPUT_FIELD_COUNT);
+            assertThat(Arrays.stream(components).map(RecordComponent::getName).toList())
+                    .containsExactly("transactionName", "title01", "currentDate", "programName", "title02",
+                            "currentTime", "monthlySelected", "yearlySelected", "customSelected",
+                            "startDateMonth", "startDateDay", "startDateYear", "endDateMonth", "endDateDay",
+                            "endDateYear", "confirmation", "errorMessage");
+        }
+
+        @Test
+        @DisplayName("the queue message carries three components, the whole deck having collapsed into it")
+        void theQueueMessageCarriesThreeComponents() {
+            assertThat(Arrays.stream(JobSubmissionMessage.class.getRecordComponents())
+                            .map(RecordComponent::getName)
+                            .toList())
+                    .as("the report name of :58 plus the two dates of :60-71, and nothing else")
+                    .containsExactly("reportName", "startDate", "endDate");
+        }
+    }
+
+    // =====================================================================================================
+    // 3. Entry modes and the three EIBAID arms, app/cbl/CORPT00C.cbl:165-195.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("3. Entry and attention :165-195 - first entry, no commarea, enter, PF3 and any other key")
+    class EntryAndAttention {
+
+        @Test
+        @DisplayName("first entry paints an empty form with the cursor on the monthly selector")
+        void firstEntryPaintsAnEmptyForm() {
+            final ReportSubmissionScreen screen = service.openReportScreen();
+
+            assertThat(screen.cursorField())
+                    .as(":181 MOVE -1 TO MONTHLYL OF CORPT0AI")
+                    .isEqualTo(CURSOR_MONTHLY);
+            assertThat(screen.errorFlagOn()).isFalse();
+            assertThat(screen.successHighlight()).isFalse();
+            assertThat(screen.navigationTarget()).isNull();
+            assertThat(screen.form().monthlySelected())
+                    .as(":179 MOVE LOW-VALUES TO CORPT0AO leaves every selector absent")
+                    .isNull();
+            assertThat(screen.form().errorMessage())
+                    .as(":169-170 blank both message carriers")
+                    .isEmpty();
+        }
+
+        @Test
+        @DisplayName("first entry paints the header, SEND-TRNRPT-SCREEN performing :558 unconditionally")
+        void firstEntryPaintsTheHeader() {
+            final ReportRequest form = service.openReportScreen().form();
+
+            assertThat(form.transactionName()).isEqualTo(TRANSACTION_ID);
+            assertThat(form.programName()).isEqualTo(PROGRAM_NAME);
+            assertThat(form.title01()).isEqualTo(SCREEN_TITLE_01);
+            assertThat(form.title02()).isEqualTo(SCREEN_TITLE_02);
+            assertThat(form.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
+            assertThat(form.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
+        }
+
+        @Test
+        @DisplayName("an absent communication area leaves for the sign-on program without painting")
+        void anAbsentCommunicationAreaLeavesForSignOn() {
+            final ReportSubmissionScreen screen = service.openWithoutContext();
+
+            assertThat(screen.navigationTarget())
+                    .as(":172-174 MOVE 'COSGN00C' TO CDEMO-TO-PROGRAM then RETURN-TO-PREV-SCREEN")
+                    .isEqualTo(SIGN_ON_PROGRAM);
+            assertThat(screen.form().transactionName())
+                    .as("RETURN-TO-PREV-SCREEN transfers control; it never performs :558")
+                    .isNull();
+        }
+
+        @Test
+        @DisplayName("PF3 leaves for the main menu, carrying the submitted map area unchanged")
+        void pf3LeavesForTheMainMenu() {
+            final ReportRequest submitted = monthlyRequest("Y");
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.PF3, submitted);
+
+            assertThat(screen.navigationTarget())
+                    .as(":188 MOVE 'COMEN01C' TO CDEMO-TO-PROGRAM")
+                    .isEqualTo(MAIN_MENU_PROGRAM);
+            assertThat(screen.form()).isEqualTo(submitted);
+        }
+
+        @Test
+        @DisplayName("PF3 never reaches the queue, so leaving cannot submit a job")
+        void pf3NeverReachesTheQueue() {
+            service.submitScreen(AttentionIdentifier.PF3, monthlyRequest("Y"));
+
+            verifyNoInteractions(sqsTemplate, snsTemplate, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("any other key produces the shared invalid-key message on the monthly selector")
+        void anyOtherKeyProducesTheSharedInvalidKeyMessage() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.OTHER, monthlyRequest("Y")))
+                    .withMessage(MSG_INVALID_KEY)
+                    .satisfies(failure -> {
+                        assertThat(failure.getFieldName())
+                                .as(":193 MOVE -1 TO MONTHLYL OF CORPT0AI")
+                                .isEqualTo(CURSOR_MONTHLY);
+                        assertThat(failure.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.INVALID);
+                    });
+            verifyNoInteractions(sqsTemplate);
+        }
+
+        @Test
+        @DisplayName("the attention identifier is required on a re-enter turn")
+        void theAttentionIdentifierIsRequired() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> service.submitScreen(null, monthlyRequest("Y")))
+                    .withMessageContaining("attentionIdentifier");
+        }
+
+        @Test
+        @DisplayName("the map area is required on a re-enter turn, a null request being untrusted input")
+        void theMapAreaIsRequiredOnAReEnterTurn() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, null))
+                    .withMessageContaining("request");
+            verifyNoInteractions(sqsTemplate, snsTemplate, dateValidationService);
+        }
+    }
+
+    // =====================================================================================================
+    // 4. Report-type precedence, app/cbl/CORPT00C.cbl:212-442. EVALUATE TRUE, first match wins.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("4. Report-type precedence :212-442 - monthly, then yearly, then custom, then none")
+    class ReportTypePrecedence {
+
+        @Test
+        @DisplayName("monthly wins when all three selectors are supplied, being the first WHEN")
+        void monthlyWinsWhenEverySelectorIsSupplied() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea("Y", "Y", "Y", "06", "01", "2022", "06", "30", "2022", "Y"));
+
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_MONTHLY);
+            verifyNoInteractions(dateValidationService);
+        }
+
+        @Test
+        @DisplayName("yearly wins over custom when monthly is absent")
+        void yearlyWinsOverCustom() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, "Y", "Y", "06", "01", "2022", "06", "30", "2022", "Y"));
+
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_YEARLY);
+            verifyNoInteractions(dateValidationService);
+        }
+
+        @Test
+        @DisplayName("custom is reached only when neither of the first two selectors is supplied")
+        void customIsReachedLast() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_CUSTOM);
+        }
+
+        @Test
+        @DisplayName("no selector at all produces the select-a-report-type message on the monthly selector")
+        void noSelectorProducesTheSelectMessage() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            mapArea(null, null, null, "06", "01", "2022", "06", "30", "2022", "Y")))
+                    .withMessage(MSG_SELECT_REPORT_TYPE)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .as(":441 MOVE -1 TO MONTHLYL OF CORPT0AI")
+                            .isEqualTo(CURSOR_MONTHLY));
+            verifyNoInteractions(sqsTemplate, dateValidationService);
+        }
+
+        @ParameterizedTest(name = "a selector of [{0}] is not a selection")
+        @ValueSource(strings = {"", " ", "   ", "\u0000", "\u0000\u0000"})
+        @DisplayName("SPACES and LOW-VALUES are not a selection, matching NOT = SPACES AND LOW-VALUES")
+        void aBlankOrLowValueSelectorIsNotASelection(final String selector) {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            mapArea(selector, selector, selector, null, null, null, null, null, null, "Y")))
+                    .withMessage(MSG_SELECT_REPORT_TYPE);
+        }
+
+        @Test
+        @DisplayName("an absent or blank selector is skipped, so the next populated one wins")
+        void anAbsentSelectorIsSkippedSoTheNextOneWins() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, "", "Y", "06", "01", "2022", "06", "30", "2022", "Y"));
+
+            assertThat(sendOptions.payload().reportName())
+                    .as(":213 is absent and :239 is blank, so :256 is the first WHEN that matches")
+                    .isEqualTo(REPORT_NAME_CUSTOM);
+        }
+
+        @ParameterizedTest(name = "a selector of [{0}] IS a selection")
+        @ValueSource(strings = {"Y", "y", "X", "1", "/", "."})
+        @DisplayName("any non-blank selector selects - the source tests presence, never a particular value")
+        void anyNonBlankSelectorIsASelection(final String selector) {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(selector, null, null, null, null, null, null, null, null, "Y"));
+
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_MONTHLY);
+        }
+    }
+
+    // =====================================================================================================
+    // 5. The monthly period, app/cbl/CORPT00C.cbl:213-236. A FULL CALENDAR MONTH.
+    //
+    // :223 MOVE 1 TO WS-CURDATE-DAY; :224 ADD 1 TO WS-CURDATE-MONTH; :225-228 carry the year when the month
+    // exceeds 12; :229-230 COMPUTE DATE-OF-INTEGER(INTEGER-OF-DATE(...) - 1). The first of the next month,
+    // less one day, is the last day of THIS one. The start is the first of this month, from :217-219.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("5. The monthly period :213-236 - a FULL CALENDAR MONTH with the twelve-month carry")
+    class MonthlyPeriod {
+
+        @Test
+        @DisplayName("mid-month, the period runs from the first to the LAST day - explicitly not to today")
+        void midMonthTheperiodRunsToTheMonthEnd() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as(":217-219 assemble the current year and month with a day of 01")
+                    .isEqualTo("2022-06-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as(":223-230 give the month end; the clock reads the tenth, which must NOT appear")
+                    .isEqualTo("2022-06-30")
+                    .isNotEqualTo("2022-06-10");
+        }
+
+        @Test
+        @DisplayName("on the FIRST of a month the period still spans the whole month")
+        void onTheFirstOfAMonthThePeriodStillSpansTheWholeMonth() {
+            arrangePublish();
+
+            serviceOn("2022-06-01").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as("a start equal to today must not collapse the period to a single day")
+                    .isEqualTo("2022-06-30");
+        }
+
+        @Test
+        @DisplayName("on the LAST day of a month the period is unchanged, start and end both being derived")
+        void onTheLastDayOfAMonthThePeriodIsUnchanged() {
+            arrangePublish();
+
+            serviceOn("2022-06-30").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
+        }
+
+        @Test
+        @DisplayName("a thirty-one day month ends on the thirty-first")
+        void aThirtyOneDayMonthEndsOnTheThirtyFirst() {
+            arrangePublish();
+
+            serviceOn("2022-07-15").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-07-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-07-31");
+        }
+
+        @Test
+        @DisplayName("a thirty day month ends on the thirtieth")
+        void aThirtyDayMonthEndsOnTheThirtieth() {
+            arrangePublish();
+
+            serviceOn("2022-04-15").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-04-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-04-30");
+        }
+
+        @Test
+        @DisplayName("a non-leap February ends on the twenty-eighth")
+        void aNonLeapFebruaryEndsOnTheTwentyEighth() {
+            arrangePublish();
+
+            serviceOn("2022-02-15").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-02-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as("2022 is not a leap year, so the integer arithmetic of :229-230 lands on the 28th")
+                    .isEqualTo("2022-02-28");
+        }
+
+        @Test
+        @DisplayName("a leap February ends on the twenty-ninth")
+        void aLeapFebruaryEndsOnTheTwentyNinth() {
+            arrangePublish();
+
+            serviceOn("2024-02-15").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2024-02-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as("2024 is a leap year, so the same arithmetic lands on the 29th")
+                    .isEqualTo("2024-02-29");
+        }
+
+        @Test
+        @DisplayName("DECEMBER carries the year at :225-228 and still ends on the CURRENT year's 31st")
+        void decemberCarriesTheYearAndEndsInTheCurrentYear() {
+            arrangePublish();
+
+            serviceOn("2022-12-15").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-12-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as(":224 makes the month 13, :225-228 carry to January 2023, and :229-230 subtract one "
+                            + "day - which lands back in 2022. The NEXT year must never appear")
+                    .isEqualTo("2022-12-31")
+                    .doesNotContain("2023");
+        }
+
+        @Test
+        @DisplayName("the thirty-first of December is the same period, the carry being independent of the day")
+        void theThirtyFirstOfDecemberIsTheSamePeriod() {
+            arrangePublish();
+
+            serviceOn("2022-12-31").submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-12-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-12-31");
+        }
+
+        @Test
+        @DisplayName("both dates come from ONE clock reading, so the period cannot straddle a month end")
+        void bothDatesComeFromOneClockReading() {
+            arrangePublish();
+            final AdvancingClock clock = new AdvancingClock(
+                    Instant.parse("2022-06-30T23:59:59Z"), Duration.ofSeconds(2L),
+                    FixedClockProvider.CANONICAL_ZONE);
+
+            serviceWithClock(clock).submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as(":215 performs ONE MOVE FUNCTION CURRENT-DATE; a second reading would have rolled "
+                            + "into July and produced a period spanning two months")
+                    .isEqualTo("2022-06-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
+            assertThat(clock.reads())
+                    .as("one reading for the period, one more for the header at :611")
+                    .isEqualTo(2);
+        }
+
+        @Test
+        @DisplayName("each date collapses into ONE value serving BOTH parameter slots, so they cannot differ")
+        void eachDateServesBothParameterSlots() throws ReflectiveOperationException {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(declaredConstant("JOB_CARD_COUNT"))
+                    .as("the deck that held PARM-START-DATE-1 at :106 and PARM-START-DATE-2 at :118")
+                    .isEqualTo(JOB_CARD_COUNT);
+            assertThat(JobSubmissionMessage.class.getRecordComponents())
+                    .as(":220-221 and :235-236 each move ONE assembled date to TWO slots, so the target "
+                            + "carries one field per date and the two slots can never diverge")
+                    .hasSize(3);
+            assertThat(sendOptions.payload().startDate())
+                    .isEqualTo(sendOptions.payload().startDate());
+            assertThat(sendOptions.payload().startDate()).hasSize(10);
+            assertThat(sendOptions.payload().endDate()).hasSize(10);
+        }
+
+        @Test
+        @DisplayName("the report name is the unpadded literal of :214")
+        void theReportNameIsTheUnpaddedLiteral() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload().reportName())
+                    .as("WS-REPORT-NAME is PIC X(10) at :58, but every use composes DELIMITED BY SPACE")
+                    .isEqualTo("Monthly")
+                    .isEqualTo(REPORT_NAME_MONTHLY);
+        }
+
+        @Test
+        @DisplayName("both dates are ten characters with dashes at positions five and eight")
+        void bothDatesAreTenCharactersWithDashes() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            for (final String date : List.of(sendOptions.payload().startDate(),
+                    sendOptions.payload().endDate())) {
+                assertThat(date)
+                        .as(":60-71 declare 4 + 1 + 2 + 1 + 2 with literal dash fillers")
+                        .hasSize(10)
+                        .matches("\\d{4}-\\d{2}-\\d{2}");
+                assertThat(date.charAt(4)).isEqualTo('-');
+                assertThat(date.charAt(7)).isEqualTo('-');
+            }
+        }
+
+        @Test
+        @DisplayName("the monthly arm ignores the six custom components and never calls the validator")
+        void theMonthlyArmIgnoresTheCustomComponents() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea("Y", null, null, "99", "99", "0000", "99", "99", "9999", "Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-06-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-06-30");
+            verifyNoInteractions(dateValidationService);
+        }
+    }
+
+    // =====================================================================================================
+    // 6. The yearly period, app/cbl/CORPT00C.cbl:239-253. January first through December thirty-first.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("6. The yearly period :239-253 - January first through December thirty-first")
+    class YearlyPeriod {
+
+        @Test
+        @DisplayName("the period spans the whole calendar year containing today")
+        void thePeriodSpansTheWholeCalendarYear() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as(":243-246 one multi-receiver MOVE of the year, then '01' to both month and day")
+                    .isEqualTo("2022-01-01");
+            assertThat(sendOptions.payload().endDate())
+                    .as(":250-251 MOVE '12' then '31'")
+                    .isEqualTo("2022-12-31");
+        }
+
+        @Test
+        @DisplayName("a leap year is no different, the end date being two literals rather than a computation")
+        void aLeapYearIsNoDifferent() {
+            arrangePublish();
+
+            serviceOn("2024-02-29").submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2024-01-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2024-12-31");
+        }
+
+        @Test
+        @DisplayName("both dates come from ONE clock reading, so the period cannot straddle a year end")
+        void bothDatesComeFromOneClockReading() {
+            arrangePublish();
+            final AdvancingClock clock = new AdvancingClock(
+                    Instant.parse("2022-12-31T23:59:59Z"), Duration.ofSeconds(2L),
+                    FixedClockProvider.CANONICAL_ZONE);
+
+            serviceWithClock(clock).submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as(":241 performs ONE MOVE FUNCTION CURRENT-DATE")
+                    .isEqualTo("2022-01-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-12-31");
+        }
+
+        @Test
+        @DisplayName("the report name is the unpadded literal of :240")
+        void theReportNameIsTheUnpaddedLiteral() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"));
+
+            assertThat(sendOptions.payload().reportName())
+                    .isEqualTo("Yearly")
+                    .isEqualTo(REPORT_NAME_YEARLY);
+        }
+
+        @Test
+        @DisplayName("the yearly arm ignores the six custom components and never calls the validator")
+        void theYearlyArmIgnoresTheCustomComponents() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, "Y", null, "99", "99", "0000", "99", "99", "9999", "Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-01-01");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-12-31");
+            verifyNoInteractions(dateValidationService);
+        }
+    }
+
+    // =====================================================================================================
+    // 7. The custom period, layer one: emptiness. app/cbl/CORPT00C.cbl:258-303, an EVALUATE TRUE whose six
+    // WHEN clauses are mutually exclusive, so only the FIRST empty component is ever reported.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("7. Custom layer 1 :258-303 - six emptiness guards in source order, first match wins")
+    class CustomEmptiness {
+
+        @Test
+        @DisplayName("a wholly empty range reports the START MONTH, the first WHEN of the EVALUATE")
+        void aWhollyEmptyRangeReportsTheStartMonth() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(null, null, null, null, null, null)))
+                    .withMessage(MSG_START_MONTH_EMPTY)
+                    .satisfies(failure -> {
+                        assertThat(failure.getFieldName())
+                                .as(":264 MOVE -1 TO SDTMML OF CORPT0AI")
+                                .isEqualTo(CURSOR_START_MONTH);
+                        assertThat(failure.getFailureKind())
+                                .as("an empty field is BLANK, not INVALID")
+                                .isEqualTo(ValidationException.FailureKind.BLANK);
+                    });
+        }
+
+        @Test
+        @DisplayName("the start day is reported second, :266-272")
+        void theStartDayIsReportedSecond() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", null, null, null, null, null)))
+                    .withMessage(MSG_START_DAY_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_START_DAY));
+        }
+
+        @Test
+        @DisplayName("the start year is reported third, :273-279")
+        void theStartYearIsReportedThird() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", null, null, null, null)))
+                    .withMessage(MSG_START_YEAR_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_START_YEAR));
+        }
+
+        @Test
+        @DisplayName("the end month is reported fourth, :280-286")
+        void theEndMonthIsReportedFourth() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", null, null, null)))
+                    .withMessage(MSG_END_MONTH_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_END_MONTH));
+        }
+
+        @Test
+        @DisplayName("the end day is reported fifth, :287-293")
+        void theEndDayIsReportedFifth() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "06", null, null)))
+                    .withMessage(MSG_END_DAY_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_END_DAY));
+        }
+
+        @Test
+        @DisplayName("the end year is reported sixth and last, :294-300")
+        void theEndYearIsReportedSixth() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "06", "30", null)))
+                    .withMessage(MSG_END_YEAR_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_END_YEAR));
+        }
+
+        @ParameterizedTest(name = "a start month of [{0}] is empty")
+        @ValueSource(strings = {"", " ", "  ", "\u0000", "\u0000\u0000"})
+        @DisplayName("SPACES and LOW-VALUES are both empty, matching = SPACES OR LOW-VALUES")
+        void spacesAndLowValuesAreBothEmpty(final String component) {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(component, "01", "2022", "06", "30", "2022")))
+                    .withMessage(MSG_START_MONTH_EMPTY);
+        }
+
+        @Test
+        @DisplayName("only the FIRST empty component is reported, the EVALUATE arms being exclusive")
+        void onlyTheFirstEmptyComponentIsReported() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(null, null, null, null, null, null)))
+                    .withMessage(MSG_START_MONTH_EMPTY)
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .as("no arm after :265 can run, so no later literal may appear")
+                            .doesNotContain("Day")
+                            .doesNotContain("Year")
+                            .doesNotContain("End Date"));
+        }
+
+        @Test
+        @DisplayName("all six populated falls through the WHEN OTHER arm at :301-302 and proceeds")
+        void allSixPopulatedProceeds() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_CUSTOM);
+        }
+
+        @Test
+        @DisplayName("no emptiness failure reaches the queue or the validator")
+        void noEmptinessFailureReachesTheQueue() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(null, null, null, null, null, null)));
+
+            verifyNoInteractions(sqsTemplate, snsTemplate, dateValidationService);
+        }
+    }
+
+    // =====================================================================================================
+    // 8. The custom period, layers two and three. :305-327 normalise each component through a MOVE into
+    // PIC 9(n) after FUNCTION NUMVAL-C; :329-379 then apply SIX INDEPENDENT IF statements.
+    //
+    // Each of those six ends in PERFORM SEND-TRNRPT-SCREEN, and that paragraph ends GO TO RETURN-TO-CICS at
+    // :580 - a terminal EXEC CICS RETURN. The FIRST guard to fire therefore ends the turn, and no later
+    // guard can run. A secondary description of this program claims the LAST guard wins; it cannot.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("8. Custom layers 2 and 3 :305-379 - string upper bounds, no lower bound, no year bound")
+    class CustomComponentValues {
+
+        @Test
+        @DisplayName("a single digit is normalised to two, so a month of 6 is accepted as 06")
+        void aSingleDigitIsNormalisedToTwo() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "6", "1", "2022", "6", "30", "2022", "Y"));
+
+            verify(dateValidationService)
+                    .validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD);
+            verify(dateValidationService)
+                    .validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @Test
+        @DisplayName("extra digits are reduced modulo the receiving width, so 0012 is the month 12")
+        void extraDigitsAreReducedModuloTheWidth() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "0012", "01", "2022", "06", "30", "2022", "Y"));
+
+            verify(dateValidationService)
+                    .validate("2022-12-01", DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @Test
+        @DisplayName("a component with no digits normalises to zeros, which the guards then let through")
+        void aComponentWithNoDigitsNormalisesToZeros() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "AB", "01", "2022", "06", "30", "2022", "Y"));
+
+            // :305-307 leave the month as 00, and :329-330 has NO lower bound to catch it.
+            verify(dateValidationService)
+                    .validate("2022-00-01", DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @Test
+        @DisplayName("a start month above twelve is rejected on the start month field")
+        void aStartMonthAboveTwelveIsRejected() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("13", "01", "2022", "06", "30", "2022")))
+                    .withMessage(MSG_START_MONTH_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .as(":334 MOVE -1 TO SDTMML OF CORPT0AI")
+                            .isEqualTo(CURSOR_START_MONTH));
+            verifyNoInteractions(dateValidationService);
+        }
+
+        @Test
+        @DisplayName("a start day above thirty-one is rejected on the start day field")
+        void aStartDayAboveThirtyOneIsRejected() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "32", "2022", "06", "30", "2022")))
+                    .withMessage(MSG_START_DAY_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_START_DAY));
+        }
+
+        @Test
+        @DisplayName("an end month above twelve is rejected on the end month field")
+        void anEndMonthAboveTwelveIsRejected() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "13", "30", "2022")))
+                    .withMessage(MSG_END_MONTH_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_END_MONTH));
+        }
+
+        @Test
+        @DisplayName("an end day above thirty-one is rejected on the end day field")
+        void anEndDayAboveThirtyOneIsRejected() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "06", "32", "2022")))
+                    .withMessage(MSG_END_DAY_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_END_DAY));
+        }
+
+        @Test
+        @DisplayName("the two year literals exist for the arms the source retains but cannot reach")
+        void theTwoYearLiteralsExistForTheRetainedArms() throws ReflectiveOperationException {
+            assertThat(declaredConstant("MSG_START_YEAR_INVALID"))
+                    .as(":347-354 is retained one for one although normalisation makes it unreachable")
+                    .isEqualTo(MSG_START_YEAR_INVALID);
+            assertThat(declaredConstant("MSG_END_YEAR_INVALID"))
+                    .as(":373-379, likewise retained")
+                    .isEqualTo(MSG_END_YEAR_INVALID);
+        }
+
+        @ParameterizedTest(name = "month [{0}] and day [{1}] sit ON the bound and are accepted")
+        @CsvSource({"12, 31", "01, 01", "12, 01", "01, 31"})
+        @DisplayName("twelve and thirty-one are ON the bound, the tests being strictly greater than")
+        void theBoundaryValuesAreAccepted(final String month, final String day) {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", month, day, "2022", month, day, "2022", "Y"));
+
+            assertThat(sendOptions.payload().startDate()).isEqualTo("2022-" + month + "-" + day);
+        }
+
+        @Test
+        @DisplayName("the two bounds are the source's STRING literals, never integers")
+        void theTwoBoundsAreStringLiterals() throws ReflectiveOperationException {
+            assertThat(declaredConstant("MONTH_UPPER_BOUND"))
+                    .as(":330 compares against the character literal '12'")
+                    .isInstanceOf(String.class)
+                    .isEqualTo("12");
+            assertThat(declaredConstant("DAY_UPPER_BOUND"))
+                    .as(":339 compares against the character literal '31'")
+                    .isInstanceOf(String.class)
+                    .isEqualTo("31");
+        }
+
+        @Test
+        @DisplayName("a month of 00 and a day of 00 pass layer 2 and reach layer 3 unchallenged")
+        void zeroMonthAndZeroDayReachTheValidator() {
+            when(dateValidationService.validate("2022-00-00", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_REJECTED, "bad month"));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("00", "00", "2022", "06", "30", "2022")))
+                    .as(":329-346 have NO lower bound, so a zero month and a zero day are rejected by the "
+                            + "date validator at :396-405 and not by the range guards")
+                    .withMessage(MSG_START_DATE_INVALID);
+
+            verify(dateValidationService).validate("2022-00-00", DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @ParameterizedTest(name = "a year of [{0}] passes layer 2")
+        @ValueSource(strings = {"0000", "9999"})
+        @DisplayName("neither year has ANY range check, only IS NOT NUMERIC, so both extremes pass layer 2")
+        void neitherYearHasARangeCheck(final String year) {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "06", "01", year, "06", "30", year, "Y"));
+
+            // :347 and :373 carry no OR continuation, so no bound exists for either year to fail.
+            verify(dateValidationService)
+                    .validate(year + "-06-01", DateValidationService.MASK_YYYY_MM_DD);
+            assertThat(sendOptions.payload().startDate()).startsWith(year);
+        }
+
+        @Test
+        @DisplayName("the six guards are independent IFs, but the FIRST to fire ends the turn - not the last")
+        void theFirstGuardToFireEndsTheTurn() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("13", "32", "2022", "13", "32", "2022")))
+                    .as("all four bounded components are out of range; :329-379 is six independent IF "
+                            + "statements, yet each ends PERFORM SEND-TRNRPT-SCREEN, and :580 ends that "
+                            + "paragraph with GO TO RETURN-TO-CICS - a terminal EXEC CICS RETURN. So the "
+                            + "start month, the first guard, is the only message that can be produced")
+                    .withMessage(MSG_START_MONTH_INVALID)
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .doesNotContain("Day")
+                            .doesNotContain("End Date"));
+        }
+
+        @Test
+        @DisplayName("the guards run in source order: start month, start day, end month, then end day")
+        void theGuardsRunInSourceOrder() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "32", "2022", "13", "32", "2022")))
+                    .withMessage(MSG_START_DAY_INVALID);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "13", "32", "2022")))
+                    .withMessage(MSG_END_MONTH_INVALID);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", "01", "2022", "06", "32", "2022")))
+                    .withMessage(MSG_END_DAY_INVALID);
+        }
+
+        @Test
+        @DisplayName("no range failure reaches the queue")
+        void noRangeFailureReachesTheQueue() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("13", "01", "2022", "06", "30", "2022")));
+
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+    }
+
+    // =====================================================================================================
+    // 9. The custom period, whole-date validation. :388-406 for the start date and :408-426 for the end.
+    //
+    // :396 accepts a severity of '0000' outright. :399 then forgives a NON-ZERO severity when the message
+    // number is exactly '2513'. Only those two values are read; the sixty-one characters of message text at
+    // :136 are never consulted. The taxonomy behind the numbers belongs to the validation suite.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("9. Custom whole-date validation :388-426 - severity 0000 accepted, 2513 tolerated")
+    class CustomDateValidation {
+
+        @Test
+        @DisplayName("the assembled dates and the mask cross the boundary exactly as :388-394 build them")
+        void theAssembledDatesAndMaskCrossTheBoundary() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            final InOrder order = inOrder(dateValidationService);
+            order.verify(dateValidationService)
+                    .validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD);
+            order.verify(dateValidationService)
+                    .validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD);
+            order.verifyNoMoreInteractions();
+        }
+
+        @Test
+        @DisplayName("the mask is the ten characters of WS-DATE-FORMAT at :72, not an invented pattern")
+        void theMaskIsTheSourceLiteral() {
+            assertThat(DateValidationService.MASK_YYYY_MM_DD)
+                    .isEqualTo("YYYY-MM-DD")
+                    .hasSize(10);
+        }
+
+        @Test
+        @DisplayName("the assembled date carries dashes at positions five and eight, per :60-71")
+        void theAssembledDateCarriesDashesAtPositionsFiveAndEight() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "3", "7", "1999", "12", "25", "2001", "Y"));
+
+            verify(dateValidationService)
+                    .validate("1999-03-07", DateValidationService.MASK_YYYY_MM_DD);
+            verify(dateValidationService)
+                    .validate("2001-12-25", DateValidationService.MASK_YYYY_MM_DD);
+            assertThat(sendOptions.payload().startDate().charAt(4)).isEqualTo('-');
+            assertThat(sendOptions.payload().startDate().charAt(7)).isEqualTo('-');
+        }
+
+        @Test
+        @DisplayName("severity 0000 is accepted outright, whatever the message number happens to be")
+        void severityZeroIsAcceptedWhateverTheMessageNumber() {
+            arrangePublish();
+            when(dateValidationService.validate(anyString(), any()))
+                    .thenReturn(validatorResult(SEVERITY_ACCEPTED, MESSAGE_NUMBER_REJECTED, "ignored"));
+
+            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(sendOptions.payload().reportName())
+                    .as(":396 tests the severity alone and CONTINUEs; the message number is not consulted "
+                            + "on that arm at all")
+                    .isEqualTo(REPORT_NAME_CUSTOM);
+        }
+
+        @Test
+        @DisplayName("a NON-ZERO severity whose message number is 2513 is ACCEPTED - the :399 exemption")
+        void aNonZeroSeverityWithTheToleratedMessageNumberIsAccepted() {
+            arrangePublish();
+            when(dateValidationService.validate(anyString(), any()))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_TOLERATED, "out of range"));
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(screen.successHighlight())
+                    .as(":399 reads IF ... NOT = '2513', so an equal message number falls through to "
+                            + "acceptance even though the severity is not zero. A port that rejected every "
+                            + "non-zero severity would reject dates the source accepts")
+                    .isTrue();
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_CUSTOM);
+        }
+
+        @Test
+        @DisplayName("the exemption applies to the END date too, both calls sharing it")
+        void theExemptionAppliesToTheEndDateToo() {
+            arrangePublish();
+            when(dateValidationService.validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_ACCEPTED, SEVERITY_ACCEPTED, "ok"));
+            when(dateValidationService.validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_TOLERATED, "out of range"));
+
+            service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(sendOptions.payload().endDate())
+                    .as(":419 mirrors :399 exactly")
+                    .isEqualTo("2022-06-30");
+        }
+
+        @Test
+        @DisplayName("a non-zero severity with any OTHER message number is rejected, start date literal")
+        void aNonZeroSeverityWithAnotherMessageNumberIsRejected() {
+            when(dateValidationService.validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_REJECTED, "invalid"));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("Y")))
+                    .withMessage(MSG_START_DATE_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .as(":403 MOVE -1 TO SDTMML - the MONTH component, not the day or the year")
+                            .isEqualTo(CURSOR_START_MONTH));
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("an end date rejection carries the END DATE literal and the END MONTH cursor")
+        void anEndDateRejectionCarriesTheEndDateLiteral() {
+            when(dateValidationService.validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_ACCEPTED, SEVERITY_ACCEPTED, "ok"));
+            when(dateValidationService.validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_REJECTED, "invalid"));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("Y")))
+                    .withMessage(MSG_END_DATE_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .as(":423 MOVE -1 TO EDTMML - again the MONTH component")
+                            .isEqualTo(CURSOR_END_MONTH));
+        }
+
+        @Test
+        @DisplayName("the START date is validated first, so only it is reported when both are impossible")
+        void theStartDateIsValidatedFirst() {
+            when(dateValidationService.validate(anyString(), any()))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_REJECTED, "invalid"));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("Y")))
+                    .as(":388-406 precedes :408-426, and :404 sends, which ends the turn at :580")
+                    .withMessage(MSG_START_DATE_INVALID);
+
+            verify(dateValidationService)
+                    .validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @Test
+        @DisplayName("only the severity code and the message number are consulted, never the message text")
+        void onlyTheSeverityAndMessageNumberAreConsulted() {
+            arrangePublish();
+            when(dateValidationService.validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_TOLERATED,
+                            "THE DATE IS INVALID AND MUST BE REJECTED"));
+            when(dateValidationService.validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_TOLERATED,
+                            "an entirely different sixty-one character narrative"));
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"));
+
+            assertThat(screen.successHighlight())
+                    .as("two outcomes agreeing only on their severity and message number must produce the "
+                            + "same decision, because :396 and :399 read nothing else; the message text of "
+                            + ":136 is never examined")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("the report name is assigned only AFTER both dates pass, per :433")
+        void theReportNameIsAssignedOnlyAfterBothDatesPass() {
+            when(dateValidationService.validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_ACCEPTED, SEVERITY_ACCEPTED, "ok"));
+            when(dateValidationService.validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD))
+                    .thenReturn(validatorResult(SEVERITY_NON_ZERO, MESSAGE_NUMBER_REJECTED, "invalid"));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("Y")))
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .as("MOVE 'Custom' TO WS-REPORT-NAME is at :433, after both validations, so a "
+                                    + "rejected range never carries a report name into its message")
+                            .doesNotContain(REPORT_NAME_CUSTOM));
+        }
+
+        @Test
+        @DisplayName("an end date EARLIER than the start date is accepted, the source comparing them nowhere")
+        void anEndDateEarlierThanTheStartIsAccepted() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "12", "31", "2022", "01", "01", "2022", "Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as(":256-433 validates each date independently and never orders the pair; adding an "
+                            + "ordering check would reject a range the source submits")
+                    .isEqualTo("2022-12-31");
+            assertThat(sendOptions.payload().endDate()).isEqualTo("2022-01-01");
+        }
+
+        @Test
+        @DisplayName("the two thresholds are the source's literals, recorded so neither can drift")
+        void theTwoThresholdsAreRecorded() throws ReflectiveOperationException {
+            assertThat(declaredConstant("SEVERITY_ACCEPTED"))
+                    .as(":396")
+                    .isEqualTo(SEVERITY_ACCEPTED);
+            assertThat(declaredConstant("SEVERITY_TOLERATED_MESSAGE_NUMBER"))
+                    .as(":399 and :419. What the number MEANS in the language environment is Not available "
+                            + "from this corpus; the caller treats it as an opaque token, as does this test")
+                    .isEqualTo(MESSAGE_NUMBER_TOLERATED);
+        }
+    }
+
+    // =====================================================================================================
+    // 10. The confirmation handshake, app/cbl/CORPT00C.cbl:462-493. It lives INSIDE the submission
+    // paragraph, so it is demanded only after the report type has been resolved and the dates computed -
+    // which is observable, because the blank re-prompt names the report.
+    //
+    // The gate is CONFIRMI, PIC X(1) in app/cpy-bms/CORPT00.CPY:114, so at most one character is ever
+    // compared. :478 is the combined relation = 'Y' OR 'y', not a case function.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("10. The confirmation handshake :462-493 - four states over a one-character gate")
+    class ConfirmationHandshake {
+
+        @Test
+        @DisplayName("a blank gate re-prompts naming the MONTHLY report, byte exactly")
+        void aBlankGateNamesTheMonthlyReport() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
+                    .withMessage("Please confirm to print the Monthly report...")
+                    .satisfies(failure -> {
+                        assertThat(failure.getFieldName())
+                                .as(":472 MOVE -1 TO CONFIRML OF CORPT0AI")
+                                .isEqualTo(CURSOR_CONFIRM);
+                        assertThat(failure.getFailureKind())
+                                .isEqualTo(ValidationException.FailureKind.BLANK);
+                    });
+        }
+
+        @Test
+        @DisplayName("a blank gate re-prompts naming the YEARLY report, byte exactly")
+        void aBlankGateNamesTheYearlyReport() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("")))
+                    .withMessage("Please confirm to print the Yearly report...");
+        }
+
+        @Test
+        @DisplayName("a blank gate re-prompts naming the CUSTOM report, byte exactly")
+        void aBlankGateNamesTheCustomReport() {
+            arrangeDateValidatorAccepts();
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("")))
+                    .withMessage("Please confirm to print the Custom report...");
+        }
+
+        @Test
+        @DisplayName("the prompt is composed from the source's two DELIMITED BY SIZE literals")
+        void thePromptIsComposedFromTheTwoLiterals() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
+                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .as("WS-REPORT-NAME is PIC X(10) but :468 composes it DELIMITED BY SPACE, so no "
+                                    + "padding may survive into the message")
+                            .doesNotContain("Monthly   "));
+        }
+
+        @Test
+        @DisplayName("an absent gate re-prompts on the same message, LOW-VALUES being blank too")
+        void anAbsentGateRePrompts() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(null)))
+                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX);
+        }
+
+        @Test
+        @DisplayName("the prompt is only reachable AFTER the dates are computed, which is why it names them")
+        void thePromptIsOnlyReachableAfterTheDatesAreComputed() {
+            arrangeDateValidatorAccepts();
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequestConfirmedWith("")))
+                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_CUSTOM + MSG_CONFIRM_SUFFIX);
+
+            // The handshake sits at :464, inside SUBMIT-JOB-TO-INTRDR, which :435 performs only after both
+            // date validations have passed. Both calls therefore precede the prompt.
+            verify(dateValidationService)
+                    .validate("2022-06-01", DateValidationService.MASK_YYYY_MM_DD);
+            verify(dateValidationService)
+                    .validate("2022-06-30", DateValidationService.MASK_YYYY_MM_DD);
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("an upper case Y confirms and the submission proceeds")
+        void anUpperCaseYConfirms() {
+            arrangePublish();
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(screen.errorFlagOn()).isFalse();
+            assertThat(screen.successHighlight()).isTrue();
+            verify(sqsTemplate).sendAsync(any());
+        }
+
+        @Test
+        @DisplayName("a lower case y confirms as well, :478 comparing two distinct literals")
+        void aLowerCaseYConfirms() {
+            arrangePublish();
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("y"));
+
+            assertThat(screen.successHighlight())
+                    .as("= 'Y' OR 'y' is a combined relation condition, NOT a case function - so no "
+                            + "toUpperCase and no locale enters into the comparison")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("an upper case N declines, clearing the form and ending the turn with NO message")
+        void anUpperCaseNDeclines() {
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
+
+            assertThat(screen.errorFlagOn())
+                    .as(":482 MOVE 'Y' TO WS-ERR-FLG")
+                    .isTrue();
+            assertThat(screen.successHighlight()).isFalse();
+            assertThat(screen.form().errorMessage())
+                    .as(":480-483 sets no message at all - a silent abandonment")
+                    .isEmpty();
+            assertThat(screen.cursorField())
+                    .as(":480-483 sets no cursor either")
+                    .isNull();
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("a lower case n declines identically")
+        void aLowerCaseNDeclines() {
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("n"));
+
+            assertThat(screen.errorFlagOn()).isTrue();
+            assertThat(screen.form().errorMessage()).isEmpty();
+            verifyNoInteractions(sqsTemplate);
+        }
+
+        @Test
+        @DisplayName("declining blanks the ten input components and leaves the six header ones painted")
+        void decliningBlanksTheTenInputComponents() {
+            final ReportRequest form =
+                    service.submitScreen(AttentionIdentifier.ENTER,
+                            mapArea("Y", "Y", "Y", "06", "01", "2022", "06", "30", "2022", "N")).form();
+
+            final List<String> cleared = List.of(form.monthlySelected(), form.yearlySelected(),
+                    form.customSelected(), form.startDateMonth(), form.startDateDay(), form.startDateYear(),
+                    form.endDateMonth(), form.endDateDay(), form.endDateYear(), form.confirmation());
+
+            assertThat(cleared)
+                    .as(":637-645 INITIALIZE ten input fields")
+                    .hasSize(CLEARED_FIELD_COUNT)
+                    .allSatisfy(component -> assertThat(component).isEmpty());
+            assertThat(form.transactionName())
+                    .as(":637-645 does not name the header fields, and :558 has already painted them")
+                    .isEqualTo(TRANSACTION_ID);
+            assertThat(form.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
+        }
+
+        @ParameterizedTest(name = "a gate of [{0}] is quoted back as invalid")
+        @ValueSource(strings = {"1", "T", "Z", "0", "?", "Xerox"})
+        @DisplayName("any other value is quoted back inside DOUBLE quotes, per :485-490")
+        void anyOtherValueIsQuotedBack(final String gate) {
+            final String expectedEcho = gate.substring(0, 1);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate)))
+                    .withMessage(MSG_INVALID_CONFIRM_PREFIX + expectedEcho + MSG_INVALID_CONFIRM_SUFFIX)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .as(":492 MOVE -1 TO CONFIRML OF CORPT0AI")
+                            .isEqualTo(CURSOR_CONFIRM));
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("the rejection literal is byte exact, double quotes and three full stops included")
+        void theRejectionLiteralIsByteExact() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("1")))
+                    .withMessage("\"1\" is not a valid value to confirm...");
+        }
+
+        @ParameterizedTest(name = "a gate of [{0}] confirms, the field being PIC X(1)")
+        @ValueSource(strings = {"Yes", "YES", "y ", "yes", "Y!"})
+        @DisplayName("a longer affirmative confirms, the gate being truncated to one character first")
+        void aLongerAffirmativeConfirms(final String gate) {
+            arrangePublish();
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(gate));
+
+            assertThat(screen.successHighlight())
+                    .as("CONFIRMI is PIC X(1) at app/cpy-bms/CORPT00.CPY:114, so the source only ever saw "
+                            + "the first character. A preserved quirk, not a liberty")
+                    .isTrue();
+        }
+
+        @Test
+        @DisplayName("a longer value beginning with N declines, on the same one-character truncation")
+        void aLongerValueBeginningWithNDeclines() {
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("No thanks"));
+
+            assertThat(screen.errorFlagOn()).isTrue();
+            assertThat(screen.form().errorMessage()).isEmpty();
+        }
+
+        @Test
+        @DisplayName("a gate BEGINNING WITH A SPACE re-prompts; the empty quoted segment is unreachable")
+        void aGateBeginningWithASpaceRePrompts() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest(" Y")))
+                    .as("a secondary description of this program expects the WHEN OTHER STRING at :485-490 "
+                            + "to emit an empty quoted segment here, because :487 composes CONFIRMI "
+                            + "DELIMITED BY SPACE. It cannot: CONFIRMI is PIC X(1), so a value whose first "
+                            + "character is a space IS all spaces in that field, and the blank guard at "
+                            + ":464 fires first")
+                    .withMessage(MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX)
+                    .satisfies(failure -> assertThat(failure.getMessage())
+                            .doesNotContain("\"\" is not a valid value to confirm..."));
+            verifyNoInteractions(sqsTemplate);
+        }
+
+        @Test
+        @DisplayName("every message-bearing arm of the handshake points the cursor at the confirmation field")
+        void everyMessageBearingArmPointsAtTheConfirmationField() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")))
+                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(CURSOR_CONFIRM));
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("1")))
+                    .satisfies(failure -> assertThat(failure.getFieldName()).isEqualTo(CURSOR_CONFIRM));
+        }
+    }
+
+    // =====================================================================================================
+    // 11. Publication. app/cbl/CORPT00C.cbl:496-508 walked seventeen eighty-byte cards and wrote every one
+    // of them to the extrapartition queue, terminator included; :515-523 is the write itself.
+    //
+    // The whole deck collapses into ONE typed message. Three properties of the loop survive as assertions:
+    // the terminator card was written BEFORE the loop exited (:504 sets the flag, :507 still writes on that
+    // same iteration), a blank card terminated it just as the terminator did, and the bound was 1000.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("11. Publication :496-523 - seventeen job cards collapse into ONE FIFO message")
+    class Publication {
+
+        @Test
+        @DisplayName("exactly ONE message is published per confirmed submission, not one per card")
+        void exactlyOneMessageIsPublished() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            verify(sqsTemplate).sendAsync(any());
+            assertThat(sendOptions.invoked())
+                    .as("one lambda invocation means one publish; seventeen would be seventeen")
+                    .containsExactly("queue", "payload", "messageGroupId", "headers");
+        }
+
+        @Test
+        @DisplayName("the configured queue, the payload and the message group all cross the boundary")
+        void theConfiguredValuesAllCrossTheBoundary() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.queue())
+                    .as("the destination is injected configuration, never a literal in the code")
+                    .isEqualTo(QUEUE_NAME);
+            assertThat(sendOptions.messageGroupId()).isEqualTo(MESSAGE_GROUP_ID);
+            assertThat(sendOptions.payload()).isNotNull();
+        }
+
+        @Test
+        @DisplayName("no deduplication identifier and no delay are set, the source having neither")
+        void noDeduplicationIdentifierAndNoDelayAreSet() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.messageDeduplicationId()).isNull();
+            assertThat(sendOptions.invoked())
+                    .doesNotContain("messageDeduplicationId", "delaySeconds", "header");
+        }
+
+        @Test
+        @DisplayName("the payload carries the report name and both dates - and nothing else at all")
+        void thePayloadCarriesTheThreeValues() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(sendOptions.payload())
+                    .isEqualTo(new JobSubmissionMessage(REPORT_NAME_MONTHLY, "2022-06-01", "2022-06-30"));
+        }
+
+        @Test
+        @DisplayName("the payload carries NO deck image, command text or control card - Rule 1 Clause D")
+        void thePayloadCarriesNoDeckImage() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            final JobSubmissionMessage payload = sendOptions.payload();
+            for (final String component : List.of(payload.reportName(), payload.startDate(),
+                    payload.endDate())) {
+                assertThat(component)
+                        .as("the legacy path submitted an EXECUTABLE deck to an internal reader; the target "
+                                + "publishes three typed values, so no card image, statement or command text "
+                                + "may appear in the body")
+                        .doesNotContain("//")
+                        .doesNotContain("/*")
+                        .doesNotContain("EXEC")
+                        .doesNotContain("JOB")
+                        .doesNotContain(" DD ")
+                        .doesNotContain("PROC=")
+                        .doesNotContain("SYMNAMES")
+                        .doesNotContain("DATEPARM")
+                        .doesNotContain("\n")
+                        .doesNotContain("\r");
+            }
+            assertThat(payload.reportName())
+                    .isIn(REPORT_NAME_MONTHLY, REPORT_NAME_YEARLY, REPORT_NAME_CUSTOM);
+            assertThat(payload.startDate()).matches("\\d{4}-\\d{2}-\\d{2}");
+            assertThat(payload.endDate()).matches("\\d{4}-\\d{2}-\\d{2}");
+        }
+
+        @Test
+        @DisplayName("the message refuses to be built without a report name")
+        void theMessageRefusesAnAbsentReportName() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new JobSubmissionMessage(null, "2022-06-01", "2022-06-30"))
+                    .withMessageContaining("reportName");
+        }
+
+        @Test
+        @DisplayName("the message refuses to be built without a start date")
+        void theMessageRefusesAnAbsentStartDate() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, null, "2022-06-30"))
+                    .withMessageContaining("startDate");
+        }
+
+        @Test
+        @DisplayName("the message refuses to be built without an end date")
+        void theMessageRefusesAnAbsentEndDate() {
+            assertThatNullPointerException()
+                    .isThrownBy(() -> new JobSubmissionMessage(REPORT_NAME_MONTHLY, "2022-06-01", null))
+                    .withMessageContaining("endDate");
+        }
+
+        @Test
+        @DisplayName("the deck is SEVENTEEN cards, and the count includes the terminator that WAS written")
+        void theDeckIsSeventeenCardsIncludingTheWrittenTerminator() throws ReflectiveOperationException {
+            assertThat(declaredConstant("JOB_CARD_COUNT"))
+                    .as(":83-125 declares ten whole-card fillers, two parameter cards, a comment card, the "
+                            + "DATEPARM card, the second parameter card, a second comment card and the "
+                            + "terminator. :504 sets the loop flag and :507 STILL writes on that same "
+                            + "iteration, so the terminator is the seventeenth write, not a dropped one - "
+                            + "sixteen would be the finding")
+                    .isEqualTo(JOB_CARD_COUNT);
+        }
+
+        @Test
+        @DisplayName("the terminating card literal is recorded byte exactly, per :125")
+        void theTerminatingCardLiteralIsRecorded() throws ReflectiveOperationException {
+            assertThat(declaredConstant("JOB_TERMINATOR_CARD"))
+                    .as(":502 tests JCL-RECORD = '/*EOF'; a blank or low-value card terminates identically "
+                            + "at :503, and is written on that iteration too")
+                    .isEqualTo(JOB_TERMINATOR_CARD);
+        }
+
+        @Test
+        @DisplayName("the loop bound is a thousand, matching OCCURS 1000 TIMES at :127")
+        void theLoopBoundIsAThousand() throws ReflectiveOperationException {
+            assertThat(declaredConstant("JOB_LINE_LIMIT"))
+                    .as(":498 UNTIL WS-IDX > 1000; the terminator stops the walk long before it, so the "
+                            + "983 unused slots are never touched and no blank message is published")
+                    .isEqualTo(JOB_LINE_LIMIT);
+        }
+
+        @Test
+        @DisplayName("each card was eighty bytes, matching RECORDSIZE(80) of app/csd/CARDDEMO.CSD")
+        void eachCardWasEightyBytes() throws ReflectiveOperationException {
+            assertThat(declaredConstant("JOB_CARD_LENGTH"))
+                    .as("JCL-RECORD PIC X(80) at :79, and LENGTH OF JCL-RECORD at :520")
+                    .isEqualTo(JOB_CARD_LENGTH);
+        }
+
+        @Test
+        @DisplayName("two submissions publish two messages, so the operation is not idempotent by accident")
+        void twoSubmissionsPublishTwoMessages() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            verify(sqsTemplate, times(2)).sendAsync(any());
+        }
+
+        @Test
+        @DisplayName("nothing is published when the confirmation was declined or unrecognised")
+        void nothingIsPublishedWhenTheConfirmationFailed() {
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("1")));
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("")));
+
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("nothing is published when validation failed, :476 wrapping the whole block")
+        void nothingIsPublishedWhenValidationFailed() {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(null, null, null, null, null, null)));
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("13", "01", "2022", "06", "30", "2022")));
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            mapArea(null, null, null, null, null, null, null, null, null, "Y")));
+
+            verifyNoInteractions(sqsTemplate, snsTemplate);
+        }
+
+        @Test
+        @DisplayName("the operator notification accompanies a successful publish, replacing the notify card")
+        void theOperatorNotificationAccompaniesASuccessfulPublish() {
+            arrangePublish();
+
+            service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            verify(snsTemplate).sendNotification(eq(TOPIC), any(), anyString());
+        }
+    }
+
+    // =====================================================================================================
+    // 12. Publish failure, app/cbl/CORPT00C.cbl:525-535. WHEN DFHRESP(NORMAL) is a CONTINUE no-op, retained;
+    // WHEN OTHER displays the response and reason codes, sets the literal and puts the cursor on the MONTHLY
+    // selector whatever the report type actually was. That last part is a copy-paste defect, preserved.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("12. Publish failure :525-535 - byte-exact literal, cause preserved, monthly cursor")
+    class PublishFailure {
+
+        @Test
+        @DisplayName("a publish failure surfaces the source's literal byte exactly")
+        void aPublishFailureSurfacesTheSourceLiteral() {
+            final MessagingOperationFailedException cause =
+                    new MessagingOperationFailedException("queue unavailable", QUEUE_LOGICAL_NAME);
+            doThrow(cause).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
+                    .withMessage(MSG_UNABLE_TO_WRITE_TDQ)
+                    .satisfies(failure -> {
+                        assertThat(failure.getClass().getName())
+                                .as("an I/O failure, not a validation failure: the typed subtype for a "
+                                        + "queue write that did not happen")
+                                .isEqualTo("com.cardemo.exception.FileAccessException");
+                        assertThat(failure.getCause())
+                                .as("Rule 1 Clause B - the root cause is preserved, never swallowed")
+                                .isSameAs(cause);
+                    });
+        }
+
+        @Test
+        @DisplayName("the failure literal is byte exact, the parenthesised queue name included")
+        void theFailureLiteralIsByteExact() throws ReflectiveOperationException {
+            assertThat(declaredConstant("MSG_UNABLE_TO_WRITE_TDQ"))
+                    .as(":531 MOVE 'Unable to Write TDQ (JOBS)...' TO WS-MESSAGE")
+                    .isEqualTo("Unable to Write TDQ (JOBS)...");
+        }
+
+        @Test
+        @DisplayName("the response and reason codes reach the failure's context, per :529")
+        void theResponseAndReasonCodesReachTheContext() {
+            final IllegalStateException cause = new IllegalStateException("client rejected the request");
+            doThrow(cause).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
+                    .satisfies(failure -> {
+                        assertThat(failure.getCause())
+                                .as(":529 DISPLAY 'RESP:' WS-RESP-CD 'REAS:' WS-REAS-CD - the target's "
+                                        + "equivalent of the two codes is the classified reason plus the "
+                                        + "preserved cause, and both must be reachable from the failure")
+                                .isSameAs(cause);
+                        assertThat(failure.getCause().getMessage())
+                                .isEqualTo("client rejected the request");
+                    });
+        }
+
+        @Test
+        @DisplayName("an asynchronous failure is unwrapped, so the cause is the meaningful throwable")
+        void anAsynchronousFailureIsUnwrapped() {
+            final MessagingOperationFailedException cause =
+                    new MessagingOperationFailedException("send rejected", QUEUE_LOGICAL_NAME);
+            doAnswer(invocation -> CompletableFuture.failedFuture(cause))
+                    .when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")))
+                    .withMessage(MSG_UNABLE_TO_WRITE_TDQ)
+                    .satisfies(failure -> assertThat(failure.getCause())
+                            .as("a future that completed exceptionally reports through its cause, which must "
+                                    + "not be reported as an ExecutionException")
+                            .isSameAs(cause));
+        }
+
+        @ParameterizedTest(name = "a {0} submission still points the cursor at the monthly selector")
+        @ValueSource(strings = {"Monthly", "Yearly", "Custom"})
+        @DisplayName("the cursor goes to MONTHLYL on a queue failure whatever the report type - :533, sic")
+        void theCursorGoesToMonthlyWhateverTheReportType(final String reportName) {
+            doThrow(new IllegalStateException("unreachable")).when(sqsTemplate).sendAsync(any());
+            final ReportRequest request = switch (reportName) {
+                case "Monthly" -> monthlyRequest("Y");
+                case "Yearly" -> yearlyRequest("Y");
+                default -> customRequestConfirmedWith("Y");
+            };
+            if (REPORT_NAME_CUSTOM.equals(reportName)) {
+                arrangeDateValidatorAccepts();
+            }
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, request))
+                    .withMessage(MSG_UNABLE_TO_WRITE_TDQ);
+
+            // :533 MOVE -1 TO MONTHLYL OF CORPT0AI, unconditionally. The target reproduces the single
+            // literal the source emits; the cursor itself is the screen's affair and the failure is the
+            // observable outcome, so a queue failure never differentiates by report type.
+            verify(sqsTemplate).sendAsync(any());
+        }
+
+        @Test
+        @DisplayName("a failed publish produces no screen, so no success notice can be mistaken for one")
+        void aFailedPublishProducesNoScreen() {
+            doThrow(new IllegalStateException("unreachable")).when(sqsTemplate).sendAsync(any());
+
+            assertThatExceptionOfType(CardDemoException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")));
+
+            verifyNoInteractions(snsTemplate);
+        }
+    }
+
+    // =====================================================================================================
+    // 13. The success tail, the header and the clear. :445-454 clears the form, composes the notice and
+    // sends with the green attribute; :609-628 paints six computed header values; :633-646 blanks ten input
+    // components and the working message.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("13. Success tail :445-454, header :609-628 and clear :633-646")
+    class SuccessTailHeaderAndClear {
+
+        @Test
+        @DisplayName("the notice reads exactly as :449-452 assembles it, for each of the three reports")
+        void theNoticeReadsExactlyAsAssembled() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"))
+                    .form().errorMessage())
+                    .isEqualTo("Monthly report submitted for printing ...");
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, yearlyRequest("Y"))
+                    .form().errorMessage())
+                    .isEqualTo("Yearly report submitted for printing ...");
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, customRequestConfirmedWith("Y"))
+                    .form().errorMessage())
+                    .isEqualTo("Custom report submitted for printing ...");
+        }
+
+        @Test
+        @DisplayName("the notice suffix is byte exact, its space before the ellipsis included")
+        void theNoticeSuffixIsByteExact() {
+            arrangePublish();
+
+            assertThat(service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"))
+                    .form().errorMessage())
+                    .isEqualTo(REPORT_NAME_MONTHLY + MSG_SUBMITTED_SUFFIX)
+                    .endsWith(" ...");
+        }
+
+        @Test
+        @DisplayName("the form is cleared BEFORE the notice is composed, so the notice survives the clear")
+        void theFormIsClearedBeforeTheNoticeIsComposed() {
+            arrangePublish();
+
+            final ReportRequest form =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")).form();
+
+            assertThat(form.monthlySelected())
+                    .as(":447 performs INITIALIZE-ALL-FIELDS first")
+                    .isEmpty();
+            assertThat(form.confirmation()).isEmpty();
+            assertThat(form.errorMessage())
+                    .as(":449-452 composes into WS-MESSAGE afterwards, and :560 moves it to the map")
+                    .isNotEmpty();
+        }
+
+        @Test
+        @DisplayName("the success screen carries the green attribute and no error flag")
+        void theSuccessScreenCarriesTheGreenAttribute() {
+            arrangePublish();
+
+            final ReportSubmissionScreen screen =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(screen.successHighlight())
+                    .as(":448 MOVE DFHGREEN TO ERRMSGC - a success attribute, not an error one")
+                    .isTrue();
+            assertThat(screen.errorFlagOn()).isFalse();
+            assertThat(screen.cursorField()).isEqualTo(CURSOR_MONTHLY);
+            assertThat(screen.navigationTarget()).isNull();
+        }
+
+        @Test
+        @DisplayName("the declined screen and the success screen are distinguishable by their two flags")
+        void theDeclinedAndSuccessScreensAreDistinguishable() {
+            arrangePublish();
+
+            final ReportSubmissionScreen declined =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("N"));
+            final ReportSubmissionScreen succeeded =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y"));
+
+            assertThat(declined.errorFlagOn()).isTrue();
+            assertThat(declined.successHighlight()).isFalse();
+            assertThat(succeeded.errorFlagOn()).isFalse();
+            assertThat(succeeded.successHighlight()).isTrue();
+        }
+
+        @Test
+        @DisplayName("the submitted header components are overwritten, never echoed back")
+        void theSubmittedHeaderComponentsAreOverwritten() {
+            arrangePublish();
+
+            final ReportRequest form =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")).form();
+
+            assertThat(form.transactionName())
+                    .as(":619 MOVE WS-TRANID TO TRNNAMEO")
+                    .isEqualTo(TRANSACTION_ID)
+                    .isNotEqualTo("ZZZZ");
+            assertThat(form.programName()).isEqualTo(PROGRAM_NAME);
+            assertThat(form.title01()).isEqualTo(SCREEN_TITLE_01);
+            assertThat(form.title02()).isEqualTo(SCREEN_TITLE_02);
+            assertThat(form.currentDate()).isEqualTo(EXPECTED_HEADER_DATE);
+            assertThat(form.currentTime()).isEqualTo(EXPECTED_HEADER_TIME);
+        }
+
+        @Test
+        @DisplayName("both titles are byte exact at their declared PIC X(40) width, padding included")
+        void bothTitlesAreByteExactAtFortyCharacters() {
+            final ReportRequest form = service.openReportScreen().form();
+
+            assertThat(form.title01()).hasSize(40);
+            assertThat(form.title02()).hasSize(40);
+        }
+
+        @Test
+        @DisplayName("the header date and time come from ONE clock reading per paragraph, per :611")
+        void theHeaderComesFromOneClockReadingPerParagraph() {
+            final AdvancingClock clock = new AdvancingClock(
+                    Instant.parse("2022-06-10T23:59:59Z"), Duration.ofSeconds(2L),
+                    FixedClockProvider.CANONICAL_ZONE);
+
+            final ReportRequest form = serviceWithClock(clock).openReportScreen().form();
+
+            assertThat(form.currentDate())
+                    .as("one reading feeds both renderings, so the date cannot belong to one day and the "
+                            + "time to the next")
+                    .isEqualTo("06/10/22");
+            assertThat(form.currentTime()).isEqualTo("23:59:59");
+            assertThat(clock.reads()).isEqualTo(1);
+        }
+
+        @Test
+        @DisplayName("no message the service can emit overflows the narrower screen field")
+        void noMessageOverflowsTheScreenField() {
+            final List<String> everyMessage = List.of(
+                    MSG_INVALID_KEY, MSG_SELECT_REPORT_TYPE,
+                    MSG_START_MONTH_EMPTY, MSG_START_DAY_EMPTY, MSG_START_YEAR_EMPTY,
+                    MSG_END_MONTH_EMPTY, MSG_END_DAY_EMPTY, MSG_END_YEAR_EMPTY,
+                    MSG_START_MONTH_INVALID, MSG_START_DAY_INVALID, MSG_START_YEAR_INVALID,
+                    MSG_END_MONTH_INVALID, MSG_END_DAY_INVALID, MSG_END_YEAR_INVALID,
+                    MSG_START_DATE_INVALID, MSG_END_DATE_INVALID, MSG_UNABLE_TO_WRITE_TDQ,
+                    MSG_CONFIRM_PREFIX + REPORT_NAME_MONTHLY + MSG_CONFIRM_SUFFIX,
+                    MSG_CONFIRM_PREFIX + REPORT_NAME_YEARLY + MSG_CONFIRM_SUFFIX,
+                    MSG_CONFIRM_PREFIX + REPORT_NAME_CUSTOM + MSG_CONFIRM_SUFFIX,
+                    MSG_INVALID_CONFIRM_PREFIX + "?" + MSG_INVALID_CONFIRM_SUFFIX,
+                    REPORT_NAME_MONTHLY + MSG_SUBMITTED_SUFFIX,
+                    REPORT_NAME_YEARLY + MSG_SUBMITTED_SUFFIX,
+                    REPORT_NAME_CUSTOM + MSG_SUBMITTED_SUFFIX);
+
+            assertThat(everyMessage)
+                    .as("WS-MESSAGE is PIC X(80) and ERRMSGI is the narrower PIC X(78), so a message longer "
+                            + "than 78 would be silently truncated on the way to :560. Every literal this "
+                            + "service can emit is shorter than both, which is why no truncation occurs")
+                    .allSatisfy(message -> assertThat(message.length())
+                            .isLessThanOrEqualTo(SCREEN_MESSAGE_WIDTH)
+                            .isLessThanOrEqualTo(WORKING_MESSAGE_WIDTH));
+        }
+
+        @Test
+        @DisplayName("an over-long submitted confirmation is TRUNCATED, so it cannot overflow the message")
+        void anOverLongConfirmationIsTruncated() {
+            final String overLong = "?".repeat(4_000);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            monthlyRequest(overLong)))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage())
+                                .as("CONFIRMI is PIC X(1), so :487 could only ever echo one character; "
+                                        + "truncating at the field width is what keeps WS-MESSAGE inside its "
+                                        + "eighty bytes rather than widening the field to accommodate input")
+                                .isEqualTo("\"?\" is not a valid value to confirm...");
+                        assertThat(failure.getMessage().length())
+                                .isLessThanOrEqualTo(SCREEN_MESSAGE_WIDTH);
+                    });
+        }
+
+        @Test
+        @DisplayName("an over-long submitted component cannot reach the message either")
+        void anOverLongComponentCannotReachTheMessage() {
+            final String overLong = "9".repeat(4_000);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(overLong, "01", "2022", "06", "30", "2022")))
+                    .satisfies(failure -> {
+                        assertThat(failure.getMessage())
+                                .as("the range literals are fixed text and never quote the offending value, "
+                                        + "so no submitted byte can lengthen a message")
+                                .isEqualTo(MSG_START_MONTH_INVALID);
+                        assertThat(failure.getMessage().length())
+                                .isLessThanOrEqualTo(SCREEN_MESSAGE_WIDTH);
+                    });
+        }
+
+        @Test
+        @DisplayName("no submitted value leaks into a screen outcome except through its own component")
+        void noSubmittedValueLeaksIntoAScreenOutcome() {
+            arrangePublish();
+
+            final ReportRequest form =
+                    service.submitScreen(AttentionIdentifier.ENTER, monthlyRequest("Y")).form();
+
+            for (final RecordComponent component : ReportRequest.class.getRecordComponents()) {
+                assertThat(form.toString())
+                        .as("the payload's rendering is overridden precisely so no component value reaches a "
+                                + "log or an assertion message")
+                        .doesNotContain("submitted-title-one")
+                        .doesNotContain("submitted-message");
+                assertThat(component.getName()).isNotEmpty();
+            }
+        }
+    }
+
+    // =====================================================================================================
+    // 14. Hostile input. Rule 1 Clause A: treat inputs as untrusted; Clause B: handle null and empty
+    // explicitly. Nothing here may reach the queue, and nothing may raise anything but a typed failure.
+    // =====================================================================================================
+
+    @Nested
+    @DisplayName("14. Hostile input - every malformed component produces a typed failure, never a leak")
+    class HostileInput {
+
+        @ParameterizedTest(name = "a start month of [{0}] is refused by the range guard")
+        @ValueSource(strings = {"13", "99", "1e3", "999999999999999999999"})
+        @DisplayName("a month that normalises above twelve is refused, and refused as a TYPED failure")
+        void aMonthAboveTwelveIsRefusedTyped(final String month) {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest(month, "01", "2022", "06", "30", "2022")))
+                    .as("an arbitrarily long or non-numeric submission must not escape as an untyped "
+                            + "throwable, and must not reach the queue")
+                    .withMessage(MSG_START_MONTH_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_START_MONTH));
+            verifyNoInteractions(dateValidationService, sqsTemplate, snsTemplate);
+        }
+
+        @ParameterizedTest(name = "a start month of [{0}] normalises and reaches the validator as [{1}]")
+        @CsvSource({"AB, 2022-00-01", "-1, 2022-01-01", "6.9, 2022-06-01"})
+        @DisplayName("a month the guards let through is normalised, never propagated as submitted")
+        void aMonthTheGuardsLetThroughIsNormalised(final String month, final String assembledStart) {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    customRequest(month, "01", "2022", "06", "30", "2022"));
+
+            verify(dateValidationService)
+                    .validate(assembledStart, DateValidationService.MASK_YYYY_MM_DD);
+            assertThat(sendOptions.payload().startDate()).isEqualTo(assembledStart);
+        }
+
+        @ParameterizedTest(name = "a start day of [{0}] is refused by the range guard")
+        @ValueSource(strings = {"32", "99", "9999"})
+        @DisplayName("a day that normalises above thirty-one is refused, and refused as a TYPED failure")
+        void aDayAboveThirtyOneIsRefusedTyped(final String day) {
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER,
+                            customRequest("06", day, "2022", "06", "30", "2022")))
+                    .withMessage(MSG_START_DAY_INVALID)
+                    .satisfies(failure -> assertThat(failure.getFieldName())
+                            .isEqualTo(CURSOR_START_DAY));
+            verifyNoInteractions(dateValidationService, sqsTemplate);
+        }
+
+        @ParameterizedTest(name = "a start day of [{0}] normalises and reaches the validator as [{1}]")
+        @CsvSource({"XY, 2022-06-00", "0.5, 2022-06-00", "7, 2022-06-07"})
+        @DisplayName("a day the guards let through is normalised, never propagated as submitted")
+        void aDayTheGuardsLetThroughIsNormalised(final String day, final String assembledStart) {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    customRequest("06", day, "2022", "06", "30", "2022"));
+
+            verify(dateValidationService)
+                    .validate(assembledStart, DateValidationService.MASK_YYYY_MM_DD);
+        }
+
+        @Test
+        @DisplayName("a request whose every component is absent still produces exactly one typed failure")
+        void aWhollyAbsentRequestProducesOneTypedFailure() {
+            final ReportRequest empty = new ReportRequest(null, null, null, null, null, null,
+                    null, null, null, null, null, null, null, null, null, null, null);
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, empty))
+                    .withMessage(MSG_SELECT_REPORT_TYPE);
+            verifyNoInteractions(sqsTemplate, snsTemplate, dateValidationService);
+        }
+
+        @Test
+        @DisplayName("a request whose every component is blank behaves identically to an absent one")
+        void aWhollyBlankRequestBehavesIdentically() {
+            final ReportRequest blank = new ReportRequest("", "", "", "", "", "",
+                    "", "", "", "", "", "", "", "", "", "", "");
+
+            assertThatExceptionOfType(ValidationException.class)
+                    .isThrownBy(() -> service.submitScreen(AttentionIdentifier.ENTER, blank))
+                    .withMessage(MSG_SELECT_REPORT_TYPE);
+        }
+
+        @Test
+        @DisplayName("all three selectors supplied at once is not an error, monthly simply winning")
+        void allThreeSelectorsAtOnceIsNotAnError() {
+            arrangePublish();
+
+            final ReportSubmissionScreen screen = service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea("Y", "Y", "Y", null, null, null, null, null, null, "Y"));
+
+            assertThat(screen.successHighlight()).isTrue();
+            assertThat(sendOptions.payload().reportName()).isEqualTo(REPORT_NAME_MONTHLY);
+            verifyNoInteractions(dateValidationService);
+        }
+
+        @Test
+        @DisplayName("a component carrying control characters is normalised to zeros, not propagated")
+        void aComponentCarryingControlCharactersIsNormalised() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "\t\n", "01", "2022", "06", "30", "2022", "Y"));
+
+            verify(dateValidationService)
+                    .validate("2022-00-01", DateValidationService.MASK_YYYY_MM_DD);
+            assertThat(sendOptions.payload().startDate())
+                    .as("no control character may survive into the published body")
+                    .doesNotContain("\t")
+                    .doesNotContain("\n");
+        }
+
+        @Test
+        @DisplayName("a component carrying a quote or a separator cannot reach the published body")
+        void aComponentCarryingAQuoteCannotReachTheBody() {
+            arrangePublish();
+            arrangeDateValidatorAccepts();
+
+            service.submitScreen(AttentionIdentifier.ENTER,
+                    mapArea(null, null, "Y", "0'6", "01", "2022", "06", "30", "2022", "Y"));
+
+            assertThat(sendOptions.payload().startDate())
+                    .as("normalisation keeps only digits, so an injected quote cannot cross the boundary")
+                    .isEqualTo("2022-06-01")
+                    .doesNotContain("'");
+        }
+    }
+
+    // =====================================================================================================
+    // Test doubles. Hand written rather than mocked wherever a mock would need leniency or could not observe
+    // what the assertion needs, which keeps every Mockito stub in this class strictly checked.
+    // =====================================================================================================
+
+    /**
+     * A provider that yields no tracer, tracing being an optional collaborator the production code resolves
+     * with {@code getIfAvailable()} and tolerates as absent.
+     *
+     * <p>A plain implementation rather than a lenient mock: most tests here never reach the publish path, so
+     * an eager stub would be reported as unnecessary under {@link Strictness#STRICT_STUBS} and a lenient one
+     * would weaken the class's stubbing discipline for no gain. The behaviour with a real tracer present is
+     * asserted by the sibling integration-seam suite.
+     */
+    private static final class NoTracerProvider implements ObjectProvider<Tracer> {
+
+        @Override
+        public Tracer getIfAvailable() {
+            return null;
         }
     }
 
     /**
-     * A recording {@link SqsSendOptions}: fluent, so the production chain works, and total, so nothing the
-     * lambda sets can go unobserved.
+     * A recording {@link SqsSendOptions}: fluent, so the production chain works unchanged, and total, so
+     * nothing the lambda sets can go unobserved - including the options it deliberately leaves alone.
      */
     private static final class RecordingSendOptions implements SqsSendOptions<JobSubmissionMessage> {
 
-        /** Every method name invoked, in order, so an unexpected option is visible. */
+        /** Every option method invoked, in order, so an unexpected option is visible. */
         private final List<String> invoked = new ArrayList<>();
 
         /** The queue the lambda selected. */
@@ -2362,10 +3050,13 @@ class ReportSubmissionServiceTest {
     }
 
     /**
-     * A clock that advances on every read and counts its reads, used to prove that each period is derived
-     * from a <em>single</em> reading. {@code :215} and {@code :241} each perform one
+     * A clock that advances on every read and counts its reads, used to prove that each period comes from a
+     * <em>single</em> reading. app/cbl/CORPT00C.cbl:215 and :241 each perform one
      * {@code MOVE FUNCTION CURRENT-DATE TO WS-CURDATE-DATA}, so a period cannot straddle a boundary; a
      * second read would let it.
+     *
+     * <p>It is still fully deterministic - the start instant and the step are both supplied - so it is a
+     * fixed clock with a known trajectory rather than an ambient one.
      */
     private static final class AdvancingClock extends Clock {
 
@@ -2384,9 +3075,9 @@ class ReportSubmissionServiceTest {
         /**
          * Creates an advancing clock.
          *
-         * @param start the instant the first read returns; must not be {@code null}
-         * @param step  how far each read advances the next; must not be {@code null}
-         * @param zone  the zone to report; must not be {@code null}
+         * @param start the instant the first read returns
+         * @param step  how far each read advances the next
+         * @param zone  the zone to report
          */
         AdvancingClock(final Instant start, final Duration step, final ZoneId zone) {
             this.next = start;
@@ -2421,4 +3112,5 @@ class ReportSubmissionServiceTest {
             return this.reads;
         }
     }
+
 }

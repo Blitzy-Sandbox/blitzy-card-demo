@@ -341,9 +341,10 @@ import org.springframework.stereotype.Repository;
  * <p>Two things follow, and the second is a standing constraint on other packages:</p>
  * <ul>
  *   <li>the only legitimate consumers are in {@code com.cardemo.batch} -
- *       {@code TransactionPostingProcessor}, which is authored, plus
- *       {@code DailyTransactionPostingJob} and {@code DailyTransactionReader}, which are
- *       <strong>planned</strong> and not yet authored;</li>
+ *       {@code TransactionPostingProcessor} and
+ *       {@code com.cardemo.batch.readers.DailyTransactionReader}, both of which are authored,
+ *       plus {@code DailyTransactionPostingJob}, which is <strong>planned</strong> and not yet
+ *       authored;</li>
  *   <li><strong>no controller operation, no REST endpoint and no administrative management
  *       surface may be created for this staging table</strong>, nor for {@code TCATBALF},
  *       {@code DISCGRP}, {@code TRANCATG} or {@code TRANTYPE}. The online surface is exactly
@@ -561,8 +562,8 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      *
      * <p><strong>Purpose.</strong> This is the forward sequential read, and it is the only
      * declared method of this interface. It is what
-     * {@code com.cardemo.batch.readers.DailyTransactionReader} (<strong>planned</strong>; not yet
-     * authored) will use to reproduce
+     * {@code com.cardemo.batch.readers.DailyTransactionReader}, which is authored, uses to
+     * reproduce
      * {@code 1000-DALYTRAN-GET-NEXT} at {@code app/cbl/CBTRN02C.cbl:L345} chunk by chunk, which
      * is the closest available analogue to the legacy behaviour of holding one record live at a
      * time between {@code OPEN INPUT DALYTRAN-FILE} at {@code :L238} and
@@ -601,15 +602,18 @@ public interface DailyTransactionRepository extends JpaRepository<DailyTransacti
      * tie-breaker and can never displace it; passing an unsorted pageable, for example one built
      * from a size alone, remains the expected usage.</p>
      *
-     * <p><strong>Named call sites - all three still to be authored.</strong> This method has no
-     * production caller yet, which is a statement about sequencing rather than about the method:
-     * {@code com.cardemo.batch.readers.DailyTransactionReader}, feeding
-     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob}, are both <strong>planned</strong>,
+     * <p><strong>Named call sites.</strong> The production caller is
+     * {@code com.cardemo.batch.readers.DailyTransactionReader}, which is authored and advances
+     * this method's page index from its own {@code read()} until a slice reports that no further
+     * rows follow. What that reader feeds is not yet in place, which is a statement about
+     * sequencing rather than about this method:
+     * {@code com.cardemo.batch.jobs.DailyTransactionPostingJob} is <strong>planned</strong>,
      * as is the read-only pre-flight step of that same job derived from
      * {@code app/cbl/CBTRN01C.cbl}, which iterates the staged
      * input to report on it without writing anything. On the test side,
-     * {@code src/test/java/com/cardemo/integration/repository} exists and holds the Testcontainers
-     * base, but no concrete subclass yet asserts the ordering, the
+     * {@code src/test/java/com/cardemo/integration/repository} holds the Testcontainers base and
+     * two concrete subclasses that already drive this method through an explicit page request and
+     * so exercise its ascending order. What no test yet asserts is the
      * acceptance of a repeated {@code dalytran_id}, or the round-trip of a negative amount, a
      * blank processing stamp and an {@code OPERATOR} origin value. Those remain owed.</p>
      *

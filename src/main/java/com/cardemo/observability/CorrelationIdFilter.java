@@ -168,8 +168,9 @@ import org.springframework.web.filter.OncePerRequestFilter;
  *   <tr><td>Filter chain composition and ordering relative to authentication</td>
  *       <td>{@code com.cardemo.config.SecurityConfig}</td></tr>
  *   <tr><td>Tracing and metrics registration, and the wiring of this package</td>
- *       <td>{@code com.cardemo.config.ObservabilityConfig} - <strong>planned, not yet authored</strong>. Its
- *       absence disables nothing here: the three classes in this package are self-registering.</td></tr>
+ *       <td>{@code com.cardemo.config.ObservabilityConfig}, which holds the documented wiring contract and the
+ *       single production time source. Nothing here depends on it: the three classes in this package are
+ *       self-registering, which is why it declares no duplicate of any of them.</td></tr>
  *   <tr><td>Log encoder, appender, JSON field set, MDC selection and masking</td>
  *       <td>{@code src/main/resources/logback-spring.xml}</td></tr>
  *   <tr><td>Per-logger operational verbosity, tracing sampling, actuator exposure</td>

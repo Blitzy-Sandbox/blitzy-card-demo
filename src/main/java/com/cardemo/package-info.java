@@ -104,19 +104,20 @@
  *   <li>{@code com.cardemo.repository} - 11 interfaces. Spring Data JPA over the 10 VSAM KSDS clusters
  *       catalogued in {@code app/catlg/LISTCAT.txt} plus the daily transaction staging dataset. Three
  *       derived finders replace the three alternate indexes.</li>
- *   <li>{@code com.cardemo.service} - <strong>20 present / 21 target</strong>, across 9 leaves
+ *   <li>{@code com.cardemo.service} - <strong>21 present / 21 target</strong>, across 9 leaves
  *       ({@code auth} 1, {@code account} 2, {@code card} 3, {@code transaction} 3, {@code billing} 1,
- *       {@code report} 1, {@code admin} <strong>3 of 4</strong>, {@code menu} 2, {@code shared} 4). One bean
+ *       {@code report} 1, {@code admin} 4, {@code menu} 2, {@code shared} 4). One bean
  *       per online COBOL program, plus four shared services covering date validation, lookup tables, file
- *       status translation and the file access call contract. Planned: {@code admin/UserDeleteService} from
- *       {@code app/cbl/COUSR03C.cbl}.</li>
+ *       status translation and the file access call contract. The service layer is complete:
+ *       {@code admin/UserDeleteService} from {@code app/cbl/COUSR03C.cbl} is authored, with that program's
+ *       absent self-delete guard preserved rather than closed.</li>
  *   <li>{@code com.cardemo.controller} - <strong>6 present / 8 target</strong>, exposing
  *       <strong>12 operations today of a target 17</strong>. REST adapters for the 17 sourced CICS
  *       transactions. Planned: {@code AuthController} (sign-on, 1 operation) and {@code AdminController}
  *       (4 operations at {@code /api/admin/*}), which is the reconciliation 12 + 1 + 4 = 17.</li>
  *   <li>{@code com.cardemo.batch} - a container package with four leaves: {@code jobs}
  *       <strong>1 present / 6 target</strong>, {@code processors} 5, {@code readers}
- *       <strong>4 present / 7 target</strong>, {@code writers} 3. Spring Batch replacing the JCL job stream,
+ *       <strong>5 present / 7 target</strong>, {@code writers} 3. Spring Batch replacing the JCL job stream,
  *       the DFSORT specifications and the IDCAMS control cards. The two leaf documents name each planned
  *       job and reader individually.</li>
  *   <li>{@code com.cardemo.exception} - 9 classes. A typed hierarchy replacing COBOL {@code FILE STATUS}

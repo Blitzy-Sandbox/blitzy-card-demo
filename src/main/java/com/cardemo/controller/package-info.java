@@ -94,8 +94,8 @@
  *       {@code AuthenticationService}, is already authored.</li>
  *   <li>{@code AdminController} - <strong>Not available.</strong> Planned at {@code /api/admin/*} for CSD
  *       {@code CU00}, {@code CU01}, {@code CU02} and {@code CU03}, contributing <strong>four</strong>
- *       operations restricted to the administrator role. Three of its four services exist; the fourth,
- *       {@code UserDeleteService}, is itself still planned.</li>
+ *       operations restricted to the administrator role. All four of the services it will delegate to are
+ *       already authored, {@code UserDeleteService} among them, so the controller is the only missing part.</li>
  *   </ul>
  *
  * <p>The reconciliation is therefore <strong>12 + 1 + 4 = 17</strong>. Volatile counts are not restated

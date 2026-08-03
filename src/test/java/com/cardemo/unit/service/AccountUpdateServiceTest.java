@@ -2305,8 +2305,18 @@ final class AccountUpdateServiceTest {
     void anAlteredSnapshotTokenIsRefused() {
         final AccountUpdateRequest request = this.screen.build(null);
         final String authentic = sealed(request.getAccountId(), this.snapshot.build());
+        // The seal frames a fresh SecureRandom nonce ahead of the ciphertext and base64url-encodes the
+        // pair, so every character of the token varies from run to run. The substitute must therefore be
+        // chosen against the character actually being replaced: testing any other position leaves the
+        // token byte-identical on the runs where the replaced position already holds the substitute, and
+        // an unaltered token authenticates and goes on to read ACCTDAT instead of being refused.
+        final char penultimate = authentic.charAt(authentic.length() - 2);
         final String tampered = authentic.substring(0, authentic.length() - 2)
-                + (authentic.endsWith("A") ? "B" : "A") + authentic.charAt(authentic.length() - 1);
+                + (penultimate == 'A' ? 'B' : 'A') + authentic.charAt(authentic.length() - 1);
+        assertThat(tampered)
+                .as("the alteration must land whatever nonce this run drew, or the case under test is not exercised")
+                .isNotEqualTo(authentic)
+                .hasSize(authentic.length());
 
         assertThatThrownBy(() -> this.service.updateAccount(request, tampered))
                 .isInstanceOf(ConcurrentUpdateException.class)

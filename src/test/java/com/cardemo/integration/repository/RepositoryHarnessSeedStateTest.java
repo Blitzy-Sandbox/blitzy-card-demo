@@ -180,9 +180,16 @@ class RepositoryHarnessSeedStateTest extends AbstractRepositoryIntegrationTest {
     @Test
     @DisplayName("the ten seeded credentials are BCrypt digests, never the plaintext the JCL carries")
     void theTenSeededCredentialsAreBcryptDigests() throws SQLException {
-        // app/jcl/DUSRSECJ.jcl carries the literal plaintext for all ten users. Storing that plaintext is
-        // what Rule 1 Clause D forbids and what the security gate asserts against, so the digest shape is
-        // checked rather than assumed. No credential value is placed in any assertion message.
+        // app/jcl/DUSRSECJ.jcl:35-44 gives all ten users one shared literal plaintext value. Storing that
+        // value is what Rule 1 Clause D forbids - the clause names tests explicitly - and what the security
+        // gate asserts against, so the digest shape is checked rather than assumed.
+        //
+        // The check is POSITIVE and never compares against the plaintext. The source value is eight
+        // characters; a BCrypt digest at the pinned strength of 10 is sixty and carries a version tag, a cost
+        // factor and a radix-64 salt and digest. Satisfying that envelope is structurally incompatible with
+        // holding the plaintext, so no comparison against it is needed - and writing the plaintext down in
+        // order to make one would itself be the leak the check exists to prevent. Asserted through a derived
+        // boolean so that no failure message can echo a digest.
         try (Connection connection = dataSource.getConnection();
                 Statement statement = connection.createStatement();
                 ResultSet digests = statement.executeQuery(
@@ -190,8 +197,11 @@ class RepositoryHarnessSeedStateTest extends AbstractRepositoryIntegrationTest {
             int rows = 0;
             while (digests.next()) {
                 final String digest = digests.getString(1);
-                assertThat(digest).as("row %d", rows).hasSize(60).startsWith("$2");
-                assertThat(digest).doesNotContain("PASSWORD");
+                assertThat(digest.length()).as("digest width at row %d", rows).isEqualTo(60);
+                assertThat(digest.matches("^\\$2[aby]\\$10\\$[./A-Za-z0-9]{53}$"))
+                        .as("BCrypt strength-10 envelope at row %d; the stored value is credential material "
+                                + "and is deliberately not reproduced in this message", rows)
+                        .isTrue();
                 rows++;
             }
 

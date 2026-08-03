@@ -1,194 +1,982 @@
 {
-  "__comment": "****************************************************************** * Dashboard    : carddemo-dashboard.json * Application  : CardDemo * Type         : Grafana dashboard definition * Function     : Renders the counters that replace the end-of-run DISPLAY statements of app/cbl/CBTRN02C.cbl ('TRANSACTIONS PROCESSED :' and 'TRANSACTIONS REJECTED  :'), together with HTTP request rate, error rate and latency for the 17 REST endpoints that replace the 17 CICS screen programs, plus JVM health. ****************************************************************** * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved. * Licensed under the Apache License, Version 2.0 (the \"License\"). * You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 ******************************************************************",
   "annotations": {
     "list": []
   },
+  "description": "CardDemo migration observability - the four Micrometer instruments that replace the DISPLAY-only instrumentation of the frozen COBOL corpus.\n\nWHAT THIS DOES. Renders the four instruments declared in src/main/java/com/cardemo/observability/MetricsConfig.java. The batch corpus reported its work exactly once per run, to SYSOUT: app/cbl/CBTRN02C.cbl:L227 emitted DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT and :L228 emitted DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT - one space before the colon on the processed line and two on the rejected line, which is part of the emitted text. There was no history and no way to observe a run in flight. These panels are the continuously scrapeable replacement.\n\nHOW TO RUN AND VALIDATE. Bring the stack up with docker compose up -d, then open Grafana on the published port - docker-compose.yml maps the host port named GRAFANA_PORT, default 3000, onto container port 3000 - and select this dashboard in the CardDemo folder. It is provisioned read-only from ./observability/grafana/dashboards, so no manual import step is needed - that is what makes the integration sign-off gate demonstrable. Panels populate once the carddemo-app scrape job reaches /actuator/prometheus.\n\nKEY CONFIGURATION AND DEFAULTS. Dashboard uid carddemo-overview. Datasource uid carddemo-prometheus, published by observability/grafana/provisioning/datasources/datasource.yml and referenced on every panel and inside every query here. schemaVersion 39, which the pinned grafana/grafana:11.3.1 image accepts without migrating. Refresh 15s, matching the fixed scrape_interval owned by observability/prometheus.yml; the time picker offers nothing faster, because a shorter refresh cannot reveal new data. Metric names are owned by MetricsConfig.java, the scrape by observability/prometheus.yml and actuator exposure by src/main/resources/application.yml; none of them is restated here. This file displays only.\n\nCOMMON FAILURE MODES AND TROUBLESHOOTING. (1) A panel is empty while the stack is healthy: a metric name has drifted from MetricsConfig.java. Micrometer renders dots as underscores and appends _total to counters only, so always confirm a rendered name against a live /actuator/prometheus response rather than against the Java constant. High severity, and silent - no error is raised anywhere. (2) Every panel fails with an unresolvable datasource: the uid above no longer matches datasource.yml. High severity; change both files in one commit. (3) The reject-code 109 series reads a flat zero rather than being absent - that is correct and expected, and the reject panels explain why. (4) The dashboard does not appear at all: confirm that the file provider in observability/grafana/provisioning/dashboards/dashboards.yml still points at /var/lib/grafana/dashboards, and that this file is still a plain dashboard model rather than a Grafana share-and-export payload. An export payload adds input-variable and requirement stanzas together with symbolic datasource placeholders, and every one of those demands the interactive import step that a file-based load cannot perform.\n\nNOT AVAILABLE ON THIS DASHBOARD: per-endpoint latency percentiles. The application publishes http_server_requests_seconds as a Prometheus summary exposing only _count, _sum and _max; no _bucket series exist, so histogram_quantile cannot be computed and no approximation is shown in its place. What would be needed is percentile-histogram publication for that meter, a management.metrics.distribution setting owned by src/main/resources/application.yml rather than by this file.\n\nNO SERVICE LEVEL IS ASSERTED ANYWHERE HERE. The COBOL corpus publishes none, so the performance gate records a measured baseline instead of a target and no panel carries a threshold that would imply one.\n\nCopyright Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed under the Apache License, Version 2.0 - http://www.apache.org/licenses/LICENSE-2.0",
   "editable": false,
+  "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
+  "id": null,
   "links": [],
   "panels": [
     {
-      "type": "row",
-      "title": "Batch pipeline (replaces CBTRN02C DISPLAY counters)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Replaces the two DISPLAY totals of app/cbl/CBTRN02C.cbl:L227-L228, which were emitted once per run after every file had closed.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "panels": [],
+      "title": "Batch posting - the CBTRN02C end-of-run counters, now continuously observable",
+      "type": "row"
     },
     {
-      "type": "stat",
-      "title": "Records processed (total)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Cumulative daily-transaction records read and processed, from carddemo_batch_records_processed_total (Micrometer carddemo.batch.records.processed, declared as MetricsConfig.METRIC_RECORDS_PROCESSED; untagged, exactly one series).\n\nReplaces DISPLAY 'TRANSACTIONS PROCESSED :' WS-TRANSACTION-COUNT at app/cbl/CBTRN02C.cbl:L227, whose counter is incremented once per record read at app/cbl/CBTRN02C.cbl:L206.\n\nA Micrometer counter is monotonic, so this figure only rises, and it restarts from zero when the application restarts. Read it as a process-lifetime total, not an all-time business total.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
           "expr": "sum(carddemo_batch_records_processed_total)",
-          "legendFormat": "processed"
+          "instant": false,
+          "legendFormat": "processed",
+          "range": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "title": "Records processed - cumulative",
+      "type": "stat"
     },
     {
-      "type": "stat",
-      "title": "Records rejected (total)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Cumulative records rejected by CBTRN02C validation, aggregated across all five reject codes, from carddemo_batch_records_rejected_total (MetricsConfig.METRIC_RECORDS_REJECTED).\n\nReplaces DISPLAY 'TRANSACTIONS REJECTED  :' WS-REJECT-COUNT at app/cbl/CBTRN02C.cbl:L228 - two spaces before that colon in the source. The counter is incremented at exactly one place, app/cbl/CBTRN02C.cbl:L214, inside the ELSE branch of the :L211 test IF WS-VALIDATION-FAIL-REASON = 0.\n\nEXIT-CODE CONTRACT. app/cbl/CBTRN02C.cbl:L229-L231 sets RETURN-CODE 4 if and only if this count exceeds zero; there is no other determinant. Any value above zero here therefore corresponds to a completed-with-rejects run rather than a failure.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
           "expr": "sum(carddemo_batch_records_rejected_total)",
-          "legendFormat": "rejected"
+          "instant": false,
+          "legendFormat": "rejected",
+          "range": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "title": "Records rejected - cumulative",
+      "type": "stat"
     },
     {
-      "type": "timeseries",
-      "title": "Rejections by reject code (100 / 101 / 102 / 103 / 109)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 1 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Records processed and records rejected per second, over a five-minute window, from the same two counters as the two panels to the left.\n\nThe legacy system could not show this at all: both totals were written to SYSOUT exactly once, after every file had closed (app/cbl/CBTRN02C.cbl:L227-L228), so a run in flight was unobservable. Continuous visibility is new capability, not migrated behaviour.\n\nUnits are records per second. No target rate is implied - the performance gate records a measured baseline, never a service level.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 1
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum by (reject_code) (rate(carddemo_batch_records_rejected_total[5m]))",
-          "legendFormat": "{{reject_code}}"
-        }
-      ]
-    },
-    {
-      "type": "row",
-      "title": "Online REST surface (replaces 17 CICS screen programs)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 },
-      "collapsed": false,
-      "panels": []
-    },
-    {
-      "type": "timeseries",
-      "title": "Request rate by URI",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (uri) (rate(http_server_requests_seconds_count[5m]))",
-          "legendFormat": "{{uri}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Error rate (5xx)",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (uri) (rate(http_server_requests_seconds_count{status=~\"5..\"}[5m]))",
-          "legendFormat": "{{uri}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Latency p50 / p95 / p99",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 7 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
-          "legendFormat": "p50"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_processed_total[5m]))",
+          "instant": false,
+          "legendFormat": "processed / sec",
+          "range": true,
+          "refId": "A"
         },
         {
-          "refId": "B",
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
-          "legendFormat": "p95"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total[5m]))",
+          "instant": false,
+          "legendFormat": "rejected / sec",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Processing and rejection rate",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Exactly five codes exist. 103 overwrites 102 when both checks fail, and 109 is never consumed as a reject; both panels below explain the consequences.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "id": 5,
+      "panels": [],
+      "title": "Reject codes - the five constants of CBTRN02C validation",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Cumulative rejections broken out by the five reject codes of app/cbl/CBTRN02C.cbl, read from the reject_code label of carddemo_batch_records_rejected_total (Micrometer tag key reject.code, MetricsConfig.TAG_REJECT_CODE; values are plain unpadded integers). Each series is selected by an exact matcher - never a regex - and its legend carries the code's verbatim legacy description: 100 INVALID CARD NUMBER FOUND (:L385-L386, paragraph 1500-A-LOOKUP-XREF at :L380), 101 ACCOUNT RECORD NOT FOUND (:L397-L398, paragraph 1500-B-LOOKUP-ACCT at :L393), 102 OVERLIMIT TRANSACTION (:L410-L411), 103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION (:L417-L418) and 109 ACCOUNT RECORD NOT FOUND (:L556-L557, paragraph 2800-UPDATE-ACCOUNT-REC at :L545). The set is closed at five because RejectCode is an enum of five constants, so no caller can widen this dimension.\n\n102 AND 103 DO NOT SUM TO THE BOTH-FAILED POPULATION. At app/cbl/CBTRN02C.cbl:L407-L420 the over-limit test and the expiry test are sequential and unguarded: the 102 block's END-IF at :L413 is immediately followed by the 103 IF at :L414, with no ELSE chain and no early exit between them. When both conditions fail, 103 overwrites 102 and exactly one reject record is written, bearing 103. A record that failed both checks therefore appears only under 103, and 102 undercounts over-limit failures by precisely the number of records that had also expired. This is preserved legacy behaviour, not a defect to be corrected, so do not add these two bars together.\n\n109 IS EXPECTED TO STAY AT ZERO. It is assigned in 2800-UPDATE-ACCOUNT-REC on the REWRITE INVALID KEY path at app/cbl/CBTRN02C.cbl:L554-L557, which runs inside the posting routine that :L211-L212 enter only when the reason code is already zero - the already-validated path. No reject record is written, the reject count is not incremented, and :L208 clears the value on the next iteration. The series is present rather than missing because MetricsConfig resolves one counter per enum constant eagerly at start-up, so it renders as a flat zero instead of an absent series. A zero here is a real observation, not a gap; were that registration ever made lazy, this bar would disappear rather than read zero.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 0,
+        "y": 7
+      },
+      "id": 6,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "top",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "text"
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_batch_records_rejected_total{reject_code=\"100\"})",
+          "instant": false,
+          "legendFormat": "100 INVALID CARD NUMBER FOUND",
+          "range": true,
+          "refId": "A"
         },
         {
-          "refId": "C",
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket[5m])))",
-          "legendFormat": "p99"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_batch_records_rejected_total{reject_code=\"101\"})",
+          "instant": false,
+          "legendFormat": "101 ACCOUNT RECORD NOT FOUND",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_batch_records_rejected_total{reject_code=\"102\"})",
+          "instant": false,
+          "legendFormat": "102 OVERLIMIT TRANSACTION",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_batch_records_rejected_total{reject_code=\"103\"})",
+          "instant": false,
+          "legendFormat": "103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_batch_records_rejected_total{reject_code=\"109\"})",
+          "instant": false,
+          "legendFormat": "109 ACCOUNT RECORD NOT FOUND",
+          "range": true,
+          "refId": "E"
         }
-      ]
+      ],
+      "title": "Rejections by reject code - cumulative",
+      "type": "bargauge"
     },
     {
-      "type": "row",
-      "title": "Authentication and money (replaces COSGN00C / COBIL00C DISPLAY)",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Rejections per second over a five-minute window, broken out by the same five exact reject codes as the panel to the left, so a burst can be attributed to a specific validation failure while a run is still in progress.\n\nSame source, same labels and the same two caveats as that panel: 103 shadows 102 whenever both conditions fail, because the checks at app/cbl/CBTRN02C.cbl:L407-L420 are sequential and unguarded; and 109 is expected to remain flat at zero because it is assigned only on the already-validated path at :L554-L557 and is never consumed as a reject.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 11,
+        "w": 12,
+        "x": 12,
+        "y": 7
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total{reject_code=\"100\"}[5m]))",
+          "instant": false,
+          "legendFormat": "100 INVALID CARD NUMBER FOUND",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total{reject_code=\"101\"}[5m]))",
+          "instant": false,
+          "legendFormat": "101 ACCOUNT RECORD NOT FOUND",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total{reject_code=\"102\"}[5m]))",
+          "instant": false,
+          "legendFormat": "102 OVERLIMIT TRANSACTION",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total{reject_code=\"103\"}[5m]))",
+          "instant": false,
+          "legendFormat": "103 TRANSACTION RECEIVED AFTER ACCT EXPIRATION",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_batch_records_rejected_total{reject_code=\"109\"}[5m]))",
+          "instant": false,
+          "legendFormat": "109 ACCOUNT RECORD NOT FOUND",
+          "range": true,
+          "refId": "E"
+        }
+      ],
+      "title": "Rejection rate by reject code",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "The remaining two of the four sanctioned instruments: authentication attempts by outcome, and the reported transaction amount.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 8,
+      "panels": [],
+      "title": "Sign-on and money",
+      "type": "row"
     },
     {
-      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Sign-on attempts per second over a five-minute window, split by the outcome label of carddemo_auth_attempts_total (MetricsConfig.METRIC_AUTHENTICATION_ATTEMPTS, tag key outcome). The dimension is closed at two values, success and failure, both selected by exact matchers.\n\nReplaces the sign-on path of app/cbl/COSGN00C.cbl, where PROCESS-ENTER-KEY at :L108 performs READ-USER-SEC-FILE at :L209 and an unresolved user identifier yields MOVE 'User not found. Try again ...' TO WS-MESSAGE at :L249 - a message shown to a single terminal operator and counted nowhere.\n\nFailure is deliberately one value rather than several: distinguishing an unknown user from a rejected credential would tell an attacker which identifiers exist. No subject is ever tagged - no user identifier, user name or credential of any kind reaches this metric, so this panel cannot leak one.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_auth_attempts_total{outcome=\"success\"}[5m]))",
+          "instant": false,
+          "legendFormat": "success / sec",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(carddemo_auth_attempts_total{outcome=\"failure\"}[5m]))",
+          "instant": false,
+          "legendFormat": "failure / sec",
+          "range": true,
+          "refId": "B"
+        }
+      ],
       "title": "Authentication attempts by outcome",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 15 },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum by (outcome) (rate(carddemo_auth_attempts_total[5m]))",
-          "legendFormat": "{{outcome}}"
-        }
-      ]
+      "type": "timeseries"
     },
     {
-      "type": "stat",
-      "title": "Transaction amount total",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 15 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Cumulative reported transaction amount, from carddemo_transaction_amount.\n\nNOTE THE NAME. The Micrometer instrument is carddemo.transaction.amount.total (MetricsConfig.METRIC_TRANSACTION_AMOUNT_TOTAL) but it is registered as a GAUGE, and the Prometheus client reserves the _total suffix for counters and strips it from a gauge. The rendered series is therefore carddemo_transaction_amount, with no suffix. Querying carddemo_transaction_amount_total returns no series whatsoever and produces a silently empty panel; this was confirmed against a live /actuator/prometheus response rather than inferred.\n\nA gauge is the correct instrument here precisely because the stream is signed. app/cbl/CBTRN02C.cbl:L548-L552 adds a negative amount to the cycle debit accumulator, so debits genuinely hold negative values, and app/data/ASCII/dailytran.txt genuinely carries negative overpunch signs. No sign is normalised anywhere, so this figure can fall as well as rise.\n\nThis is a telemetry mirror and NOT the authoritative financial total: the authoritative value is the BigDecimal held in the domain and the NUMERIC(11,2) column it persists to, and the exact accumulator is converted to a double once per scrape. The unit is left dimensionless on purpose - the COBOL corpus names no currency, and none is invented here.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "id": 10,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum(carddemo_transaction_amount_total)",
-          "legendFormat": "total"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(carddemo_transaction_amount)",
+          "instant": false,
+          "legendFormat": "reported total",
+          "range": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "title": "Reported transaction amount - telemetry mirror",
+      "type": "stat"
     },
     {
-      "type": "row",
-      "title": "JVM",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 21 },
       "collapsed": false,
-      "panels": []
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Scrape reachability of the application, and the heap figure the performance gate records as a measured baseline.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 25
+      },
+      "id": 11,
+      "panels": [],
+      "title": "Availability and capacity - measured baseline, no service level asserted",
+      "type": "row"
     },
     {
-      "type": "timeseries",
-      "title": "Heap used by area",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 22 },
-      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "Whether Prometheus can currently scrape the application: 1 when the last scrape of /actuator/prometheus by the carddemo-app job succeeded, 0 when it failed. The up series is generated by Prometheus itself, so this panel reports reachability of the scrape target.\n\nIT IS NOT A RE-IMPLEMENTATION OF APPLICATION HEALTH. The authoritative health surface is /actuator/health, whose readiness group covers the database, the object store and the queue, and whose S3 and SQS contributors are implemented in src/main/java/com/cardemo/observability/HealthIndicators.java (bean names s3HealthIndicator and sqsHealthIndicator, so the health component keys are s3 and sqs). docker-compose.yml health-checks /actuator/health/readiness. Those checks stand in for the CICS file-availability jobs app/jcl/OPENFIL.jcl and app/jcl/CLOSEFIL.jcl, each an EXEC PGM=SDSF job issuing /F CICSAWSA,'CEMT SET FIL(<name>) OPE' or the CLO counterpart for exactly five files - TRANSACT, CCXREF, ACCTDAT, CXACAIX and USRSEC - at app/jcl/OPENFIL.jcl:L26-L30 and app/jcl/CLOSEFIL.jcl:L26-L30. This dashboard visualises health; it implements none of it.\n\nRecorded and deliberately never corrected, because app/ is frozen byte-for-byte: the job card at app/jcl/OPENFIL.jcl:L1 reads //OEPNFIL, transposing the E and the P, while the member itself is OPENFIL.jcl. app/jcl/CLOSEFIL.jcl:L1 is spelled correctly.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "text"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "DOWN - last scrape failed"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "UP - last scrape succeeded"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 26
+      },
+      "id": 12,
+      "options": {
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum by (area) (jvm_memory_used_bytes)",
-          "legendFormat": "{{area}}"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "up{job=\"carddemo-app\"}",
+          "instant": false,
+          "legendFormat": "scrape up",
+          "range": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "title": "carddemo-app scrape availability",
+      "type": "stat"
     },
     {
-      "type": "timeseries",
-      "title": "GC pause rate",
-      "datasource": { "type": "prometheus", "uid": "carddemo-prometheus" },
-      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 22 },
-      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "carddemo-prometheus"
+      },
+      "description": "JVM heap bytes in use, summed across the heap memory pools - jvm_memory_used_bytes with an exact area=\"heap\" matcher, so the nonheap pools are excluded by selection rather than by a regex.\n\nPresent because the performance gate records peak heap, and the legend reports both the last and the maximum value over the selected window so that peak can be read directly. That figure is a MEASURED BASELINE and explicitly not a target: the COBOL corpus publishes no service level and none may be invented, so no threshold is set here and no colour on this panel implies a limit.\n\nThe legacy system had no equivalent signal of any kind; its entire telemetry surface was DISPLAY to SYSOUT.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 8,
+        "y": 26
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "sortBy": "Last *",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "11.3.1",
       "targets": [
         {
-          "refId": "A",
-          "expr": "sum by (cause) (rate(jvm_gc_pause_seconds_sum[5m]))",
-          "legendFormat": "{{cause}}"
+          "datasource": {
+            "type": "prometheus",
+            "uid": "carddemo-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})",
+          "instant": false,
+          "legendFormat": "heap used",
+          "range": true,
+          "refId": "A"
         }
-      ]
+      ],
+      "title": "JVM heap used - peak-heap measured baseline",
+      "type": "timeseries"
     }
   ],
-  "refresh": "30s",
+  "refresh": "15s",
   "schemaVersion": 39,
-  "tags": ["carddemo", "cobol-migration", "batch", "observability"],
-  "templating": { "list": [] },
-  "time": { "from": "now-6h", "to": "now" },
+  "tags": [
+    "carddemo",
+    "cobol-migration",
+    "batch",
+    "observability",
+    "cbtrn02c",
+    "apache-2.0"
+  ],
+  "templating": {
+    "list": []
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "15s",
+      "30s",
+      "1m",
+      "5m",
+      "15m",
+      "30m",
+      "1h"
+    ]
+  },
   "timezone": "utc",
   "title": "CardDemo - Migration Observability",
   "uid": "carddemo-overview",
